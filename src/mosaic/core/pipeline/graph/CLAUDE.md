@@ -120,6 +120,18 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   a joining group would refit or only re-score, and `assume_added` reports it through
   cautions alone, since `PlanWire` has no room for a field
   (`test_pipeline_held_out.py`, `tests/agent/mcp/test_plan_recipe_held_out.py`).
+- `reach_findings` (`reach.py`) checks each `fits` step planned with `cv_unit="block"`
+  that is not bound to a run: the `temporal_reach` of the steps above it, summed along a
+  path of data edges (not `after`) with the maximum taken over paths, against its
+  `cv_gap_frames`. The step's own reach is not counted, because a fold model trains on
+  pieces cut out of the runs. A gap below a reach every step declares is a `Problem`. A
+  step above that is `unknown` (declared, unbounded) or `undeclared` makes it a caution
+  kept in `Plan.reach_cautions`, which `plan_wire` appends, so `PlanWire` gains no field,
+  unless the gap is positive and covers the reach that is known. An op passes the reach
+  above it through. The sequence unit is never checked. A step above an unresolved parent
+  takes `fits` from its declaration and its reach from its own params (`recipe_reach`),
+  so the first plan of a recipe is checked as the later ones are
+  (`test_pipeline_temporal_reach.py`).
 - `score_heldout` (`score.py`, `mosaic pipeline score`) scores a finished recipe on
   held-out data on a copy of the study, and never writes the study. It converts the
   new data with `convert_all_tracks` and `convert_all_labels` called with the params

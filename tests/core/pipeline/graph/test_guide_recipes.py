@@ -45,7 +45,9 @@ def sequence() -> dict[str, Any]:
 def cross_validated(supervised: dict[str, Any]) -> dict[str, Any]:
     """The supervised recipe, with the two steps that the cross-validation section changes."""
     (block,) = [
-        b for b in guide_blocks("json") if '"xgboost"' in b and '"cv_folds"' in b
+        b
+        for b in guide_blocks("json")
+        if '"xgboost"' in b and '"cv_folds"' in b and '"cv_unit"' not in b
     ]
     changed: dict[str, dict[str, Any]] = {
         step["id"]: step for step in json.loads(f"[{block}]")

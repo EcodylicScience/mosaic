@@ -16,6 +16,7 @@ import logging
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import joblib
 import numpy as np
@@ -830,6 +831,376 @@ def test_a_cached_run_with_folds_applies_the_same(tmp_path: Path) -> None:
     pd.testing.assert_frame_equal(
         again.apply(tables[entries[1]]), fitted.apply(tables[entries[1]])
     )
+
+
+# --- Cross-validation by block -----------------------------------------------------------
+
+
+PROBS = ["prob_0", "prob_1", "prob_2"]
+
+
+def _record_fit_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[set[tuple[tuple[str, str], int]]]:
+    """Record the ``(entry, frame)`` of every frame each model fits on, and fit as usual."""
+    recorded: list[set[tuple[tuple[str, str], int]]] = []
+    original = SequenceClassifier._fit_model  # pyright: ignore[reportPrivateUsage]
+
+    def spy(
+        self: SequenceClassifier,
+        runs: list[module.TrainingRun],
+        columns: list[str],
+        classes: list[int],
+        fold: int | None,
+        seed: int,
+    ) -> module.SequenceClassifierModel:
+        recorded.append(
+            {
+                (run.entry, run.first_frame + offset)
+                for run in runs
+                if run.first_frame is not None
+                for offset in range(len(run.y))
+            }
+        )
+        return original(self, runs, columns, classes, fold, seed)
+
+    monkeypatch.setattr(SequenceClassifier, "_fit_model", spy)
+    return recorded
+
+
+def _one_sequence(
+    tmp_path: Path,
+) -> tuple[TemplatesStudy, dict[Entry, pd.DataFrame]]:
+    return _study(tmp_path, {A: 0}, train=[A])
+
+
+def test_one_training_sequence_is_cut_into_blocks_that_fill_the_folds(
+    tmp_path: Path,
+) -> None:
+    study, tables = _one_sequence(tmp_path)
+
+    feature = _fit(
+        study, tables, cv_folds=2, cv_unit="block", cv_blocks_per_sequence=4, steps=20
+    )
+
+    bundle = _saved(feature, tmp_path / "saved")
+    folds = pd.read_parquet(tmp_path / "saved" / "cv_folds.parquet")
+    assert folds[["block", "start", "stop"]].values.tolist() == [
+        [0, 0, 15],
+        [1, 15, 30],
+        [2, 30, 45],
+        [3, 45, 60],
+    ]
+    assert sorted(folds["fold"].tolist()) == [0, 0, 1, 1]
+    assert folds["n_rows"].tolist() == [15, 15, 15, 15]
+    assert (folds[["rows_0", "rows_1", "rows_2"]].sum(axis=1) == 15).all()
+    saved_cv = bundle.get("cv")
+    assert saved_cv is not None
+    cv = cast("dict[str, Any]", saved_cv)
+    assert cv["unit"] == "block"
+    assert cv["blocks_per_sequence"] == 4
+    assert cv["gap_frames"] == 0
+    assert cv["fold_of"] == []
+    assert [b[:5] for b in cv["blocks"]] == [
+        ("train", "a", 0, 0, 15),
+        ("train", "a", 1, 15, 30),
+        ("train", "a", 2, 30, 45),
+        ("train", "a", 3, 45, 60),
+    ]
+    assert [m["fold"] for m in bundle["models"]] == [0, 1, None]
+
+
+def test_the_blocks_default_to_one_per_fold(tmp_path: Path) -> None:
+    study, tables = _one_sequence(tmp_path)
+
+    feature = _fit(study, tables, cv_folds=3, cv_unit="block", steps=20)
+
+    assert feature.params.cv_blocks_per_sequence == 3
+    feature.save_state(tmp_path / "saved")
+    folds = pd.read_parquet(tmp_path / "saved" / "cv_folds.parquet")
+    assert sorted(folds["fold"].tolist()) == [0, 1, 2]
+
+
+def test_a_fold_model_trains_without_its_blocks_and_the_gap_around_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, tables = _one_sequence(tmp_path)
+    fitted = _record_fit_runs(monkeypatch)
+    gap = 3
+
+    feature = _fit(
+        study,
+        tables,
+        cv_folds=2,
+        cv_unit="block",
+        cv_blocks_per_sequence=4,
+        cv_gap_frames=gap,
+        steps=20,
+    )
+
+    feature.save_state(tmp_path / "saved")
+    folds = pd.read_parquet(tmp_path / "saved" / "cv_folds.parquet")
+    assert len(fitted) == 3
+    for fold in range(2):
+        held = [
+            (start - gap, stop + gap)
+            for start, stop, f in zip(folds["start"], folds["stop"], folds["fold"])
+            if f == fold
+        ]
+        expected = {
+            (A, frame)
+            for frame in range(FRAMES)
+            if not any(first <= frame < stop for first, stop in held)
+        }
+        # A piece shorter than min_run does not train, so only a subset is promised
+        # of what the gap leaves, and it is never a frame the gap took.
+        assert fitted[fold] <= expected
+        assert fitted[fold]
+        for block_start, block_stop, f in zip(
+            folds["start"], folds["stop"], folds["fold"]
+        ):
+            if f == fold:
+                assert not any(
+                    (A, frame) in fitted[fold]
+                    for frame in range(block_start - gap, block_stop + gap)
+                )
+    assert fitted[2] == {(A, frame) for frame in range(FRAMES)}
+
+
+def test_a_gap_that_leaves_a_piece_shorter_than_min_run_drops_that_piece(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, tables = _one_sequence(tmp_path)
+    runs = _record_training_runs(monkeypatch)
+
+    _ = _fit(
+        study,
+        tables,
+        cv_folds=2,
+        cv_unit="block",
+        cv_blocks_per_sequence=6,
+        cv_gap_frames=2,
+        min_run=8,
+        steps=20,
+    )
+
+    for lengths in runs[:2]:
+        assert lengths
+        assert min(lengths) >= 8
+
+
+def test_a_row_of_a_block_is_scored_by_the_model_of_its_fold(tmp_path: Path) -> None:
+    study, tables = _study(tmp_path, {A: 0, C: 2}, train=[A], test=[C])
+    feature = _fit(
+        study,
+        tables,
+        cv_folds=2,
+        cv_unit="block",
+        cv_blocks_per_sequence=4,
+        cv_gap_frames=2,
+        steps=20,
+    )
+    bundle = _saved(feature, tmp_path / "saved")
+    folds = pd.read_parquet(tmp_path / "saved" / "cv_folds.parquet")
+    frame = tables[A]["frame"].to_numpy()
+    in_fold = {fold: np.zeros(len(frame), dtype=bool) for fold in (0, 1)}
+    for start, stop, fold in zip(folds["start"], folds["stop"], folds["fold"]):
+        in_fold[int(fold)] |= (frame >= start) & (frame < stop)
+    assert in_fold[0].sum() + in_fold[1].sum() == len(frame)
+
+    scored = feature.apply(tables[A])[PROBS].to_numpy()
+
+    for fold in (0, 1):
+        alone = _scored_by(bundle, fold, tables[A], tmp_path / f"fold{fold}")
+        np.testing.assert_allclose(
+            scored[in_fold[fold]], alone[in_fold[fold]], atol=1e-6
+        )
+    full = _scored_by(bundle, 2, tables[C], tmp_path / "full")
+    np.testing.assert_allclose(
+        feature.apply(tables[C])[PROBS].to_numpy(), full, atol=1e-6
+    )
+
+
+def test_a_frame_outside_every_block_is_scored_by_the_full_model(
+    tmp_path: Path,
+) -> None:
+    study, tables = _study(tmp_path, {A: 0}, train=[A])
+    # Unlabeled frames beyond the labeled span are in no block.
+    tables[A] = _table(A, range(FRAMES + 20))
+    feature = _fit(
+        study,
+        tables,
+        cv_folds=2,
+        cv_unit="block",
+        cv_blocks_per_sequence=2,
+        steps=20,
+    )
+    bundle = _saved(feature, tmp_path / "saved")
+    frame = tables[A]["frame"].to_numpy()
+    outside = frame >= FRAMES
+
+    scored = feature.apply(tables[A])[PROBS].to_numpy()
+
+    full = _scored_by(bundle, 2, tables[A], tmp_path / "full")
+    np.testing.assert_allclose(scored[outside], full[outside], atol=1e-6)
+    assert not np.allclose(scored[~outside], full[~outside], atol=1e-6)
+
+
+def test_the_blocks_do_not_depend_on_the_order_or_the_width_of_the_scope(
+    tmp_path: Path,
+) -> None:
+    entries = [("train", f"s{i}") for i in range(3)]
+    study, tables = _study(
+        tmp_path,
+        {entry: i for i, entry in enumerate(entries)} | {C: 2},
+        train=entries,
+        test=[C],
+        frames={
+            entries[0]: range(10, 70),
+            entries[1]: range(45),
+            entries[2]: range(60),
+        },
+    )
+    items = [(f"{g}__{s}", table) for (g, s), table in sorted(tables.items())]
+
+    def fitted(name: str, order: list[tuple[str, pd.DataFrame]]) -> pd.DataFrame:
+        feature = _feature(
+            cv_folds=2, cv_unit="block", cv_blocks_per_sequence=3, steps=20
+        )
+        assert not feature.load_state(
+            study.root / name,
+            {"templates": study.templates},
+            {"labels": study.label_files},
+        )
+        feature.fit(InputStream(lambda: iter(order), n_entries=len(order)))
+        feature.save_state(tmp_path / name)
+        return pd.read_parquet(tmp_path / name / "cv_folds.parquet")
+
+    # The fit needs every training entry, so a narrower scope drops the test entry.
+    train_only = [item for item in items if item[0].startswith("train")]
+    base = fitted("base", train_only)
+    reversed_ = fitted("reversed", train_only[::-1])
+    widened = fitted("widened", items)
+
+    pd.testing.assert_frame_equal(reversed_, base)
+    pd.testing.assert_frame_equal(widened, base)
+    first = base[base["sequence"] == "s0"]
+    assert first["start"].min() == 10
+    assert first["stop"].max() == 70
+
+
+def test_the_unit_of_a_sequence_is_the_run_it_always_was(tmp_path: Path) -> None:
+    entries = [("train", f"s{i}") for i in range(4)]
+    study, tables = _study(
+        tmp_path, {e: i for i, e in enumerate(entries)}, train=entries
+    )
+
+    default = _saved(
+        _fit(study, tables, "default", cv_folds=2, steps=20), tmp_path / "default"
+    )
+    named = _saved(
+        _fit(study, tables, "named", cv_folds=2, cv_unit="sequence", steps=20),
+        tmp_path / "named",
+    )
+
+    assert list(pd.read_parquet(tmp_path / "default" / "cv_folds.parquet").columns) == [
+        "group",
+        "sequence",
+        "fold",
+        "n_rows",
+        "rows_0",
+        "rows_1",
+        "rows_2",
+    ]
+    for saved in (default, named):
+        cv = saved.get("cv")
+        assert cv is not None
+        assert sorted(cv) == ["fold_of", "folds", "seed"]
+    for index, model in enumerate(default["models"]):
+        for name, weights in model["weights"].items():
+            np.testing.assert_array_equal(
+                weights, named["models"][index]["weights"][name]
+            )
+    assert (tmp_path / "default" / "cv_folds.parquet").read_bytes() == (
+        tmp_path / "named" / "cv_folds.parquet"
+    ).read_bytes()
+
+
+def test_a_cached_run_by_block_applies_the_same(tmp_path: Path) -> None:
+    study, tables = _one_sequence(tmp_path)
+    fitted = _fit(
+        study, tables, steps=20, cv_folds=2, cv_unit="block", cv_blocks_per_sequence=4
+    )
+    fitted.save_state(tmp_path / "run")
+    again = _feature(steps=20, cv_folds=2, cv_unit="block", cv_blocks_per_sequence=4)
+
+    assert again.load_state(
+        tmp_path / "run", {"templates": study.templates}, {"labels": study.label_files}
+    )
+    pd.testing.assert_frame_equal(again.apply(tables[A]), fitted.apply(tables[A]))
+
+
+def test_a_cached_model_of_the_other_unit_is_refused(tmp_path: Path) -> None:
+    study, tables = _one_sequence(tmp_path)
+    _fit(
+        study, tables, cv_folds=2, cv_unit="block", cv_blocks_per_sequence=4, steps=20
+    ).save_state(tmp_path / "run")
+    other = _feature(cv_folds=2, steps=20)
+
+    with pytest.raises(RuntimeError, match="the other unit"):
+        _ = other.load_state(
+            tmp_path / "run",
+            {"templates": study.templates},
+            {"labels": study.label_files},
+        )
+
+
+def test_more_folds_than_blocks_is_refused(tmp_path: Path) -> None:
+    study, tables = _one_sequence(tmp_path)
+
+    with pytest.raises(ValueError, match="cannot deal 2 blocks into 3 folds"):
+        _ = _fit(
+            study,
+            tables,
+            cv_folds=3,
+            cv_unit="block",
+            cv_blocks_per_sequence=2,
+            steps=20,
+        )
+
+
+def test_a_gap_that_leaves_a_fold_one_class_is_refused(tmp_path: Path) -> None:
+    study, tables = _one_sequence(tmp_path)
+
+    with pytest.raises(ValueError, match="leaves training runs"):
+        _ = _fit(
+            study,
+            tables,
+            cv_folds=2,
+            cv_unit="block",
+            cv_blocks_per_sequence=2,
+            cv_gap_frames=40,
+            steps=20,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"cv_unit": "block"}, "cut the folds of cv_folds"),
+        ({"cv_gap_frames": 5}, "cut the folds of cv_folds"),
+        ({"cv_folds": 2, "cv_gap_frames": 5}, "only apply with cv_unit block"),
+        (
+            {"cv_folds": 2, "cv_blocks_per_sequence": 4},
+            "only apply with cv_unit block",
+        ),
+    ],
+)
+def test_block_settings_without_what_they_need_are_refused(
+    overrides: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _ = _feature(**overrides)
 
 
 # --- Progress and cancel ---------------------------------------------------------------

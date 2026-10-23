@@ -81,6 +81,7 @@ from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
 from .heldout import held_out_fit_problem
+from .compatibility import Reach
 from .lanes import lane_for
 from .model import (
     TRACKS_INPUT,
@@ -99,11 +100,13 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
+    feature_class_for_slug,
     feature_parallelizable,
     op_class_for_kind,
     resolve_step_spec,
 )
 from .columns import ColumnSet, measured_columns
+from .reach import UNDECLARED, feature_reach, reach_findings, recipe_reach
 from .scope import intended_scope
 from .topo import ancestors_of, parents_of, topological_order
 from .validate import (
@@ -326,6 +329,11 @@ class PlannedStep:
         fits: Whether the step learns from the entries it covers, read off the
             built feature beside ``scope_dependent`` and ``False`` for an op. The
             held-out guard and :func:`~.heldout.refit_set` read the two together.
+        temporal_reach: The frames on each side that one output row of the step
+            depends on, read off the built feature under the step's own params
+            (:mod:`~.reach`), or ``undeclared``. The feature's class-level answer
+            stands in for a step whose identity is unresolved. ``undeclared`` for
+            an op, whose reach the gap check passes through unchanged.
     """
 
     step_id: str
@@ -353,6 +361,7 @@ class PlannedStep:
     parallelizable: bool = False
     scope_dependent: bool = False
     fits: bool = False
+    temporal_reach: Reach = UNDECLARED
 
     @property
     def is_complete(self) -> bool:
@@ -388,6 +397,11 @@ class Plan:
             plan's scope is empty then, and the held-out guard sees no group
             (:func:`~.heldout.deferred_fit_cautions` says so). ``None``
             otherwise. Not part of the wire or the fingerprint.
+        reach_cautions: The classifiers planned for block cross-validation whose
+            ``cv_gap_frames`` cannot be checked, because a step above them
+            declares no reach or one no params bound (:func:`~.reach.reach_findings`).
+            Their problems are in ``problems``. Not part of the wire or the
+            fingerprint.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -408,6 +422,7 @@ class Plan:
         default_factory=lambda: cast("dict[str, SplitRole]", {})
     )
     deferred_by: str | None = None
+    reach_cautions: tuple[Problem, ...] = ()
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -551,6 +566,8 @@ class _Resolution:
     """
     fits: bool = False
     """Whether this step learns from the entries it covers, read beside the above."""
+    reach: Reach | None = None
+    """The temporal reach of the built feature, ``None`` where none was built."""
 
 
 def plan_pipeline(
@@ -708,7 +725,9 @@ def plan_pipeline(
             labels_kind=step_plan.labels_kind,
         )
 
+    reached = reach_findings(recipe, steps, skip=bind)
     problems = list(findings.problems)
+    problems.extend(reached.problems)
     problems.extend(
         _step_scope_problems(
             recipe, planned, narrowed, catalog=catalog, bind=bind, deferred=deferred_by
@@ -727,6 +746,7 @@ def plan_pipeline(
         step_scopes=narrowed,
         splits=splits,
         deferred_by=deferred_by,
+        reach_cautions=reached.cautions,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)
@@ -780,6 +800,16 @@ def _plan_step(
         # silently answers a question nobody asked.
         resolution = _Resolution(step=_unresolved(step, target, recipe, resolved, bind))
         base = replace(resolution.step, reason=inherited)
+        if isinstance(step, FeatureStepSpec):
+            # What the class declares, since the feature is not built: a fitter
+            # given a ``model`` applies it, and the others fit. Left at the
+            # default, the cross-validation gap of a classifier whose upstream
+            # has not run would go unchecked until its step ran and was refused.
+            base = replace(
+                base,
+                fits=declared.fits and step.params.get("model") is None,
+                temporal_reach=_reach_of(step, resolution),
+            )
     elif isinstance(step, OpStepSpec):
         resolution = _resolve_op_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
@@ -793,6 +823,7 @@ def _plan_step(
             resolution.step,
             scope_dependent=resolution.scope_dependent,
             fits=resolution.fits,
+            temporal_reach=_reach_of(step, resolution),
         )
         if (
             deferred_by is not None
@@ -824,6 +855,14 @@ def _plan_step(
         finished=view.finished,
         reason=_reason_for(base, parents, planned, view.coverage, view.status),
     )
+
+
+def _reach_of(step: FeatureStepSpec, resolution: _Resolution) -> Reach:
+    """The temporal reach of a feature step: the built feature's, else its params'."""
+    if resolution.reach is not None:
+        return resolution.reach
+    cls = feature_class_for_slug(step.feature)
+    return UNDECLARED if cls is None else recipe_reach(cls, step.params)
 
 
 def _as_recorded(base: PlannedStep, run_id: str) -> PlannedStep:
@@ -1153,6 +1192,7 @@ def _resolve_feature_step(
     # Read off the instance as ``scope_dependent`` is: several features narrow
     # both in ``__init__``, as a model they are given is applied and not fitted.
     fits = bool(getattr(feature, "fits", False))
+    reach = feature_reach(feature)
 
     fps = ds.meta_float("fps_default")
     unconvertible = _time_filter_problems(step, fps)
@@ -1161,6 +1201,7 @@ def _resolve_feature_step(
             step=_unresolved_feature(step, spec, unconvertible),
             scope_dependent=scope_dependent,
             fits=fits,
+            reach=reach,
         )
 
     frame_start, frame_end = resolve_frame_range(
@@ -1201,6 +1242,7 @@ def _resolve_feature_step(
         ),
         scope_dependent=scope_dependent,
         fits=fits,
+        reach=reach,
     )
 
 

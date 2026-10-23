@@ -24,6 +24,24 @@ fitted elsewhere is applied through ``model``.
 is scored by the model that did not see it, and an entry outside the training set by
 the model fitted on all of it. ``cv_folds.parquet`` lists the folds.
 
+**Cross-validation by block.** ``cv_unit="block"`` holds out blocks of frames instead of
+whole sequences, so that a dataset with one training sequence is still cross-validated.
+Each training entry is cut into ``cv_blocks_per_sequence`` contiguous blocks that tile
+the frames from the first to the last labeled frame of any of its series (the frames
+the step's inputs hold, so the cut does not depend on the scope or on the order the
+entries arrive in), differing in length by at most one frame. The blocks of all entries
+are ordered by the sha256 of ``[cv_seed, group, sequence, block]`` and dealt to the folds
+in turn. The model of a fold trains on the labeled runs of every entry minus the blocks
+of that fold and ``cv_gap_frames`` frames on each side of them; a piece of a run that this
+leaves shorter than ``min_run`` does not train. A row is scored by the model of the fold
+whose block holds its ``frame``, an unlabeled frame between two labeled ones included.
+Only the frames outside every block, which no label covers, and the entries outside the
+training set are scored by the model fitted on all of it, so every labeled frame of a
+training entry is out of fold. The network predicts each series whole for every model
+that scores some of its rows, so a block-mode apply costs up to one pass per fold more.
+``cv_folds.parquet`` then has one row per block, with its ``start`` and ``stop`` frames
+(half-open) beside ``fold``.
+
 **Determinism.** The same params and inputs fit the same model on a CPU at one
 thread count. A GPU repeats on the same machine with the settings below, and is
 not promised to give the CPU's bytes. ``device`` is part of the run id for this
@@ -34,6 +52,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -45,6 +64,7 @@ from typing import (
     Self,
     TypedDict,
     final,
+    override,
 )
 
 import numpy as np
@@ -89,17 +109,27 @@ from mosaic.optional_dependency import OptionalModule, Prerequisite
 from .classifier_common import (
     FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
+    CvBlock,
+    CvBlocksPerSequence,
+    CvGapFrames,
     CvSeed,
+    CvUnit,
     DecisionThreshold,
     FitReporting,
+    FoldLookup,
     RunningMoments,
     assemble_prediction,
+    block_fold_table,
+    block_list,
+    block_rows,
     check_cross_validation,
     check_folds,
+    deal_blocks,
     deal_folds,
     fold_map,
     fold_rows,
     fold_table,
+    held_out_frames,
     refuse_entries_outside_scope,
     standardize,
     write_bundle,
@@ -148,6 +178,21 @@ _MIN_STD: Final = 1e-6
 """A column with less spread than this standardizes by 1, as a constant column does."""
 
 
+@dataclass(frozen=True)
+class _FoldPlan:
+    """The folds a fit deals: ``cv_folds.parquet``, who is in which fold, and each fold's runs.
+
+    ``fold_of`` holds the fold of each entry when the unit is the sequence, and
+    ``blocks`` the folded blocks when it is the block. ``training[k]`` holds the runs
+    that the model without fold ``k`` trains on.
+    """
+
+    table: pd.DataFrame
+    fold_of: dict[tuple[str, str], int]
+    blocks: list[CvBlock]
+    training: list[list[TrainingRun]]
+
+
 # --- Model artifact ---
 
 
@@ -166,11 +211,21 @@ class SequenceClassifierModel(TypedDict):
 
 
 class SequenceClassifierCv(TypedDict):
-    """The cross-validation half of a bundle, written when ``cv_folds`` is set."""
+    """The cross-validation half of a bundle, written when ``cv_folds`` is set.
+
+    By sequence, ``fold_of`` holds ``(group, sequence, fold)`` for every train entry.
+    By block, the keys ``unit``, ``blocks_per_sequence``, ``gap_frames`` and
+    ``blocks`` are written too, ``fold_of`` is empty, and ``blocks`` holds
+    ``(group, sequence, block, start, stop, fold)`` for every block.
+    """
 
     folds: int
     seed: int
     fold_of: list[tuple[str, str, int]]
+    unit: NotRequired[Literal["block"]]
+    blocks_per_sequence: NotRequired[int]
+    gap_frames: NotRequired[int]
+    blocks: NotRequired[list[tuple[str, str, int, int, int, int]]]
 
 
 class SequenceClassifierBundle(TypedDict):
@@ -223,8 +278,8 @@ _LABELS_DESCRIPTION = (
 
 _COLUMNS_DESCRIPTION = (
     "The payload columns the network reads, in this order. Unset, every numeric "
-    "payload column of the inputs. A narrow set usually beats a wide one: 37 "
-    "columns beat 562 to 999 on CalMS21."
+    "payload column of the inputs. A narrow set can beat a wide one, so compare "
+    "sets by cross-validated score."
 )
 
 _HEAD_DESCRIPTION = (
@@ -295,7 +350,8 @@ _CV_FOLDS_DESCRIPTION = (
     "models are fitted, each on the training runs outside one fold. A training "
     "entry is then scored by the model that did not see it, and every other "
     "entry by the model fitted on all training runs. The fold of each entry is "
-    "in cv_folds.parquet. Needs templates and is refused beside model."
+    "in cv_folds.parquet. With cv_unit block, the folds hold out blocks of frames "
+    "and not whole entries. Needs templates and is refused beside model."
 )
 
 _DEVICE_DESCRIPTION = (
@@ -351,6 +407,18 @@ class SequenceClassifier(FitReporting):
         conditional=META_COLUMNS_KEPT,
     )
     ModelArtifact = SequenceClassifierModelArtifact
+
+    @staticmethod
+    def temporal_reach(params: SequenceClassifier.Params) -> int | None:
+        """Frames on each side that the head reads of its input, the step's own reach.
+
+        ``None`` for a head whose reach no option bounds (a GRU), or one that is not
+        registered in the process that asks.
+        """
+        try:
+            return get_head(params.head).temporal_reach(params.head_options())
+        except ValueError:
+            return None
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"
@@ -413,6 +481,9 @@ class SequenceClassifier(FitReporting):
             int | None, Field(ge=2), Declared(_CV_FOLDS_DESCRIPTION)
         ] = None
         cv_seed: CvSeed = 0
+        cv_unit: CvUnit = "sequence"
+        cv_blocks_per_sequence: CvBlocksPerSequence = None
+        cv_gap_frames: CvGapFrames = 0
         # Not HASH_EXCLUDE: a GPU and a CPU need not give one model.
         device: Annotated[Literal["cpu", "cuda"], Declared(_DEVICE_DESCRIPTION)] = (
             "cuda"
@@ -475,12 +546,29 @@ class SequenceClassifier(FitReporting):
                     "a model fits nothing"
                 )
                 raise ValueError(msg)
-            check_cross_validation(
+            self.cv_blocks_per_sequence = check_cross_validation(
                 self.cv_folds,
                 self.cv_seed,
                 model_given="model" in self.model_fields_set and self.model is not None,
+                cv_unit=self.cv_unit,
+                cv_blocks_per_sequence=self.cv_blocks_per_sequence,
+                cv_gap_frames=self.cv_gap_frames,
             )
             return self
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, with the block settings left out under ``cv_unit="sequence"``.
+
+            A run that cross-validates by sequence, or not at all, has the identity it
+            had before the block settings existed. ``check_cross_validation`` leaves
+            them at their defaults then, so leaving them out loses nothing.
+            """
+            dumped = super().identity_dump()
+            if self.cv_unit == "sequence":
+                for name in ("cv_unit", "cv_blocks_per_sequence", "cv_gap_frames"):
+                    del dumped[name]
+            return dumped
 
         def head_options(self) -> HeadConfig:
             """Return the options of the chosen head: those given, else its defaults.
@@ -512,6 +600,7 @@ class SequenceClassifier(FitReporting):
     def _reset(self) -> None:
         self._bundle: SequenceClassifierBundle | None = None
         self._fold_of: dict[tuple[str, str], int] = {}
+        self._blocks: FoldLookup | None = None
         self._cv_table: pd.DataFrame | None = None
         self._train_entries: list[tuple[str, str]] | None = None
         self._label_files: DependencyLookup = {}
@@ -573,7 +662,19 @@ class SequenceClassifier(FitReporting):
             )
             raise RuntimeError(msg)
         if folds and cv is not None:
-            self._fold_of = fold_map(cv["fold_of"])
+            by_block = self.params.cv_unit == "block"
+            if by_block != (cv.get("unit") == "block"):
+                msg = (
+                    f"[{self.name}] cv_unit is {self.params.cv_unit!r} and the cached "
+                    "model was fitted with the other unit. Remove "
+                    "sequence_classifier_model.joblib from the run directory to fit "
+                    "again"
+                )
+                raise RuntimeError(msg)
+            if by_block:
+                self._blocks = FoldLookup.by_block(block_list(cv.get("blocks", [])))
+            else:
+                self._fold_of = fold_map(cv["fold_of"])
 
     def fit(self, inputs: InputStream) -> None:
         if self._train_entries is None:
@@ -588,7 +689,7 @@ class SequenceClassifier(FitReporting):
         torch = TORCH.load()
         p = self.params
 
-        columns, runs = self._collect_runs(inputs)
+        columns, runs, ranges = self._collect_runs(inputs)
         classes = sorted({int(c) for run in runs for c in np.unique(run.y)})
         # The runs hold the labels themselves until here, and class indices after.
         index_of = {label: index for index, label in enumerate(classes)}
@@ -597,6 +698,7 @@ class SequenceClassifier(FitReporting):
                 run.entry,
                 run.x,
                 np.array([index_of[int(v)] for v in run.y], dtype=np.intp),
+                run.first_frame,
             )
             for run in runs
         ]
@@ -608,30 +710,25 @@ class SequenceClassifier(FitReporting):
             "Name fewer columns with `columns`, or narrow the scope.",
         )
 
-        fold_of: dict[tuple[str, str], int] | None = None
+        plan: _FoldPlan | None = None
         if p.cv_folds is not None:
-            fold_of = deal_folds(self.name, self._train_entries, p.cv_folds, p.cv_seed)
-            self._cv_table = self._fold_table(fold_of, runs, classes)
-            check_folds(
-                self.name,
-                p.cv_folds,
-                self._cv_table,
-                classes,
-                rows="labeled frames",
+            plan = self._deal(runs, ranges, classes)
+            self._cv_table = plan.table
+            self._fold_of = dict(plan.fold_of)
+            self._blocks = (
+                FoldLookup.by_block(block_rows(plan.blocks)) if plan.blocks else None
             )
-            self._fold_of = dict(fold_of)
 
         total = 1 + (p.cv_folds or 0)
         models: list[SequenceClassifierModel] = []
         environment = self._environment(torch.__version__)
         with deterministic_torch(device=p.device, n_threads=p.n_threads):
-            if fold_of is not None and p.cv_folds is not None:
+            if plan is not None and p.cv_folds is not None:
                 for fold in range(p.cv_folds):
                     self._before_fit(fold, total, whole="all runs")
-                    inside = [r for r in runs if fold_of[r.entry] != fold]
                     models.append(
                         self._fit_model(
-                            inside,
+                            plan.training[fold],
                             columns,
                             classes,
                             fold,
@@ -656,12 +753,18 @@ class SequenceClassifier(FitReporting):
             "models": models,
             "environment": environment,
         }
-        if fold_of is not None and p.cv_folds is not None:
-            bundle["cv"] = {
+        if plan is not None and p.cv_folds is not None:
+            cv: SequenceClassifierCv = {
                 "folds": p.cv_folds,
                 "seed": p.cv_seed,
-                "fold_of": fold_rows(fold_of),
+                "fold_of": fold_rows(plan.fold_of),
             }
+            if plan.blocks and p.cv_blocks_per_sequence is not None:
+                cv["unit"] = "block"
+                cv["blocks_per_sequence"] = p.cv_blocks_per_sequence
+                cv["gap_frames"] = p.cv_gap_frames
+                cv["blocks"] = block_rows(plan.blocks)
+            bundle["cv"] = cv
         self._bundle = bundle
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -675,24 +778,29 @@ class SequenceClassifier(FitReporting):
         ensure_columns(df, [COLUMNS.frame_col, *columns])
         refuse_repeated_series_rows(df, self.name)
 
-        index = self._scoring_model(df, bundle)
-        model = bundle["models"][index]
-        mean = np.asarray(model["mean"], dtype=np.float64)
-        std = np.asarray(model["std"], dtype=np.float64)
-        frames = standardize(
-            df[columns].to_numpy(dtype=np.float64), mean, std, bundle["clip"]
-        ).astype(np.float32)
+        choice = self._scoring_models(df, bundle)
         probs = np.full((len(df), len(bundle["classes"])), np.nan)
         order = df[COLUMNS.frame_col].to_numpy()
-        network = self._network(index, bundle)
-        for positions in iter_series_positions(df):
-            for start, stop in consecutive_runs(
-                order[positions], np.ones(len(positions), dtype=bool)
-            ):
-                stretch = positions[start:stop]
-                probs[stretch] = predict_probabilities(
-                    network, frames[stretch], device=self.params.apply_device
-                )
+        features = df[columns].to_numpy(dtype=np.float64)
+        for index in np.unique(choice):
+            needed = choice == index
+            model = bundle["models"][int(index)]
+            mean = np.asarray(model["mean"], dtype=np.float64)
+            std = np.asarray(model["std"], dtype=np.float64)
+            frames = standardize(features, mean, std, bundle["clip"]).astype(np.float32)
+            scored = np.full_like(probs, np.nan)
+            network = self._network(int(index), bundle)
+            for positions in iter_series_positions(df):
+                if not needed[positions].any():
+                    continue
+                for start, stop in consecutive_runs(
+                    order[positions], np.ones(len(positions), dtype=bool)
+                ):
+                    stretch = positions[start:stop]
+                    scored[stretch] = predict_probabilities(
+                        network, frames[stretch], device=self.params.apply_device
+                    )
+            probs[needed] = scored[needed]
         return assemble_prediction(
             df,
             probs,
@@ -711,12 +819,16 @@ class SequenceClassifier(FitReporting):
 
     # --- Fitting ---
 
-    def _collect_runs(self, inputs: InputStream) -> tuple[list[str], list[TrainingRun]]:
+    def _collect_runs(
+        self, inputs: InputStream
+    ) -> tuple[list[str], list[TrainingRun], dict[tuple[str, str], tuple[int, int]]]:
         """Stream the training entries and keep each run of consecutive labeled frames.
 
         Returns:
-            The columns the network reads, and the runs, each with the class
-            labels of its frames.
+            The columns the network reads, the runs, each with the class labels of
+            its frames, and for cross-validation by block the labeled frames of
+            each entry as ``(first, stop)``, from the first labeled frame of any of
+            its series to one past the last. Without it the last is empty.
 
         Raises:
             ValueError: A train entry that has labels is missing from the stream.
@@ -727,6 +839,8 @@ class SequenceClassifier(FitReporting):
         train = set(self._train_entries)
         columns: list[str] | None = None
         runs: list[TrainingRun] = []
+        ranges: dict[tuple[str, str], tuple[int, int]] = {}
+        by_block = p.cv_folds is not None and p.cv_unit == "block"
         seen: set[tuple[str, str]] = set()
         unlabeled_entries = 0
         too_short = 0
@@ -750,6 +864,13 @@ class SequenceClassifier(FitReporting):
                 labels = labels_for_rows(label_file, rows)
                 frames = rows[COLUMNS.frame_col].to_numpy()
                 matrix = rows[columns].to_numpy(dtype=np.float32)
+                if by_block and (labels != UNLABELED).any():
+                    labeled = frames[labels != UNLABELED]
+                    first, last = ranges.get(entry, (int(labeled[0]), 0))
+                    ranges[entry] = (
+                        min(first, int(labeled.min())),
+                        max(last, int(labeled.max()) + 1),
+                    )
                 for start, stop in consecutive_runs(frames, labels != UNLABELED):
                     if stop - start < p.min_run:
                         too_short += 1
@@ -759,6 +880,7 @@ class SequenceClassifier(FitReporting):
                             entry,
                             matrix[start:stop].copy(),
                             labels[start:stop].astype(np.intp),
+                            int(frames[start]) if by_block else None,
                         )
                     )
         refuse_entries_outside_scope(
@@ -793,7 +915,133 @@ class SequenceClassifier(FitReporting):
                 f"({sorted(found)}), and a classifier needs two or more"
             )
             raise RuntimeError(msg)
-        return columns, runs
+        return columns, runs, ranges
+
+    def _deal(
+        self,
+        runs: list[TrainingRun],
+        ranges: dict[tuple[str, str], tuple[int, int]],
+        classes: list[int],
+    ) -> _FoldPlan:
+        """Deal the folds and name the runs each fold's model trains on.
+
+        By sequence, a fold's model trains on the runs of every entry outside the
+        fold. By block, it trains on every entry's runs but the frames of its own
+        blocks and the ``cv_gap_frames`` on each side of them.
+        """
+        p = self.params
+        assert p.cv_folds is not None
+        if p.cv_unit == "block":
+            assert p.cv_blocks_per_sequence is not None
+            blocks = deal_blocks(
+                self.name, ranges, p.cv_blocks_per_sequence, p.cv_folds, p.cv_seed
+            )
+            table = self._block_table(blocks, runs, classes)
+            training = [
+                self._outside_blocks(
+                    runs, held_out_frames(blocks, fold, p.cv_gap_frames)
+                )
+                for fold in range(p.cv_folds)
+            ]
+
+            def enough_classes(
+                fold: int, present: npt.NDArray[np.intp], _: npt.NDArray[np.intp]
+            ) -> None:
+                held = np.concatenate(
+                    [r.y for r in training[fold]] or [np.empty(0, np.intp)]
+                )
+                if len(np.unique(held)) < 2:
+                    msg = (
+                        f"[{self.name}] holding out the blocks of fold {fold} and "
+                        f"{p.cv_gap_frames} frames around them leaves training runs "
+                        f"of {len(np.unique(held))} class (of {len(present)} outside "
+                        "the blocks), and a classifier needs two. Lower "
+                        "cv_gap_frames or cv_folds, or cut fewer, larger blocks"
+                    )
+                    raise ValueError(msg)
+
+            check_folds(
+                self.name,
+                p.cv_folds,
+                table,
+                classes,
+                rows="labeled frames",
+                unit="block",
+                per_fold=enough_classes,
+            )
+            return _FoldPlan(table, {}, blocks, training)
+        fold_of = deal_folds(
+            self.name, self._train_entries or [], p.cv_folds, p.cv_seed
+        )
+        table = self._fold_table(fold_of, runs, classes)
+        check_folds(self.name, p.cv_folds, table, classes, rows="labeled frames")
+        training = [
+            [r for r in runs if fold_of[r.entry] != fold] for fold in range(p.cv_folds)
+        ]
+        return _FoldPlan(table, fold_of, [], training)
+
+    def _outside_blocks(
+        self,
+        runs: list[TrainingRun],
+        held: dict[tuple[str, str], list[tuple[int, int]]],
+    ) -> list[TrainingRun]:
+        """Cut the frames of *held* out of the runs, and keep the pieces of ``min_run`` frames or more."""
+        kept: list[TrainingRun] = []
+        for run in runs:
+            ranges = held.get(run.entry)
+            if not ranges:
+                kept.append(run)
+                continue
+            assert run.first_frame is not None
+            frames = run.first_frame + np.arange(len(run.y))
+            keep = np.ones(len(frames), dtype=bool)
+            for first, stop in ranges:
+                keep &= (frames < first) | (frames >= stop)
+            for start, stop in consecutive_runs(frames, keep):
+                if stop - start >= self.params.min_run:
+                    kept.append(
+                        TrainingRun(
+                            run.entry,
+                            run.x[start:stop],
+                            run.y[start:stop],
+                            int(frames[start]),
+                        )
+                    )
+        return kept
+
+    @staticmethod
+    def _block_table(
+        blocks: list[CvBlock], runs: list[TrainingRun], classes: list[int]
+    ) -> pd.DataFrame:
+        """``cv_folds.parquet`` by block: the fold of every block and its labeled frames."""
+        in_entry: dict[tuple[str, str], list[CvBlock]] = {}
+        for block in blocks:
+            in_entry.setdefault((block.group, block.sequence), []).append(block)
+        counts = {
+            (block.group, block.sequence, block.block): np.zeros(
+                len(classes), dtype=np.int64
+            )
+            for block in blocks
+        }
+        for run in runs:
+            assert run.first_frame is not None
+            of_entry = in_entry[run.entry]
+            starts = np.array([block.start for block in of_entry], dtype=np.int64)
+            frames = run.first_frame + np.arange(len(run.y))
+            where = np.clip(np.searchsorted(starts, frames, side="right") - 1, 0, None)
+            tally = np.bincount(
+                where * len(classes) + run.y, minlength=len(of_entry) * len(classes)
+            ).reshape(len(of_entry), len(classes))
+            for position, block in enumerate(of_entry):
+                counts[(block.group, block.sequence, block.block)] += tally[position]
+        frame = pd.DataFrame(
+            list(counts.values()),
+            index=pd.MultiIndex.from_tuples(
+                list(counts), names=["group", "sequence", "block"]
+            ),
+            columns=classes,
+        )
+        return block_fold_table(blocks, frame, classes)
 
     @staticmethod
     def _fold_table(
@@ -892,13 +1140,25 @@ class SequenceClassifier(FitReporting):
 
     # --- Applying ---
 
-    def _scoring_model(self, df: pd.DataFrame, bundle: SequenceClassifierBundle) -> int:
-        """Return the index of the model that scores the entry *df* holds."""
+    def _scoring_models(
+        self, df: pd.DataFrame, bundle: SequenceClassifierBundle
+    ) -> npt.NDArray[np.intp]:
+        """Return the index of the model that scores each row of the entry *df* holds.
+
+        By sequence the entry is scored whole, by the model of its fold or the full
+        model. By block each row is scored by the model of the fold whose block holds
+        its frame, and a row in no block by the full model.
+        """
         full = len(bundle["models"]) - 1
-        if "cv" not in bundle or not self._fold_of:
-            return full
+        if "cv" not in bundle:
+            return np.full(len(df), full, dtype=np.intp)
+        if self._blocks is not None:
+            folds = self._blocks.scoring_folds(df, self.name)
+            return np.where(folds < 0, full, folds).astype(np.intp)
+        if not self._fold_of:
+            return np.full(len(df), full, dtype=np.intp)
         fold = out_of_fold_choice(df, self._fold_of, self.name)
-        return full if fold is None else fold
+        return np.full(len(df), full if fold is None else fold, dtype=np.intp)
 
     def _network(self, index: int, bundle: SequenceClassifierBundle) -> nn.Module:
         """Return the network of model *index* in evaluation mode, built once."""

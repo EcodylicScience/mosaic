@@ -25,6 +25,13 @@ EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
 """Spelled out rather than derived from the type alias, so a value silently
 added to the alias still has to be added here deliberately."""
 
+ALWAYS_FITS = frozenset({"TuneThresholdFeature"})
+"""The scope-free fitters with no mode that fits nothing, so ``fits`` is never narrowed.
+
+``tune-threshold`` applies the thresholds it chose to its input and has no param
+that names a fit to apply instead. A consumer of its thresholds is another step.
+"""
+
 FEATURE_CLASSES = sorted(FEATURES.values(), key=lambda cls: cls.__name__)
 FEATURE_IDS = [cls.__name__ for cls in FEATURE_CLASSES]
 
@@ -188,6 +195,8 @@ def test_a_scope_free_fitter_declares_fits_and_narrows_it_per_instance(
         f"{cls.__name__} pins its fit set and sets 'scope_dependent' per instance."
     )
     assert getattr(cls, "fits", False) is True
+    if cls.__name__ in ALWAYS_FITS:
+        pytest.skip("every run fits: it has no mode that applies a stored fit")
     assert _sets_on_instance(cls, "fits"), (
         f"{cls.__name__} pins its fit set and does not narrow 'fits' in __init__ "
         "for a run that fits nothing."
@@ -361,3 +370,30 @@ def test_a_pair_feature_writes_perspective(cls: type) -> None:
         f"{cls.__name__} declares emits = 'pair' but never names 'perspective'. "
         f"Two rows of one frame that differ in nothing cannot be joined apart."
     )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_declared_temporal_reach_is_a_frame_count_or_unknown(cls: type) -> None:
+    """``temporal_reach`` is optional, and a feature that declares it declares a number.
+
+    The gap check of a classifier cross-validated by blocks adds the declared
+    reaches along the recipe. A feature that declares nothing is cautioned on, so
+    nothing here requires one. One that does declare must give an int of at least
+    0 under its default params, or ``None`` for a reach no params bound, and never
+    a bool, a float or a negative count.
+    """
+    from mosaic.core.pipeline.graph.reach import UNDECLARED, class_reach
+
+    if not hasattr(cls, "temporal_reach"):
+        assert class_reach(cls) == UNDECLARED
+        pytest.skip("declares no temporal_reach")
+    declared: object = getattr(cls, "temporal_reach")  # noqa: B009
+    if not callable(declared):
+        assert declared is None or (
+            isinstance(declared, int)
+            and not isinstance(declared, bool)
+            and declared >= 0
+        ), f"{cls.__name__}.temporal_reach is {declared!r}"
+    reach = class_reach(cls)
+    assert reach != UNDECLARED
+    assert reach == "unknown" or (isinstance(reach, int) and reach >= 0)

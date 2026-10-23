@@ -383,7 +383,23 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   when a training entry is converted again; only that entry's output is recomputed with
   the stored model, so refit on purpose by changing a parameter. `fit_scope.json` lists
   the entries of the templates run, not of the request. The score is not nested, and a
-  fold is whole sequences
+  fold is whole sequences unless `cv_unit` is `block`
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+- With one training sequence there is nothing to hold out, and `cv_folds` refuses it. Set
+  `cv_unit: "block"` on `xgboost` or `sequence-classifier`: each sequence is cut into
+  `cv_blocks_per_sequence` blocks of frames, a fold holds blocks out, and `cv_folds.parquet`
+  has a row per block with `start` and `stop`. Set `cv_gap_frames` to the longest window
+  above the classifier. The plan refuses a gap shorter than the `temporal_reach` the steps
+  above declare, and cautions on a step that declares none while the gap is 0 or short of
+  what is known. `xgboost` needs templates from `extract-labeled-templates` 0.7, which
+  moves the run id of every classifier built on them. `lightning-action` has no `cv_unit`.
+- Choose a decision threshold on the out-of-fold probabilities, never on the test groups:
+  `tune-threshold` over a classifier fitted with `cv_folds`, then a one-member
+  `probability-ensemble` over the same classifier with `decision_threshold: {"step":
+  "<tune>"}`. The report `tune_report.json` gives `plain` (optimistic) and `nested` scores,
+  and `warnings` when a cut is the lowest or highest `grid` value, which is the edge of what
+  was tried and not a tuned value. The default class takes threshold 1.0, and a class left
+  out of `classes` has 0
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps

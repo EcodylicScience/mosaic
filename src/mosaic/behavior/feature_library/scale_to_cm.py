@@ -179,6 +179,7 @@ class ScaleToCm:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    temporal_reach = 0  # multiplies each row by a scale
     accepts_overlap = (
         False  # resolves one entry's calibration, and refuses a multi-entry frame
     )

@@ -445,6 +445,25 @@ CASES: tuple[Case, ...] = (
         params={"templates": _TEMPLATES_REF, "default_class": 0},
     ),
     Case(
+        case_id="xgboost/cv-sequence",
+        feature="xgboost",
+        inputs=[{"feature": "global-scaler"}],
+        params={"templates": _TEMPLATES_REF, "default_class": 0, "cv_folds": 3},
+    ),
+    Case(
+        case_id="xgboost/cv-block",
+        feature="xgboost",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "default_class": 0,
+            "cv_folds": 3,
+            "cv_unit": "block",
+            "cv_blocks_per_sequence": 6,
+            "cv_gap_frames": 25,
+        },
+    ),
+    Case(
         case_id="sequence-classifier/templates",
         feature="sequence-classifier",
         inputs=[{"feature": "global-scaler"}],
@@ -479,6 +498,25 @@ CASES: tuple[Case, ...] = (
             "head": "tcn",
             "head_config": {"blocks": 5},
             "cv_folds": 5,
+            "device": "cpu",
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="sequence-classifier/tcn-cv-block",
+        feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior"},
+            "default_class": 0,
+            "head": "tcn",
+            "head_config": {"blocks": 5},
+            "cv_folds": 5,
+            "cv_unit": "block",
+            "cv_blocks_per_sequence": 10,
+            "cv_gap_frames": 127,
             "device": "cpu",
         },
         scope=(("train", "s1"), ("train", "s2")),
@@ -522,6 +560,52 @@ CASES: tuple[Case, ...] = (
         },
         scope=(("train", "s1"), ("train", "s2")),
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    # --- tuning thresholds, and applying them ---
+    #
+    # ``tune-threshold`` reads its input's fold table, so the scope is not hashed,
+    # as for a fitted blend. The ensemble case below names its thresholds by run:
+    # ``probability-ensemble/uniform`` above, with no threshold, keeps the
+    # identifier it had before the field took a reference.
+    Case(
+        case_id="tune-threshold/default",
+        feature="tune-threshold",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={"default_class": 0},
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="tune-threshold/pooled-f1-positive-class",
+        feature="tune-threshold",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={
+            "default_class": 0,
+            "metric": "pooled_f1",
+            "classes": [1],
+            "grid": [0.1, 0.2, 0.3],
+            "nested": False,
+        },
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="probability-ensemble/tuned-threshold",
+        feature="probability-ensemble",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={
+            "default_class": 0,
+            "decision_threshold": {
+                "feature": "tune-threshold",
+                "run_id": "0.1-0123456789",
+                "pattern": "thresholds.parquet",
+            },
+        },
+    ),
+    Case(
+        case_id="probability-ensemble/threshold-mapping",
+        feature="probability-ensemble",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={"default_class": 0, "decision_threshold": {0: 1.0, 1: 0.2}},
     ),
     # --- scoring against labels ---
     #

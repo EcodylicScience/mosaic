@@ -55,6 +55,7 @@ __all__ = [
     "DeclarationCatalog",
     "EntityLevel",
     "ProducerDecl",
+    "Reach",
     "TRACKS_DECLARATION",
     "Verdict",
     "can_connect",
@@ -74,6 +75,13 @@ type EntityLevel = Literal["individual", "pair", "global"]
 everyone present carries. The declaration side spells the same thing
 ``"unidentified"``, because on a feature "global" already means a fit-then-apply
 feature and one word cannot carry both.
+"""
+
+type Reach = int | Literal["unknown", "undeclared"]
+"""Frames on each side that one output row reads, or why that is not a number.
+
+``unknown`` is a declared reach that no params bound. ``undeclared`` is a feature
+that declares none (:mod:`~.reach`).
 """
 
 _LEVEL_COLUMNS: Mapping[EntityLevel, frozenset[str]] = {
@@ -250,6 +258,16 @@ class Declaration:
     (``sequence-classifier`` given a ``model``, ``probability-ensemble`` with
     fixed weights) declares the fitting answer on the class, and its instance
     narrows it. ``False`` for an op and for a feature that declares nothing.
+    """
+    temporal_reach: Reach = "undeclared"
+    """The frames on each side that one output row depends on, at default params.
+
+    Read off the feature's optional ``temporal_reach`` declaration
+    (:mod:`~.reach`). ``0`` is a feature that computes within a frame, and
+    ``unknown`` a declared reach that no params bound, such as a bidirectional
+    recurrent network. ``undeclared`` is a feature that says nothing, which is not
+    zero. A reach that depends on params reads as it does with none set, and the
+    planner reads each step's own params. Always ``undeclared`` for an op.
     """
     unavailable: str | None = None
     """What this installation lacks to run the step, ``None`` when it lacks nothing.

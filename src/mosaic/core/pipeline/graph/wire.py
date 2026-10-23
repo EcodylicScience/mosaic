@@ -42,7 +42,7 @@ from ..inventory.model import ArtifactStatus
 from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
 from ..types.feature import EmitsLevel
-from .compatibility import Declaration
+from .compatibility import Declaration, Reach
 from .model import CleanupPolicy, GraphModel
 from .status import RequestSummaryWire, RetirableRecipeWire
 
@@ -341,6 +341,13 @@ class StepTypeDetail(CatalogIndexEntry):
             the entries in scope fits, and a scoring step depends on scope and
             learns nothing. A step type whose runs differ by params reads
             ``True`` here and its run may fit nothing.
+        temporal_reach: The frames on each side that one output row depends on,
+            at the default params: ``0`` for a feature that computes within a
+            frame, ``unknown`` for a declared reach that no params bound, and
+            ``undeclared`` for a feature that says nothing (not zero). A reach
+            that depends on params, such as a window, reads as it does with none
+            set. A classifier cross-validated by blocks needs ``cv_gap_frames`` at
+            least the reach above it.
         params: One row per params field.
         params_schema: Its params model as JSON Schema without titles or class
             docstrings, given only when asked for. ``None`` otherwise.
@@ -350,6 +357,7 @@ class StepTypeDetail(CatalogIndexEntry):
     resource_class: str
     scope_dependent: bool
     fits: bool = False
+    temporal_reach: Reach = "undeclared"
     params: tuple[ParamRow, ...] = ()
     params_schema: dict[str, JsonValue] | None = None
 

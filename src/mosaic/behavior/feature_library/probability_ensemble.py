@@ -24,6 +24,13 @@ when no member has one. The count columns of a member's table are not compared:
 ``xgboost`` counts sampled template rows and ``sequence-classifier`` counts
 labeled frames.
 
+A member fitted with ``cv_unit="block"`` writes a table with one row per block, with
+the block's ``start`` and ``stop`` frames. Such tables agree only when they also
+agree on those bounds, and a table by sequence never agrees with one by block. The
+blend writes the table with the bounds, and ``weights="fit"`` pools the labeled rows
+by frame: a row is out of fold where its frame falls in a block, whichever fold's
+model scored it, and a row in no block is left out of the fit.
+
 ``uniform`` and listed weights fit nothing and need no fold table, so members of
 which some have one and some do not, or whose folds differ, are averaged all the
 same, and the step writes no fold table for them. ``weights="fit"`` refuses
@@ -34,6 +41,12 @@ never chooses a weight.
 id does not cover the step's scope: the step fits once, and a wider scope applies
 the stored weights to the new entries. The first run of ``weights="fit"`` has to
 be asked for over a scope that holds the fold entries.
+
+**Thresholds.** ``decision_threshold`` takes a float, a mapping from class to
+threshold, or ``{"step": <id>}`` naming a ``tune-threshold`` run, whose
+``thresholds.parquet`` then applies. A one-member ensemble over a classifier is the
+step that applies a tuned threshold to it, because a classifier cannot name the
+tuning of its own run.
 
 **Column names.** An input merge keeps the first input's ``prob_<class>`` and
 numbers the same column of input *i* ``prob_<class>__<i>``
@@ -46,16 +59,15 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, ClassVar, Final, Literal, Self, final
+from typing import Annotated, ClassVar, Final, Literal, Self, cast, final
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.evaluation import pool_entry_counts
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -66,6 +78,7 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
+from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -82,8 +95,13 @@ from mosaic.core.strict_model import StrictModel
 from .classifier_common import (
     FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
-    DecisionThreshold,
+    FoldLookup,
+    ThresholdsArtifact,
+    TunedDecisionThreshold,
     assemble_prediction,
+    pooled_class_scores,
+    read_fold_table,
+    read_thresholds,
     refuse_entries_outside_scope,
 )
 from .helpers import ensure_columns, entry_identity
@@ -102,7 +120,6 @@ MAX_GRID_POINTS: Final = 20_000
 """The most weight vectors that ``weights="fit"`` searches."""
 
 _PROBABILITY_COLUMN: Final = re.compile(r"^prob_(-?[0-9]+)$")
-_FOLD_COLUMNS: Final = ["group", "sequence", "fold"]
 
 _WEIGHTS_DESCRIPTION = (
     "How the members' probabilities are combined. uniform averages them. A "
@@ -223,18 +240,7 @@ def _pooled_macro_f1(
     average_over: Sequence[int] | None,
 ) -> float:
     """Score predictions by the pooled counts, with the formula of ``evaluate-labels``."""
-    size = len(labels)
-    confusion = np.bincount(truth * size + predicted, minlength=size * size).reshape(
-        size, size
-    )
-    hits = np.diag(confusion)
-    counts: dict[str, int] = {}
-    for position, label in enumerate(labels):
-        counts[f"tp_{label}"] = int(hits[position])
-        counts[f"fp_{label}"] = int(confusion[:, position].sum() - hits[position])
-        counts[f"fn_{label}"] = int(confusion[position].sum() - hits[position])
-    scores = pool_entry_counts(pd.DataFrame([counts]), average_over=average_over)
-    return scores["macro_f1"]
+    return pooled_class_scores(truth, predicted, labels, average_over)["macro_f1"]
 
 
 @final
@@ -268,6 +274,7 @@ class ProbabilityEnsembleFeature:
     # Every other mode fits nothing, and ``__init__`` clears this for them.
     fits = True  # learns its weights in fit mode
     accepts_overlap = False  # computes within a row
+    temporal_reach = 0  # blends the members' probabilities of one row
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     requires: ClassVar[tuple[Requirement, ...]] = (Prefix("prob_"),)
@@ -292,7 +299,7 @@ class ProbabilityEnsembleFeature:
         grid_step: Annotated[
             float, Field(gt=0.0, le=0.5), Declared(_GRID_STEP_DESCRIPTION)
         ] = 0.05
-        decision_threshold: DecisionThreshold = None
+        decision_threshold: TunedDecisionThreshold = None
         default_class: Annotated[int, Declared(DEFAULT_CLASS_DESCRIPTION)]
 
         @model_validator(mode="after")
@@ -347,6 +354,12 @@ class ProbabilityEnsembleFeature:
             raise ValueError(msg)
 
         self._weights: npt.NDArray[np.float64] | None = None
+        # A threshold that names a ``tune-threshold`` run is read in load_state.
+        self._threshold: float | Mapping[int, float] | None = (
+            None
+            if isinstance(self.params.decision_threshold, ThresholdsArtifact)
+            else self.params.decision_threshold
+        )
         self._report: dict[str, object] | None = None
         self._cv_table: pd.DataFrame | None = None
         self._label_files: DependencyLookup = {}
@@ -362,6 +375,7 @@ class ProbabilityEnsembleFeature:
         self._weights = None
         self._report = None
         self._label_files = {}
+        self._threshold = self._resolved_threshold(artifact_paths)
         self._cv_table = self._members_fold_table(dependency_lookups)
 
         cached = run_root / "ensemble.json"
@@ -389,6 +403,12 @@ class ProbabilityEnsembleFeature:
         if self._weights is None:
             msg = f"[{self.name}] no weights -- call fit() or load_state() first"
             raise RuntimeError(msg)
+        if (
+            isinstance(self.params.decision_threshold, ThresholdsArtifact)
+            and self._threshold is None
+        ):
+            msg = f"[{self.name}] no thresholds -- call load_state() first"
+            raise RuntimeError(msg)
         ensure_columns(df, ["frame"])
         classes = merged_classes([str(c) for c in df.columns])
         probs = member_probabilities(df, classes, self._members)
@@ -399,7 +419,7 @@ class ProbabilityEnsembleFeature:
             df,
             blended,
             classes,
-            self.params.decision_threshold,
+            self._threshold,
             self.params.default_class,
         )
 
@@ -420,6 +440,77 @@ class ProbabilityEnsembleFeature:
             run_root / "ensemble.json",
             lambda temporary: temporary.write_text(state.model_dump_json()),
         )
+
+    def _resolved_threshold(
+        self, artifact_paths: dict[str, Path]
+    ) -> float | Mapping[int, float] | None:
+        """Return the ``decision_threshold`` to apply, reading a named run's file.
+
+        Raises:
+            FileNotFoundError: ``decision_threshold`` names a ``tune-threshold``
+                run that holds no ``thresholds.parquet``. The step does not
+                fall back to the highest probability in its place.
+        """
+        named = self.params.decision_threshold
+        if not isinstance(named, ThresholdsArtifact):
+            return named
+        path = artifact_paths.get("decision_threshold")
+        if path is None:
+            msg = (
+                f"[{self.name}] decision_threshold names the {named.feature!r} run "
+                f"{named.run_id!r}, which holds no {named.pattern!r}. Run that "
+                "step first"
+            )
+            raise FileNotFoundError(msg)
+        self._refuse_other_input(path, named.run_id)
+        thresholds = read_thresholds(path)
+        # The tuned rule gives its default class threshold 1.0, so a default_class
+        # that the step tuned would be applied to a rule it was not scored under.
+        limit = thresholds.get(self.params.default_class)
+        if limit is not None and limit != 1.0:
+            msg = (
+                f"[{self.name}] default_class {self.params.default_class} has the "
+                f"tuned threshold {limit} in {path.name}. The step tuned it as a "
+                "class, so its default_class is another. Give this step the "
+                "default_class of the tune-threshold step"
+            )
+            raise ValueError(msg)
+        return thresholds
+
+    def _refuse_other_input(self, thresholds: Path, run_id: str | None) -> None:
+        """Refuse thresholds that were tuned on another input than this step blends.
+
+        The tuning report's estimates describe the output of the run it read.
+        Applied to the blend of other runs, the thresholds were never scored on
+        what they now cut. The run's ``params.json`` records the input it read; a
+        run that records none is not checked, because nothing says what it read.
+
+        Raises:
+            ValueError: The tuned run read other runs than this step's inputs.
+        """
+        read = read_run_params(thresholds.parent)
+        if read.params is None:
+            return
+        recorded: list[tuple[str, str | None]] = []
+        for item in read.params.inputs:
+            if not isinstance(item, dict) or "feature" not in item:
+                return
+            record = cast("dict[str, object]", item)
+            run = record.get("run_id")
+            recorded.append((str(record["feature"]), None if run is None else str(run)))
+        blended = [(r.feature, r.run_id) for r in self.inputs.feature_inputs]
+        if recorded == blended:
+            return
+        names = ", ".join(f"{feature} {run}" for feature, run in blended)
+        tuned = ", ".join(f"{feature} {run}" for feature, run in recorded)
+        msg = (
+            f"[{self.name}] decision_threshold names the tune-threshold run "
+            f"{run_id!r}, which tuned the thresholds on {tuned}, and this step "
+            f"blends {names}. The thresholds were scored on the output of what "
+            "they were tuned on. Apply them to that run alone, or tune the "
+            "blend"
+        )
+        raise ValueError(msg)
 
     # --- Folds ---
 
@@ -448,13 +539,7 @@ class ProbabilityEnsembleFeature:
                 tables.append(None)
                 continue
             path = next(iter(lookup.values())).parent / "cv_folds.parquet"
-            tables.append(
-                pd.read_parquet(path)[_FOLD_COLUMNS].sort_values(
-                    _FOLD_COLUMNS[:2], ignore_index=True
-                )
-                if path.exists()
-                else None
-            )
+            tables.append(read_fold_table(path) if path.exists() else None)
         if unresolved and fitting:
             msg = (
                 f"[{self.name}] inputs {', '.join(unresolved)} resolved no output "
@@ -516,7 +601,8 @@ class ProbabilityEnsembleFeature:
                 "members with cv_folds"
             )
             raise ValueError(msg)
-        fit_entries = set(zip(self._cv_table["group"], self._cv_table["sequence"]))
+        folds = FoldLookup.from_table(self._cv_table)
+        fit_entries = folds.entries
         seen: set[tuple[str, str]] = set()
         classes: list[int] | None = None
         probability_blocks: list[npt.NDArray[np.float64]] = []
@@ -534,7 +620,11 @@ class ProbabilityEnsembleFeature:
                 classes = merged_classes([str(c) for c in df.columns])
             probs = member_probabilities(df, classes, self._members)
             labels = labels_for_rows(label_file, df)
-            keep = (labels != UNLABELED) & ~np.isnan(probs).any(axis=(1, 2))
+            keep = (
+                (labels != UNLABELED)
+                & ~np.isnan(probs).any(axis=(1, 2))
+                & (folds.folds(entry, df["frame"].to_numpy()) >= 0)
+            )
             probability_blocks.append(probs[keep])
             truth_blocks.append(labels[keep])
 

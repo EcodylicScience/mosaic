@@ -156,6 +156,7 @@ class PairPoseDistancePCA:
     scope_dependent = True
     fits = True  # learns its basis; ``__init__`` clears this for a run given a model
     accepts_overlap = False  # computes within a frame, so gains nothing
+    temporal_reach = 0
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
     requires: ClassVar[tuple[Requirement, ...]] = (

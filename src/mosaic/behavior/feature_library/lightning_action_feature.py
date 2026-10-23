@@ -9,6 +9,10 @@ A temporal model reads one animal's frames in time order. The feature therefore
 splits each table into series, one per individual or per ordered pair, and trains
 and predicts on each series as a sequence of its own.
 
+The step has no ``cv_folds``, and so no ``cv_unit="block"``: it does not
+cross-validate yet. A dataset with one training sequence is cross-validated by
+block with ``sequence-classifier`` or ``xgboost``.
+
 Requires the optional ``lightning-action`` package::
 
     pip install lightning-action

@@ -239,6 +239,7 @@ def _plan_cautions(
             )
         )
     cautions.extend(deferred_fit_cautions(plan))
+    cautions.extend(plan.reach_cautions)
     for step in steps:
         if step.asked > LARGE_SCOPE_ENTRIES:
             cautions.append(

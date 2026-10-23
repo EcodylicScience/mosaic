@@ -163,6 +163,27 @@ class PairWavelet:
         self._scales: np.ndarray | None = None
         self._central_f: float | None = None
 
+    @staticmethod
+    def temporal_reach(params: PairWavelet.Params) -> int | None:
+        """Frames on each side that one row reads: half the longest wavelet.
+
+        ``pywt.cwt`` convolves with the wavelet sampled over its whole support,
+        ``scale * (upper_bound - lower_bound)`` samples at a scale, and the
+        longest scale belongs to ``f_min``. The frame rate is ``sampling.fps_default``,
+        which a constant ``fps`` column of the input would replace. ``None`` for a
+        wavelet that pywt does not know or one without a bounded support.
+        """
+        try:
+            wavelet = pywt.ContinuousWavelet(params.wavelet)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportAttributeAccessIssue]
+            central: float = pywt.central_frequency(wavelet)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            lower = float(wavelet.lower_bound)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+            upper = float(wavelet.upper_bound)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        except Exception:
+            return None
+        scale = params.sampling.fps_default / (params.f_min * central)
+        support = scale * (upper - lower)
+        return math.ceil(support / 2) if math.isfinite(support) else None
+
     def load_state(
         self,
         run_root: Path,

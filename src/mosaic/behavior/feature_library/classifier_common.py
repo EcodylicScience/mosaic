@@ -14,16 +14,32 @@ can use it without one.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Collection, Container, Mapping
-from typing import TYPE_CHECKING, Annotated, Final
+from collections.abc import (
+    Callable,
+    Collection,
+    Container,
+    Iterable,
+    Mapping,
+    Sequence,
+)
+from typing import TYPE_CHECKING, Annotated, Final, Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
+from pydantic import Field
 
+from mosaic.core.evaluation import CountScores, pool_entry_counts
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.types import COLUMNS, ParquetArtifact, ParquetLoadSpec
 
-from .helpers import cv_fold_assignment, meta_columns
+from .helpers import (
+    cv_block_assignment,
+    cv_block_bounds,
+    cv_fold_assignment,
+    meta_columns,
+    scored_entry,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -38,19 +54,39 @@ __all__ = [
     "CV_SEED_DESCRIPTION",
     "DECISION_THRESHOLD_DESCRIPTION",
     "DEFAULT_CLASS_DESCRIPTION",
+    "THRESHOLDS_FILE",
+    "TUNED_DECISION_THRESHOLD_DESCRIPTION",
+    "CV_BLOCKS_PER_SEQUENCE_DESCRIPTION",
+    "CV_GAP_FRAMES_DESCRIPTION",
+    "CV_UNIT_DESCRIPTION",
+    "CvBlock",
+    "CvBlocksPerSequence",
+    "CvGapFrames",
     "CvSeed",
+    "CvUnit",
     "DecisionThreshold",
     "FitReporting",
+    "FoldLookup",
     "RunningMoments",
+    "ThresholdsArtifact",
+    "TunedDecisionThreshold",
     "assemble_prediction",
     "balanced_class_weights",
+    "block_fold_table",
+    "block_list",
+    "block_rows",
     "check_cross_validation",
     "check_folds",
+    "deal_blocks",
     "deal_folds",
     "fold_map",
     "fold_rows",
     "fold_table",
+    "held_out_frames",
+    "pooled_class_scores",
     "predicted_labels",
+    "read_fold_table",
+    "read_thresholds",
     "refuse_entries_outside_scope",
     "standardize",
     "write_bundle",
@@ -71,14 +107,34 @@ FIT_SCOPE_REMEDY: Final = (
 DECISION_THRESHOLD_DESCRIPTION: Final = (
     "Unset, the predicted class is the class with the highest probability. "
     "A float applies one probability threshold to every class, and a "
-    "mapping from class to threshold applies a per-class one. Any row "
-    "where no class clears its threshold is assigned default_class."
+    "mapping from class to threshold applies a per-class one. A probability "
+    "under its class's threshold counts as 0, so a mapping that omits a "
+    "class gives that class threshold 0, which it always clears. Any row "
+    "where no class clears its threshold is assigned default_class. To "
+    "predict the positive class of a binary problem from probability t up, "
+    'give the other class threshold 1.0: {"0": 1.0, "1": t}. {"1": t} alone '
+    "changes nothing for a t under 0.5, because class 0 still wins wherever "
+    "its probability is the higher."
 )
 
 DEFAULT_CLASS_DESCRIPTION: Final = (
     "The class assigned to a row where decision_threshold is set and no "
-    "class clears its threshold."
+    "class clears its threshold. A mapping that omits a class gives it "
+    "threshold 0, so only a class listed with a threshold above 0 can fail "
+    "to claim a row. A row with no probabilities takes it too, whether or "
+    "not decision_threshold is set."
 )
+
+TUNED_DECISION_THRESHOLD_DESCRIPTION: Final = (
+    DECISION_THRESHOLD_DESCRIPTION
+    + " A {step: <id>} reference names a tune-threshold step and applies the "
+    "thresholds it saved, which keep default_class out of the competition for a "
+    "row. Give default_class the value that step has. That step reads a classifier "
+    "run, so a classifier cannot name its own tuning."
+)
+
+THRESHOLDS_FILE: Final = "thresholds.parquet"
+"""What ``tune-threshold`` calls the thresholds it saves, one row per class."""
 
 CV_SEED_DESCRIPTION: Final = (
     "The seed that deals the training sequences into folds. It changes the "
@@ -91,39 +147,142 @@ DecisionThreshold = Annotated[
 ]
 """The type of a classifier's ``decision_threshold`` parameter."""
 
+
+class ThresholdsArtifact(ParquetArtifact):
+    """The ``thresholds.parquet`` of a ``tune-threshold`` run: a ``class`` and a ``threshold`` per row."""
+
+    feature: str = "tune-threshold"
+    pattern: str = THRESHOLDS_FILE
+    load: ParquetLoadSpec = Field(default_factory=ParquetLoadSpec)
+
+
+TunedDecisionThreshold = Annotated[
+    float | Mapping[int, float] | ThresholdsArtifact | None,
+    Declared(TUNED_DECISION_THRESHOLD_DESCRIPTION),
+]
+"""The type of a ``decision_threshold`` that may also name a ``tune-threshold`` run."""
+
 CvSeed = Annotated[int, Declared(CV_SEED_DESCRIPTION)]
 """The type of a classifier's ``cv_seed`` parameter."""
 
+CV_UNIT_DESCRIPTION: Final = (
+    "What cross-validation holds out. sequence holds out whole training "
+    "sequences, so a fold's models never see a held-out sequence. block cuts "
+    "each labeled sequence into cv_blocks_per_sequence contiguous blocks of "
+    "frames, deals the blocks into the folds, and holds one block out at a "
+    "time, so that a dataset with one training sequence still has a "
+    "cross-validated score. A block's frames are not independent of the "
+    "frames beside it, so block is optimistic where sequences are the unit "
+    "you generalize over; use cv_gap_frames to drop the frames around a "
+    "held-out block from training. Only with cv_folds."
+)
+
+CV_BLOCKS_PER_SEQUENCE_DESCRIPTION: Final = (
+    "With cv_unit block, the blocks that each training sequence is cut into, "
+    "at least 2. A sequence's blocks span its labeled frames, from the first "
+    "labeled frame of any of its series to the last, and differ in length by "
+    "at most one frame. Unset, the number of cv_folds, so that every fold "
+    "holds out one block of each sequence. Only with cv_unit block."
+)
+
+CV_GAP_FRAMES_DESCRIPTION: Final = (
+    "With cv_unit block, the width of the margin on each side of a held-out "
+    "block that the model of that fold does not train on, so that a window or a "
+    "network receptive field reaching across the block's edge does not carry its "
+    "labels into training. The model of a fold trains on no frame of its "
+    "held-out blocks or of this margin, and scores only what lies inside its "
+    "own blocks. Only with cv_unit block."
+)
+
+CvUnit = Annotated[Literal["sequence", "block"], Declared(CV_UNIT_DESCRIPTION)]
+"""The type of a classifier's ``cv_unit`` parameter."""
+
+CvBlocksPerSequence = Annotated[
+    int | None, Field(ge=2), Declared(CV_BLOCKS_PER_SEQUENCE_DESCRIPTION)
+]
+"""The type of a classifier's ``cv_blocks_per_sequence`` parameter."""
+
+CvGapFrames = Annotated[
+    int, Field(ge=0), Declared(CV_GAP_FRAMES_DESCRIPTION, unit="frames")
+]
+"""The type of a classifier's ``cv_gap_frames`` parameter."""
+
 
 def check_cross_validation(
-    cv_folds: int | None, cv_seed: int, *, model_given: bool
-) -> None:
-    """Refuse a ``cv_folds`` and ``cv_seed`` that cannot describe one fit.
+    cv_folds: int | None,
+    cv_seed: int,
+    *,
+    model_given: bool,
+    cv_unit: Literal["sequence", "block"] = "sequence",
+    cv_blocks_per_sequence: int | None = None,
+    cv_gap_frames: int = 0,
+) -> int | None:
+    """Refuse cross-validation settings that cannot describe one fit.
 
     ``cv_folds`` fits fold models from templates, and ``cv_seed`` only deals
     their folds. A ``cv_seed`` other than 0 without folds would give the same
-    output a second run id, since the id hashes both.
+    output a second run id, since the id hashes both, and so would a setting of
+    the block unit that the sequence unit ignores.
 
     Args:
         cv_folds: The number of folds, unset for none.
         cv_seed: The seed that deals them.
         model_given: Whether the parameters name a pre-fitted ``model``.
+        cv_unit: What a fold holds out: whole sequences or blocks of frames.
+        cv_blocks_per_sequence: The blocks that a sequence is cut into, unset
+            for ``cv_folds`` blocks.
+        cv_gap_frames: The frames around a held-out block that its fold does
+            not train on.
+
+    Returns:
+        The blocks per sequence the fit cuts: the one given, else ``cv_folds``
+        under the block unit, ``None`` under the sequence unit. A caller stores it
+        back, so that naming the default and leaving it out are one run id.
 
     Raises:
-        ValueError: ``cv_seed`` is set without ``cv_folds``, or ``cv_folds``
-            is set beside a ``model``.
+        ValueError: ``cv_seed`` or a block setting is set without what it needs,
+            or ``cv_folds`` is set beside a ``model``.
     """
     if cv_folds is None:
         if cv_seed != 0:
             msg = "cv_seed deals the folds of cv_folds, which is not set"
             raise ValueError(msg)
-        return
+        unset = (
+            ["cv_unit"]
+            if cv_unit != "sequence"
+            else [
+                name
+                for name, value in (
+                    ("cv_blocks_per_sequence", cv_blocks_per_sequence),
+                    ("cv_gap_frames", cv_gap_frames),
+                )
+                if value not in (None, 0)
+            ]
+        )
+        if unset:
+            msg = f"{', '.join(unset)} cut the folds of cv_folds, which is not set"
+            raise ValueError(msg)
+        return None
     if model_given:
         msg = (
             "cv_folds fits fold models from templates, so it needs "
             "templates and is refused beside model"
         )
         raise ValueError(msg)
+    if cv_unit == "sequence":
+        unused = [
+            name
+            for name, value in (
+                ("cv_blocks_per_sequence", cv_blocks_per_sequence),
+                ("cv_gap_frames", cv_gap_frames),
+            )
+            if value not in (None, 0)
+        ]
+        if unused:
+            msg = f"{', '.join(unused)} only apply with cv_unit block"
+            raise ValueError(msg)
+        return None
+    return cv_folds if cv_blocks_per_sequence is None else cv_blocks_per_sequence
 
 
 # --- Prediction ---
@@ -195,6 +354,51 @@ def assemble_prediction(
         probs, classes, threshold, default_class
     )
     return result
+
+
+def read_thresholds(path: Path) -> dict[int, float]:
+    """Return the ``{class: threshold}`` mapping a ``tune-threshold`` run saved at *path*.
+
+    Args:
+        path: A ``thresholds.parquet`` with a ``class`` and a ``threshold`` column.
+    """
+    frame = pd.read_parquet(path)
+    return {
+        int(cls): float(limit)
+        for cls, limit in zip(frame["class"], frame["threshold"], strict=True)
+    }
+
+
+def pooled_class_scores(
+    truth: npt.NDArray[np.intp],
+    predicted: npt.NDArray[np.intp],
+    labels: Sequence[int],
+    average_over: Sequence[int] | None,
+) -> CountScores:
+    """Score predictions by their pooled counts, with the formula of ``evaluate-labels``.
+
+    Args:
+        truth: The position in *labels* of each row's true class.
+        predicted: The position in *labels* of each row's predicted class.
+        labels: Every class a row can hold or be predicted as, in order.
+        average_over: The classes ``macro_f1`` averages over. Unset, every class
+            with a true row.
+
+    Returns:
+        The result of :func:`~mosaic.core.evaluation.pool_entry_counts` over the
+        rows: ``macro_f1``, ``accuracy`` and ``per_class`` with each class's ``f1``.
+    """
+    size = len(labels)
+    confusion = np.bincount(truth * size + predicted, minlength=size * size).reshape(
+        size, size
+    )
+    hits = np.diag(confusion)
+    counts: dict[str, int] = {}
+    for position, label in enumerate(labels):
+        counts[f"tp_{label}"] = int(hits[position])
+        counts[f"fp_{label}"] = int(confusion[:, position].sum() - hits[position])
+        counts[f"fn_{label}"] = int(confusion[position].sum() - hits[position])
+    return pool_entry_counts(pd.DataFrame([counts]), average_over=average_over)
 
 
 # --- Standardization ---
@@ -335,6 +539,267 @@ def fold_table(
     )
 
 
+class CvBlock(NamedTuple):
+    """One block of a sequence that cross-validation holds out: its frames and its fold.
+
+    The block is the frames ``start`` up to ``stop`` (half-open, in the ``frame``
+    column) of the entry ``(group, sequence)``, and ``block`` is its index among
+    the blocks the sequence was cut into.
+    """
+
+    group: str
+    sequence: str
+    block: int
+    start: int
+    stop: int
+    fold: int
+
+
+def deal_blocks(
+    feature: str,
+    ranges: Mapping[tuple[str, str], tuple[int, int]],
+    blocks_per_sequence: int,
+    folds: int,
+    seed: int,
+) -> list[CvBlock]:
+    """Cut each entry's labeled frames into blocks and deal the blocks into *folds* folds.
+
+    Wraps :func:`~mosaic.behavior.feature_library.helpers.cv_block_bounds` and
+    :func:`~mosaic.behavior.feature_library.helpers.cv_block_assignment`, so that
+    every classifier cuts and deals alike. The result depends on the ranges, the
+    block count, the fold count and the seed alone.
+
+    Args:
+        feature: The classifier, which a refusal names.
+        ranges: The labeled frames of each entry to cut, as ``(first, stop)``: the
+            first labeled frame of any of its series and one past the last.
+        blocks_per_sequence: The blocks each entry is cut into.
+        folds: The number of folds.
+        seed: The seed that deals the blocks.
+
+    Returns:
+        Every block, sorted by ``(group, sequence, block)``.
+
+    Raises:
+        ValueError: Naming *feature*, when *folds* is below 2 or above the number
+            of blocks.
+    """
+    bounds = {
+        (group, sequence, index): (start, stop)
+        for (group, sequence), (first, last) in ranges.items()
+        for index, start, stop in cv_block_bounds(first, last, blocks_per_sequence)
+    }
+    try:
+        fold_of = cv_block_assignment(bounds, folds, seed)
+    except ValueError as exc:
+        msg = f"[{feature}] {exc}"
+        raise ValueError(msg) from exc
+    return [
+        CvBlock(group, sequence, index, start, stop, fold_of[(group, sequence, index)])
+        for (group, sequence, index), (start, stop) in sorted(bounds.items())
+    ]
+
+
+def block_rows(blocks: Sequence[CvBlock]) -> list[tuple[str, str, int, int, int, int]]:
+    """Return the blocks as plain tuples, ``(group, sequence, block, start, stop, fold)``, as a bundle stores them."""
+    return [(b.group, b.sequence, b.block, b.start, b.stop, b.fold) for b in blocks]
+
+
+def block_list(rows: Sequence[Sequence[object]]) -> list[CvBlock]:
+    """Return the blocks of the rows :func:`block_rows` wrote."""
+    return [CvBlock(*row) for row in rows]  # pyright: ignore[reportArgumentType]
+
+
+def held_out_frames(
+    blocks: Sequence[CvBlock], fold: int, gap: int
+) -> dict[tuple[str, str], list[tuple[int, int]]]:
+    """Return the frames a fold's model does not train on, per entry, as half-open ranges.
+
+    Each block of *fold* is held out together with *gap* frames on both sides.
+
+    Args:
+        blocks: Every block, with its fold.
+        fold: The fold whose model is fitted.
+        gap: The frames either side of a held-out block that are held out too.
+    """
+    held: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for block in blocks:
+        if block.fold == fold:
+            held.setdefault((block.group, block.sequence), []).append(
+                (block.start - gap, block.stop + gap)
+            )
+    return held
+
+
+def block_fold_table(
+    blocks: Sequence[CvBlock], counts: pd.DataFrame, classes: list[int]
+) -> pd.DataFrame:
+    """Return ``cv_folds.parquet`` of block cross-validation: the fold and the rows of each block.
+
+    Args:
+        blocks: Every block, sorted by ``(group, sequence, block)``.
+        counts: The rows of a block per class, indexed by ``(group, sequence,
+            block)``, one column per class label. A block or a class it lacks
+            counts 0.
+        classes: The class labels, in the order of their columns.
+
+    Returns:
+        One row per block with ``group``, ``sequence``, ``block``, ``start``,
+        ``stop``, ``fold``, ``n_rows`` and a ``rows_<class>`` column per class.
+        ``start`` and ``stop`` are the frames of the block, half-open.
+    """
+    index = pd.MultiIndex.from_tuples(
+        [(b.group, b.sequence, b.block) for b in blocks],
+        names=["group", "sequence", "block"],
+    )
+    per_class = counts.reindex(index=index, columns=classes, fill_value=0)
+    table = per_class.reset_index()
+    table.columns = pd.Index(
+        ["group", "sequence", "block", *[f"rows_{c}" for c in classes]]
+    )
+    table.insert(3, "start", [b.start for b in blocks])
+    table.insert(4, "stop", [b.stop for b in blocks])
+    table.insert(5, "fold", [b.fold for b in blocks])
+    table.insert(6, "n_rows", per_class.sum(axis=1).to_numpy())
+    return table.astype(
+        {name: np.int64 for name in table.columns if name not in ("group", "sequence")}
+    )
+
+
+def read_fold_table(path: Path) -> pd.DataFrame:
+    """Return the columns of a ``cv_folds.parquet`` that say which rows are out of fold.
+
+    ``group``, ``sequence`` and ``fold``, and ``start`` and ``stop`` when the file
+    holds blocks, sorted by entry and block. Two classifiers that deal alike
+    return equal tables, whatever they count in the other columns.
+
+    Args:
+        path: A ``cv_folds.parquet``.
+    """
+    table = pd.read_parquet(path)
+    by_block = "start" in table.columns
+    columns = ["group", "sequence", "fold", *(["start", "stop"] if by_block else [])]
+    return table[columns].sort_values(
+        ["group", "sequence", *(["start"] if by_block else [])], ignore_index=True
+    )
+
+
+class FoldLookup:
+    """The fold of each row of an entry that ``cv_folds.parquet`` deals out.
+
+    A table of entries gives every row of an entry its fold. A table of blocks
+    gives a row the fold of the block its ``frame`` falls in, and no fold to a
+    frame outside every block. Build one with :meth:`from_table`,
+    :meth:`by_entry` or :meth:`by_block`.
+    """
+
+    def __init__(
+        self,
+        entries: Mapping[tuple[str, str], int],
+        blocks: Mapping[
+            tuple[str, str],
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]],
+        ],
+    ) -> None:
+        self._entries = dict(entries)
+        self._blocks = dict(blocks)
+
+    @classmethod
+    def by_entry(cls, fold_of: Mapping[tuple[str, str], int]) -> FoldLookup:
+        """Return the lookup of whole entries: *fold_of* gives each its fold."""
+        return cls(fold_of, {})
+
+    @classmethod
+    def by_block(cls, blocks: Iterable[Sequence[object]]) -> FoldLookup:
+        """Return the lookup of blocks from ``(group, sequence, ..., start, stop, fold)`` rows.
+
+        A row's first two items name the entry and its last three are the block's
+        ``start``, ``stop`` and ``fold``; the items between are ignored.
+        """
+        grouped: dict[tuple[str, str], list[tuple[int, int, int]]] = {}
+        for row in blocks:
+            entry = (str(row[0]), str(row[1]))
+            grouped.setdefault(entry, []).append(
+                (int(row[-3]), int(row[-2]), int(row[-1]))  # pyright: ignore[reportArgumentType]
+            )
+        arrays: dict[
+            tuple[str, str],
+            tuple[npt.NDArray[np.int64], npt.NDArray[np.int64], npt.NDArray[np.int64]],
+        ] = {}
+        for entry, rows in grouped.items():
+            start, stop, fold = (
+                np.array(column, dtype=np.int64) for column in zip(*sorted(rows))
+            )
+            arrays[entry] = (start, stop, fold)
+        return cls({}, arrays)
+
+    @classmethod
+    def from_table(cls, table: pd.DataFrame) -> FoldLookup:
+        """Return the lookup that a ``cv_folds.parquet`` (or :func:`read_fold_table`) describes."""
+        if "start" in table.columns:
+            return cls.by_block(
+                zip(
+                    table["group"],
+                    table["sequence"],
+                    table["start"],
+                    table["stop"],
+                    table["fold"],
+                    strict=True,
+                )
+            )
+        return cls.by_entry(
+            {
+                (str(group), str(sequence)): int(fold)
+                for group, sequence, fold in zip(
+                    table["group"], table["sequence"], table["fold"], strict=True
+                )
+            }
+        )
+
+    @property
+    def by_blocks(self) -> bool:
+        """Whether a row's fold depends on its frame."""
+        return bool(self._blocks)
+
+    @property
+    def entries(self) -> set[tuple[str, str]]:
+        """The entries that have a fold, or a block with one."""
+        return set(self._entries) | set(self._blocks)
+
+    def folds(
+        self, entry: tuple[str, str], frames: npt.ArrayLike
+    ) -> npt.NDArray[np.intp]:
+        """Return the fold of each frame of *entry*, ``-1`` for a frame in no fold.
+
+        Args:
+            entry: The ``(group, sequence)`` the frames belong to.
+            frames: The ``frame`` of each row, in any order.
+        """
+        frame = np.asarray(frames, dtype=np.int64)
+        if entry in self._entries:
+            return np.full(frame.shape, self._entries[entry], dtype=np.intp)
+        blocks = self._blocks.get(entry)
+        if blocks is None:
+            return np.full(frame.shape, -1, dtype=np.intp)
+        starts, stops, folds = blocks
+        at = np.maximum(np.searchsorted(starts, frame, side="right") - 1, 0)
+        inside = (frame >= starts[at]) & (frame < stops[at])
+        return np.where(inside, folds[at], -1).astype(np.intp)
+
+    def scoring_folds(self, df: pd.DataFrame, feature: str) -> npt.NDArray[np.intp]:
+        """Return the fold of each row of the one entry *df* holds, ``-1`` for the full model.
+
+        Args:
+            df: One entry's table, with ``group``, ``sequence`` and ``frame``.
+            feature: The feature that scores, which a refusal names.
+
+        Raises:
+            ValueError: *df* lacks ``group`` or ``sequence``, or holds more than one entry.
+        """
+        entry = scored_entry(df, feature)
+        return self.folds(entry, df[COLUMNS.frame_col].to_numpy())
+
+
 def check_folds(
     feature: str,
     folds: int,
@@ -342,6 +807,7 @@ def check_folds(
     classes: list[int],
     *,
     rows: str,
+    unit: str = "sequence",
     per_fold: Callable[[int, npt.NDArray[np.intp], npt.NDArray[np.intp]], None]
     | None = None,
 ) -> None:
@@ -358,6 +824,7 @@ def check_folds(
         table: The result of :func:`fold_table`.
         classes: The class labels.
         rows: What *table* counts, such as ``"template rows"``, for the messages.
+        unit: What a row of *table* is, ``"sequence"`` or ``"block"``, for the messages.
         per_fold: Called for each fold, after its two-class check, with the
             fold, the classes present outside it and their row counts. It
             raises to refuse a fold for a reason of the classifier's own.
@@ -375,8 +842,12 @@ def check_folds(
                 f"[{feature}] cv_folds={folds}: the train rows outside fold {fold} "
                 f"hold {len(present)} of the {len(classes)} classes "
                 f"({present.tolist()}), and a classifier needs two. Lower "
-                "cv_folds, or draw the templates from more sequences of "
-                "each class"
+                + (
+                    "cv_folds, or label each class in more of the sequence"
+                    if unit == "block"
+                    else "cv_folds, or draw the templates from more sequences of "
+                    "each class"
+                )
             )
             raise ValueError(msg)
         if per_fold is not None:
@@ -388,7 +859,7 @@ def check_folds(
         n_sequences = int((column > 0).sum())
         if n_sequences < folds:
             log.warning(
-                "[%s] class %d has %s in %d sequence%s, fewer than "
+                "[%s] class %d has %s in %d %s%s, fewer than "
                 "cv_folds=%d, so the models of some fold never see it and "
                 "give it probability 0 there (rows_%d of cv_folds.parquet "
                 "shows where)",
@@ -396,6 +867,7 @@ def check_folds(
                 cls,
                 rows,
                 n_sequences,
+                unit,
                 "" if n_sequences == 1 else "s",
                 folds,
                 cls,

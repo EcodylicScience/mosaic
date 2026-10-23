@@ -84,6 +84,7 @@ from . import (
     temporal_stacking,
     track_subsample,
     trajectory_smooth,
+    tune_threshold,
     vame_feature,
     xgboost_feature,
 )
@@ -132,6 +133,7 @@ from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
 from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
+from .tune_threshold import TuneThresholdFeature
 from .vame_feature import VameFeature
 from .xgboost_feature import XgboostFeature
 
@@ -220,6 +222,7 @@ __all__ = [
     "TemporalStackingFeature",
     "TrackSubsample",
     "TrajectorySmooth",
+    "TuneThresholdFeature",
     "VameFeature",
     "XgboostFeature",
     # Optional, present only when their extra is installed. Named here anyway,
@@ -276,6 +279,7 @@ __all__ = [
     "temporal_stacking",
     "track_subsample",
     "trajectory_smooth",
+    "tune_threshold",
     "vame_feature",
     "xgboost_feature",
 ]

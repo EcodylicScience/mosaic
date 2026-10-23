@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.sequence_training import TrainingRun
 from mosaic.behavior.feature_library.sequence_classifier import (
     SequenceClassifier,
     SequenceClassifierModelArtifact,
@@ -49,7 +50,7 @@ def _dataset(base: Path) -> Dataset:
     )
 
 
-def _recipe() -> Recipe:
+def _recipe(**classifier: object) -> Recipe:
     return Recipe.model_validate(
         {
             "schema_version": 1,
@@ -100,6 +101,7 @@ def _recipe() -> Recipe:
                         "crop_length": 60,
                         "learning_rate": 0.01,
                         "cv_folds": 3,
+                        **classifier,
                     },
                 },
                 {
@@ -118,9 +120,15 @@ def _recipe() -> Recipe:
     )
 
 
-def _root(ds: Dataset, run: PipelineRun, step: str, scopes: dict[str, Scope]) -> Path:
+def _root(
+    ds: Dataset,
+    run: PipelineRun,
+    step: str,
+    scopes: dict[str, Scope],
+    recipe: Recipe | None = None,
+) -> Path:
     outcome = next(o for o in run.outcomes if o.step_id == step)
-    planned = plan_pipeline(ds, _recipe(), step_scopes=scopes).step(step)
+    planned = plan_pipeline(ds, recipe or _recipe(), step_scopes=scopes).step(step)
     return ds.get_root("features") / planned.storage_name / str(outcome.run_id)
 
 
@@ -225,9 +233,11 @@ def test_a_train_entry_is_scored_out_of_fold_and_a_test_entry_by_the_final_model
 
     full = len(bundle["models"]) - 1
     train_df, test_df = table(*TRAIN_ENTRIES[0]), table(*TEST_ENTRIES[0])
-    assert feature._scoring_model(train_df, bundle) == fold_of[TRAIN_ENTRIES[0]]  # pyright: ignore[reportPrivateUsage]
-    assert feature._scoring_model(train_df, bundle) != full  # pyright: ignore[reportPrivateUsage]
-    assert feature._scoring_model(test_df, bundle) == full  # pyright: ignore[reportPrivateUsage]
+    train_models = feature._scoring_models(train_df, bundle)  # pyright: ignore[reportPrivateUsage]
+    assert set(train_models.tolist()) == {fold_of[TRAIN_ENTRIES[0]]}
+    assert full not in train_models
+    test_models = feature._scoring_models(test_df, bundle)  # pyright: ignore[reportPrivateUsage]
+    assert set(test_models.tolist()) == {full}
     stored_train = pd.read_parquet(root / "train__s1.parquet")
     stored_test = pd.read_parquet(root / "test__t1.parquet")
     for stored, source in ((stored_train, train_df), (stored_test, test_df)):
@@ -278,3 +288,83 @@ def test_a_rerun_of_one_request_is_a_cache_hit(tmp_path: Path) -> None:
     assert {o.step_id: o.run_id for o in again.outcomes} == {
         o.step_id: o.run_id for o in first.outcomes
     }
+
+
+# --- Cross-validation by block ---
+
+
+def _one_sequence_dataset(base: Path) -> Dataset:
+    """One training sequence, so that holding sequences out leaves nothing to fit."""
+    return calms21_dataset(
+        base,
+        {"train": {"a": {"s1": 600}}, "test": {"a": {"t1": 240}}},
+        seed=11,
+        n_classes=3,
+    )
+
+
+def _by_block() -> Recipe:
+    return _recipe(cv_unit="block", cv_blocks_per_sequence=6, cv_gap_frames=5)
+
+
+def test_one_training_sequence_has_a_cross_validated_score_by_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _one_sequence_dataset(tmp_path / "ds")
+    trained: list[set[int]] = []
+    original = SequenceClassifier._fit_model  # pyright: ignore[reportPrivateUsage]
+
+    def spy(
+        self: SequenceClassifier, runs: list[TrainingRun], *args: object, **kw: object
+    ) -> object:
+        trained.append(
+            {
+                run.first_frame + offset
+                for run in runs
+                if run.first_frame is not None
+                for offset in range(len(run.y))
+            }
+        )
+        return original(self, runs, *args, **kw)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(SequenceClassifier, "_fit_model", spy)
+    scopes = {"labeled": TRAIN, "classifier": TRAIN, "evaluate": TRAIN}
+
+    with pytest.raises(ValueError, match="1 train entries into 3"):
+        run_pipeline(ds, _recipe(), step_scopes=scopes)
+
+    run = run_pipeline(ds, _by_block(), step_scopes=scopes)
+
+    states = {o.step_id: o.state for o in run.outcomes}
+    assert states["classifier"] == states["evaluate"] == "ran"
+    root = _root(ds, run, "classifier", scopes, _by_block())
+    folds = pd.read_parquet(root / "cv_folds.parquet")
+    assert len(folds) == 6
+    assert set(folds["fold"]) == {0, 1, 2}
+    assert len(trained) == 3 + 1
+    for fold in range(3):
+        for start, stop, of in zip(folds["start"], folds["stop"], folds["fold"]):
+            if of == fold:
+                assert not trained[fold] & set(range(start - 5, stop + 5))
+    metrics = json.loads(
+        (_root(ds, run, "evaluate", scopes, _by_block()) / "metrics.json").read_text()
+    )
+    assert metrics["n_entries"] == 1
+    assert metrics["n_scored"] > 0
+    assert 0.0 <= metrics["macro_f1"] <= 1.0
+
+
+def test_the_blocks_are_the_same_run_over_a_wider_scope(tmp_path: Path) -> None:
+    ds = _one_sequence_dataset(tmp_path / "ds")
+    narrow = {"labeled": TRAIN, "classifier": TRAIN, "evaluate": TRAIN}
+    wide = {"labeled": TRAIN, "classifier": BOTH, "evaluate": TEST}
+    first = run_pipeline(ds, _by_block(), step_scopes=narrow)
+    old = _root(ds, first, "classifier", narrow, _by_block())
+    folds = _digest(old / "cv_folds.parquet")
+
+    second = run_pipeline(ds, _by_block(), step_scopes=wide)
+
+    new = _root(ds, second, "classifier", wide, _by_block())
+    assert new == old
+    assert _digest(new / "cv_folds.parquet") == folds
+    assert (new / "test__t1.parquet").exists()

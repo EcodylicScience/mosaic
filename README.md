@@ -31,11 +31,11 @@ tells you exactly what a dataset already holds.
 | --- | --- |
 | **Track** | Run **4 integrated trackers** over your videos from one command — or import tracks you already have, from **8 formats** |
 | **Standardize** | Every tracker's output becomes one validated schema: video pixels, `X`/`Y` at the body centre, keypoints optional |
-| **Feature** | **52 registered features** — kinematic, social, collective-motion, spectral, reduction, temporal context |
+| **Feature** | **53 registered features** — kinematic, social, collective-motion, spectral, reduction, temporal context |
 | **Model** | t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq, VAME; XGBoost / Lightning-Action / FERAL classifiers; three visual identity models |
 | **Annotate** | Overlay video with identities, poses and predicted behavior; egocentric crops for identity work |
 | **Train pose** | No tracks yet? Sample frames for annotation and train YOLO pose, POLO point detection, or a heatmap localizer from CVAT / COCO / Lightning Pose |
-| **Operate** | **33 CLI commands** and **22 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
+| **Operate** | **34 CLI commands** and **22 ops** behind one job contract, with a run log, cancellation, and a dataset inventory |
 
 ## Install
 

@@ -208,6 +208,22 @@ class SpeedAngvel:
 
     # --- State ---
 
+    @staticmethod
+    def temporal_reach(params: SpeedAngvel.Params) -> int:
+        """Frames on each side that one row reads.
+
+        A difference reaches back ``step_size`` frames (one without it). The
+        Savitzky-Golay window of ``speed_smooth`` is centered, so it reads
+        ``smooth_window // 2`` frames of speed on each side, and each speed reads
+        one frame further back. Near a sequence's ends the filter fits its first
+        or last window instead, which reaches further and is not counted. Rows
+        are taken to be consecutive frames.
+        """
+        reach = params.step_size or 1
+        if params.smooth_window is not None:
+            reach = max(reach, params.smooth_window // 2 + 1)
+        return reach
+
     def load_state(
         self,
         run_root: Path,

@@ -31,6 +31,11 @@ from sklearn.model_selection import LeaveOneGroupOut
 from xgboost import XGBClassifier
 
 from mosaic.behavior.feature_library import helpers
+from mosaic.behavior.feature_library.classifier_common import (
+    block_fold_table,
+    deal_blocks,
+    read_fold_table,
+)
 from mosaic.behavior.feature_library.helpers import cv_fold_assignment
 from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
 from mosaic.core.pipeline.job import Cancelled, CancelToken
@@ -68,6 +73,8 @@ def make_world(
     seed: int = 0,
     constant_per_entry: bool = False,
     shuffle_provenance: bool = False,
+    with_frames: bool = False,
+    interleave: bool = False,
 ) -> World:
     """Write `templates.parquet` and `template_provenance.parquet` into *root*.
 
@@ -75,7 +82,11 @@ def make_world(
     contribute template rows to their split. `empty` entries are train entries of the
     provenance that drew no template row, and `outside` entries are in no templates
     run, as the entries of a test group are not. All four have a table to score.
-    With `constant_per_entry`, every feature of an entry is one constant.
+    With `constant_per_entry`, every feature of an entry is one constant. With
+    `with_frames`, the templates keep each row's `frame` and the provenance records
+    each entry's labeled frames, as `extract-labeled-templates` 0.7 does. With
+    `interleave`, the classes of an entry alternate in frame order and are not
+    one stretch each.
     """
     rng = np.random.default_rng(seed)
     frames: dict[Entry, pd.DataFrame] = {}
@@ -94,6 +105,8 @@ def make_world(
             label = np.concatenate(
                 [np.full(n, c, dtype=np.int64) for c, n in sorted(per_class.items())]
             )
+            if interleave:
+                label = rng.permutation(label)
             n = len(label)
             code = entry_index * 1000.0 + np.arange(n)
             if constant_per_entry:
@@ -128,10 +141,17 @@ def make_world(
                         "split": "test" if kind == "test" else "train",
                         "count": 0 if kind == "empty" else n,
                         "proportion": 0.0,
+                        **(
+                            {"labeled_start": 0, "labeled_stop": n}
+                            if with_frames
+                            else {}
+                        ),
                     }
                 )
     templates = pd.concat(template_rows, ignore_index=True)
-    templates = templates.drop(columns=["frame", "time", "id"])
+    templates = templates.drop(
+        columns=["time", "id"] if with_frames else ["frame", "time", "id"]
+    )
     root.mkdir(parents=True, exist_ok=True)
     templates.to_parquet(root / "templates.parquet", index=False)
     table = pd.DataFrame(provenance)
@@ -1228,3 +1248,435 @@ class TestThroughputAndWeights:
         for call in fits:
             assert call.sample_weight is not None
             assert sorted(set(call.sample_weight.tolist())) == [1.0, 3.0]
+
+
+class TestBlocks:
+    """`cv_unit="block"` holds out blocks of frames, so one training sequence is still cross-validated."""
+
+    ONLY: Entry = ("g", "only")
+
+    def _world(self, tmp_path: Path, n_entries: int = 1, **kwargs: Any) -> World:
+        per_class = {0: 30, 1: 30}
+        train = (
+            {self.ONLY: per_class}
+            if n_entries == 1
+            else sequences(n_entries, per_class)
+        )
+        return make_world(
+            tmp_path / "templates",
+            train,
+            with_frames=True,
+            interleave=True,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _bounds(folds: pd.DataFrame, fold: int) -> tuple[int, int]:
+        """The frames ``start`` up to ``stop`` of the one block that *fold* holds out."""
+        (block,) = folds.loc[[fold]].to_dict("records")
+        return int(block["start"]), int(block["stop"])
+
+    @staticmethod
+    def _frames(call: FitCall) -> set[int]:
+        """The frames of the rows a fit saw: a row's `code` is its entry's thousands plus its frame."""
+        return {int(code % 1000) for code in call.x[:, 0]}
+
+    def test_one_training_sequence_is_cut_into_blocks_and_each_fold_holds_one_out(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path)
+        feature, _ = fitted(world, tmp_path / "run", cv_folds=3, cv_unit="block")
+        feature.save_state(tmp_path / "run")
+
+        folds = sidecar(tmp_path / "run")
+
+        assert list(folds.columns) == [
+            "group",
+            "sequence",
+            "block",
+            "start",
+            "stop",
+            "fold",
+            "n_rows",
+            "rows_0",
+            "rows_1",
+        ]
+        assert folds[["block", "start", "stop"]].values.tolist() == [
+            [0, 0, 20],
+            [1, 20, 40],
+            [2, 40, 60],
+        ]
+        assert sorted(folds["fold"]) == [0, 1, 2]
+        assert (folds["n_rows"] == 20).all()
+        assert (folds["rows_0"] + folds["rows_1"] == folds["n_rows"]).all()
+
+    def test_a_fold_trains_on_no_row_of_its_blocks_or_of_the_gap_around_them(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        world = self._world(tmp_path)
+        feature, _ = fitted(
+            world, tmp_path / "run", cv_folds=3, cv_unit="block", cv_gap_frames=2
+        )
+        feature.save_state(tmp_path / "run")
+        folds = sidecar(tmp_path / "run").set_index("fold")
+
+        assert len(fits) == 3 + 1
+        for fold in range(3):
+            start, stop = self._bounds(folds, fold)
+            assert self._frames(fits[fold]) == {
+                f for f in range(60) if not start - 2 <= f < stop + 2
+            }
+        assert self._frames(fits[3]) == set(range(60))
+
+    def test_a_row_is_scored_by_the_model_of_the_block_that_holds_its_frame(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path, outside={("test", "z"): {0: 9, 1: 9}})
+        feature, state = fitted(
+            world, tmp_path / "run", cv_folds=3, cv_unit="block", cv_gap_frames=2
+        )
+        feature.save_state(tmp_path / "run")
+        folds = sidecar(tmp_path / "run").set_index("fold")
+        columns: list[str] = state["_feature_columns"]
+        models: list[XGBClassifier] = state["_cv"]["models"]
+        frame = world.frames[self.ONLY]
+
+        out = feature.apply(frame)
+
+        expected = np.empty(len(frame))
+        for fold in range(3):
+            start, stop = self._bounds(folds, fold)
+            rows = ((frame["frame"] >= start) & (frame["frame"] < stop)).to_numpy()
+            expected[rows] = models[fold].predict_proba(
+                frame.loc[rows, columns].to_numpy(dtype=np.float64)
+            )[:, 1]
+        np.testing.assert_allclose(out["prob_1"].to_numpy(), expected)
+        assert len({round(float(p), 9) for p in expected}) > 3
+
+    def test_a_frame_in_no_block_and_an_entry_outside_the_templates_are_scored_by_the_full_model(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path, outside={("test", "z"): {0: 9, 1: 9}})
+        feature, state = fitted(world, tmp_path / "run", cv_folds=3, cv_unit="block")
+        columns: list[str] = state["_feature_columns"]
+        full: XGBClassifier = state["_model"]
+        beyond = world.frames[self.ONLY].iloc[:10].copy()
+        beyond["frame"] += 500
+
+        for frame in (beyond, world.frames[("test", "z")]):
+            expected = full.predict_proba(frame[columns].to_numpy(dtype=np.float64))
+            np.testing.assert_allclose(
+                feature.apply(frame)["prob_1"].to_numpy(), expected[:, 1]
+            )
+
+    def test_every_fold_trains_on_every_sequence_but_its_blocks(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        world = self._world(tmp_path, n_entries=3)
+        _ = fitted(world, tmp_path / "run", cv_folds=2, cv_unit="block")
+
+        assert len(fits) == 2 + 1
+        assert fits[0].entries == fits[1].entries == fits[2].entries == {0, 1, 2}
+        assert len(fits[0].x) + len(fits[1].x) == len(fits[2].x)
+
+    def test_more_blocks_than_folds_hold_several_blocks_out_of_each_fold(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        world = self._world(tmp_path)
+        feature, _ = fitted(
+            world,
+            tmp_path / "run",
+            cv_folds=2,
+            cv_unit="block",
+            cv_blocks_per_sequence=4,
+        )
+        feature.save_state(tmp_path / "run")
+
+        folds = sidecar(tmp_path / "run")
+
+        assert folds["start"].tolist() == [0, 15, 30, 45]
+        assert sorted(folds["fold"]) == [0, 0, 1, 1]
+        for fold in (0, 1):
+            held = {
+                f
+                for start, stop in folds.loc[folds["fold"] == fold, ["start", "stop"]]
+                .to_numpy()
+                .tolist()
+                for f in range(start, stop)
+            }
+            assert self._frames(fits[fold]) == set(range(60)) - held
+
+    def test_the_blocks_are_dealt_as_sequence_classifier_deals_them(
+        self, tmp_path: Path
+    ) -> None:
+        """One fold table serves both, so that a `probability-ensemble` can pool their runs."""
+        world = self._world(tmp_path, n_entries=3)
+        feature, _ = fitted(
+            world,
+            tmp_path / "run",
+            cv_folds=3,
+            cv_unit="block",
+            cv_blocks_per_sequence=2,
+            cv_seed=5,
+        )
+        feature.save_state(tmp_path / "run")
+        blocks = deal_blocks(
+            "sequence-classifier", {entry: (0, 60) for entry in world.train}, 2, 3, 5
+        )
+        # sequence-classifier counts labeled frames, and this step the rows it drew
+        other = block_fold_table(
+            blocks,
+            pd.DataFrame(
+                0,
+                index=pd.MultiIndex.from_tuples(
+                    [(b.group, b.sequence, b.block) for b in blocks]
+                ),
+                columns=[0, 1],
+            ),
+            [0, 1],
+        )
+        other.to_parquet(tmp_path / "other.parquet", index=False)
+
+        pd.testing.assert_frame_equal(
+            read_fold_table(tmp_path / "run" / "cv_folds.parquet"),
+            read_fold_table(tmp_path / "other.parquet"),
+        )
+
+    def test_the_seed_changes_which_blocks_share_a_fold(self, tmp_path: Path) -> None:
+        world = self._world(tmp_path)
+
+        def dealt(seed: int) -> list[int]:
+            feature, _ = fitted(
+                world,
+                tmp_path / f"run{seed}",
+                cv_folds=3,
+                cv_unit="block",
+                cv_blocks_per_sequence=6,
+                cv_seed=seed,
+            )
+            feature.save_state(tmp_path / f"run{seed}")
+            return sidecar(tmp_path / f"run{seed}")["fold"].tolist()
+
+        assert dealt(0) != dealt(1)
+
+    def test_fewer_blocks_than_folds_is_refused(self, tmp_path: Path) -> None:
+        world = self._world(tmp_path)
+        feature = make_feature(
+            world,
+            tmp_path / "run",
+            cv_folds=3,
+            cv_unit="block",
+            cv_blocks_per_sequence=2,
+        )
+
+        with pytest.raises(ValueError, match=r"^\[xgboost\] .*2 blocks into 3"):
+            feature.fit(NO_INPUT)
+
+    def test_a_gap_that_leaves_a_fold_one_class_is_refused_before_any_fit(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        """Stretches of one class: the gap eats the only block of the other."""
+        world = make_world(
+            tmp_path / "templates",
+            {self.ONLY: {0: 20, 1: 20}},
+            with_frames=True,
+        )
+        feature = make_feature(
+            world,
+            tmp_path / "run",
+            cv_folds=4,
+            cv_unit="block",
+            cv_gap_frames=12,
+        )
+
+        with pytest.raises(ValueError, match=r"leaves training rows of \d class"):
+            feature.fit(NO_INPUT)
+        assert fits == []
+
+    def test_blocks_that_leave_a_fold_one_class_are_refused(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        """One stretch of each class, cut in two: the training half of a fold has one class."""
+        world = make_world(
+            tmp_path / "templates", {self.ONLY: {0: 20, 1: 20}}, with_frames=True
+        )
+        feature = make_feature(world, tmp_path / "run", cv_folds=2, cv_unit="block")
+
+        with pytest.raises(
+            ValueError,
+            match=r"outside fold \d hold 1 of the 2 classes.*label each class",
+        ):
+            feature.fit(NO_INPUT)
+        assert fits == []
+
+    def test_templates_without_a_frame_column_are_refused_and_name_the_remedy(
+        self, tmp_path: Path
+    ) -> None:
+        world = make_world(tmp_path / "templates", sequences(4, {0: 8, 1: 8}))
+        feature = make_feature(world, tmp_path / "run", cv_folds=2, cv_unit="block")
+
+        with pytest.raises(
+            ValueError,
+            match=r"cv_unit='block'.*record no frame.*extract-labeled-templates again",
+        ):
+            feature.fit(NO_INPUT)
+
+    def test_a_provenance_without_labeled_frames_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path)
+        provenance = world.path.parent / "template_provenance.parquet"
+        pd.read_parquet(provenance).drop(
+            columns=["labeled_start", "labeled_stop"]
+        ).to_parquet(provenance, index=False)
+        feature = make_feature(world, tmp_path / "run", cv_folds=2, cv_unit="block")
+
+        with pytest.raises(
+            ValueError, match=r"records no labeled frames.*extract-labeled-templates"
+        ):
+            feature.fit(NO_INPUT)
+
+    def test_template_rows_outside_the_labeled_frames_are_refused(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path)
+        provenance = world.path.parent / "template_provenance.parquet"
+        table = pd.read_parquet(provenance)
+        table["labeled_stop"] = 40
+        table.to_parquet(provenance, index=False)
+        feature = make_feature(world, tmp_path / "run", cv_folds=2, cv_unit="block")
+
+        with pytest.raises(ValueError, match="outside the labeled frames"):
+            feature.fit(NO_INPUT)
+
+    def test_old_templates_stay_readable_by_sequence(self, tmp_path: Path) -> None:
+        """Templates with no frame column, and a provenance without ranges, still cross-validate by sequence."""
+        world = make_world(tmp_path / "templates", sequences(6, {0: 10, 1: 10}))
+
+        feature, _ = fitted(world, tmp_path / "run", cv_folds=3)
+        feature.save_state(tmp_path / "run")
+
+        assert "start" not in sidecar(tmp_path / "run").columns
+
+    def test_templates_that_record_frames_cross_validate_by_sequence_as_before(
+        self, tmp_path: Path
+    ) -> None:
+        plain = make_world(tmp_path / "plain", sequences(6, {0: 10, 1: 10}))
+        framed = make_world(
+            tmp_path / "framed", sequences(6, {0: 10, 1: 10}), with_frames=True
+        )
+        scored: list[pd.DataFrame] = []
+        for name, world in (("plain", plain), ("framed", framed)):
+            feature, _ = fitted(world, tmp_path / f"{name}-run", cv_folds=3, cv_seed=2)
+            feature.save_state(tmp_path / f"{name}-run")
+            scored.append(
+                pd.concat([feature.apply(world.frames[entry]) for entry in world.train])
+            )
+
+        pd.testing.assert_frame_equal(
+            sidecar(tmp_path / "plain-run"), sidecar(tmp_path / "framed-run")
+        )
+        pd.testing.assert_frame_equal(scored[0], scored[1])
+
+    def test_the_block_settings_are_refused_where_they_do_not_apply(self) -> None:
+        with pytest.raises(ValueError, match="cv_unit.*cv_folds"):
+            XgboostFeature.Params.from_overrides({**PARAMS, "cv_unit": "block"})
+        with pytest.raises(ValueError, match="only apply with cv_unit block"):
+            XgboostFeature.Params.from_overrides(
+                {**PARAMS, "cv_folds": 3, "cv_gap_frames": 5}
+            )
+        with pytest.raises(ValueError, match="cv_blocks_per_sequence"):
+            XgboostFeature.Params.from_overrides(
+                {**PARAMS, "cv_blocks_per_sequence": 1}
+            )
+
+    def test_the_block_settings_enter_the_run_id_only_under_the_block_unit(
+        self,
+    ) -> None:
+        def digest(**extra: object) -> str:
+            return run_id_digest(
+                XgboostFeature.Params.from_overrides({**PARAMS, **extra})
+            )
+
+        assert digest(cv_folds=3, cv_unit="sequence") == digest(cv_folds=3)
+        assert digest(cv_folds=3, cv_unit="block") != digest(cv_folds=3)
+        assert digest(cv_folds=3, cv_unit="block") == digest(
+            cv_folds=3, cv_unit="block", cv_blocks_per_sequence=3
+        )
+        blocks = digest(cv_folds=3, cv_unit="block")
+        assert digest(cv_folds=3, cv_unit="block", cv_blocks_per_sequence=6) != blocks
+        assert digest(cv_folds=3, cv_unit="block", cv_gap_frames=4) != blocks
+
+    def test_a_block_run_reloads_from_its_bundle_and_a_worker_scores_alike(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path, outside={("test", "z"): {0: 9, 1: 9}})
+        params = {"cv_folds": 3, "cv_unit": "block", "cv_gap_frames": 1}
+        feature, _ = fitted(world, tmp_path / "run", **params)
+        feature.save_state(tmp_path / "run")
+        bundle = joblib.load(tmp_path / "run" / "xgboost_model.joblib")
+        again = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={**PARAMS, **params},
+        )
+
+        assert bundle["cv"]["unit"] == "block"
+        assert bundle["cv"]["gap_frames"] == 1
+        assert bundle["cv"]["blocks_per_sequence"] == 3
+        assert len(bundle["cv"]["blocks"]) == 3
+        assert again.load_state(tmp_path / "run", {}, {}) is True
+        for entry in (self.ONLY, ("test", "z")):
+            frame = world.frames[entry]
+            pd.testing.assert_frame_equal(again.apply(frame), feature.apply(frame))
+            worker = process_apply_worker(
+                feature.__module__,
+                type(feature).__name__,
+                feature.inputs.model_dump(),
+                feature.params.model_dump(),
+                str(tmp_path / "run"),
+                {},
+                {},
+                frame,
+            )
+            pd.testing.assert_frame_equal(worker, feature.apply(frame))
+
+    def test_a_cached_model_of_the_other_unit_is_not_taken_for_this_one(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path)
+        feature, _ = fitted(world, tmp_path / "run", cv_folds=3, cv_unit="block")
+        feature.save_state(tmp_path / "run")
+        by_sequence = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={**PARAMS, "cv_folds": 3},
+        )
+
+        with pytest.raises(RuntimeError, match="fitted with the other unit"):
+            by_sequence.load_state(tmp_path / "run", {}, {})
+
+    def test_the_one_vs_rest_strategy_scores_each_block_by_its_fold(
+        self, tmp_path: Path
+    ) -> None:
+        world = self._world(tmp_path)
+        feature, state = fitted(
+            world,
+            tmp_path / "run",
+            cv_folds=3,
+            cv_unit="block",
+            strategy="one_vs_rest",
+        )
+        folds = state["_blocks"].folds(
+            self.ONLY, world.frames[self.ONLY]["frame"].to_numpy()
+        )
+        columns: list[str] = state["_feature_columns"]
+        frame = world.frames[self.ONLY]
+        row = int(np.flatnonzero(folds == 1)[0])
+        model: list[XGBClassifier] = state["_cv"]["models"][1]
+
+        out = feature.apply(frame)
+
+        x = frame.loc[[row], columns].to_numpy(dtype=np.float64)
+        expected = np.column_stack([m.predict_proba(x)[:, 1] for m in model])
+        np.testing.assert_allclose(
+            out.loc[row, ["prob_0", "prob_1"]].to_numpy(dtype=float), expected[0]
+        )

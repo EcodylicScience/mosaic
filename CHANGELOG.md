@@ -195,6 +195,37 @@ no keypoints or `center_mode` was `xy`. A `trex_v1` table with keypoints, and ev
   instead of the first row of the entry.
 - No run id or tracks variant moves. `tracks_schemas` is never hashed.
 
+**Block cross-validation, `tune-threshold` and a declared temporal reach.** A dataset with
+one training sequence had no cross-validated score, and a decision threshold was chosen by
+hand.
+
+- `xgboost` and `sequence-classifier` take `cv_unit` (`sequence`, the default, or `block`),
+  `cv_blocks_per_sequence` and `cv_gap_frames`. With `block` a fold holds out contiguous
+  blocks of frames, `cv_folds.parquet` has one row per block with `start` and `stop`, and the
+  model of a fold trains without its blocks and the gap around them. The new params leave
+  the run id of an existing run unchanged while they hold their defaults. `lightning-action`
+  has no `cv_folds`, and so no `cv_unit`, yet.
+- `extract-labeled-templates` moves 0.6 to 0.7: the templates gain a `frame` column and the
+  provenance gains `labeled_start` and `labeled_stop`. **Its run id moves, and so does the
+  run id of every `xgboost` and `sequence-classifier` run built on an older templates run,
+  `cv_unit: sequence` ones included.** Run the templates again. `xgboost` with `cv_unit:
+  block` refuses templates from an older run.
+- New `tune-threshold` (0.1) chooses the per-class thresholds of a classifier fitted with
+  `cv_folds` on its out-of-fold probabilities, and reports a plain and a nested estimate. It
+  warns, in the report and the log, of a threshold at the edge of its grid. It hashes no
+  scope. Only `probability-ensemble` takes `decision_threshold: {"step": "<tune>"}`; the
+  classifiers keep a number or a mapping, and the ensemble refuses a tuned run whose input
+  is not what it blends. The default class of a tuned rule has
+  threshold 1.0 and a class left out of `classes` has 0, which the description of
+  `decision_threshold` now says.
+- A feature may declare `temporal_reach`, the frames on each side that one row depends on.
+  The catalog reports it. A plan refuses a block-cross-validated classifier whose
+  `cv_gap_frames` is below the reach declared above it, and cautions when a step above does
+  not declare one, unless a positive gap covers the reach that is known. The check runs for
+  a recipe whose upstream has not run yet. The classifier's own reach is not counted.
+- `probability-ensemble` compares the `start` and `stop` of block folds beside `group`,
+  `sequence` and `fold` when it checks its members' fold tables.
+
 **`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
 Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
 and the inference bridge set `id` 0 on every row. Every detection of a table was then
