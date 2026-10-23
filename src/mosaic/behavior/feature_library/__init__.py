@@ -109,6 +109,7 @@ from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
 from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
+from .keypoint_kinematics import KeypointKinematics
 from .kpms import KpmsFeature
 from .label_statistics import LabelStatistics
 from .local_order_metrics import LocalOrderMetrics
@@ -196,6 +197,7 @@ __all__ = [
     "GlobalTSNE",
     "GlobalWardClustering",
     "IdTagColumns",
+    "KeypointKinematics",
     "KpmsFeature",
     "LabelMapRef",
     "LabelStatistics",

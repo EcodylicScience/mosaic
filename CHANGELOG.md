@@ -10,6 +10,19 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**`keypoint-kinematics` measures the speed and acceleration of every keypoint.**
+`speed-angvel` measures the body center alone. The new feature fits a Savitzky-Golay
+derivative to each keypoint of each individual and writes `speed__<kp>` and
+`accel__<kp>`, the distance between any pairs of keypoints you name (`dist__<a>__<b>`),
+and optionally every measure divided by a body segment's length. It adds a registered
+feature (52), and no existing run id moves.
+
+- A table with `poseZ*` columns is measured in 3D and also writes `vz__<kp>`, the
+  velocity along +Z. A table without them is measured on `poseX*`/`poseY*`.
+- A keypoint is named by its position in the table's keypoint order, or by a name from
+  `keypoint_names`. `core.pose_columns.pose_column_triplets` lists a table's
+  `(poseX, poseY, poseZ)` columns as `pose_column_pairs` lists the pairs.
+
 **`label-statistics` summarizes a label sequence per individual.** It reads ground-truth
 labels (`GroundTruthLabelsSource`) or a categorical column of a feature's output
 (`ResultColumn`), such as `arhmm`'s `syllable`, and writes one row per

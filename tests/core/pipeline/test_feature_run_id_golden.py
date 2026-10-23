@@ -98,6 +98,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "heading",
     "id-tag-columns",
     "interaction-crop-pipeline",
+    "keypoint-kinematics",
     "label-statistics",
     "movement-filter-interpolate",
     "movement-smooth",

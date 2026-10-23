@@ -40,7 +40,8 @@ parameter, generated from the registry. Grouped by the question they answer:
 
 **Individual.** `speed-angvel` (speed and angular velocity),
 `heading` (body orientation from keypoints, under a method you name),
-`trajectory-smooth`, `body-scale`, `scale-to-cm`, `track-subsample`.
+`keypoint-kinematics` (smoothed speed and acceleration of every keypoint, and distances
+between keypoints), `trajectory-smooth`, `body-scale`, `scale-to-cm`, `track-subsample`.
 
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at

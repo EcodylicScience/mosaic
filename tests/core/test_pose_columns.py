@@ -29,6 +29,7 @@ from mosaic.core.pose_columns import (
     keypoint_centroid,
     keypoint_suffixes,
     pose_column_pairs,
+    pose_column_triplets,
     reindex_contiguous,
     resolve_keypoint_refs,
 )
@@ -380,3 +381,24 @@ def test_reindexing_no_rows_returns_no_rows() -> None:
     assert arrays.frames.shape == (0,)
     assert arrays.position.shape == (0, 1, 2)
     assert arrays.confidence.shape == (0, 1)
+
+
+# -- 3D keypoints ---------------------------------------------------------------
+
+
+def test_triplets_are_ordered_numerically_like_pairs() -> None:
+    columns = [f"pose{axis}{i}" for i in (10, 2, 1) for axis in ("X", "Y", "Z")]
+    assert pose_column_triplets(columns) == [
+        ("poseX1", "poseY1", "poseZ1"),
+        ("poseX2", "poseY2", "poseZ2"),
+        ("poseX10", "poseY10", "poseZ10"),
+    ]
+
+
+def test_a_keypoint_without_its_z_is_not_a_triplet() -> None:
+    columns = ["poseX0", "poseY0", "poseZ0", "poseX1", "poseY1"]
+    assert pose_column_triplets(columns) == [("poseX0", "poseY0", "poseZ0")]
+
+
+def test_a_2d_table_has_no_triplets() -> None:
+    assert pose_column_triplets(_numbered(3)) == []

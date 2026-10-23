@@ -3,7 +3,7 @@
 
 # Features
 
-51 features are registered. Each one runs as
+52 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -98,6 +98,22 @@ Per-frame body heading derived from pose keypoints.
 | `front_idx` | `integer` | `0` |  | The keypoint index of the forward landmark, such as the head, snout or rostrum. Used when method is two_point. |
 | `rear_idx` | `integer` | `1` |  | The keypoint index of the rearward landmark, such as the tail base or abdomen. Used when method is two_point. |
 | `output_col` | `string` | `"ANGLE"` |  | The column the heading is written to. Defaults to the library's own orientation column, the name a downstream feature reading ANGLE already expects. |
+
+### `keypoint-kinematics`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.keypoint_kinematics.KeypointKinematics`
+
+Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | A name for each keypoint, in the table's keypoint order. Used in the output column names, and accepted wherever a parameter refers to a keypoint. Its length must equal the table's keypoint count. Unset, keypoint k is labelled kp{k} and is referred to by its index. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The keypoints to report speed and acceleration for, by index or by name. An index is a keypoint's position in the table's keypoint order, which is its column number when the keypoints are numbered from 0 without a gap. Unset, every keypoint the table carries. An empty list reports none, for a run that wants only distances. |
+| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is the reciprocal of the median time step per frame read off the time column, and a table whose time column cannot give one is refused. [fps] |
+| `window` | `integer` | `7` | >= `3` | The Savitzky-Golay window length: odd, and larger than polyorder. It is also the longest gap in a keypoint's track that is linearly interpolated before filtering. A longer gap ends the stretch the filter runs over. [frames] |
+| `polyorder` | `integer` | `2` | >= `2` | The order of the polynomial fitted in each window. At least 2, because acceleration is the fit's second derivative and a lower order would report it as zero everywhere. |
+| `distances` | list of (tuple of (`integer` \| `string`, `integer` \| `string`)) | _constructed_ |  | Keypoint pairs, by index or by name, whose separation is reported on every row as dist__{a}__{b}. Euclidean over the table's two or three axes, and measured on the unsmoothed positions. |
+| `normalize_by` | tuple of (`integer` \| `string`, `integer` \| `string`) \| `None` | `null` |  | A keypoint pair whose median separation over each individual's rows in the sequence divides every distance, speed, vertical velocity and acceleration, making them independent of body size. Unset, they stay in the table's units. An individual on which the pair is never seen reports NaN throughout. |
 
 ### `local-order-metrics`
 

@@ -34,6 +34,7 @@ __all__ = [
     "keypoint_centroid",
     "keypoint_suffixes",
     "pose_column_pairs",
+    "pose_column_triplets",
     "reindex_contiguous",
     "resolve_keypoint_refs",
 ]
@@ -75,6 +76,28 @@ def pose_column_pairs(columns: Iterable[str]) -> list[tuple[str, str]]:
         (f"poseX{suffix}", f"poseY{suffix}")
         for suffix in keypoint_suffixes(column_names, "poseX")
         if f"poseY{suffix}" in present
+    ]
+
+
+def pose_column_triplets(columns: Iterable[str]) -> list[tuple[str, str, str]]:
+    """Extract (poseX*, poseY*, poseZ*) column triplets, ordered by keypoint index.
+
+    The 3D sibling of :func:`pose_column_pairs`.
+
+    Args:
+        columns: Column names to scan.
+
+    Returns:
+        The ``(poseX<k>, poseY<k>, poseZ<k>)`` triplets present in full, in
+        keypoint order -- numerically for numeric suffixes. A keypoint missing
+        any of its three axes is skipped rather than half-reported.
+    """
+    column_names = list(columns)
+    present = set(column_names)
+    return [
+        (f"poseX{suffix}", f"poseY{suffix}", f"poseZ{suffix}")
+        for suffix in keypoint_suffixes(column_names, "poseX")
+        if f"poseY{suffix}" in present and f"poseZ{suffix}" in present
     ]
 
 
