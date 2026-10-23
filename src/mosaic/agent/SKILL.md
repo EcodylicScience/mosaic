@@ -349,7 +349,10 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   --recipe <recipe> --heldout <file> --answers <answers.json> --out <dir>`, which works
   on a copy of the dataset and exits 1 with `RUN IDS CHANGED` when adding the data would
   fit a step of your recipe again. Propose it, and run it only when the user asks. Give
-  `--step-scope` as you ran the recipe. To find out beforehand, call `plan_recipe` with
+  `--step-scope` as you ran the recipe, the raw format's source options (`--src-format`,
+  `--multi-sequences-per-file`, `--group-from`, `--patterns`, `--labels-path`) and the
+  evaluation protocol (`--perspective`, `--average-over`); see `mosaic pipeline score
+  --help`. To find out beforehand, call `plan_recipe` with
   `assume_added: [group]`: its cautions name the steps that would refit and the steps
   that would only re-score. A `test` group that is already in the dataset is scored
   with an `evaluate-labels` step narrowed to it, once. An `evaluate-labels` step that

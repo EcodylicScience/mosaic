@@ -634,6 +634,7 @@ class LocalBackend:
             requests_matching,
             retirable_recipes,
         )
+        from mosaic.core.dataset import open_dataset
         from mosaic.core.pipeline.index import feature_run_root
         from mosaic.core.scope import Scope
 
@@ -641,10 +642,13 @@ class LocalBackend:
         recipe = _recipe(args.recipe)
         catalog = self._declarations()
         scope = _scope(args.entries)
+        # Opened again, as ``_describe_dataset`` does, so that the manifest fields
+        # (the split roles above all) are those on disk now and not at start.
+        dataset = open_dataset(held.manifest, ensure_roots=False)
         with held.lock:
             # A read, so it needs no --allow-cleanup.
             plan = plan_with_cleanup(
-                held.dataset,
+                dataset,
                 recipe,
                 cleanup=self._cleanup(args.cleanup),
                 scope=scope,
@@ -1346,7 +1350,7 @@ def _submission_findings(
     return findings
 
 
-def _reads_labels(planned: PlannedStep) -> bool:
+def _scores_against_labels(planned: PlannedStep) -> bool:
     """Does *planned* score a model's output against labels?
 
     That is ``evaluate-labels`` and nothing else. A step that merely has a labels
@@ -1360,13 +1364,12 @@ def _reads_labels(planned: PlannedStep) -> bool:
 def _sealed_scoring_findings(plan: Plan) -> list[ConfirmationFinding]:
     """Return a ``score_sealed`` finding for each step scoring a sealed group.
 
-    A step reads labels (:func:`_reads_labels`) and its target holds an entry of
-    a group the manifest's ``splits`` give the role ``sealed``. A ``test`` group
-    does not count: scoring it is the protocol. The planner can only see labels
-    that the dataset registered, so this fires only when the sealed group's
-    labels are in the manifest. With the sealed labels kept outside it, as a
-    protocol that holds them back intends, the condition never fires and the
-    seal is the operator's to keep. It is defensive.
+    A step scores against labels (:func:`_scores_against_labels`) and its target
+    holds an entry of a group the manifest's ``splits`` give the role ``sealed``.
+    A ``test`` group does not count: scoring it is the protocol. The target is
+    the tracks entries of the plan, so this fires whether or not the sealed
+    group's labels are in the dataset. Keeping those labels outside it is what
+    protects the seal, and this finding is the second line.
     """
     from mosaic.core.pipeline.graph.plan import step_target
     from mosaic.core.splits import groups_with_role
@@ -1376,7 +1379,7 @@ def _sealed_scoring_findings(plan: Plan) -> list[ConfirmationFinding]:
         return []
     findings: list[ConfirmationFinding] = []
     for planned in plan.steps:
-        if not _reads_labels(planned):
+        if not _scores_against_labels(planned):
             continue
         reached = sorted({group for group, _ in step_target(planned, plan)} & sealed)
         if reached:

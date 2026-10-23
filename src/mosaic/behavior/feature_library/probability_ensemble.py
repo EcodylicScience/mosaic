@@ -93,7 +93,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.strict_model import StrictModel
 
 from .classifier_common import (
-    FIT_SCOPE_REMEDY,
+    DERIVED_FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     FoldLookup,
     ThresholdsArtifact,
@@ -638,7 +638,7 @@ class ProbabilityEnsembleFeature:
                 "The weights would be chosen on fewer entries than the members "
                 "were fitted on."
             ),
-            remedy=FIT_SCOPE_REMEDY,
+            remedy=DERIVED_FIT_SCOPE_REMEDY,
         )
         if classes is None or not probability_blocks:
             msg = (

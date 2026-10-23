@@ -20,6 +20,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.classifier_common import read_fold_table
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.inventory.model import FeatureRunRef
@@ -50,7 +51,9 @@ def _dataset(base: Path) -> Dataset:
     )
 
 
-def _classifier(step: str, seed: int, cv_folds: int | None = 3) -> dict[str, object]:
+def _classifier(
+    step: str, seed: int, cv_folds: int | None = 3, **params: JsonValue
+) -> dict[str, object]:
     return {
         "id": step,
         "type": "feature",
@@ -63,6 +66,7 @@ def _classifier(step: str, seed: int, cv_folds: int | None = 3) -> dict[str, obj
             "n_jobs": 1,
             "random_state": seed,
             **({} if cv_folds is None else {"cv_folds": cv_folds}),
+            **params,
         },
     }
 
@@ -276,8 +280,14 @@ def test_a_first_blend_asked_over_a_scope_without_the_members_fold_entries_is_re
         "blend": Scope(groups=["test"]),
     }
 
-    with pytest.raises(Exception, match="first run must be asked for over a scope"):
+    with pytest.raises(
+        Exception, match="first run must be asked for over a scope"
+    ) as refused:
         _ = run_pipeline(ds, _recipe(), step_scopes=scopes)
+
+    # The blend has no `model` parameter, so the refusal does not offer one.
+    assert "cv_folds.parquet" in str(refused.value)
+    assert "`model`" not in str(refused.value)
 
 
 def test_the_plan_of_a_widened_blend_names_the_new_entries_and_the_stored_run(
@@ -330,3 +340,89 @@ def test_fixed_weights_average_members_of_which_only_some_were_cross_validated(
     assert (root / "ensemble.json").exists()
     assert not (root / "cv_folds.parquet").exists()
     assert len(list(root.glob("*__*.parquet"))) == len(TRAIN_ENTRIES)
+
+
+@pytest.mark.identity
+def test_a_fitted_blend_of_block_validated_xgboost_and_sequence_classifier_runs(
+    tmp_path: Path,
+) -> None:
+    """One training sequence, dealt into blocks, scored by two kinds of classifier.
+
+    The two runs write equal fold tables, because both deal the blocks by the same hash,
+    so the blend finds one table. It chooses its weights on the frames inside the
+    blocks, and each of those was scored by a model that never trained on it.
+    """
+    ds = calms21_dataset(
+        tmp_path / "ds",
+        {"train": {"a": {"s1": 600}}},
+        seed=11,
+        n_classes=3,
+    )
+    blocks: dict[str, JsonValue] = {
+        "cv_unit": "block",
+        "cv_blocks_per_sequence": 6,
+        "cv_gap_frames": 5,
+    }
+    xgboost = _classifier(
+        "xgb", 1, cv_unit="block", cv_blocks_per_sequence=6, cv_gap_frames=5
+    )
+    network: dict[str, object] = {
+        "id": "seq",
+        "type": "feature",
+        "feature": "sequence-classifier",
+        "inputs": [{"step": "pairs"}],
+        "params": {
+            "templates": {"step": "labeled"},
+            "labels": {"step": "labels"},
+            "default_class": 0,
+            "device": "cpu",
+            "head": "mlp",
+            "steps": 30,
+            "batch_size": 4,
+            "crop_length": 60,
+            "cv_folds": 3,
+            **blocks,
+        },
+    }
+    blend: dict[str, object] = {
+        "id": "blend",
+        "type": "feature",
+        "feature": "probability-ensemble",
+        "inputs": [{"step": "xgb"}, {"step": "seq"}],
+        "params": {
+            "default_class": 0,
+            "weights": "fit",
+            "labels": {"step": "labels"},
+            "score_classes": [0, 1, 2],
+        },
+    }
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "blocks",
+            "steps": [*_shared_steps(), xgboost, network, blend],
+        }
+    )
+    scopes = {step: TRAIN for step in ("labeled", "xgb", "seq", "blend")}
+
+    run = run_pipeline(ds, recipe, step_scopes=scopes)
+
+    assert {o.state for o in run.outcomes} == {"ran"}
+
+    def root(step: str) -> Path:
+        outcome = next(o for o in run.outcomes if o.step_id == step)
+        planned = plan_pipeline(ds, recipe, step_scopes=scopes).step(step)
+        return ds.get_root("features") / planned.storage_name / str(outcome.run_id)
+
+    folds = read_fold_table(root("xgb") / "cv_folds.parquet")
+    assert len(folds) == 6
+    pd.testing.assert_frame_equal(
+        folds, read_fold_table(root("seq") / "cv_folds.parquet")
+    )
+    pd.testing.assert_frame_equal(
+        folds, read_fold_table(root("blend") / "cv_folds.parquet")
+    )
+    report = json.loads((root("blend") / "ensemble_report.json").read_text())
+    assert report["n_entries"] == 1
+    # Every frame the weights were chosen on lies inside a block.
+    assert report["n_frames"] == int((folds["stop"] - folds["start"]).sum())

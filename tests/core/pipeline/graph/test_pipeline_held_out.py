@@ -307,6 +307,126 @@ def test_a_scoped_fit_over_a_graph_that_converts_first_has_no_such_caution(
     assert [c.step for c in plan_wire(plan).cautions[1:]] == []
 
 
+def _converting(tmp_path: Path) -> Dataset:
+    """A dataset of raw files only, with the roles its group names say."""
+    ds = calms21_dataset(
+        tmp_path / "raw",
+        {"train": {"a": {"s1": 40, "s2": 30}}, "test": {"a": {"s3": 30}}},
+        seed=5,
+    )
+    ds.set_splits("train", ["train"])
+    ds.set_splits("test", ["test"])
+    return ds
+
+
+def test_a_fit_below_an_unresolved_fit_is_cautioned_too(tmp_path: Path) -> None:
+    ds = _converting(tmp_path)
+    tracks: dict[str, JsonValue] = {"tracks": {"step": "tracks"}}
+    recipe = _recipe(
+        CONVERT_TRACKS_STEP,
+        {**PCA_FIT, **tracks},
+        {**PCA_APPLY, **tracks},
+        {
+            "id": "hmm",
+            "type": "feature",
+            "feature": "arhmm",
+            "inputs": [{"step": "apply"}],
+            "params": {"n_states": 2, "n_iter": 2},
+        },
+    )
+
+    plan = plan_pipeline(ds, recipe, refuse=False)
+
+    assert plan.step("hmm").run_id is None
+    assert plan.step("hmm").scope_dependent
+    assert plan.step("hmm").fits
+    # The apply step is given a model, so it fits nothing and covers no entries.
+    assert not plan.step("apply").scope_dependent
+    assert not plan.step("apply").fits
+    assert [c.step for c in plan_wire(plan).cautions[1:]] == ["fit", "hmm"]
+
+
+def test_a_step_bound_to_a_run_is_not_cautioned_over_a_graph_that_converts_first(
+    tmp_path: Path,
+) -> None:
+    ds = _converting(tmp_path)
+    recipe = _recipe(
+        CONVERT_TRACKS_STEP, {**SPEED, "tracks": {"step": "tracks"}}, TEMPLATES
+    )
+    request = Request(
+        request_id="r",
+        recipe_digest="d",
+        bind={
+            "templates": BoundRef(
+                feature="extract-templates__from__speed-angvel", run_id="0.3-aaaaaaaaaa"
+            )
+        },
+    )
+
+    plan = plan_pipeline(ds, recipe, request=request, refuse=False)
+
+    assert plan.bound == {"templates"}
+    assert [c.step for c in plan_wire(plan).cautions[1:]] == []
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        Scope(groups=["train", "test"]),
+        Scope(entries=[("test", "s3")]),
+    ],
+)
+def test_a_step_scope_naming_the_test_group_is_refused_before_the_conversion(
+    tmp_path: Path, scope: Scope
+) -> None:
+    ds = _converting(tmp_path)
+    recipe = _recipe(
+        CONVERT_TRACKS_STEP, {**SPEED, "tracks": {"step": "tracks"}}, TEMPLATES
+    )
+
+    plan = plan_pipeline(ds, recipe, step_scopes={"templates": scope}, refuse=False)
+
+    assert plan.deferred_by == "tracks"
+    assert _problems(plan) == [("templates", "step_scopes.templates")]
+    assert "'test' (test)" in plan.problems[0].message
+    assert [c.step for c in plan_wire(plan).cautions[1:]] == []
+
+
+def test_a_request_scope_naming_the_test_group_is_refused_before_the_conversion(
+    tmp_path: Path,
+) -> None:
+    ds = _converting(tmp_path)
+    recipe = _recipe(
+        CONVERT_TRACKS_STEP, {**SPEED, "tracks": {"step": "tracks"}}, TEMPLATES
+    )
+
+    plan = plan_pipeline(ds, recipe, scope=Scope(groups=["test"]), refuse=False)
+
+    assert plan.deferred_by == "tracks"
+    assert _problems(plan) == [("templates", "scope")]
+    assert [c.step for c in plan_wire(plan).cautions[1:]] == []
+
+
+def test_a_sequences_scope_over_a_graph_that_converts_first_stays_a_caution(
+    tmp_path: Path,
+) -> None:
+    ds = _converting(tmp_path)
+    recipe = _recipe(
+        CONVERT_TRACKS_STEP, {**SPEED, "tracks": {"step": "tracks"}}, TEMPLATES
+    )
+
+    plan = plan_pipeline(
+        ds, recipe, step_scopes={"speed": Scope(sequences=["s3"])}, refuse=False
+    )
+    narrowed = plan_pipeline(
+        ds, recipe, step_scopes={"templates": Scope(sequences=["s3"])}, refuse=False
+    )
+
+    assert plan.problems == ()
+    assert [c.step for c in plan_wire(plan).cautions[1:]] == ["templates"]
+    assert narrowed.problems == ()
+
+
 def _labelled(base: Path) -> Dataset:
     ds = calms21_dataset(
         base,
@@ -512,7 +632,30 @@ def test_a_request_that_names_groups_not_including_it_moves_nothing() -> None:
     assert "templates" in _moves(["new"], scope=Scope(groups=["new"]))
 
 
-def test_a_request_that_names_entries_moves_nothing() -> None:
+def test_an_entries_selector_naming_the_group_may_take_it() -> None:
+    named = dict(
+        FACTS,
+        templates=StepFacts(
+            "templates", True, True, Scope(entries=[("new", "s1"), ("train", "s1")])
+        ),
+    )
+    moved = {step.step_id: step for step in refit_set(CHAIN, named, ["new"])}
+
+    assert moved["templates"].action == "refit"
+    assert moved["templates"].joins == ("new",)
+    assert moved["templates"].uncertain
+    other = {step.step_id for step in refit_set(CHAIN, named, ["other"])}
+    assert "templates" not in other
+
+
+def test_a_request_scope_of_entries_naming_the_group_may_take_it() -> None:
+    moved = refit_set(CHAIN, FACTS, ["new"], scope=Scope(entries=[("new", "s1")]))
+
+    assert [step.step_id for step in moved][:2] == ["templates", "kmeans"]
+    assert moved[0].uncertain
+
+
+def test_a_request_that_names_entries_of_other_groups_moves_nothing() -> None:
     assert _moves(["new"], scope=Scope(entries=[("train", "s1")])) == {}
 
 

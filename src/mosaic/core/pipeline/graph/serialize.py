@@ -9,7 +9,7 @@ import json
 from typing import TYPE_CHECKING, Final, cast
 
 from .digest import document_digest
-from .heldout import deferred_fit_cautions
+from .heldout import deferred_fit_cautions, listed
 from .plan import (
     CoverageShort,
     DepsIncomplete,
@@ -59,9 +59,6 @@ __all__ = ["LARGE_SCOPE_ENTRIES", "plan_fingerprint", "plan_wire"]
 
 LARGE_SCOPE_ENTRIES: Final = 100
 """The most entries a step may be asked for before its plan cautions it."""
-
-_ROLE_GROUPS: Final = 8
-"""How many groups with a role the whole-dataset caution names before it counts."""
 
 
 def plan_wire(
@@ -257,9 +254,7 @@ def _roles_named(plan: Plan) -> str:
     if not plan.splits:
         return ""
     held = sorted(plan.splits.items())
-    named = ", ".join(f"{group!r} ({role})" for group, role in held[:_ROLE_GROUPS])
-    if len(held) > _ROLE_GROUPS:
-        named += f" and {len(held) - _ROLE_GROUPS} more"
+    named = listed([f"{group!r} ({role})" for group, role in held])
     return f". The manifest gives the groups {named} a role"
 
 
@@ -274,9 +269,7 @@ def _roles_covered(plan: Plan) -> str:
     covered = sorted({group for group, _ in plan.scope})
     held = [(group, plan.splits[group]) for group in covered if group in plan.splits]
     unassigned = len(covered) - len(held)
-    named = ", ".join(f"{group!r} ({role})" for group, role in held[:_ROLE_GROUPS])
-    if len(held) > _ROLE_GROUPS:
-        named += f" and {len(held) - _ROLE_GROUPS} more"
+    named = listed([f"{group!r} ({role})" for group, role in held])
     if not held:
         return f", in {unassigned} group(s) with no role"
     return f", in the groups {named}" + (

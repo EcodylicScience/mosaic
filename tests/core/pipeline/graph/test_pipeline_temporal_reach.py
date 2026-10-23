@@ -195,12 +195,9 @@ def test_a_speed_reads_back_one_step_and_its_smoothing_window() -> None:
     assert _reach("speed-angvel", step_size=8, smooth_window=9) == 8
 
 
-def test_a_wavelet_reads_half_its_longest_support() -> None:
-    # The longest scale is fps / (f_min * central frequency); cmor1.5-1.0 spans 16.
-    reach = _reach("pair-wavelet")
-    assert isinstance(reach, int)
-    assert reach == 1200
-    assert _reach("pair-wavelet", f_min=0.4) == 600
+def test_a_wavelet_reach_is_unknown_because_the_data_may_set_the_frame_rate() -> None:
+    assert _reach("pair-wavelet") is None
+    assert _reach("pair-wavelet", f_min=0.4) is None
 
 
 def test_the_tcn_reach_is_its_receptive_field_less_the_frame() -> None:
@@ -281,6 +278,16 @@ def test_a_gap_that_covers_the_reach_passes(ds: Dataset) -> None:
 
     assert plan.problems == ()
     assert plan.reach_cautions == ()
+
+
+def test_a_gap_written_as_a_string_the_params_accept_is_counted(ds: Dataset) -> None:
+    covered = _plan(ds, SPEED, STACK, *_classifier("stack", cv_gap_frames="11"))
+    short = _plan(ds, SPEED, STACK, *_classifier("stack", cv_gap_frames="10"))
+
+    assert covered.problems == ()
+    assert covered.reach_cautions == ()
+    (message,) = _gap_problems(short)
+    assert "drops 10 frames" in message
 
 
 def test_the_sequence_unit_is_not_checked(ds: Dataset) -> None:
@@ -415,7 +422,11 @@ def test_a_reach_no_params_bound_cautions_and_names_what_is_known(ds: Dataset) -
 def _sequence_classifier(
     source: str, **params: JsonValue
 ) -> list[dict[str, JsonValue]]:
-    """The labeled templates drawn from *source* and a sequence-classifier over it."""
+    """The labeled templates drawn from *source* and a sequence-classifier over it.
+
+    A plan of these steps imports torch, so the tests that use it carry the ``identity``
+    marker, which runs only where torch is installed.
+    """
     return [
         {
             "id": "labeled",
@@ -441,6 +452,7 @@ def _sequence_classifier(
     ]
 
 
+@pytest.mark.identity
 def test_the_classifiers_own_reach_is_not_counted_against_its_gap(ds: Dataset) -> None:
     # A fold model trains on pieces cut out of the runs, so its head never reads a
     # held-out frame. Only the speed above it (1 frame) can leak one.
@@ -461,6 +473,7 @@ def test_the_classifiers_own_reach_is_not_counted_against_its_gap(ds: Dataset) -
     assert mlp.reach_cautions == ()
 
 
+@pytest.mark.identity
 def test_a_recurrent_head_over_declared_steps_plans_clean_at_the_gap_above_it(
     ds: Dataset,
 ) -> None:
@@ -474,6 +487,7 @@ def test_a_recurrent_head_over_declared_steps_plans_clean_at_the_gap_above_it(
     assert plan.reach_cautions == ()
 
 
+@pytest.mark.identity
 def test_a_gap_short_of_the_steps_above_a_sequence_classifier_is_a_problem(
     ds: Dataset,
 ) -> None:
@@ -521,6 +535,7 @@ def test_an_undeclared_step_cautions_before_the_tracks_are_converted(
     assert "'position' declare no temporal reach" in caution.message
 
 
+@pytest.mark.identity
 def test_a_classifier_given_a_model_before_the_tracks_exist_fits_nothing(
     raw_ds: Dataset,
 ) -> None:

@@ -23,9 +23,6 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import pytest
-import torch
-import torch.nn as nn
-import torch.nn.functional as functional
 
 from mosaic.behavior.feature_library.classifier_common import FIT_SCOPE_REMEDY
 from mosaic.behavior.feature_library import sequence_classifier as module
@@ -58,6 +55,12 @@ from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import Event, StudyEntry, TemplatesStudy, write_templates_study
 
 pytestmark = pytest.mark.identity
+
+# A job without torch collects this module and skips it, as it skips its marker.
+_ = pytest.importorskip("torch")
+import torch  # noqa: E402
+import torch.nn as nn  # noqa: E402
+import torch.nn.functional as functional  # noqa: E402
 
 Entry = StudyEntry
 CLASSES = [0, 1, 2]

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
-from mosaic.core.manifest import SplitRole, read_manifest
+from mosaic.core.manifest import SPLIT_ROLES, SplitRole, read_manifest
 from mosaic.core.splits import groups_with_role, held_out_groups, role_of
 from tests.helpers import make_dataset
 
@@ -77,3 +78,7 @@ def test_a_save_keeps_roles_written_by_another_process(tmp_path: Path) -> None:
         "from-other": "test",
         "from-ds": "train",
     }
+
+
+def test_the_listed_roles_are_the_literal_roles() -> None:
+    assert SPLIT_ROLES == get_args(SplitRole)

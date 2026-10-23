@@ -99,18 +99,18 @@ answer the scheme exists to prevent. A step with no scope dependence gets the
 remainder, as it should. `pair-posedistance-pca` is the first when it fits and the
 second when it is given a `model`, which applies a basis fitted by another step.
 
-Which entries a fit learns from can be named elsewhere than in its scope. The
-classifiers `xgboost`, `sequence-classifier` and `lightning-action` train on the entries
-of their `templates` run, and a `probability-ensemble` with `weights: fit` chooses its
-weights on the entries of its members' fold table, and `tune-threshold` chooses its
-thresholds on the entries of its input's fold table. Their identity holds no scope, so
-widening one to the test groups is the same run: the stored fit is applied to the new
-entries and nothing fits again. For the two networks, the blend and `tune-threshold`,
-the first request has to cover the training entries, and is refused otherwise. The same holds for `arhmm`, `kpms`, `vame`, the identity
-models and `pair-posedistance-pca` when given a `model`. The template steps,
-`fit-label-map` and any of these without a `model` are still asked for the whole of
-their scope, so scope them to the training groups once and apply what they fitted from
-a second step.
+Which entries a fit learns from can be named elsewhere than in its scope. The classifiers
+`xgboost`, `sequence-classifier` and `lightning-action` train on the entries of their
+`templates` run, and a `probability-ensemble` with `weights: fit` chooses its weights on
+the entries of its members' fold table, and `tune-threshold` chooses its thresholds on the
+entries of its input's fold table. Their identity holds no scope, so widening one to the
+test groups is the same run: the stored fit is applied to the new entries and nothing fits
+again. For the two networks, the blend and `tune-threshold`, the first request has to
+cover the training entries, and is refused otherwise. The same holds for `arhmm`, `kpms`,
+`vame`, the identity models and `pair-posedistance-pca` when given a `model`. The template
+steps, `fit-label-map` and any of these without a `model` are still asked for the whole of
+their scope, so scope them to the training groups once and apply what they fitted from a
+second step.
 
 That asymmetry is also why a coverage shortfall is **refused** rather than proceeded
 through, and refused only for a scope-dependent step. A scope-free step over 89 of 90
@@ -125,14 +125,14 @@ question about how much, and no flag unlocks them.
 ## A held-out group is not fitted on
 
 A score on data that a fit has seen is not a held-out score, and a scope-dependent fit
-makes it easy to arrive there without noticing: widen a step from the training groups
-to the whole dataset and its identity changes, so it fits again, this time on the test
-groups too. The dataset can name its held-out groups ([`splits`](../dataset.md#hold-groups-out-of-training)),
-and the plan then refuses a step that is both scope-dependent and a fit (`fits` in the
-step catalog) over a `test` or `sealed` group. A step that is scope-dependent and learns
-nothing, such as `evaluate-labels`, may cover them. So may a step that applies a fitted
-model, because the model is named by the step that fitted it and not by the entries it
-is applied to.
+makes it easy to arrive there without noticing: widen a step from the training groups to
+the whole dataset and its identity changes, so it fits again, this time on the test groups
+too. The dataset can name its held-out groups
+([`splits`](../dataset.md#hold-groups-out-of-training)), and the plan then refuses a step
+that is both scope-dependent and a fit (`fits` in the step catalog) over a `test` or
+`sealed` group. A step that is scope-dependent and learns nothing, such as
+`evaluate-labels`, may cover them. So may a step that applies a fitted model, because the
+model is named by the step that fitted it and not by the entries it is applied to.
 
 Data that arrives after the fits is the same question asked later. Adding a group
 changes the entries of every scope-dependent step that covers it, so each one's

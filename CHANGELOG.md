@@ -225,6 +225,96 @@ hand.
   a recipe whose upstream has not run yet. The classifier's own reach is not counted.
 - `probability-ensemble` compares the `start` and `stop` of block folds beside `group`,
   `sequence` and `fold` when it checks its members' fold tables.
+- Review fixes. `pair-wavelet` declares its reach as unknown, since the frame rate may come
+  from the data's `fps` column. The description of `cv_blocks_per_sequence` says that the
+  blocks of all sequences are dealt together, so a fold holds a near-equal count of blocks
+  and not one of each sequence. `xgboost` given a `model` that did not resolve says so,
+  where it read "No templates loaded". `probability-ensemble` and `tune-threshold` say that
+  their first run must be asked for over a scope that holds their input's training entries,
+  where they pointed to a `model` param they do not have.
+
+**A fit is scope-free where the training entries are fixed, evaluations pool, and
+`mosaic pipeline verify` checks a result.** Widening a classifier from the training
+groups to train plus test fitted it again, about five minutes per seed, although the
+templates run had already named what it trains on. Run ids move, as below.
+
+- `sequence-classifier` moves from 0.1 to 0.2, `lightning-action` from 0.5 to 0.6, and
+  `probability-ensemble` from 0.1 to 0.2. Their run ids no longer hash the request scope
+  (`probability-ensemble` only with `weights: fit`), so a wider request is the same run:
+  it applies the stored fit to the new entries and fits nothing again. A run stored under
+  an older version is not found by the new one (the version segment moved), and fits
+  again. The first request must hold the training entries and is refused otherwise.
+  A fit does not move when a training entry is converted again: that entry's output is
+  computed again with the stored model, and a parameter is what fits again. `--overwrite`
+  recomputes entries and loads the stored fit. The entries below say what held through
+  the earlier versions.
+- `probability-ensemble` with `uniform` or listed weights no longer reads its members'
+  `cv_folds.parquet`, so members of which some were cross-validated and some applied
+  from a stored model are averaged, and the blend then writes no fold table. `weights:
+  fit` still refuses them. A `model` that did not resolve is now named in the refusal of
+  `sequence-classifier` and `lightning-action`, where it read "No templates loaded".
+- `arhmm`, `kpms`, `vame`, `global-identity-model`, `global-identity-embedding` and
+  `global-identity-dinov2-temporal` hash no scope when given a `model`, which applies it
+  to each entry alone. Their versions did not move, because a fit's run id is unchanged,
+  but the id of a run given a `model` is new, so such a run stored before is applied
+  again under the new id. The fit that produced the model is untouched. A `model` that
+  does not resolve to a stored file is refused, where `arhmm` fitted a new model in its
+  place and stored it under the missing model's id. `extract-templates`,
+  `extract-labeled-templates`, `fit-label-map` and `pair-posedistance-pca` without a
+  `model` still hash their scope: scope each to the training groups once.
+- `evaluate-labels` takes several inputs over disjoint entries and scores them as one
+  stack, with the pooled counts of a single run over all of them. The plan refuses inputs
+  asked for the same entry, where the run refused it only after its inputs had run.
+- `mosaic pipeline verify` fits each fitting step of a finished recipe again in a scratch
+  directory and compares it with the stored run, then scores again on the new
+  predictions. It exits 1 on a difference, and when nothing was compared. A network is
+  held to `--atol` and every other feature to equality. The dataset is opened read-only.
+- `pipeline verify` reports `differences found` only when a step differs, and otherwise says
+  how many steps have no complete run or raised. A booster that would not serialize is
+  reported unchecked and is not counted as compared.
+
+**A dataset can name its held-out groups, and a plan refuses to fit on them.** An agent
+run on CalMS21 could widen a fitting step over the test group and score a model that had
+seen it, and nothing said so. The manifest gains `splits`, and the planner and a new
+verb act on it. No run id, version or parameter moves, and the manifest version stays 3.
+
+- `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key, so
+  an older mosaic keeps it through a save and does not enforce it. `mosaic splits
+  list|set|remove` and `Dataset.set_splits` and `remove_splits` write it, and
+  `mosaic describe` and the dataset summary report it. No agent tool writes it.
+- Every `global` or `scope_dependent` feature declares `fits`, whether it learns from
+  its inputs. `describe_step_types` and `mosaic pipeline catalog` report it. It is not
+  hashed. `evaluate-labels` is `scope_dependent` and declares `fits = False`.
+- `plan_pipeline` refuses a step that is `scope_dependent` and `fits` when its target
+  holds a `test` or `sealed` group, with or without a step scope. `submit_pipeline`
+  refuses the same recipe. A step that applies a fitted model is not refused. A plan
+  over the whole dataset names the groups it covers with their roles, and a plan that
+  waits on a conversion cautions each unscoped fit, which is refused when it runs.
+- `plan_recipe` and `mosaic pipeline plan` take `assume_added` (`--assume-added`), and
+  note in the plan's cautions which steps would fit again and which would only re-score
+  if those groups joined the dataset.
+- `mosaic pipeline score` scores a finished recipe on held-out data on a copy of the
+  dataset. It compares the run id of every step before and after the data joins, exits 1
+  with `RUN IDS CHANGED` when one that fits moved, and otherwise runs the recipe with one
+  `evaluate-labels` step per answer and writes `test_scores.json` and `test_scores.txt`.
+  The dataset is opened read-only.
+- `submit_pipeline` asks for confirmation (`score_sealed`) when an `evaluate-labels`
+  step reads a sealed group. Its hook declines it by default. It fires on the sealed
+  group's tracks, whether or not its labels are in the dataset, and it backs up, and
+  does not replace, keeping the labels outside it.
+- Review fixes. On a graph that converts first, a step scope or request scope that names
+  a held-out group is a problem at plan time, a step planned under an unresolved fitting
+  step is cautioned, and a step bound to a run is not. `assume_added` counts a step scope
+  that names entries of the assumed group. `plan_recipe` through `mosaic agent serve` reads
+  the roles at each call, so roles set after the server started apply. The gap check reads
+  `cv_gap_frames` as the params validate it, so `"11"` counts as 11.
+- Review fixes to `mosaic pipeline score`. It refuses a `--heldout` name that is neither a
+  path nor a group of role `test` or `sealed` before it copies the study. `--reuse` takes
+  only a directory that a finished copy of this study left, which holds a
+  `scoring/copy-complete` marker with the study's uuid. `--expect-plan` is compared under
+  `--dry-run` as well. A reused directory that holds the plan of another recipe says so.
+  A mistyped `--answers` path is reported as a missing file. `mosaic splits set` warns of
+  a group with no indexed entry and echoes each group once.
 
 **`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
 Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
@@ -287,73 +377,6 @@ apply, so passing them changes no prediction in either locked environment.
   (`tracking/common/detection_params.py`). Its identifiers do not move, and its `iou`
   description no longer mentions the tracker.
 
-**A fit is scope-free where the training entries are fixed, evaluations pool, and
-`mosaic pipeline verify` checks a result.** Widening a classifier from the training
-groups to train plus test fitted it again, about five minutes per seed, although the
-templates run had already named what it trains on. Run ids move, as below.
-
-- `sequence-classifier` moves from 0.1 to 0.2, `lightning-action` from 0.5 to 0.6, and
-  `probability-ensemble` from 0.1 to 0.2. Their run ids no longer hash the request scope
-  (`probability-ensemble` only with `weights: fit`), so a wider request is the same run:
-  it applies the stored fit to the new entries and fits nothing again. A run stored under
-  an older version is not found by the new one (the version segment moved), and fits
-  again. The first request must hold the training entries and is refused otherwise.
-  A fit does not move when a training entry is converted again: that entry's output is
-  computed again with the stored model, and a parameter is what fits again. `--overwrite`
-  recomputes entries and loads the stored fit. The entries below say what held through
-  the earlier versions.
-- `probability-ensemble` with `uniform` or listed weights no longer reads its members'
-  `cv_folds.parquet`, so members of which some were cross-validated and some applied
-  from a stored model are averaged, and the blend then writes no fold table. `weights:
-  fit` still refuses them. A `model` that did not resolve is now named in the refusal of
-  `sequence-classifier` and `lightning-action`, where it read "No templates loaded".
-- `arhmm`, `kpms`, `vame`, `global-identity-model`, `global-identity-embedding` and
-  `global-identity-dinov2-temporal` hash no scope when given a `model`, which applies it
-  to each entry alone. Their versions did not move, because a fit's run id is unchanged,
-  but the id of a run given a `model` is new, so such a run stored before is applied
-  again under the new id. The fit that produced the model is untouched. A `model` that
-  does not resolve to a stored file is refused, where `arhmm` fitted a new model in its
-  place and stored it under the missing model's id. `extract-templates`,
-  `extract-labeled-templates`, `fit-label-map` and `pair-posedistance-pca` without a
-  `model` still hash their scope: scope each to the training groups once.
-- `evaluate-labels` takes several inputs over disjoint entries and scores them as one
-  stack, with the pooled counts of a single run over all of them. The plan refuses inputs
-  asked for the same entry, where the run refused it only after its inputs had run.
-- `mosaic pipeline verify` fits each fitting step of a finished recipe again in a scratch
-  directory and compares it with the stored run, then scores again on the new
-  predictions. It exits 1 on a difference, and when nothing was compared. A network is
-  held to `--atol` and every other feature to equality. The dataset is opened read-only.
-
-**A dataset can name its held-out groups, and a plan refuses to fit on them.** An agent
-run on CalMS21 could widen a fitting step over the test group and score a model that had
-seen it, and nothing said so. The manifest gains `splits`, and the planner and a new
-verb act on it. No run id, version or parameter moves, and the manifest version stays 3.
-
-- `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key, so
-  an older mosaic keeps it through a save and does not enforce it. `mosaic splits
-  list|set|remove` and `Dataset.set_splits` and `remove_splits` write it, and
-  `mosaic describe` and the dataset summary report it. No agent tool writes it.
-- Every `global` or `scope_dependent` feature declares `fits`, whether it learns from
-  its inputs. `describe_step_types` and `mosaic pipeline catalog` report it. It is not
-  hashed. `evaluate-labels` is `scope_dependent` and declares `fits = False`.
-- `plan_pipeline` refuses a step that is `scope_dependent` and `fits` when its target
-  holds a `test` or `sealed` group, with or without a step scope. `submit_pipeline`
-  refuses the same recipe. A step that applies a fitted model is not refused. A plan
-  over the whole dataset names the groups it covers with their roles, and a plan that
-  waits on a conversion cautions each unscoped fit, which is refused when it runs.
-- `plan_recipe` and `mosaic pipeline plan` take `assume_added` (`--assume-added`), and
-  note in the plan's cautions which steps would fit again and which would only re-score
-  if those groups joined the dataset.
-- `mosaic pipeline score` scores a finished recipe on held-out data on a copy of the
-  dataset. It compares the run id of every step before and after the data joins, exits 1
-  with `RUN IDS CHANGED` when one that fits moved, and otherwise runs the recipe with one
-  `evaluate-labels` step per answer and writes `test_scores.json` and `test_scores.txt`.
-  The dataset is opened read-only.
-- `submit_pipeline` asks for confirmation (`score_sealed`) when an `evaluate-labels`
-  step reads a sealed group. Its hook declines it by default. It fires only when the
-  sealed group's labels are in the dataset, so it backs up, and does not replace,
-  keeping them outside it.
-
 **The classifiers share their output, standardizer, fold and bundle code.** `xgboost` and
 `lightning-action` each assembled their `prob_` columns and `predicted_label`, applied
 the decision threshold, standardized, dealt cross-validation folds and wrote their bundle
@@ -412,13 +435,14 @@ classifier would, `prob_<class>` and `predicted_label`. It is new, so no run id 
   blend over `score_classes`, from the members' out-of-fold probabilities against `labels`.
   It takes the first maximum in the grid's order, refuses a grid of more than 20,000
   weight vectors, and refuses a member without a `cv_folds.parquet`, so an in-sample
-  probability never chooses a weight. Only `fit` reads its stream. Through 0.1 a `fit` run held its scope in its run
-  id; 0.2 does not. The report is `ensemble_report.json`.
+  probability never chooses a weight. Only `fit` reads its stream. Through 0.1 a `fit` run
+  held its scope in its run id; 0.2 does not. The report is `ensemble_report.json`.
 - When every input writes `cv_folds.parquet` and the tables agree on `group`, `sequence`
   and `fold`, the step writes that table of its own, because an average of out-of-fold
-  probabilities is still out-of-fold. It refuses inputs of which some have a table and some
-  do not, and inputs whose folds differ. The count columns are not compared, since
-  `xgboost` counts sampled template rows.
+  probabilities is still out-of-fold. With `weights: fit` it refuses inputs of which some
+  have a table and some do not, and inputs whose folds differ. `uniform` and listed
+  weights average such inputs and write no fold table. The count columns are not
+  compared, since `xgboost` counts sampled template rows.
 
 **`lightning-action` reads a pair table, and trains on frames in order.** It trained on
 the class-sampled templates, which hold no frame order, and normalized each file by its

@@ -126,6 +126,7 @@ from .classifier_common import (
     check_folds,
     deal_blocks,
     deal_folds,
+    drop_block_settings,
     fold_map,
     fold_rows,
     fold_table,
@@ -564,11 +565,7 @@ class SequenceClassifier(FitReporting):
             had before the block settings existed. ``check_cross_validation`` leaves
             them at their defaults then, so leaving them out loses nothing.
             """
-            dumped = super().identity_dump()
-            if self.cv_unit == "sequence":
-                for name in ("cv_unit", "cv_blocks_per_sequence", "cv_gap_frames"):
-                    del dumped[name]
-            return dumped
+            return drop_block_settings(super().identity_dump(), self.cv_unit)
 
         def head_options(self) -> HeadConfig:
             """Return the options of the chosen head: those given, else its defaults.

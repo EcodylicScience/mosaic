@@ -192,6 +192,7 @@ says what was **attempted**. A run that failed leaves a log entry and no index r
 The record says that a run happened, not that its answer repeats. To check that, run
 `mosaic pipeline verify -m dataset.yaml --recipe @recipe.json`, with the `--step-scope`
 options the recipe ran with. It fits each fitting step again in a scratch directory,
-compares the result with the stored run and writes nothing to the dataset. It exits 1
-on a difference, and when it compared nothing. [Reproducibility](../../concepts/reproducibility.md#checking-that-a-result-reproduces)
+compares the result with the stored run and writes nothing to the dataset. It exits 1 on a
+difference, and when it compared nothing.
+[Reproducibility](../../concepts/reproducibility.md#checking-that-a-result-reproduces)
 says what counts as a match.

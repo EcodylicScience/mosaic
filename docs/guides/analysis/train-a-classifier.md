@@ -271,6 +271,10 @@ training sequence has no score of that kind, and `cv_folds` refuses it. Set `cv_
   every block, which no label covers, and the entries outside the training set are scored
   by the model fitted on all of it. `cv_folds.parquet` has one row per block, with its
   `start` and `stop` frames, and not one per entry.
+- The numbers above suit sequences of minutes. On a few seconds of tracks, lower
+  `cv_blocks_per_sequence`, `cv_gap_frames` and `cv_folds` until each fold's training
+  frames hold every class: the fit refuses a fold that leaves no training rows of a
+  class.
 - Neighboring frames are not independent, so a block score is more optimistic than a
   sequence score wherever sequences are the unit you generalize over. The frames next to a
   held-out block resemble it, and a feature that reads a window of frames carries the
@@ -311,13 +315,13 @@ classifier fitted with `cv_folds`, against the labels, and saves it for a step t
 
 - A one-member `probability-ensemble` is the step that applies the thresholds. Its
   `decision_threshold` takes `{"step": "tune"}` beside a number or a mapping of class to
-  cut. The classifier cannot name its own tuning, because the tuning needs the classifier's
-  run: that is a cycle. For the same reason only `probability-ensemble` takes a tune
-  step: the `decision_threshold` of `xgboost`, `sequence-classifier` and `lightning-action`
-  stays a number or a mapping, and an `xgboost` stage stacked over probabilities takes the
-  tuned cuts through a one-member ensemble as well. The ensemble must blend the run that was tuned and nothing else,
-  and is refused for any other input, because the thresholds were scored on that run's
-  output.
+  cut. The classifier cannot name its own tuning, because the tuning needs the
+  classifier's run: that is a cycle. For the same reason only `probability-ensemble` takes
+  a tune step: the `decision_threshold` of `xgboost`, `sequence-classifier` and
+  `lightning-action` stays a number or a mapping, and an `xgboost` stage stacked over
+  probabilities takes the tuned cuts through a one-member ensemble as well. The ensemble
+  must blend the run that was tuned and nothing else, and is refused for any other input,
+  because the thresholds were scored on that run's output.
 - `default_class` takes the rows no class claims and has no cut of its own: the step saves
   it with 1.0. A class left out of `classes` keeps a cut of 0, which it always clears. A
   threshold for one class in a binary problem is therefore `{"0": 1.0, "1": t}`: a lone
@@ -647,8 +651,9 @@ name the entries that the blend's weights were chosen on.
   `xgboost` included: add `{"step": "classifier"}` to the blend's `inputs` beside the
   averages. The members must write the same classes and deal the same folds, so give them
   one templates run and one `cv_seed`. The step compares the folds, `group`, `sequence`
-  and `fold`, with the `start` and `stop` of a block fold, and not the counts, because `xgboost` counts sampled template rows where
-  `sequence-classifier` counts labeled frames.
+  and `fold`, with the `start` and `stop` of a block fold, and not the counts, because
+  `xgboost` counts sampled template rows where `sequence-classifier` counts labeled
+  frames.
 - The blend's score over the training entries is optimistic by the freedom of its weights,
   one fewer than the number of members. `ensemble_report.json` in the run directory gives
   the weights, the objective, the objective of each member alone and of the uniform

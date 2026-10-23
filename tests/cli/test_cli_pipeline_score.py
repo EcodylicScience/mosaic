@@ -446,6 +446,7 @@ def test_a_rerun_after_a_partly_failed_conversion_scores_every_held_out_file(
 
     assert first.exit_code == 1
     assert "did not convert" in first.stderr
+    assert "delete --out and start again" in first.stderr
     assert again.exit_code == 0, again.stderr
     report = json.loads(again.stdout)
     assert report["heldout_scope"] == {"groups": ["test1", "test2"]}
@@ -537,3 +538,124 @@ def test_the_protocol_reaches_each_evaluation() -> None:
         "prediction_column": "label",
     }
     assert ScoreProtocol().evaluation_params("labels") == {"labels": {"step": "labels"}}
+
+
+def _held_flags(heldout: Path, out: Path) -> list[str]:
+    return [
+        "--heldout",
+        str(heldout),
+        "--multi-sequences-per-file",
+        "--group-from",
+        "filename",
+        "--out",
+        str(out),
+    ]
+
+
+def test_reuse_refuses_a_directory_that_is_not_a_finished_copy_of_this_study(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    truncated = tmp_path / "truncated"
+    truncated.mkdir()
+    _ = (truncated / study.manifest_path.name).write_bytes(
+        study.manifest_path.read_bytes()
+    )
+    other = _study(tmp_path / "other")
+    before = tree_snapshot(other.base_dir)
+
+    for out in (truncated, other.base_dir):
+        result = _score(
+            study, tmp_path, *_held_flags(heldout, out), "--reuse", "--dry-run"
+        )
+
+        assert result.exit_code == 1
+        assert "is not a complete scoring copy of this study" in result.stderr
+    assert_tree_unchanged(other.base_dir, before)
+    assert list(truncated.iterdir()) == [truncated / study.manifest_path.name]
+
+
+def test_reuse_refuses_a_copy_made_of_another_study(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "scored"
+    first = _score(study, tmp_path, *_held_flags(heldout, out), "--dry-run")
+    assert first.exit_code == 0, first.stderr
+    marker = out / "scoring" / "copy-complete"
+    _ = marker.write_text("another-study", encoding="utf-8")
+
+    again = _score(study, tmp_path, *_held_flags(heldout, out), "--reuse", "--dry-run")
+
+    assert again.exit_code == 1
+    assert "is not a complete scoring copy of this study" in again.stderr
+
+
+def test_a_bad_heldout_group_is_refused_before_the_study_is_copied(
+    study: Dataset, tmp_path: Path
+) -> None:
+    out = tmp_path / "scored"
+
+    result = _score(study, tmp_path, "--heldout", "nowhere", "--out", str(out))
+
+    assert result.exit_code == 1
+    assert "neither an existing path nor a group" in result.stderr
+    assert not out.exists()
+
+
+def test_a_dry_run_checks_the_plan_it_was_told_to_expect(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "scored"
+    held = _held_flags(heldout, out)
+    first = _score(study, tmp_path, *held, "--dry-run")
+    fingerprint = json.loads(first.stdout)["plan_fingerprint"]
+
+    stale = _score(
+        study, tmp_path, *held, "--reuse", "--dry-run", "--expect-plan", "stale"
+    )
+    current = _score(
+        study, tmp_path, *held, "--reuse", "--dry-run", "--expect-plan", fingerprint
+    )
+
+    assert stale.exit_code == 1
+    assert fingerprint in stale.stderr
+    assert current.exit_code == 0, current.stderr
+
+
+def test_reuse_with_another_recipe_says_so(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "scored"
+    held = _held_flags(heldout, out)
+    first = _score(study, tmp_path, *held, "--dry-run")
+    assert first.exit_code == 0, first.stderr
+    # The first attempt converted the held-out data into the copy.
+    again = _score(
+        study,
+        tmp_path,
+        *held,
+        "--reuse",
+        recipe=classifier_recipe("clf_a"),
+        models={"final": ["clf_a"]},
+    )
+
+    assert again.exit_code == 1
+    assert "holds the plan of another recipe" in again.stderr
+
+
+def test_a_mistyped_answers_path_and_a_bad_answers_body_are_said_plainly(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    held = ["--heldout", str(heldout), "--out", str(tmp_path / "scored")]
+    bad = tmp_path / "bad.json"
+    _ = bad.write_text('{"models": {"final": []}}', encoding="utf-8")
+
+    missing = _score(study, tmp_path, *held, "--answers", str(tmp_path / "nope.json"))
+    body = _score(study, tmp_path, *held, "--answers", str(bad))
+
+    assert missing.exit_code == 1
+    assert "is not a file and not inline JSON" in missing.stderr
+    assert "Invalid JSON" not in missing.stderr
+    assert body.exit_code == 1
+    assert "lists no step" in body.stderr
+    assert "pydantic" not in body.stderr
+    assert "errors.pydantic.dev" not in body.stderr

@@ -34,17 +34,20 @@ from mosaic.cli.pipeline import (
     JsonOption,
     ManifestOption,
     RecipeOption,
-    _fail_unrunnable,  # pyright: ignore[reportPrivateUsage]
-    _recipe,  # pyright: ignore[reportPrivateUsage]
+    fail_unrunnable,
+    recipe_argument,
 )
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.refusal import Refusal
+from mosaic.core.strict_model import terse
 from mosaic.user_paths import user_path
 
 
 def _json_file(value: str, what: str) -> object:
     """Read *value* as a path to a JSON file, or as ``@file``, ``@-`` or inline JSON."""
-    if not value.startswith(("@", "{", "[")) and user_path(value).is_file():
+    if not value.startswith(("@", "{", "[")):
+        if not user_path(value).is_file():
+            fail(f"{what}: {value!r} is not a file and not inline JSON.")
         value = f"@{value}"
     parsed = load_json_arg(value)
     if parsed is None:
@@ -245,7 +248,7 @@ def score_command(
     from pydantic import ValidationError
 
     study = load_dataset(manifest, read_only=True)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     step_scopes = parse_step_scopes(step_scope)
     try:
         wanted = ScoreAnswers.model_validate(_json_file(answers, "--answers"))
@@ -256,7 +259,7 @@ def score_command(
             prediction_column=prediction_column,
         )
     except ValidationError as error:
-        fail(f"invalid scoring options: {error}")
+        fail(f"invalid scoring options: {terse(error)}")
 
     path = user_path(heldout)
     where: HeldOutFiles | str
@@ -316,7 +319,7 @@ def score_command(
     except Refusal as refusal:
         exit_refused("", refusal, as_json=as_json)
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json)
+        fail_unrunnable(error, as_json=as_json)
 
     for warning in result.warnings:
         log(f"warning: {warning}")

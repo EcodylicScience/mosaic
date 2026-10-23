@@ -8,15 +8,18 @@ what the role protects.
 
 from __future__ import annotations
 
-from typing import Annotated, cast, get_args
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail
 from mosaic.cli.tags import ManifestOption
-from mosaic.core.manifest import SplitRole
+from mosaic.core.manifest import SPLIT_ROLES
 from mosaic.core.strict_model import terse
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 splits_app = typer.Typer(
     name="splits",
@@ -51,15 +54,32 @@ def set_splits(
     groups: Annotated[list[str], typer.Argument(help="The groups to give the role.")],
 ) -> None:
     """Give each group a role, replacing the one it had."""
-    allowed = get_args(SplitRole)
-    if role not in allowed:
-        fail(f"{role!r} is not a role; use one of {', '.join(allowed)}.")
+    if role not in SPLIT_ROLES:
+        fail(f"{role!r} is not a role; use one of {', '.join(SPLIT_ROLES)}.")
     dataset = load_dataset(manifest)
+    named = list(dict.fromkeys(groups))
     try:
-        dataset.set_splits(cast("SplitRole", role), groups)
+        dataset.set_splits(role, named)
     except ValueError as exc:
         fail(f"splits set failed: {terse(exc)}")
-    typer.echo(f"Set {role}: {', '.join(groups)}.")
+    unknown = [group for group in named if group not in _indexed_groups(dataset)]
+    if unknown:
+        # A warning and not a refusal: the held-out data may be added later.
+        typer.echo(
+            f"Warning: no entry of {', '.join(map(repr, unknown))} is indexed in "
+            "this dataset. Check the spelling if the group should hold data now.",
+            err=True,
+        )
+    typer.echo(f"Set {role}: {', '.join(named)}.")
+
+
+def _indexed_groups(dataset: Dataset) -> set[str]:
+    """The groups that hold a row of the tracks index or of the raw tracks index."""
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+
+    groups = {str(group) for group in read_tracks_index(dataset)["group"]}
+    groups.update(row.get("group", "") for row in dataset.read_tracks_raw_index())
+    return groups
 
 
 @splits_app.command("remove")

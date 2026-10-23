@@ -43,7 +43,7 @@ import json
 import math
 import shutil
 import tempfile
-from collections.abc import Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,11 +53,12 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
+from mosaic.core.helpers import resolve_frame_range
 from mosaic.core.scope import Scope
 from mosaic.core.strict_model import StrictModel
 from mosaic.user_paths import user_path
 
-from ._utils import ResolvedScope
+from ._utils import FeatureMeta, ResolvedScope
 from .index import feature_index, feature_index_path, feature_run_root
 from .loading import CROSS_JOIN_FEATURES, resolve_sequence_identity, stacks_inputs
 from .manifest import (
@@ -211,6 +212,8 @@ class VerifyReport(StrictModel):
             with.
         verified: How many steps were compared with their stored runs.
         steps: One verdict per step of the plan, in order.
+        unfinished: How many steps that fit or score had no complete run to
+            compare. Each is ``skipped`` in ``steps``, and any makes ``ok`` false.
     """
 
     ok: bool
@@ -218,6 +221,7 @@ class VerifyReport(StrictModel):
     n_threads: int
     verified: int
     steps: list[StepVerdict]
+    unfinished: int = 0
 
 
 # --- Comparison ---------------------------------------------------------------
@@ -404,9 +408,13 @@ def _walk(
         # A gradient-boosted booster. Its serialized bytes are equal when the fit
         # was, and not otherwise, so a tolerant feature is judged on its outputs.
         if exact_models:
-            found.compared += 1
-            if not _same_booster(stored, fresh):
-                found.mismatch(path, "the serialized model differs")
+            same = _same_booster(stored, fresh)
+            if same is None:
+                found.skip(path, "the model would not serialize")
+            else:
+                found.compared += 1
+                if not same:
+                    found.mismatch(path, "the serialized model differs")
         else:
             found.skip(path, "a model is judged on its outputs")
         return
@@ -446,15 +454,19 @@ def _kind(value: object) -> str:
     return "nothing" if value is None else type(value).__name__
 
 
-def _same_booster(stored: object, fresh: object) -> bool:
-    """Whether two boosters serialize alike. One that will not serialize is not a finding."""
+def _same_booster(stored: object, fresh: object) -> bool | None:
+    """Whether two boosters serialize alike, ``None`` when one will not serialize.
+
+    A model that cannot be compared is left unchecked by the caller and never
+    counted as compared.
+    """
     try:
         return bool(
             cast("Any", stored).save_raw(raw_format="ubj")
             == cast("Any", fresh).save_raw(raw_format="ubj")
         )
     except Exception:  # noqa: BLE001
-        return True
+        return None
 
 
 def _compare_frames(
@@ -464,7 +476,7 @@ def _compare_frames(
 
     Returns:
         What was found, the rows whose probability columns are finite in both,
-        and the share of those rows that keep their most probable class.
+        and the count of those rows that keep their most probable class.
     """
     found = _Found()
     if list(stored.columns) != list(fresh.columns):
@@ -597,8 +609,6 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
             stack=stacks_inputs(feature),
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, spec.labels_run_id)
-    from mosaic.core.helpers import resolve_frame_range
-
     frame_start, frame_end = resolve_frame_range(
         ds.meta_float("fps_default"),
         spec.filter_start_frame,
@@ -690,6 +700,36 @@ class _Applied:
     tolerant: bool
 
 
+def _load_json(path: Path) -> object:
+    return json.loads(path.read_text())
+
+
+def _load_npz(path: Path) -> dict[str, npt.NDArray[Any]]:
+    with np.load(path) as archive:
+        return {name: archive[name] for name in archive.files}
+
+
+def _load_joblib(path: Path) -> object:
+    import joblib
+
+    return joblib.load(path)
+
+
+_FRAME_READERS: Final[dict[str, Callable[[Path], pd.DataFrame]]] = {
+    ".parquet": pd.read_parquet,
+    ".csv": pd.read_csv,
+}
+"""The state files read as tables, by suffix."""
+
+_VALUE_LOADERS: Final[dict[str, Callable[[Path], object]]] = {
+    ".json": _load_json,
+    ".npz": _load_npz,
+    ".npy": np.load,
+    ".joblib": _load_joblib,
+}
+"""The state files read as values and walked, by suffix."""
+
+
 def _compare_state(
     state_dir: Path, stored_root: Path, tolerance: float, *, exact_models: bool
 ) -> list[StateDiff]:
@@ -708,61 +748,23 @@ def _compare_state(
                 )
             )
             continue
+        if path.suffix not in _FRAME_READERS and path.suffix not in _VALUE_LOADERS:
+            found.append(
+                StateDiff(
+                    file=path.name,
+                    status="unchecked",
+                    detail=f"a {path.suffix or 'plain'} file is not compared",
+                )
+            )
+            continue
         result = _Found()
         try:
-            match path.suffix:
-                case ".parquet":
-                    result, _, _ = _compare_frames(
-                        pd.read_parquet(other), pd.read_parquet(path)
-                    )
-                case ".csv":
-                    result, _, _ = _compare_frames(
-                        pd.read_csv(other), pd.read_csv(path)
-                    )
-                case ".json":
-                    _walk(
-                        json.loads(other.read_text()),
-                        json.loads(path.read_text()),
-                        "",
-                        result,
-                        exact_models=exact_models,
-                    )
-                case ".npz":
-                    with np.load(other) as left, np.load(path) as right:
-                        _walk(
-                            {name: left[name] for name in left.files},
-                            {name: right[name] for name in right.files},
-                            "",
-                            result,
-                            exact_models=exact_models,
-                        )
-                case ".npy":
-                    _walk(
-                        np.load(other),
-                        np.load(path),
-                        "",
-                        result,
-                        exact_models=exact_models,
-                    )
-                case ".joblib":
-                    import joblib
-
-                    _walk(
-                        joblib.load(other),
-                        joblib.load(path),
-                        "",
-                        result,
-                        exact_models=exact_models,
-                    )
-                case _:
-                    found.append(
-                        StateDiff(
-                            file=path.name,
-                            status="unchecked",
-                            detail=f"a {path.suffix or 'plain'} file is not compared",
-                        )
-                    )
-                    continue
+            if path.suffix in _FRAME_READERS:
+                read = _FRAME_READERS[path.suffix]
+                result, _, _ = _compare_frames(read(other), read(path))
+            else:
+                load = _VALUE_LOADERS[path.suffix]
+                _walk(load(other), load(path), "", result, exact_models=exact_models)
         except Exception as exc:  # noqa: BLE001 - a file that will not open is a finding
             found.append(
                 StateDiff(
@@ -872,10 +874,11 @@ def _verify_fit(
         fresh = feature.apply(frame)
         if selector is not None:
             fresh = trim_feature_output(fresh, selector)
-        _ = _write_entry(outputs, entry, fresh)
+        _write_entry(outputs, entry, fresh)
+        stored_frame = pd.read_parquet(stored_path)
+        # Read back from the file, so the comparison is with what the writer persists.
         found, rows, agree = _compare_frames(
-            pd.read_parquet(stored_path),
-            pd.read_parquet(build_output_path(*entry, outputs)),
+            stored_frame, pd.read_parquet(build_output_path(*entry, outputs))
         )
         worst = max(worst, found.max_diff)
         n_compared += 1
@@ -886,7 +889,7 @@ def _verify_fit(
                 group=entry[0],
                 sequence=entry[1],
                 status="ok" if found.within(tolerance) else "differs",
-                n_rows=len(pd.read_parquet(stored_path)),
+                n_rows=len(stored_frame),
                 max_abs_diff=_finite(found.max_diff),
                 n_probability_rows=rows,
                 n_argmax_agree=agree,
@@ -918,14 +921,12 @@ def _verify_fit(
     return verdict
 
 
-def _write_entry(outputs: Path, entry: tuple[str, str], frame: FeatureOutput) -> int:
+def _write_entry(outputs: Path, entry: tuple[str, str], frame: FeatureOutput) -> None:
     """Write a re-applied entry beside its siblings, through the one parquet writer."""
-    from ._utils import FeatureMeta
-
     meta = FeatureMeta(
         group=entry[0], sequence=entry[1], out_path=build_output_path(*entry, outputs)
     )
-    return write_output(meta, frame)
+    _ = write_output(meta, frame)
 
 
 # --- Evaluation steps -------------------------------------------------------------
@@ -1149,6 +1150,7 @@ def verify_plan(
         n_threads=n_threads,
         verified=verified,
         steps=verdicts,
+        unfinished=unfinished,
     )
 
 

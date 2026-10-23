@@ -100,7 +100,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .classifier_common import (
-    FIT_SCOPE_REMEDY,
+    DERIVED_FIT_SCOPE_REMEDY,
     THRESHOLDS_FILE,
     FoldLookup,
     assemble_prediction,
@@ -639,7 +639,7 @@ class TuneThresholdFeature:
                 "The thresholds would be chosen on fewer entries than the input "
                 "was fitted on."
             ),
-            remedy=FIT_SCOPE_REMEDY,
+            remedy=DERIVED_FIT_SCOPE_REMEDY,
         )
         if classes is None or not probability_blocks:
             msg = (

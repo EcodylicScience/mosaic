@@ -108,7 +108,7 @@ def test_a_changed_output_exits_one_and_the_text_report_names_the_entry(
     result = _verify(study, recipe_file)
 
     assert result.exit_code == 1
-    assert "differences found" in result.stderr
+    assert "1 step(s) differ." in result.stderr
     assert "train/s1 differs" in result.stderr
     assert "clf\txgboost\tfit\tdiffers" in result.stdout
 
@@ -137,6 +137,7 @@ def test_a_step_scope_that_the_run_did_not_use_verifies_nothing_and_exits_one(
     by_step = {step["step"]: step for step in report["steps"]}
     assert by_step["labeled"]["status"] == "skipped"
     assert "no complete run" in by_step["labeled"]["reason"]
+    assert report["unfinished"] > 0
 
 
 def test_a_scratch_directory_inside_the_dataset_exits_one(
@@ -157,3 +158,23 @@ def test_verifying_writes_nothing_under_the_dataset(
 
     assert result.exit_code == 0, result.stderr
     assert_tree_unchanged(study.base_dir, before)
+
+
+def test_an_unfinished_step_is_named_as_the_cause_and_not_a_difference(
+    study: Dataset, recipe_file: str
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "verify",
+            "--manifest",
+            str(study.manifest_path),
+            "--recipe",
+            recipe_file,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "have no complete run" in result.stderr
+    assert "differ" not in result.stderr.split("verified 0 step(s)")[-1]

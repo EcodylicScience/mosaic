@@ -205,8 +205,28 @@ def _block_gap(planned: PlannedStep) -> int | None:
     params = planned.spec.params
     if params.get("cv_unit") != "block":
         return None
-    gap = params.get("cv_gap_frames", 0)
-    return gap if isinstance(gap, int) and not isinstance(gap, bool) else 0
+    return _frames(params.get("cv_gap_frames", 0))
+
+
+def _frames(value: object) -> int:
+    """A ``cv_gap_frames`` as the params model reads it, 0 for what it would refuse.
+
+    The recipe holds the raw value, and the params model accepts a whole number
+    written as a string or a float (``"11"``, ``11.0``), so a gap read as an
+    integer alone would count as 0 and ask for a gap already given.
+    """
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else 0
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
 
 
 def _chain(path: Sequence[tuple[str, int]]) -> str:

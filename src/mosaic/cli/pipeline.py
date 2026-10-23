@@ -170,7 +170,7 @@ and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
 """
 
 
-def _recipe(argument: str, *, as_json: bool) -> "Recipe":
+def recipe_argument(argument: str, *, as_json: bool) -> "Recipe":
     """Parse the ``--recipe`` argument, failing cleanly on a bad document."""
     from mosaic.core.pipeline.graph import RecipeInvalid, read_recipe
 
@@ -191,7 +191,7 @@ def _cleanup_policy(
     return CleanupPolicy(keep_newest=keep_newest, min_age_hours=min_age_hours)
 
 
-def _fail_unrunnable(
+def fail_unrunnable(
     error: ClassifiedError, *, as_json: bool, step: str = ""
 ) -> NoReturn:
     """Report a classified error that stopped a recipe, and exit 1.
@@ -325,7 +325,7 @@ def plan_command(
     from mosaic.core.scope import Scope
 
     ds = load_dataset(manifest, read_only=True)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     try:
@@ -344,7 +344,7 @@ def plan_command(
             raise typer.Exit(code=1) from refusal
         fail(str(refusal))
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json)
+        fail_unrunnable(error, as_json=as_json)
     unended = requests_matching(
         ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
     )
@@ -449,7 +449,7 @@ def verify_command(
     from mosaic.core.pipeline.verify import ScratchRefused, verify_plan
 
     ds = load_dataset(manifest, read_only=True)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     try:
@@ -465,7 +465,7 @@ def verify_command(
             raise typer.Exit(code=1) from refusal
         fail(str(refusal))
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json)
+        fail_unrunnable(error, as_json=as_json)
     try:
         with stdout_to_stderr():
             report = verify_plan(
@@ -530,12 +530,25 @@ def _emit_verify(report: "VerifyReport") -> None:
                     f"(max {number(state.max_abs_diff)}) {state.detail}".rstrip(),
                     err=True,
                 )
+    differing = sum(1 for step in report.steps if step.status == "differs")
+    raised = sum(1 for step in report.steps if step.status == "error")
+    causes = [
+        f"{count} step(s) {what}"
+        for count, what in (
+            (differing, "differ"),
+            (report.unfinished, "have no complete run"),
+            (raised, "raised"),
+        )
+        if count
+    ]
     if report.verified == 0:
-        outcome = "nothing was compared, so nothing is verified."
+        outcome = "nothing was compared, so nothing is verified" + (
+            f" ({'; '.join(causes)})." if causes else "."
+        )
     elif report.ok:
         outcome = "all within tolerance."
     else:
-        outcome = "differences found."
+        outcome = "; ".join(causes) + "."
     typer.echo(f"verified {report.verified} step(s): {outcome}", err=not report.ok)
 
 
@@ -543,7 +556,7 @@ def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     """Print a recipe's steps and the references between them. No dataset."""
     from mosaic.core.pipeline.graph import edges, recipe_digest, topological_order
 
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     ordered = topological_order(parsed)
     wires = edges(parsed)
     if as_json:
@@ -753,7 +766,7 @@ def run_command(
     if detach:
         fail("--detach is used with --request. Submit the recipe first.")
     ds = load_dataset(manifest)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     submitted: Request | None = None
@@ -800,7 +813,7 @@ def run_command(
         exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
     except ClassifiedError as error:
         step_id, _ = _failed_attempt(ds.base_dir, submitted, error)
-        _fail_unrunnable(error, as_json=as_json, step=step_id)
+        fail_unrunnable(error, as_json=as_json, step=step_id)
 
     rows = [
         {
@@ -886,7 +899,7 @@ def _run_request(
         except Refusal as refusal:
             exit_refused("", refusal, as_json=as_json)
         except ClassifiedError as error:
-            _fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+            fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
         if as_json:
             emit_json(
                 {
@@ -909,7 +922,7 @@ def _run_request(
     except Refusal as refusal:
         exit_refused("", refusal, as_json=as_json)
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+        fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
     report = request_status_wire(ds.base_dir, request)
     if as_json:
         emit_json(
@@ -1007,7 +1020,7 @@ def submit_command(
     from mosaic.core.pipeline.graph import plan_fingerprint, step_argv, submit_request
 
     ds = load_dataset(manifest)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     try:
@@ -1026,7 +1039,7 @@ def submit_command(
                 retire=retire or (),
             )
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json)
+        fail_unrunnable(error, as_json=as_json)
     request = submitted.request
     _warn_duplicates(submitted.duplicates)
     steps = [
@@ -1461,9 +1474,3 @@ _ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)
 _ = pipeline_app.command(name="status")(status_command)
 _ = pipeline_app.command(name="list")(list_command)
-
-# pipeline_score reads this module's option aliases and helpers, so it is imported
-# once they exist. Importing the package runs this module first in every case.
-from mosaic.cli.pipeline_score import score_command  # noqa: E402
-
-_ = pipeline_app.command(name="score")(score_command)

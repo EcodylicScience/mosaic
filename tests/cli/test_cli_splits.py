@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.manifest import read_manifest
-from tests.helpers import make_dataset
+from tests.helpers import calms21_dataset, make_dataset
 
 runner = CliRunner()
 
@@ -77,3 +77,30 @@ def test_removing_a_group_with_no_role_says_so(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "has a role" in result.output
+
+
+def test_a_group_the_dataset_does_not_hold_is_warned_about_and_still_set(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 40}}}, seed=5)
+    _ = ds.convert_all_tracks()
+
+    result = runner.invoke(
+        app, ["splits", "set", "-m", str(ds.manifest_path), "train", "train", "trian"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "no entry of 'trian' is indexed" in result.stderr
+    assert "'train'" not in result.stderr
+    assert _listed(ds.manifest_path) == {"train": "train", "trian": "train"}
+
+
+def test_a_group_named_twice_is_set_and_echoed_once(tmp_path: Path) -> None:
+    manifest = make_dataset(tmp_path / "ds").manifest_path
+
+    result = runner.invoke(
+        app, ["splits", "set", "-m", str(manifest), "test", "t1", "t1", "t2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip() == "Set test: t1, t2."

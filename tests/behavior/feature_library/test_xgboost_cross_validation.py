@@ -955,6 +955,21 @@ class TestBundle:
         frame = world.frames[world.train[0]]
         pd.testing.assert_frame_equal(applied.apply(frame), feature.apply(frame))
 
+    def test_a_model_that_did_not_resolve_is_not_replaced_by_a_fit(
+        self, tmp_path: Path
+    ) -> None:
+        feature = XgboostFeature(
+            XgboostFeature.Inputs((Result(feature="upstream"),)),
+            params={
+                "model": {"feature": "xgboost", "run_id": "0.2-old"},
+                "default_class": 0,
+            },
+        )
+
+        assert feature.load_state(tmp_path, {}, {}) is False
+        with pytest.raises(RuntimeError, match="did not resolve to a stored model"):
+            feature.fit(NO_INPUT)
+
     def test_a_cross_validated_bundle_loaded_through_model_scores_every_entry_in_full(
         self, tmp_path: Path
     ) -> None:

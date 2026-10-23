@@ -136,3 +136,24 @@ def test_assume_added_is_refused_past_its_cap(
     )
 
     assert isinstance(answered, ErrorEnvelope)
+
+
+def test_roles_set_after_the_server_started_are_seen(tmp_path: Path) -> None:
+    ds = calms21_dataset(
+        tmp_path / "ds",
+        {"train": {"a": {"s1": 40, "s2": 30}}, "test": {"a": {"s3": 30}}},
+        seed=5,
+    )
+    _ = ds.convert_all_tracks()
+    backend = LocalBackend(
+        [ds.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    assert _plan(backend, ds).problems == ()
+
+    ds.set_splits("train", ["train"])
+    ds.set_splits("test", ["test"])
+
+    plan = _plan(backend, ds)
+    assert [(problem.step, problem.where) for problem in plan.problems] == [
+        ("templates", "scope")
+    ]

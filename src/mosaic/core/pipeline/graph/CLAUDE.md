@@ -112,13 +112,13 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   entry comes from one of them (`test_a_stack_is_planned_over_the_union_of_its_inputs_and_no_more`).
 - `plan_pipeline` refuses a step that is `scope_dependent` and `fits`, both read off the
   built feature, when its target holds a group the manifest's `splits` gives the role
-  `test` or `sealed` (`held_out_fit_problem`, `heldout.py`). It does so with no step
-  scope too, and leaves `Plan.splits` for the whole-dataset caution to name. A scope-free
-  fitter is not flagged, because its `templates` step is. A graph that converts first has
-  no entries to check (`Plan.deferred_by`), so `deferred_fit_cautions` cautions each
-  unscoped fitting step instead, and the step is refused when it runs. `refit_set` answers which steps
-  a joining group would refit or only re-score, and `assume_added` reports it through
-  cautions alone, since `PlanWire` has no room for a field
+  `test` or `sealed` (`held_out_fit_problem`, `heldout.py`). It does so with no step scope
+  too, and leaves `Plan.splits` for the whole-dataset caution to name. A scope-free fitter
+  is not flagged, because its `templates` step is. A graph that converts first has no
+  entries to check (`Plan.deferred_by`), so `deferred_fit_cautions` cautions each unscoped
+  fitting step instead, and the step is refused when it runs. `refit_set` answers which
+  steps a joining group would refit or only re-score, and `assume_added` reports it
+  through cautions alone, since `PlanWire` has no room for a field
   (`test_pipeline_held_out.py`, `tests/agent/mcp/test_plan_recipe_held_out.py`).
 - `reach_findings` (`reach.py`) checks each `fits` step planned with `cv_unit="block"`
   that is not bound to a run: the `temporal_reach` of the steps above it, summed along a
@@ -133,19 +133,19 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   so the first plan of a recipe is checked as the later ones are
   (`test_pipeline_temporal_reach.py`).
 - `score_heldout` (`score.py`, `mosaic pipeline score`) scores a finished recipe on
-  held-out data on a copy of the study, and never writes the study. It converts the
-  new data with `convert_all_tracks` and `convert_all_labels` called with the params
-  of the recipe's own convert steps, not by running those steps, because their plan
-  counts converted entries as the target and reports them complete. It compares
-  `Plan.run_ids` of the recipe's steps before and after the data joins, and runs
-  nothing when one that fits moved: a step that learns nothing (`evaluate-labels`) moves
-  too, since it covers the held-out entries, and is reported as a warning. The train-only
-  plan, the entries before the conversion and a digest of the held-out data and step
-  scopes are saved in `scoring/state.json`, so a `reuse` still compares with it, counts
-  what a failed first attempt converted, and refuses other inputs. A held-out file is declared as a directory source
-  matching its exact name, because the raw scans do not walk a `files` source. The
-  module imports nothing from `behavior` and reads the report through
-  `read_run_report` (`tests/cli/test_cli_pipeline_score.py`).
+  held-out data on a copy of the study, and never writes the study. It converts the new
+  data with `convert_all_tracks` and `convert_all_labels` called with the params of the
+  recipe's own convert steps, not by running those steps, because their plan counts
+  converted entries as the target and reports them complete. It compares `Plan.run_ids` of
+  the recipe's steps before and after the data joins, and runs nothing when one that fits
+  moved: a step that learns nothing (`evaluate-labels`) moves too, since it covers the
+  held-out entries, and is reported as a warning. The train-only plan, the entries before
+  the conversion and a digest of the held-out data and step scopes are saved in
+  `scoring/state.json`, so a `reuse` still compares with it, counts what a failed first
+  attempt converted, and refuses other inputs. A held-out file is declared as a directory
+  source matching its exact name, because the raw scans do not walk a `files` source. The
+  module imports nothing from `behavior` and reads the report through `read_run_report`
+  (`tests/cli/test_cli_pipeline_score.py`).
 - A writer of tracks that takes no scope (`convert-tracks`) does not make the media
   universe the target. On a dataset with no tracks, a graph holding one leaves its
   `scope_dependent` features and its scoped ops unresolved with an

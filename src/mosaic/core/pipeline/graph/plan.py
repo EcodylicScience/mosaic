@@ -80,7 +80,7 @@ from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
-from .heldout import held_out_fit_problem
+from .heldout import deferred_scope_problem, held_out_fit_problem
 from .compatibility import Reach
 from .lanes import lane_for
 from .model import (
@@ -397,6 +397,13 @@ class Plan:
             plan's scope is empty then, and the held-out guard sees no group
             (:func:`~.heldout.deferred_fit_cautions` says so). ``None``
             otherwise. Not part of the wire or the fingerprint.
+        bound: The ids of the steps a request binds to a run. They are not
+            executed, so they fit nothing. Not part of the wire or the
+            fingerprint.
+        request_scope: The selector the plan was asked for, ``None`` for none.
+            Kept for :func:`~.heldout.deferred_fit_cautions`, which cannot read
+            groups out of a scope that selects no entries yet. Not part of the
+            wire or the fingerprint.
         reach_cautions: The classifiers planned for block cross-validation whose
             ``cv_gap_frames`` cannot be checked, because a step above them
             declares no reach or one no params bound (:func:`~.reach.reach_findings`).
@@ -423,6 +430,8 @@ class Plan:
     )
     deferred_by: str | None = None
     reach_cautions: tuple[Problem, ...] = ()
+    bound: frozenset[str] = frozenset()
+    request_scope: Scope | None = None
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -698,6 +707,15 @@ def plan_pipeline(
                     step_plan, step_entries, splits, narrowed=step.id in narrowed
                 )
             )
+            if leak is None and deferred_by is not None and step.id not in bind:
+                # No entries to ask yet, but a scope that names the group says
+                # where the step will read.
+                leak = deferred_scope_problem(
+                    step_plan,
+                    splits,
+                    request_scope=narrowing,
+                    step_scope=narrowed.get(step.id),
+                )
             if leak is not None:
                 findings.problems.append(leak)
             if TRACKS_INPUT in step.inputs and (
@@ -747,6 +765,8 @@ def plan_pipeline(
         splits=splits,
         deferred_by=deferred_by,
         reach_cautions=reached.cautions,
+        bound=frozenset(bind),
+        request_scope=narrowing,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)
@@ -805,9 +825,16 @@ def _plan_step(
             # given a ``model`` applies it, and the others fit. Left at the
             # default, the cross-validation gap of a classifier whose upstream
             # has not run would go unchecked until its step ran and was refused.
+            applies = step.params.get("model") is not None
+            cls = feature_class_for_slug(step.feature)
             base = replace(
                 base,
-                fits=declared.fits and step.params.get("model") is None,
+                fits=declared.fits and not applies,
+                # Read for the same reason: ``deferred_fit_cautions`` asks a
+                # step for both, and a fitter given a model covers no entries
+                # in its identity.
+                scope_dependent=bool(getattr(cls, "scope_dependent", False))
+                and not (declared.fits and applies),
                 temporal_reach=_reach_of(step, resolution),
             )
     elif isinstance(step, OpStepSpec):

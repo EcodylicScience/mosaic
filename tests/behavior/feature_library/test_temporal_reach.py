@@ -121,7 +121,7 @@ def test_a_trajectory_smooth_declares_the_distance_it_reads(
     assert measured <= reach
 
 
-def test_a_wavelet_declares_the_distance_it_reads() -> None:
+def test_a_wavelet_declares_no_reach_because_the_data_may_set_the_frame_rate() -> None:
     wavelet = PairWavelet(
         PairWavelet.Inputs((Result(feature="pair-posedistance-pca"),)),
         params={"f_min": 2.0, "f_max": 5.0, "n_freq": 4},
@@ -140,9 +140,14 @@ def test_a_wavelet_declares_the_distance_it_reads() -> None:
         }
     )
 
-    measured = _farthest_change(wavelet.apply, pairs, "PC0")
+    from_default = _farthest_change(wavelet.apply, pairs, "PC0")
+    from_column = _farthest_change(wavelet.apply, pairs.assign(fps=60.0), "PC0")
 
-    assert measured == wavelet.temporal_reach(wavelet.params) == 120
+    # The reach follows the frame rate, and a constant ``fps`` column replaces
+    # ``sampling.fps_default``: a declaration from the default alone is too small.
+    assert from_default == 120
+    assert from_column > from_default
+    assert wavelet.temporal_reach(wavelet.params) is None
 
 
 def test_a_tcn_reaches_half_its_receptive_field() -> None:

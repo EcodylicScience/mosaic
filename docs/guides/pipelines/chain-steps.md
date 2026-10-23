@@ -174,6 +174,11 @@ under `RUN IDS CHANGED`, having run nothing. Otherwise it appends an `evaluate-l
 step for each answer, runs the recipe, and writes `test_scores.json` and `test_scores.txt`
 to `--out`.
 
+- The held-out file is declared as a source, so give the raw format's source options
+  (`--src-format`, `--multi-sequences-per-file`, `--group-from`, `--patterns`,
+  `--labels-path`) and the evaluation protocol (`--perspective`, `--average-over`) as the
+  recipe's own convert and evaluate steps expect them. Without them the conversion
+  or the evaluation fails. `mosaic pipeline score --help` lists them.
 - Give `--step-scope` as the recipe ran. A fit left unscoped covers the new group, so its
   run id moves and the command stops.
 - `--dry-run` stops after the comparison and prints the plan fingerprint. Pass it back as

@@ -49,7 +49,9 @@ __all__ = [
     "StepFacts",
     "assume_added_cautions",
     "deferred_fit_cautions",
+    "deferred_scope_problem",
     "held_out_fit_problem",
+    "listed",
     "refit_set",
     "step_facts",
 ]
@@ -94,20 +96,79 @@ def held_out_fit_problem(
     inside = sorted({group for group, _ in target} & held)
     if not inside:
         return None
-    named = ", ".join(f"{group!r} ({role_of(splits, group)})" for group in inside)
-    train = groups_with_role(splits, "train")
-    scoped = ", ".join(repr(group) for group in train) or "the training groups"
+    step = planned.step_id
+    where = f"step_scopes.{step}" if narrowed else "scope"
+    return Problem(step, where, _leak_message(planned, inside, splits))
+
+
+def deferred_scope_problem(
+    planned: PlannedStep,
+    splits: Mapping[str, SplitRole],
+    *,
+    request_scope: Scope | None,
+    step_scope: Scope | None,
+) -> Problem | None:
+    """The problem of a fitting step whose scope names a held-out group outright.
+
+    A graph that converts first has no entries to ask :func:`held_out_fit_problem`
+    about, but a step scope or a request scope that *names* a group (``groups``,
+    or the groups of ``entries``) says where the step reads whatever the
+    conversion writes. A selector of ``sequences`` alone names no group and is
+    left to :func:`deferred_fit_cautions`.
+
+    Args:
+        planned: The planned step.
+        splits: The role of each group the manifest names.
+        request_scope: The selector the plan was asked for, ``None`` for none.
+        step_scope: The step's own scope, ``None`` when it has none.
+
+    Returns:
+        ``None`` unless the step is ``scope_dependent`` and ``fits`` and a scope
+        names a group of role ``test`` or ``sealed``. The step scope is read first,
+        and the problem points at it.
+    """
+    if not (planned.scope_dependent and planned.fits) or not splits:
+        return None
+    step = planned.step_id
+    for selector, where in (
+        (step_scope, f"step_scopes.{step}"),
+        (request_scope, "scope"),
+    ):
+        inside = sorted(_named_held_out(selector, splits))
+        if inside:
+            return Problem(step, where, _leak_message(planned, inside, splits))
+    return None
+
+
+def _named_held_out(scope: Scope | None, splits: Mapping[str, SplitRole]) -> set[str]:
+    """The held-out groups that *scope* names by group or by an entry."""
+    if scope is None or scope.is_unset:
+        return set()
+    pairs = scope.entry_pairs
+    named = scope.groups if pairs is None else [group for group, _ in pairs]
+    return set(named or ()) & set(held_out_groups(splits))
+
+
+def _leak_message(
+    planned: PlannedStep, inside: Sequence[str], splits: Mapping[str, SplitRole]
+) -> str:
+    """The sentence of a fit that covers the held-out groups *inside*."""
+    named = listed([f"{group!r} ({role_of(splits, group)})" for group in inside])
     step = planned.step_id
     reference = json.dumps({"step": step})
-    message = (
+    return (
         f"{planned.runs} fits on the entries it covers, and those include the "
         f"held-out group(s) {named}. Scope {step!r} to the training groups "
-        f"({scoped}) with a step scope, and use what it fits on the other groups "
-        f"in a step that reads it as {reference} in its model, templates or "
-        "label_map param"
+        f"({_train_groups(splits)}) with a step scope, and use what it fits on the "
+        f"other groups in a step that reads it as {reference} in its model, "
+        "templates or label_map param"
     )
-    where = f"step_scopes.{step}" if narrowed else "scope"
-    return Problem(step, where, message)
+
+
+def _train_groups(splits: Mapping[str, SplitRole]) -> str:
+    """The training groups of *splits*, for a message that scopes a step to them."""
+    train = groups_with_role(splits, "train")
+    return listed([repr(group) for group in train]) or "the training groups"
 
 
 def deferred_fit_cautions(plan: Plan) -> tuple[Problem, ...]:
@@ -118,22 +179,25 @@ def deferred_fit_cautions(plan: Plan) -> tuple[Problem, ...]:
     The step is refused when it runs, after the steps above it have, if the
     conversion writes a group of role ``test`` or ``sealed``. This names each such
     step up front. It is a caution because nothing can enumerate the groups the
-    conversion will write.
+    conversion will write. A step bound to a run is not executed and is left out,
+    as are the steps whose scope names a held-out group, which
+    :func:`deferred_scope_problem` refuses.
 
     Args:
-        plan: The plan. Its ``deferred_by`` and ``splits`` are read.
+        plan: The plan. Its ``deferred_by``, ``splits``, ``bound`` and
+            ``request_scope`` are read.
 
     Returns:
-        One caution for each step that is ``scope_dependent``, ``fits`` and has
-        no step scope. Empty unless the plan is deferred and the manifest names a
-        held-out group.
+        One caution for each step that is ``scope_dependent``, ``fits``, is not
+        bound and has no step scope. Empty unless the plan is deferred and the
+        manifest names a held-out group.
     """
     held = held_out_groups(plan.splits)
     if plan.deferred_by is None or not held:
         return ()
-    named = ", ".join(f"{group!r} ({role_of(plan.splits, group)})" for group in held)
-    train = groups_with_role(plan.splits, "train")
-    scoped = ", ".join(repr(group) for group in train) or "the training groups"
+    if _named_held_out(plan.request_scope, plan.splits):
+        return ()
+    named = listed([f"{group!r} ({role_of(plan.splits, group)})" for group in held])
     return tuple(
         Problem(
             planned.step_id,
@@ -142,12 +206,13 @@ def deferred_fit_cautions(plan: Plan) -> tuple[Problem, ...]:
             f"{plan.deferred_by!r} converts, and the dataset holds no tracks to "
             f"check them against. If that includes the held-out group(s) {named} "
             f"this step is refused when it runs. Scope {planned.step_id!r} to "
-            f"the training groups ({scoped}) with a step scope",
+            f"the training groups ({_train_groups(plan.splits)}) with a step scope",
         )
         for planned in plan.steps
         if planned.scope_dependent
         and planned.fits
         and planned.step_id not in plan.step_scopes
+        and planned.step_id not in plan.bound
     )
 
 
@@ -199,14 +264,15 @@ def _joins(scope: Scope | None, group: str) -> Joins:
     """Whether *scope* would take a group that is not in the dataset yet.
 
     ``Scope.selects`` is asked about a placeholder entry of the group. An
-    ``entries`` selector names exact entries, which a new group has none of. A
-    ``sequences`` selector may match a sequence the group holds, which nothing
-    can tell before it is indexed.
+    ``entries`` selector names exact entries, so it may take the group when it
+    names an entry of it, which nothing can tell before the group is indexed. A
+    ``sequences`` selector may match a sequence the group holds, likewise.
     """
     if scope is None or scope.is_unset:
         return "yes"
-    if scope.entry_pairs is not None:
-        return "no"
+    pairs = scope.entry_pairs
+    if pairs is not None:
+        return "maybe" if any(named == group for named, _ in pairs) else "no"
     placeholder = (group, _PLACEHOLDER_SEQUENCE)
     if scope.sequences is None:
         return "yes" if scope.selects(placeholder) else "no"
@@ -289,10 +355,15 @@ def step_facts(plan: Plan) -> dict[str, StepFacts]:
     }
 
 
-def _listed(names: Sequence[str]) -> str:
-    shown = ", ".join(repr(name) for name in names[:_LISTED_GROUPS])
-    rest = len(names) - _LISTED_GROUPS
+def listed(items: Sequence[str], limit: int = _LISTED_GROUPS) -> str:
+    """The first *limit* of *items* joined by commas, then a count of the rest."""
+    shown = ", ".join(items[:limit])
+    rest = len(items) - limit
     return shown + (f" and {rest} more" if rest > 0 else "")
+
+
+def _listed(names: Sequence[str]) -> str:
+    return listed([repr(name) for name in names])
 
 
 def assume_added_cautions(
@@ -368,7 +439,10 @@ def assume_added_cautions(
     if rescores:
         parts.append("these would only re-score: " + ", ".join(rescores))
     if any(step.uncertain for step in moved):
-        parts.append("? marks a step that moves only if a sequences selector matches")
+        parts.append(
+            "? marks a step that moves only if its sequences or entries selector "
+            "matches something the new group holds"
+        )
     found.append(
         Problem("", "assume_added", f"if {subject} joined{note}, " + "; ".join(parts))
     )

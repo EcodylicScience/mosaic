@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.agent.mcp.local import LocalBackend, _reads_labels  # pyright: ignore[reportPrivateUsage]
+from mosaic.agent.mcp.local import LocalBackend, _scores_against_labels  # pyright: ignore[reportPrivateUsage]
 from mosaic.agent.mcp.spec import (
     MAX_RESULT_CHARS,
     PLAN_RETIRABLE_SAMPLE,
@@ -384,7 +384,7 @@ def test_only_the_evaluation_step_scores_against_labels(
     )
     planned = graph.plan_pipeline(dataset, recipe).step("speed")
 
-    assert _reads_labels(replace(planned, runs=feature)) is scores
+    assert _scores_against_labels(replace(planned, runs=feature)) is scores
 
 
 def test_training_asks_to_confirm_and_is_polled_less_often(

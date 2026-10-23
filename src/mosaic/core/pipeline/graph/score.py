@@ -67,7 +67,7 @@ from ..error_kind import ClassifiedError, ErrorKind
 from .digest import recipe_digest
 from .model import FeatureStepSpec, OpStepSpec, Recipe, StepRef
 from .plan import Plan, plan_pipeline
-from .request import submit_request
+from .request import PlanChanged, submit_request
 from .run import run_pipeline
 from .serialize import plan_fingerprint
 
@@ -107,6 +107,10 @@ SCORES_TXT: Final = "test_scores.txt"
 
 EVALUATION_PREFIX: Final = "test__"
 """What an evaluation step's id starts with, followed by the step it scores."""
+
+_COPY_MARKER: Final = "copy-complete"
+"""Written last into ``scoring/`` of a copy, so ``--reuse`` can tell a finished copy
+of this study from a directory that merely holds a manifest."""
 
 _STATE_FILE: Final = "state.json"
 _EVALUATE: Final = "evaluate-labels"
@@ -385,6 +389,7 @@ def _copy_study(study: Dataset, out: Path, *, reuse: bool) -> Dataset:
             "scored copy goes in a directory of its own"
         )
     manifest = target / study.manifest_path.name
+    marker = target / SCORING_DIR / _COPY_MARKER
     if target.exists() and any(target.iterdir()):
         if not reuse:
             raise ScoreRefused(
@@ -392,6 +397,13 @@ def _copy_study(study: Dataset, out: Path, *, reuse: bool) -> Dataset:
             )
         if not manifest.exists():
             raise ScoreRefused(f"{target} holds no {manifest.name}; it is not a copy")
+        if not marker.is_file() or marker.read_text(encoding="utf-8") != _copy_id(
+            study
+        ):
+            raise ScoreRefused(
+                f"{target} is not a complete scoring copy of this study, so held-out "
+                "data would be written into something else. Use a new --out"
+            )
     else:
 
         def skip(directory: str, names: list[str]) -> list[str]:
@@ -400,7 +412,25 @@ def _copy_study(study: Dataset, out: Path, *, reuse: bool) -> Dataset:
         _ = shutil.copytree(
             source, target, symlinks=True, ignore=skip, dirs_exist_ok=True
         )
+        marker.parent.mkdir(exist_ok=True)
+        _ = marker.write_text(_copy_id(study), encoding="utf-8")
     return open_dataset(manifest)
+
+
+def _copy_id(study: Dataset) -> str:
+    """What the marker of a finished copy of *study* holds: the study's own uuid."""
+    return study.uuid or ""
+
+
+def _check_heldout_role(ds: Dataset, group: str) -> None:
+    """Refuse a ``--heldout`` name that is not a group of role test or sealed."""
+    role = role_of(ds, group)
+    if role not in HELD_OUT_ROLES:
+        raise ScoreRefused(
+            f"--heldout {group!r} is neither an existing path nor a group whose "
+            f"role is test or sealed (its role: {role}). Give a file or a "
+            "directory, or set the role with 'mosaic splits set'"
+        )
 
 
 def _plan(ds: Dataset, recipe: Recipe, step_scopes: Mapping[str, Scope]) -> Plan:
@@ -568,8 +598,9 @@ def _add_heldout(
     )
     if converted.failed:
         raise ScoreRefused(
-            f"{converted.failed} held-out raw file(s) did not convert. Fix them and "
-            "run again with --reuse"
+            f"{converted.failed} held-out raw file(s) did not convert. Fix the files "
+            "and run again with --reuse. To change a source option (--patterns, "
+            "--group-from, ...), delete --out and start again"
         )
     _ = ds.convert_all_labels(
         kind=labels.kind,
@@ -584,7 +615,8 @@ def _add_heldout(
             f"{tracks_variant}. Check its path, patterns and format"
         )
     groups = sorted({group for group, _ in new})
-    whole = all(entry in set(new) for entry in after if entry[0] in set(groups))
+    added, named = set(new), set(groups)
+    whole = all(entry in added for entry in after if entry[0] in named)
     if whole:
         return Scope(groups=groups), len(new)
     return Scope(entries=new), len(new)
@@ -818,6 +850,10 @@ def score_heldout(
             "held-out files into is not known"
         )
     _check_answers(recipe, answers)
+    # What is known without the copy is refused before the study is copied.
+    evaluations, scored = _evaluation_steps(recipe, answers, labels_step.id, protocol)
+    if isinstance(heldout, str):
+        _check_heldout_role(study, heldout)
     if files is not None:
         for where in (files.tracks, files.labels):
             if where is not None and not user_path(where).exists():
@@ -851,10 +887,15 @@ def score_heldout(
         before = state.before
     else:
         if files is not None and (_declared(ds, "tracks") or _declared(ds, "labels")):
+            recorded_for = (
+                "holds no record of the plan before it was added"
+                if state is None
+                else "holds the plan of another recipe, not this one"
+            )
             raise ScoreRefused(
-                f"the copy already declares the {HELDOUT_SOURCE_ID!r} source but holds "
-                "no record of the plan before it was added, so a moved run id could "
-                "not be seen. Remove --reuse and --out, and start again"
+                f"the copy already declares the {HELDOUT_SOURCE_ID!r} source but "
+                f"{recorded_for}, so a moved run id could not be seen. Remove "
+                "--reuse and --out, and start again"
             )
         say("plan the recipe on the data it was built on")
         first = _plan(ds, recipe, scopes)
@@ -880,13 +921,8 @@ def score_heldout(
     # 2. the held-out data
     entries: int | None = None
     if isinstance(heldout, str):
-        role = role_of(ds, heldout)
-        if role not in HELD_OUT_ROLES:
-            raise ScoreRefused(
-                f"--heldout {heldout!r} is neither an existing path nor a group whose "
-                f"role is test or sealed (its role: {role}). Give a file or a "
-                "directory, or set the role with 'mosaic splits set'"
-            )
+        # Again on the copy, which a reused directory may have changed.
+        _check_heldout_role(ds, heldout)
         scope = Scope(groups=[heldout])
     elif state.heldout is not None:
         say("the held-out data is already converted in the copy")
@@ -923,7 +959,6 @@ def score_heldout(
             _write_state(work, state)
 
     # 3. the scoring recipe and its plan
-    evaluations, scored = _evaluation_steps(recipe, answers, labels_step.id, protocol)
     scoring = recipe.model_copy(
         update={
             "name": f"{recipe.name or 'recipe'}-heldout",
@@ -960,6 +995,9 @@ def score_heldout(
         warnings=warnings,
         plan_fingerprint=fingerprint,
     )
+    if expect_plan is not None and expect_plan != fingerprint and (moved or dry_run):
+        # Otherwise ``submit_request`` compares it, below.
+        raise PlanChanged(expected=expect_plan, found=fingerprint)
     if moved or dry_run:
         return result
 

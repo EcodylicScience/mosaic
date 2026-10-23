@@ -31,6 +31,7 @@ from mosaic.behavior.feature_library.classifier_common import (
     check_folds,
     deal_blocks,
     deal_folds,
+    drop_block_settings,
     fold_map,
     fold_rows,
     fold_table,
@@ -665,7 +666,6 @@ def test_a_lookup_by_block_gives_a_row_the_fold_of_the_block_its_frame_is_in() -
 
     assert folds.tolist() == [2, -1, 1, 1, 0, 0, -1, -1, 2, -1]
     assert lookup.folds(("g", "zz"), [10, 20]).tolist() == [-1, -1]
-    assert lookup.by_blocks
     assert lookup.entries == {("g", "a")}
 
 
@@ -674,7 +674,7 @@ def test_a_lookup_by_entry_gives_every_row_of_an_entry_one_fold() -> None:
 
     assert lookup.folds(("g", "a"), [0, 99]).tolist() == [2, 2]
     assert lookup.folds(("g", "b"), [0]).tolist() == [-1]
-    assert not lookup.by_blocks
+    assert lookup.entries == {("g", "a")}
 
 
 def test_a_lookup_reads_the_table_that_the_fold_file_holds() -> None:
@@ -714,5 +714,18 @@ def test_blocks_name_themselves_in_the_two_class_refusal_of_a_fold() -> None:
     )
     table = block_fold_table(blocks, counts, [0, 1])
 
-    with pytest.raises(ValueError, match="label each class in more of the sequence"):
+    with pytest.raises(ValueError, match="label each class in more of the blocks"):
         check_folds("clf", 2, table, [0, 1], rows="labeled frames", unit="block")
+
+
+def test_the_block_settings_leave_the_identity_of_the_sequence_unit() -> None:
+    def dumped() -> dict[str, object]:
+        return {
+            "cv_folds": 3,
+            "cv_unit": "block",
+            "cv_blocks_per_sequence": 3,
+            "cv_gap_frames": 5,
+        }
+
+    assert drop_block_settings(dumped(), "sequence") == {"cv_folds": 3}
+    assert drop_block_settings(dumped(), "block") == dumped()

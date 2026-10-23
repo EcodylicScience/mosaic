@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.progress import ProgressCallback
 
 __all__ = [
+    "DERIVED_FIT_SCOPE_REMEDY",
     "FIT_SCOPE_REMEDY",
     "CV_SEED_DESCRIPTION",
     "DECISION_THRESHOLD_DESCRIPTION",
@@ -79,6 +80,7 @@ __all__ = [
     "check_folds",
     "deal_blocks",
     "deal_folds",
+    "drop_block_settings",
     "fold_map",
     "fold_rows",
     "fold_table",
@@ -102,6 +104,13 @@ FIT_SCOPE_REMEDY: Final = (
     "entries, because it fits on them. Once it has fitted, a wider scope applies "
     "the stored fit to the new entries and fits nothing again. To apply a fit "
     "from elsewhere, name it through `model`."
+)
+
+DERIVED_FIT_SCOPE_REMEDY: Final = (
+    "The step's first run must be asked for over a scope that holds the "
+    "entries of its input's cv_folds.parquet, because it fits on their "
+    "out-of-fold output. Once it has fitted, a wider scope applies the stored "
+    "result to the new entries and fits nothing again."
 )
 
 DECISION_THRESHOLD_DESCRIPTION: Final = (
@@ -181,8 +190,11 @@ CV_BLOCKS_PER_SEQUENCE_DESCRIPTION: Final = (
     "With cv_unit block, the blocks that each training sequence is cut into, "
     "at least 2. A sequence's blocks span its labeled frames, from the first "
     "labeled frame of any of its series to the last, and differ in length by "
-    "at most one frame. Unset, the number of cv_folds, so that every fold "
-    "holds out one block of each sequence. Only with cv_unit block."
+    "at most one frame. Unset, the number of cv_folds, so that a single "
+    "training sequence has one block per fold. The blocks of all the sequences "
+    "are dealt into the folds together, so with several sequences a fold holds "
+    "a near-equal count of blocks, not one block of each sequence. Only with "
+    "cv_unit block."
 )
 
 CV_GAP_FRAMES_DESCRIPTION: Final = (
@@ -206,6 +218,29 @@ CvGapFrames = Annotated[
     int, Field(ge=0), Declared(CV_GAP_FRAMES_DESCRIPTION, unit="frames")
 ]
 """The type of a classifier's ``cv_gap_frames`` parameter."""
+
+
+def drop_block_settings(
+    dumped: dict[str, object], cv_unit: Literal["sequence", "block"]
+) -> dict[str, object]:
+    """Return *dumped* without the block settings when the unit is the sequence.
+
+    A classifier's ``identity_dump`` calls this, so that a run which
+    cross-validates by sequence, or not at all, hashes as it did before the block
+    settings existed. ``check_cross_validation`` leaves them at their defaults
+    then, so leaving them out loses nothing.
+
+    Args:
+        dumped: The hashed params of the classifier, which this changes in place.
+        cv_unit: The classifier's ``cv_unit``.
+
+    Returns:
+        *dumped*.
+    """
+    if cv_unit == "sequence":
+        for name in ("cv_unit", "cv_blocks_per_sequence", "cv_gap_frames"):
+            del dumped[name]
+    return dumped
 
 
 def check_cross_validation(
@@ -243,22 +278,19 @@ def check_cross_validation(
         ValueError: ``cv_seed`` or a block setting is set without what it needs,
             or ``cv_folds`` is set beside a ``model``.
     """
+    block_settings = [
+        name
+        for name, value in (
+            ("cv_blocks_per_sequence", cv_blocks_per_sequence),
+            ("cv_gap_frames", cv_gap_frames),
+        )
+        if value not in (None, 0)
+    ]
     if cv_folds is None:
         if cv_seed != 0:
             msg = "cv_seed deals the folds of cv_folds, which is not set"
             raise ValueError(msg)
-        unset = (
-            ["cv_unit"]
-            if cv_unit != "sequence"
-            else [
-                name
-                for name, value in (
-                    ("cv_blocks_per_sequence", cv_blocks_per_sequence),
-                    ("cv_gap_frames", cv_gap_frames),
-                )
-                if value not in (None, 0)
-            ]
-        )
+        unset = ["cv_unit"] if cv_unit != "sequence" else block_settings
         if unset:
             msg = f"{', '.join(unset)} cut the folds of cv_folds, which is not set"
             raise ValueError(msg)
@@ -270,16 +302,8 @@ def check_cross_validation(
         )
         raise ValueError(msg)
     if cv_unit == "sequence":
-        unused = [
-            name
-            for name, value in (
-                ("cv_blocks_per_sequence", cv_blocks_per_sequence),
-                ("cv_gap_frames", cv_gap_frames),
-            )
-            if value not in (None, 0)
-        ]
-        if unused:
-            msg = f"{', '.join(unused)} only apply with cv_unit block"
+        if block_settings:
+            msg = f"{', '.join(block_settings)} only apply with cv_unit block"
             raise ValueError(msg)
         return None
     return cv_folds if cv_blocks_per_sequence is None else cv_blocks_per_sequence
@@ -757,11 +781,6 @@ class FoldLookup:
         )
 
     @property
-    def by_blocks(self) -> bool:
-        """Whether a row's fold depends on its frame."""
-        return bool(self._blocks)
-
-    @property
     def entries(self) -> set[tuple[str, str]]:
         """The entries that have a fold, or a block with one."""
         return set(self._entries) | set(self._blocks)
@@ -807,7 +826,7 @@ def check_folds(
     classes: list[int],
     *,
     rows: str,
-    unit: str = "sequence",
+    unit: Literal["sequence", "block"] = "sequence",
     per_fold: Callable[[int, npt.NDArray[np.intp], npt.NDArray[np.intp]], None]
     | None = None,
 ) -> None:
@@ -843,7 +862,8 @@ def check_folds(
                 f"hold {len(present)} of the {len(classes)} classes "
                 f"({present.tolist()}), and a classifier needs two. Lower "
                 + (
-                    "cv_folds, or label each class in more of the sequence"
+                    "cv_folds, or label each class in more of the blocks (a longer "
+                    "labeled stretch or more sequences)"
                     if unit == "block"
                     else "cv_folds, or draw the templates from more sequences of "
                     "each class"

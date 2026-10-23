@@ -141,12 +141,12 @@ that does not read, is left out and reported on the server's standard error.
 
 | Tool | Result |
 | --- | --- |
-| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags and counts |
+| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits` and counts |
 | `list_sequences` | The entries, with the tracks table each resolves to |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
+| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
@@ -248,9 +248,10 @@ Restart it after installing an extra or building a tool's environment.
   retirement too;
 - a step scores predictions against labels over a group that the dataset's
   [`splits`](dataset.md#hold-groups-out-of-training) seal (`score_sealed`). A sealed
-  group allows one look, and this spends it. It only fires when the sealed group's labels
-  are registered in the dataset. Keeping them outside the dataset until
-  `mosaic pipeline score` adds them to a copy is the stronger protection.
+  group allows one look, and this spends it. It fires whenever an `evaluate-labels` step
+  is planned over entries of a sealed group, whether or not the group's labels are in the
+  dataset. Keeping the labels outside the dataset until `mosaic pipeline score` adds them
+  to a copy is the stronger protection.
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
@@ -259,26 +260,6 @@ A plan over the whole dataset, or a step asked for more than 100 entries, does n
 ask. `plan_recipe` reports each as a caution, and the agent shows you the cautions
 with the plan before it submits. When the dataset gives its groups roles, the caution
 for a whole-dataset plan names the groups it covers and their roles.
-
-### Held-out groups
-
-A dataset can mark groups as held out with [`splits`](dataset.md#hold-groups-out-of-training).
-The agent reads them and never writes them: its tools cannot give a group a role or take
-one away, so you set them with `mosaic splits`. With roles set:
-
-- `plan_recipe` refuses a step that fits on the entries it covers when they include a
-  `test` or `sealed` group, and `submit_pipeline` refuses the same recipe. The problem
-  names the step, the groups and how to scope it. A step that applies a fitted model to
-  a test group is not refused.
-- `plan_recipe` takes `assume_added`, a list of groups, and notes in its cautions which
-  steps would fit again and which would only re-score if those groups joined the
-  dataset. It reads the recipe and changes nothing.
-- `submit_pipeline` asks you to confirm a step that scores a sealed group
-  (`score_sealed`).
-
-To score data the agent has never seen, keep it outside the dataset and run
-`mosaic pipeline score` yourself, on a copy of the dataset
-([the protocol](guides/pipelines/chain-steps.md#score-on-held-out-data)).
 
 A client that supports MCP elicitation shows you a form listing the conditions, and
 only your answer confirms. With any other client, the tool refuses with reason
@@ -305,6 +286,26 @@ hook to read:
 A dataset whose manifest names a managing service (`managed_by`), such as a mosaic-api
 deployment, refuses both tools unless the server is started with
 `--allow-managed-writes` or `allow_managed_writes: true`. Every read tool still works.
+
+### Held-out groups
+
+A dataset can mark groups as held out with [`splits`](dataset.md#hold-groups-out-of-training).
+The agent reads them and never writes them: its tools cannot give a group a role or take
+one away, so you set them with `mosaic splits`. With roles set:
+
+- `plan_recipe` refuses a step that fits on the entries it covers when they include a
+  `test` or `sealed` group, and `submit_pipeline` refuses the same recipe. The problem
+  names the step, the groups and how to scope it. A step that applies a fitted model to
+  a test group is not refused.
+- `plan_recipe` takes `assume_added`, a list of groups, and notes in its cautions which
+  steps would fit again and which would only re-score if those groups joined the
+  dataset. It reads the recipe and changes nothing.
+- `submit_pipeline` asks you to confirm a step that scores a sealed group
+  (`score_sealed`).
+
+To score data the agent has never seen, keep it outside the dataset and run
+`mosaic pipeline score` yourself, on a copy of the dataset
+([the protocol](guides/pipelines/chain-steps.md#score-on-held-out-data)).
 
 ### Unattended runs: approving conditions with a hook
 

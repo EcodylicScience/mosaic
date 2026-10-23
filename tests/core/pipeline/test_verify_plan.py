@@ -286,3 +286,17 @@ def test_equal_values_count_as_compared() -> None:
 
     assert found.within(0.0)
     assert found.compared == 4
+
+
+def test_a_model_that_will_not_serialize_is_unchecked_and_not_counted() -> None:
+    class Unserializable:
+        def save_raw(self, raw_format: str) -> bytes:
+            raise RuntimeError(raw_format)
+
+    found = _Found()
+
+    _walk(Unserializable(), Unserializable(), "model", found, exact_models=True)
+
+    assert found.compared == 0
+    assert found.within(0.0)
+    assert found.unchecked == ["model: the model would not serialize"]

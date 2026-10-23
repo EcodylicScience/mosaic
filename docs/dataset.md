@@ -359,7 +359,7 @@ dataset_summary(ds, found=dataset_inventory(ds))  # what `mosaic describe --json
 mosaic describe -m ~/dataset/dataset.yaml
 ```
 
-The summary gives the manifest's name, `uuid`, notes, tags and libraries, and
+The summary gives the manifest's name, `uuid`, notes, tags, libraries and `splits`, and
 counts the sequences, videos, tracks variants, feature runs and trained models
 the dataset holds. It also lists the track schemas of its tables and the frame
 rates of its videos. To find the datasets in a directory and up to three levels

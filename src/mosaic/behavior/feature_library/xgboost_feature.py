@@ -64,6 +64,7 @@ from .classifier_common import (
     check_folds,
     deal_blocks,
     deal_folds,
+    drop_block_settings,
     fold_map,
     fold_rows,
     fold_table,
@@ -382,11 +383,7 @@ class XgboostFeature(FitReporting):
             had before the block settings existed. ``check_cross_validation`` leaves
             them at their defaults then, so leaving them out loses nothing.
             """
-            dumped = super().identity_dump()
-            if self.cv_unit == "sequence":
-                for name in ("cv_unit", "cv_blocks_per_sequence", "cv_gap_frames"):
-                    del dumped[name]
-            return dumped
+            return drop_block_settings(super().identity_dump(), self.cv_unit)
 
     def __init__(
         self,
@@ -887,7 +884,13 @@ class XgboostFeature(FitReporting):
 
     def fit(self, inputs: InputStream) -> None:
         if self._templates is None:
-            msg = "No templates loaded -- call load_state first"
+            msg = (
+                f"[{self.name}] model {self.params.model.run_id!r} did not resolve "
+                "to a stored model, so there is nothing to apply and the step "
+                "does not fit in its place. Check the model reference"
+                if self.params.model is not None
+                else "No templates loaded -- call load_state first"
+            )
             raise RuntimeError(msg)
         if self._feature_columns is None:
             msg = "No feature columns determined"

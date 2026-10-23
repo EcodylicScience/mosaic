@@ -165,24 +165,16 @@ class PairWavelet:
 
     @staticmethod
     def temporal_reach(params: PairWavelet.Params) -> int | None:
-        """Frames on each side that one row reads: half the longest wavelet.
+        """Return ``None``: the reach depends on a frame rate the data may set.
 
-        ``pywt.cwt`` convolves with the wavelet sampled over its whole support,
-        ``scale * (upper_bound - lower_bound)`` samples at a scale, and the
-        longest scale belongs to ``f_min``. The frame rate is ``sampling.fps_default``,
-        which a constant ``fps`` column of the input would replace. ``None`` for a
-        wavelet that pywt does not know or one without a bounded support.
+        One row reads half the longest wavelet, ``scale * (upper_bound -
+        lower_bound) / 2`` samples at the scale of ``f_min``, and the scale is the
+        frame rate over ``f_min`` times the central frequency. The frame rate is
+        ``sampling.fps_default`` only when the input has no constant ``fps`` column,
+        and a column of 60 against a default of 30 doubles the reach. A declaration
+        from the default alone would understate it, so the reach is unknown.
         """
-        try:
-            wavelet = pywt.ContinuousWavelet(params.wavelet)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportAttributeAccessIssue]
-            central: float = pywt.central_frequency(wavelet)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            lower = float(wavelet.lower_bound)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-            upper = float(wavelet.upper_bound)  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-        except Exception:
-            return None
-        scale = params.sampling.fps_default / (params.f_min * central)
-        support = scale * (upper - lower)
-        return math.ceil(support / 2) if math.isfinite(support) else None
+        return None
 
     def load_state(
         self,
