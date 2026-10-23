@@ -161,7 +161,7 @@ def test_a_bins_step_reading_speed_names_every_response_column() -> None:
     ):
         assert problem.message == (
             f"needs '{column}', and its merged input from speed, focal_tags "
-            "lacks it. nn-delta-response provides it"
+            "lacks it. neighbor-delta-response; nn-delta-response provide it"
         )
 
 
