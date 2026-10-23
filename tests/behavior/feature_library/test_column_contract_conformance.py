@@ -101,6 +101,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
         "num_epochs": 1,
         "sequence_length": 10,
     },
+    "label-statistics": {"states": [0, 1], "fps": 30.0},
     "local-order-metrics": {"radius": 10.0},
     "pair-egocentric": {"pose": {"pose_n": 3}, "neck_idx": 0, "tail_base_idx": 1},
     "pair-facing": {"pose_head_index": 0, "pose_abdomen_index": 1},
@@ -321,6 +322,7 @@ LABELS: dict[str, Callable[[Path], Path]] = {
     "evaluate-labels": _behavior_labels,
     "extract-labeled-templates": _behavior_labels,
     "fit-label-map": _behavior_labels,
+    "label-statistics": _behavior_labels,
 }
 """The labels file that a feature reads, where it is not the ``id_tags`` one."""
 

@@ -59,6 +59,12 @@ pair.
 order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.
 
+**A label sequence as a fingerprint.** `label-statistics` reduces labels to one row per
+individual: how much of the time each state occupies, how often it starts, how long its
+bouts last and what tends to follow it. It reads ground-truth labels or a categorical
+column such as AR-HMM's `syllable`, so the same row compares annotated and discovered
+behavior.
+
 **Models fitted over a collection.** t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq,
 VAME and the supervised classifiers. See [Find behaviors without
 labels](discover-behaviors.md), [Train a behavior classifier](train-a-classifier.md)

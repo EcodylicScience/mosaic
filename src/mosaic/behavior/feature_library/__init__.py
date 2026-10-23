@@ -110,6 +110,7 @@ from .id_tag_columns import IdTagColumns
 from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
 from .kpms import KpmsFeature
+from .label_statistics import LabelStatistics
 from .local_order_metrics import LocalOrderMetrics
 from .nearestneighbor import NearestNeighbor
 from .nn_delta_bins import NearestNeighborDeltaBins
@@ -197,6 +198,7 @@ __all__ = [
     "IdTagColumns",
     "KpmsFeature",
     "LabelMapRef",
+    "LabelStatistics",
     "LocalOrderMetrics",
     "NearestNeighbor",
     "NearestNeighborDelta",

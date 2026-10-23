@@ -31,6 +31,7 @@
   "id-tag-columns/labels-one-variant": "0.1-e538ec7fa1",
   "id-tag-columns/no-labels-variant": "0.1-0ed02bfded",
   "interaction-crop-pipeline/default": "0.3-33c0805241",
+  "label-statistics/default": "0.1-fdec8babe5",
   "local-order-metrics/params-shells": "0.1-51839a5ea7",
   "local-order-metrics/radius-body-scale": "0.1-70fcbe7241",
   "local-order-metrics/radius-position": "0.1-128153b692",

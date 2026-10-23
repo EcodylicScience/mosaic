@@ -10,6 +10,25 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**`label-statistics` summarizes a label sequence per individual.** It reads ground-truth
+labels (`GroundTruthLabelsSource`) or a categorical column of a feature's output
+(`ResultColumn`), such as `arhmm`'s `syllable`, and writes one row per
+`(group, sequence, id)`: usage, bout counts and durations, rates per minute,
+transition probabilities and two entropies per state. It adds a registered feature
+(51), and no existing run id moves.
+
+- `GroundTruthLabelsSource.kind` accepts any label kind and not only `behavior`, so the
+  labels of any `labels/<kind>/` index resolve the same way. The default is still
+  `behavior`, and a recipe that names no kind keeps its run id.
+- A label file may carry segments beside its per-frame arrays: `seg_start_frame`,
+  `seg_end_frame` (one past the end), `seg_label` and optional `seg_individual`
+  (`mosaic.core.label_intervals`). `label-statistics` reads them as bouts that may
+  overlap or nest, where the per-frame arrays merge them. Seconds become frames by the
+  midpoint rule (`seconds_to_frames`), so back-to-back segments share a boundary.
+- A frame that no event, segment or value labels counts toward `n_frames` and nothing
+  else. Name the background label in `ignore` to leave it out of every statistic, or in
+  `states` to count it.
+
 **The overlay and the crop features refuse every table in centimeters.** `overlay`,
 `egocentric-crop` and `interaction-crop-pipeline` placed `X`/`Y`, or the keypoints, on
 video as pixels. Their check refused only a `trex_v1` table, and only when the table had

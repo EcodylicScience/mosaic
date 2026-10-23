@@ -91,7 +91,6 @@ from .types import (
     Feature,
     InputStream,
     Inputs,
-    GroundTruthLabelsSource,
     LabelsSource,
     NNResult,
     Result,
@@ -2064,9 +2063,7 @@ def _run_feature_impl(
 # --- load_values ---
 
 
-# ``GroundTruthLabelsSource`` is named beside ``LabelsSource``: its kind is a
-# ``Literal``, and the type parameter is invariant, so the bare base does not admit it.
-ValueSource = ResultColumn | TracksColumn | LabelsSource | GroundTruthLabelsSource
+ValueSource = ResultColumn | TracksColumn | LabelsSource
 
 
 def _source_column_name(source: ValueSource) -> str:
