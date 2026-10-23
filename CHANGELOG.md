@@ -10,6 +10,24 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
+**The overlay and the crop features refuse every table in centimeters.** `overlay`,
+`egocentric-crop` and `interaction-crop-pipeline` placed `X`/`Y`, or the keypoints, on
+video as pixels. Their check refused only a `trex_v1` table, and only when the table had
+no keypoints or `center_mode` was `xy`. A `trex_v1` table with keypoints, and every
+`mosaic_cm_v1` table, was drawn and cropped at centimeter coordinates without an error.
+
+- The check runs for every table and every `center_mode`, and refuses a table recorded
+  as `trex_v1` or `mosaic_cm_v1`. A notebook that cropped such a table now raises.
+  `mosaic upgrade-tracks` converts a `trex_v1` table to pixels. A `mosaic_cm_v1` table
+  records no pixel factor and cannot be drawn.
+- A `TrackSchema` declares an optional `space`, `image_px` or `plane_cm`, inherited
+  through `extends`. A schema without one, or one this process never registered, is
+  drawn as pixels with a warning. A blank recorded schema is still read as `trex_v1`.
+- The check judges the table the caller holds: the schema in `ResolvedScope.tracks_schemas`
+  for a crop, or the index row of the variant `tracks_run_id` names for the overlay,
+  instead of the first row of the entry.
+- No run id or tracks variant moves. `tracks_schemas` is never hashed.
+
 **`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
 Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
 and the inference bridge set `id` 0 on every row. Every detection of a table was then

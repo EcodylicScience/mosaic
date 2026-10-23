@@ -84,6 +84,14 @@ class ResolvedScope:
         default_factory=dict
     )
     selector: scope_module.Scope = field(default_factory=scope_module.Scope)
+    tracks_schemas: Mapping[tuple[str, str], str] = field(
+        default_factory=dict[tuple[str, str], str]
+    )
+    """The schema each in-scope entry's tracks table records, keyed like
+    ``entries``; ``""`` for a row written before the column existed. Recorded
+    for consumers that place coordinates on video, which must ask the space of
+    the table they were handed rather than of whichever row an index lookup
+    meets first. Never hashed."""
 
     def composition_of(self, entry: tuple[str, str], root: str) -> str:
         """*root*'s recorded composition for *entry*, or ``""`` when none is.

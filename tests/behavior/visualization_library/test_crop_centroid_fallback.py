@@ -11,8 +11,12 @@ models, so a TREx-tracked dataset trained on blank images with no error anywhere
 along the way.
 
 The fix was blocked on the units question -- ``X``/``Y`` used to be centimetres
-on TREx and pixels everywhere else. It is not any more: tracks are pixels, and
-the one family that is not (``trex_v1``) is refused by name.
+on TREx and pixels everywhere else. It is not any more: every schema family
+declares its space, and a crop or an overlay refuses a table known to be in
+centimetres (``trex_v1``, ``mosaic_cm_v1``). A schema whose space cannot be
+read -- one declaring none, or one registered only by code another process ran --
+is drawn as pixels with a warning, because refusing would stop a legitimate
+render over a fact the rendering process cannot see.
 
 ``center_mode="xy"`` is that fallback asked for outright: a request for the body
 centre that never consults pose even where pose exists, and that therefore
@@ -35,8 +39,11 @@ from mosaic.behavior.visualization_library.helpers import require_pixel_position
 from mosaic.behavior.visualization_library.interaction_crop import (
     InteractionCropPipeline,
 )
+from mosaic.behavior.visualization_library.playback import build_overlay
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.tracks_index import write_tracks_row
+from mosaic.core.schema import TRACK_SCHEMAS, TrackSchema, register_track_schema
 
 
 def _centroid_table(n: int = 5) -> pd.DataFrame:
@@ -153,6 +160,137 @@ def test_an_unrecorded_schema_is_read_as_the_legacy_one(tmp_path: Path) -> None:
     ds = _dataset_recording(tmp_path, "")
     with pytest.raises(ValueError, match="upgrade-tracks"):
         require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_a_centimetre_table_without_a_pixel_factor_refuses(tmp_path: Path) -> None:
+    """``mosaic_cm_v1`` used to pass: the guard only knew the ``trex_v1`` family."""
+    ds = _dataset_recording(tmp_path, "mosaic_cm_v1")
+    with pytest.raises(ValueError, match="centimetres"):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_an_unregistered_schema_warns_and_is_drawn_as_pixels(tmp_path: Path) -> None:
+    """The process that renders is often not the one that registered the schema."""
+    ds = _dataset_recording(tmp_path, "never_registered_v1")
+    with pytest.warns(UserWarning, match="never_registered_v1"):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+def test_a_schema_declaring_no_space_warns_and_is_drawn_as_pixels(
+    tmp_path: Path,
+) -> None:
+    register_track_schema(TrackSchema(name="spaceless_root", required={"frame"}))
+    try:
+        ds = _dataset_recording(tmp_path, "spaceless_root")
+        with pytest.warns(UserWarning, match="spaceless_root"):
+            require_pixel_positions(ds, "", "seq", "who")
+    finally:
+        _ = TRACK_SCHEMAS.pop("spaceless_root", None)
+
+
+def test_the_schema_of_the_table_in_hand_wins_over_the_index(tmp_path: Path) -> None:
+    """A feature knows which table it was handed; the index row may be another."""
+    ds = _dataset_recording(tmp_path, "trex_v1")
+    require_pixel_positions(ds, "", "seq", "who", schema="mosaic_v1")
+    with pytest.raises(ValueError, match="centimetres"):
+        require_pixel_positions(ds, "", "seq", "who", schema="mosaic_cm_v1")
+
+
+def _add_pixel_variant(ds: Dataset) -> str:
+    """A second variant of the entry, in pixels; returns its run id."""
+    run_id = "convert-y.0.1-bbbbbbbbbb"
+    out = ds.get_root("tracks") / "seq_pixels.parquet"
+    _centroid_table().to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id=run_id,
+        group="",
+        sequence="seq",
+        out_path=out,
+        producer="convert-y",
+        std_format="mosaic_v1",
+        n_rows=5,
+    )
+    return run_id
+
+
+def test_the_guard_judges_the_variant_that_was_read(tmp_path: Path) -> None:
+    """Two variants of one entry: the first index row is not necessarily the one."""
+    ds = _dataset_recording(tmp_path, "mosaic_cm_v1")
+    pixels = _add_pixel_variant(ds)
+    require_pixel_positions(ds, "", "seq", "who", tracks_run_id=pixels)
+    with pytest.raises(ValueError, match="centimetres"):
+        require_pixel_positions(
+            ds, "", "seq", "who", tracks_run_id="convert-x.0.1-aaaaaaaaaa"
+        )
+    with pytest.raises(ValueError):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
+@pytest.mark.parametrize(
+    ("crop_type", "run"),
+    [(EgocentricCrop, "transform"), (InteractionCropPipeline, "apply")],
+)
+def test_a_posed_centimetre_table_refuses_in_the_default_mode(
+    tmp_path: Path,
+    crop_type: type[EgocentricCrop] | type[InteractionCropPipeline],
+    run: str,
+) -> None:
+    """Keypoints are no safer than ``X``: in ``trex_v1`` both are centimetres.
+
+    The gate used to run only without keypoints or under ``"xy"``, so a
+    ``trex_v1`` table -- which always has keypoints -- was cropped around its
+    centimetre keypoints with nothing raising.
+    """
+    ds = _dataset_recording(tmp_path, "trex_v1", table=_posed_table())
+    crop = crop_type(params={"angle_col": "ANGLE"})
+    crop.bind_dataset(ds)
+    with pytest.raises(ValueError, match="upgrade-tracks"):
+        _ = getattr(crop, run)(_posed_table())
+
+
+@pytest.mark.parametrize(
+    ("crop_type", "run"),
+    [(EgocentricCrop, "transform"), (InteractionCropPipeline, "apply")],
+)
+def test_a_crop_reads_the_schema_off_its_scope(
+    tmp_path: Path,
+    crop_type: type[EgocentricCrop] | type[InteractionCropPipeline],
+    run: str,
+) -> None:
+    """The scope names the schema of the table the run resolved for the entry."""
+    ds = _dataset_recording(tmp_path, "mosaic_v1", table=_posed_table())
+    crop = crop_type(params={"angle_col": "ANGLE"})
+    crop.bind_dataset(ds)
+    crop.set_scope(ResolvedScope(tracks_schemas={("", "seq"): "mosaic_cm_v1"}))
+    with pytest.raises(ValueError, match="centimetres"):
+        _ = getattr(crop, run)(_posed_table())
+
+
+@pytest.mark.parametrize("std_format", ["trex_v1", "mosaic_cm_v1"])
+def test_the_overlay_refuses_a_posed_centimetre_table(
+    tmp_path: Path, std_format: str
+) -> None:
+    """The overlay's gate also ran only for keypoint-less tables."""
+    ds = _dataset_recording(tmp_path, std_format, table=_posed_table())
+    with pytest.raises(ValueError, match="centimetres"):
+        _ = build_overlay(ds, "", "seq", {}, label_kind=None)
+
+
+def test_the_overlay_judges_the_pinned_variant(tmp_path: Path) -> None:
+    """A pinned pixel variant draws although another variant of the entry is cm."""
+    ds = _dataset_recording(tmp_path, "mosaic_cm_v1")
+    pixels = _add_pixel_variant(ds)
+    _ = build_overlay(ds, "", "seq", {}, label_kind=None, tracks_run_id=pixels)
+    with pytest.raises(ValueError, match="centimetres"):
+        _ = build_overlay(
+            ds,
+            "",
+            "seq",
+            {},
+            label_kind=None,
+            tracks_run_id="convert-x.0.1-aaaaaaaaaa",
+        )
 
 
 # ---------------------------------------------------------------------------

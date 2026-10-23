@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional, Iterable, Any, Tuple
 import cv2
 
-from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.user_paths import user_path
 
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels
@@ -33,7 +32,7 @@ def build_overlay(
     hide_unlabeled: bool = False,
     visualization_spec: Optional[dict[str, Any]] = None,
     tracks_run_id: Optional[str] = None,
-) -> Tuple[dict, Any, Dict[str, Any]]:
+) -> Tuple[dict[str, Any], Any, Dict[str, Any]]:
     """Build a base overlay (and optional spec layers), returning overlay/tracks/labels."""
     tracks_df, labels = load_tracks_and_labels(
         ds, group, sequence, feature_runs, tracks_run_id=tracks_run_id
@@ -53,10 +52,9 @@ def build_overlay(
         except FileNotFoundError as exc:
             print(f"[build_overlay] warning: {exc}")
 
-    if not pose_column_pairs(tracks_df.columns):
-        # With no keypoints the overlay falls back to drawing the centroid ring,
-        # which reads X/Y as pixels. Refuse where they are not.
-        require_pixel_positions(ds, group, sequence, "overlay")
+    # Keypoints and the centroid ring alike are drawn as pixels, and in every
+    # schema family both are in the same space. Refuse where they are centimetres.
+    require_pixel_positions(ds, group, sequence, "overlay", tracks_run_id=tracks_run_id)
 
     overlay = prepare_overlay(
         tracks_df, labels, gt_df=gt_df, color_by=color_by, hide_unlabeled=hide_unlabeled

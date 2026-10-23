@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
+from typing import Final, Literal
 
 import pandas as pd
 
@@ -14,13 +15,16 @@ __all__ = [
     "DERIVED_COLUMNS",
     "LEGACY_SCHEMA",
     "TRACK_SCHEMAS",
+    "TRACK_SPACES",
     "ForbiddenTrackColumnError",
     "TrackSchema",
     "TrackSchemaError",
+    "TrackSpace",
     "UnknownTrackSchemaError",
     "ensure_track_schema",
     "register_track_schema",
     "schema_family",
+    "schema_space",
 ]
 
 LEGACY_SCHEMA = "trex_v1"
@@ -32,6 +36,26 @@ has to decide what an unrecorded schema means reads it from here, so the two
 that ask -- the scope check in ``pipeline.manifest`` and the crop features'
 units guard -- cannot drift into answering differently.
 """
+
+
+type TrackSpace = Literal["image_px", "plane_cm"]
+"""What a table's spatial columns are measured in.
+
+- ``"image_px"`` -- video pixels of the view the producer read. ``mosaic_v1`` and
+  everything extending it. The only space a coordinate may be *drawn* in as it
+  stands: an overlay or a crop places it on the frame directly.
+- ``"plane_cm"`` -- centimetres in the image plane, for archived tables whose
+  pixel factor cannot be recovered (``mosaic_cm_v1``, ``trex_v1``). Nothing draws
+  it, though a planar feature computes in it.
+
+Declared on a schema family rather than inferred from columns, because the two
+spaces are indistinguishable by their columns -- a centimetre table and a pixel
+table both carry ``X`` and ``Y`` -- and the difference reads as a plausible
+number either way.
+"""
+
+TRACK_SPACES: Final[tuple[TrackSpace, ...]] = ("image_px", "plane_cm")
+"""Every :data:`TrackSpace`, in a stable order for messages and iteration."""
 
 
 @dataclass(frozen=True)
@@ -74,6 +98,7 @@ class TrackSchema:
     forbidden: AbstractSet[str] = _NO_COLUMNS
     extends: str | None = None
     allows: AbstractSet[str] = _NO_COLUMNS
+    space: TrackSpace | None = None
     description: str = ""
 
 
@@ -91,6 +116,8 @@ def register_track_schema(schema: TrackSchema) -> None:
         UnknownTrackSchemaError: If ``extends`` names a schema that is not
             registered yet. Registration order is therefore base-before-derived,
             which is also the order they read in.
+        TrackSchemaError: If an extension declares a ``space`` different from its
+            base's. A family is one space: register a root schema for another.
     """
     if schema.extends is not None:
         base = TRACK_SCHEMAS.get(schema.extends)
@@ -100,12 +127,23 @@ def register_track_schema(schema: TrackSchema) -> None:
                 f"Schema {schema.name!r} extends {schema.extends!r}, which is not "
                 f"registered. Known: {known}"
             )
+        if (
+            schema.space is not None
+            and base.space is not None
+            and schema.space != base.space
+        ):
+            raise TrackSchemaError(
+                f"Schema {schema.name!r} declares space {schema.space!r}, but it "
+                f"extends {base.name!r}, whose space is {base.space!r}. A family is "
+                f"one space: register a root schema for a different one."
+            )
         schema = replace(
             schema,
             required=base.required | schema.required,
             required_prefixes=base.required_prefixes | schema.required_prefixes,
             recommended=base.recommended | schema.recommended,
             forbidden=(base.forbidden | schema.forbidden) - schema.allows,
+            space=base.space if base.space is not None else schema.space,
         )
     TRACK_SCHEMAS[schema.name] = schema
 
@@ -179,6 +217,21 @@ def schema_family(schema_name: str) -> str:
             return current
         current = schema.extends
     return current
+
+
+def schema_space(schema_name: str) -> TrackSpace | None:
+    """The :data:`TrackSpace` of *schema_name*'s family, or ``None`` if unknown.
+
+    A blank name is the legacy schema, the same reading ``schema_family``'s
+    callers give an index row written before the column existed. Total, like
+    ``schema_family``: a name that is not registered in this process, or a
+    schema that declares no space, answers ``None`` rather than raising. A caller
+    deciding whether to *draw* a table treats ``None`` as "cannot say" and warns,
+    because refusing would stop a legitimate pixel table whose schema was
+    registered by code this process never ran.
+    """
+    schema = TRACK_SCHEMAS.get(schema_family(schema_name or LEGACY_SCHEMA))
+    return None if schema is None else schema.space
 
 
 def ensure_track_schema(
@@ -289,6 +342,7 @@ register_track_schema(
             "SPEED",
             "ANGLE",
         },
+        space="plane_cm",
         description="Minimal T-Rex-like per-frame, per-id tracks with centroid/pose columns. "
         "`group` is required but may be empty (an optional namespace, not the "
         "canonical grouping -- use tags / run_feature(scope=Scope(entries=...)) "
@@ -359,6 +413,7 @@ register_track_schema(
         name="mosaic_v1",
         required=STANDARD_COLUMNS,
         forbidden=DERIVED_COLUMNS,
+        space="image_px",
         description=(
             "The tracker-neutral standard: per-frame, per-id tracks in video "
             "pixels. `X`/`Y` are the individual's body center -- for a pose-only "
@@ -397,6 +452,7 @@ register_track_schema(
         name="mosaic_cm_v1",
         required=STANDARD_COLUMNS,
         allows=DERIVED_COLUMNS,
+        space="plane_cm",
         description=(
             "The same contract as `trex_v2`, in centimeters rather than pixels, "
             "with `X`/`Y` still the body center. Use it for archived data whose "

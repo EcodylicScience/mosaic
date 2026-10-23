@@ -102,6 +102,14 @@ in the root guide.
   `STANDARD_COLUMNS` instead, to stay out of the pixel family. `LEGACY_SCHEMA` is what a
   blank recorded schema means. That schema, `trex_v1` (centimeters, `X` at the head),
   stays registered so archived datasets keep resolving. Do not use it for new data.
+- **A schema family declares its `space`**, `image_px` or `plane_cm`, and an extension
+  inherits it and may not change it. `space` is optional, so a third-party root schema
+  registers without one. The overlay and the crops refuse a `plane_cm` table, and draw a
+  table of unknown space (no `space`, or a schema this process never registered) as pixels
+  with a warning (`require_pixel_positions`,
+  `tests/behavior/visualization_library/test_crop_centroid_fallback.py`). They judge the
+  table they were handed, from `ResolvedScope.tracks_schemas` or the variant the caller
+  pinned. A blank schema is `LEGACY_SCHEMA`, so it is refused.
 - A converter receives its entry through `EntryHints`, which is not a `Params` and is
   not hashed (`test_no_converter_can_hash_an_entry_name`). Its `fps` is the measured
   frame rate of the media the tool read, `None` when unmeasured.

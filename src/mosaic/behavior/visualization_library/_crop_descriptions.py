@@ -20,10 +20,11 @@ CENTER_MODE_DESCRIPTION = (
     "the body center where the table has no pose columns. xy uses the body "
     "center alone, even where pose points exist. pose0 uses the first pose "
     "point, and an integer names a specific pose point index. Reading the "
-    "body center needs pixel coordinates. A run refuses an entry recorded "
-    "on the centimeter-era trex_v1 schema under xy, and under any mode "
-    "where the table has no pose columns. An unrecorded schema is read as "
-    "trex_v1."
+    "body center needs pixel coordinates, and so do the pose points. A run "
+    "refuses an entry recorded in centimeters (the trex_v1 and mosaic_cm_v1 "
+    "schemas) under every mode. An unrecorded schema is read as trex_v1. A "
+    "schema that declares no coordinate space is cropped as pixels, with a "
+    "warning."
 )
 
 CROP_SIZE_DESCRIPTION = "Width and height of the output crop."

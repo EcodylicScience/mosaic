@@ -19,6 +19,11 @@ centimeters, for archived data whose factor cannot be recovered. It is its own s
 family, and a feature run whose scope resolves both families is refused rather than
 mixed.
 
+Each schema family declares its coordinate space, pixels or centimeters, and the overlay
+and the crop features refuse a table in centimeters, because a marker placed at those
+coordinates lands somewhere else in the frame. A table whose schema declares no space is
+drawn as pixels, with a warning. Convert a `trex_v1` table with `mosaic upgrade-tracks`.
+
 ## `X` and `Y` are the body center
 
 On every tracker. For a pose-only tracker that is the mean of the frame's keypoints;

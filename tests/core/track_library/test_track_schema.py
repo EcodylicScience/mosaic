@@ -27,6 +27,7 @@ from mosaic.core.pipeline.types import Inputs
 from mosaic.core.schema import (
     DERIVED_COLUMNS,
     TRACK_SCHEMAS,
+    TRACK_SPACES,
     ForbiddenTrackColumnError,
     TrackSchema,
     TrackSchemaError,
@@ -34,6 +35,7 @@ from mosaic.core.schema import (
     ensure_track_schema,
     register_track_schema,
     schema_family,
+    schema_space,
 )
 from mosaic.core.scope import Scope
 
@@ -358,3 +360,56 @@ def test_an_unrecorded_schema_still_refuses_beside_a_pixel_native_one(
     ds = _dataset_mixing(tmp_path, "", "mosaic_v1")
     with pytest.raises(ValueError, match="incompatible schemas"):
         _ = build_manifest(ds, Inputs(("tracks",)))
+
+
+# -- Track spaces -------------------------------------------------------------
+
+
+def test_every_built_in_schema_declares_a_space() -> None:
+    """A family is one space; a built-in with none would be guessed at downstream."""
+    for name in ("trex_v1", "trex_v2", "mosaic_v1", "mosaic_cm_v1"):
+        assert TRACK_SCHEMAS[name].space in TRACK_SPACES, name
+
+
+def test_the_built_in_spaces() -> None:
+    assert schema_space("mosaic_v1") == "image_px"
+    assert schema_space("trex_v2") == "image_px"
+    assert schema_space("mosaic_cm_v1") == "plane_cm"
+    assert schema_space("trex_v1") == "plane_cm"
+
+
+def test_an_unrecorded_schema_is_read_as_the_legacy_space() -> None:
+    """The blank cell an old index row carries is ``trex_v1``, in centimetres."""
+    assert schema_space("") == "plane_cm"
+
+
+def test_an_unknown_schema_has_no_space_rather_than_raising() -> None:
+    assert schema_space("never_registered") is None
+
+
+def test_a_root_schema_may_declare_no_space() -> None:
+    """Optional, so a plugin schema registers without a contract change."""
+    try:
+        register_track_schema(TrackSchema(name="spaceless_root", required={"frame"}))
+        assert TRACK_SCHEMAS["spaceless_root"].space is None
+        assert schema_space("spaceless_root") is None
+    finally:
+        _ = TRACK_SCHEMAS.pop("spaceless_root", None)
+
+
+def test_an_extension_inherits_its_base_space() -> None:
+    try:
+        register_track_schema(
+            TrackSchema(name="pixel_extension", extends="mosaic_v1", allows={"ANGLE"})
+        )
+        assert TRACK_SCHEMAS["pixel_extension"].space == "image_px"
+    finally:
+        _ = TRACK_SCHEMAS.pop("pixel_extension", None)
+
+
+def test_an_extension_may_not_change_its_base_space() -> None:
+    with pytest.raises(TrackSchemaError, match="one space"):
+        register_track_schema(
+            TrackSchema(name="relabelled", extends="mosaic_v1", space="plane_cm")
+        )
+    assert "relabelled" not in TRACK_SCHEMAS

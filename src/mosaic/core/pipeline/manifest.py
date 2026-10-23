@@ -101,6 +101,9 @@ class ResolvedInput:
         tracks_variants: Which tracks recipes produced them. Only ever non-empty
             for the tracks resolver; a feature input's own identity is already
             pinned in ``Inputs`` by ``resolve_references``.
+        tracks_schemas: The schema each entry in ``entries`` records, for the
+            tracks resolver only. What ``ResolvedScope.tracks_schemas`` is
+            narrowed from.
     """
 
     entries: set[tuple[str, str]]
@@ -108,6 +111,7 @@ class ResolvedInput:
     full_order: list[tuple[str, str]]
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]]
     tracks_variants: tuple[str, ...] = ()
+    tracks_schemas: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
 def _ensure_track_shaped(
@@ -221,10 +225,12 @@ def build_manifest(
     first_full_order: list[tuple[str, str]] = []
 
     variants: tuple[str, ...] = ()
+    tracks_schemas: dict[tuple[str, str], str] = {}
     for i, item in enumerate(inputs.root):
         if item == "tracks":
             input_result = _resolve_tracks(ds, tracks_run_id, selector, on_missing_run)
             variants = input_result.tracks_variants
+            tracks_schemas = input_result.tracks_schemas
         else:
             input_result = _resolve_feature(
                 ds,
@@ -260,6 +266,11 @@ def build_manifest(
         selector=selector,
         tracks_variants=variants,
         compositions=read_entry_compositions(ds, shared_entries),
+        tracks_schemas={
+            entry: schema
+            for entry, schema in tracks_schemas.items()
+            if entry in shared_entries
+        },
     )
 
     # Build per-group ordering: the universe from the first input, the *order*
@@ -610,7 +621,12 @@ def _resolve_tracks(
     _refuse_mixed_schemas(scoped, schema_by_entry)
 
     return ResolvedInput(
-        scoped, path_map, full_order, path_map_all, tuple(sorted(resolved_variants))
+        scoped,
+        path_map,
+        full_order,
+        path_map_all,
+        tuple(sorted(resolved_variants)),
+        {entry: schema_by_entry[entry] for entry in scoped},
     )
 
 
