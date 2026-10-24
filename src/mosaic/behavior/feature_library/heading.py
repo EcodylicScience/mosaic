@@ -97,6 +97,7 @@ class HeadingFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    temporal_reach = 0  # one heading per row from its keypoints
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

@@ -34,6 +34,7 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.parallelism import ParallelLimits, ParallelRefused
 
+from .dataset_tools import missing_field
 from .spec import (
     LISTED_STATUS_NOT,
     LISTING_MISSING_SAMPLE,
@@ -45,6 +46,7 @@ from .spec import (
     AttemptDiagnosis,
     CancelRequestInput,
     ConfirmationFinding,
+    DatasetChange,
     DatasetList,
     DatasetListItem,
     DescribeDatasetInput,
@@ -53,13 +55,15 @@ from .spec import (
     FailureDiagnosis,
     GetInventoryInput,
     GetRequestStatusInput,
-    GroupSelector,
     ListActivityInput,
     ListDatasetsInput,
     ListSequencesInput,
+    ManageDatasetInput,
+    PatchRecipeInput,
     PlanRecipeInput,
     PreviewOutputInput,
     RunSummary,
+    ScopeSelector,
     SequencePage,
     SequenceRow,
     SubmitPipelineInput,
@@ -89,6 +93,7 @@ if TYPE_CHECKING:
         DeclarationCatalog,
         DetachedDriver,
         Plan,
+        PlannedStep,
         PlanWire,
         Recipe,
         RecordedErrorWire,
@@ -103,7 +108,7 @@ if TYPE_CHECKING:
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
     from .config import CleanupClass
-    from .outputs import PlanPage, StepSuggestions, StepTypes
+    from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 
 __all__ = [
     "POLL_AFTER_MIN_SECONDS",
@@ -130,6 +135,9 @@ POLL_AFTER_SECONDS: Final = POLL_AFTER_MIN_SECONDS
 
 POLL_AFTER_TRAINING_SECONDS: Final = 60
 """How long a client waits before polling a request that trains on a GPU."""
+
+_EVALUATE_LABELS: Final = "evaluate-labels"
+"""The one feature that scores a model's output against labels."""
 
 type DriverStarter = Callable[[Dataset, Request, ParallelSettings], DetachedDriver]
 """What starts the process driving a submitted request, given its parallelism."""
@@ -185,6 +193,8 @@ class LocalBackend:
         allow_cleanup: frozenset[CleanupClass] = frozenset(),
         cleanup_policy: CleanupPolicy | None = None,
         parallel_limits: ParallelLimits | None = None,
+        dataset_roots: Sequence[Path] = (),
+        source_roots: Sequence[Path] = (),
     ) -> None:
         """Serve the datasets of *manifests*.
 
@@ -205,6 +215,11 @@ class LocalBackend:
             start_driver: What starts the driver of a submitted request.
                 :func:`~mosaic.core.pipeline.graph.start_detached_driver` when
                 ``None``.
+            dataset_roots: The directories inside which ``manage_dataset`` may
+                create a dataset, fixed by the operator. A dataset found below
+                one is served, and one created while serving is served at once.
+            source_roots: The directories inside which ``manage_dataset`` may
+                declare a source, fixed by the operator.
         """
         self._manifests: tuple[Path, ...] = tuple(manifests)
         self._allow_managed: bool = allow_managed
@@ -214,7 +229,14 @@ class LocalBackend:
             ParallelLimits() if parallel_limits is None else parallel_limits
         )
         self._start_driver: DriverStarter | None = start_driver
+        self._dataset_roots: tuple[Path, ...] = tuple(
+            root.resolve() for root in dataset_roots
+        )
+        self._source_roots: tuple[Path, ...] = tuple(
+            root.resolve() for root in source_roots
+        )
         self._served: dict[str, _Served] | None = None
+        self._looked_at: set[Path] = set()
         self._served_lock: threading.Lock = threading.Lock()
         self._catalog_lock: threading.Lock = threading.Lock()
         self._contributors_registered: bool = False
@@ -317,6 +339,10 @@ class LocalBackend:
         """Answer ``suggest_steps``."""
         return answer(lambda: self._suggest_steps(args))
 
+    def patch_recipe(self, args: PatchRecipeInput) -> ToolResult[PatchedRecipe]:
+        """Answer ``patch_recipe``."""
+        return answer(lambda: self._patch_recipe(args))
+
     def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
         return answer(lambda: self._plan_recipe(args))
@@ -351,11 +377,16 @@ class LocalBackend:
         """Answer ``preview_output``."""
         return answer(lambda: self._preview_output(args))
 
+    def manage_dataset(self, args: ManageDatasetInput) -> ToolResult[DatasetChange]:
+        """Answer ``manage_dataset``."""
+        return answer(lambda: self._manage_dataset(args))
+
     # ------------------------------------------------------------- datasets
 
     def _list_datasets(self, args: ListDatasetsInput) -> DatasetList:
         from mosaic.core.pipeline.inventory import reportable_universe
 
+        self._serve_new_datasets()
         current = [
             (held, _current_manifest(held)) for held in self._datasets().values()
         ]
@@ -559,9 +590,17 @@ class LocalBackend:
             raise ToolFailure(error_envelope(error)) from error
 
     def _validate_recipe(self, args: ValidateRecipeInput) -> ValidationReport:
-        from mosaic.core.pipeline.graph import validation_report
+        from mosaic.core.pipeline.graph import (
+            canonical_recipe,
+            recipe_reference,
+            validation_report,
+        )
 
-        return validation_report(args.recipe, self._declarations())
+        if recipe_reference(args.recipe) is None:
+            # Sent whole, it is reported and not refused when it does not parse.
+            return validation_report(args.recipe, self._declarations())
+        recipe = self._recipe(args.recipe, args.dataset)
+        return validation_report(canonical_recipe(recipe), self._declarations())
 
     def _suggest_steps(self, args: SuggestStepsInput) -> StepSuggestions:
         from mosaic.core.pipeline.graph import (
@@ -572,7 +611,7 @@ class LocalBackend:
 
         from .outputs import StepSuggestions
 
-        recipe = _recipe(args.recipe)
+        recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
         if args.mode == "input":
             if args.step is None:
@@ -620,26 +659,84 @@ class LocalBackend:
             refused=len(candidates) - len(steps),
         )
 
+    def _patch_recipe(self, args: PatchRecipeInput) -> PatchedRecipe:
+        from mosaic.core.pipeline.graph import (
+            canonical_recipe,
+            patch_recipe,
+            save_recipe,
+            validation_report,
+        )
+
+        from .outputs import PatchedRecipe
+
+        held = self._dataset(args.dataset)
+        dataset = self._changeable(held, "patch_recipe")
+        patched = patch_recipe(self._recipe(args.base, args.dataset), args.ops)
+        _ = save_recipe(dataset.base_dir, patched)
+        report = validation_report(canonical_recipe(patched), self._declarations())
+        return PatchedRecipe(
+            **report.model_dump(),
+            name=patched.name,
+            steps_total=len(patched.steps),
+        )
+
+    def _recipe(self, document: object, dataset: str | None) -> Recipe:
+        """Parse *document*, or read the saved recipe it names in *dataset*.
+
+        Raises:
+            ToolFailure: It names a saved recipe and no dataset is given.
+            RecipeInvalid: It does not parse.
+            RecipeNotSaved: The dataset has no saved recipe it names.
+            RecipeNameAmbiguous: It names several saved recipes by name.
+        """
+        from mosaic.core.pipeline.graph import (
+            read_recipe,
+            recipe_reference,
+            resolve_saved_recipe,
+        )
+
+        reference = recipe_reference(document)
+        if reference is None:
+            return read_recipe(document)
+        if dataset is None:
+            raise ToolFailure(
+                ErrorEnvelope(
+                    kind="invalid",
+                    reason="dataset_required",
+                    message=(
+                        "a recipe named by digest or saved name is read from a "
+                        "dataset: pass its dataset"
+                    ),
+                    detail={"field": "dataset"},
+                )
+            )
+        return resolve_saved_recipe(self._dataset(dataset).dataset.base_dir, reference)
+
     # ------------------------------------------------------------- planning
 
     def _plan_recipe(self, args: PlanRecipeInput) -> PlanPage:
         from mosaic.core.pipeline.graph import (
+            assume_added_cautions,
             plan_wire,
             plan_with_cleanup,
             requests_matching,
             retirable_recipes,
         )
+        from mosaic.core.dataset import open_dataset
         from mosaic.core.pipeline.index import feature_run_root
         from mosaic.core.scope import Scope
 
         held = self._dataset(args.dataset)
-        recipe = _recipe(args.recipe)
+        recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
         scope = _scope(args.entries)
+        # Opened again, as ``_describe_dataset`` does, so that the manifest fields
+        # (the split roles above all) are those on disk now and not at start.
+        dataset = open_dataset(held.manifest, ensure_roots=False)
         with held.lock:
             # A read, so it needs no --allow-cleanup.
             plan = plan_with_cleanup(
-                held.dataset,
+                dataset,
                 recipe,
                 cleanup=self._cleanup(args.cleanup),
                 scope=scope,
@@ -676,6 +773,9 @@ class LocalBackend:
             retirable=retirable,
             retirable_omitted=retirable_omitted,
             parallel=self._parallel_limits,
+            extra_cautions=assume_added_cautions(
+                recipe, plan, args.assume_added, scope=scope
+            ),
         )
         return _plan_page(wire, args.limit, args.cursor)
 
@@ -701,7 +801,7 @@ class LocalBackend:
             )
         except ParallelRefused as refused:
             raise ToolFailure(error_envelope(refused)) from refused
-        recipe = _recipe(args.recipe)
+        recipe = self._recipe(args.recipe, args.dataset)
         catalog = self._declarations()
         narrowing = _scope(args.entries) or Scope()
         step_scopes = _step_scopes(args.step_entries)
@@ -777,6 +877,155 @@ class LocalBackend:
             workers=parallel.workers,
             parallel_mode=parallel.mode,
         )
+
+    # ------------------------------------------------------------- datasets
+
+    def _manage_dataset(self, args: ManageDatasetInput) -> DatasetChange:
+        from mosaic.core.dataset_summary import dataset_next_steps
+
+        from .dataset_tools import PathRefused
+
+        try:
+            if args.action == "create":
+                held, message = self._create_dataset(args)
+                return self._change(args, held, message)
+            if args.dataset is None:
+                raise ToolFailure(missing_field(args.action, "dataset"))
+            held = self._dataset(args.dataset)
+            dataset = self._changeable(held, "manage_dataset")
+            scanned: dict[str, int] = {}
+            orphaned: int | None = None
+        except PathRefused as refused:
+            raise ToolFailure(refused.envelope) from refused
+        try:
+            match args.action:
+                case "add_source":
+                    message = self._add_source(dataset, args)
+                case "remove_source":
+                    orphaned = self._remove_source(dataset, args)
+                    message = (
+                        f"removed the {args.kind} source {args.source_id!r}; "
+                        f"{orphaned} index rows it claimed stay"
+                    )
+                case "scan":
+                    scanned = _scan(dataset, args)
+                    message = f"scanned {', '.join(scanned) or 'no declared source'}"
+                case "set_tags":
+                    message = _set_tags(dataset, args)
+        except PathRefused as refused:
+            raise ToolFailure(refused.envelope) from refused
+        finally:
+            # A scan that failed on a later kind kept what the earlier wrote.
+            self._reopened(held)
+        change = self._change(args, held, message)
+        return change.model_copy(
+            update={
+                "scanned": scanned,
+                "orphaned_rows": orphaned,
+                "next_steps": dataset_next_steps(held.dataset),
+            }
+        )
+
+    def _change(
+        self, args: ManageDatasetInput, held: _Served, message: str
+    ) -> DatasetChange:
+        from mosaic.core.dataset_summary import dataset_next_steps
+
+        return DatasetChange(
+            action=args.action,
+            dataset=held.uuid,
+            name=held.dataset.manifest.name,
+            manifest=str(held.manifest),
+            message=message,
+            next_steps=dataset_next_steps(held.dataset),
+        )
+
+    def _create_dataset(self, args: ManageDatasetInput) -> tuple[_Served, str]:
+        from mosaic.core.dataset import new_dataset_manifest
+
+        from .dataset_tools import confined_path, create_findings
+
+        if args.path is None:
+            raise ToolFailure(missing_field("create", "path"))
+        target = confined_path(args.path, self._dataset_roots, "dataset_roots")
+        manifest = target / "dataset.yaml"
+        taken = target.exists() and (not target.is_dir() or any(target.iterdir()))
+        if taken:
+            raise ToolFailure(_dataset_exists(target))
+        name = args.name or target.name
+        findings = create_findings(name, target)
+        if not args.confirm:
+            raise ToolFailure(confirmation_required("manage_dataset", findings))
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            # Claimed exclusively, so two calls for one path make one dataset.
+            manifest.open("x").close()
+        except FileExistsError as exists:
+            raise ToolFailure(_dataset_exists(target)) from exists
+        try:
+            written = new_dataset_manifest(name, target)
+        except BaseException:
+            manifest.unlink(missing_ok=True)
+            raise
+        held = self._attach(written)
+        if held is None:
+            msg = f"the dataset created at {written} does not open"
+            raise RuntimeError(msg)
+        return held, f"created the dataset {name!r} at {str(target)!r}"
+
+    def _add_source(self, dataset: Dataset, args: ManageDatasetInput) -> str:
+        from mosaic.core.source_fields import (
+            SourceFieldsInvalid,
+            scan_source_from_fields,
+        )
+
+        from .dataset_tools import (
+            confined_path,
+            refuse_escaping_globs,
+            source_fields_of,
+            source_findings,
+        )
+
+        if args.kind is None:
+            raise ToolFailure(missing_field("add_source", "kind"))
+        if args.path is None:
+            raise ToolFailure(missing_field("add_source", "path"))
+        path = confined_path(args.path, self._source_roots, "source_roots")
+        refuse_escaping_globs(args)
+        try:
+            source = scan_source_from_fields(source_fields_of(args, path))
+        except SourceFieldsInvalid as invalid:
+            raise ToolFailure(_invalid_source(str(invalid))) from invalid
+        findings = source_findings("add_source", args.kind, source.id, str(path))
+        if not args.confirm:
+            raise ToolFailure(confirmation_required("manage_dataset", findings))
+        try:
+            dataset.declare_scan_source(source)
+        except ValueError as invalid:
+            raise ToolFailure(_invalid_source(str(invalid))) from invalid
+        return f"declared the {args.kind} source {source.id!r} ({source.mode}) at {str(path)!r}"
+
+    def _remove_source(self, dataset: Dataset, args: ManageDatasetInput) -> int:
+        from .dataset_tools import source_findings
+
+        if args.kind is None:
+            raise ToolFailure(missing_field("remove_source", "kind"))
+        if args.source_id is None:
+            raise ToolFailure(missing_field("remove_source", "source_id"))
+        findings = source_findings("remove_source", args.kind, args.source_id, None)
+        if not args.confirm:
+            raise ToolFailure(confirmation_required("manage_dataset", findings))
+        try:
+            return dataset.undeclare_scan_source(args.kind, args.source_id)
+        except KeyError as unknown:
+            raise ToolFailure(
+                ErrorEnvelope(
+                    kind="not_found",
+                    reason="unknown_source",
+                    message=str(unknown.args[0]),
+                    detail={"kind": args.kind, "source_id": args.source_id},
+                )
+            ) from unknown
 
     # ------------------------------------------------------------- requests
 
@@ -890,18 +1139,75 @@ class LocalBackend:
         with self._served_lock:
             if self._served is None:
                 self._served = _open_allowlist(self._manifests)
-            return self._served
+            # A copy, so a reader iterates a snapshot while _attach adds one.
+            return dict(self._served)
 
     def _dataset(self, uuid: str) -> _Served:
         """Return the served dataset *uuid*.
+
+        A dataset made below a dataset root since the last look is served first.
 
         Raises:
             ToolFailure: The allowlist names no dataset *uuid*.
         """
         held = self._datasets().get(uuid)
+        if held is None and self._dataset_roots:
+            self._serve_new_datasets()
+            held = self._datasets().get(uuid)
         if held is None:
             raise ToolFailure(unknown_dataset(uuid))
         return held
+
+    def _serve_new_datasets(self) -> None:
+        """Serve each dataset below a dataset root that is not served yet."""
+        from mosaic.core.dataset_discovery import (
+            DEFAULT_DISCOVERY_DEPTH,
+            discover_datasets,
+        )
+
+        if not self._dataset_roots:
+            return
+        served = {held.manifest.resolve() for held in self._datasets().values()}
+        for root in self._dataset_roots:
+            for found in discover_datasets(root, max_depth=DEFAULT_DISCOVERY_DEPTH):
+                manifest = Path(found.manifest).resolve()
+                if (
+                    found.error is None
+                    and found.uuid
+                    and manifest not in served
+                    and manifest not in self._looked_at
+                ):
+                    # Looked at once: a copy repeating a served uuid is not
+                    # opened again on every listing.
+                    self._looked_at.add(manifest)
+                    _ = self._attach(manifest)
+                    served.add(manifest)
+
+    def _attach(self, manifest: Path) -> _Served | None:
+        """Serve the dataset of *manifest* from now on, and return it.
+
+        ``None`` when it does not open or has no uuid. A uuid already served
+        keeps the dataset served first.
+        """
+        added = _open_allowlist([manifest])
+        _ = self._datasets()
+        with self._served_lock:
+            assert self._served is not None
+            for uuid, held in added.items():
+                if uuid in self._served:
+                    return self._served[uuid]
+                self._served = {**self._served, uuid: held}
+                return held
+        return None
+
+    def _reopened(self, held: _Served) -> None:
+        """Read *held*'s manifest again after a change, so every tool sees it."""
+        from mosaic.core.dataset import open_dataset
+
+        dataset = open_dataset(held.manifest, ensure_roots=False)
+        with held.lock:
+            held.dataset = dataset
+            held.cache = None
 
     def _cleanup(self, mode: str) -> CleanupPolicy | None:
         """The operator's cleanup policy when *mode* asks for one, else ``None``."""
@@ -1199,37 +1505,44 @@ def _cursor_key(cursor: str) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def _scope(entries: list[tuple[str, str]] | GroupSelector | None) -> Scope | None:
-    """Return the scope naming *entries* or groups, ``None`` for the whole dataset."""
+def _scope(entries: list[tuple[str, str]] | ScopeSelector | None) -> Scope | None:
+    """Return the scope naming *entries*, ``None`` for the whole dataset.
+
+    A bare list names entries, and a selector is the library's scope.
+    """
     from mosaic.core.scope import Scope
 
     if entries is None:
         return None
-    if isinstance(entries, GroupSelector):
-        return Scope(groups=list(entries.groups))
+    if isinstance(entries, ScopeSelector):
+        return Scope(
+            entries=None if entries.entries is None else list(entries.entries),
+            groups=entries.groups,
+            sequences=entries.sequences,
+        )
     return Scope(entries=list(entries))
 
 
 def _entry_scope(
-    dataset: Dataset, entries: list[tuple[str, str]] | GroupSelector | None
+    dataset: Dataset, entries: list[tuple[str, str]] | ScopeSelector | None
 ) -> Scope | None:
-    """Return the scope naming *entries*, a groups selector enumerated to entries.
+    """Return the scope naming *entries*, a groups or sequences selector enumerated.
 
     The inventory narrows a tracks or labels variant by named entries alone,
-    so a groups selector is resolved against the dataset's entries first, and
-    every kind of artifact is narrowed alike.
+    so a selector is resolved against the dataset's entries first, and every
+    kind of artifact is narrowed alike.
     """
     from mosaic.core.pipeline.inventory.scan import narrow_target, reportable_universe
     from mosaic.core.scope import Scope
 
     scope = _scope(entries)
-    if scope is None or scope.groups is None:
+    if scope is None or scope.entries is not None:
         return scope
     return Scope(entries=sorted(narrow_target(reportable_universe(dataset), scope)))
 
 
 def _step_scopes(
-    step_entries: dict[str, list[tuple[str, str]] | GroupSelector] | None,
+    step_entries: dict[str, list[tuple[str, str]] | ScopeSelector] | None,
 ) -> dict[str, Scope]:
     """Return the scope narrowing each step that *step_entries* names."""
     found: dict[str, Scope] = {}
@@ -1240,11 +1553,90 @@ def _step_scopes(
     return found
 
 
-def _recipe(document: object) -> Recipe:
-    """Parse a recipe document, reporting a malformed one as its problems."""
-    from mosaic.core.pipeline.graph import read_recipe
+def _scan(dataset: Dataset, args: ManageDatasetInput) -> dict[str, int]:
+    """Scan what *args* name; the raw index rows of each kind scanned.
 
-    return read_recipe(document)
+    The kind given, or with ``source_id`` alone the kinds that declare it, or
+    every kind that declares a source.
+    """
+    from mosaic.core.dataset_summary import raw_label_rows
+    from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
+
+    declared = {
+        kind: {source.id for source in dataset.manifest.sources.of_kind(kind)}
+        for kind in ("media", "tracks", "labels")
+    }
+    if args.kind is not None:
+        kinds = [args.kind]
+    elif args.source_id is not None:
+        kinds = [kind for kind, ids in declared.items() if args.source_id in ids]
+    else:
+        kinds = [kind for kind, ids in declared.items() if ids]
+    if args.source_id is not None and not kinds:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="not_found",
+                reason="unknown_source",
+                message=f"no source named {args.source_id!r} is declared",
+                detail={"source_id": args.source_id},
+            )
+        )
+    only = () if args.source_id is None else (args.source_id,)
+    scanned: dict[str, int] = {}
+    for kind in kinds:
+        try:
+            if kind == "media":
+                _ = dataset.scan_media(only=only)
+                scanned[kind] = len(dataset.read_media_index())
+            elif kind == "tracks":
+                index = dataset.scan_tracks(only=only)
+                scanned[kind] = len(read_tracks_raw_index(index))
+            else:
+                _ = dataset.scan_labels(only=only)
+                scanned[kind] = raw_label_rows(dataset)
+        except (KeyError, ValueError, NotImplementedError) as invalid:
+            raise ToolFailure(_invalid_source(str(invalid))) from invalid
+    return scanned
+
+
+def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:
+    """Set and remove the tags *args* name, and say what changed."""
+    if not args.tags and not args.remove_tags:
+        raise ToolFailure(missing_field("set_tags", "tags or remove_tags"))
+    try:
+        dataset.update_tags(args.tags or {}, remove=args.remove_tags)
+    except (KeyError, ValueError) as invalid:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid",
+                reason="invalid_tag",
+                message=str(invalid.args[0]) if invalid.args else str(invalid),
+                detail={
+                    "tags": [name for name in sorted(args.tags or {})],
+                    "remove_tags": [name for name in args.remove_tags],
+                },
+            )
+        ) from invalid
+    changed = [*sorted(args.tags or {}), *(f"-{name}" for name in args.remove_tags)]
+    return f"tags changed: {', '.join(changed)}"
+
+
+def _dataset_exists(target: Path) -> ErrorEnvelope:
+    """Refuse a create where something already is."""
+    return ErrorEnvelope(
+        kind="conflict",
+        reason="dataset_exists",
+        message=(
+            f"{str(target)!r} is not an empty directory; a dataset is created in "
+            "a new or empty one"
+        ),
+        detail={"path": str(target)},
+    )
+
+
+def _invalid_source(message: str) -> ErrorEnvelope:
+    """Refuse a source that does not declare or scan."""
+    return ErrorEnvelope(kind="invalid", reason="invalid_source", message=message)
 
 
 def _submission_findings(
@@ -1289,6 +1681,7 @@ def _submission_findings(
                         f"step {planned.step_id!r} runs {planned.runs}",
                     )
                 )
+    findings.extend(_sealed_scoring_findings(plan))
     if args.allow_partial:
         findings.append(
             ConfirmationFinding("allow_partial", "the submission sets allow_partial")
@@ -1334,6 +1727,50 @@ def _submission_findings(
                 f"request(s) {', '.join(duplicates)} of this recipe have not ended",
             )
         )
+    return findings
+
+
+def _scores_against_labels(planned: PlannedStep) -> bool:
+    """Does *planned* score a model's output against labels?
+
+    That is ``evaluate-labels`` and nothing else. A step that merely has a labels
+    param is not one: ``id-tag-columns`` copies labels into tag columns, and a
+    classifier that applies a model reads none. A fitting step that reads labels
+    is the held-out guard's, which refuses it over any held-out group.
+    """
+    return planned.kind == "feature" and planned.runs == _EVALUATE_LABELS
+
+
+def _sealed_scoring_findings(plan: Plan) -> list[ConfirmationFinding]:
+    """Return a ``score_sealed`` finding for each step scoring a sealed group.
+
+    A step scores against labels (:func:`_scores_against_labels`) and its target
+    holds an entry of a group the manifest's ``splits`` give the role ``sealed``.
+    A ``test`` group does not count: scoring it is the protocol. The target is
+    the tracks entries of the plan, so this fires whether or not the sealed
+    group's labels are in the dataset. Keeping those labels outside it is what
+    protects the seal, and this finding is the second line.
+    """
+    from mosaic.core.pipeline.graph.plan import step_target
+    from mosaic.core.splits import groups_with_role
+
+    sealed = set(groups_with_role(plan.splits, "sealed"))
+    if not sealed:
+        return []
+    findings: list[ConfirmationFinding] = []
+    for planned in plan.steps:
+        if not _scores_against_labels(planned):
+            continue
+        reached = sorted({group for group, _ in step_target(planned, plan)} & sealed)
+        if reached:
+            groups = ", ".join(repr(group) for group in reached)
+            findings.append(
+                ConfirmationFinding(
+                    "score_sealed",
+                    f"step {planned.step_id!r} scores against labels over the "
+                    f"sealed group(s) {groups}",
+                )
+            )
     return findings
 
 

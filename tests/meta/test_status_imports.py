@@ -45,6 +45,8 @@ STATUS_IMPORTS = (
     "from mosaic.core.pipeline.graph import driver_alive, read_driver_lease",
     "import mosaic.core.pipeline.graph.liveness",
     "import mosaic.core.pipeline.graph.retirement",
+    "import mosaic.core.pipeline.graph.saved",
+    "import mosaic.core.pipeline.graph.patch",
     "from mosaic.core.pipeline.graph import retirable_recipes, RetirableRecipeWire",
     "from mosaic.core.pipeline.cancel import cancel_attempt, cancel_request",
 )

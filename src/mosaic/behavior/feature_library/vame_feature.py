@@ -283,9 +283,10 @@ class VameModelBundle(FittedModel):
 
 
 _MODEL_DESCRIPTION = (
-    "A fitted VAME model to apply. Unset, the feature fits a new model. With a "
-    "model set, the settings that build and preprocess the sessions must equal "
-    "the model's."
+    "A fitted VAME model to apply, such as a fit step scoped to the training "
+    "groups. Unset, the feature fits a new model on the entries in scope. With a "
+    "model set, nothing is fitted, the entries in scope leave the run id, and the "
+    "settings that build and preprocess the sessions must equal the model's."
 )
 
 _VAME_PYTHON_DESCRIPTION = (
@@ -557,11 +558,16 @@ class VameFeature:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
+    # run given a model, which applies it.
+    fits = True
     # VAME trains a recurrent network, and is built for a GPU.
     resource_class = "gpu"
     name = "vame"
     version = "0.1"
     parallelizable = False
+    # The entries in scope are the training set, so a fit hashes them. A run given
+    # a ``model`` embeds each entry from its own rows and hashes none.
     scope_dependent = True
     # Apply builds its sessions from the rows of the entry alone.
     accepts_overlap = False
@@ -764,6 +770,10 @@ class VameFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        # A run given a model applies it and learns nothing: a held-out group may be
+        # in its scope, and the scope is not part of what the run is.
+        self.scope_dependent = self.params.model is None
+        self.fits = self.params.model is None
         self.progress_callback: ProgressCallback | None = None
         self.cancel_token: CancelToken | None = None
         self._runner = RunnerProcess(

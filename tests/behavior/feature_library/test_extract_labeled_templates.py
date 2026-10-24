@@ -999,6 +999,156 @@ class TestIdentityColumns:
         )
 
 
+class TestFrameColumn:
+    """Every template row records the frame it was drawn at, and the provenance the labeled frames."""
+
+    ENTRIES = TestIdentityColumns.ENTRIES
+
+    def _run(self, tmp_path: Path, params: dict[str, object]) -> Path:
+        labels = np.array([0] * 20 + [1] * 20)
+        lookup = _setup_labels_lookup(
+            tmp_path / "labels" / "behavior",
+            [(group, sequence, labels) for group, sequence, _ in self.ENTRIES],
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={"labels": {"kind": "behavior"}, "test_fraction": 0.0, **params},
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    (f"{group}__{sequence}", _coded_df(sequence, group, 40, code))
+                    for group, sequence, code in self.ENTRIES
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+        return tmp_path / "run"
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"n_per_class": 15},
+            {"n_per_class": 6, "pool": {"allocation": "exact"}},
+            {"n_per_class": 6, "strategy": "farthest_first", "pool": {"size": 15}},
+            {"n_total": 20},
+        ],
+        ids=["reservoir", "exact", "farthest_first", "reservoir-n-total"],
+    )
+    def test_each_row_records_its_own_frame(
+        self, tmp_path: Path, params: dict[str, object]
+    ) -> None:
+        run = self._run(tmp_path, params)
+
+        templates = pd.read_parquet(run / "templates.parquet")
+        code_of = {(g, s): code for g, s, code in self.ENTRIES}
+        codes = [
+            code_of[(str(g), str(s))]
+            for g, s in zip(templates["group"], templates["sequence"])
+        ]
+        assert len(templates) > 0
+        assert (templates["frame"] == templates["feat_0"] - codes).all()
+        assert pd.api.types.is_integer_dtype(templates["frame"])
+
+    def test_the_frame_is_no_feature_and_comes_last(self, tmp_path: Path) -> None:
+        run = self._run(tmp_path, {"n_per_class": 15})
+
+        templates = pd.read_parquet(run / "templates.parquet")
+        assert feature_columns(templates) == ["feat_0", "feat_1"]
+        assert list(templates.columns)[-4:] == ["split", "group", "sequence", "frame"]
+
+    def test_the_frame_survives_a_save_after_a_load(self, tmp_path: Path) -> None:
+        run = self._run(tmp_path, {"n_per_class": 15})
+        feat = ExtractLabeledTemplates(
+            ExtractLabeledTemplates.Inputs((Result(feature="upstream"),)),
+            params={"labels": {"kind": "behavior"}, "n_per_class": 15},
+        )
+
+        assert feat.load_state(run, {}, {}) is True
+        feat.save_state(tmp_path / "reload")
+
+        pd.testing.assert_frame_equal(
+            pd.read_parquet(run / "templates.parquet"),
+            pd.read_parquet(tmp_path / "reload" / "templates.parquet"),
+        )
+
+    @pytest.mark.parametrize("allocation", ["reservoir", "exact"])
+    def test_the_provenance_records_the_labeled_frames_of_each_entry(
+        self, tmp_path: Path, allocation: str
+    ) -> None:
+        """Frames 5 to 14 of one entry and 20 to 29 of another are labeled; a third has none."""
+        lookup = {
+            ("g", "a"): write_sparse_labels(
+                tmp_path / "labels" / "a.npz", [(f, 0, -1, 1) for f in range(5, 15)]
+            ),
+            ("g", "b"): write_sparse_labels(
+                tmp_path / "labels" / "b.npz", [(f, 0, -1, 2) for f in range(20, 30)]
+            ),
+        }
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 100,
+                "test_fraction": 0.0,
+                "pool": {"allocation": allocation},
+            },
+        )
+        feat.fit(
+            _make_factory(
+                [
+                    ("g__a", _coded_df("a", "g", 40, 0.0)),
+                    ("g__b", _coded_df("b", "g", 40, 1000.0)),
+                    ("g__c", _coded_df("c", "g", 40, 2000.0)),
+                ]
+            )
+        )
+        feat.save_state(tmp_path / "run")
+
+        provenance = pd.read_parquet(tmp_path / "run" / "template_provenance.parquet")
+        ranges = {
+            str(row["sequence"]): (row["labeled_start"], row["labeled_stop"])
+            for row in provenance.to_dict("records")
+        }
+        assert ranges["a"] == (5, 15)
+        assert ranges["b"] == (20, 30)
+        assert pd.isna(ranges["c"][0]) and pd.isna(ranges["c"][1])
+        templates = pd.read_parquet(tmp_path / "run" / "templates.parquet")
+        drawn = templates.loc[templates["sequence"] == "a", "frame"]
+        assert drawn.sort_values().tolist() == list(range(5, 15))
+
+    def test_the_labeled_frames_run_from_the_first_series_to_the_last(
+        self, tmp_path: Path
+    ) -> None:
+        """Two individuals label different frames: the entry's range spans both."""
+        lookup = {
+            ("g", "a"): write_sparse_labels(
+                tmp_path / "labels" / "a.npz",
+                [(f, 0, -1, 1) for f in range(10, 15)]
+                + [(f, 1, -1, 1) for f in range(30, 36)],
+            )
+        }
+        df = pd.concat(
+            [_coded_df("a", "g", 40, 0.0).assign(id=i) for i in (0, 1)],
+            ignore_index=True,
+        )
+        feat = _make_feature_with_labels(
+            lookup,
+            params={
+                "labels": {"kind": "behavior"},
+                "n_per_class": 100,
+                "test_fraction": 0.0,
+            },
+        )
+        feat.fit(_make_factory([("g__a", df)]))
+        feat.save_state(tmp_path / "run")
+
+        provenance = pd.read_parquet(tmp_path / "run" / "template_provenance.parquet")
+        assert provenance[["labeled_start", "labeled_stop"]].values.tolist() == [
+            [10, 36]
+        ]
+
+
 class TestColumns:
     """``columns`` names the payload columns that the templates sample."""
 
@@ -1036,8 +1186,9 @@ class TestColumns:
             "split",
             "group",
             "sequence",
+            "frame",
         ]
-        kept = ["feat_0", "feat_2", "label", "split", "group", "sequence"]
+        kept = ["feat_0", "feat_2", "label", "split", "group", "sequence", "frame"]
         pd.testing.assert_frame_equal(named, every[kept])
 
     @pytest.mark.parametrize(

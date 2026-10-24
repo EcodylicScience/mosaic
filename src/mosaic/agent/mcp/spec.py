@@ -45,6 +45,7 @@ from mosaic.core.pipeline.graph import (
     strip_schema_keywords,
 )
 from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
+from mosaic.core.pipeline.graph.patch import PatchOp
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
@@ -55,7 +56,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory import InventoryWire
     from mosaic.core.pipeline.preview import ArtifactPreview
 
-    from .outputs import PlanPage, StepSuggestions, StepTypes
+    from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 
 __all__ = [
     "CLEANUP_NOT_ALLOWED",
@@ -64,6 +65,7 @@ __all__ = [
     "CONFIRMATION_REQUIRED",
     "CONFIRMATION_TAG",
     "CONFIRMATION_UNANSWERED",
+    "CONFIRMATION_UNAVAILABLE",
     "CONFIRM_FIELD",
     "DATASET_MANAGED",
     "DEFAULT_PAGE_SIZE",
@@ -73,8 +75,10 @@ __all__ = [
     "LISTING_MISSING_SAMPLE",
     "MAX_DESCRIBED_STEP_TYPES",
     "MAX_PAGE_SIZE",
+    "MAX_PATCH_OPS",
     "MAX_PREVIEW_ROWS",
     "MAX_RESULT_CHARS",
+    "MAX_ASSUMED_GROUPS",
     "MAX_RETIRED_RECIPES",
     "MAX_SCHEMA_BYTES",
     "MAX_STEP_TYPE_DETAIL_CHARS",
@@ -98,6 +102,8 @@ __all__ = [
     "CancelRequestInput",
     "ConfirmationCondition",
     "ConfirmationFinding",
+    "DatasetAction",
+    "DatasetChange",
     "DatasetList",
     "DatasetListItem",
     "DescribeDatasetInput",
@@ -106,14 +112,16 @@ __all__ = [
     "FailureDiagnosis",
     "GetInventoryInput",
     "GetRequestStatusInput",
-    "GroupSelector",
     "ListActivityInput",
     "ListDatasetsInput",
     "ListSequencesInput",
+    "ManageDatasetInput",
     "ModelRef",
+    "PatchRecipeInput",
     "PlanRecipeInput",
     "PreviewOutputInput",
     "RunSummary",
+    "ScopeSelector",
     "SequencePage",
     "SequenceRow",
     "SubmitPipelineInput",
@@ -135,6 +143,7 @@ __all__ = [
     "confirmation_required",
     "confirmation_tag",
     "confirmation_unanswered",
+    "confirmation_unavailable",
     "dataset_managed",
     "invalid_cursor",
     "read_confirmation_tag",
@@ -144,7 +153,7 @@ __all__ = [
     "unknown_tool",
 ]
 
-SHARED_TOOL_LIMIT: Final = 15
+SHARED_TOOL_LIMIT: Final = 16
 """The most tools the shared set may declare. Each tool costs a model context."""
 
 MAX_SCHEMA_BYTES: Final = 8192
@@ -200,6 +209,12 @@ recipe saves dozens.
 MAX_RETIRED_RECIPES: Final = 8
 """The most recipes one call retires."""
 
+MAX_PATCH_OPS: Final = 64
+"""The most edits one ``patch_recipe`` call applies."""
+
+MAX_ASSUMED_GROUPS: Final = 16
+"""The most groups one ``plan_recipe`` call assumes added."""
+
 LISTING_MISSING_SAMPLE: Final = 5
 """The missing keys that a ``get_inventory`` listing names per artifact."""
 
@@ -227,6 +242,14 @@ CONFIRMATION_UNANSWERED: Final = "confirmation_unanswered"
 
 A client that cannot show the question, such as one run without a person,
 cancels it, and the call does not run.
+"""
+
+CONFIRMATION_UNAVAILABLE: Final = "confirmation_unavailable"
+"""The ``reason`` of a call that needs a confirmation this client cannot ask for.
+
+A server that does not take ``confirm`` from a model, such as one served over
+HTTP without ``--allow-model-confirm``, refuses the call when its client cannot
+ask the user.
 """
 
 CONFIRMATION_TAG: Final = "mosaic-confirm"
@@ -275,6 +298,7 @@ type ToolName = Literal[
     "describe_step_types",
     "validate_recipe",
     "suggest_steps",
+    "patch_recipe",
     "plan_recipe",
     "submit_pipeline",
     "get_request_status",
@@ -282,6 +306,7 @@ type ToolName = Literal[
     "list_activity",
     "diagnose_failures",
     "preview_output",
+    "manage_dataset",
 ]
 """The name of each shared tool."""
 
@@ -299,7 +324,10 @@ type ConfirmationCondition = Literal[
     "bind",
     "open_duplicate",
     "cleanup",
+    "score_sealed",
     "hard_cancel",
+    "create_dataset",
+    "add_source",
 ]
 """A condition under which a tool refuses until the user confirms the call."""
 
@@ -321,9 +349,18 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
         "steps finish, and with retire the runs that retired recipes wrote in any "
         "storage"
     ),
+    "score_sealed": (
+        "a step scores predictions against labels over a group the dataset's "
+        "splits seal, which spends the one look a sealed group allows"
+    ),
     "hard_cancel": (
         "a running step loses its work when cancelled. A keypoint-MoSeq or VAME "
         "fit stops at once, and training loses the epoch in progress"
+    ),
+    "create_dataset": "the call creates a dataset: a directory and its manifest",
+    "add_source": (
+        "the call declares or removes a source, which changes the files the "
+        "dataset reads"
     ),
 }
 """What each confirmation condition means, as a person reads it."""
@@ -397,7 +434,11 @@ RecipeDocument = Annotated[
         description=(
             "The recipe as a JSON object: schema_version, name and steps. A step "
             "is {id, type: 'feature', feature, inputs, params} or {id, type: 'op', "
-            "kind, params}. An input is 'tracks' or {step: <id>}."
+            "kind, params}. An input is 'tracks' or {step: <id>}. A step or an "
+            "input with repeat, as {id: 'xgb_s{seed}', repeat: {seed: [1, 2]}}, "
+            "stands for one copy per value with {seed} replaced; '{seed}' alone "
+            "takes the value. Or name a recipe the dataset saved (patch_recipe "
+            "and submit_pipeline save one): {digest: <digest>} or {saved: <name>}."
         ),
         examples=[RECIPE_EXAMPLE],
     ),
@@ -405,32 +446,56 @@ RecipeDocument = Annotated[
 """A recipe document, parsed by the backend so that a malformed one is reported."""
 
 
-class GroupSelector(StrictModel):
-    """Every entry of the named groups, as a selector."""
+class ScopeSelector(StrictModel):
+    """Entries named as ``mosaic.core.scope.Scope`` and ``--step-scope`` name them.
 
-    groups: list[str] = Field(min_length=1, description="The groups to cover.")
+    ``entries`` alone, or ``groups`` and ``sequences``, which cover their cross
+    product.
+    """
 
+    entries: list[tuple[str, str]] | None = None
+    groups: list[str] | None = Field(default=None, min_length=1)
+    sequences: list[str] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _names_entries(self) -> Self:
+        if self.entries is None and self.groups is None and self.sequences is None:
+            msg = "a scope names entries, groups or sequences"
+            raise ValueError(msg)
+        if self.entries is not None and (
+            self.groups is not None or self.sequences is not None
+        ):
+            msg = "a scope names entries, or groups and sequences, not both"
+            raise ValueError(msg)
+        return self
+
+
+_SCOPE_FORMS: Final = (
+    "[[group, sequence], ...], or {entries: [[group, sequence], ...]}, or "
+    "{groups: [...], sequences: [...]} with either left out (their cross product)"
+)
 
 Entries = Annotated[
-    list[tuple[str, str]] | GroupSelector | None,
+    list[tuple[str, str]] | ScopeSelector | None,
     Field(
         description=(
-            "The [group, sequence] entries to cover, {groups: [...]} for every "
-            "entry of those groups, or null for every entry of the dataset."
+            f"The entries to cover: {_SCOPE_FORMS}. Null covers every entry of "
+            "the dataset, and is what a request with steps scoped to different "
+            "groups takes, since a step covers only what entries also covers."
         )
     ),
 ]
 """The entries a plan or a submission covers."""
 
 StepEntries = Annotated[
-    dict[str, list[tuple[str, str]] | GroupSelector] | None,
+    dict[str, list[tuple[str, str]] | ScopeSelector] | None,
     Field(
         description=(
-            "Narrow single steps, keyed by step id, each to [group, sequence] "
-            "entries or {groups: [...]} within entries: a fit on the training "
-            "groups and its scoring on the test groups in one request. A step "
-            "reading another through inputs or tracks must narrow to a subset "
-            "of it."
+            f"Narrow single steps, keyed by step id, each as {_SCOPE_FORMS}: a "
+            "fit on the training groups and its scoring on the test groups in "
+            "one request. Each is intersected with entries, so leave entries "
+            "null to cover them all. A step reading another through inputs or "
+            "tracks must narrow to a subset of it."
         )
     ),
 ]
@@ -575,16 +640,24 @@ class DescribeStepTypesInput(ToolInput):
         return "fields" if self.names is not None else "summary"
 
 
+_REFERENCE_DATASET: Final = (
+    "The dataset holding a recipe named by digest or saved name. Not needed for a "
+    "recipe sent whole."
+)
+
+
 class ValidateRecipeInput(ToolInput):
     """The arguments of ``validate_recipe``."""
 
     recipe: RecipeDocument
+    dataset: str | None = Field(default=None, description=_REFERENCE_DATASET)
 
 
 class SuggestStepsInput(ToolInput):
     """The arguments of ``suggest_steps``."""
 
     recipe: RecipeDocument
+    dataset: str | None = Field(default=None, description=_REFERENCE_DATASET)
     mode: SuggestMode = Field(
         description=(
             "'attach': step types to add below step. 'insert': step types to "
@@ -624,6 +697,37 @@ RetireDigests = Annotated[
 """The recipes a plan or a submission retires, by digest."""
 
 
+AssumeAdded = Annotated[
+    list[str],
+    Field(
+        max_length=MAX_ASSUMED_GROUPS,
+        description=(
+            "Groups to assume join the dataset. The cautions then name the steps "
+            "that would refit, and those that would only re-score, as the same "
+            "request covers them. Changes nothing else."
+        ),
+    ),
+]
+"""Groups a plan is asked to assume added, which only adds cautions."""
+
+
+class PatchRecipeInput(ToolInput):
+    """The arguments of ``patch_recipe``."""
+
+    dataset: DatasetId
+    base: RecipeDocument
+    ops: list[PatchOp] = Field(
+        default_factory=list,
+        max_length=MAX_PATCH_OPS,
+        description=(
+            "The edits, applied in order to the expanded base: add_step "
+            "{document}, remove_step {step}, set_param {step, path, value} (a "
+            "dotted path into params; without value the param is removed) and "
+            "replace_step {step, document}. No edits saves the base as it is."
+        ),
+    )
+
+
 class PlanRecipeInput(ToolInput):
     """The arguments of ``plan_recipe``."""
 
@@ -637,6 +741,7 @@ class PlanRecipeInput(ToolInput):
         + " The fingerprint then covers the removable runs.",
     )
     retire: RetireDigests = Field(default_factory=list)
+    assume_added: AssumeAdded = Field(default_factory=list)
     limit: PageSize | None = Field(
         default=None,
         description=(
@@ -819,6 +924,109 @@ class PreviewOutputInput(ToolInput):
         le=MAX_PREVIEW_ROWS,
         description=f"The rows of the head to return, 0 to {MAX_PREVIEW_ROWS}.",
     )
+
+
+type DatasetAction = Literal[
+    "create", "add_source", "remove_source", "scan", "set_tags"
+]
+"""What ``manage_dataset`` does to a dataset."""
+
+type SourceKindName = Literal["media", "tracks", "labels"]
+"""Which raw files a source declares."""
+
+TagValue = str | int | float | bool | None
+"""A dataset tag's value."""
+
+
+class ManageDatasetInput(ToolInput):
+    """The arguments of ``manage_dataset``. Each action reads the fields it names."""
+
+    action: DatasetAction = Field(
+        description=(
+            "create: a new dataset at path, named name. add_source: declare the "
+            "kind's files at path. remove_source: undeclare kind's source_id "
+            "(its rows stay). scan: index the declared sources of kind, or all; "
+            "source_id narrows it to one. set_tags: set tags, remove remove_tags."
+        )
+    )
+    dataset: str | None = Field(
+        default=None, description="The dataset's uuid. Every action but create."
+    )
+    path: str | None = Field(
+        default=None,
+        description=(
+            "create: the new dataset's directory, inside the server's "
+            "dataset_roots. add_source: where the files are, inside its "
+            "source_roots."
+        ),
+    )
+    name: str | None = Field(default=None, description="create: the dataset's name.")
+    kind: SourceKindName | None = None
+    source_id: str | None = Field(
+        default=None,
+        description="The source's id. add_source: default the directory's name.",
+    )
+    files: list[str] | None = Field(
+        default=None,
+        description="add_source: only these files, relative to path.",
+    )
+    patterns: list[str] | None = Field(
+        default=None, description="add_source, tracks or labels: file globs."
+    )
+    src_format: str | None = Field(
+        default=None,
+        description=(
+            "add_source, tracks or labels: the converter that reads the files, "
+            "such as calms21_npy."
+        ),
+    )
+    extensions: list[str] | None = Field(
+        default=None, description="add_source, media: file suffixes."
+    )
+    recursive: bool = True
+    multi_sequences_per_file: bool = False
+    group_from: Literal["filename", "parent"] | None = None
+    group_pattern: str | None = None
+    tags: dict[str, TagValue] | None = Field(
+        default=None,
+        description=(
+            "set_tags: values by tag name. A tag not defined yet is defined, "
+            "typed by its value."
+        ),
+    )
+    remove_tags: list[str] = Field(default_factory=list)
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "Set only after the user agreed to the conditions that a refusal "
+            "with reason confirmation_required listed."
+        ),
+    )
+
+
+class DatasetChange(StrictModel):
+    """What ``manage_dataset`` changed.
+
+    Attributes:
+        action: The action done.
+        dataset: The dataset's uuid.
+        name: The dataset's name.
+        manifest: The manifest file.
+        message: What changed, in a sentence.
+        scanned: Under ``scan``, the raw index rows of each kind scanned.
+        orphaned_rows: Under ``remove_source``, the index rows the source
+            claimed, which stay.
+        next_steps: What the dataset needs before a pipeline runs on it.
+    """
+
+    action: DatasetAction
+    dataset: str
+    name: str
+    manifest: str
+    message: str
+    scanned: dict[str, int] = Field(default_factory=dict)
+    orphaned_rows: int | None = None
+    next_steps: tuple[str, ...] = ()
 
 
 class DatasetListItem(StrictModel):
@@ -1275,6 +1483,25 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         narrowing=("step", "mode"),
     ),
     ToolSpec(
+        name="patch_recipe",
+        title="Patch a recipe",
+        description=(
+            "Change a recipe by edits and save the result in the dataset, so "
+            "that the other recipe tools take it as {digest: <digest>} instead "
+            "of the whole document. Returns its digest, its number of steps "
+            "after repeat is expanded, and its validation report. A recipe that "
+            "parses is saved even when it has problems, so it can be patched "
+            "again. Saving changes no data and runs nothing."
+        ),
+        input_model=PatchRecipeInput,
+        output=ModelRef("mosaic.agent.mcp.outputs", "PatchedRecipe"),
+        # It writes one content-addressed file, which the same call writes again
+        # with the same bytes.
+        annotations=ToolAnnotations(
+            read_only=False, destructive=False, idempotent=True
+        ),
+    ),
+    ToolSpec(
         name="plan_recipe",
         title="Plan a recipe",
         description=(
@@ -1305,7 +1532,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "ask the user asks. Otherwise the call is refused with reason "
             "confirmation_required: ask the user, then call again with confirm "
             "true. Do not set confirm without the user's agreement. After "
-            "confirmation_unanswered or confirmation_declined, stop and report."
+            "confirmation_unanswered, confirmation_declined or "
+            "confirmation_unavailable, stop and report."
         ),
         input_model=SubmitPipelineInput,
         output=SubmittedPipeline,
@@ -1321,6 +1549,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "bind",
             "open_duplicate",
             "cleanup",
+            "score_sealed",
         ),
         always_load=True,
     ),
@@ -1354,8 +1583,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "its unstarted steps are recorded cancelled. When a running step "
             "loses its work, a client that can ask the user asks. Otherwise the "
             "call is refused with reason confirmation_required: ask the user, "
-            "then call again with confirm true. After confirmation_unanswered or "
-            "confirmation_declined, stop and report."
+            "then call again with confirm true. After confirmation_unanswered, "
+            "confirmation_declined or confirmation_unavailable, stop and report."
         ),
         input_model=CancelRequestInput,
         output=RequestCancel,
@@ -1404,6 +1633,29 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         output=ModelRef("mosaic.core.pipeline.preview", "ArtifactPreview"),
         annotations=READ,
         narrowing=("columns", "max_columns", "limit"),
+    ),
+    ToolSpec(
+        name="manage_dataset",
+        title="Manage a dataset",
+        description=(
+            "Create a dataset, declare or remove a source of raw files, scan the "
+            "sources into the raw indexes, or set the dataset's tags. Paths must "
+            "lie inside the roots the server's operator allows. Converting is a "
+            "recipe step (convert-tracks, convert-labels), and next_steps says "
+            "what a dataset still needs. Creating a dataset or changing its "
+            "sources asks the user to confirm: a client that can ask the user "
+            "asks; otherwise the call is refused with reason "
+            "confirmation_required: ask the user, then call again with confirm "
+            "true. After confirmation_unanswered, confirmation_declined or "
+            "confirmation_unavailable, stop and report. A scan reads and "
+            "checksums every file and can take minutes."
+        ),
+        input_model=ManageDatasetInput,
+        output=DatasetChange,
+        annotations=ToolAnnotations(
+            read_only=False, destructive=False, idempotent=False
+        ),
+        confirm_when=("create_dataset", "add_source"),
     ),
 )
 """The shared tools, in the order a server lists them."""
@@ -1461,6 +1713,10 @@ class ToolBackend(Protocol):
         """Answer ``suggest_steps``."""
         ...
 
+    def patch_recipe(self, args: PatchRecipeInput) -> ToolResult[PatchedRecipe]:
+        """Answer ``patch_recipe``."""
+        ...
+
     def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
         ...
@@ -1493,6 +1749,10 @@ class ToolBackend(Protocol):
 
     def preview_output(self, args: PreviewOutputInput) -> ToolResult[ArtifactPreview]:
         """Answer ``preview_output``."""
+        ...
+
+    def manage_dataset(self, args: ManageDatasetInput) -> ToolResult[DatasetChange]:
+        """Answer ``manage_dataset``."""
         ...
 
 
@@ -1576,6 +1836,8 @@ def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
             return backend.validate_recipe(request)
         case SuggestStepsInput():
             return backend.suggest_steps(request)
+        case PatchRecipeInput():
+            return backend.patch_recipe(request)
         case PlanRecipeInput():
             return backend.plan_recipe(request)
         case SubmitPipelineInput():
@@ -1590,6 +1852,8 @@ def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
             return backend.diagnose_failures(request)
         case PreviewOutputInput():
             return backend.preview_output(request)
+        case ManageDatasetInput():
+            return backend.manage_dataset(request)
         case _:
             msg = f"no tool takes {type(request).__name__}"
             raise TypeError(msg)
@@ -1679,6 +1943,41 @@ def confirmation_required(
         reason=CONFIRMATION_REQUIRED,
         message=message,
         detail={"tool": name, "conditions": conditions, "findings": listed},
+    )
+
+
+def confirmation_unavailable(refusal: ErrorEnvelope) -> ErrorEnvelope:
+    """Refuse a call that needs a confirmation that its client cannot ask for.
+
+    Args:
+        refusal: The call's :func:`confirmation_required` refusal, whose
+            detail names the tool, the conditions and their findings.
+
+    Returns:
+        An ``invalid`` envelope with reason :data:`CONFIRMATION_UNAVAILABLE` and
+        the refusal's detail.
+    """
+    detail = refusal.detail or {}
+    tool = detail.get("tool")
+    findings = detail.get("findings")
+    sentences = (
+        "; ".join(
+            str(finding.get("message"))
+            for finding in findings
+            if isinstance(finding, dict)
+        )
+        if isinstance(findings, list)
+        else ""
+    )
+    message = (
+        f"{tool} needs the user's confirmation ({sentences}), and this client "
+        "cannot ask the user, so this server does not accept confirm from the "
+        "model. Stop and report the conditions to the user. The work can run "
+        "from a client that asks the user (MCP elicitation), from the mosaic CLI, "
+        "or here once the operator serves with --allow-model-confirm."
+    )
+    return ErrorEnvelope(
+        kind="invalid", reason=CONFIRMATION_UNAVAILABLE, message=message, detail=detail
     )
 
 

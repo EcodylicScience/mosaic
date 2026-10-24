@@ -61,8 +61,9 @@ def test_the_network_commands_screen_and_then_score_the_test_groups(
     final = run_pipeline(ds, _network(), step_scopes=step_scopes(final_command))
 
     assert set(step_states(screening).values()) == {"ran"}
-    # The classifier fits from its own inputs, so its scope is part of its run id.
-    assert run_ids(final)["classifier"] != run_ids(screening)["classifier"]
+    # The templates run names the training set, so the wider scope is the same run
+    # and the final model scores the test groups.
+    assert run_ids(final)["classifier"] == run_ids(screening)["classifier"]
     assert step_states(final)["classifier"] == "ran"
     assert step_states(final)["evaluate"] == "ran"
 
@@ -81,4 +82,8 @@ def test_the_blend_commands_screen_and_then_score_the_test_groups(
         step_states(final)[step] for step in (*NETWORKS, "gru", "tcn", "blend")
     } == {"ran"}
     assert step_states(final)["evaluate"] == "ran"
-    assert run_ids(final)["blend"] != run_ids(screening)["blend"]
+    # No step of the blend hashes its scope, so the final request is the same runs.
+    assert all(
+        run_ids(final)[step] == run_ids(screening)[step]
+        for step in (*NETWORKS, "gru", "tcn", "blend")
+    )

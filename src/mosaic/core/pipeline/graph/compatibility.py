@@ -55,6 +55,7 @@ __all__ = [
     "DeclarationCatalog",
     "EntityLevel",
     "ProducerDecl",
+    "Reach",
     "TRACKS_DECLARATION",
     "Verdict",
     "can_connect",
@@ -74,6 +75,13 @@ type EntityLevel = Literal["individual", "pair", "global"]
 everyone present carries. The declaration side spells the same thing
 ``"unidentified"``, because on a feature "global" already means a fit-then-apply
 feature and one word cannot carry both.
+"""
+
+type Reach = int | Literal["unknown", "undeclared"]
+"""Frames on each side that one output row reads, or why that is not a number.
+
+``unknown`` is a declared reach that no params bound. ``undeclared`` is a feature
+that declares none (:mod:`~.reach`).
 """
 
 _LEVEL_COLUMNS: Mapping[EntityLevel, frozenset[str]] = {
@@ -161,6 +169,11 @@ class ConsumerDecl:
             refusal, and closed rather than a per-feature flag.
         reads_media: Whether it opens video, which is what makes an ordering-only
             edge from a media writer worth declaring.
+        stacks_inputs: Whether several inputs are runs over disjoint entries that
+            it reads as one stack (``evaluate-labels`` over one classifier run per
+            fold), in place of joining them column-wise. The inputs must then be
+            alike, at one entity level, and the merged columns are the ones every
+            input has.
     """
 
     name: str
@@ -171,6 +184,7 @@ class ConsumerDecl:
     takes_no_inputs: bool = False
     cross_joins: bool = False
     reads_media: bool = False
+    stacks_inputs: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +247,27 @@ class Declaration:
     Read off the feature's optional ``costly_fit`` class attribute, which every
     ``global`` and ``media`` feature declares. A superseded-run cleanup keeps
     every run of such a feature (:mod:`~.cleanup`). ``False`` for an op.
+    """
+    fits: bool = False
+    """Whether a run of this feature learns something from its inputs.
+
+    Read off the feature's optional ``fits`` class attribute. It is not
+    ``scope_dependent``: ``xgboost`` and the ``global-*`` fitters learn but name
+    their run without the entries in scope, and ``evaluate-labels`` is
+    scope-dependent and learns nothing. A feature whose instances differ
+    (``sequence-classifier`` given a ``model``, ``probability-ensemble`` with
+    fixed weights) declares the fitting answer on the class, and its instance
+    narrows it. ``False`` for an op and for a feature that declares nothing.
+    """
+    temporal_reach: Reach = "undeclared"
+    """The frames on each side that one output row depends on, at default params.
+
+    Read off the feature's optional ``temporal_reach`` declaration
+    (:mod:`~.reach`). ``0`` is a feature that computes within a frame, and
+    ``unknown`` a declared reach that no params bound, such as a bidirectional
+    recurrent network. ``undeclared`` is a feature that says nothing, which is not
+    zero. A reach that depends on params reads as it does with none set, and the
+    planner reads each step's own params. Always ``undeclared`` for an op.
     """
     unavailable: str | None = None
     """What this installation lacks to run the step, ``None`` when it lacks nothing.
@@ -387,6 +422,8 @@ def can_join(producers: Sequence[ProducerDecl], consumer: ConsumerDecl) -> Verdi
             return single
     if len(producers) < 2:
         return _ALLOWED
+    if consumer.stacks_inputs:
+        return _stack_verdict(producers, consumer)
     if consumer.cross_joins:
         return _ALLOWED
     verdict = alignment_verdict([columns_for_level(p.level) for p in producers])
@@ -394,6 +431,27 @@ def can_join(producers: Sequence[ProducerDecl], consumer: ConsumerDecl) -> Verdi
         return _ALLOWED
     named = ", ".join(f"{p.name} ({p.level})" for p in producers)
     return Verdict(False, f"{consumer.name} cannot align {named}: {verdict.reason}")
+
+
+def _stack_verdict(
+    producers: Sequence[ProducerDecl], consumer: ConsumerDecl
+) -> Verdict:
+    """May *producers* be stacked by *consumer*?
+
+    A stack unions the entries of its inputs, so the rows must be of one kind:
+    inputs at different concrete entity levels would stack an individual-level
+    table beneath a pair-level one. No join happens, so shared identity columns
+    are not asked for.
+    """
+    levels = {p.level for p in producers}
+    if len(levels) <= 1:
+        return _ALLOWED
+    named = ", ".join(f"{p.name} ({p.level})" for p in producers)
+    return Verdict(
+        False,
+        f"{consumer.name} stacks its inputs, and {named} are at different entity "
+        "levels, so their rows are not alike",
+    )
 
 
 def possible_connections(

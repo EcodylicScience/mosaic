@@ -20,10 +20,16 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.helpers import (
+    cv_block_assignment,
+    cv_block_bounds,
     cv_fold_assignment,
     out_of_fold_choice,
+    scored_entry,
 )
-from mosaic.behavior.feature_library.helpers import _cv_entry_key  # pyright: ignore[reportPrivateUsage]
+from mosaic.behavior.feature_library.helpers import (
+    _cv_block_key,  # pyright: ignore[reportPrivateUsage]
+    _cv_entry_key,  # pyright: ignore[reportPrivateUsage]
+)
 
 ENTRIES = [(f"g{i % 3}", f"seq{i:02d}") for i in range(23)]
 
@@ -134,3 +140,139 @@ class TestOutOfFoldChoice:
 
         with pytest.raises(ValueError, match=r"^\[xgboost\] .*more than one entry"):
             out_of_fold_choice(frame, self.FOLDS, "xgboost")
+
+
+class TestBlockBounds:
+    def test_the_blocks_tile_the_range_and_differ_by_at_most_one_frame(self) -> None:
+        blocks = cv_block_bounds(10, 107, 4)
+
+        assert [index for index, _, _ in blocks] == [0, 1, 2, 3]
+        assert blocks[0][1] == 10
+        assert blocks[-1][2] == 107
+        for (_, _, stop), (_, start, _) in zip(blocks, blocks[1:]):
+            assert stop == start
+        lengths = [stop - start for _, start, stop in blocks]
+        assert max(lengths) - min(lengths) <= 1
+        assert sum(lengths) == 97
+
+    def test_an_even_range_is_cut_at_whole_multiples(self) -> None:
+        assert cv_block_bounds(0, 60, 4) == [
+            (0, 0, 15),
+            (1, 15, 30),
+            (2, 30, 45),
+            (3, 45, 60),
+        ]
+
+    def test_a_range_shorter_than_the_blocks_leaves_the_empty_ones_out(self) -> None:
+        blocks = cv_block_bounds(5, 8, 5)
+
+        assert all(stop > start for _, start, stop in blocks)
+        assert sum(stop - start for _, start, stop in blocks) == 3
+        assert len(blocks) == 3
+        assert [index for index, _, _ in blocks] != [0, 1, 2]
+
+    def test_an_empty_range_has_no_block(self) -> None:
+        assert cv_block_bounds(7, 7, 3) == []
+
+    def test_the_cut_depends_on_the_range_alone(self) -> None:
+        assert cv_block_bounds(3, 50, 6) == cv_block_bounds(3, 50, 6)
+
+
+BLOCKS = [(g, s, b) for g, s in ENTRIES[:4] for b in range(3)]
+
+
+class TestBlockAssignment:
+    def test_every_block_has_a_fold_and_the_counts_differ_by_at_most_one(self) -> None:
+        folds = cv_block_assignment(BLOCKS, 5, seed=0)
+
+        assert set(folds) == set(BLOCKS)
+        sizes = [list(folds.values()).count(fold) for fold in range(5)]
+        assert max(sizes) - min(sizes) <= 1
+        assert set(folds.values()) == set(range(5))
+
+    def test_one_entry_still_fills_the_folds(self) -> None:
+        folds = cv_block_assignment([("g", "only", b) for b in range(4)], 4, seed=2)
+
+        assert sorted(folds.values()) == [0, 1, 2, 3]
+
+    def test_the_order_of_the_blocks_changes_nothing(self) -> None:
+        assert cv_block_assignment(BLOCKS[::-1], 4, seed=3) == cv_block_assignment(
+            BLOCKS, 4, seed=3
+        )
+
+    def test_the_seed_changes_the_folds(self) -> None:
+        assert cv_block_assignment(BLOCKS, 4, seed=0) != cv_block_assignment(
+            BLOCKS, 4, seed=1
+        )
+
+    def test_a_repeated_block_is_dealt_once(self) -> None:
+        assert cv_block_assignment(BLOCKS + BLOCKS[:3], 4, seed=0) == (
+            cv_block_assignment(BLOCKS, 4, seed=0)
+        )
+
+    def test_the_fold_of_a_block_is_its_rank_by_sha256_of_the_json_key_mod_folds(
+        self,
+    ) -> None:
+        import hashlib
+
+        ranked = sorted(
+            BLOCKS,
+            key=lambda block: hashlib.sha256(
+                json.dumps([7, *block], separators=(",", ":")).encode()
+            ).hexdigest(),
+        )
+
+        folds = cv_block_assignment(BLOCKS, 5, seed=7)
+
+        assert folds == {block: rank % 5 for rank, block in enumerate(ranked)}
+
+    def test_the_process_that_deals_does_not_matter(self) -> None:
+        program = (
+            "import json; "
+            "from mosaic.behavior.feature_library.helpers import cv_block_assignment; "
+            f"blocks = {BLOCKS!r}; "
+            "folds = cv_block_assignment(blocks, 4, seed=2); "
+            "print(json.dumps([folds[b] for b in blocks]))"
+        )
+        source = str(Path(mosaic.__file__).parent.parent)
+        dealt: list[object] = []
+        for hash_seed in ("1", "2"):
+            env = {**os.environ, "PYTHONHASHSEED": hash_seed, "PYTHONPATH": source}
+            done = subprocess.run(
+                [sys.executable, "-c", program],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            dealt.append(json.loads(done.stdout))
+
+        assert dealt[0] == dealt[1]
+        expected = cv_block_assignment(BLOCKS, 4, seed=2)
+        assert dealt[0] == [expected[b] for b in BLOCKS]
+
+    def test_the_key_of_a_split_name_is_not_that_of_another_split(self) -> None:
+        assert _cv_block_key(0, "a", "bc", 0) != _cv_block_key(0, "ab", "c", 0)
+        assert _cv_block_key(0, "a", "b", 0) != _cv_block_key(0, "a", "b", 1)
+        assert _cv_block_key(0, "a", "b", 0) != _cv_block_key(1, "a", "b", 0)
+
+    def test_one_fold_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="at least 2"):
+            cv_block_assignment(BLOCKS, 1, seed=0)
+
+    def test_more_folds_than_blocks_is_refused_with_the_count(self) -> None:
+        with pytest.raises(ValueError, match=r"cannot deal 12 blocks into 13 folds"):
+            cv_block_assignment(BLOCKS, 13, seed=0)
+
+
+class TestScoredEntry:
+    def test_the_entry_is_read_as_text(self) -> None:
+        frame = pd.DataFrame({"frame": [0, 1], "group": ["", ""], "sequence": [12, 12]})
+
+        assert scored_entry(frame, "xgboost") == ("", "12")
+
+    def test_a_table_of_two_entries_is_refused(self) -> None:
+        frame = pd.DataFrame({"group": ["g", "g"], "sequence": ["a", "b"]})
+
+        with pytest.raises(ValueError, match=r"^\[xgboost\] .*more than one entry"):
+            scored_entry(frame, "xgboost")

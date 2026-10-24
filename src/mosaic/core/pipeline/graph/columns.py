@@ -201,8 +201,20 @@ def need_status(need: NamedColumns, available: ColumnSet) -> NeedStatus:
 # --- the merge ----------------------------------------------------------------------
 
 
-def merged_input(inputs: Sequence[ColumnSet]) -> ColumnSet:
+def _shared(sets: Iterable[frozenset[str]]) -> frozenset[str]:
+    """The names every one of *sets* holds."""
+    shared: frozenset[str] | None = None
+    for one in sets:
+        shared = one if shared is None else shared & one
+    return _NO_NAMES if shared is None else shared
+
+
+def merged_input(inputs: Sequence[ColumnSet], *, stack: bool = False) -> ColumnSet:
     """The columns of a step's merged input, from the columns of each input.
+
+    With *stack*, for a step that reads its inputs as one stack of disjoint
+    entries, no column is renamed: a column is guaranteed when every input
+    guarantees it, and possible when any input may contain it.
 
     Applies the naming rule of the merge once to the guaranteed sets and once to
     the possible ones. A column of the first input keeps its name. A colliding
@@ -213,6 +225,16 @@ def merged_input(inputs: Sequence[ColumnSet]) -> ColumnSet:
     """
     if not inputs:
         return ColumnSet()
+    if stack and len(inputs) > 1:
+        return _column_set(
+            _shared(one.guaranteed for one in inputs),
+            (name for one in inputs for name in one.possible),
+            _shared(one.guaranteed_prefixes for one in inputs),
+            (prefix for one in inputs for prefix in one.possible_prefixes),
+            unbounded=any(one.unbounded for one in inputs),
+            unlisted=any(one.unlisted for one in inputs),
+            vocabulary=(name for one in inputs for name in one.vocabulary),
+        )
     first, *rest = inputs
     guaranteed = first.guaranteed
     possible = first.possible

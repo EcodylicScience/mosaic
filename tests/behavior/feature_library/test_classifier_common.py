@@ -18,17 +18,26 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.classifier_common import (
+    CvBlock,
     FitReporting,
+    FoldLookup,
     RunningMoments,
     assemble_prediction,
     balanced_class_weights,
+    block_fold_table,
+    block_list,
+    block_rows,
     check_cross_validation,
     check_folds,
+    deal_blocks,
     deal_folds,
+    drop_block_settings,
     fold_map,
     fold_rows,
     fold_table,
+    held_out_frames,
     predicted_labels,
+    read_fold_table,
     refuse_entries_outside_scope,
     standardize,
     write_bundle,
@@ -119,6 +128,54 @@ def test_cross_validation_needs_folds_for_a_seed_and_templates_for_folds() -> No
         check_cross_validation(None, 3, model_given=False)
     with pytest.raises(ValueError, match="cv_folds.*templates.*model"):
         check_cross_validation(5, 0, model_given=True)
+
+
+def test_the_block_settings_resolve_to_the_blocks_a_fit_cuts() -> None:
+    assert check_cross_validation(None, 0, model_given=False) is None
+    assert check_cross_validation(4, 0, model_given=False) is None
+    assert check_cross_validation(4, 0, model_given=False, cv_unit="block") == 4, (
+        "unset blocks default to one per fold"
+    )
+    assert (
+        check_cross_validation(
+            4, 0, model_given=False, cv_unit="block", cv_blocks_per_sequence=9
+        )
+        == 9
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"cv_folds": None, "cv_unit": "block"}, "cv_unit cut the folds of cv_folds"),
+        (
+            {"cv_folds": None, "cv_gap_frames": 3},
+            "cv_gap_frames cut the folds of cv_folds",
+        ),
+        (
+            {"cv_folds": None, "cv_blocks_per_sequence": 3},
+            "cv_blocks_per_sequence cut the folds",
+        ),
+        (
+            {"cv_folds": 3, "cv_gap_frames": 3},
+            "cv_gap_frames only apply with cv_unit block",
+        ),
+        (
+            {"cv_folds": 3, "cv_blocks_per_sequence": 3},
+            "cv_blocks_per_sequence only apply with cv_unit block",
+        ),
+    ],
+)
+def test_block_settings_that_the_unit_or_the_folds_ignore_are_refused(
+    kwargs: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        check_cross_validation(
+            kwargs.pop("cv_folds"),  # pyright: ignore[reportArgumentType]
+            0,
+            model_given=False,
+            **kwargs,  # pyright: ignore[reportArgumentType]
+        )
 
 
 # --- Standardization ---
@@ -475,3 +532,200 @@ def test_a_table_without_identity_is_one_series() -> None:
     series = [positions.tolist() for positions in iter_series_positions(df)]
 
     assert series == [[1, 2, 0]]
+
+
+# --- Block cross-validation ---
+
+
+RANGES = {("g", "a"): (10, 70), ("g", "b"): (0, 45)}
+
+
+def test_dealing_blocks_cuts_every_entry_and_names_the_classifier_in_a_refusal() -> (
+    None
+):
+    blocks = deal_blocks("clf", RANGES, 3, 2, 0)
+
+    assert [(b.group, b.sequence, b.block) for b in blocks] == sorted(
+        (b.group, b.sequence, b.block) for b in blocks
+    )
+    assert [(b.start, b.stop) for b in blocks if b.sequence == "a"] == [
+        (10, 30),
+        (30, 50),
+        (50, 70),
+    ]
+    assert [(b.start, b.stop) for b in blocks if b.sequence == "b"] == [
+        (0, 15),
+        (15, 30),
+        (30, 45),
+    ]
+    assert {b.fold for b in blocks} == {0, 1}
+    assert blocks == deal_blocks("clf", dict(reversed(RANGES.items())), 3, 2, 0)
+
+    with pytest.raises(ValueError, match=r"^\[clf\] cannot deal 6 blocks into 7"):
+        deal_blocks("clf", RANGES, 3, 7, 0)
+
+
+def test_the_blocks_survive_a_bundle_round_trip() -> None:
+    blocks = deal_blocks("clf", RANGES, 3, 3, 1)
+
+    rows = block_rows(blocks)
+
+    assert rows == sorted(rows)
+    assert block_list(rows) == blocks
+
+
+def test_a_fold_holds_out_its_blocks_and_the_gap_on_each_side() -> None:
+    blocks = [
+        CvBlock("g", "a", 0, 0, 20, 0),
+        CvBlock("g", "a", 1, 20, 40, 1),
+        CvBlock("g", "a", 2, 40, 60, 0),
+        CvBlock("g", "b", 0, 5, 25, 1),
+    ]
+
+    assert held_out_frames(blocks, 0, 4) == {("g", "a"): [(-4, 24), (36, 64)]}
+    assert held_out_frames(blocks, 1, 0) == {
+        ("g", "a"): [(20, 40)],
+        ("g", "b"): [(5, 25)],
+    }
+
+
+def test_the_block_table_lists_every_block_with_its_frames_and_rows_per_class() -> None:
+    blocks = [
+        CvBlock("g", "a", 0, 0, 20, 1),
+        CvBlock("g", "a", 1, 20, 40, 0),
+        CvBlock("g", "b", 0, 5, 25, 0),
+    ]
+    counts = pd.DataFrame(
+        {0: [5, 7], 2: [1, 0]},
+        index=pd.MultiIndex.from_tuples(
+            [("g", "a", 0), ("g", "a", 1)], names=["group", "sequence", "block"]
+        ),
+    )
+
+    table = block_fold_table(blocks, counts, [0, 2, 5])
+
+    assert list(table.columns) == [
+        "group",
+        "sequence",
+        "block",
+        "start",
+        "stop",
+        "fold",
+        "n_rows",
+        "rows_0",
+        "rows_2",
+        "rows_5",
+    ]
+    assert table[["start", "stop", "fold", "n_rows"]].values.tolist() == [
+        [0, 20, 1, 6],
+        [20, 40, 0, 7],
+        [5, 25, 0, 0],
+    ]
+    assert all(table[name].dtype == np.int64 for name in table.columns[2:])
+
+
+def test_the_fold_columns_a_blend_compares_hold_the_bounds_only_for_blocks(
+    tmp_path: Path,
+) -> None:
+    blocks = [CvBlock("g", "b", 0, 5, 25, 0), CvBlock("g", "a", 0, 0, 20, 1)]
+    counts = pd.DataFrame(
+        {0: [4, 4]},
+        index=pd.MultiIndex.from_tuples(
+            [("g", "a", 0), ("g", "b", 0)], names=["group", "sequence", "block"]
+        ),
+    )
+    block_file = tmp_path / "block.parquet"
+    block_fold_table(sorted(blocks), counts, [0]).to_parquet(block_file)
+    entry_file = tmp_path / "entry.parquet"
+    fold_table({("g", "a"): 1}, _counts({("g", "a"): {0: 3}}), [0]).to_parquet(
+        entry_file
+    )
+
+    assert list(read_fold_table(block_file).columns) == [
+        "group",
+        "sequence",
+        "fold",
+        "start",
+        "stop",
+    ]
+    assert list(read_fold_table(entry_file).columns) == ["group", "sequence", "fold"]
+
+
+def test_a_lookup_by_block_gives_a_row_the_fold_of_the_block_its_frame_is_in() -> None:
+    lookup = FoldLookup.by_block(
+        block_rows(
+            [
+                CvBlock("g", "a", 0, 10, 20, 1),
+                CvBlock("g", "a", 1, 20, 30, 0),
+                CvBlock("g", "a", 2, 40, 50, 2),
+            ]
+        )
+    )
+
+    folds = lookup.folds(("g", "a"), [45, 5, 10, 19, 20, 29, 30, 35, 49, 50])
+
+    assert folds.tolist() == [2, -1, 1, 1, 0, 0, -1, -1, 2, -1]
+    assert lookup.folds(("g", "zz"), [10, 20]).tolist() == [-1, -1]
+    assert lookup.entries == {("g", "a")}
+
+
+def test_a_lookup_by_entry_gives_every_row_of_an_entry_one_fold() -> None:
+    lookup = FoldLookup.by_entry({("g", "a"): 2})
+
+    assert lookup.folds(("g", "a"), [0, 99]).tolist() == [2, 2]
+    assert lookup.folds(("g", "b"), [0]).tolist() == [-1]
+    assert lookup.entries == {("g", "a")}
+
+
+def test_a_lookup_reads_the_table_that_the_fold_file_holds() -> None:
+    by_block = pd.DataFrame(
+        {
+            "group": ["g", "g"],
+            "sequence": ["a", "a"],
+            "fold": [1, 0],
+            "start": [0, 10],
+            "stop": [10, 20],
+        }
+    )
+    by_entry = by_block[["group", "sequence", "fold"]].iloc[:1]
+
+    assert FoldLookup.from_table(by_block).folds(("g", "a"), [3, 12]).tolist() == [1, 0]
+    assert FoldLookup.from_table(by_entry).folds(("g", "a"), [3, 12]).tolist() == [1, 1]
+
+
+def test_a_lookup_scores_the_one_entry_of_a_table_by_frame() -> None:
+    lookup = FoldLookup.by_block([("g", "a", 0, 0, 5, 1)])
+    frame = pd.DataFrame({"frame": [2, 8], "group": ["g", "g"], "sequence": ["a", "a"]})
+
+    assert lookup.scoring_folds(frame, "clf").tolist() == [1, -1]
+
+    two = pd.concat([frame, frame.assign(sequence="b")])
+    with pytest.raises(ValueError, match=r"^\[clf\] .*more than one entry"):
+        lookup.scoring_folds(two, "clf")
+
+
+def test_blocks_name_themselves_in_the_two_class_refusal_of_a_fold() -> None:
+    blocks = [CvBlock("g", "a", 0, 0, 10, 0), CvBlock("g", "a", 1, 10, 20, 1)]
+    counts = pd.DataFrame(
+        {0: [5, 5], 1: [5, 0]},
+        index=pd.MultiIndex.from_tuples(
+            [("g", "a", 0), ("g", "a", 1)], names=["group", "sequence", "block"]
+        ),
+    )
+    table = block_fold_table(blocks, counts, [0, 1])
+
+    with pytest.raises(ValueError, match="label each class in more of the blocks"):
+        check_folds("clf", 2, table, [0, 1], rows="labeled frames", unit="block")
+
+
+def test_the_block_settings_leave_the_identity_of_the_sequence_unit() -> None:
+    def dumped() -> dict[str, object]:
+        return {
+            "cv_folds": 3,
+            "cv_unit": "block",
+            "cv_blocks_per_sequence": 3,
+            "cv_gap_frames": 5,
+        }
+
+    assert drop_block_settings(dumped(), "sequence") == {"cv_folds": 3}
+    assert drop_block_settings(dumped(), "block") == dumped()

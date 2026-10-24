@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from mosaic.behavior.feature_library.fit_label_map import (
     read_label_map,
 )
 from mosaic.behavior.feature_library.helpers import entry_identity
+from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.graph import (
     Recipe,
@@ -22,9 +24,21 @@ from mosaic.core.pipeline.graph import (
     resolved_columns,
     resolved_levels,
 )
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.loading import load_entry_data
+from mosaic.core.pipeline.run import compute_run_id, run_feature
+from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.types import InputStream, ParquetLoadSpec, Result
-from tests.helpers import run_id_digest, write_sparse_labels
+from mosaic.core.scope import Scope
+from tests.helpers import (
+    add_tracks_variant,
+    make_dataset,
+    model_reference,
+    result_outputs,
+    result_run_root,
+    run_id_digest,
+    write_sparse_labels,
+)
 
 _INPUTS = ArHmmFeature.Inputs((Result(feature="speed-angvel"),))
 
@@ -625,3 +639,123 @@ class TestCacheKey:
         assert "backend" not in dump_np
         # ...but it still round-trips through the full model dump.
         assert "backend" in _make_feature("numba").params.model_dump()
+
+
+class TestApplyMode:
+    """A run given ``model`` applies it, so the entries it covers are not its identity."""
+
+    _VARIANT = "convert-test.0.1-aaaaaaaaaa"
+
+    @staticmethod
+    def _feature(upstream: Result | None = None, **params: object) -> ArHmmFeature:
+        reads = upstream or Result(feature="speed-angvel", run_id="0.1-aaaaaaaaaa")
+        return ArHmmFeature(
+            inputs=ArHmmFeature.Inputs((reads,)),
+            params={"n_states": 3, "n_iter": 5, "backend": "numpy", **params},
+        )
+
+    @pytest.fixture
+    def dataset(self, tmp_path: Path) -> Dataset:
+        ds = make_dataset(tmp_path / "dataset")
+        add_tracks_variant(ds, self._VARIANT, "s1", "s2", "s3", n_rows=60)
+        return ds
+
+    @pytest.fixture
+    def speeds(self, dataset: Dataset) -> Result:
+        """The per-frame speeds of every sequence, which arhmm reads."""
+        return run_feature(dataset, SpeedAngvel())
+
+    def test_a_run_given_a_model_applies_and_hashes_no_scope(self) -> None:
+        feature = self._feature(model={"feature": "arhmm", "run_id": "0.3-aaaaaaaaaa"})
+
+        assert feature.scope_dependent is False
+        assert feature.fits is False
+        assert self._feature().scope_dependent is True
+        assert self._feature().fits is True
+
+    def test_the_run_id_of_an_apply_names_the_model_and_no_entry(self) -> None:
+        def run_id(model: str, *sequences: str) -> str:
+            feature = self._feature(model={"feature": "arhmm", "run_id": model})
+            scope = ResolvedScope(entries={("", name) for name in sequences})
+            return compute_run_id(feature, None, None, scope)[0]
+
+        assert run_id("0.3-aaaaaaaaaa", "s1") == run_id("0.3-aaaaaaaaaa", "s1", "s2")
+        assert run_id("0.3-aaaaaaaaaa", "s1") != run_id("0.3-bbbbbbbbbb", "s1")
+
+    def test_a_fit_hashes_the_entries_it_is_fitted_on(self) -> None:
+        feature = self._feature()
+        narrow = compute_run_id(
+            feature, None, None, ResolvedScope(entries={("", "s1")})
+        )
+        wide = compute_run_id(
+            feature, None, None, ResolvedScope(entries={("", "s1"), ("", "s2")})
+        )
+
+        assert narrow != wide
+
+    def test_a_model_that_was_not_found_is_refused_rather_than_refitted(
+        self, tmp_path: Path
+    ) -> None:
+        feature = self._feature(model={"feature": "arhmm", "run_id": "0.3-aaaaaaaaaa"})
+
+        with pytest.raises(FileNotFoundError, match="0.3-aaaaaaaaaa"):
+            _ = feature.load_state(tmp_path, {}, {})
+        assert not list(tmp_path.iterdir())
+
+    def test_a_missing_model_stops_the_run_and_stores_nothing(
+        self, dataset: Dataset, speeds: Result
+    ) -> None:
+        feature = self._feature(
+            speeds, model={"feature": "arhmm", "run_id": "0.3-0000000000"}
+        )
+
+        with pytest.raises(FileNotFoundError, match="0.3-0000000000"):
+            _ = run_feature(dataset, feature)
+
+        assert not list(
+            dataset.get_root("features").glob("arhmm*/*/arhmm_model.joblib")
+        )
+
+    def test_an_apply_over_a_wider_scope_is_the_same_run_of_the_same_model(
+        self, dataset: Dataset, speeds: Result
+    ) -> None:
+        fitted = run_feature(
+            dataset,
+            self._feature(speeds),
+            scope=Scope(entries=[("", "s1"), ("", "s2")]),
+        )
+        model = result_run_root(dataset, fitted) / "arhmm_model.joblib"
+        digest = hashlib.sha256(model.read_bytes()).hexdigest()
+        reference = model_reference(fitted)
+
+        narrow = run_feature(
+            dataset,
+            self._feature(speeds, model=reference),
+            scope=Scope(entries=[("", "s1")]),
+        )
+        wide = run_feature(dataset, self._feature(speeds, model=reference))
+
+        assert wide.run_id == narrow.run_id
+        assert wide.run_id != fitted.run_id
+        assert sorted(result_outputs(dataset, wide)) == ["s1", "s2", "s3"]
+        assert hashlib.sha256(model.read_bytes()).hexdigest() == digest
+        assert not (result_run_root(dataset, wide) / "arhmm_model.joblib").exists()
+
+    def test_the_held_out_entry_is_labeled_by_the_stored_model(
+        self, dataset: Dataset, speeds: Result
+    ) -> None:
+        """An apply labels an entry the fit never saw, as the fit labels its own."""
+        fitted = run_feature(
+            dataset,
+            self._feature(speeds),
+            scope=Scope(entries=[("", "s1"), ("", "s2")]),
+        )
+        applied = run_feature(
+            dataset, self._feature(speeds, model=model_reference(fitted))
+        )
+
+        fitted_out = result_outputs(dataset, fitted)
+        applied_out = result_outputs(dataset, applied)
+        assert sorted(fitted_out) == ["s1", "s2"]
+        assert "s3" in applied_out and len(applied_out["s3"]) == len(fitted_out["s1"])
+        pd.testing.assert_frame_equal(applied_out["s1"], fitted_out["s1"])

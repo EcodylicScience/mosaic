@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Eight verbs, and the split between them is the split the library makes.
+Ten verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -15,6 +15,14 @@ prints the command each step is run by, so a graph can be driven by anything tha
 starts processes in order -- a shell loop, a job array, a scheduler. ``status``
 then says how far that submission got, reading only the attempts' own logs.
 ``list`` reports a page of the dataset's submissions the same way.
+
+``verify`` fits the fitting steps of a finished recipe again in a scratch directory
+and compares them with the stored runs (``core/pipeline/verify.py``). It writes
+nothing under the dataset.
+
+``score`` is the verb of a held-out protocol (``pipeline_score.py``). It copies
+the study, adds held-out data to the copy, refuses when that would move the run
+id of any step, and otherwise runs the recipe and its evaluations there.
 
 ``--recipe`` takes the same ``@file.json`` / inline-JSON argument every other
 JSON option on this CLI takes, so a recipe can be piped in with ``@-``.
@@ -63,12 +71,14 @@ if TYPE_CHECKING:
         CleanupStatusWire,
         Plan,
         PlannedStep,
+        Problem,
         Recipe,
         Request,
         RequestStatusWire,
         RequestSummaryWire,
         RetirableRecipeWire,
     )
+    from mosaic.core.pipeline.verify import VerifyReport
 
 pipeline_app = typer.Typer(
     name="pipeline",
@@ -137,6 +147,19 @@ RetireOption = Annotated[
     ),
 ]
 
+AssumeAddedOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--assume-added",
+        metavar="GROUP",
+        help=(
+            "Assume this group joins the dataset (repeatable) and note which "
+            "steps of the plan would refit and which would only re-score, as "
+            "the same scope covers it. It changes nothing else."
+        ),
+    ),
+]
+
 SCOPE_FLAGS_REMEDY = (
     "--entry group:sequence (repeatable). Omit it to cover the whole dataset."
 )
@@ -147,7 +170,7 @@ and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
 """
 
 
-def _recipe(argument: str, *, as_json: bool) -> "Recipe":
+def recipe_argument(argument: str, *, as_json: bool) -> "Recipe":
     """Parse the ``--recipe`` argument, failing cleanly on a bad document."""
     from mosaic.core.pipeline.graph import RecipeInvalid, read_recipe
 
@@ -168,7 +191,7 @@ def _cleanup_policy(
     return CleanupPolicy(keep_newest=keep_newest, min_age_hours=min_age_hours)
 
 
-def _fail_unrunnable(
+def fail_unrunnable(
     error: ClassifiedError, *, as_json: bool, step: str = ""
 ) -> NoReturn:
     """Report a classified error that stopped a recipe, and exit 1.
@@ -273,6 +296,7 @@ def plan_command(
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
+    assume_added: AssumeAddedOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
@@ -285,11 +309,13 @@ def plan_command(
     ``--cleanup superseded`` also reports the superseded runs of the recipe's
     feature storages, and the fingerprint then covers the ones removable. It
     also lists the saved recipes whose requests wrote runs, and ``--retire
-    <digest>`` judges the runs of one of them too, in any storage. It writes
-    nothing.
+    <digest>`` judges the runs of one of them too, in any storage.
+    ``--assume-added GROUP`` notes which steps would refit, and which would
+    only re-score, if that group joined the dataset. It writes nothing.
     """
     from mosaic.core.pipeline.graph import (
         RecipeRefused,
+        assume_added_cautions,
         plan_wire,
         plan_with_cleanup,
         requests_matching,
@@ -299,7 +325,7 @@ def plan_command(
     from mosaic.core.scope import Scope
 
     ds = load_dataset(manifest, read_only=True)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     try:
@@ -318,7 +344,7 @@ def plan_command(
             raise typer.Exit(code=1) from refusal
         fail(str(refusal))
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json)
+        fail_unrunnable(error, as_json=as_json)
     unended = requests_matching(
         ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
     )
@@ -338,15 +364,199 @@ def plan_command(
         open_requests=unended,
         retirable=retirable,
         retirable_omitted=omitted,
+        extra_cautions=assume_added_cautions(
+            parsed, plan, assume_added or (), scope=scope
+        ),
         as_json=as_json,
     )
+
+
+AtolOption = Annotated[
+    float,
+    typer.Option(
+        "--atol",
+        min=0,
+        help=(
+            "How far a tolerant feature's new fit may sit from the stored one, "
+            "per value. Only a feature that trains a network is tolerant (it has "
+            "an n_threads param, or a device other than cpu). Every other "
+            "feature must match exactly."
+        ),
+    ),
+]
+ScratchOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--scratch",
+        help=(
+            "Where the new fits go, outside the dataset. It must be absent or "
+            "empty, and is kept afterwards. Without it a temporary directory is "
+            "used and removed."
+        ),
+    ),
+]
+VerifyThreadsOption = Annotated[
+    int,
+    typer.Option(
+        "--n-threads",
+        min=1,
+        help=(
+            "The thread count a feature with an n_threads param is fitted with. "
+            "It is outside the run id."
+        ),
+    ),
+]
+
+
+def verify_command(
+    recipe: RecipeOption,
+    manifest: ManifestOption,
+    entry: EntriesOption = None,
+    group: GroupOption = None,
+    step_scope: StepScopeOption = None,
+    atol: AtolOption = 1e-5,
+    scratch: ScratchOption = None,
+    n_threads: VerifyThreadsOption = 1,
+    as_json: JsonOption = False,
+) -> None:
+    """Fit a finished recipe's fitting steps again and compare them with the stored runs.
+
+    Plans the recipe as 'pipeline plan' does (same --entry, --group and
+    --step-scope). Each step whose feature fits and whose run is complete is
+    fitted again into a scratch directory, never into the dataset, and then:
+    its stored per-entry outputs are compared with the same entries applied
+    from the new fit (largest absolute difference, and for prob_* columns the
+    share of rows keeping their most probable class), and so are the files the
+    fit saves. Each evaluation step (evaluate-labels) is scored again, on the
+    predictions of the new fit where its input was just verified, and its
+    metrics.json is compared with the stored one. Exits 0 when everything is
+    within tolerance and 1 otherwise, with --json giving every difference. It
+    also exits 1 when no step was compared (a recipe never run, or a
+    --step-scope the run did not use).
+
+    The tolerance is a decision, not a default to loosen. Most features are
+    deterministic and must match exactly. A feature that trains a network
+    (sequence-classifier, lightning-action) matches exactly on CPU at the same
+    thread count, with n_threads fixed at 1 here unless --n-threads says
+    otherwise. Across thread counts on Linux its probabilities move (mean
+    about 7e-3, about 99% of rows keep their argmax), and across a GPU and a
+    CPU they move more. A tolerant feature is held to --atol (1e-5) and an
+    evaluation of its predictions inherits it. To verify a run that was fitted
+    at another thread count or on a GPU, raise --atol and read the argmax
+    agreement. The dataset is opened read-only and nothing is written under it.
+    """
+    from mosaic.core.pipeline.graph import RecipeRefused, plan_pipeline
+    from mosaic.core.pipeline.verify import ScratchRefused, verify_plan
+
+    ds = load_dataset(manifest, read_only=True)
+    parsed = recipe_argument(recipe, as_json=as_json)
+    scope = entries_scope(entry, group)
+    step_scopes = parse_step_scopes(step_scope)
+    try:
+        with stdout_to_stderr():
+            plan = plan_pipeline(
+                ds, parsed, scope=scope, step_scopes=step_scopes, refuse=True
+            )
+    except RecipeRefused as refusal:
+        if as_json:
+            from mosaic.core.pipeline.graph import plan_wire
+
+            emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
+            raise typer.Exit(code=1) from refusal
+        fail(str(refusal))
+    except ClassifiedError as error:
+        fail_unrunnable(error, as_json=as_json)
+    try:
+        with stdout_to_stderr():
+            report = verify_plan(
+                ds, plan, atol=atol, n_threads=n_threads, scratch=scratch
+            )
+    except ScratchRefused as refusal:
+        fail(str(refusal))
+    if as_json:
+        emit_json(report.model_dump(mode="json"))
+    else:
+        _emit_verify(report)
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+def _emit_verify(report: "VerifyReport") -> None:
+    """Render a verification as a table with the differences listed below it."""
+
+    def number(value: float | None, pattern: str = "{:.3g}") -> str:
+        return "-" if value is None else pattern.format(value)
+
+    rows = [
+        {
+            "step": step.step,
+            "runs": step.runs,
+            "role": step.role,
+            "status": step.status,
+            "tolerance": f"{step.tolerance:g}",
+            "max_abs_diff": number(step.max_abs_diff),
+            "argmax": number(step.argmax_agreement, "{:.4f}"),
+            "entries": step.entries_checked,
+            "note": step.reason,
+        }
+        for step in report.steps
+    ]
+    render_table(
+        rows,
+        [
+            "step",
+            "runs",
+            "role",
+            "status",
+            "tolerance",
+            "max_abs_diff",
+            "argmax",
+            "entries",
+            "note",
+        ],
+    )
+    for step in report.steps:
+        for entry in step.entries:
+            if entry.status == "differs":
+                typer.echo(
+                    f"{step.step}: {entry.group}/{entry.sequence} differs "
+                    f"(max {number(entry.max_abs_diff)}) {entry.detail}".rstrip(),
+                    err=True,
+                )
+        for state in step.state:
+            if state.status == "differs":
+                typer.echo(
+                    f"{step.step}: {state.file} differs "
+                    f"(max {number(state.max_abs_diff)}) {state.detail}".rstrip(),
+                    err=True,
+                )
+    differing = sum(1 for step in report.steps if step.status == "differs")
+    raised = sum(1 for step in report.steps if step.status == "error")
+    causes = [
+        f"{count} step(s) {what}"
+        for count, what in (
+            (differing, "differ"),
+            (report.unfinished, "have no complete run"),
+            (raised, "raised"),
+        )
+        if count
+    ]
+    if report.verified == 0:
+        outcome = "nothing was compared, so nothing is verified" + (
+            f" ({'; '.join(causes)})." if causes else "."
+        )
+    elif report.ok:
+        outcome = "all within tolerance."
+    else:
+        outcome = "; ".join(causes) + "."
+    typer.echo(f"verified {report.verified} step(s): {outcome}", err=not report.ok)
 
 
 def show_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     """Print a recipe's steps and the references between them. No dataset."""
     from mosaic.core.pipeline.graph import edges, recipe_digest, topological_order
 
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     ordered = topological_order(parsed)
     wires = edges(parsed)
     if as_json:
@@ -556,7 +766,7 @@ def run_command(
     if detach:
         fail("--detach is used with --request. Submit the recipe first.")
     ds = load_dataset(manifest)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     submitted: Request | None = None
@@ -603,7 +813,7 @@ def run_command(
         exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
     except ClassifiedError as error:
         step_id, _ = _failed_attempt(ds.base_dir, submitted, error)
-        _fail_unrunnable(error, as_json=as_json, step=step_id)
+        fail_unrunnable(error, as_json=as_json, step=step_id)
 
     rows = [
         {
@@ -689,7 +899,7 @@ def _run_request(
         except Refusal as refusal:
             exit_refused("", refusal, as_json=as_json)
         except ClassifiedError as error:
-            _fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+            fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
         if as_json:
             emit_json(
                 {
@@ -712,7 +922,7 @@ def _run_request(
     except Refusal as refusal:
         exit_refused("", refusal, as_json=as_json)
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+        fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
     report = request_status_wire(ds.base_dir, request)
     if as_json:
         emit_json(
@@ -810,7 +1020,7 @@ def submit_command(
     from mosaic.core.pipeline.graph import plan_fingerprint, step_argv, submit_request
 
     ds = load_dataset(manifest)
-    parsed = _recipe(recipe, as_json=as_json)
+    parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     try:
@@ -829,7 +1039,7 @@ def submit_command(
                 retire=retire or (),
             )
     except ClassifiedError as error:
-        _fail_unrunnable(error, as_json=as_json)
+        fail_unrunnable(error, as_json=as_json)
     request = submitted.request
     _warn_duplicates(submitted.duplicates)
     steps = [
@@ -1095,12 +1305,14 @@ def _emit_plan(
     open_requests: "tuple[RequestSummaryWire, ...]" = (),
     retirable: "tuple[RetirableRecipeWire, ...]" = (),
     retirable_omitted: int = 0,
+    extra_cautions: "tuple[Problem, ...]" = (),
     as_json: bool,
 ) -> None:
     """Render a plan as its fingerprint and a table, or as the JSON an API serves.
 
-    Each of the plan's cautions and of *open_requests* is noted below the table,
-    followed by the *retirable* recipes of a plan asked for a cleanup.
+    Each of the plan's cautions, those *extra_cautions* add and of *open_requests*
+    is noted below the table, followed by the *retirable* recipes of a plan asked
+    for a cleanup.
     """
     from mosaic.core.pipeline.graph import plan_wire
 
@@ -1109,6 +1321,7 @@ def _emit_plan(
         open_requests=open_requests,
         retirable=retirable,
         retirable_omitted=retirable_omitted,
+        extra_cautions=extra_cautions,
     )
     if as_json:
         emit_json(wire.model_dump(mode="json"))
@@ -1255,6 +1468,7 @@ def _reason_cell(planned: "PlannedStep") -> str:
 _ = pipeline_app.command(name="catalog")(catalog_command)
 _ = pipeline_app.command(name="validate")(validate_command)
 _ = pipeline_app.command(name="plan")(plan_command)
+_ = pipeline_app.command(name="verify")(verify_command)
 _ = pipeline_app.command(name="show")(show_command)
 _ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)

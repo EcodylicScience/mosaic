@@ -52,12 +52,21 @@ in the root guide.
   (`tests/core/test_dataset_manifest.py`).
 - `write_manifest` is atomic. A writer that may race another goes through
   `Dataset.mutate_manifest`, which re-reads and writes under `index_lock`.
+  `declare_scan_source`, `undeclare_scan_source` and `update_tags` are the locked
+  forms of the source and tag edits, which the MCP's `manage_dataset` calls. The CLI's
+  `sources add` and that tool build a source through `scan_source_from_fields`
+  (`source_fields.py`, `tests/core/test_source_fields.py`).
 - Dataset tags use the grammar in `typed_attribute.py`, which mosaic-api shares. It
   imports only the standard library and `json_value`. Keep dataset concepts out of it.
 - `continuous_groups` refuses an empty or repeated name
   (`test_the_empty_group_cannot_be_continuous`). A continuous group's media resolves as
   one timeline (`Dataset._match_continuous_group_rows`), and `overlap_frames` checks the
   declaration against recorded frame extents (`core/pipeline/manifest.py`).
+- `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key
+  and moved no `MANIFEST_VERSION`, so older code preserves it without enforcing it.
+  Read it through `core/splits.py` (`role_of`, `groups_with_role`, `held_out_groups`)
+  and write it only through `Dataset.set_splits` and `remove_splits`
+  (`tests/core/test_splits.py`).
 
 ## Scans
 

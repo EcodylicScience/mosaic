@@ -39,7 +39,9 @@ pass for that tag.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 import threading
 from collections.abc import AsyncGenerator, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -76,6 +78,7 @@ from .spec import (
     confirmation_declined,
     confirmation_tag,
     confirmation_unanswered,
+    confirmation_unavailable,
     tool_spec,
 )
 from .summaries import summarize
@@ -96,7 +99,8 @@ _CONFIRMATION_RULES: Final = (
     "Show the user the plan's cautions with the plan. submit_pipeline and "
     "cancel_request ask the user themselves when the work is costly; set "
     "confirm only when the user agreed in this conversation. After "
-    "confirmation_declined or confirmation_unanswered, stop and report: do not "
+    "confirmation_declined, confirmation_unanswered or confirmation_unavailable, "
+    "stop and report: do not "
     "run the same work another way, such as through the mosaic CLI. For what "
     "these tools do not offer, propose the mosaic CLI command to the user."
 )
@@ -115,8 +119,10 @@ INSTRUCTIONS: Final = (
     "you choose; draft a recipe and validate_recipe; plan_recipe, show the user "
     "the plan and wait for their approval; submit_pipeline, then wait with "
     "get_request_status and wait_seconds; get_inventory and preview_output read "
-    "the results, and diagnose_failures explains a failure. Reads change "
-    "nothing. A result is at most 40,000 characters, and a result_too_large "
+    "the results, and diagnose_failures explains a failure. For a long recipe, "
+    "write repeated steps once with repeat, save it with patch_recipe, then pass "
+    "{digest: ...} as the recipe and change it with patch_recipe edits. Reads "
+    "change nothing. A result is at most 40,000 characters, and a result_too_large "
     "error names the arguments that narrow the call. The mosaic://guide resource, the "
     "`mosaic agent guide` command and the installed SKILL.md are one text; read "
     "it once, when the tools leave a question open. " + _CONFIRMATION_RULES
@@ -154,6 +160,13 @@ ALWAYS_LOAD_META: Final = "anthropic/alwaysLoad"
 """The ``_meta`` key of a tool that a client should load up front."""
 
 _STATE_SEPARATOR: Final = "."
+
+_STATE_KEY: Final = secrets.token_bytes(32)
+"""The key of a confirmation's request state, new in each server process.
+
+A client returns the state with the user's answer. Keyed, it names a question
+this process asked, so a client that was never asked cannot write one.
+"""
 """What separates the call digest from the conditions in a request state."""
 
 _MAX_QUESTIONS: Final = 3
@@ -214,11 +227,15 @@ async def _no_state(_server: Server[None]) -> AsyncGenerator[None]:
     yield
 
 
-def bind_server(backend: LocalBackend) -> Server[None]:
+def bind_server(backend: LocalBackend, *, model_confirm: bool = True) -> Server[None]:
     """Bind the shared tools, resources and prompts to *backend*.
 
     Args:
         backend: What answers the tools and reads the resources.
+        model_confirm: Whether a client that cannot ask the user may confirm a
+            call with ``confirm: true``, which its model sets. Off, such a call
+            is refused with ``confirmation_unavailable``, as over HTTP unless
+            the operator allows it.
 
     Returns:
         The low-level server, which ``Server.run`` serves over a pair of
@@ -234,7 +251,7 @@ def bind_server(backend: LocalBackend) -> Server[None]:
     async def call(
         ctx: ServerRequestContext[None], params: types.CallToolRequestParams
     ) -> types.CallToolResult | types.InputRequiredResult:
-        return await _call_tool(backend, ctx, params)
+        return await _call_tool(backend, ctx, params, model_confirm=model_confirm)
 
     async def list_resources(
         _ctx: ServerRequestContext[None], _params: types.PaginatedRequestParams | None
@@ -342,22 +359,30 @@ async def _call_tool(
     backend: LocalBackend,
     ctx: ServerRequestContext[None],
     params: types.CallToolRequestParams,
+    *,
+    model_confirm: bool = True,
 ) -> types.CallToolResult | types.InputRequiredResult:
     """Answer one tool call, asking the user to confirm where the tool refuses.
 
     Where the client can elicit, only the user's answer confirms the call: a
-    ``confirm`` that the model passed is dropped before the tool runs.
+    ``confirm`` that the model passed is dropped before the tool runs. Without
+    *model_confirm* it is dropped from every client, and a call that a client
+    which cannot elicit would have to confirm is refused as unavailable.
     """
     arguments: dict[str, object] = dict(params.arguments or {})
     eliciting = _can_elicit(ctx)
     spec = tool_spec(params.name)
-    if eliciting and spec is not None and spec.needs_confirmation:
+    if (
+        (eliciting or not model_confirm)
+        and spec is not None
+        and spec.needs_confirmation
+    ):
         _ = arguments.pop(_CONFIRM_ARGUMENT, None)
     call_digest = _call_digest(params.name, arguments)
     digest, _, asked = (params.request_state or "").partition(_STATE_SEPARATOR)
     answered = (
         _answered_confirmation(params.input_responses)
-        if digest == call_digest
+        if eliciting and hmac.compare_digest(digest, call_digest)
         else None
     )
     if answered is not None:
@@ -371,6 +396,9 @@ async def _call_tool(
         )
     else:
         output = await _run_tool(backend, params.name, arguments)
+    if _asks_to_confirm(output) and not eliciting and not model_confirm:
+        assert isinstance(output, ErrorEnvelope)
+        return _tool_result(confirmation_unavailable(output))
     if not (_asks_to_confirm(output) and eliciting):
         return _tool_result(output)
     for _ in range(_MAX_QUESTIONS):
@@ -465,13 +493,14 @@ def _call_digest(name: str, arguments: Mapping[str, object]) -> str:
     """Return the digest of a call to *name* with *arguments*, ``confirm`` aside.
 
     The request state of a confirmation, so that the answer confirms the call
-    that the user was shown and no other.
+    that the user was shown and no other. Keyed with :data:`_STATE_KEY`, so only
+    this process can name a question it asked.
     """
     asked = {key: value for key, value in arguments.items() if key != _CONFIRM_ARGUMENT}
     canonical = json.dumps(
         {"tool": name, "arguments": asked}, sort_keys=True, separators=(",", ":")
     )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return hmac.new(_STATE_KEY, canonical.encode(), hashlib.sha256).hexdigest()
 
 
 def _confirmation_question(

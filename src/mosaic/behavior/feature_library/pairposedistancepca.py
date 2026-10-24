@@ -154,7 +154,9 @@ class PairPoseDistancePCA:
     version = "0.3"
     parallelizable = True
     scope_dependent = True
+    fits = True  # learns its basis; ``__init__`` clears this for a run given a model
     accepts_overlap = False  # computes within a frame, so gains nothing
+    temporal_reach = 0
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
     requires: ClassVar[tuple[Requirement, ...]] = (
@@ -232,6 +234,7 @@ class PairPoseDistancePCA:
         # A fit derives its basis from the entries in scope, so they are part of its
         # identity. A run given a model reads none of them for a fit.
         self.scope_dependent = self.params.model is None
+        self.fits = self.params.model is None
 
     # ---------- Feature protocol ----------
     def load_state(

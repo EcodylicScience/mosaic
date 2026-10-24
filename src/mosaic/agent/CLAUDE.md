@@ -24,7 +24,7 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 ## Tool contract
 
 - `TOOLS` in `spec.py` declares each tool once, and a backend answers it through the
-  `ToolBackend` method of the same name. The set contains at most 15 tools
+  `ToolBackend` method of the same name. The set contains at most 16 tools
   (`tests/meta/test_shared_tool_cap.py`), and each schema stays under
   `MAX_SCHEMA_BYTES`.
 - A tool wraps a library function and its wire model, which live beside their concept
@@ -44,8 +44,13 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `mosaic features describe` and `mosaic pipeline catalog <name>` print it. Each step
   type's detail stays under `MAX_STEP_TYPE_DETAIL_CHARS`, which a test measures over
   the catalog, so a new feature or op with a large params model must fit it.
-- `submit_pipeline` and `cancel_request` are the only tools that change a dataset, and
-  both declare `confirm_when`. No tool takes `overwrite` (`test_tool_spec.py`).
+- `submit_pipeline`, `cancel_request` and `manage_dataset` are the tools that change
+  a dataset, and each declares `confirm_when`. `patch_recipe` writes only a content-addressed
+  recipe file through `save_recipe`, is idempotent, asks nothing and is refused on a
+  managed dataset. No tool takes `overwrite` (`test_tool_spec.py`).
+- A recipe argument is a document or a saved recipe named `{"digest": ...}` or
+  `{"saved": ...}` (`graph/saved.py`). `LocalBackend._recipe` resolves both, so a tool
+  that takes a recipe takes a `dataset` for the reference.
 - The confirmation conditions are the ones `test_tool_spec.py` pins. A whole-dataset
   or large plan is a `PlanWire.cautions` entry, not a condition. In `_binding.py` an
   elicitation's `cancel` is `confirmation_unanswered` and a decline or an unticked
@@ -66,9 +71,16 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - A run's report is a resource, not a tool: a feature declaring `report_file` has it
   served at `.../artifacts/feature/{name}/{run_id}/report` through
   `read_run_report`.
+- `manage_dataset` (`dataset_tools.py`, `LocalBackend._manage_dataset`) creates a
+  dataset inside the operator's `dataset_roots` and declares a source inside its
+  `source_roots`, each path resolved through links and `..`. It writes the manifest
+  only through `Dataset.declare_scan_source`, `undeclare_scan_source` and
+  `update_tags`, which take the manifest's lock, and never `splits`. A dataset below a
+  dataset root is served without a restart (`_serve_new_datasets`), and a change
+  reopens the served dataset (`_reopened`) (`tests/agent/mcp/test_dataset_tools.py`).
 - `docs/agents.md` lists the operations the server leaves to the user, such as
-  deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
-  for one. The one deletion the tools make is removing superseded feature runs: the
+  deletion, `--apply` on a sweep or prune verb, and the other manifest writes. Do not
+  add a tool for one. The one deletion the tools make is removing superseded feature runs: the
   `cleanup` argument of `submit_pipeline`, refused (`cleanup_not_allowed`) unless the
   server runs with `--allow-cleanup feature-runs`, and asked about through the
   `cleanup` condition. The policy comes from the server's configuration, never from a
@@ -76,6 +88,10 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   widens the same deletion to the runs of retired recipes in any storage. It needs
   `cleanup`, applies to one call, and shares the flag and the condition, so its
   finding names the retired recipes.
+- The agent tools never write `splits`, the manifest roles (`train`, `test`, `sealed`)
+  that mark a group held out. An agent that could set a role could unseal what it
+  protects, so only the operator's `mosaic splits` verbs write them. The tools read
+  them (`tests/meta/test_agent_never_writes_splits.py`).
 - Parallelism limits (`max_workers`, `allow_process_mode`, `min_free_memory_fraction`)
   are the operator's. `submit_pipeline` takes `workers` and `parallel_mode` within them
   and `ParallelLimits.settings_for` refuses a request over a limit
@@ -85,6 +101,21 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - An accepted confirmation confirms only the conditions it named. `_binding.py` runs
   the call again without `confirm` first and asks again when it meets another
   (`test_mcp_server.py`).
+
+## HTTP
+
+- `serve_http` (`server.py`, `mosaic agent serve --http`) serves the same tools over
+  streamable HTTP, stateful, so a client that declares elicitation is asked during the
+  call. It needs a bearer token from a 0600 file (`http_auth.py`), checked by
+  `BearerGuard` in constant time before the SDK sees the request, even on loopback,
+  because other users of a shared host reach it. It imports `uvicorn` inside the
+  function. Over HTTP `bind_server(model_confirm=False)` drops a model's `confirm` and
+  refuses a call that needs one from a client that cannot elicit
+  (`confirmation_unavailable`), unless the operator passes `--allow-model-confirm`
+  (`tests/agent/mcp/test_mcp_http.py`).
+- A network listener puts the server under AGPL section 13: a user who interacts
+  with a modified server over the network is offered its source. Keep the version the
+  server reports at initialization accurate.
 
 ## Standard output
 

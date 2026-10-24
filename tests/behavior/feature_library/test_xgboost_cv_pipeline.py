@@ -349,3 +349,59 @@ def test_a_run_recorded_before_the_folds_is_reported_by_reconcile_and_left_in_pl
     )
     assert root.exists()
     assert sorted(p.name for p in root.parent.iterdir() if p.is_dir()) == [run_id]
+
+
+def single_sequence_dataset(base: Path) -> Dataset:
+    """One training sequence, so that holding sequences out leaves nothing to fit."""
+    return calms21_dataset(
+        base,
+        {"train": {"a": {"s1": 600}}, "test": {"a": {"t1": 240}}},
+        seed=11,
+        n_classes=3,
+    )
+
+
+def test_one_training_sequence_has_a_cross_validated_score_by_block(
+    tmp_path: Path, fit_calls: list[int], scored: list[tuple[str, str]]
+) -> None:
+    """`cv_unit="block"` cuts the sequence, so each block is scored by a model that never saw it."""
+    ds = single_sequence_dataset(tmp_path / "ds")
+    by_block = recipe(cv_unit="block", cv_blocks_per_sequence=6, cv_gap_frames=5)
+
+    with pytest.raises(ValueError, match="1 train entries into 3"):
+        run_pipeline(ds, recipe(), step_scopes=SCREENING)
+
+    run = run_pipeline(ds, by_block, step_scopes=SCREENING)
+
+    outcomes = {o.step_id: o for o in run.outcomes}
+    assert [outcomes[step].state for step in ("classifier", "evaluate")] == ["ran"] * 2
+    assert len(fit_calls) == 3 + 1
+    assert scored == [("train", "s1")]
+    planned = plan_pipeline(ds, by_block, step_scopes=SCREENING)
+    root = (
+        ds.get_root("features")
+        / planned.step("classifier").storage_name
+        / str(outcomes["classifier"].run_id)
+    )
+    folds = pd.read_parquet(root / "cv_folds.parquet")
+    assert len(folds) == 6
+    assert set(folds["fold"]) == {0, 1, 2}
+    assert folds["start"].is_monotonic_increasing
+    templates_root = (
+        ds.get_root("features")
+        / planned.step("labeled").storage_name
+        / str(outcomes["labeled"].run_id)
+    )
+    provenance = pd.read_parquet(templates_root / "template_provenance.parquet")
+    assert provenance.loc[0, "labeled_start"] == folds["start"].min()
+    assert provenance.loc[0, "labeled_stop"] == folds["stop"].max()
+    report = EvaluationReport.model_validate_json(
+        (
+            ds.get_root("features")
+            / planned.step("evaluate").storage_name
+            / str(outcomes["evaluate"].run_id)
+            / "metrics.json"
+        ).read_text()
+    )
+    assert report.n_entries == 1
+    assert report.n_scored > 0

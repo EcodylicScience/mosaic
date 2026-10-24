@@ -90,6 +90,7 @@ class Case:
 # below is what stops one being forgotten.
 _TRACKS_DEFAULT_FEATURES = (
     "approach-avoidance",
+    "body-length",
     "body-scale",
     "collective-motion-metrics",
     "egocentric-crop",
@@ -103,6 +104,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "movement-filter-interpolate",
     "movement-smooth",
     "nearest-neighbor",
+    "neighbor-delta-response",
     "nn-delta-bins",
     "nn-delta-response",
     "orientation-rel",
@@ -132,6 +134,30 @@ _PCA_MODEL_REF: dict[str, object] = {
     "pattern": "model.joblib",
 }
 
+_APPLY_MODELS: dict[str, tuple[str, list[object]]] = {
+    "arhmm": ("arhmm/from-pair-wavelet", [{"feature": "pair-wavelet"}]),
+    "vame": ("vame", ["tracks"]),
+    "global-identity-model": (
+        "global-identity-model/from-egocentric-crop",
+        [{"feature": "egocentric-crop"}],
+    ),
+    "global-identity-embedding": (
+        "global-identity-embedding/from-egocentric-crop",
+        [{"feature": "egocentric-crop"}],
+    ),
+    "global-identity-dinov2-temporal": (
+        "global-identity-dinov2-temporal/from-egocentric-crop",
+        [{"feature": "egocentric-crop"}],
+    ),
+}
+"""The scope-dependent fitters that can apply a ``model``, by slug.
+
+The value is the prefix of the fitter's own cases, and its inputs.
+
+Each is a pair of cases below. The fit the model came from is the identity of the
+apply, so the two scopes of a pair must agree where the scopes of a fit differ.
+"""
+
 _VAME_REFERENCES: dict[str, object] = {
     "centered_reference_keypoint": 0,
     "orientation_reference_keypoint": 1,
@@ -144,6 +170,11 @@ CASES: tuple[Case, ...] = (
         for slug in _TRACKS_DEFAULT_FEATURES
     ),
     # --- params participate in identity ---
+    Case(
+        case_id="scale-to-bl/length",
+        feature="scale-to-bl",
+        params={"length": 12.0},
+    ),
     Case(
         case_id="speed-angvel/params-smooth",
         feature="speed-angvel",
@@ -383,6 +414,24 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "egocentric-crop"}],
         scope=(("", "seq_a"), ("", "seq_b")),
     ),
+    # --- the same fitters applying a model: the scope is where it is applied ---
+    *(
+        Case(
+            case_id=f"{prefix}/model-{label}",
+            feature=slug,
+            inputs=inputs,
+            params={
+                **(_VAME_REFERENCES if slug == "vame" else {}),
+                "model": {"feature": slug, "run_id": "0.1-0123456789"},
+            },
+            scope=scope,
+        )
+        for slug, (prefix, inputs) in _APPLY_MODELS.items()
+        for label, scope in (
+            ("scope-a", (("", "seq_a"),)),
+            ("scope-ab", (("", "seq_a"), ("", "seq_b"))),
+        )
+    ),
     # --- params-level global fitters: the templates ref is the training set ---
     Case(
         case_id="global-scaler/templates",
@@ -403,8 +452,39 @@ CASES: tuple[Case, ...] = (
         params={"templates": _TEMPLATES_REF, "default_class": 0},
     ),
     Case(
+        case_id="xgboost/cv-sequence",
+        feature="xgboost",
+        inputs=[{"feature": "global-scaler"}],
+        params={"templates": _TEMPLATES_REF, "default_class": 0, "cv_folds": 3},
+    ),
+    Case(
+        case_id="xgboost/cv-block",
+        feature="xgboost",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "default_class": 0,
+            "cv_folds": 3,
+            "cv_unit": "block",
+            "cv_blocks_per_sequence": 6,
+            "cv_gap_frames": 25,
+        },
+    ),
+    Case(
         case_id="sequence-classifier/templates",
         feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior"},
+            "default_class": 0,
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="lightning-action/templates",
+        feature="lightning-action",
         inputs=[{"feature": "global-scaler"}],
         params={
             "templates": _TEMPLATES_REF,
@@ -425,6 +505,25 @@ CASES: tuple[Case, ...] = (
             "head": "tcn",
             "head_config": {"blocks": 5},
             "cv_folds": 5,
+            "device": "cpu",
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="sequence-classifier/tcn-cv-block",
+        feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior"},
+            "default_class": 0,
+            "head": "tcn",
+            "head_config": {"blocks": 5},
+            "cv_folds": 5,
+            "cv_unit": "block",
+            "cv_blocks_per_sequence": 10,
+            "cv_gap_frames": 127,
             "device": "cpu",
         },
         scope=(("train", "s1"), ("train", "s2")),
@@ -468,6 +567,52 @@ CASES: tuple[Case, ...] = (
         },
         scope=(("train", "s1"), ("train", "s2")),
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    # --- tuning thresholds, and applying them ---
+    #
+    # ``tune-threshold`` reads its input's fold table, so the scope is not hashed,
+    # as for a fitted blend. The ensemble case below names its thresholds by run:
+    # ``probability-ensemble/uniform`` above, with no threshold, keeps the
+    # identifier it had before the field took a reference.
+    Case(
+        case_id="tune-threshold/default",
+        feature="tune-threshold",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={"default_class": 0},
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="tune-threshold/pooled-f1-positive-class",
+        feature="tune-threshold",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={
+            "default_class": 0,
+            "metric": "pooled_f1",
+            "classes": [1],
+            "grid": [0.1, 0.2, 0.3],
+            "nested": False,
+        },
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="probability-ensemble/tuned-threshold",
+        feature="probability-ensemble",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={
+            "default_class": 0,
+            "decision_threshold": {
+                "feature": "tune-threshold",
+                "run_id": "0.1-0123456789",
+                "pattern": "thresholds.parquet",
+            },
+        },
+    ),
+    Case(
+        case_id="probability-ensemble/threshold-mapping",
+        feature="probability-ensemble",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={"default_class": 0, "decision_threshold": {0: 1.0, 1: 0.2}},
     ),
     # --- scoring against labels ---
     #
@@ -681,6 +826,20 @@ def test_a_pca_applying_a_model_has_one_run_for_every_scope() -> None:
     assert one is not None
     assert one == both
     assert one != golden.get("pair-posedistance-pca/scope-a")
+
+
+@pytest.mark.parametrize("slug", sorted(_APPLY_MODELS))
+def test_a_fitter_applying_a_model_has_one_run_for_every_scope(slug: str) -> None:
+    """The model it applies is the identity, and the entries it covers are not."""
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    golden = read_string_golden(GOLDEN)
+    prefix, _ = _APPLY_MODELS[slug]
+    one = golden.get(f"{prefix}/model-scope-a")
+    both = golden.get(f"{prefix}/model-scope-ab")
+    assert one is not None
+    assert one == both
+    assert one != golden.get(f"{prefix}/scope-a")
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.case_id)

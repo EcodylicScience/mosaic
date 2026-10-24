@@ -17,12 +17,20 @@ import inspect
 import textwrap
 
 import pytest
+from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
 
 EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
 """Spelled out rather than derived from the type alias, so a value silently
 added to the alias still has to be added here deliberately."""
+
+ALWAYS_FITS = frozenset({"TuneThresholdFeature"})
+"""The scope-free fitters with no mode that fits nothing, so ``fits`` is never narrowed.
+
+``tune-threshold`` applies the thresholds it chose to its input and has no param
+that names a fit to apply instead. A consumer of its thresholds is another step.
+"""
 
 FEATURE_CLASSES = sorted(FEATURES.values(), key=lambda cls: cls.__name__)
 FEATURE_IDS = [cls.__name__ for cls in FEATURE_CLASSES]
@@ -65,6 +73,134 @@ def test_every_global_and_media_feature_declares_costly_fit(cls: type) -> None:
         f"hours, False otherwise."
     )
     assert isinstance(vars(cls)["costly_fit"], bool)
+
+
+def _sets_on_instance(cls: type, attribute: str) -> bool:
+    """Whether the class's own ``__init__`` assigns ``self.<attribute>``."""
+    init = vars(cls).get("__init__")
+    if init is None:
+        return False
+    tree = ast.parse(textwrap.dedent(inspect.getsource(init)))
+    return any(
+        isinstance(node, ast.Attribute)
+        and node.attr == attribute
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+        and isinstance(node.ctx, ast.Store)
+        for node in ast.walk(tree)
+    )
+
+
+def _learns_or_depends_on_scope(cls: type) -> bool:
+    """Whether a feature is a global fitter or names its run by its scope.
+
+    The class default or an instance assignment in ``__init__`` counts for
+    ``scope_dependent``, because a feature may declare it only per instance.
+    """
+    return (
+        getattr(cls, "category", "") == "global"
+        or getattr(cls, "scope_dependent", False) is True
+        or _sets_on_instance(cls, "scope_dependent")
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_every_global_or_scope_dependent_feature_declares_fits(cls: type) -> None:
+    """Whether a feature learns from its inputs is not implied by its scope.
+
+    ``scope_dependent`` is not "fits": ``xgboost`` and the ``global-*`` fitters
+    learn and name their run without the entries in scope, and ``evaluate-labels``
+    names its run by them and learns nothing. A guard that keeps a held-out group
+    out of a fit reads ``fits``, so a feature copied from a neighbour that
+    declared nothing would be read as learning nothing, the wrong direction for
+    a fitter.
+    """
+    if not _learns_or_depends_on_scope(cls):
+        pytest.skip("neither a global feature nor scope-dependent")
+    assert hasattr(cls, "fits"), (
+        f"{cls.__name__} is global or scope-dependent and declares no 'fits'. "
+        f"Declare it: True when it learns something from its inputs, False when "
+        f"it only scores or applies them."
+    )
+    declared: object = getattr(cls, "fits")  # noqa: B009
+    assert isinstance(declared, bool)
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_feature_that_clears_scope_dependent_per_instance_clears_fits(
+    cls: type,
+) -> None:
+    """A run given a model or fixed weights fits nothing, and says so on the instance.
+
+    The class declares the fitting answer, which the catalog reads. The instance
+    narrows ``scope_dependent`` when the params make the run apply instead of
+    fit, and ``fits`` must narrow beside it or a planner reading the instance
+    would take an apply step for a fit.
+    """
+    if not _sets_on_instance(cls, "scope_dependent"):
+        pytest.skip("scope_dependent is not set per instance")
+    assert getattr(cls, "fits", False) is True, (
+        f"{cls.__name__} sets 'scope_dependent' per instance but declares "
+        f"fits = True on the class no differently from a fit."
+    )
+    assert _sets_on_instance(cls, "fits"), (
+        f"{cls.__name__} narrows 'scope_dependent' in __init__ and does not "
+        f"narrow 'fits' beside it."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance(
+    cls: type,
+) -> None:
+    """A run told which model to apply fits nothing, whatever its identity covers.
+
+    The held-out guard reads ``fits`` off the instance, and an apply step left
+    declaring ``True`` would be refused over the test group. A fitter that hashes
+    its scope narrows ``scope_dependent`` beside it (``arhmm``, ``kpms``, ``vame``,
+    the identity models), which the check above also covers. A scope-free fitter is
+    not the guard's concern, except one
+    that declares ``fit_set_pinned_by``: ``sequence-classifier`` and
+    ``lightning-action`` hash no scope and still narrow ``fits`` for a given
+    ``model``, which the planner and the catalog read.
+    """
+    params: object = getattr(cls, "Params", None)
+    if not (isinstance(params, type) and issubclass(params, BaseModel)):
+        pytest.skip("no Params model")
+    fits: object = getattr(cls, "fits", False)
+    named: object = getattr(cls, "scope_dependent", False)
+    pinned = getattr(cls, "fit_set_pinned_by", None) is not None
+    if "model" not in params.model_fields or fits is not True or not (named or pinned):
+        pytest.skip("takes no model, does not fit, or a scope-free fitter")
+    assert _sets_on_instance(cls, "fits"), (
+        f"{cls.__name__} fits and takes a 'model' param to apply, and does not "
+        f"narrow 'fits' in __init__ for a run given one."
+    )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_scope_free_fitter_declares_fits_and_narrows_it_per_instance(
+    cls: type,
+) -> None:
+    """A fit set pinned outside the scope leaves the identity scope-free and ``fits`` set.
+
+    The class says ``fits = True`` for the catalog, and the instance clears it for
+    a run that applies a stored model or fixed weights. Nothing sets
+    ``scope_dependent`` on the instance: the identity does not depend on the params.
+    """
+    if getattr(cls, "fit_set_pinned_by", None) is None:
+        pytest.skip("does not pin its fit set outside the scope")
+    assert getattr(cls, "scope_dependent", None) is False
+    assert not _sets_on_instance(cls, "scope_dependent"), (
+        f"{cls.__name__} pins its fit set and sets 'scope_dependent' per instance."
+    )
+    assert getattr(cls, "fits", False) is True
+    if cls.__name__ in ALWAYS_FITS:
+        pytest.skip("every run fits: it has no mode that applies a stored fit")
+    assert _sets_on_instance(cls, "fits"), (
+        f"{cls.__name__} pins its fit set and does not narrow 'fits' in __init__ "
+        "for a run that fits nothing."
+    )
 
 
 def _reads_row_zero_of(node: ast.AST, frame_name: str) -> list[str]:
@@ -234,3 +370,30 @@ def test_a_pair_feature_writes_perspective(cls: type) -> None:
         f"{cls.__name__} declares emits = 'pair' but never names 'perspective'. "
         f"Two rows of one frame that differ in nothing cannot be joined apart."
     )
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_a_declared_temporal_reach_is_a_frame_count_or_unknown(cls: type) -> None:
+    """``temporal_reach`` is optional, and a feature that declares it declares a number.
+
+    The gap check of a classifier cross-validated by blocks adds the declared
+    reaches along the recipe. A feature that declares nothing is cautioned on, so
+    nothing here requires one. One that does declare must give an int of at least
+    0 under its default params, or ``None`` for a reach no params bound, and never
+    a bool, a float or a negative count.
+    """
+    from mosaic.core.pipeline.graph.reach import UNDECLARED, class_reach
+
+    if not hasattr(cls, "temporal_reach"):
+        assert class_reach(cls) == UNDECLARED
+        pytest.skip("declares no temporal_reach")
+    declared: object = getattr(cls, "temporal_reach")  # noqa: B009
+    if not callable(declared):
+        assert declared is None or (
+            isinstance(declared, int)
+            and not isinstance(declared, bool)
+            and declared >= 0
+        ), f"{cls.__name__}.temporal_reach is {declared!r}"
+    reach = class_reach(cls)
+    assert reach != UNDECLARED
+    assert reach == "unknown" or (isinstance(reach, int) and reach >= 0)

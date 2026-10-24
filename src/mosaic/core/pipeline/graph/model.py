@@ -38,6 +38,8 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
 
+from .expand import expand_repeats
+
 __all__ = [
     "REQUEST_HOLD_FLOOR_HOURS",
     "BoundRef",
@@ -261,6 +263,16 @@ class Recipe(GraphModel):
     schema_version: int = SCHEMA_VERSION
     name: str = ""
     steps: list[Step] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _expand_repeats(cls, data: object) -> object:
+        """Expand each ``repeat`` item, so the recipe holds its steps in full.
+
+        Every reader parses through here, so the canonical form, the digest and
+        the saved file are those of the expanded steps (``expand.py``).
+        """
+        return expand_repeats(data)
 
     @model_validator(mode="after")
     def _references_resolve(self) -> Self:

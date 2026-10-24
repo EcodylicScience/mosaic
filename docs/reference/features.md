@@ -3,7 +3,7 @@
 
 # Features
 
-52 features are registered. Each one runs as
+56 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -65,6 +65,19 @@ Per-frame attention target with group-membership labeling.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id_group_map` | `object` \| `None` | `null` |  | Maps each individual id, as a string, to a group label. Unset, focal_group and target_group are always NA and attention_type is none (no facing target) or unknown (a target was picked but its group label is missing). |
+
+### `body-length`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.body_length.BodyLength`
+
+Body length of each individual, per frame and as a per-sequence median.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source` | `"keypoints"` \| `"column"` | `"keypoints"` |  | Where the length comes from. keypoints sums the distances between consecutive keypoints of the chain that keypoints names, a polyline that follows a bent body. column reads a per-row length a tracker already measured, from the column that column names. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The chain of keypoints the length runs along, from the front of the body to the back, each by index or by name. Unset, every keypoint in the table's order. A frame where any keypoint of the chain is missing has no length. Read when source is keypoints. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | Names for the table's keypoints, in index order, so that keypoints can name them. Must list one name per keypoint the table carries. |
+| `column` | `string` | `"body_length"` | min length `1` | The column holding a length already measured per row, read when source is column. |
 
 ### `body-scale`
 
@@ -185,6 +198,33 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.nearestneighbor.NearestN
 Per-sequence feature computing nearest-neighbor identity and relative kinematics.
 
 No parameters.
+
+### `neighbor-delta-response`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.neighbor_delta_response.NeighborDeltaResponse`
+
+Change in a focal individual's position, heading and speed, by each neighbor.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
+| `speed_col` | `string` | `"SPEED"` |  | The focal individual's speed column. Falls back to speed when absent. |
+| `focal_col` | `string` | `"Focal_fish"` |  | The column flagging a focal individual. Passed through for the focal and looked up for the neighbor as neighbor_focal when present, the category columns nn-delta-bins splits by. |
+| `diff_numframes` | `integer` | `4` | >= `1` | How far ahead the response delta is measured. [frames] |
+| `max_neighbor_rank` | `integer` \| `None` | `null` |  | Keep only the neighbors this close in rank, 1 being the nearest in that frame. 1 reproduces the nearest-neighbor pairing of nn-delta-response. Unset, every neighbor. |
+| `wrap_angle` | `boolean` | `true` |  | Wrap the heading difference to [-pi, pi]. When False, the raw difference is kept. |
+| `divide_dangle_by_frames` | `boolean` | `true` |  | Divide the heading change by the number of frames it spans. When False, the raw windowed difference is kept. |
+| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the sampling frame rate. Together with divide_dangle_by_frames this gives radians per second. |
+| `time_shuffle` | `boolean` | `false` |  | Shift each neighbor's trajectory in time, circularly over the sequence and by its own random offset, before placing it in the focal's frame: the chance-level control of a neighbor map. The focal's own movement is not shifted. |
+| `shuffle_seed` | `integer` | `0` |  | Seed of the shuffle offsets, combined with the group and sequence so that each sequence draws its own offsets and every run draws the same. |
+| `shuffle_min_shift` | `integer` | `300` | >= `1` | The smallest time shift of a shuffled neighbor, in either direction. A sequence spanning no more than twice this shift refuses to shuffle. [frames] |
+
+??? note "`SamplingConfig`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `nn-delta-response`
 
@@ -423,6 +463,31 @@ CWT spectrograms on PairPoseDistancePCA outputs. It is the spectral stage of a b
     | --- | --- | --- | --- | --- |
     | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
+
+### `scale-to-bl`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.scale_to_bl.ScaleToBodyLength`
+
+Convert every length-bearing column into body lengths.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `length` | `number` \| `None` | `null` |  | The body length to divide by, in the units of the input positions. A value that is not positive raises. Unset, the length is read from the body-length run that body_length references. |
+| `body_length` | `BodyLengthResult` \| `None` | `null` |  | Reference to the upstream body-length run. The sequence's length is the median, over its individuals, of their body_length. Read when length is unset. |
+| `mode` | `"derive"` \| `"convert"` | `"derive"` |  | derive emits only the scaled columns, each under its own name plus suffix, alongside the metadata. convert returns the whole table with every length column converted in place, under its own name. |
+| `suffix` | `string` | `"_bl"` |  | Appended to each scaled column's name in derive mode. Names nothing in convert mode, which refuses a non-default value. |
+| `columns` | list of `string` \| `None` | `null` |  | Replace the length-bearing classifier with exactly these columns, scaling every one whether or not it is length-bearing. A name absent from the table raises. |
+
+??? note "`BodyLengthResult`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"body-length"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ### `scale-to-cm`
 
@@ -703,7 +768,7 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
 
 ### `nn-delta-bins`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins`
+Version `0.2` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins`
 
 Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
@@ -713,13 +778,15 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 | `binmax` | `number` | `14.0` | > `0` | Maximum absolute neighbor offset spanned by a bin edge, in position units. |
 | `max_for_avg` | `number` | `5.0` | > `0` | Maximum neighbor offset, in position units, used to select rows for the turn response, keeping neighbor_x between 0 and max_for_avg. The speed response uses half this value, keeping neighbor_y within plus or minus max_for_avg / 2. |
 | `antisymm` | `boolean` | `true` |  | Duplicate each row of the turn (dangle) response with its y offset and its dangle negated, which folds that response left-right. The speed (dspeed) response never reads this flag. Its one-dimensional bins select a symmetric band of y offsets, and its two-dimensional bins mirror-duplicate every row with the dspeed value unchanged. |
-| `focal_category_col` | `string` | `"Focal_fish"` |  | The column recording the focal animal's category flag. |
+| `focal_category_col` | `string` \| `None` | `"Focal_fish"` |  | The column recording the focal animal's category flag. Unset, rows are not split by the focal's category: every row is binned together, with center_category null, and no category column is required. |
 | `neighbor_category_col` | `string` | `"neighbor_focal"` |  | The column recording the neighbor's category flag. |
 | `group_size_col` | `string` | `"group_size"` |  | The column recording the group size. |
 | `exp_col` | `string` | `"Exp"` |  | The column recording the experimental condition identifier. |
 | `trial_col` | `string` | `"Trial"` |  | The column recording the trial identifier. |
 | `category_specs` | list of any | _constructed_ |  | Specs for derived category columns, each a dict with source_col, new_col, quantile (default 0.75) and op, adding a boolean column comparing source_col against its quantile. Any op value other than <= is treated as >, without raising. The specs run in list order before the category columns are read, and a spec may write focal_category_col or neighbor_category_col. A run refuses an entry whose table lacks the source_col of a spec, unless an earlier spec writes it. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Column names whose truthy rows are dropped before computation. A name absent from the table is skipped rather than raising. |
+| `start_time` | `number` \| `None` | `null` |  | Bin only rows whose time is at or after this, a window such as the dark half of a light-dark recording. Read from the time column, which the input must then carry. Unset, from the start. [s] |
+| `end_time` | `number` \| `None` | `null` |  | Bin only rows whose time is before this. Read from the time column, which the input must then carry. Unset, to the end. [s] |
 | `nonfocal_flag_col` | `string` | `"Focal_fish"` |  | Name of the column flagging nonfocal animals, read only when focal_category_col is unset or absent from the table. |
 | `nonfocal_flag_value` | `boolean` | `false` |  | The value in nonfocal_flag_col marking an animal as nonfocal, read under the same condition as nonfocal_flag_col. |
 
@@ -747,7 +814,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `ArHmmModelArtifact` \| `None` | `null` |  | A pre-fitted model artifact to load, skipping the fit. Unset, the model is fit from scratch. |
+| `model` | `ArHmmModelArtifact` \| `None` | `null` |  | The arhmm_model.joblib of an arhmm run to apply, such as a fit step scoped to the training groups. Unset, the model is fit from scratch on the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `pca_dim` | `integer` \| `None` | `null` |  | How many components PCA reduces the feature dimensionality to before fitting. Unset, no PCA is applied. Ignored when it is not smaller than the number of input feature columns. |
 | `n_states` | `integer` | `50` | >= `2` | The maximum number of HMM states. Pruned down after fitting when prune_threshold is greater than zero. |
 | `n_lags` | `integer` | `1` | >= `1` | How many preceding steps enter as autoregressive regressors. A step is one row of the sequence being fit, which is a video frame unless downsample_rate has subsampled it. |
@@ -784,7 +851,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 ### `extract-labeled-templates`
 
-Version `0.6` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
+Version `0.7` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
 
 Extract labeled, split-annotated templates from upstream features.
 
@@ -983,7 +1050,7 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  | A pre-fitted DinoV2TemporalIdentityArtifact to load, skipping the fit. Unset, the model fits from the crops named by identities or group_as_identity. |
+| `model` | `DinoV2TemporalIdentityArtifact` \| `None` | `null` |  | A pre-fitted DinoV2TemporalIdentityArtifact to load, such as a fit step scoped to the training groups. Unset, the model fits from the crops named by identities or group_as_identity over the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `identities` | `object` \| `None` | `null` |  | An explicit mapping of identity name to the sequences containing that individual alone. Takes precedence over group_as_identity. |
 | `group_as_identity` | `boolean` | `false` |  | Treat each sequence's group name as its identity, instead of listing sequences explicitly under identities. Ignored when identities is set. |
 | `backbone` | `string` | `"dinov2_vits14"` |  | The DINOv2 model name loaded from the facebookresearch/dinov2 torch hub repository. |
@@ -1029,7 +1096,7 @@ Train an identity model from frozen backbone embeddings + k-NN.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  | A pre-fitted EmbeddingIdentityArtifact to load, skipping the fit. Unset, the model fits from the crops named by identities or group_as_identity. |
+| `model` | `EmbeddingIdentityArtifact` \| `None` | `null` |  | A pre-fitted EmbeddingIdentityArtifact to load, such as a fit step scoped to the training groups. Unset, the model fits from the crops named by identities or group_as_identity over the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `identities` | `object` \| `None` | `null` |  | An explicit mapping of identity name to the sequences containing that individual alone. Takes precedence over group_as_identity. |
 | `group_as_identity` | `boolean` | `false` |  | Treat each sequence's group name as its identity, instead of listing sequences explicitly under identities. Ignored when identities is set. |
 | `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  | A bare timm architecture tag or a Hugging Face hub id naming the frozen embedding backbone. Mosaic ships no weights, and whatever this names downloads at run time under its own license. |
@@ -1068,7 +1135,7 @@ Train a visual identity model from individual animal sequences.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  | Unset, the fit runs over the input scope. Set to a pre-fitted ClassifierIdentityArtifact, the fit is skipped and the referenced training run enters this run's identity beside its scope. |
+| `model` | `ClassifierIdentityArtifact` \| `None` | `null` |  | Unset, the fit runs over the input scope. Set to a pre-fitted ClassifierIdentityArtifact, such as a fit step scoped to the training groups, nothing is fitted, the referenced training run enters this run's identity and the entries in scope do not, and a model that cannot be found is refused. |
 | `identities` | `object` \| `None` | `null` |  | The mapping from an identity name to the group/sequence entries that contain that individual alone. Takes priority over group_as_identity when both are given. |
 | `group_as_identity` | `boolean` | `false` |  | Derive one identity per group name from the input entries, used only when identities is unset. Fitting raises when neither is given. |
 | `model_name` | `string` | `"timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k"` |  | A bare timm architecture tag or a Hugging Face hub id naming the backbone. Mosaic ships no weights, and whatever is named here is downloaded at run time under its own license. |
@@ -1391,7 +1458,7 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `KpmsModelArtifact` \| `None` | `null` |  | A pre-fitted model to load. Unset, the feature fits a new model. |
+| `model` | `KpmsModelArtifact` \| `None` | `null` |  | The model of a kpms run to apply, such as a fit step scoped to the training groups. Unset, the feature fits a new model on the entries in scope. Set, nothing is fitted, the entries in scope leave the run id, and a model that cannot be found is refused. |
 | `kpms_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with keypoint-moseq installed. Unset, resolution reads MOSAIC_KPMS_CONDA_ENV, then MOSAIC_KPMS_PYTHON, then the in-repository environment under feature_library/external/.venv. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `anterior_bodyparts` | list of `string` | _required_ | min items `1` | Bodypart names marking the front of the body, used to initialize heading for egocentric alignment. |
@@ -1445,13 +1512,13 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.6` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
 
 Supervised temporal action segmentation via lightning-action.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. Mutually exclusive with model. |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. The run names the training set, so the step's scope is not part of its identity: a wider scope applies the fit it has and does not fit again. Mutually exclusive with model. |
 | `model` | `LightningActionModelArtifact` \| `None` | _constructed_ |  | Pre-fitted model to load instead of training. Mutually exclusive with templates. |
 | `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
 | `head` | `"temporalmlp"` \| `"rnn"` \| `"dtcn"` | `"dtcn"` |  | Temporal encoder architecture: dtcn (dilated temporal convolution), rnn (LSTM/GRU), or temporalmlp. |
@@ -1469,8 +1536,8 @@ Supervised temporal action segmentation via lightning-action.
 | `weight_classes` | `boolean` | `true` |  | Weight the training loss by inverse class frequency, to correct for class imbalance. |
 | `device` | `string` | `"gpu"` |  | Which device trains the model. Known values are cpu and gpu. The step is offered to a GPU worker whichever it is, and gpu trains on the CPU where the machine has no CUDA device. |
 | `random_state` | `integer` | `42` |  | The random seed for model initialization and training. |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
-| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. It is also assigned to a frame that belongs to no series because its identity columns are missing. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. A probability under its class's threshold counts as 0, so a mapping that omits a class gives that class threshold 0, which it always clears. Any row where no class clears its threshold is assigned default_class. To predict the positive class of a binary problem from probability t up, give the other class threshold 1.0: {"0": 1.0, "1": t}. {"1": t} alone changes nothing for a t under 0.5, because class 0 still wins wherever its probability is the higher. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. A mapping that omits a class gives it threshold 0, so only a class listed with a threshold above 0 can fail to claim a row. A row with no probabilities takes it too, whether or not decision_threshold is set. It is also assigned to a frame that belongs to no series because its identity columns are missing. |
 
 ??? note "`GroundTruthLabelsSource`"
 
@@ -1535,7 +1602,7 @@ Supervised temporal action segmentation via lightning-action.
 
 ### `probability-ensemble`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature`
 
 Average or blend the class probabilities of several classifier runs.
 
@@ -1545,8 +1612,8 @@ Average or blend the class probabilities of several classifier runs.
 | `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The ground-truth labels that fit scores the blend against. Only with weights fit. |
 | `score_classes` | list of `integer` \| `None` | `null` |  | The classes that the macro F1 of fit averages over, such as every behavior but other. Unset, every class that a labeled frame has. Only with weights fit. |
 | `grid_step` | `number` | `0.05` | > `0.0`, <= `0.5` | The spacing of the weights that fit tries. It must divide 1, and the search refuses a grid of more than 20,000 weight vectors, which a coarser step or fewer members avoids. Only with weights fit. |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
-| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
+| `decision_threshold` | `number` \| `object` \| `ThresholdsArtifact` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. A probability under its class's threshold counts as 0, so a mapping that omits a class gives that class threshold 0, which it always clears. Any row where no class clears its threshold is assigned default_class. To predict the positive class of a binary problem from probability t up, give the other class threshold 1.0: {"0": 1.0, "1": t}. {"1": t} alone changes nothing for a t under 0.5, because class 0 still wins wherever its probability is the higher. A {step: <id>} reference names a tune-threshold step and applies the thresholds it saved, which keep default_class out of the competition for a row. Give default_class the value that step has. That step reads a classifier run, so a classifier cannot name its own tuning. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. A mapping that omits a class gives it threshold 0, so only a class listed with a threshold above 0 can fail to claim a row. A row with no probabilities takes it too, whether or not decision_threshold is set. |
 
 ??? note "`GroundTruthLabelsSource`"
 
@@ -1583,18 +1650,31 @@ Average or blend the class probabilities of several classifier runs.
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
     | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
+??? note "`ThresholdsArtifact`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"tune-threshold"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"thresholds.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
+
 ### `sequence-classifier`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier`
+Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier`
 
 Neural sequence classifier: a registered head on runs of consecutive frames.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. Mutually exclusive with model. |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on. Only its template_provenance.parquet is read: the model trains on the frame runs of those entries, not on the sampled templates. An entry the run lists as test, or does not list, never trains. The run names the training set, so the step's scope is not part of its identity: a wider scope applies the fit it has and does not fit again. Mutually exclusive with model. |
 | `model` | `SequenceClassifierModelArtifact` \| `None` | _constructed_ |  | A pre-fitted SequenceClassifierModelArtifact to load instead of training. Mutually exclusive with templates. |
 | `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
-| `columns` | list of `string` \| `None` | `null` |  | The payload columns the network reads, in this order. Unset, every numeric payload column of the inputs. A narrow set usually beats a wide one: 37 columns beat 562 to 999 on CalMS21. |
+| `columns` | list of `string` \| `None` | `null` |  | The payload columns the network reads, in this order. Unset, every numeric payload column of the inputs. A narrow set can beat a wide one, so compare sets by cross-validated score. |
 | `head` | `string` | `"gru"` |  | The network. A built-in head is tcn (dilated convolutions), gru (a bidirectional GRU) or mlp (each frame by itself). A head registered in Python with register_head in the process that runs the step is named here too. |
 | `head_config` | `HeadConfig` \| `None` | `null` |  | The options of the chosen head. Unset, the head's defaults. tcn takes hidden (128), blocks (6), kernel_size (3, odd) and dropout (0.3). gru takes hidden (128), layers (2), bidirectional (true) and dropout (0.3). mlp takes hidden (128), layers (2) and dropout (0.3). Options that the chosen head does not have are refused. |
 | `head_revision` | `integer` | `0` | >= `0` | A number that the author of a head registered in Python raises when its code changes, so that a changed head is a new run. A built-in head ignores it, because the version of the step names its code. |
@@ -1610,13 +1690,16 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
 | `grad_clip` | `number` | `1.0` | > `0.0` | The norm that gradients are clipped to. |
 | `min_run` | `integer` | `64` | >= `2` | The shortest run of consecutive labeled rows that trains. A shorter run is left out. [frames] |
 | `random_state` | `integer` | `42` |  | The random seed of the batches, the initial weights and the dropout. The model fitted on every training run uses it as it is, and each fold's model a seed derived from it. |
-| `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training entries of the templates are dealt into K folds and K more models are fitted, each on the training runs outside one fold. A training entry is then scored by the model that did not see it, and every other entry by the model fitted on all training runs. The fold of each entry is in cv_folds.parquet. Needs templates and is refused beside model. |
+| `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training entries of the templates are dealt into K folds and K more models are fitted, each on the training runs outside one fold. A training entry is then scored by the model that did not see it, and every other entry by the model fitted on all training runs. The fold of each entry is in cv_folds.parquet. With cv_unit block, the folds hold out blocks of frames and not whole entries. Needs templates and is refused beside model. |
 | `cv_seed` | `integer` | `0` |  | The seed that deals the training sequences into folds. It changes the folds and nothing else, so runs that differ in random_state are compared on the same folds. Other than 0 only with cv_folds. |
+| `cv_unit` | `"sequence"` \| `"block"` | `"sequence"` |  | What cross-validation holds out. sequence holds out whole training sequences, so a fold's models never see a held-out sequence. block cuts each labeled sequence into cv_blocks_per_sequence contiguous blocks of frames, deals the blocks into the folds, and holds one block out at a time, so that a dataset with one training sequence still has a cross-validated score. A block's frames are not independent of the frames beside it, so block is optimistic where sequences are the unit you generalize over; use cv_gap_frames to drop the frames around a held-out block from training. Only with cv_folds. |
+| `cv_blocks_per_sequence` | `integer` \| `None` | `null` |  | With cv_unit block, the blocks that each training sequence is cut into, at least 2. A sequence's blocks span its labeled frames, from the first labeled frame of any of its series to the last, and differ in length by at most one frame. Unset, the number of cv_folds, so that a single training sequence has one block per fold. The blocks of all the sequences are dealt into the folds together, so with several sequences a fold holds a near-equal count of blocks, not one block of each sequence. Only with cv_unit block. |
+| `cv_gap_frames` | `integer` | `0` | >= `0` | With cv_unit block, the width of the margin on each side of a held-out block that the model of that fold does not train on, so that a window or a network receptive field reaching across the block's edge does not carry its labels into training. The model of a fold trains on no frame of its held-out blocks or of this margin, and scores only what lies inside its own blocks. Only with cv_unit block. [frames] |
 | `device` | `"cpu"` \| `"cuda"` | `"cuda"` |  | Where the network trains. cuda needs a CUDA device and fails without one. cpu is for small fits and tests. The device is part of the run id, since a GPU and a CPU need not give one model. The step is offered to a GPU worker whichever it is. |
 | `apply_device` | `"cpu"` \| `"cuda"` | `"cpu"` |  | Where a fitted network predicts. A model fitted on a GPU applies on the CPU. It changes the time of an apply and not the model, so it is not part of the run id. Probabilities agree across devices to about 1e-5. |
 | `n_threads` | `integer` | `1` | >= `1` | The CPU threads a fit or an apply uses. It changes the time, not the model beyond rounding, so it is not part of the run id. One thread makes a CPU fit repeat across machines. |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
-| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. A probability under its class's threshold counts as 0, so a mapping that omits a class gives that class threshold 0, which it always clears. Any row where no class clears its threshold is assigned default_class. To predict the positive class of a binary problem from probability t up, give the other class threshold 1.0: {"0": 1.0, "1": t}. {"1": t} alone changes nothing for a t under 0.5, because class 0 still wins wherever its probability is the higher. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. A mapping that omits a class gives it threshold 0, so only a class listed with a threshold above 0 can fail to claim a row. A row with no probabilities takes it too, whether or not decision_threshold is set. |
 
 ??? note "`GroundTruthLabelsSource`"
 
@@ -1683,6 +1766,58 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"sequence_classifier_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
+### `tune-threshold`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.tune_threshold.TuneThresholdFeature`
+
+Choose the probability thresholds of a cross-validated classifier.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `labels` | `GroundTruthLabelsSource` | _constructed_ |  | The ground-truth labels the thresholds are scored against, resolved from labels/<kind>/index.csv. A {step: <id>} reference names a convert-labels step and pins the variant it writes. |
+| `classes` | list of `integer` \| `None` | `null` |  | The classes that get a tuned threshold, other than default_class, which takes the rows that no class claims. Unset, every class of the input but default_class. A class left out keeps threshold 0, which it always clears. |
+| `metric` | `"macro_f1"` \| `"pooled_f1"` | `"macro_f1"` |  | What the thresholds maximize, over every labeled out-of-fold row pooled together. macro_f1 is the mean F1 of the classes in average_over. pooled_f1 is the F1 of the one class in classes, such as the positive class of a binary classifier. |
+| `average_over` | list of `integer` \| `None` | `null` |  | The classes that macro_f1 averages over, such as every behavior but other. Unset, every class that a labeled row has. Only with macro_f1. |
+| `grid` | list of `number` | _constructed_ |  | The thresholds tried for each class, ascending and between 0 and 1. A tie goes to the lowest. The default is fine below 0.1 and steps by 0.05 above, because a rare class is best cut low. |
+| `nested` | `boolean` | `true` |  | Also estimate how the tuning generalizes, by choosing the thresholds of each fold on the rows of the other folds and scoring that fold with them. The report then gives this nested estimate beside the plain one, which is optimistic because the thresholds were chosen on the rows it scores. |
+| `perspective` | `integer` \| `None` | `null` |  | Which rows of a pair output to tune on: the rows of this perspective, as evaluate-labels scores one. Unset, every row. |
+| `default_class` | `integer` | _required_ |  | The class of a row that no tuned class claims, as in the decision_threshold of a classifier. It takes no threshold of its own: it is saved with 1.0, which keeps it out of the competition for a row. The step that applies the thresholds takes the same value as its default_class. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
 ### `vame`
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.vame_feature.VameFeature`
@@ -1691,7 +1826,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `model` | `VameModelArtifact` \| `None` | `null` |  | A fitted VAME model to apply. Unset, the feature fits a new model. With a model set, the settings that build and preprocess the sessions must equal the model's. |
+| `model` | `VameModelArtifact` \| `None` | `null` |  | A fitted VAME model to apply, such as a fit step scoped to the training groups. Unset, the feature fits a new model on the entries in scope. With a model set, nothing is fitted, the entries in scope leave the run id, and the settings that build and preprocess the sessions must equal the model's. |
 | `vame_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with VAME installed. Unset, resolution reads MOSAIC_VAME_CONDA_ENV, then MOSAIC_VAME_PYTHON, then the in-repository environment under feature_library/external/vame-env/.venv. |
 | `device` | `"auto"` \| `"cpu"` \| `"cuda"` \| `"mps"` | `"auto"` |  | Where VAME trains and embeds. The value auto selects CUDA, then MPS, then the CPU, as VAME does. The run identifier leaves the device out. One recipe therefore runs under one name on any machine. Training on different devices gives different models, and only training on the CPU is bit-reproducible. The model bundle and the run log record the device that ran. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
@@ -1781,8 +1916,8 @@ XGBoost behavior classifier as a pipeline feature.
 | `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The labeled templates artifact to train on. Mutually exclusive with model. |
 | `model` | `XgboostModelArtifact` \| `None` | _constructed_ |  | A pre-fitted XgboostModelArtifact to load, skipping training. Mutually exclusive with templates. |
 | `strategy` | `"multiclass"` \| `"one_vs_rest"` | `"multiclass"` |  | The classification strategy. multiclass fits one multi-class model. one_vs_rest fits one binary classifier per class. |
-| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. Any row where no class clears its threshold is assigned default_class. |
-| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. |
+| `decision_threshold` | `number` \| `object` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. A probability under its class's threshold counts as 0, so a mapping that omits a class gives that class threshold 0, which it always clears. Any row where no class clears its threshold is assigned default_class. To predict the positive class of a binary problem from probability t up, give the other class threshold 1.0: {"0": 1.0, "1": t}. {"1": t} alone changes nothing for a t under 0.5, because class 0 still wins wherever its probability is the higher. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. A mapping that omits a class gives it threshold 0, so only a class listed with a threshold above 0 can fail to claim a row. A row with no probabilities takes it too, whether or not decision_threshold is set. |
 | `class_weight` | `"balanced"` \| `object` \| `None` | `"balanced"` |  | Unset, every training sample is weighted equally. balanced weights each sample inversely to its class's frequency. A mapping from class to weight gives each sample its class's weight, 1 for a class it does not list, and applies no balanced weighting. |
 | `use_smote` | `boolean` | `false` |  | Apply SMOTE oversampling to the training set, after any undersample_ratio undersampling. |
 | `undersample_ratio` | `number` \| `None` | `null` |  | Unset, no class is undersampled before training. Set, every class larger than the minority class is undersampled to this many times the minority class's size, never below the minority class's own size. |
@@ -1792,8 +1927,11 @@ XGBoost behavior classifier as a pipeline feature.
 | `subsample` | `number` | `0.8` | > `0`, <= `1` | The fraction of training rows sampled for each boosting round. |
 | `colsample_bytree` | `number` | `0.8` | > `0`, <= `1` | The fraction of feature columns sampled for each tree. |
 | `random_state` | `integer` | `42` |  | The random seed for XGBoost training and, when enabled, for undersampling and SMOTE. |
-| `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training sequences of the templates are dealt into K folds and K more models are fitted, each on the training rows outside one fold. A training sequence is then scored by the model that did not see it, and every other entry by the model fitted on all training rows. The fold of each sequence is in cv_folds.parquet. Needs templates and is refused beside model. |
+| `cv_folds` | `integer` \| `None` | `null` |  | Unset, one model is fitted and scores every entry. Set to K (at least 2), the training sequences of the templates are dealt into K folds and K more models are fitted, each on the training rows outside one fold. A training sequence is then scored by the model that did not see it, and every other entry by the model fitted on all training rows. The fold of each sequence is in cv_folds.parquet. With cv_unit block, the folds hold out blocks of frames and not whole sequences, which needs templates that record their frames (extract-labeled-templates 0.7 or later). Needs templates and is refused beside model. |
 | `cv_seed` | `integer` | `0` |  | The seed that deals the training sequences into folds. It changes the folds and nothing else, so runs that differ in random_state are compared on the same folds. Other than 0 only with cv_folds. |
+| `cv_unit` | `"sequence"` \| `"block"` | `"sequence"` |  | What cross-validation holds out. sequence holds out whole training sequences, so a fold's models never see a held-out sequence. block cuts each labeled sequence into cv_blocks_per_sequence contiguous blocks of frames, deals the blocks into the folds, and holds one block out at a time, so that a dataset with one training sequence still has a cross-validated score. A block's frames are not independent of the frames beside it, so block is optimistic where sequences are the unit you generalize over; use cv_gap_frames to drop the frames around a held-out block from training. Only with cv_folds. |
+| `cv_blocks_per_sequence` | `integer` \| `None` | `null` |  | With cv_unit block, the blocks that each training sequence is cut into, at least 2. A sequence's blocks span its labeled frames, from the first labeled frame of any of its series to the last, and differ in length by at most one frame. Unset, the number of cv_folds, so that a single training sequence has one block per fold. The blocks of all the sequences are dealt into the folds together, so with several sequences a fold holds a near-equal count of blocks, not one block of each sequence. Only with cv_unit block. |
+| `cv_gap_frames` | `integer` | `0` | >= `0` | With cv_unit block, the width of the margin on each side of a held-out block that the model of that fold does not train on, so that a window or a network receptive field reaching across the block's edge does not carry its labels into training. The model of a fold trains on no frame of its held-out blocks or of this margin, and scores only what lies inside its own blocks. Only with cv_unit block. [frames] |
 | `device` | `"cpu"` \| `"cuda"` | `"cpu"` |  | Which device fits the model. cpu fits on the processor. cuda fits on the GPU and fails where XGBoost has no CUDA device. The step stays on a CPU worker either way, so cuda runs only where the run is placed on a GPU machine. A fitted model predicts on the CPU, so a model fitted on cuda applies anywhere. |
 | `n_jobs` | `integer` \| `None` | `null` |  | The number of threads each fit uses. Unset, XGBoost uses every core. It changes the time of a fit and not its model, so it is not part of the run id. |
 

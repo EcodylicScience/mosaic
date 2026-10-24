@@ -163,6 +163,36 @@ def test_the_cross_join_escape_is_honoured() -> None:
     assert can_join([SPEED, PAIRWISE], CROSS)
 
 
+STACKS = ConsumerDecl(
+    name="evaluate-labels",
+    kind="feature",
+    accepts_tracks=True,
+    accepts_features=True,
+    stacks_inputs=True,
+)
+
+
+def test_a_stacking_consumer_takes_inputs_at_one_level() -> None:
+    """Rows are unioned and not joined, so identity columns need not be shared."""
+    other = ProducerDecl(name="heading", kind="feature", level="individual")
+    assert can_join([SPEED, other], STACKS)
+
+
+def test_a_stacking_consumer_refuses_inputs_at_different_levels() -> None:
+    verdict = can_join([SPEED, PAIRWISE], STACKS)
+    assert not verdict
+    assert "stacks its inputs" in verdict.reason
+
+
+def test_evaluate_labels_declares_that_it_stacks_and_no_other_feature_does() -> None:
+    stacking = {
+        name
+        for name, declared in declaration_catalog().entries.items()
+        if declared.consumes.stacks_inputs
+    }
+    assert stacking == {"evaluate-labels"}
+
+
 # --- enumeration --------------------------------------------------------------
 
 

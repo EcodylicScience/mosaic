@@ -66,6 +66,7 @@ class BodyScaleFeature:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    temporal_reach = 0  # measures the keypoints of one row
     accepts_overlap = False  # measures one entry, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

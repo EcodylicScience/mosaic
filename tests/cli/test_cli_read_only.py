@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
@@ -51,6 +53,7 @@ from tests.helpers import (
     SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
     calms21_dataset,
+    classifier_recipe,
     speed_recipe,
     speed_recipe_stepping,
     add_media_sequence,
@@ -60,6 +63,7 @@ from tests.helpers import (
     make_dataset,
     register_trained_model,
     tree_snapshot,
+    write_calms21_npy,
 )
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -190,6 +194,14 @@ CLI_READS: dict[str, CliArguments] = {
         "--step-scope",
         'speed={"entries": [["", "seq_a"]]}',
     ],
+    "pipeline plan --assume-added": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--assume-added",
+        "elsewhere",
+    ],
     "pipeline plan --cleanup superseded": lambda f: [
         "pipeline",
         "plan",
@@ -218,6 +230,12 @@ CLI_READS: dict[str, CliArguments] = {
     ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "prerequisites": lambda _: ["prerequisites", "--kind", "trex"],
+    "pipeline verify": lambda f: [
+        "pipeline",
+        "verify",
+        "--recipe",
+        f"@{f.recipe_path}",
+    ],
     "preview": lambda _: ["preview", f"tracks-variant/{VARIANT}", "--entry", "seq_a"],
     "prune-joined --dry-run": lambda _: ["prune-joined"],
     "prune-media --dry-run": lambda _: ["prune-media"],
@@ -228,6 +246,7 @@ CLI_READS: dict[str, CliArguments] = {
     "runs errors": lambda f: ["runs", "errors", f.lossy_execution_id],
     "sequences": lambda _: ["sequences"],
     "sources list": lambda _: ["sources", "list"],
+    "splits list": lambda _: ["splits", "list"],
     "status": lambda f: ["status", "--execution-id", f.execution_id, "--progress"],
     "sweep-tracking --dry-run": lambda _: ["sweep-tracking"],
     "tags list": lambda _: ["tags", "list"],
@@ -251,6 +270,7 @@ CLI_READS_OF_NOTHING = (
     "runs",
     "runs --limit",
     "sources list",
+    "splits list",
     "sweep-tracking --dry-run",
     "tags list",
     "upgrade-tracks --dry-run",
@@ -258,10 +278,19 @@ CLI_READS_OF_NOTHING = (
 """The verbs of ``CLI_READS`` that succeed on a dataset holding nothing."""
 
 
+CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset({"pipeline verify"})
+"""Verbs whose fixture recipe holds nothing to compare, so they report it with exit 1."""
+
+
 def _invoke_read(fixture: ReadDataset, verb: str) -> None:
     arguments = CLI_READS[verb](fixture)
     manifest = str(fixture.dataset.manifest_path)
-    result = invoke_ok([*arguments, "--manifest", manifest, "--json"])
+    command = [*arguments, "--manifest", manifest, "--json"]
+    if verb in CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING:
+        result = CliRunner().invoke(app, command)
+        assert result.exit_code == 1, result.stderr
+    else:
+        result = invoke_ok(command)
     json.loads(result.stdout)
 
 
@@ -454,3 +483,118 @@ def test_a_library_read_of_an_absent_index_creates_nothing(
     LIBRARY_READS[read](unpopulated)
 
     assert_tree_unchanged(unpopulated.root, before)
+
+
+def _scoring_arguments(tmp_path: Path, manifest: Path, *flags: str) -> list[str]:
+    """``pipeline score --dry-run`` of the classifier recipe, with the training scope."""
+    recipe = tmp_path / "scoring.recipe.json"
+    recipe.write_text(classifier_recipe("clf").model_dump_json(), encoding="utf-8")
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"models": {"final": ["clf"]}}), encoding="utf-8")
+    return [
+        "pipeline",
+        "score",
+        "--manifest",
+        str(manifest),
+        "--recipe",
+        f"@{recipe}",
+        "--answers",
+        str(answers),
+        "--step-scope",
+        'labeled={"groups": ["train"]}',
+        "--perspective",
+        "0",
+        "--dry-run",
+        "--json",
+        *flags,
+    ]
+
+
+def test_a_scoring_dry_run_of_a_group_in_the_dataset_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """Nothing is added to score a group that is there, so the study is planned in place."""
+    dataset = calms21_dataset(
+        tmp_path / "ds",
+        {"train": {"a": {"s1": 30}}, "test": {"a": {"t1": 30}}},
+        seed=3,
+    )
+    _ = dataset.convert_all_tracks()
+    dataset.set_splits("train", ["train"])
+    dataset.set_splits("test", ["test"])
+    _strip_to_content(dataset.base_dir)
+    out = tmp_path / "scored"
+    before = tree_snapshot(dataset.base_dir)
+
+    result = invoke_ok(
+        _scoring_arguments(
+            tmp_path, dataset.manifest_path, "--heldout", "test", "--out", str(out)
+        )
+    )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    assert not out.exists()
+    assert json.loads(result.stdout)["moved"] == []
+
+
+def test_a_scoring_dry_run_of_a_file_leaves_the_study_as_it_found_it(
+    tmp_path: Path,
+) -> None:
+    """The held-out file joins the copy in --out, which the comparison needs."""
+    dataset = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 30}}}, seed=3)
+    _ = dataset.convert_all_tracks()
+    heldout = tmp_path / "heldout" / "test.npy"
+    write_calms21_npy(heldout, {"a": {"t1": 30}}, seed=4)
+    _strip_to_content(dataset.base_dir)
+    out = tmp_path / "scored"
+    before = tree_snapshot(dataset.base_dir)
+
+    result = invoke_ok(
+        _scoring_arguments(
+            tmp_path,
+            dataset.manifest_path,
+            "--heldout",
+            str(heldout),
+            "--multi-sequences-per-file",
+            "--group-from",
+            "filename",
+            "--out",
+            str(out),
+        )
+    )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    assert (out / "scoring" / "state.json").exists()
+    assert json.loads(result.stdout)["heldout_scope"] == {"groups": ["test"]}
+
+
+def test_verifying_a_fitted_recipe_writes_nothing_under_the_dataset(
+    tmp_path: Path,
+) -> None:
+    """The fit is repeated in a scratch directory, and the stored run is only read."""
+    dataset = calms21_dataset(
+        tmp_path / "ds", {"train": {"a": {"s1": 90, "s2": 90}}}, seed=3, n_classes=2
+    )
+    recipe = classifier_recipe("clf")
+    _ = run_pipeline(dataset, recipe)
+    recipe_file = tmp_path / "verifying.recipe.json"
+    recipe_file.write_text(recipe.model_dump_json(), encoding="utf-8")
+    _strip_to_content(dataset.base_dir)
+    before = tree_snapshot(dataset.base_dir)
+
+    result = invoke_ok(
+        [
+            "pipeline",
+            "verify",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--recipe",
+            f"@{recipe_file}",
+            "--json",
+        ]
+    )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    report = json.loads(result.stdout)
+    assert report["ok"] is True
+    assert report["verified"] == 2

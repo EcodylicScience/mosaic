@@ -163,6 +163,19 @@ class PairWavelet:
         self._scales: np.ndarray | None = None
         self._central_f: float | None = None
 
+    @staticmethod
+    def temporal_reach(params: PairWavelet.Params) -> int | None:
+        """Return ``None``: the reach depends on a frame rate the data may set.
+
+        One row reads half the longest wavelet, ``scale * (upper_bound -
+        lower_bound) / 2`` samples at the scale of ``f_min``, and the scale is the
+        frame rate over ``f_min`` times the central frequency. The frame rate is
+        ``sampling.fps_default`` only when the input has no constant ``fps`` column,
+        and a column of 60 against a default of 30 doubles the reach. A declaration
+        from the default alone would understate it, so the reach is unknown.
+        """
+        return None
+
     def load_state(
         self,
         run_root: Path,

@@ -35,6 +35,8 @@ __all__ = [
     "clean_animal_track",
     "clean_tracks_grouped",
     "consecutive_runs",
+    "cv_block_assignment",
+    "cv_block_bounds",
     "cv_fold_assignment",
     "ego_rotate",
     "ensure_columns",
@@ -55,10 +57,12 @@ __all__ = [
     "row_max",
     "row_median",
     "row_quantile",
+    "scored_entry",
     "series_columns",
     "smooth_1d",
     "sort_nan_last",
     "train_entries_of_templates",
+    "train_labeled_frames_of_templates",
     "unwrap_diff",
     "wrap_angle",
 ]
@@ -512,6 +516,45 @@ def train_entries_of_templates(templates_path: Path) -> list[tuple[str, str]] | 
     return [(str(g), str(s)) for g, s in zip(train["group"], train["sequence"])]
 
 
+def train_labeled_frames_of_templates(
+    templates_path: Path,
+) -> dict[tuple[str, str], tuple[int, int]] | None:
+    """Return the labeled frames of each train entry of the run that wrote *templates_path*.
+
+    A classifier that cross-validates by block cuts these frames into blocks, the
+    same frames that ``sequence-classifier`` reads from its own labeled input.
+
+    Args:
+        templates_path: The ``templates.parquet`` of an ``extract-labeled-templates`` run.
+
+    Returns:
+        The ``(first, stop)`` of each train entry that has a labeled frame: the first
+        frame of any of its series that a label covers, and one past the last. An
+        entry with no label has none. ``None`` when the run left no provenance
+        beside the templates, or a provenance from before ``extract-labeled-templates``
+        0.7, which does not record them.
+    """
+    path = templates_path.parent / "template_provenance.parquet"
+    if not path.exists():
+        return None
+    provenance = pd.read_parquet(path)
+    if not {"labeled_start", "labeled_stop"} <= set(provenance.columns):
+        return None
+    train = provenance[
+        (provenance["split"] == "train") & provenance["labeled_start"].notna()
+    ]
+    return {
+        (str(g), str(s)): (int(first), int(stop))
+        for g, s, first, stop in zip(
+            train["group"],
+            train["sequence"],
+            train["labeled_start"],
+            train["labeled_stop"],
+            strict=True,
+        )
+    }
+
+
 # --- Shared helpers for per-sequence features ---
 
 
@@ -800,14 +843,79 @@ def cv_fold_assignment(
     return {entry: rank % n_folds for rank, entry in enumerate(ranked)}
 
 
-def out_of_fold_choice(
-    df: pd.DataFrame, fold_of: Mapping[tuple[str, str], int], feature: str
-) -> int | None:
-    """Return the fold whose model scores the entry *df* holds, ``None`` for the full model.
+def cv_block_bounds(first: int, stop: int, n_blocks: int) -> list[tuple[int, int, int]]:
+    """Cut the frames ``first`` up to ``stop`` into *n_blocks* contiguous, near-equal blocks.
 
-    An entry in a fold is scored by the model that was fitted without it. Any other
-    entry, such as one of a test group, was in no fold's training rows and no
-    model's, so the full model scores it.
+    Block ``i`` of ``n_blocks`` spans ``first + i * span // n_blocks`` up to
+    ``first + (i + 1) * span // n_blocks``, with ``span = stop - first``, so the
+    blocks tile the range exactly and differ in length by at most one frame. A range
+    shorter than *n_blocks* has fewer non-empty blocks: an empty one is left out, and
+    the others keep their index.
+
+    Args:
+        first: The first frame of the range.
+        stop: One past the last frame of the range.
+        n_blocks: The number of blocks, at least 1.
+
+    Returns:
+        ``(index, start, stop)`` of each non-empty block, in order, half-open in
+        the frame number.
+    """
+    span = stop - first
+    edges = [first + (i * span) // n_blocks for i in range(n_blocks)] + [stop]
+    return [
+        (index, edges[index], edges[index + 1])
+        for index in range(n_blocks)
+        if edges[index + 1] > edges[index]
+    ]
+
+
+def _cv_block_key(seed: int, group: str, sequence: str, block: int) -> str:
+    """Return the sort key of a block: the sha256 of the JSON text ``[seed, group, sequence, block]``."""
+    text = json.dumps([seed, group, sequence, block], separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def cv_block_assignment(
+    blocks: Iterable[tuple[str, str, int]], n_folds: int, seed: int = 0
+) -> dict[tuple[str, str, int], int]:
+    """Deal blocks into *n_folds* folds, balanced in their count.
+
+    The block counterpart of :func:`cv_fold_assignment`: the blocks are ordered by the
+    sha256 of ``[seed, group, sequence, block]`` and dealt out in turn, so block
+    ``rank`` goes to fold ``rank % n_folds``. A dataset with one training sequence
+    therefore still has *n_folds* folds, and the result depends on the blocks and the
+    seed alone, not on the order they arrive in or the process.
+
+    Args:
+        blocks: The ``(group, sequence, block index)`` of every block to deal. A
+            repeated block is dealt once.
+        n_folds: The number of folds, at least 2 and at most the number of blocks.
+        seed: Changes the folds and nothing else.
+
+    Returns:
+        The fold, from 0, of each block.
+
+    Raises:
+        ValueError: *n_folds* is below 2 or above the number of blocks.
+    """
+    unique = sorted(set(blocks))
+    if n_folds < 2:
+        msg = f"cross-validation needs at least 2 folds, not {n_folds}"
+        raise ValueError(msg)
+    if n_folds > len(unique):
+        msg = (
+            f"cannot deal {len(unique)} blocks into {n_folds} folds. Lower the "
+            f"number of folds to at most {len(unique)}, or cut each sequence "
+            "into more blocks"
+        )
+        raise ValueError(msg)
+    ranked = sorted(unique, key=lambda block: _cv_block_key(seed, *block))
+    return {block: rank % n_folds for rank, block in enumerate(ranked)}
+
+
+def scored_entry(df: pd.DataFrame, feature: str) -> tuple[str, str]:
+    """Return the ``(group, sequence)`` of the one entry that *df* holds, for cross-validation.
 
     The entry is read from the ``group`` and ``sequence`` columns by
     :func:`entry_identity`, the function that names an entry in the templates. A
@@ -817,7 +925,6 @@ def out_of_fold_choice(
 
     Args:
         df: One entry's table.
-        fold_of: The fold of each ``(group, sequence)`` that was dealt.
         feature: The feature that scores, which the message names.
 
     Raises:
@@ -838,4 +945,24 @@ def out_of_fold_choice(
             "input holds more than one entry"
         )
         raise ValueError(msg)
-    return fold_of.get(entry_identity(df))
+    return entry_identity(df)
+
+
+def out_of_fold_choice(
+    df: pd.DataFrame, fold_of: Mapping[tuple[str, str], int], feature: str
+) -> int | None:
+    """Return the fold whose model scores the entry *df* holds, ``None`` for the full model.
+
+    An entry in a fold is scored by the model that was fitted without it. Any other
+    entry, such as one of a test group, was in no fold's training rows and no
+    model's, so the full model scores it. The entry is named by :func:`scored_entry`.
+
+    Args:
+        df: One entry's table.
+        fold_of: The fold of each ``(group, sequence)`` that was dealt.
+        feature: The feature that scores, which the message names.
+
+    Raises:
+        ValueError: *df* lacks ``group`` or ``sequence``, or holds more than one entry.
+    """
+    return fold_of.get(scored_entry(df, feature))

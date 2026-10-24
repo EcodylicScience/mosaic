@@ -189,12 +189,20 @@ def build_manifest(
     *,
     tracks_run_id: str | None = None,
     on_missing_run: MissingRunPolicy = "raise",
+    stack: bool = False,
 ) -> tuple[Manifest, ResolvedScope]:
     """Build unified manifest for all input types.
 
     Returns the manifest (entry_key -> ManifestEntry) and the resolved
-    ``ResolvedScope`` (entries present in ALL inputs after intersection),
-    recording the selector it came from.
+    ``ResolvedScope`` (entries present in ALL inputs after intersection, or in
+    ANY input under *stack*), recording the selector it came from.
+
+    *stack* is the reading of a feature that declares ``stacks_inputs``: its
+    inputs are runs over disjoint parts of the data, and the entries are their
+    **union**, each entry carrying the one file that holds it. An entry that two
+    inputs both hold is refused with :class:`StackedEntryOverlap`, because
+    reading it from either would silently drop the other and reading both would
+    count it twice. A single input is unchanged by it.
 
     *scope* is applied to every input and the results are intersected.
     ``Scope(groups=..., sequences=...)`` keeps an entry whose group and whose
@@ -223,6 +231,7 @@ def build_manifest(
     per_input_paths: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
     per_input_paths_all: list[dict[tuple[str, str], tuple[Path, LoadSpec]]] = []
     first_full_order: list[tuple[str, str]] = []
+    stacked_full_order: set[tuple[str, str]] = set()
 
     variants: tuple[str, ...] = ()
     tracks_schemas: dict[tuple[str, str], str] = {}
@@ -246,10 +255,15 @@ def build_manifest(
         per_input_paths_all.append(input_result.path_map_all)
         if i == 0:
             first_full_order = input_result.full_order
+        stacked_full_order.update(input_result.full_order)
 
-    # Intersect entries across all inputs
     shared_entries: set[tuple[str, str]] = set()
-    if per_input_entries:
+    if stack:
+        _refuse_stacked_overlap(per_input_entries)
+        shared_entries = {entry for entries in per_input_entries for entry in entries}
+        first_full_order = sorted(stacked_full_order)
+    elif per_input_entries:
+        # Intersect entries across all inputs
         shared_entries = per_input_entries[0].intersection(*per_input_entries[1:])
 
     # Per-entry, and therefore read *after* the narrowing -- the opposite of
@@ -356,6 +370,39 @@ def build_manifest(
         )
 
     return manifest, resolved
+
+
+class StackedEntryOverlap(ValueError):
+    """Two inputs of a stacking step both hold one entry."""
+
+
+def _refuse_stacked_overlap(per_input_entries: list[set[tuple[str, str]]]) -> None:
+    """Raise :class:`StackedEntryOverlap` when an entry is in more than one input.
+
+    Args:
+        per_input_entries: The entries each input resolves under the scope, by
+            declared position.
+    """
+    held_by: dict[tuple[str, str], list[int]] = {}
+    for position, entries in enumerate(per_input_entries):
+        for entry in entries:
+            held_by.setdefault(entry, []).append(position)
+    repeated = sorted(entry for entry, held in held_by.items() if len(held) > 1)
+    if not repeated:
+        return
+    shown = ", ".join(
+        f"({group!r}, {sequence!r}) in inputs "
+        + " and ".join(str(position) for position in held_by[(group, sequence)])
+        for group, sequence in repeated[:3]
+    )
+    more = f" and {len(repeated) - 3} more" if len(repeated) > 3 else ""
+    msg = (
+        f"inputs that stack must hold disjoint entries, and {len(repeated)} "
+        f"entries appear in more than one input: {shown}{more}. Scoring an "
+        "entry twice would count it twice. Narrow the step's scope or give each "
+        "input its own entries."
+    )
+    raise StackedEntryOverlap(msg)
 
 
 def order_values(df: pd.DataFrame, order_col: str) -> npt.NDArray[np.float64]:

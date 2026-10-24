@@ -14,12 +14,13 @@ from mosaic.core.pipeline.graph import (
     PlanWire,
     StepTypeDetail,
     StillNeeded,
+    ValidationReport,
 )
 from mosaic.core.strict_model import StrictModel
 
 from .spec import StepTypeDetailLevel, SuggestMode
 
-__all__ = ["PlanPage", "StepSuggestions", "StepTypes"]
+__all__ = ["PatchedRecipe", "PlanPage", "StepSuggestions", "StepTypes"]
 
 
 class StepTypes(StrictModel):
@@ -93,3 +94,15 @@ class PlanPage(PlanWire):
 
     steps_total: int
     next_cursor: str | None
+
+
+class PatchedRecipe(ValidationReport):
+    """A patched recipe as it was saved, and its validation report.
+
+    Attributes:
+        name: The recipe's name.
+        steps_total: How many steps it has, ``repeat`` expanded.
+    """
+
+    name: str
+    steps_total: int

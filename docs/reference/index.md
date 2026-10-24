@@ -9,7 +9,7 @@ and need the name and the knobs.
 
 | Page | Holds |
 | --- | --- |
-| [Features](features.md) | 52 registered features, grouped by category, with their parameters |
+| [Features](features.md) | 56 registered features, grouped by category, with their parameters |
 | [Ops](ops.md) | 22 registered ops -- trackers, training, inference, frame extraction and media |
 | [Media steps](media-steps.md) | 7 steps a `preprocess` run applies to make a media variant, with their parameters |
 | [CLI](cli.md) | Every `mosaic` command and flag |

@@ -146,6 +146,27 @@ class TrajectorySmooth:
 
     # --- State (stateless feature) ---
 
+    @staticmethod
+    def temporal_reach(params: TrajectorySmooth.Params) -> int | None:
+        """Frames on each side that one row reads, ``None`` under interpolation.
+
+        A bad or missing frame is filled from the nearest good frames, however far
+        away they are, so no param bounds an interpolating run. Without
+        interpolation a row reads the Savitzky-Golay window (``savgol_window // 2``
+        frames, centered) and, for ``bad_frame``, a displacement flag expanded by
+        ``expand_frames`` (the speed of a frame reads one further back). Near a
+        sequence's ends the filter fits its first or last window, which reaches
+        further and is not counted. Rows are taken to be consecutive frames.
+        """
+        if params.interpolate_centroid or params.interpolate_pose:
+            return None
+        reach = 0
+        if params.speed_threshold is not None:
+            reach = params.expand_frames + 1
+        if params.savgol_window is not None:
+            reach = max(reach, params.savgol_window // 2)
+        return reach
+
     def load_state(
         self,
         run_root: Path,

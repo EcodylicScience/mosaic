@@ -56,6 +56,7 @@ from .helpers import (
     label_series,
     refuse_repeated_series_rows,
 )
+from .named_model import named_model_file
 from .registry import register_feature
 from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
 
@@ -88,8 +89,10 @@ class ArHmmModelArtifact(JoblibArtifact[ArHmmModelBundle]):
 
 
 _MODEL_DESCRIPTION = (
-    "A pre-fitted model artifact to load, skipping the fit. Unset, the "
-    "model is fit from scratch."
+    "The arhmm_model.joblib of an arhmm run to apply, such as a fit step "
+    "scoped to the training groups. Unset, the model is fit from scratch on "
+    "the entries in scope. Set, nothing is fitted, the entries in scope leave "
+    "the run id, and a model that cannot be found is refused."
 )
 
 _PCA_DIM_DESCRIPTION = (
@@ -205,6 +208,9 @@ class ArHmmFeature:
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
+    # run given a model, which applies it.
+    fits = True
     name = "arhmm"
     # NOTE: bump only when the *model math* changes, not for a backend swap.
     # Backends are numerically-equivalent implementations of the same algorithm,
@@ -217,6 +223,8 @@ class ArHmmFeature:
     # one sequence of interleaved rows.
     version = "0.3"
     parallelizable = False
+    # The entries in scope are the training set, so a fit hashes them. A run given
+    # a ``model`` applies it to each entry alone and hashes none.
     scope_dependent = True
     accepts_overlap = (
         False  # decodes a whole sequence at once, so context is not a window
@@ -286,6 +294,10 @@ class ArHmmFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
+        # A run given a model applies it and learns nothing: a held-out group may be
+        # in its scope, and the scope is not part of what the run is.
+        self.scope_dependent = self.params.model is None
+        self.fits = self.params.model is None
 
         self._model: ARHMM | None = None
         self._pca: PCA | None = None
@@ -313,9 +325,12 @@ class ArHmmFeature:
             self._load_bundle(ArHmmModelArtifact().from_path(cached_path))
             return True
 
-        # Branch 2: pre-fitted model from artifact_paths
-        if self.params.model is not None and "model" in artifact_paths:
-            self._load_bundle(self.params.model.from_path(artifact_paths["model"]))
+        # Branch 2: pre-fitted model from artifact_paths. A model that was named
+        # and is not there is refused: fitting in its place would store a model of
+        # this scope under an id that names the missing one.
+        if self.params.model is not None:
+            path = named_model_file(self.name, self.params.model, artifact_paths)
+            self._load_bundle(self.params.model.from_path(path))
             return True
 
         return False

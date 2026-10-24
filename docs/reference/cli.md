@@ -49,6 +49,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `sources`: Declare and inspect the directories and...
 * `notes`: Read and write the dataset's free-text notes.
 * `tags`: Declare and set the dataset's typed tags.
+* `splits`: Give groups a role in a held-out protocol:...
 * `libraries`: Link the datasets a trained model may be...
 
 ## `mosaic run`
@@ -1005,11 +1006,13 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `catalog`: List the step types a recipe may run, or...
 * `validate`: Check a recipe against the registries.
 * `plan`: Resolve a recipe against a dataset:...
+* `verify`: Fit a finished recipe's fitting steps...
 * `show`: Print a recipe's steps and the references...
 * `submit`: Record a submission of a recipe, and print...
 * `run`: Run every step of a recipe here, in order,...
 * `status`: Say how far one submission got, from its...
 * `list`: List the dataset's pipeline requests...
+* `score`: Score a finished recipe on held-out data...
 
 ### `mosaic pipeline catalog`
 
@@ -1063,8 +1066,9 @@ to the training groups and the scoring to the test groups.
 ``--cleanup superseded`` also reports the superseded runs of the recipe's
 feature storages, and the fingerprint then covers the ones removable. It
 also lists the saved recipes whose requests wrote runs, and ``--retire
-<digest>`` judges the runs of one of them too, in any storage. It writes
-nothing.
+<digest>`` judges the runs of one of them too, in any storage.
+``--assume-added GROUP`` notes which steps would refit, and which would
+only re-score, if that group joined the dataset. It writes nothing.
 
 **Usage**:
 
@@ -1083,6 +1087,54 @@ $ mosaic pipeline plan [OPTIONS]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
+* `--assume-added GROUP`: Assume this group joins the dataset (repeatable) and note which steps of the plan would refit and which would only re-score, as the same scope covers it. It changes nothing else.
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+### `mosaic pipeline verify`
+
+Fit a finished recipe's fitting steps again and compare them with the stored runs.
+
+Plans the recipe as 'pipeline plan' does (same --entry, --group and
+--step-scope). Each step whose feature fits and whose run is complete is
+fitted again into a scratch directory, never into the dataset, and then:
+its stored per-entry outputs are compared with the same entries applied
+from the new fit (largest absolute difference, and for prob_* columns the
+share of rows keeping their most probable class), and so are the files the
+fit saves. Each evaluation step (evaluate-labels) is scored again, on the
+predictions of the new fit where its input was just verified, and its
+metrics.json is compared with the stored one. Exits 0 when everything is
+within tolerance and 1 otherwise, with --json giving every difference. It
+also exits 1 when no step was compared (a recipe never run, or a
+--step-scope the run did not use).
+
+The tolerance is a decision, not a default to loosen. Most features are
+deterministic and must match exactly. A feature that trains a network
+(sequence-classifier, lightning-action) matches exactly on CPU at the same
+thread count, with n_threads fixed at 1 here unless --n-threads says
+otherwise. Across thread counts on Linux its probabilities move (mean
+about 7e-3, about 99% of rows keep their argmax), and across a GPU and a
+CPU they move more. A tolerant feature is held to --atol (1e-5) and an
+evaluation of its predictions inherits it. To verify a run that was fitted
+at another thread count or on a GPU, raise --atol and read the argmax
+agreement. The dataset is opened read-only and nothing is written under it.
+
+**Usage**:
+
+```console
+$ mosaic pipeline verify [OPTIONS]
+```
+
+**Options**:
+
+* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--atol <float range>`: How far a tolerant feature's new fit may sit from the stored one, per value. Only a feature that trains a network is tolerant (it has an n_threads param, or a device other than cpu). Every other feature must match exactly.  [default: 1e-05; x>=0]
+* `--scratch <path>`: Where the new fits go, outside the dataset. It must be absent or empty, and is kept afterwards. Without it a temporary directory is used and removed.
+* `--n-threads <int range>`: The thread count a feature with an n_threads param is fitted with. It is outside the run id.  [default: 1; x>=1]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1253,6 +1305,54 @@ $ mosaic pipeline list [OPTIONS]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
+### `mosaic pipeline score`
+
+Score a finished recipe on held-out data that was added afterwards.
+
+Copies the study to --out, adds the held-out data to the copy, converts it
+with the recipe's own convert steps, appends one evaluate-labels step per
+answer step, and runs the recipe. Every fit of the recipe is kept: the
+command compares the run id of every step before and after the held-out data
+joins, and exits 1 listing 'RUN IDS CHANGED' when one moved, because that
+step would be fitted again on different data. Nothing is run then.
+
+Give --step-scope as the recipe was run, so each fit stays on the training
+groups. The study is opened read-only and is never written.
+
+**Usage**:
+
+```console
+$ mosaic pipeline score [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `--heldout <str>`: The held-out data: a file or a directory to add as a tracks and a labels source of the copy, or a group already in the dataset whose role is test or sealed, which needs nothing added.  [required]
+* `--answers <str>`: The steps to score, as a JSON file or inline JSON: {"models": {"<name>": ["<step id>", ...]}}. One name with several steps is reported as mean and standard deviation.  [required]
+* `--out <path>`: Where the copy of the dataset goes, and the scores are written (test_scores.json and test_scores.txt). Refused when it exists, unless --reuse.  [required]
+* `--labels-path <path>`: Where the held-out labels are, when not beside the tracks.
+* `--src-format <str>`: The raw format of the held-out files. It must be the format the recipe's convert steps read, which is where it is taken from.
+* `--patterns <str>`: With a directory, comma-separated globs selecting its files.
+* `--multi-sequences-per-file`: One held-out file holds several sequences.
+* `--group-from <str>`: 'filename' or 'parent'. Multi-sequence files only.
+* `--group-pattern <str>`: Regex extracting the group from a path.
+* `--perspective <str>`: Which rows of a pair output the evaluation scores: an individual as an integer, 'pooled' or 'mean_probabilities'.
+* `--average-over <int>`: A class the macro F1 averages over (repeatable). Unset: every class.
+* `--classes <int>`: A class to report (repeatable), in order.
+* `--prediction-column <str>`: The column holding each row's predicted class.
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--expect-plan <str>`: The plan_fingerprint that a --dry-run printed. Refuses the run, writing nothing more, when the scoring plan has changed since.
+* `--expect-md5 <str>`: The MD5 of the held-out file. Refuses an incomplete copy before anything is done. A file only.
+* `--reuse`: Continue with the copy in --out after a failure or a dry run. The plan recorded before the held-out data was added is the one compared.
+* `--dry-run`: Stop after the comparison of run ids: nothing is run or scored. The study is never written. A held-out group already in the dataset is planned in place and writes nothing at all. Held-out files are added to the copy in --out, which is what the comparison needs.
+* `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
+* `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
+* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
 ## `mosaic agent`
 
 Print or install the guide for an AI agent that uses mosaic, or serve it MCP tools.
@@ -1323,6 +1423,11 @@ and output, so the command writes its own messages to standard error. It
 needs the `mcp` extra. `mosaic agent install --mcp` registers it for Claude
 Code.
 
+With --http it serves one user over streamable HTTP instead, behind a bearer
+token, for a client on another machine of a trusted network. It does not
+encrypt unless given --tls-cert and --tls-key; put it on a tailnet or behind a
+reverse proxy that does.
+
 **Usage**:
 
 ```console
@@ -1332,9 +1437,15 @@ $ mosaic agent serve [OPTIONS]
 **Options**:
 
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
-* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, and the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`. Its relative paths are read from its directory.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`, and the `dataset_roots` and `source_roots` that manage_dataset may write inside. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
+* `--http HOST:PORT`: Serve one user over streamable HTTP at http://HOST:PORT/mcp instead of stdio, for a trusted network such as a tailnet. Needs --token-file. Write an IPv6 host in brackets.
+* `--token-file <path>`: With --http: a file of mode 0600 holding the bearer token that every request must send as 'Authorization: Bearer <token>'.
+* `--allowed-host <str>`: With --http: a host name clients reach the server by, such as its tailnet name. Requests naming another host are refused. Repeatable. Without it, a non-loopback address checks no host.
+* `--tls-cert <path>`: With --http and --tls-key: serve HTTPS with this certificate.
+* `--tls-key <path>`: The private key of --tls-cert.
+* `--allow-model-confirm`: With --http: accept confirm true from a client that cannot ask the user, so its model confirms costly work itself. Without it such a call is refused.
 * `--help`: Show this message and exit.
 
 ### `mosaic agent confirm-hook`
@@ -1354,7 +1465,7 @@ $ mosaic agent confirm-hook [OPTIONS]
 
 **Options**:
 
-* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup or hard_cancel. Repeatable.
+* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup, score_sealed, hard_cancel, create_dataset or add_source. Repeatable.
 * `--otherwise <ask|cancel|decline>`: What to answer a confirmation with a condition not approved: decline it, cancel it, or ask (print nothing and leave it to the dialog). decline keeps any other hook from accepting it.  [default: decline]
 * `--server <str>`: The name under which the client lists mosaic's server.  [default: mosaic]
 * `--help`: Show this message and exit.
@@ -1656,6 +1767,81 @@ $ mosaic tags remove [OPTIONS] {name}
 **Arguments**:
 
 * `name`: The tag to drop.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--help`: Show this message and exit.
+
+## `mosaic splits`
+
+Give groups a role in a held-out protocol: train, test or sealed.
+
+**Usage**:
+
+```console
+$ mosaic splits [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `list`: Show every group that has a role.
+* `set`: Give each group a role, replacing the one...
+* `remove`: Take the role from each group.
+
+### `mosaic splits list`
+
+Show every group that has a role.
+
+**Usage**:
+
+```console
+$ mosaic splits list [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--json`: Emit JSON.
+* `--help`: Show this message and exit.
+
+### `mosaic splits set`
+
+Give each group a role, replacing the one it had.
+
+**Usage**:
+
+```console
+$ mosaic splits set [OPTIONS] {role} {groups}...
+```
+
+**Arguments**:
+
+* `role`: train, test or sealed.  [required]
+* `groups...`: The groups to give the role.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--help`: Show this message and exit.
+
+### `mosaic splits remove`
+
+Take the role from each group. A group with no role is skipped.
+
+**Usage**:
+
+```console
+$ mosaic splits remove [OPTIONS] {groups}...
+```
+
+**Arguments**:
+
+* `groups...`: The groups to take the role from.  [required]
 
 **Options**:
 

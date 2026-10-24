@@ -59,11 +59,15 @@ class TrainingRun:
         entry: The ``(group, sequence)`` it comes from.
         x: The frames, one row each, as they are in the table.
         y: The class index of each frame, in the order of the model's classes.
+        first_frame: The ``frame`` of its first row, which the rows then follow
+            one by one. Set only where a fit cuts runs by frame, for
+            cross-validation by block.
     """
 
     entry: tuple[str, str]
     x: npt.NDArray[np.float32]
     y: npt.NDArray[np.intp]
+    first_frame: int | None = None
 
 
 def sub_seed(seed: int, role: str, index: int) -> int:

@@ -222,6 +222,12 @@ training and test groups from the start would score the test groups for every se
 you try. Keep one classifier step: two steps with the same parameters and different
 scopes are one run, and can fit at the same time.
 
+A fit that does not hash its scope also does not notice that a training entry changed. If
+you convert a training entry again, the model stays the run it was, and only that entry's
+output is computed again with it. To fit again on the new data, change a parameter, such
+as `cv_seed`. `--overwrite` does not do it: it recomputes the entries' output and loads
+the stored model.
+
 The out-of-fold probabilities are inputs a second stage can train on. Stack the
 `prob_*` columns with `temporal-stack`, draw templates from the stacked table, and fit a
 second `xgboost` with the same `cv_seed`. Its folds are the first stage's. Name the
@@ -238,9 +244,104 @@ What the score does not cover:
   held-out sequences. The labeled sample is drawn over all training sequences, so a
   held-out sequence's class totals set how many rows of the other folds are kept. No
   label of a held-out sequence enters the model that scores it.
-- A fold is a set of sequences. If several sequences come from one animal or one
-  recording, a fold that splits them leaks across them, and mosaic does not know. Make
-  that unit one sequence before you draw the templates.
+- A fold is a set of sequences, unless `cv_unit` is `block` (below). If several
+  sequences come from one animal or one recording, a fold that splits them leaks across
+  them, and mosaic does not know. Make that unit one sequence before you draw the
+  templates.
+
+## Cross-validate one training sequence by blocks
+
+Folds of whole sequences need more training sequences than folds. A dataset with one
+training sequence has no score of that kind, and `cv_folds` refuses it. Set `cv_unit` to
+`block` on `xgboost` or `sequence-classifier` to hold out stretches of frames instead:
+
+```json
+{"id": "classifier", "type": "feature", "feature": "xgboost",
+ "inputs": [{"step": "scaler"}],
+ "params": {"templates": {"step": "labeled"}, "default_class": 3,
+            "cv_folds": 5, "cv_unit": "block",
+            "cv_blocks_per_sequence": 10, "cv_gap_frames": 60}}
+```
+
+- Each training sequence is cut into `cv_blocks_per_sequence` contiguous blocks (unset,
+  `cv_folds`) that tile the frames from its first to its last labeled frame, and the
+  blocks are dealt to the folds by a hash of `cv_seed`, group, sequence and block. The
+  model of a fold trains on the frames outside its blocks and outside the `cv_gap_frames`
+  frames on each side of them, and scores the frames inside its blocks. The frames outside
+  every block, which no label covers, and the entries outside the training set are scored
+  by the model fitted on all of it. `cv_folds.parquet` has one row per block, with its
+  `start` and `stop` frames, and not one per entry.
+- The numbers above suit sequences of minutes. On a few seconds of tracks, lower
+  `cv_blocks_per_sequence`, `cv_gap_frames` and `cv_folds` until each fold's training
+  frames hold every class: the fit refuses a fold that leaves no training rows of a
+  class.
+- Neighboring frames are not independent, so a block score is more optimistic than a
+  sequence score wherever sequences are the unit you generalize over. The frames next to a
+  held-out block resemble it, and a feature that reads a window of frames carries the
+  block's frames into the rows beside it. `cv_gap_frames` removes that margin from
+  training. It should be at least as wide as the longest window above the classifier.
+  The plan checks it: each step can declare `temporal_reach`, the frames on each side that
+  one of its output rows depends on (`mosaic pipeline catalog <name>` lists it), and the plan
+  sums the declared reach along the steps above the classifier and refuses a gap that is
+  shorter. A step that declares none, or whose reach no setting bounds (an interpolation
+  over gaps of any length), makes the plan a caution instead. A `cv_gap_frames` above 0
+  that covers the reach that is known is taken to be your answer to a step that says
+  nothing, and the caution goes. The classifier's own reach is not counted: a network
+  trains on pieces cut out of the runs, so it never reads a held-out frame.
+- `xgboost` places each template row in a block by its `frame`, which
+  `extract-labeled-templates` writes from version 0.7. It also records each entry's
+  labeled frames in the provenance. Templates from an older run are refused under
+  `cv_unit: block`. Drawing them again moves the run id of every classifier built on
+  them, `cv_unit: sequence` ones included.
+- `lightning-action` has no `cv_folds` yet, and so no `cv_unit`. To cross-validate a
+  single sequence, use `sequence-classifier` or `xgboost`.
+
+## Choose decision thresholds out of fold
+
+The class with the highest probability is rarely the best call for a rare behavior.
+`decision_threshold` takes a cut per class, and a cut chosen by looking at the
+test groups spends them. `tune-threshold` chooses it on the out-of-fold probabilities of a
+classifier fitted with `cv_folds`, against the labels, and saves it for a step to apply:
+
+```json
+{"id": "tune", "type": "feature", "feature": "tune-threshold",
+ "inputs": [{"step": "classifier"}],
+ "params": {"labels": {"step": "labels"}, "default_class": 3,
+            "metric": "macro_f1", "average_over": [0, 1, 2]}},
+{"id": "apply", "type": "feature", "feature": "probability-ensemble",
+ "inputs": [{"step": "classifier"}],
+ "params": {"default_class": 3, "decision_threshold": {"step": "tune"}}}
+```
+
+- A one-member `probability-ensemble` is the step that applies the thresholds. Its
+  `decision_threshold` takes `{"step": "tune"}` beside a number or a mapping of class to
+  cut. The classifier cannot name its own tuning, because the tuning needs the
+  classifier's run: that is a cycle. For the same reason only `probability-ensemble` takes
+  a tune step: the `decision_threshold` of `xgboost`, `sequence-classifier` and
+  `lightning-action` stays a number or a mapping, and an `xgboost` stage stacked over
+  probabilities takes the tuned cuts through a one-member ensemble as well. The ensemble
+  must blend the run that was tuned and nothing else, and is refused for any other input,
+  because the thresholds were scored on that run's output.
+- `default_class` takes the rows no class claims and has no cut of its own: the step saves
+  it with 1.0. A class left out of `classes` keeps a cut of 0, which it always clears. A
+  threshold for one class in a binary problem is therefore `{"0": 1.0, "1": t}`: a lone
+  `{"1": t}` with `t` under 0.5 changes nothing.
+- `metric` is `macro_f1` over `average_over` or `pooled_f1` of the one class in `classes`.
+  The step tries each cut of `grid` (fine below 0.1) and takes the lowest of equal scores.
+  With several classes it improves one at a time, for up to five passes.
+- `tune_report.json` in the run directory gives the estimate on the rows the cuts were
+  chosen on (`plain`, optimistic by the freedom of the cuts) and, with `nested`, the
+  estimate in which each fold is scored with cuts chosen on the other folds. Believe the
+  nested one. Neither corrects for the hyperparameters, which were chosen on the same
+  rows. A labeled row with no probability is scored as `default_class`, as the step that
+  applies the cuts would assign it.
+- The report's `warnings` and the log name a cut that is the lowest or the highest value of
+  `grid`: the best cut may lie beyond it, and that value is the edge of what was tried and
+  not a tuned value. Widen `grid` and run again.
+- With block folds the step maps each row to the fold of its block and leaves out a labeled
+  row in no block. The step hashes no scope, so widening the request to the test groups is
+  the same run, which applies the stored cuts to the new entries. Ask the first request
+  over a scope that holds the classifier's training entries.
 
 ## Give each frame its context
 
@@ -314,13 +415,15 @@ What differs from `xgboost`:
   The sample `labeled` drew is not read, so `n_per_class` shapes nothing here. `weight_classes`
   (on by default) weights the loss by class frequency in its place. The step may read other
   inputs than `labeled` did.
-- **The classifier's scope is part of its run id.** `xgboost` fits from its templates and
-  reuses its model on any entry. `lightning-action` fits from the entries in its own
-  scope, so the same step over other entries is another run, and fits again. The step
-  refuses a scope that leaves out a training entry that has labels. To predict more
-  entries with a model you have fitted, name it in a second step with `"model": {"step":
-  "classifier"}` and no `templates` or `labels`. `fit_scope.json` lists every entry of the
-  step's scope, test group included, though only the entries of the train split trained.
+- **The classifier's scope is not part of its run id.** The `templates` run names the
+  training entries, so `lightning-action`, like `xgboost`, keeps its run id when you widen
+  the scope: the stored fit is applied to the new entries and nothing is fitted again.
+  The first request must hold every training entry that has labels, and the step refuses
+  a scope that leaves one out. To predict with a model fitted elsewhere, name it in a
+  second step with `"model": {"step": "classifier"}` and no `templates` or `labels`.
+  `fit_scope.json` lists the entries of the templates run, which are the ones that
+  trained. A fit does not move when you convert a training entry again: that entry's
+  output is computed again with the stored model. To fit again, change a parameter.
 - **A run of consecutive labeled frames is the unit of training.** A frame no label covers
   ends a run, and so does a gap in the frame numbers. The network reads windows of
   `sequence_length` frames from the first frame of a run, so a run shorter than that does
@@ -344,10 +447,12 @@ whole. A head from a registry is the network: `tcn` (dilated convolutions, cente
 each frame), `gru` (a bidirectional GRU) or `mlp` (each frame by itself). It needs the
 `[deep-learning]` extra and is offered to a GPU worker.
 
-Its defaults are those of the networks in the CalMS21 Task 1 agent runs, where a
-bidirectional GRU and a dilated TCN on 37 per-frame columns scored 0.859 and 0.855 test
-macro F1 over attack, investigation and mount, the score of XGBoost on 981 columns. The
-recipe is the `lightning-action` one with the classifier swapped:
+Its defaults are those of the networks in the CalMS21 Task 1 agent runs, a published
+benchmark, where a bidirectional GRU and a dilated TCN on 37 per-frame columns scored
+0.859 and 0.855 on its test split, macro F1 over attack, investigation and mount, the
+score of XGBoost on 981 columns. Read that as documented behavior of one dataset, scored
+on a split these defaults saw, and not as a result for yours: cross-validate before you
+trust it. The recipe is the `lightning-action` one with the classifier swapped:
 
 ```json
 {
@@ -393,12 +498,14 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   --step-scope 'evaluate={"groups": ["test"]}'
 ```
 
-- **The second command fits again.** The classifier fits from the entries of its own
-  scope, so its scope is part of its run id, and the wider step is a new run. Expect about
-  the same time again, about 5 minutes per seed with five folds on a GPU (an estimate).
-  `xgboost` fits from its templates and keeps its run id, as the cross-validation section
-  above shows. Splitting fitting from applying into two steps, which is planned for every
-  classifier, removes the refit.
+- **The second command fits nothing again.** The `templates` run names the training
+  entries, so the classifier's scope is not part of its run id, and the wider step is the
+  same run, as it is for `xgboost` in the cross-validation section above. Only the test
+  groups are computed, with the final model, and the training entries keep their
+  out-of-fold output. Ask the first request over a scope that holds the training entries,
+  and the step refuses one that does not. A fitted-weight `probability-ensemble` behaves
+  the same way, because its members' fold table names the entries its weights were chosen
+  on.
 - **The templates name the training entries, and the frames come from the step's
   inputs.** As with `lightning-action`, the sample that `labeled` drew is not read, an
   entry it held out never trains, and the step refuses a scope that leaves out a training
@@ -410,9 +517,10 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   `hidden`, `layers`, `bidirectional` and `dropout` for `gru`, and `hidden`, `layers` and
   `dropout` for `mlp`. An option the head does not have is refused. A `tcn` reads
   `(kernel_size - 1) * (2 ** blocks - 1) + 1` frames around each frame, 127 by default.
-- **Name the columns.** `columns` lists the payload columns the network reads. Narrow sets
-  usually win: 37 columns beat 562 to 999 by 0.04 of cross-validated macro F1.
-  Unset, every payload column of the inputs is read.
+- **Name the columns.** `columns` lists the payload columns the network reads. A narrow set
+  can beat a wide one (on CalMS21, 37 columns beat 562 to 999 by 0.04 of cross-validated
+  macro F1), so compare sets by cross-validation. Unset, every payload column of the inputs
+  is read.
 - **A run of consecutive labeled frames is the unit of training.** A frame no label covers
   ends a run, and so does a gap in the frame numbers. A batch is `batch_size` random crops
   of up to `crop_length` frames of whole runs, drawn in proportion to the run's length,
@@ -429,6 +537,9 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   share their folds. One network is fitted without each fold, and the full model last. A
   training entry is scored by the network of its fold, and any other entry by the full
   model. `cv_folds.parquet` lists the fold of every entry and its labeled frames per class.
+  With `cv_unit: block`, as for `xgboost` above, it holds one row per block with its
+  `start` and `stop`, and the network of a fold trains on the labeled runs of every entry
+  less its blocks and `cv_gap_frames` frames around them.
 - **Device and repeatability.** `device` is `cuda` or `cpu` and is part of the run id,
   because a GPU and a CPU need not give one model. A model fitted on a GPU applies on a
   CPU (`apply_device`, not part of the run id). A CPU fit repeats at one thread count
@@ -532,14 +643,17 @@ mosaic pipeline run -m dataset.yaml --recipe @blend.json \
   --step-scope 'evaluate={"groups": ["test"]}'
 ```
 
-The second request fits every network again, for the reason given above.
+The second request fits nothing again: no step of the blend hashes its scope, so each is
+the run of the first request and only the test groups are computed. The networks' folds
+name the entries that the blend's weights were chosen on.
 
 - A member of a fitted blend may be any classifier run that writes `cv_folds.parquet`,
   `xgboost` included: add `{"step": "classifier"}` to the blend's `inputs` beside the
   averages. The members must write the same classes and deal the same folds, so give them
   one templates run and one `cv_seed`. The step compares the folds, `group`, `sequence`
-  and `fold`, and not the counts, because `xgboost` counts sampled template rows where
-  `sequence-classifier` counts labeled frames.
+  and `fold`, with the `start` and `stop` of a block fold, and not the counts, because
+  `xgboost` counts sampled template rows where `sequence-classifier` counts labeled
+  frames.
 - The blend's score over the training entries is optimistic by the freedom of its weights,
   one fewer than the number of members. `ensemble_report.json` in the run directory gives
   the weights, the objective, the objective of each member alone and of the uniform
@@ -548,7 +662,15 @@ The second request fits every network again, for the reason given above.
   above, and blend the averages. Six members at the default step of 0.05 would be
   well over the limit.
 - `weights` as a list or `uniform` needs no labels and no folds, and the run does not
-  depend on its scope.
+  depend on its scope. Members may then differ in whether they were cross-validated, such
+  as a network fitted with `cv_folds` and one applied from a stored model. The blend is
+  averaged all the same, and writes no fold table, because it is not out of fold wherever
+  its members differ.
+- To score runs that cover different entries as one, give `evaluate-labels` all of them
+  as `inputs`, such as a cross-validated run over the training groups and an applied one
+  over the test groups. It reports their union, with the pooled counts of a single run
+  over all of them. An entry that two inputs hold is refused, because it would count
+  twice, and the plan refuses it first.
 
 ## Read the predictions
 

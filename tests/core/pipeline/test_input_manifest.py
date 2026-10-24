@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
 import pytest
 from pydantic import ValidationError
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.manifest import (
     ManifestEntry,
@@ -595,3 +597,90 @@ def test_widening_inputs_did_not_move_the_identifier(feature_name):
 
     cls = next(c for c in FEATURES.values() if getattr(c, "name", None) == feature_name)
     assert cls.Inputs(("tracks",)).model_dump() == ("tracks",)
+
+
+# --- stacked inputs --------------------------------------------------------------
+
+
+def _dataset(ds: MockDataset) -> Dataset:
+    """The mock, typed as the Dataset the manifest builder takes."""
+    return cast("Dataset", ds)
+
+
+def _two_runs(
+    ds: MockDataset, first: list[tuple[str, str]], second: list[tuple[str, str]]
+) -> Inputs:
+    """Two runs of one feature, each over the entries given."""
+    a = _setup_feature(ds, "clf", first, run_id="v1-aaa")
+    b = _setup_feature(ds, "clf", second, run_id="v1-bbb")
+    return Inputs(
+        (
+            Result(feature="clf", run_id=a),
+            Result(feature="clf", run_id=b),
+        )
+    )
+
+
+def test_stacked_inputs_hold_the_union_of_their_entries_each_from_its_own_file(
+    tmp_path: Path,
+):
+    ds = MockDataset(tmp_path)
+    inputs = _two_runs(ds, [("g1", "s1"), ("g1", "s2")], [("g2", "s3"), ("g2", "s4")])
+
+    manifest, scope = build_manifest(_dataset(ds), inputs, stack=True)
+
+    assert scope.entries == {("g1", "s1"), ("g1", "s2"), ("g2", "s3"), ("g2", "s4")}
+    assert sorted(manifest) == sorted(
+        f"{group}__{sequence}" for group, sequence in scope.entries
+    )
+    for entry in manifest.values():
+        assert len(entry.file_specs) == 1
+        assert entry.file_specs[0][0].name == f"{entry.group}__{entry.sequence}.parquet"
+    loaded = [frame for _, frame in iter_manifest(manifest)]
+    assert len(loaded) == 4
+    assert all("feat_a" in frame.columns for frame in loaded)
+
+
+def test_inputs_that_do_not_stack_still_intersect(tmp_path: Path):
+    """The default is the entry-coverage rule: disjoint inputs share no entry."""
+    ds = MockDataset(tmp_path)
+    inputs = _two_runs(ds, [("g1", "s1")], [("g1", "s2")])
+
+    manifest, scope = build_manifest(_dataset(ds), inputs)
+
+    assert manifest == {}
+    assert scope.entries == set()
+
+
+def test_stacked_inputs_refuse_an_entry_that_two_of_them_hold(tmp_path: Path):
+    from mosaic.core.pipeline.manifest import StackedEntryOverlap
+
+    ds = MockDataset(tmp_path)
+    inputs = _two_runs(ds, [("g1", "s1"), ("g1", "s2")], [("g1", "s2"), ("g1", "s3")])
+
+    with pytest.raises(StackedEntryOverlap, match=r"\('g1', 's2'\) in inputs 0 and 1"):
+        _ = build_manifest(_dataset(ds), inputs, stack=True)
+
+
+def test_a_scope_that_leaves_the_shared_entry_out_lets_the_inputs_stack(tmp_path: Path):
+    ds = MockDataset(tmp_path)
+    inputs = _two_runs(ds, [("g1", "s1"), ("g1", "s2")], [("g1", "s2"), ("g2", "s3")])
+
+    manifest, scope = build_manifest(
+        _dataset(ds), inputs, Scope(entries=[("g1", "s1"), ("g2", "s3")]), stack=True
+    )
+
+    assert scope.entries == {("g1", "s1"), ("g2", "s3")}
+    assert len(manifest) == 2
+
+
+def test_one_stacked_input_is_the_input_itself(tmp_path: Path):
+    ds = MockDataset(tmp_path)
+    run = _setup_feature(ds, "clf", [("g1", "s1"), ("g1", "s2")])
+    inputs = Inputs((Result(feature="clf", run_id=run),))
+
+    stacked, stacked_scope = build_manifest(_dataset(ds), inputs, stack=True)
+    plain, plain_scope = build_manifest(_dataset(ds), inputs)
+
+    assert stacked_scope.entries == plain_scope.entries
+    assert stacked == plain

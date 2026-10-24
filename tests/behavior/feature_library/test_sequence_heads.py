@@ -31,8 +31,11 @@ from mosaic.behavior.feature_library.sequence_training import (
     class_weights,
     sub_seed,
 )
+from mosaic.core.pipeline.types import InputStream
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from torch import nn
 
 
@@ -258,7 +261,7 @@ def test_folds_need_templates_and_a_seed_needs_folds() -> None:
         )
 
 
-def test_only_a_fit_is_scope_dependent_and_none_is_parallel() -> None:
+def test_no_run_hashes_the_scope_only_a_fit_fits_and_none_is_parallel() -> None:
     inputs = SequenceClassifier.Inputs.model_validate([{"feature": "speed-angvel"}])
     fit = SequenceClassifier(inputs, dict(FIT))
     applied = SequenceClassifier(
@@ -266,9 +269,24 @@ def test_only_a_fit_is_scope_dependent_and_none_is_parallel() -> None:
         {"model": {"feature": "sequence-classifier"}, "default_class": 0},
     )
 
-    assert fit.scope_dependent is True
+    assert SequenceClassifier.fit_set_pinned_by == "templates"
+    assert fit.scope_dependent is False
     assert applied.scope_dependent is False
+    assert fit.fits is True
+    assert applied.fits is False
     assert SequenceClassifier.parallelizable is False
+
+
+def test_a_model_that_did_not_resolve_is_not_replaced_by_a_fit(tmp_path: Path) -> None:
+    inputs = SequenceClassifier.Inputs.model_validate([{"feature": "speed-angvel"}])
+    feature = SequenceClassifier(
+        inputs,
+        {"model": {"feature": "sequence-classifier"}, "default_class": 0},
+    )
+
+    assert feature.load_state(tmp_path, {}, {}) is False
+    with pytest.raises(RuntimeError, match="did not resolve to a stored model"):
+        feature.fit(InputStream(lambda: iter(()), n_entries=0))
 
 
 # --- The batches ----------------------------------------------------------------

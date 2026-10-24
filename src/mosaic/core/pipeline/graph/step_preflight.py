@@ -184,16 +184,26 @@ def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:
         return
     target = step_target(planned, plan)
     by_status = frozenset(planned.status_parents)
+    stacked = planned.stacked_parents
     lacking: dict[str, frozenset[Entry]] = {}
+    held: dict[str, int] = {}
+    if stacked:
+        found = _lacking_stack(plan, stacked, target)
+        if found is not None:
+            lacking[" and ".join(stacked)] = found
+            held[" and ".join(stacked)] = sum(
+                len(plan.step(parent).coverage.covered) for parent in stacked
+            )
     for parent in planned.parents:
+        if parent in stacked:
+            continue
         found = _lacking(plan, parent, target, entry_by_entry=parent not in by_status)
         if found is not None:
             lacking[parent] = found
+            held[parent] = len(plan.step(parent).coverage.covered)
     if not lacking:
         return
-    covered = min(
-        (len(plan.step(parent).coverage.covered) for parent in lacking), default=0
-    )
+    covered = min(held.values(), default=0)
     missing = sorted(str(entry) for entries in lacking.values() for entry in entries)
     raise CoverageShortfall(
         planned.step_id,
@@ -201,6 +211,26 @@ def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:
         len(target),
         "missing " + ", ".join(missing[:MISSING_SAMPLE]),
     )
+
+
+def _lacking_stack(
+    plan: Plan, parents: tuple[str, ...], target: frozenset[Entry]
+) -> frozenset[Entry] | None:
+    """What the inputs of a stacking step lack of *target*, taken together.
+
+    Each entry is read from one input, so the inputs answer for *target* as a
+    union: complete, and planned over every entry of it between them, or else
+    the entries of it that none of them holds.
+    """
+    steps = [plan.step(parent) for parent in parents]
+    if all(step.status in COMPLETE_STATUSES for step in steps) and target <= frozenset(
+        entry for step in steps for entry in step.coverage.target
+    ):
+        return None
+    outside = target - frozenset(
+        entry for step in steps for entry in step.coverage.covered
+    )
+    return outside or None
 
 
 def _lacking(

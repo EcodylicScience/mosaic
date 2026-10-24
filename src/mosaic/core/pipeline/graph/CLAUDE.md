@@ -42,6 +42,15 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   defaulted field added to a recipe model moves every digest; old requests load through
   that rule. Do not delete a `pipelines/<digest>.json` that a request names
   (`test_pipeline_recipe.py`, `test_pipeline_step.py`).
+- A `repeat` item (`expand.py`) is expanded by `Recipe`'s `before` validator, so every
+  reader gets the expanded steps and the canonical form, the digest and the saved file
+  hold no `repeat`. `read_recipe` expands first and places a structural fault at the
+  expanded step's id, and a `repeat` fault at the declared step. `schema_version` did
+  not move (`test_recipe_repeat.py`).
+- `pipelines/<digest>.json` is written by `submit_request` and by the MCP's
+  `patch_recipe`. `patch_recipe` (`patch.py`) edits the canonical expanded document, and
+  `resolve_saved_recipe` (`saved.py`) reads a recipe named by digest, in either canonical
+  form, or by a `name` one saved recipe has (`test_recipe_patch.py`).
 - A cross-step reference is written at the site it substitutes. Do not add a stored
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
   for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`). No
@@ -107,12 +116,52 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   scope or a bound step, or selecting nothing, and a reader planned over entries its
   `inputs` or `tracks` parent is not. A params reference and `after` carry no entry
   rule, so `refuse_shortfall` asks such a parent (`PlannedStep.status_parents`) only
-  to be complete.
+  to be complete. A step that stacks its inputs (`ConsumerDecl.stacks_inputs`) is asked
+  for the union of its `inputs` parents (`PlannedStep.stacked_parents`), because each
+  entry comes from one of them (`test_a_stack_is_planned_over_the_union_of_its_inputs_and_no_more`).
+- `plan_pipeline` refuses a step that is `scope_dependent` and `fits`, both read off the
+  built feature, when its target holds a group the manifest's `splits` gives the role
+  `test` or `sealed` (`held_out_fit_problem`, `heldout.py`). It does so with no step scope
+  too, and leaves `Plan.splits` for the whole-dataset caution to name. A scope-free fitter
+  is not flagged, because its `templates` step is. A graph that converts first has no
+  entries to check (`Plan.deferred_by`), so `deferred_fit_cautions` cautions each unscoped
+  fitting step instead, and the step is refused when it runs. `refit_set` answers which
+  steps a joining group would refit or only re-score, and `assume_added` reports it
+  through cautions alone, since `PlanWire` has no room for a field
+  (`test_pipeline_held_out.py`, `tests/agent/mcp/test_plan_recipe_held_out.py`).
+- `reach_findings` (`reach.py`) checks each `fits` step planned with `cv_unit="block"`
+  that is not bound to a run: the `temporal_reach` of the steps above it, summed along a
+  path of data edges (not `after`) with the maximum taken over paths, against its
+  `cv_gap_frames`. The step's own reach is not counted, because a fold model trains on
+  pieces cut out of the runs. A gap below a reach every step declares is a `Problem`. A
+  step above that is `unknown` (declared, unbounded) or `undeclared` makes it a caution
+  kept in `Plan.reach_cautions`, which `plan_wire` appends, so `PlanWire` gains no field,
+  unless the gap is positive and covers the reach that is known. An op passes the reach
+  above it through. The sequence unit is never checked. A step above an unresolved parent
+  takes `fits` from its declaration and its reach from its own params (`recipe_reach`),
+  so the first plan of a recipe is checked as the later ones are
+  (`test_pipeline_temporal_reach.py`).
+- `score_heldout` (`score.py`, `mosaic pipeline score`) scores a finished recipe on
+  held-out data on a copy of the study, and never writes the study. It converts the new
+  data with `convert_all_tracks` and `convert_all_labels` called with the params of the
+  recipe's own convert steps, not by running those steps, because their plan counts
+  converted entries as the target and reports them complete. It compares `Plan.run_ids` of
+  the recipe's steps before and after the data joins, and runs nothing when one that fits
+  moved: a step that learns nothing (`evaluate-labels`) moves too, since it covers the
+  held-out entries, and is reported as a warning. The train-only plan, the entries before
+  the conversion and a digest of the held-out data and step scopes are saved in
+  `scoring/state.json`, so a `reuse` still compares with it, counts what a failed first
+  attempt converted, and refuses other inputs. A held-out file is declared as a directory
+  source matching its exact name, because the raw scans do not walk a `files` source. The
+  module imports nothing from `behavior` and reads the report through `read_run_report`
+  (`tests/cli/test_cli_pipeline_score.py`).
 - A writer of tracks that takes no scope (`convert-tracks`) does not make the media
   universe the target. On a dataset with no tracks, a graph holding one leaves its
   `scope_dependent` features and its scoped ops unresolved with an
   `IdentityUnresolved` naming the conversion; scope-free features keep their identity
-  (`test_pipeline_converting_graph.py`). A step whose artifact reads complete after its
+  (`test_pipeline_converting_graph.py`). A plan over a dataset with no converted tracks and no
+  converting step covers no entry, and its whole-dataset caution says to convert first
+  (`_plan_cautions`, `tests/agent/mcp/test_dataset_tools.py`). A step whose artifact reads complete after its
   attempt is not stalled.
 
 ## Running a step
@@ -229,8 +278,8 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py` and `retirement.py`
-  import nothing that loads pandas, cv2, av or the feature library
+  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py`, `retirement.py`,
+  `saved.py`, `expand.py` and `patch.py` (which `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the feature library
   (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
   registry and the inventory, which do.
 

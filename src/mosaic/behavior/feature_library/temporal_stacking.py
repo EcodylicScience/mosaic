@@ -151,6 +151,20 @@ def _temporal_stack(
     return result, names
 
 
+def _pool_window(sigma: float, fps: float, win_sec: float) -> tuple[float, float]:
+    """The sigma and truncation of the pooling Gaussian, in frames."""
+    if sigma <= 0:
+        sigma = max(1.0, win_sec * fps / 6.0)
+    win_frames = max(1, int(round(win_sec * fps)))
+    truncate = max(1.0, win_frames / (2.0 * sigma)) if sigma > 0 else 4.0
+    return sigma, truncate
+
+
+def _gaussian_radius(sigma: float, truncate: float) -> int:
+    """Frames on each side that ``gaussian_filter1d`` reads: ``int(truncate * sigma + 0.5)``."""
+    return int(truncate * sigma + 0.5)
+
+
 def _pooled_stats(
     base: np.ndarray,
     base_names: list[str],
@@ -162,10 +176,7 @@ def _pooled_stats(
     """Compute pooled statistics over a sliding Gaussian window."""
     if not stats:
         return [], []
-    if sigma <= 0:
-        sigma = max(1.0, win_sec * fps / 6.0)
-    win_frames = max(1, int(round(win_sec * fps)))
-    truncate = max(1.0, win_frames / (2.0 * sigma)) if sigma > 0 else 4.0
+    sigma, truncate = _pool_window(sigma, fps, win_sec)
     mean_vals = gaussian_filter1d(
         base,
         sigma=sigma,
@@ -328,6 +339,32 @@ class TemporalStackingFeature:
         self.params = self.Params.from_overrides(params)
 
     # --- Protocol ---
+
+    @staticmethod
+    def temporal_reach(params: TemporalStackingFeature.Params) -> int:
+        """Frames on each side that one row reads.
+
+        The stack reaches ``half`` frames, and the Gaussian smoothing of each copy
+        reads ``int(4 * sigma_stack + 0.5)`` more (scipy's default truncation). The
+        pooled statistics read their own Gaussian window. The row reads the larger
+        of the two. Rows are taken to be consecutive frames.
+        """
+        reach = 0
+        if params.use_temporal_stack:
+            smoothing = (
+                _gaussian_radius(params.sigma_stack, 4.0)
+                if params.sigma_stack > 0
+                else 0
+            )
+            reach = params.half + smoothing
+        if params.add_pool and any(
+            stat in ("mean", "std", "variance") for stat in params.pool_stats
+        ):
+            sigma, truncate = _pool_window(
+                params.sigma_pool, params.fps, params.win_sec
+            )
+            reach = max(reach, _gaussian_radius(sigma, truncate))
+        return reach
 
     def load_state(
         self,

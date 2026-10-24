@@ -96,6 +96,7 @@ class _Reservoir:
 
     buffer: np.ndarray
     entry_indices: np.ndarray
+    frames: np.ndarray
     target: int | None
     filled: int = 0
     n_seen: int = 0
@@ -118,9 +119,11 @@ class _Reservoir:
             return
         buffer = np.empty((grown, self.buffer.shape[1]), dtype=np.float64)
         entries = np.empty(grown, dtype=np.int32)
+        frames = np.empty(grown, dtype=np.int64)
         buffer[: self.filled] = self.buffer[: self.filled]
         entries[: self.filled] = self.entry_indices[: self.filled]
-        self.buffer, self.entry_indices = buffer, entries
+        frames[: self.filled] = self.frames[: self.filled]
+        self.buffer, self.entry_indices, self.frames = buffer, entries, frames
 
     def truncate(self, rows: int) -> None:
         """Keep the first *rows* rows, and cap the reservoir at that many."""
@@ -128,6 +131,7 @@ class _Reservoir:
         if self.filled > rows:
             self.buffer = self.buffer[:rows].copy()
             self.entry_indices = self.entry_indices[:rows].copy()
+            self.frames = self.frames[:rows].copy()
             self.filled = rows
 
 
@@ -203,10 +207,14 @@ class ExtractLabeledTemplates:
     files, assigns train/test splits by sequence, and subsamples per
     class. Produces a templates parquet with feature columns + label
     (int) + split (str) + group and sequence (str), the entry each row was
-    drawn from.
+    drawn from, and frame (int), the frame it was drawn at.
 
     The run writes ``templates.parquet`` and ``template_provenance.parquet``.
-    The provenance records each entry's split. Each entry's table is empty. A
+    The provenance records each entry's split and its labeled frames: the
+    ``labeled_start`` and ``labeled_stop`` of an entry run from the first frame
+    of any series that a label covers to one past the last, empty for an entry
+    with no label. A classifier that cross-validates by block cuts those frames
+    into blocks. Each entry's table is empty. A
     step that consumes the templates reads this step's inputs and names the
     templates through a params field.
 
@@ -216,6 +224,7 @@ class ExtractLabeledTemplates:
 
     category = "global"
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "extract-labeled-templates"
     # 0.2: farthest_first compares rows over their finite columns, draws its
     # first row from those with a finite value, and selects each row once. A
@@ -239,10 +248,17 @@ class ExtractLabeledTemplates:
     # ``None`` takes every labeled frame of a class, a reservoir grows with the
     # rows it receives instead of being allocated at its target, and a draw
     # that would not fit in memory is refused before it starts.
-    version = "0.6"
+    # 0.7: ``frame`` is written beside ``group`` and ``sequence``, the frame each
+    # row was drawn at, and the provenance records each entry's labeled frames
+    # (``labeled_start``, ``labeled_stop``). ``frame`` is an identity column and
+    # no feature. A classifier that cross-validates by block (``cv_unit="block"``)
+    # cuts the labeled frames of each train entry into blocks and tells a template
+    # row's block by its frame. The sample itself is as 0.6 drew it.
+    version = "0.7"
     parallelizable = False
     scope_dependent = True
     accepts_overlap = False  # computes within a frame, so gains nothing
+    temporal_reach = 0  # draws rows of its inputs as they are
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     # Fit aligns each entry's labels by frame and samples its payload columns,
@@ -318,9 +334,13 @@ class ExtractLabeledTemplates:
         self._template_entries: np.ndarray | None = None
         # The group and the sequence of each template row, as text.
         self._row_identity: tuple[np.ndarray, np.ndarray] | None = None
+        # The frame of each template row, in the order of the rows.
+        self._template_frames: np.ndarray | None = None
         self._entry_map: dict[int, tuple[str, str]] = {}
         self._provenance: pd.DataFrame | None = None
         self._sequence_splits: dict[tuple[str, str], str] = {}
+        # The first labeled frame of each entry and one past its last.
+        self._labeled_frames: dict[tuple[str, str], tuple[int, int]] = {}
         self._labels_lookup: dict[tuple[str, str], Path] = {}
         self._rng = np.random.default_rng(self.params.random_state)
 
@@ -336,9 +356,11 @@ class ExtractLabeledTemplates:
         self._splits = None
         self._template_entries = None
         self._row_identity = None
+        self._template_frames = None
         self._entry_map = {}
         self._provenance = None
         self._sequence_splits = {}
+        self._labeled_frames = {}
         self._labels_lookup = dependency_lookups.get("labels", {})
 
         path = run_root / TEMPLATES_ARTIFACT_NAME
@@ -356,6 +378,8 @@ class ExtractLabeledTemplates:
                     df[C.group_col].to_numpy(dtype=object),
                     df[C.seq_col].to_numpy(dtype=object),
                 )
+            if C.frame_col in df.columns:
+                self._template_frames = df[C.frame_col].to_numpy(dtype=np.int64)
 
             provenance_path = run_root / "template_provenance.parquet"
             if provenance_path.exists():
@@ -476,6 +500,7 @@ class ExtractLabeledTemplates:
         label_blocks: list[np.ndarray] = []
         split_blocks: list[np.ndarray] = []
         entry_blocks: list[np.ndarray] = []
+        frame_blocks: list[np.ndarray] = []
 
         # Iterate unique (split, label) pairs
         unique_splits = np.unique(self._splits)
@@ -497,10 +522,14 @@ class ExtractLabeledTemplates:
                     template_blocks.append(selected)
                     if self._template_entries is not None:
                         entry_blocks.append(self._template_entries[mask][sel_idx])
+                    if self._template_frames is not None:
+                        frame_blocks.append(self._template_frames[mask][sel_idx])
                 else:
                     template_blocks.append(subset)
                     if self._template_entries is not None:
                         entry_blocks.append(self._template_entries[mask])
+                    if self._template_frames is not None:
+                        frame_blocks.append(self._template_frames[mask])
 
                 n_out = int(template_blocks[-1].shape[0])
                 label_arr: np.ndarray = np.full(n_out, int(label_int), dtype=np.int64)
@@ -516,6 +545,27 @@ class ExtractLabeledTemplates:
         self._splits = np.concatenate(split_blocks)
         if entry_blocks:
             self._template_entries = np.concatenate(entry_blocks)
+        if frame_blocks:
+            self._template_frames = np.concatenate(frame_blocks)
+
+    def _note_labeled_frames(
+        self, entry: tuple[str, str], df: pd.DataFrame, labels: np.ndarray
+    ) -> None:
+        """Widen the labeled frames of *entry* by those of the labeled rows of *df*.
+
+        Args:
+            entry: The ``(group, sequence)`` *df* belongs to.
+            df: The entry's input, with a ``frame`` column.
+            labels: The label of each row of *df*, ``UNLABELED`` for none.
+        """
+        labeled = df[C.frame_col].to_numpy()[labels != UNLABELED]
+        if len(labeled) == 0:
+            return
+        first, stop = self._labeled_frames.get(entry, (int(labeled.min()), 0))
+        self._labeled_frames[entry] = (
+            min(first, int(labeled.min())),
+            max(stop, int(labeled.max()) + 1),
+        )
 
     def _fit_reservoir(
         self,
@@ -547,8 +597,10 @@ class ExtractLabeledTemplates:
 
             labels = labels_for_rows(npz_path, df)
             keep = labels != UNLABELED
+            self._note_labeled_frames((group, sequence), df, labels)
             labels = labels[keep]
             matrix = df[self._feature_columns].to_numpy(dtype=np.float64)[keep]
+            row_frames = df[C.frame_col].to_numpy(dtype=np.int64)[keep]
 
             # Check for newly discovered classes and rebalance if using n_total
             unique_labels = set(np.unique(labels).tolist())
@@ -569,6 +621,7 @@ class ExtractLabeledTemplates:
                 label_int = int(label)
                 mask = labels == label_int
                 label_matrix = matrix[mask]
+                label_frames = row_frames[mask]
                 n_rows = int(label_matrix.shape[0])
                 if n_rows == 0:
                     continue
@@ -583,6 +636,7 @@ class ExtractLabeledTemplates:
                     reservoirs[key] = _Reservoir(
                         buffer=np.empty((0, n_features), dtype=np.float64),
                         entry_indices=np.empty(0, dtype=np.int32),
+                        frames=np.empty(0, dtype=np.int64),
                         target=target,
                     )
 
@@ -602,9 +656,11 @@ class ExtractLabeledTemplates:
                     self._reserve(reservoirs, reservoir, filled + space)
                     reservoir.buffer[filled : filled + space] = label_matrix[:space]
                     reservoir.entry_indices[filled : filled + space] = entry_idx
+                    reservoir.frames[filled : filled + space] = label_frames[:space]
                     reservoir.filled += space
                     reservoir.n_seen += space
                     label_matrix = label_matrix[space:]
+                    label_frames = label_frames[space:]
                     n_rows = int(label_matrix.shape[0])
                     n_seen = reservoir.n_seen
 
@@ -617,6 +673,7 @@ class ExtractLabeledTemplates:
                     randoms: np.ndarray = self._rng.random(n_rows)
                     include_mask: np.ndarray = randoms < probabilities
                     included = label_matrix[include_mask]
+                    included_frames = label_frames[include_mask]
                     n_included = int(included.shape[0])
                     if n_included > 0:
                         slots: np.ndarray = self._rng.integers(
@@ -624,6 +681,7 @@ class ExtractLabeledTemplates:
                         )
                         reservoir.buffer[slots] = included
                         reservoir.entry_indices[slots] = entry_idx
+                        reservoir.frames[slots] = included_frames
                     reservoir.n_seen += n_rows
 
         if not reservoirs:
@@ -635,6 +693,7 @@ class ExtractLabeledTemplates:
         label_blocks: list[np.ndarray] = []
         split_blocks: list[np.ndarray] = []
         entry_blocks: list[np.ndarray] = []
+        frame_blocks: list[np.ndarray] = []
 
         for (split, label), reservoir in sorted(reservoirs.items()):
             if reservoir.filled == 0:
@@ -643,6 +702,7 @@ class ExtractLabeledTemplates:
             label_blocks.append(np.full(reservoir.filled, label, dtype=np.int64))
             split_blocks.append(np.array([split] * reservoir.filled, dtype=object))
             entry_blocks.append(reservoir.entry_indices[: reservoir.filled])
+            frame_blocks.append(reservoir.frames[: reservoir.filled])
 
         if not template_blocks:
             msg = "No data received during fit"
@@ -652,6 +712,7 @@ class ExtractLabeledTemplates:
         self._labels = np.concatenate(label_blocks)
         self._splits = np.concatenate(split_blocks)
         self._template_entries = np.concatenate(entry_blocks)
+        self._template_frames = np.concatenate(frame_blocks)
 
     def _reserve(
         self,
@@ -709,6 +770,7 @@ class ExtractLabeledTemplates:
                 continue
 
             labels = labels_for_rows(npz_path, df)
+            self._note_labeled_frames((group, sequence), df, labels)
             labels = labels[labels != UNLABELED]
             for label_int in np.unique(labels).tolist():
                 key = (split, int(label_int))
@@ -745,6 +807,7 @@ class ExtractLabeledTemplates:
         label_blocks: list[np.ndarray] = []
         split_blocks: list[np.ndarray] = []
         entry_blocks: list[np.ndarray] = []
+        frame_blocks: list[np.ndarray] = []
 
         cols = self._feature_columns
         assert cols is not None
@@ -762,6 +825,7 @@ class ExtractLabeledTemplates:
             keep = labels != UNLABELED
             labels = labels[keep]
             matrix = df[cols].to_numpy(dtype=np.float64)[keep]
+            row_frames = df[C.frame_col].to_numpy(dtype=np.int64)[keep]
 
             for label_int in np.unique(labels).tolist():
                 label_int = int(label_int)
@@ -770,14 +834,17 @@ class ExtractLabeledTemplates:
                     continue
 
                 label_matrix = matrix[labels == label_int]
+                label_frames = row_frames[labels == label_int]
                 n_rows = int(label_matrix.shape[0])
                 if n_rows > take:
                     sample_idx: np.ndarray = sampling_rng.choice(
                         n_rows, size=take, replace=False
                     )
                     label_matrix = label_matrix[sample_idx]
+                    label_frames = label_frames[sample_idx]
 
                 template_blocks.append(label_matrix)
+                frame_blocks.append(label_frames)
                 label_blocks.append(np.full(take, label_int, dtype=np.int64))
                 split_blocks.append(np.array([split] * take, dtype=object))
                 entry_blocks.append(np.full(take, entry_idx, dtype=np.int32))
@@ -790,11 +857,13 @@ class ExtractLabeledTemplates:
         self._labels = np.concatenate(label_blocks)
         self._splits = np.concatenate(split_blocks)
         self._template_entries = np.concatenate(entry_blocks)
+        self._template_frames = np.concatenate(frame_blocks)
 
     def _build_provenance(self) -> pd.DataFrame:
         """Build per-entry template provenance table.
 
-        Every entry from _entry_map appears, even those with 0 templates.
+        Every entry from _entry_map appears, even those with 0 templates. An
+        entry with no labeled frame has no ``labeled_start`` or ``labeled_stop``.
         """
         if self._template_entries is None:
             total = 0
@@ -806,11 +875,12 @@ class ExtractLabeledTemplates:
             total = int(counts.sum())
             count_map = dict(zip(unique_indices.tolist(), counts.tolist()))
 
-        rows: list[dict[str, str | int | float]] = []
+        rows: list[dict[str, str | int | float | None]] = []
         for entry_idx in sorted(self._entry_map):
             group, sequence = self._entry_map[entry_idx]
             count = count_map.get(entry_idx, 0)
             split = self._sequence_splits.get((group, sequence), "train")
+            labeled = self._labeled_frames.get((group, sequence))
             rows.append(
                 {
                     "group": group,
@@ -818,9 +888,13 @@ class ExtractLabeledTemplates:
                     "split": split,
                     "count": count,
                     "proportion": float(count) / total if total > 0 else 0.0,
+                    "labeled_start": None if labeled is None else labeled[0],
+                    "labeled_stop": None if labeled is None else labeled[1],
                 }
             )
-        return pd.DataFrame(rows)
+        return pd.DataFrame(rows).astype(
+            {"labeled_start": "Int64", "labeled_stop": "Int64"}
+        )
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
@@ -841,6 +915,8 @@ class ExtractLabeledTemplates:
         df["split"] = self._splits
         if self._row_identity is not None:
             df[C.group_col], df[C.seq_col] = self._row_identity
+        if self._template_frames is not None:
+            df[C.frame_col] = self._template_frames
         _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)
 
         _ = write_parquet_atomic(

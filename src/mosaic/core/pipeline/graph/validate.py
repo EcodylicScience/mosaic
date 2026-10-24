@@ -90,6 +90,7 @@ from .compatibility import (
     resolve_emits,
 )
 from .digest import recipe_digest
+from .expand import RepeatInvalid, expand_repeats
 from .model import (
     TRACKS_INPUT,
     FeatureStepSpec,
@@ -338,13 +339,15 @@ class _Walk:
 
     def merged_columns(self, step: FeatureStepSpec) -> ColumnSet:
         """The columns of *step*'s merged input, read with the tracks of *step*."""
+        declared = self.catalog.get(step.feature)
         return merged_input(
             [
                 self.tracks_of(step.id)
                 if isinstance(item, str)
                 else self.input_columns(item)
                 for item in step.inputs
-            ]
+            ],
+            stack=declared is not None and declared.consumes.stacks_inputs,
         )
 
     def level_behind(self, step_id: str) -> EntityLevel:
@@ -1013,15 +1016,23 @@ def read_recipe(document: object) -> Recipe:
     The one parse every reader shares. A structural fault reads the same from
     the CLI, from an API and from an editor. A pydantic error inside
     ``steps[i]`` is reported at that step's id when the document gives it one.
+    The ``repeat`` items are expanded first (``expand.py``), so ``i`` counts
+    the expanded steps and a fault in a repeated step names the step it became.
+    A ``repeat`` that cannot be expanded names the step that declared it.
 
     Raises:
         RecipeInvalid: Carrying one problem per structural fault.
     """
     try:
-        return Recipe.model_validate(document)
+        expanded = expand_repeats(document)
+    except RepeatInvalid as exc:
+        problem = Problem(exc.step, exc.where, exc.message)
+        raise RecipeInvalid((problem,)) from exc
+    try:
+        return Recipe.model_validate(expanded)
     except ValidationError as exc:
         problems = tuple(
-            _structural_problem(document, err["loc"], err["type"], err["msg"])
+            _structural_problem(expanded, err["loc"], err["type"], err["msg"])
             for err in exc.errors()
         )
         raise RecipeInvalid(problems) from exc
@@ -1417,7 +1428,9 @@ def _insert_refusal(
     values = walk.values.get(child.id)
     if values is None:
         values = {**declared.param_defaults, **child.params}
-    merged_now, merged_then = merged_input(now), merged_input(then)
+    stack = declared.consumes.stacks_inputs
+    merged_now = merged_input(now, stack=stack)
+    merged_then = merged_input(then, stack=stack)
     lost = [
         need.label
         for need in needs_of(declared.requires or (), values)
@@ -1487,7 +1500,8 @@ def input_candidates(
         # stand in, and a value of the wrong shape resolves as unknown.
         values = {**declared.param_defaults, **target.params}
     current = [walk.input_columns(item) for item in target.inputs]
-    merged_now = merged_input(current)
+    stack = declared.consumes.stacks_inputs
+    merged_now = merged_input(current, stack=stack)
     still: list[tuple[NamedColumns, UnmetStatus]] = []
     for need in needs_of(declared.requires or (), values):
         status = need_status(need, merged_now)
@@ -1527,7 +1541,7 @@ def input_candidates(
     candidates: dict[str, InputCandidate] = {}
     for key, verdict in join_verdicts(declared.consumes, offered, existing).items():
         item, columns = supplied[key]
-        grown = merged_input([*current, columns])
+        grown = merged_input([*current, columns], stack=stack)
         allowed, reason = verdict.allowed, verdict.reason
         run = None if key == TRACKS_INPUT else walk.run_of(StepRef(step=key))
         same = None if run is None else reading.get(run)

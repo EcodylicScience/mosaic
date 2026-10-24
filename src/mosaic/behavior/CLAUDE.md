@@ -49,6 +49,44 @@ own environments.
   protocol (`test_every_global_and_media_feature_declares_costly_fit`). `True` when a
   refit costs a GPU or hours. The superseded-run cleanup keeps every run of such a
   feature, and the catalog's `Declaration.costly_fit` carries it.
+- **A feature may declare `temporal_reach`**, the frames on each side that one output
+  row depends on. It is a class attribute or a static function of the validated params,
+  returning an int (`0` computes within a frame) or `None` for a reach no params bound
+  (interpolation over any gap, a bidirectional GRU). Declare only what the code shows
+  and measure it (`test_temporal_reach.py`). A feature that declares nothing is
+  *undeclared*, which is not `0`: the block cross-validation gap check cautions on it
+  until a positive gap covers the reach that is known (`core/pipeline/graph/reach.py`).
+  `pair-position` and `pair-egocentric` smooth and difference, so they stay undeclared
+  until their reach is measured. A head of `sequence-classifier` declares its reach
+  with `HeadSpec(reach=...)`, and none declared is unknown.
+- **Every `global` or `scope_dependent` feature declares `fits`**, a bool outside the
+  protocol (`test_every_global_or_scope_dependent_feature_declares_fits`). `True` when
+  the feature learns something from its inputs, whether its scope names its run
+  (`extract-labeled-templates`, `arhmm`) or not (`xgboost`, the `global-*` fitters).
+  `evaluate-labels` depends on scope and learns nothing, so it declares `False`. A feature
+  that fits only without a `model` or with `weights="fit"` declares `True` on the class and
+  narrows `self.fits` in `__init__`, beside `self.scope_dependent` when that narrows too
+  (`test_a_feature_that_clears_scope_dependent_per_instance_clears_fits`). A
+  `scope_dependent` fitter with a `model` param narrows `fits` and `scope_dependent`
+  together (`arhmm`, `kpms`, `vame`, the identity models;
+  `test_a_fitting_feature_given_a_model_param_narrows_fits_per_instance`). The class
+  keeps `scope_dependent = True`, which describes the fit. An apply step then hashes the
+  model and no scope, so the test groups join its scope without a second run, and
+  without `fits` cleared the held-out guard would refuse it. Such a feature's
+  `load_state` raises `FileNotFoundError` for a `model` that did not resolve
+  (`named_model_file` in `feature_library/named_model.py`), because a step that fitted
+  in its place would store a fit of this scope under the missing model's id. The catalog's
+  `Declaration.fits` and `StepTypeDetail.fits` carry the class value. It is not hashed.
+- **A fitter that streams its inputs hashes its scope, unless it pins its fit set.**
+  `fit()` that reads its stream is `scope_dependent = True`
+  (`test_stream_fitting_features_declare_scope_dependent`). `sequence-classifier`,
+  `lightning-action`, `probability-ensemble` and `tune-threshold` instead declare
+  `scope_dependent = False` and `fit_set_pinned_by`, the `Params` field or `"inputs"` that
+  names the training entries outside the request scope (`templates`; the input's
+  `cv_folds.parquet`). Their
+  fit skips every other entry before it touches state, so a wider scope is the same run
+  that applies the stored fit to the new entries. The first run must be asked for over a
+  scope that holds the training entries, and `refuse_entries_outside_scope` says so.
 - **A rendered artifact is `media`.** `overlay`, `egocentric-crop` and
   `interaction-crop-pipeline` live in `visualization_library/` and use the feature
   protocol and its caching. Their videos and crops are addressed by run id. mosaic has

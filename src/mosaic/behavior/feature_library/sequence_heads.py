@@ -69,6 +69,8 @@ class _Spec(Protocol):
 
     def source_digest(self) -> str: ...
 
+    def temporal_reach(self, config: HeadConfig) -> int | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class HeadSpec[C: HeadConfig]:
@@ -81,12 +83,18 @@ class HeadSpec[C: HeadConfig]:
         build: Returns the module for *config*, with ``n_features`` input
             columns and ``n_classes`` outputs. It imports torch itself.
         description: One sentence on the head, for the catalog.
+        reach: Returns the frames on each side of a frame that the head reads,
+            for *config*: ``0`` for a head that reads each frame by itself, and
+            ``None`` for a reach that no option bounds, such as a recurrent
+            network's. Unset, the reach is unknown, which is what a head
+            registered in Python says until its author declares one.
     """
 
     name: str
     config: type[C]
     build: Callable[[C, int, int], nn.Module]
     description: str
+    reach: Callable[[C], int | None] | None = None
 
     def make(self, config: HeadConfig, n_features: int, n_classes: int) -> nn.Module:
         """Build the head for *config*, which must be an instance of :attr:`config`."""
@@ -97,6 +105,12 @@ class HeadSpec[C: HeadConfig]:
             )
             raise TypeError(msg)
         return self.build(config, n_features, n_classes)
+
+    def temporal_reach(self, config: HeadConfig) -> int | None:
+        """Return the frames on each side that the head reads, ``None`` when unbounded."""
+        if self.reach is None or not isinstance(config, self.config):
+            return None
+        return self.reach(config)
 
     def source_digest(self) -> str:
         """Return the sha256 of the source of :attr:`build`, empty when it has none."""
@@ -307,12 +321,30 @@ def _build_mlp(config: MlpConfig, n_features: int, n_classes: int) -> nn.Module:
     return Mlp()
 
 
+def _tcn_reach(config: TcnConfig) -> int:
+    """Frames on each side that a TCN reads: its receptive field less the frame itself.
+
+    Block ``i`` convolves at dilation ``2**i``, each side of its kernel reaching
+    ``kernel_size // 2`` taps of that dilation, and the blocks stack.
+    """
+    return (config.kernel_size // 2) * (2**config.blocks - 1)
+
+
+def _unbounded_reach(config: HeadConfig) -> None:
+    return None
+
+
+def _frame_reach(config: HeadConfig) -> int:
+    return 0
+
+
 _ = register_head(
     HeadSpec(
         name="tcn",
         config=TcnConfig,
         build=_build_tcn,
         description="Dilated residual convolutions over time, centered on each frame.",
+        reach=_tcn_reach,
     )
 )
 _ = register_head(
@@ -321,6 +353,9 @@ _ = register_head(
         config=GruConfig,
         build=_build_gru,
         description="A bidirectional GRU over the frames of a series.",
+        # Recurrent state carries information from every earlier frame, and from
+        # every later one when bidirectional, so no option bounds the reach.
+        reach=_unbounded_reach,
     )
 )
 _ = register_head(
@@ -329,6 +364,7 @@ _ = register_head(
         config=MlpConfig,
         build=_build_mlp,
         description="A feed-forward network on each frame, with no temporal context.",
+        reach=_frame_reach,
     )
 )
 

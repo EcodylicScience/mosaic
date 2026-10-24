@@ -106,6 +106,7 @@ from .manifest import (
     ScanSource,
     ScanSources,
     SourceKind,
+    SplitRole,
     default_roots,
     empty_root_template,
     legacy_tracking_roots,
@@ -118,7 +119,7 @@ from .manifest import (
     write_manifest,
 )
 from .scope import Scope
-from .typed_attribute import TypedAttributeValue
+from .typed_attribute import TypedAttributeType, TypedAttributeValue
 from .pipeline._utils import (
     ResolvedScope,
     atomic_write,
@@ -482,6 +483,25 @@ _RAW_ROOT_FOR_KIND: Final[Mapping[str, str]] = {
 # re-exported here because every caller already imports them from this
 # module, and because what a root *is* stays a property of the dataset that
 # declares it.
+
+
+def _tag_type_of(value: TypedAttributeValue) -> TypedAttributeType:
+    """The tag type a value alone names, for a tag defined by its first value."""
+    if value is None:
+        return "label"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "text"
+    msg = (
+        f"a tag defined by its value takes a string, number, boolean or null, "
+        f"not {value!r}; define it with mosaic tags define"
+    )
+    raise ValueError(msg)
 
 
 def new_dataset_manifest(
@@ -1159,6 +1179,56 @@ class Dataset:
         if save:
             self.save()
 
+    @property
+    def splits(self) -> dict[str, SplitRole]:
+        """The role of each named group in a held-out protocol, as a copy.
+
+        See :mod:`mosaic.core.splits` for reading one group's role.
+        """
+        return dict(self.manifest.splits)
+
+    def set_splits(self, role: SplitRole, groups: Iterable[str]) -> None:
+        """Give each of *groups* the role *role*, replacing any role it had.
+
+        The manifest is re-read and written under the index lock, so two
+        operators changing roles at once both land.
+
+        Raises:
+            ValueError: If *role* is not ``train``, ``test`` or ``sealed``, or a
+                group name is empty. The manifest is left as it was.
+        """
+        named = [str(group) for group in groups]
+
+        def assign(manifest: DatasetManifest) -> None:
+            merged: dict[str, SplitRole] = {
+                **manifest.splits,
+                **dict.fromkeys(named, role),
+            }
+            _check_manifest(manifest.model_copy(update={"splits": merged}))
+            manifest.splits = merged
+
+        self.mutate_manifest(assign)
+
+    def remove_splits(self, groups: Iterable[str]) -> list[str]:
+        """Drop the role of each of *groups*. Returns the groups that had one.
+
+        Takes the same lock as :meth:`set_splits`. A group with no role is
+        skipped rather than refused, so removing twice is the same as once.
+        """
+        named = [str(group) for group in groups]
+        removed: list[str] = []
+
+        def drop(manifest: DatasetManifest) -> None:
+            removed.clear()
+            kept = dict(manifest.splits)
+            for group in named:
+                if kept.pop(group, None) is not None:
+                    removed.append(group)
+            manifest.splits = kept
+
+        self.mutate_manifest(drop)
+        return removed
+
     def define_tag(self, tag: DatasetTag, *, save: bool = True) -> None:
         """Declare *tag*, replacing any existing one of the same name.
 
@@ -1451,6 +1521,85 @@ class Dataset:
         if save:
             self.save()
         return orphaned
+
+    def declare_scan_source(self, source: AnyScanSource) -> None:
+        """Declare *source* in the manifest on disk, under the manifest's lock.
+
+        :meth:`add_scan_source` applied to the manifest as it reads under the
+        lock (:meth:`mutate_manifest`), so a writer in another process loses
+        nothing. The writer that an agent's tools call.
+
+        Raises:
+            ValueError: As :meth:`add_scan_source` raises.
+        """
+        self._edit_manifest_locked(lambda: self.add_scan_source(source, save=False))
+
+    def undeclare_scan_source(self, kind: SourceKind, source_id: str) -> int:
+        """Undeclare a source under the manifest's lock, as :meth:`declare_scan_source`.
+
+        Returns:
+            How many index rows the source was claiming. They stay, as
+            :meth:`remove_scan_source` keeps them.
+
+        Raises:
+            KeyError: If *kind* declares no source with that id.
+        """
+        return self._edit_manifest_locked(
+            lambda: self.remove_scan_source(kind, source_id, save=False)
+        )
+
+    def update_tags(
+        self,
+        values: Mapping[str, TypedAttributeValue],
+        *,
+        remove: Sequence[str] = (),
+    ) -> None:
+        """Set and remove dataset tags under the manifest's lock.
+
+        A value for a defined tag is checked against its type, as
+        :meth:`set_tag_value` checks it. A value for a tag not defined defines
+        one, typed by the value: ``None`` a ``label``, a boolean ``bool``, an
+        integer ``int``, a number ``float`` and a string ``text``.
+
+        Raises:
+            KeyError: *remove* names a tag that is not defined.
+            ValueError: A value does not fit its tag.
+        """
+
+        def edit() -> None:
+            for name, value in values.items():
+                if self.manifest.tag(name) is None:
+                    tag = DatasetTag(name=name, type=_tag_type_of(value), value=value)
+                    self.define_tag(tag, save=False)
+                else:
+                    self.set_tag_value(name, value, save=False)
+            for name in remove:
+                if not self.remove_tag(name, save=False):
+                    declared = sorted(tag.name for tag in self.manifest.tags)
+                    msg = f"no tag named {name!r}; defined: {declared or 'none'}"
+                    raise KeyError(msg)
+
+        self._edit_manifest_locked(edit)
+
+    def _edit_manifest_locked[T](self, edit: Callable[[], T]) -> T:
+        """Run *edit*, which changes ``self.manifest`` without saving, under the lock.
+
+        *edit* sees the manifest as it reads under the lock, and its result is
+        written. An edit that replaced the manifest object (``model_copy``)
+        is copied onto the one :meth:`mutate_manifest` writes.
+        """
+        found: list[T] = []
+
+        def change(current: DatasetManifest) -> None:
+            self.manifest = current
+            found.append(edit())
+            edited = self.manifest
+            if edited is not current:
+                for name in type(current).model_fields:
+                    setattr(current, name, getattr(edited, name))
+
+        self.mutate_manifest(change)
+        return found[0]
 
     def add_source_files(
         self, kind: SourceKind, source_id: str, files: Sequence[str]

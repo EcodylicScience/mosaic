@@ -134,7 +134,7 @@ def _row_lags(g: pd.DataFrame, lag_col: str | None, default_lag: int) -> np.ndar
     return np.where(usable, lags, default_lag).astype(np.int64)
 
 
-def _windowed_delta(
+def windowed_delta(
     vals: np.ndarray, lags: np.ndarray, frame_idx: int, *, forward: bool
 ) -> tuple[np.ndarray, np.ndarray]:
     """Difference across a per-row window, plus which rows have a valid one.
@@ -334,7 +334,7 @@ class NearestNeighborDelta:
             vals = g[delta_cols].to_numpy(dtype=float)
             lags = _row_lags(g, lag_col, diff_n)
 
-            fwd, ok_fwd = _windowed_delta(vals, lags, i_frm, forward=True)
+            fwd, ok_fwd = windowed_delta(vals, lags, i_frm, forward=True)
             valid_mask = pd.Series(ok_fwd, index=g.index)
             if not ok_fwd.any():
                 continue
@@ -361,7 +361,7 @@ class NearestNeighborDelta:
             # with no valid past (the first tau of a track, or across a frame gap)
             # get NaN so they drop out of Model B alone, not out of Model A too.
             if p.emit_backward:
-                back, ok_back = _windowed_delta(vals, lags, i_frm, forward=False)
+                back, ok_back = windowed_delta(vals, lags, i_frm, forward=False)
                 back = np.where(ok_back[:, None], back, np.nan)
                 rows["dx_back"] = back[ok_fwd, i_x]
                 rows["dy_back"] = back[ok_fwd, i_y]

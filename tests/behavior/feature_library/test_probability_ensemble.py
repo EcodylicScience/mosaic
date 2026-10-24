@@ -256,10 +256,17 @@ def test_only_fit_takes_labels_score_classes_and_a_grid_step() -> None:
             _feature(2, **{name: value})
 
 
-def test_only_a_fit_is_scope_dependent() -> None:
+def test_no_mode_hashes_the_scope_and_only_a_fit_fits() -> None:
+    fit = _feature(2, weights="fit", labels={"kind": "behavior"})
+
+    assert ProbabilityEnsembleFeature.scope_dependent is False
+    assert ProbabilityEnsembleFeature.fit_set_pinned_by == "inputs"
     assert _feature(2).scope_dependent is False
     assert _feature(2, weights=[1.0, 2.0]).scope_dependent is False
-    assert _feature(2, weights="fit", labels={"kind": "behavior"}).scope_dependent
+    assert fit.scope_dependent is False
+    assert fit.fits is True
+    assert _feature(2).fits is False
+    assert _feature(2, weights=[1.0, 2.0]).fits is False
 
 
 # --- The weight grid ------------------------------------------------------------
@@ -376,9 +383,11 @@ def test_members_that_deal_one_set_of_folds_pass_the_fold_table_on(
     assert dict(zip(zip(table["group"], table["sequence"]), table["fold"])) == FOLDS
 
 
-def test_members_of_which_some_have_a_fold_table_are_refused(tmp_path: Path) -> None:
+def test_fitted_weights_refuse_members_of_which_some_have_a_fold_table(
+    tmp_path: Path,
+) -> None:
     lookups = [_run(tmp_path, "a", _fold_table(FOLDS)), _run(tmp_path, "b", None)]
-    feature = _feature(2)
+    feature = _feature(2, weights="fit", labels={"kind": "behavior"})
     dependency_lookups = {f"_input_{i}": lookup for i, lookup in enumerate(lookups)}
 
     with pytest.raises(
@@ -387,17 +396,167 @@ def test_members_of_which_some_have_a_fold_table_are_refused(tmp_path: Path) -> 
         feature.load_state(tmp_path / "blend", {}, dependency_lookups)
 
 
-def test_members_that_deal_different_folds_are_refused(tmp_path: Path) -> None:
+def test_fitted_weights_refuse_members_that_deal_different_folds(
+    tmp_path: Path,
+) -> None:
     other = {entry: 1 - fold for entry, fold in FOLDS.items()} | {TRAIN[0]: 5}
     lookups = [
         _run(tmp_path, "a", _fold_table(FOLDS)),
         _run(tmp_path, "b", _fold_table(other)),
     ]
-    feature = _feature(2)
+    feature = _feature(2, weights="fit", labels={"kind": "behavior"})
     dependency_lookups = {f"_input_{i}": lookup for i, lookup in enumerate(lookups)}
 
     with pytest.raises(ValueError, match="input 1 deals its cross-validation folds"):
         feature.load_state(tmp_path / "blend", {}, dependency_lookups)
+
+
+BLOCKS: dict[tuple[Entry, int], tuple[int, int, int]] = {
+    (TRAIN[0], 0): (0, 50, 1),
+    (TRAIN[0], 1): (50, 100, 0),
+    (TRAIN[1], 0): (10, 60, 0),
+    (TRAIN[1], 1): (60, 110, 1),
+}
+"""The blocks of two entries as ``(start, stop, fold)``, which a block run's fold table lists."""
+
+
+def _block_table(
+    blocks: dict[tuple[Entry, int], tuple[int, int, int]],
+    *,
+    scale: int = 1,
+) -> pd.DataFrame:
+    """A ``cv_folds.parquet`` by block, with the counts of a classifier that counts *scale* per row."""
+    return pd.DataFrame(
+        [
+            {
+                "group": group,
+                "sequence": sequence,
+                "block": block,
+                "start": start,
+                "stop": stop,
+                "fold": fold,
+                "n_rows": 10 * scale,
+                "rows_0": 4 * scale,
+                "rows_1": 6 * scale,
+            }
+            for ((group, sequence), block), (start, stop, fold) in sorted(
+                blocks.items()
+            )
+        ]
+    )
+
+
+def test_members_that_cut_and_deal_the_same_blocks_pass_the_fold_table_on(
+    tmp_path: Path,
+) -> None:
+    """The count columns differ, as an ``xgboost`` run's sampled rows and a network's labeled frames do."""
+    lookups = [
+        _run(tmp_path, "a", _block_table(BLOCKS), entries=TRAIN[:2]),
+        _run(tmp_path, "b", _block_table(BLOCKS, scale=250), entries=TRAIN[:2]),
+    ]
+
+    run, _ = _ensemble_run(tmp_path, "blend", lookups)
+
+    table = pd.read_parquet(run / "cv_folds.parquet")
+    assert list(table.columns) == ["group", "sequence", "fold", "start", "stop"]
+    assert table[["start", "stop", "fold"]].values.tolist() == [
+        [0, 50, 1],
+        [50, 100, 0],
+        [10, 60, 0],
+        [60, 110, 1],
+    ]
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {**BLOCKS, (TRAIN[0], 1): (50, 99, 0)},
+        {**BLOCKS, (TRAIN[1], 0): (11, 60, 0)},
+        {**BLOCKS, (TRAIN[0], 0): (0, 50, 0)},
+    ],
+    ids=["stop", "start", "fold"],
+)
+def test_fitted_weights_refuse_members_that_cut_or_deal_their_blocks_differently(
+    tmp_path: Path, other: dict[tuple[Entry, int], tuple[int, int, int]]
+) -> None:
+    lookups = [
+        _run(tmp_path, "a", _block_table(BLOCKS), entries=TRAIN[:2]),
+        _run(tmp_path, "b", _block_table(other), entries=TRAIN[:2]),
+    ]
+    feature = _feature(2, weights="fit", labels={"kind": "behavior"})
+    dependency_lookups = {f"_input_{i}": lookup for i, lookup in enumerate(lookups)}
+
+    with pytest.raises(ValueError, match="input 1 deals its cross-validation folds"):
+        feature.load_state(tmp_path / "blend", {}, dependency_lookups)
+
+
+def test_a_member_by_block_and_a_member_by_sequence_are_not_pooled(
+    tmp_path: Path,
+) -> None:
+    by_sequence = {TRAIN[0]: 0, TRAIN[1]: 1}
+    lookups = [
+        _run(tmp_path, "a", _block_table(BLOCKS), entries=TRAIN[:2]),
+        _run(tmp_path, "b", _fold_table(by_sequence), entries=TRAIN[:2]),
+    ]
+    feature = _feature(2, weights="fit", labels={"kind": "behavior"})
+    dependency_lookups = {f"_input_{i}": lookup for i, lookup in enumerate(lookups)}
+
+    with pytest.raises(ValueError, match="input 1 deals its cross-validation folds"):
+        feature.load_state(tmp_path / "blend", {}, dependency_lookups)
+
+    run, _ = _ensemble_run(tmp_path, "average", lookups)
+    assert not (run / "cv_folds.parquet").exists()
+
+
+def test_fitted_weights_say_so_when_an_input_resolved_no_output(
+    tmp_path: Path,
+) -> None:
+    """An empty member lookup is not a member that writes no fold table."""
+    lookups = [_run(tmp_path, "a", _fold_table(FOLDS)), {}]
+    feature = _feature(2, weights="fit", labels={"kind": "behavior"})
+    dependency_lookups = {f"_input_{i}": lookup for i, lookup in enumerate(lookups)}
+
+    with pytest.raises(ValueError, match="inputs 1 resolved no output entry"):
+        feature.load_state(tmp_path / "blend", {}, dependency_lookups)
+
+
+@pytest.mark.parametrize("weights", ["uniform", [3.0, 1.0]])
+def test_fixed_weights_average_members_of_which_some_have_a_fold_table(
+    tmp_path: Path, weights: str | list[float]
+) -> None:
+    """Fixed weights need no fold table, so mixed members are averaged without one."""
+    lookups = [_run(tmp_path, "a", _fold_table(FOLDS)), _run(tmp_path, "b", None)]
+
+    run, _ = _ensemble_run(tmp_path, "blend", lookups, weights=weights)
+
+    assert (run / "ensemble.json").exists()
+    assert not (run / "cv_folds.parquet").exists()
+
+
+def test_fixed_weights_average_members_that_deal_different_folds(
+    tmp_path: Path,
+) -> None:
+    other = {entry: 1 - fold for entry, fold in FOLDS.items()} | {TRAIN[0]: 5}
+    lookups = [
+        _run(tmp_path, "a", _fold_table(FOLDS)),
+        _run(tmp_path, "b", _fold_table(other)),
+    ]
+
+    run, _ = _ensemble_run(tmp_path, "blend", lookups)
+
+    assert (run / "ensemble.json").exists()
+    assert not (run / "cv_folds.parquet").exists()
+
+
+def test_fixed_weights_over_an_input_that_resolved_no_output_fit_nothing(
+    tmp_path: Path,
+) -> None:
+    lookups = [_run(tmp_path, "a", _fold_table(FOLDS)), {}]
+
+    run, _ = _ensemble_run(tmp_path, "blend", lookups)
+
+    assert (run / "ensemble.json").exists()
+    assert not (run / "cv_folds.parquet").exists()
 
 
 def test_an_ensemble_of_ensembles_finds_the_fold_table_where_a_classifier_has_it(
@@ -648,3 +807,58 @@ def test_a_fold_entry_that_is_not_in_the_scope_is_refused(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match=r"1 entries of the members' folds.*g/s3"):
         feature.fit(study.stream(kept))
+
+
+def _fit_over_blocks(
+    study: _Study, name: str, blocks: dict[tuple[Entry, int], tuple[int, int, int]]
+) -> dict[str, object]:
+    """Fit the weights over members whose fold table is *blocks*, and read the report."""
+    table = _block_table(blocks)
+    entries = list(study.tables)
+    lookups = {
+        "_input_0": _run(study.root, f"{name}-member-0", table, entries),
+        "_input_1": _run(study.root, f"{name}-member-1", table, entries),
+        "labels": study.files,
+    }
+    feature = _feature(
+        2, weights="fit", labels={"kind": "behavior"}, score_classes=[0, 1, 2]
+    )
+    run = study.root / name
+    assert not feature.load_state(run, {}, lookups)
+    feature.fit(study.stream())
+    feature.save_state(run)
+    return json.loads((run / "ensemble_report.json").read_text())
+
+
+def test_fitted_weights_pool_the_rows_inside_the_blocks_and_no_others(
+    tmp_path: Path,
+) -> None:
+    half = FRAMES // 2
+    blocks = {
+        (entry, 0): (0, half, index % 2)
+        for index, entry in enumerate(_Study(tmp_path / "probe").tables)
+    }
+    clean = _Study(tmp_path / "clean")
+    poisoned = _Study(tmp_path / "poisoned")
+    for entry, table in poisoned.tables.items():
+        copy = table.copy()
+        # Past the block, the members are certain of the wrong class.
+        for position in range(2):
+            for column, label in enumerate(CLASSES):
+                copy.loc[
+                    copy["frame"] >= half, member_probability_column(label, position)
+                ] = 1.0 if column == 0 else 0.0
+        poisoned.tables[entry] = copy
+
+    wanted = _fit_over_blocks(clean, "fit", blocks)
+    got = _fit_over_blocks(poisoned, "fit", blocks)
+
+    assert got["weights_used"] == wanted["weights_used"]
+    assert got["objective"] == wanted["objective"]
+    assert got["n_frames"] == 4 * half
+    whole = _fit_over_blocks(
+        _Study(tmp_path / "whole"),
+        "fit",
+        {(entry, 0): (0, FRAMES, 0) for entry in TRAIN},
+    )
+    assert whole["n_frames"] == 4 * FRAMES

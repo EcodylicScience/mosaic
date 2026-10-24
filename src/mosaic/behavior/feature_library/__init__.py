@@ -44,6 +44,7 @@ from . import (
     arhmm,
     approach_avoidance,
     attention_target,
+    body_length,
     body_scale,
     collective_math,
     collective_motion_metrics,
@@ -65,6 +66,7 @@ from . import (
     kpms,
     local_order_metrics,
     nearestneighbor,
+    neighbor_delta_response,
     nn_delta_bins,
     nn_delta_response,
     orientation_relative,
@@ -75,6 +77,7 @@ from . import (
     pair_wavelet,
     pairposedistancepca,
     probability_ensemble,
+    scale_to_bl,
     scale_to_cm,
     sequence_classifier,
     sequence_heads,
@@ -84,12 +87,14 @@ from . import (
     temporal_stacking,
     track_subsample,
     trajectory_smooth,
+    tune_threshold,
     vame_feature,
     xgboost_feature,
 )
 from .arhmm import ArHmmFeature
 from .approach_avoidance import ApproachAvoidance
 from .attention_target import AttentionTarget
+from .body_length import BodyLength
 from .body_scale import BodyScaleFeature
 from .heading import HeadingFeature
 from .collective_math import STATE_HIGH, STATE_LOW, classify_state
@@ -114,6 +119,7 @@ from .kpms import KpmsFeature
 from .label_statistics import LabelStatistics
 from .local_order_metrics import LocalOrderMetrics
 from .nearestneighbor import NearestNeighbor
+from .neighbor_delta_response import NeighborDeltaResponse
 from .nn_delta_bins import NearestNeighborDeltaBins
 from .nn_delta_response import NearestNeighborDelta
 from .orientation_relative import OrientationRelativeFeature
@@ -124,6 +130,7 @@ from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
 from .probability_ensemble import ProbabilityEnsembleFeature
+from .scale_to_bl import ScaleToBodyLength
 from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
 from .sequence_classifier import SequenceClassifier
@@ -132,6 +139,7 @@ from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
 from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
+from .tune_threshold import TuneThresholdFeature
 from .vame_feature import VameFeature
 from .xgboost_feature import XgboostFeature
 
@@ -178,6 +186,7 @@ __all__ = [
     "ArHmmFeature",
     "ApproachAvoidance",
     "AttentionTarget",
+    "BodyLength",
     "BodyScaleFeature",
     "HeadingFeature",
     "CollectiveMotionMetrics",
@@ -205,6 +214,7 @@ __all__ = [
     "NearestNeighbor",
     "NearestNeighborDelta",
     "NearestNeighborDeltaBins",
+    "NeighborDeltaResponse",
     "OrientationRelativeFeature",
     "PairEgocentricFeatures",
     "PairFacing",
@@ -213,6 +223,7 @@ __all__ = [
     "PairPoseDistancePCA",
     "ProbabilityEnsembleFeature",
     "PairWavelet",
+    "ScaleToBodyLength",
     "ScaleToCm",
     "SequenceClassifier",
     "SocialMotionSummary",
@@ -220,6 +231,7 @@ __all__ = [
     "TemporalStackingFeature",
     "TrackSubsample",
     "TrajectorySmooth",
+    "TuneThresholdFeature",
     "VameFeature",
     "XgboostFeature",
     # Optional, present only when their extra is installed. Named here anyway,
@@ -238,6 +250,7 @@ __all__ = [
     "arhmm",
     "approach_avoidance",
     "attention_target",
+    "body_length",
     "body_scale",
     "collective_motion_metrics",
     "dinov2_temporal_identity_model",
@@ -257,6 +270,7 @@ __all__ = [
     "kpms",
     "local_order_metrics",
     "nearestneighbor",
+    "neighbor_delta_response",
     "nn_delta_bins",
     "nn_delta_response",
     "orientation_relative",
@@ -267,6 +281,7 @@ __all__ = [
     "pair_wavelet",
     "pairposedistancepca",
     "probability_ensemble",
+    "scale_to_bl",
     "scale_to_cm",
     "sequence_classifier",
     "sequence_heads",
@@ -276,6 +291,7 @@ __all__ = [
     "temporal_stacking",
     "track_subsample",
     "trajectory_smooth",
+    "tune_threshold",
     "vame_feature",
     "xgboost_feature",
 ]

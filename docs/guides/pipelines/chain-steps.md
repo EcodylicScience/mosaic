@@ -102,6 +102,53 @@ artifacts — `template_provenance.parquet`, say, rather than `templates.parquet
 from it — transcode before trex is the standard example: the tracker reads the
 derivative from the media index, not from the transcode step's return value.
 
+### Repeat a step
+
+A step tried with several seeds, or fitted once per behavior, is written once with
+`repeat`, a mapping of names to lists of values:
+
+```json
+{
+  "schema_version": 1,
+  "name": "three seeds",
+  "steps": [
+    {"id": "speed", "type": "feature", "feature": "speed-angvel"},
+    {
+      "id": "templates_s{seed}",
+      "type": "feature",
+      "feature": "extract-templates",
+      "repeat": {"seed": [1, 2, 3]},
+      "inputs": [{"step": "speed"}],
+      "params": {"n_templates": 2000, "random_state": "{seed}"}
+    },
+    {
+      "id": "clusters_s{seed}",
+      "type": "feature",
+      "feature": "global-kmeans",
+      "repeat": {"seed": [1, 2, 3]},
+      "inputs": [{"step": "speed"}],
+      "params": {"templates": {"step": "templates_s{seed}"}, "k": 25}
+    }
+  ]
+}
+```
+
+This recipe has seven steps: `speed`, `templates_s1` to `templates_s3` and
+`clusters_s1` to `clusters_s3`.
+
+- `{seed}` is replaced in every string of the step. A string that is `"{seed}"` alone
+  takes the value with its type, so `random_state` is the number 1, not `"1"`.
+- A step's id names each of its names, so every copy has an id of its own.
+- Several names expand to every combination, the first name varying slowest:
+  `"repeat": {"behavior": ["attack", "mount"], "seed": [1, 2]}` is four steps.
+- An item of `inputs` repeats the same way. An ensemble reads every seed with one input,
+  `{"step": "clf_s{seed}", "repeat": {"seed": [1, 2, 3]}}`, and inside a repeated step
+  it sees that step's values. `repeat` is read on a step and an input only.
+
+The recipe is expanded when it is read. Its digest, its saved copy and every run id are
+those of the steps written out in full, so writing a step out by hand later changes
+nothing. A problem is reported at the expanded step's id, such as `templates_s2`.
+
 ### Narrow one step: step scopes
 
 A request covers a set of entries, and a step scope narrows one step to part of it.
@@ -114,9 +161,9 @@ mosaic pipeline run -m dataset.yaml --recipe @recipe.json \
     --step-scope 'evaluate={"groups": ["test"]}'
 ```
 
-SCOPE is a JSON selector, `{"groups": [...]}` or `{"entries": [[group, sequence],
-...]}`, or `@file.json`. `plan`, `submit` and `run` take it, and so does an MCP client
-as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
+SCOPE is a JSON selector, `{"groups": [...]}`, `{"sequences": [...]}` (both together
+cover their cross product) or `{"entries": [[group, sequence], ...]}`, or `@file.json`.
+`plan`, `submit` and `run` take it, and so does an MCP client as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
 it to entries.
 
 - A step scope is intersected with the request's entries, and a step whose identity
@@ -130,6 +177,68 @@ it to entries.
 
 A request without step scopes is written as before, and older mosaic reads it. A
 request with them is read by this version and later.
+
+### Score on held-out data
+
+A held-out score needs the test data to have taken no part in any fit. Mark the groups
+once, then run the recipe as a train/test split:
+
+```bash
+mosaic splits set -m dataset.yaml train day1 day2
+mosaic splits set -m dataset.yaml test day3
+mosaic pipeline plan -m dataset.yaml --recipe @recipe.json \
+    --step-scope 'templates={"groups": ["train"]}' \
+    --step-scope 'evaluate={"groups": ["test"]}'
+```
+
+- A step that fits on the entries it covers is refused over a `test` or `sealed` group,
+  at the step scope or, with none, at the request's scope. The problem names the groups
+  and the step to scope. A step that applies what another fitted is not refused.
+  `describe_step_types`, or `mosaic pipeline catalog`, shows which steps fit.
+- `--assume-added GROUP` (`assume_added` for an MCP client) asks a plan what would
+  happen if a group joined the dataset. Its cautions list the steps that would fit
+  again and those that would only re-score. It reads the recipe and changes nothing.
+- A plan over the whole dataset names the groups it covers with their roles. It does not
+  refuse them: only the fitting steps do.
+
+To score data kept outside the dataset, such as a test file you hold back until the end,
+let `mosaic pipeline score` add it to a copy:
+
+```bash
+mosaic pipeline score -m dataset.yaml --recipe @recipe.json \
+    --heldout /data/test.npz --answers answers.json --out scoring/ \
+    --step-scope 'templates={"groups": ["train"]}' \
+    --perspective 0 --dry-run
+```
+
+`answers.json` names the steps to score, `{"models": {"xgboost": ["classify"]}}`; a name
+with several steps, such as seeds, is reported as their mean and spread. The command
+copies the dataset to `--out`, adds the file as a tracks and a labels source of the
+copy, converts it with the recipe's own convert steps, and plans the recipe again. It
+then compares the run id of every step of the recipe before and after. If one moved,
+that step would fit again on data it must not see, and the command exits 1 listing them
+under `RUN IDS CHANGED`, having run nothing. Otherwise it appends an `evaluate-labels`
+step for each answer, runs the recipe, and writes `test_scores.json` and `test_scores.txt`
+to `--out`.
+
+- The held-out file is declared as a source, so give the raw format's source options
+  (`--src-format`, `--multi-sequences-per-file`, `--group-from`, `--patterns`,
+  `--labels-path`) and the evaluation protocol (`--perspective`, `--average-over`) as the
+  recipe's own convert and evaluate steps expect them. Without them the conversion
+  or the evaluation fails. `mosaic pipeline score --help` lists them.
+- Give `--step-scope` as the recipe ran. A fit left unscoped covers the new group, so its
+  run id moves and the command stops.
+- `--dry-run` stops after the comparison and prints the plan fingerprint. Pass it back as
+  `--expect-plan` to run only if nothing changed meanwhile. `--expect-md5` checks the
+  test file's checksum first, which refuses a partial copy.
+- The dataset is opened read-only and never written, so the scores never reach it.
+  Without `--reuse`, `--out` must not exist. With it, the plan recorded before the data
+  joined is the one compared.
+- `--heldout` may name a group already in the dataset that has the role `test` or
+  `sealed`, which adds nothing to the copy.
+- Keep a sealed file out of every source of the dataset and out of an agent's reach. A
+  scan finds a file inside a source, and the file is then in the dataset, where an agent
+  can read its labels.
 
 ### `overwrite` is refused
 

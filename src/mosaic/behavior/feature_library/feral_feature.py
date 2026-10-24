@@ -514,6 +514,7 @@ class FeralFeature:
     # feature of category global is also offered to the queue's gpu-train lane.
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.
     resource_class = "gpu"
     name = "feral"

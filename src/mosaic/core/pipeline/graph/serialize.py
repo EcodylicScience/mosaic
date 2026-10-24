@@ -9,6 +9,7 @@ import json
 from typing import TYPE_CHECKING, Final, cast
 
 from .digest import document_digest
+from .heldout import deferred_fit_cautions, listed
 from .plan import (
     CoverageShort,
     DepsIncomplete,
@@ -70,6 +71,7 @@ def plan_wire(
     retirable: tuple[RetirableRecipeWire, ...] = (),
     retirable_omitted: int = 0,
     parallel: ParallelLimits | None = None,
+    extra_cautions: tuple[Problem, ...] = (),
 ) -> PlanWire:
     """Serialize *plan* with a structured reason and a bounded coverage summary.
 
@@ -99,6 +101,9 @@ def plan_wire(
             step then reports the workers a submission that names no count
             receives, and the plan reports the limits and the host's memory. The
             fingerprint depends on neither.
+        extra_cautions: Cautions a caller worked out beyond the plan's own, such
+            as what ``assume_added`` found. They follow the plan's cautions and
+            join no field of the wire.
     """
     superseded = _superseded_by_step(plan.cleanup)
     default = None if parallel is None else parallel.settings_for()
@@ -120,7 +125,7 @@ def plan_wire(
         complete=plan.is_complete,
         steps=steps,
         problems=plan.problems,
-        cautions=_plan_cautions(plan, steps),
+        cautions=(*_plan_cautions(plan, steps), *extra_cautions),
         open_requests=open_requests,
         cleanup=_cleanup_wire(plan.cleanup, retired_sample),
         retirable=retirable,
@@ -205,19 +210,44 @@ def _plan_cautions(
 ) -> tuple[Problem, ...]:
     """What the person submitting *plan* should know first. None refuses it.
 
-    A plan asked for no narrowing covers the whole dataset. A step of *steps*
+    A plan asked for no narrowing covers the whole dataset, and when the dataset
+    gives its groups roles the caution names the groups it covers with them, so
+    a person submitting it sees that it takes the held-out ones. A step of *steps*
     is cautioned on the entries it is asked for (:func:`~.plan.asked_of`), its
     own and not the plan's scope.
     """
     cautions: list[Problem] = []
-    if plan.covers_dataset:
+    if plan.covers_dataset and plan.deferred_by is not None:
         cautions.append(
             Problem(
                 "",
                 "scope",
-                f"the plan covers all {len(plan.scope)} entries of the dataset",
+                "the dataset holds no tracks yet, so the plan covers every entry "
+                f"that step {plan.deferred_by!r} converts" + _roles_named(plan),
             )
         )
+    elif plan.covers_dataset and not plan.scope:
+        cautions.append(
+            Problem(
+                "",
+                "scope",
+                "the dataset holds no converted tracks, so the plan covers no "
+                "entry. Begin the recipe with a convert-tracks step, or convert "
+                "the raw tracks first. mosaic describe and describe_dataset list "
+                "the next steps",
+            )
+        )
+    elif plan.covers_dataset:
+        cautions.append(
+            Problem(
+                "",
+                "scope",
+                f"the plan covers all {len(plan.scope)} entries of the dataset"
+                + _roles_covered(plan),
+            )
+        )
+    cautions.extend(deferred_fit_cautions(plan))
+    cautions.extend(plan.reach_cautions)
     for step in steps:
         if step.asked > LARGE_SCOPE_ENTRIES:
             cautions.append(
@@ -228,6 +258,34 @@ def _plan_cautions(
                 )
             )
     return tuple(cautions)
+
+
+def _roles_named(plan: Plan) -> str:
+    """The roles the manifest gives its groups, for a plan with no entries yet."""
+    if not plan.splits:
+        return ""
+    held = sorted(plan.splits.items())
+    named = listed([f"{group!r} ({role})" for group, role in held])
+    return f". The manifest gives the groups {named} a role"
+
+
+def _roles_covered(plan: Plan) -> str:
+    """The groups of *plan*'s scope that hold a role, with their roles.
+
+    Empty for a dataset that gives no group a role, which leaves the caution as
+    it was. Groups with no role are counted and not named.
+    """
+    if not plan.splits:
+        return ""
+    covered = sorted({group for group, _ in plan.scope})
+    held = [(group, plan.splits[group]) for group in covered if group in plan.splits]
+    unassigned = len(covered) - len(held)
+    named = listed([f"{group!r} ({role})" for group, role in held])
+    if not held:
+        return f", in {unassigned} group(s) with no role"
+    return f", in the groups {named}" + (
+        f" and {unassigned} with no role" if unassigned else ""
+    )
 
 
 def plan_fingerprint(plan: Plan) -> str:

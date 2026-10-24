@@ -5,9 +5,19 @@ import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, NotRequired, Self, TypedDict, final
+from typing import (
+    Annotated,
+    ClassVar,
+    Literal,
+    NotRequired,
+    Self,
+    TypedDict,
+    final,
+    override,
+)
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
 from xgboost import XGBClassifier
@@ -37,17 +47,28 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .classifier_common import (
     DEFAULT_CLASS_DESCRIPTION,
+    CvBlock,
+    CvBlocksPerSequence,
+    CvGapFrames,
     CvSeed,
+    CvUnit,
     DecisionThreshold,
     FitReporting,
+    FoldLookup,
     assemble_prediction,
     balanced_class_weights,
+    block_fold_table,
+    block_list,
+    block_rows,
     check_cross_validation,
     check_folds,
+    deal_blocks,
     deal_folds,
+    drop_block_settings,
     fold_map,
     fold_rows,
     fold_table,
+    held_out_frames,
     write_bundle,
 )
 from .helpers import (
@@ -58,6 +79,7 @@ from .helpers import (
     out_of_fold_choice,
     refuse_unlabeled_templates,
     train_entries_of_templates,
+    train_labeled_frames_of_templates,
 )
 from .registry import register_feature
 
@@ -125,8 +147,10 @@ _CV_FOLDS_DESCRIPTION = (
     "K more models are fitted, each on the training rows outside one fold. "
     "A training sequence is then scored by the model that did not see it, "
     "and every other entry by the model fitted on all training rows. The "
-    "fold of each sequence is in cv_folds.parquet. Needs templates and is "
-    "refused beside model."
+    "fold of each sequence is in cv_folds.parquet. With cv_unit block, the "
+    "folds hold out blocks of frames and not whole sequences, which needs "
+    "templates that record their frames (extract-labeled-templates 0.7 or "
+    "later). Needs templates and is refused beside model."
 )
 
 _N_JOBS_DESCRIPTION = (
@@ -147,10 +171,14 @@ _DEVICE_DESCRIPTION = (
 class XgboostCv(TypedDict):
     """The cross-validation half of a bundle, written when ``cv_folds`` is set.
 
-    ``fold_of`` holds ``(group, sequence, fold)`` for every train entry of the
-    templates. ``models[fold]`` was fitted on the train rows outside that fold,
-    over the classes in ``classes[fold]``, which are its probability columns in
-    order and are fewer than the bundle's when the rows held none of a class.
+    By sequence, ``fold_of`` holds ``(group, sequence, fold)`` for every train
+    entry of the templates. By block, the keys ``unit``, ``blocks_per_sequence``,
+    ``gap_frames`` and ``blocks`` are written too, ``fold_of`` is empty, and
+    ``blocks`` holds ``(group, sequence, block, start, stop, fold)`` for every
+    block. ``models[fold]`` was fitted on the train rows outside that fold, and
+    outside the gap around its blocks, over the classes in ``classes[fold]``,
+    which are its probability columns in order and are fewer than the bundle's
+    when the rows held none of a class.
     """
 
     folds: int
@@ -158,6 +186,10 @@ class XgboostCv(TypedDict):
     fold_of: list[tuple[str, str, int]]
     models: list[XGBClassifier | list[XGBClassifier]]
     classes: list[list[int]]
+    unit: NotRequired[Literal["block"]]
+    blocks_per_sequence: NotRequired[int]
+    gap_frames: NotRequired[int]
+    blocks: NotRequired[list[tuple[str, str, int, int, int, int]]]
 
 
 class XgboostModelBundle(TypedDict):
@@ -182,11 +214,13 @@ class _FoldPlan:
     """How the train rows of the templates fall into folds."""
 
     fold_of: dict[tuple[str, str], int]
-    """The fold of every train entry the templates run saw."""
-    row_fold: np.ndarray
-    """The fold of each train row, in the order of the train rows."""
+    """The fold of every train entry the templates run saw, empty by block."""
+    blocks: list[CvBlock]
+    """Every block and its fold, empty by sequence."""
+    training: list[np.ndarray]
+    """``training[k]`` marks the train rows that the model without fold ``k`` fits."""
     table: pd.DataFrame
-    """``cv_folds.parquet``: the fold and the rows of each train entry."""
+    """``cv_folds.parquet``: the fold and the rows of each train entry, or block."""
 
 
 @final
@@ -211,12 +245,32 @@ class XgboostFeature(FitReporting):
     were chosen with every training sequence in view, as were label-free fits
     upstream of the templates.
 
+    **Cross-validation by block.** ``cv_unit="block"`` holds out blocks of frames
+    instead of whole sequences, so that a dataset with one training sequence is
+    still cross-validated. Each train entry's labeled frames (``labeled_start`` up
+    to ``labeled_stop`` in the templates run's provenance, the frames that
+    ``sequence-classifier`` cuts from its own input) are cut into
+    ``cv_blocks_per_sequence`` contiguous blocks, and the blocks of all entries are
+    dealt to the folds by the sha256 of ``[cv_seed, group, sequence, block]``, so
+    that this step and ``sequence-classifier`` deal alike and a
+    ``probability-ensemble`` can pool them. A template row belongs to the block
+    that holds its ``frame``. The model of a fold trains on the template rows
+    outside its blocks and outside the ``cv_gap_frames`` frames on each side of
+    them. A row is scored by the model of the fold whose block holds its frame,
+    and a row in no block, and every entry outside the training set, by the model
+    fitted on all train rows. ``cv_folds.parquet`` then has one row per block, with
+    its ``start`` and ``stop`` frames (half-open) beside ``fold``. The templates
+    must record their frames, so extract them again with
+    ``extract-labeled-templates`` 0.7 or later. The templates are a sample of the
+    labeled frames, so the rows of a block are those the sample drew.
+
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.xgboost_feature.XgboostFeature.Params`.
     """
 
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "xgboost"
     # 0.2: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``
@@ -229,6 +283,7 @@ class XgboostFeature(FitReporting):
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
+    temporal_reach = 0  # one row in, one row out
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     # Apply reads the template columns and writes one probability per class.
@@ -282,6 +337,9 @@ class XgboostFeature(FitReporting):
             default=None, ge=2
         )
         cv_seed: CvSeed = 0
+        cv_unit: CvUnit = "sequence"
+        cv_blocks_per_sequence: CvBlocksPerSequence = None
+        cv_gap_frames: CvGapFrames = 0
         # Not HASH_EXCLUDE: a GPU histogram build need not give the model a CPU one does.
         device: Annotated[Literal["cpu", "cuda"], Declared(_DEVICE_DESCRIPTION)] = "cpu"
         # HASH_EXCLUDE: the threads of a fit change its time and not its model. One
@@ -307,12 +365,25 @@ class XgboostFeature(FitReporting):
 
         @model_validator(mode="after")
         def _cross_validation_fits_from_templates(self) -> Self:
-            check_cross_validation(
+            self.cv_blocks_per_sequence = check_cross_validation(
                 self.cv_folds,
                 self.cv_seed,
                 model_given="model" in self.model_fields_set and self.model is not None,
+                cv_unit=self.cv_unit,
+                cv_blocks_per_sequence=self.cv_blocks_per_sequence,
+                cv_gap_frames=self.cv_gap_frames,
             )
             return self
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, with the block settings left out under ``cv_unit="sequence"``.
+
+            A run that cross-validates by sequence, or not at all, has the identity it
+            had before the block settings existed. ``check_cross_validation`` leaves
+            them at their defaults then, so leaving them out loses nothing.
+            """
+            return drop_block_settings(super().identity_dump(), self.cv_unit)
 
     def __init__(
         self,
@@ -329,8 +400,10 @@ class XgboostFeature(FitReporting):
         self._metrics: dict[str, object] | None = None
         # The train entries of the templates run, for the folds.
         self._train_entries: list[tuple[str, str]] | None = None
+        self._labeled_frames: dict[tuple[str, str], tuple[int, int]] | None = None
         self._cv: XgboostCv | None = None
         self._fold_of: dict[tuple[str, str], int] = {}
+        self._blocks: FoldLookup | None = None
         self._cv_table: pd.DataFrame | None = None
 
     def load_state(
@@ -345,8 +418,10 @@ class XgboostFeature(FitReporting):
         self._templates = None
         self._metrics = None
         self._train_entries = None
+        self._labeled_frames = None
         self._cv = None
         self._fold_of = {}
+        self._blocks = None
         self._cv_table = None
 
         # Branch 1: cached model in run_root
@@ -373,6 +448,10 @@ class XgboostFeature(FitReporting):
                 self._train_entries = train_entries_of_templates(
                     artifact_paths["templates"]
                 )
+                if self.params.cv_unit == "block":
+                    self._labeled_frames = train_labeled_frames_of_templates(
+                        artifact_paths["templates"]
+                    )
             return False
 
         return False
@@ -391,8 +470,19 @@ class XgboostFeature(FitReporting):
                 "Remove xgboost_model.joblib from the run directory to fit again"
             )
             raise RuntimeError(msg)
+        by_block = self.params.cv_unit == "block"
+        if by_block != (cv.get("unit") == "block"):
+            msg = (
+                f"[{self.name}] cv_unit is {self.params.cv_unit!r} and the cached "
+                "model was fitted with the other unit. Remove xgboost_model.joblib "
+                "from the run directory to fit again"
+            )
+            raise RuntimeError(msg)
         self._cv = cv
-        self._fold_of = fold_map(cv["fold_of"])
+        if by_block:
+            self._blocks = FoldLookup.by_block(block_list(cv.get("blocks", [])))
+        else:
+            self._fold_of = fold_map(cv["fold_of"])
 
     def _undersampled_counts(self, counts: np.ndarray) -> list[int]:
         """The rows each class keeps under ``undersample_ratio``, given its rows in *counts*."""
@@ -572,7 +662,7 @@ class XgboostFeature(FitReporting):
         )
 
     def _plan_folds(self, train: pd.DataFrame, labels: np.ndarray) -> _FoldPlan:
-        """Deal the train entries into folds and place every train row in one.
+        """Deal the train entries, or their blocks, into folds and place every train row in one.
 
         Args:
             train: The train rows of the templates.
@@ -581,8 +671,9 @@ class XgboostFeature(FitReporting):
         Raises:
             ValueError: The templates lack the identity of their rows or their
                 provenance, name an entry the provenance does not list, hold
-                fewer entries than folds, or leave a fold's training rows with
-                fewer than two classes.
+                fewer entries (or blocks) than folds, or leave a fold's training
+                rows with fewer than two classes. By block, also templates that
+                record no frames.
         """
         k = self.params.cv_folds
         assert k is not None
@@ -602,21 +693,15 @@ class XgboostFeature(FitReporting):
                 "found none. Rerun extract-labeled-templates 0.5 or later"
             )
             raise ValueError(msg)
+        keys = list(zip(map(str, train["group"]), map(str, train["sequence"])))
+        classes = sorted(int(c) for c in np.unique(labels))
+        if self.params.cv_unit == "block":
+            return self._plan_block_folds(train, keys, labels, classes)
         fold_of = deal_folds(self.name, self._train_entries, k, self.params.cv_seed)
 
-        keys = list(zip(map(str, train["group"]), map(str, train["sequence"])))
         row_fold = np.array([fold_of.get(key, -1) for key in keys], dtype=np.intp)
-        unknown = sorted({key for key, fold in zip(keys, row_fold) if fold < 0})
-        if unknown:
-            msg = (
-                f"[{self.name}] the template rows of {len(unknown)} "
-                f"entr{'y' if len(unknown) == 1 else 'ies'}, such as {unknown[0]}, "
-                "belong to entries the provenance does not list as train entries. "
-                "The templates and their provenance disagree"
-            )
-            raise ValueError(msg)
+        self._refuse_unlisted_entries(keys, row_fold < 0)
 
-        classes = sorted(int(c) for c in np.unique(labels))
         rows = pd.DataFrame(
             {
                 "group": [key[0] for key in keys],
@@ -636,7 +721,142 @@ class XgboostFeature(FitReporting):
             rows="template rows",
             per_fold=self._check_smote_fold if self.params.use_smote else None,
         )
-        return _FoldPlan(fold_of, row_fold, table)
+        return _FoldPlan(fold_of, [], [row_fold != fold for fold in range(k)], table)
+
+    def _refuse_unlisted_entries(
+        self, keys: list[tuple[str, str]], unknown: np.ndarray
+    ) -> None:
+        """Refuse template rows that belong to an entry with no fold.
+
+        Args:
+            keys: The ``(group, sequence)`` of each train row.
+            unknown: Marks the rows whose entry the provenance does not list, or
+                gives no block.
+
+        Raises:
+            ValueError: A row is marked.
+        """
+        gone = sorted({key for key, bad in zip(keys, unknown) if bad})
+        if gone:
+            msg = (
+                f"[{self.name}] the template rows of {len(gone)} "
+                f"entr{'y' if len(gone) == 1 else 'ies'}, such as {gone[0]}, "
+                "belong to entries the provenance does not list as train entries, "
+                "or fall outside the labeled frames it records for them. The "
+                "templates and their provenance disagree"
+            )
+            raise ValueError(msg)
+
+    def _plan_block_folds(
+        self,
+        train: pd.DataFrame,
+        keys: list[tuple[str, str]],
+        labels: np.ndarray,
+        classes: list[int],
+    ) -> _FoldPlan:
+        """Cut each train entry's labeled frames into blocks, deal them, and place every row in one.
+
+        Raises:
+            ValueError: The templates or their provenance record no frames, a row
+                falls in no block, there are fewer blocks than folds, or a fold's
+                training rows, outside its blocks and their gap, hold fewer than
+                two classes.
+        """
+        p = self.params
+        k = p.cv_folds
+        assert k is not None and p.cv_blocks_per_sequence is not None
+        if "frame" not in train.columns or not self._labeled_frames:
+            what = (
+                "these templates record no frame for their rows"
+                if "frame" not in train.columns
+                else "the provenance beside these templates records no labeled frames"
+            )
+            msg = (
+                f"[{self.name}] cv_unit='block' cuts each sequence into blocks of "
+                f"frames and places each template row in one by its frame, and "
+                f"{what}. They come from extract-labeled-templates before 0.7. "
+                "Run extract-labeled-templates again, and point templates at the "
+                "new run"
+            )
+            raise ValueError(msg)
+        blocks = deal_blocks(
+            self.name, self._labeled_frames, p.cv_blocks_per_sequence, k, p.cv_seed
+        )
+        frames = train["frame"].to_numpy(dtype=np.int64)
+        of_entry: dict[tuple[str, str], list[CvBlock]] = {}
+        for block in blocks:
+            of_entry.setdefault((block.group, block.sequence), []).append(block)
+        listed: dict[tuple[str, str], list[int]] = {}
+        for position, key in enumerate(keys):
+            listed.setdefault(key, []).append(position)
+        positions = {key: np.array(rows, dtype=np.intp) for key, rows in listed.items()}
+        row_block = np.full(len(keys), -1, dtype=np.intp)
+        for entry, rows in positions.items():
+            entry_blocks = of_entry.get(entry, [])
+            if not entry_blocks:
+                continue
+            starts = np.array([b.start for b in entry_blocks], dtype=np.int64)
+            stops = np.array([b.stop for b in entry_blocks], dtype=np.int64)
+            at_frame: npt.NDArray[np.int64] = frames[rows]
+            after: npt.NDArray[np.intp] = np.searchsorted(
+                starts, at_frame, side="right"
+            )
+            at = np.maximum(after - 1, 0)
+            inside = (at_frame >= starts[at]) & (at_frame < stops[at])
+            row_block[rows[inside]] = np.array(
+                [b.block for b in entry_blocks], dtype=np.intp
+            )[at[inside]]
+        self._refuse_unlisted_entries(keys, row_block < 0)
+
+        table = block_fold_table(
+            blocks,
+            pd.DataFrame(
+                {
+                    "group": [key[0] for key in keys],
+                    "sequence": [key[1] for key in keys],
+                    "block": row_block,
+                    "label": labels,
+                }
+            )
+            .groupby(["group", "sequence", "block", "label"])
+            .size()
+            .unstack(fill_value=0),
+            classes,
+        )
+        training: list[np.ndarray] = []
+        for fold in range(k):
+            fits = np.ones(len(keys), dtype=bool)
+            for entry, held in held_out_frames(blocks, fold, p.cv_gap_frames).items():
+                rows = positions.get(entry)
+                if rows is None:
+                    continue
+                for first, stop in held:
+                    fits[rows[(frames[rows] >= first) & (frames[rows] < stop)]] = False
+            training.append(fits)
+
+        def enough_classes(fold: int, _: np.ndarray, __: np.ndarray) -> None:
+            present, counts = np.unique(labels[training[fold]], return_counts=True)
+            if len(present) < 2:
+                msg = (
+                    f"[{self.name}] holding out the blocks of fold {fold} and "
+                    f"{p.cv_gap_frames} frames around them leaves training rows "
+                    f"of {len(present)} class, and a classifier needs two. Lower "
+                    "cv_gap_frames or cv_folds, or cut fewer, larger blocks"
+                )
+                raise ValueError(msg)
+            if p.use_smote:
+                self._check_smote_fold(fold, present, counts)
+
+        check_folds(
+            self.name,
+            k,
+            table,
+            classes,
+            rows="template rows",
+            unit="block",
+            per_fold=enough_classes,
+        )
+        return _FoldPlan({}, blocks, training, table)
 
     def _check_smote_fold(
         self, fold: int, present: np.ndarray, counts: np.ndarray
@@ -664,7 +884,13 @@ class XgboostFeature(FitReporting):
 
     def fit(self, inputs: InputStream) -> None:
         if self._templates is None:
-            msg = "No templates loaded -- call load_state first"
+            msg = (
+                f"[{self.name}] model {self.params.model.run_id!r} did not resolve "
+                "to a stored model, so there is nothing to apply and the step "
+                "does not fit in its place. Check the model reference"
+                if self.params.model is not None
+                else "No templates loaded -- call load_state first"
+            )
             raise RuntimeError(msg)
         if self._feature_columns is None:
             msg = "No feature columns determined"
@@ -702,7 +928,7 @@ class XgboostFeature(FitReporting):
         if plan is not None:
             for fold in range(n_folds):
                 self._before_fit(fold, total, whole="all rows")
-                outside = plan.row_fold != fold
+                outside = plan.training[fold]
                 model, present = self._fit_rows(x_train[outside], y_train[outside])
                 fold_models.append(model)
                 fold_classes.append(present)
@@ -715,13 +941,20 @@ class XgboostFeature(FitReporting):
         self._model = full
         if plan is not None:
             assert self.params.cv_folds is not None
-            self._cv = {
+            cv: XgboostCv = {
                 "folds": self.params.cv_folds,
                 "seed": self.params.cv_seed,
                 "fold_of": fold_rows(plan.fold_of),
                 "models": fold_models,
                 "classes": fold_classes,
             }
+            if plan.blocks and self.params.cv_blocks_per_sequence is not None:
+                cv["unit"] = "block"
+                cv["blocks_per_sequence"] = self.params.cv_blocks_per_sequence
+                cv["gap_frames"] = self.params.cv_gap_frames
+                cv["blocks"] = block_rows(plan.blocks)
+                self._blocks = FoldLookup.by_block(cv["blocks"])
+            self._cv = cv
             self._fold_of = dict(plan.fold_of)
             self._cv_table = plan.table
 
@@ -763,15 +996,28 @@ class XgboostFeature(FitReporting):
         """The model that scores the entry *df* holds, and its classes.
 
         Without folds, the model. With them, the fold's model for a training
-        sequence, and the full model for any other entry.
+        sequence, and the full model for any other entry. By block the entry is
+        scored by row: see :meth:`_scoring_folds`.
         """
         assert self._model is not None and self._classes is not None
-        if self._cv is None:
+        if self._cv is None or self._blocks is not None:
             return self._model, self._classes
         fold = out_of_fold_choice(df, self._fold_of, self.name)
         if fold is None:
             return self._model, self._classes
         return self._cv["models"][fold], self._cv["classes"][fold]
+
+    def _scoring_folds(self, df: pd.DataFrame) -> np.ndarray | None:
+        """The fold whose model scores each row of the entry *df* holds, by block.
+
+        Returns:
+            The fold of each row, ``-1`` for a row in no block, which the full
+            model scores. ``None`` when the run does not cross-validate by block.
+        """
+        if self._blocks is None:
+            return None
+        ensure_columns(df, ["frame"])
+        return self._blocks.scoring_folds(df, self.name)
 
     def _probabilities(
         self,
@@ -807,8 +1053,23 @@ class XgboostFeature(FitReporting):
         feat_matrix = df[self._feature_columns].to_numpy(dtype=np.float64)
 
         # Get probabilities
-        model, model_classes = self._scoring_model(df)
-        probs = self._probabilities(model, model_classes, feat_matrix)
+        folds = self._scoring_folds(df)
+        if folds is None:
+            model, model_classes = self._scoring_model(df)
+            probs = self._probabilities(model, model_classes, feat_matrix)
+        else:
+            assert self._cv is not None
+            probs = np.zeros((len(df), len(self._classes)))
+            for fold in np.unique(folds):
+                rows = folds == fold
+                if fold < 0:
+                    model, model_classes = self._model, self._classes
+                else:
+                    model = self._cv["models"][int(fold)]
+                    model_classes = self._cv["classes"][int(fold)]
+                probs[rows] = self._probabilities(
+                    model, model_classes, feat_matrix[rows]
+                )
 
         return assemble_prediction(
             df,

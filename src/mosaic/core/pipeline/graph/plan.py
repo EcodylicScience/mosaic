@@ -80,6 +80,8 @@ from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
 from .digest import recipe_digest
+from .heldout import deferred_scope_problem, held_out_fit_problem
+from .compatibility import Reach
 from .lanes import lane_for
 from .model import (
     TRACKS_INPUT,
@@ -98,11 +100,13 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
+    feature_class_for_slug,
     feature_parallelizable,
     op_class_for_kind,
     resolve_step_spec,
 )
 from .columns import ColumnSet, measured_columns
+from .reach import UNDECLARED, feature_reach, reach_findings, recipe_reach
 from .scope import intended_scope
 from .topo import ancestors_of, parents_of, topological_order
 from .validate import (
@@ -120,11 +124,12 @@ if TYPE_CHECKING:
     from mosaic_media import MediaProbeError
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.manifest import SplitRole
     from mosaic.core.params import Params
 
     from ..inventory.model import DatasetInventory
     from .cleanup import CleanupPlan
-    from .compatibility import DeclarationCatalog
+    from .compatibility import Declaration, DeclarationCatalog
 
 __all__ = [
     "COMPLETE_STATUSES",
@@ -292,6 +297,10 @@ class PlannedStep:
             named only through a params reference, such as templates or a
             label map, which answer for what they were fitted on, and those
             named only by ``after``. A step scope sets no entry rule on them.
+        stacked_parents: The parents a step that stacks its inputs reads through
+            ``inputs``, set only when there are several. Together they answer
+            for the step's entries, each entry from one of them, so the entry
+            rules ask the union of their coverage and not each one's.
         run_id: What the run will be called, or ``None`` when neither it nor
             something above it can say yet.
         storage_name: Where a feature step's outputs live.
@@ -315,6 +324,16 @@ class PlannedStep:
         reason: Why this step is not simply running, or ``None``.
         parallelizable: Whether a feature step can compute several entries at once.
             ``False`` for an op.
+        scope_dependent: Whether the step's identity covers its set of entries,
+            read off the built feature. ``False`` for an op.
+        fits: Whether the step learns from the entries it covers, read off the
+            built feature beside ``scope_dependent`` and ``False`` for an op. The
+            held-out guard and :func:`~.heldout.refit_set` read the two together.
+        temporal_reach: The frames on each side that one output row of the step
+            depends on, read off the built feature under the step's own params
+            (:mod:`~.reach`), or ``undeclared``. The feature's class-level answer
+            stands in for a step whose identity is unresolved. ``undeclared`` for
+            an op, whose reach the gap check passes through unchanged.
     """
 
     step_id: str
@@ -324,6 +343,7 @@ class PlannedStep:
     lane: str = ""
     parents: tuple[str, ...] = ()
     status_parents: tuple[str, ...] = ()
+    stacked_parents: tuple[str, ...] = ()
     run_id: str | None = None
     storage_name: str = ""
     tracks_variant: str = ""
@@ -339,6 +359,9 @@ class PlannedStep:
     finished: bool = False
     reason: Reason | None = None
     parallelizable: bool = False
+    scope_dependent: bool = False
+    fits: bool = False
+    temporal_reach: Reach = UNDECLARED
 
     @property
     def is_complete(self) -> bool:
@@ -366,6 +389,26 @@ class Plan:
         step_scopes: The scopes narrowing single steps, keyed by step id. A
             step's target is ``scope`` narrowed by its own, and its coverage
             is measured against that (:func:`step_target`).
+        splits: The role of each group the dataset's manifest names, which the
+            held-out guard and the whole-dataset caution read. Empty for a
+            dataset with no roles. Not part of the wire or the fingerprint.
+        deferred_by: The conversion step whose entries the plan waits on, set
+            when the dataset holds no tracks yet and the graph converts some. The
+            plan's scope is empty then, and the held-out guard sees no group
+            (:func:`~.heldout.deferred_fit_cautions` says so). ``None``
+            otherwise. Not part of the wire or the fingerprint.
+        bound: The ids of the steps a request binds to a run. They are not
+            executed, so they fit nothing. Not part of the wire or the
+            fingerprint.
+        request_scope: The selector the plan was asked for, ``None`` for none.
+            Kept for :func:`~.heldout.deferred_fit_cautions`, which cannot read
+            groups out of a scope that selects no entries yet. Not part of the
+            wire or the fingerprint.
+        reach_cautions: The classifiers planned for block cross-validation whose
+            ``cv_gap_frames`` cannot be checked, because a step above them
+            declares no reach or one no params bound (:func:`~.reach.reach_findings`).
+            Their problems are in ``problems``. Not part of the wire or the
+            fingerprint.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -382,6 +425,13 @@ class Plan:
         default_factory=lambda: cast("dict[str, Scope]", {})
     )
     cleanup: CleanupPlan | None = None
+    splits: Mapping[str, SplitRole] = field(
+        default_factory=lambda: cast("dict[str, SplitRole]", {})
+    )
+    deferred_by: str | None = None
+    reach_cautions: tuple[Problem, ...] = ()
+    bound: frozenset[str] = frozenset()
+    request_scope: Scope | None = None
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -523,6 +573,10 @@ class _Resolution:
     Carried out of resolution rather than asked again later, because answering it
     means building the feature, and the resolution has one in hand.
     """
+    fits: bool = False
+    """Whether this step learns from the entries it covers, read beside the above."""
+    reach: Reach | None = None
+    """The temporal reach of the built feature, ``None`` where none was built."""
 
 
 def plan_pipeline(
@@ -625,14 +679,16 @@ def plan_pipeline(
     steps: list[PlannedStep] = []
     findings = _Findings()
     fps = ds.meta_float("fps_default")
+    splits = ds.splits
     for step in topological_order(recipe):
+        step_entries = _step_target(step.id, target, narrowed)
         step_plan = _plan_step(
             ds,
             recipe,
             step,
             catalog=catalog,
             inv=inv,
-            target=_step_target(step.id, target, narrowed),
+            target=step_entries,
             bind=bind,
             resolved=resolved,
             planned=planned,
@@ -641,6 +697,27 @@ def plan_pipeline(
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
+            # A step bound to a run is not executed, so it fits nothing. The
+            # guard does not wait on a step scope: a whole-dataset request with
+            # none is the case it exists for.
+            leak = (
+                None
+                if step.id in bind
+                else held_out_fit_problem(
+                    step_plan, step_entries, splits, narrowed=step.id in narrowed
+                )
+            )
+            if leak is None and deferred_by is not None and step.id not in bind:
+                # No entries to ask yet, but a scope that names the group says
+                # where the step will read.
+                leak = deferred_scope_problem(
+                    step_plan,
+                    splits,
+                    request_scope=narrowing,
+                    step_scope=narrowed.get(step.id),
+                )
+            if leak is not None:
+                findings.problems.append(leak)
             if TRACKS_INPUT in step.inputs and (
                 step.tracks is None or step_plan.spec.tracks_run_id
             ):
@@ -666,7 +743,9 @@ def plan_pipeline(
             labels_kind=step_plan.labels_kind,
         )
 
+    reached = reach_findings(recipe, steps, skip=bind)
     problems = list(findings.problems)
+    problems.extend(reached.problems)
     problems.extend(
         _step_scope_problems(
             recipe, planned, narrowed, catalog=catalog, bind=bind, deferred=deferred_by
@@ -683,6 +762,11 @@ def plan_pipeline(
         dataset_uuid=ds.uuid or "",
         covers_dataset=intended.selector.is_unset,
         step_scopes=narrowed,
+        splits=splits,
+        deferred_by=deferred_by,
+        reach_cautions=reached.cautions,
+        bound=frozenset(bind),
+        request_scope=narrowing,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)
@@ -736,6 +820,23 @@ def _plan_step(
         # silently answers a question nobody asked.
         resolution = _Resolution(step=_unresolved(step, target, recipe, resolved, bind))
         base = replace(resolution.step, reason=inherited)
+        if isinstance(step, FeatureStepSpec):
+            # What the class declares, since the feature is not built: a fitter
+            # given a ``model`` applies it, and the others fit. Left at the
+            # default, the cross-validation gap of a classifier whose upstream
+            # has not run would go unchecked until its step ran and was refused.
+            applies = step.params.get("model") is not None
+            cls = feature_class_for_slug(step.feature)
+            base = replace(
+                base,
+                fits=declared.fits and not applies,
+                # Read for the same reason: ``deferred_fit_cautions`` asks a
+                # step for both, and a fitter given a model covers no entries
+                # in its identity.
+                scope_dependent=bool(getattr(cls, "scope_dependent", False))
+                and not (declared.fits and applies),
+                temporal_reach=_reach_of(step, resolution),
+            )
     elif isinstance(step, OpStepSpec):
         resolution = _resolve_op_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
@@ -745,7 +846,12 @@ def _plan_step(
         resolution = _resolve_feature_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
         )
-        base = resolution.step
+        base = replace(
+            resolution.step,
+            scope_dependent=resolution.scope_dependent,
+            fits=resolution.fits,
+            temporal_reach=_reach_of(step, resolution),
+        )
         if (
             deferred_by is not None
             and resolution.scope_dependent
@@ -764,6 +870,7 @@ def _plan_step(
         base,
         parents=parents,
         status_parents=_status_parents(step, parents),
+        stacked_parents=_stacked_parents(step, declared),
         lane=lane_for(declared),
         spec=replace(
             base.spec,
@@ -775,6 +882,14 @@ def _plan_step(
         finished=view.finished,
         reason=_reason_for(base, parents, planned, view.coverage, view.status),
     )
+
+
+def _reach_of(step: FeatureStepSpec, resolution: _Resolution) -> Reach:
+    """The temporal reach of a feature step: the built feature's, else its params'."""
+    if resolution.reach is not None:
+        return resolution.reach
+    cls = feature_class_for_slug(step.feature)
+    return UNDECLARED if cls is None else recipe_reach(cls, step.params)
 
 
 def _as_recorded(base: PlannedStep, run_id: str) -> PlannedStep:
@@ -893,8 +1008,10 @@ def _step_scope_problems(
             continue
         if not planned[step_id].coverage.target and deferred is None:
             message = (
-                "selects no entry of what the submission covers. Name entries "
-                "or groups the dataset holds"
+                "selects no entry of what the submission covers. A step scope "
+                "is intersected with the request's scope, so the request must "
+                "cover every step's scope: leave its scope unset to cover the "
+                "whole dataset, and name entries or groups the dataset holds"
             )
             found.append(Problem(step_id, where, message))
     for step in recipe.steps:
@@ -905,9 +1022,20 @@ def _step_scope_problems(
 
 
 def _input_coverage_problems(
-    step: Step, target: frozenset[Entry], planned: Mapping[str, PlannedStep]
+    step: Step,
+    target: frozenset[Entry],
+    planned: Mapping[str, PlannedStep],
 ) -> list[Problem]:
-    """A problem at each data input of *step* planned over fewer entries than it."""
+    """A problem at each data input of *step* planned over fewer entries than it.
+
+    A step that stacks its inputs reads each entry from one of them, so its
+    entries must lie within the **union** of what its inputs are asked for, and
+    a problem is reported once at ``inputs``. They must also be asked for
+    disjoint entries within the step's own, because the run refuses an entry
+    two of them hold. The planner sees what each is asked for, not what a
+    scope-free run already holds from an earlier request, so that case is
+    still refused only when the step runs.
+    """
     if not isinstance(step, FeatureStepSpec):
         return []
     reads: list[tuple[str, str]] = [
@@ -918,6 +1046,41 @@ def _input_coverage_problems(
     if step.tracks is not None:
         reads.append((step.tracks.step, "tracks"))
     found: list[Problem] = []
+    stacked = planned[step.id].stacked_parents
+    if stacked:
+        covered = frozenset(
+            entry
+            for parent in stacked
+            if parent in planned
+            for entry in planned[parent].coverage.target
+        )
+        outside = sorted(target - covered)
+        if outside:
+            sample = ", ".join(str(entry) for entry in outside[:MISSING_SAMPLE])
+            named = " and ".join(repr(parent) for parent in stacked)
+            message = (
+                f"{len(outside)} entries of {step.id!r} are outside what any of "
+                f"{named} is asked for: {sample}. Narrow {step.id!r} to entries "
+                "its inputs cover, or widen one of them"
+            )
+            found.append(Problem(step.id, "inputs", message))
+        held: dict[Entry, list[str]] = {}
+        for parent in stacked:
+            if parent in planned:
+                for entry in planned[parent].coverage.target & target:
+                    held.setdefault(entry, []).append(parent)
+        twice = sorted(entry for entry, parents in held.items() if len(parents) > 1)
+        if twice:
+            sample = ", ".join(str(entry) for entry in twice[:MISSING_SAMPLE])
+            named = " and ".join(repr(parent) for parent in stacked)
+            message = (
+                f"{len(twice)} entries of {step.id!r} are asked of more than one "
+                f"of {named}: {sample}. Inputs that stack must hold disjoint "
+                "entries, because scoring an entry twice would count it twice. "
+                f"Narrow {step.id!r} or give each input its own entries"
+            )
+            found.append(Problem(step.id, "inputs", message))
+        reads = [(parent, where) for parent, where in reads if parent not in stacked]
     for parent, where in reads:
         above = planned.get(parent)
         if above is None:
@@ -1003,6 +1166,16 @@ def _status_parents(step: Step, parents: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(parent for parent in parents if parent not in reads)
 
 
+def _stacked_parents(step: Step, declared: Declaration) -> tuple[str, ...]:
+    """The steps a stacking *step* reads through ``inputs``, when it reads several."""
+    if not isinstance(step, FeatureStepSpec) or not declared.consumes.stacks_inputs:
+        return ()
+    found = tuple(
+        dict.fromkeys(item.step for item in step.inputs if isinstance(item, StepRef))
+    )
+    return found if len(found) > 1 else ()
+
+
 def _data_parents(step: Step) -> tuple[str, ...]:
     """The steps whose identity reaches this one's, ``after`` excluded."""
     found: list[str] = []
@@ -1045,6 +1218,10 @@ def _resolve_feature_step(
     # hashed it as None would predict one identifier and execute another.
     _ = resolve_references(ds, feature)
     scope_dependent = bool(getattr(feature, "scope_dependent", False))
+    # Read off the instance as ``scope_dependent`` is: several features narrow
+    # both in ``__init__``, as a model they are given is applied and not fitted.
+    fits = bool(getattr(feature, "fits", False))
+    reach = feature_reach(feature)
 
     fps = ds.meta_float("fps_default")
     unconvertible = _time_filter_problems(step, fps)
@@ -1052,6 +1229,8 @@ def _resolve_feature_step(
         return _Resolution(
             step=_unresolved_feature(step, spec, unconvertible),
             scope_dependent=scope_dependent,
+            fits=fits,
+            reach=reach,
         )
 
     frame_start, frame_end = resolve_frame_range(
@@ -1091,6 +1270,8 @@ def _resolve_feature_step(
             parallelizable=feature_parallelizable(step.feature),
         ),
         scope_dependent=scope_dependent,
+        fits=fits,
+        reach=reach,
     )
 
 

@@ -93,6 +93,7 @@ class GlobalScaler:
 
     category = "global"
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
+    fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "global-scaler"
     # 0.2: the output keeps the identity and bookkeeping columns and the fitted
     # columns, and drops every other payload column.
@@ -100,6 +101,7 @@ class GlobalScaler:
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
+    temporal_reach = 0  # standardizes each row by itself
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)

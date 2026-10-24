@@ -69,6 +69,7 @@ from .compatibility import (
     resolve_emits,
 )
 from .lanes import lane_for
+from .reach import class_reach
 from .model import (
     TRACKS_INPUT,
     BoundRef,
@@ -438,7 +439,7 @@ def _keeps_track_frame(provides: Provides | None) -> bool | None:
 
 def _feature_declaration(cls: type) -> Declaration:
     """Read one feature class as a producer and a consumer."""
-    from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES
+    from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES, stacks_inputs
 
     slug = str(getattr(cls, "name", cls.__name__))
     inputs_cls: type | None = getattr(cls, "Inputs", None)
@@ -477,6 +478,7 @@ def _feature_declaration(cls: type) -> Declaration:
             requires_track_shape=bool(getattr(inputs_cls, "_track_input", False)),
             takes_no_inputs=require == "empty",
             cross_joins=slug in CROSS_JOIN_FEATURES,
+            stacks_inputs=stacks_inputs(cls),
             reads_media="media_raw" in roots,
         ),
         emits=emits,
@@ -488,6 +490,8 @@ def _feature_declaration(cls: type) -> Declaration:
         provides=provides,
         param_defaults=_param_defaults(cls, contract_fields(requires, provides)),
         costly_fit=getattr(cls, "costly_fit", False) is True,
+        fits=getattr(cls, "fits", False) is True,
+        temporal_reach=class_reach(cls),
         unavailable=unmet(_prerequisites_of(cls)),
     )
 
@@ -753,6 +757,8 @@ def step_type_detail(
         consumes=tuple(label for label, holds in labels if holds),
         resource_class=declared.resource_class,
         scope_dependent=scope_dependent,
+        fits=declared.fits,
+        temporal_reach=declared.temporal_reach,
         params=() if schema is None else param_rows(schema, entry.reference_fields),
         params_schema=(
             compact_params_schema(schema)

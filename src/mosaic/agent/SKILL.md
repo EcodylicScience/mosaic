@@ -155,6 +155,10 @@ A dataset is a directory with `dataset.yaml` and named roots
   `mosaic libraries`, or the matching `Dataset` methods. A top-level key added by hand
   survives. A newer `manifest_version` raises `ManifestVersionError`. Upgrade mosaic
   then, and leave the version as it is.
+- `splits` in `dataset.yaml` gives a group the role `train`, `test` or `sealed`. Read it
+  with `describe_dataset` or `mosaic splits list`. Only the user sets it, with `mosaic
+  splits`. Never write it, even when it blocks a plan, because it is the record of
+  which data no fit may see.
 - Derived and temporary folders cost only time to delete. Reclaim space with `mosaic
   sweep-tracking`, `prune-media` and `prune-joined`. `mosaic reindex` drops index rows
   whose files are gone. All four are dry runs until given `--apply`. For superseded
@@ -189,7 +193,8 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 
 - Every spatial column is in **video pixels**, and `X`/`Y` are the **body center**, for
   every tracker. For centimeters, record the scale with `ds.set_media_calibration(...)`
-  and run the `scale-to-cm` feature. Do not rescale a tracks table yourself. The overlay
+  and run the `scale-to-cm` feature. For body lengths, run `body-length` and then
+  `scale-to-bl` referencing it. Do not rescale a tracks table yourself. The overlay
   and the crop features refuse a table recorded in centimeters (`trex_v1`,
   `mosaic_cm_v1`). `mosaic upgrade-tracks` converts a `trex_v1` table to pixels.
 - Velocity, speed and heading angle come from features. The `mosaic_v1` schema refuses
@@ -209,8 +214,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 ## Running features
 
 - A run is named `<version>-<10 hex>`, a hash of its parameters, inputs and frame range.
-  The same call again computes nothing. `--overwrite` (`overwrite=True`) recomputes. To
-  change a result, change its parameters. Editing output files breaks the cache.
+  The same call again computes nothing. `--overwrite` (`overwrite=True`) recomputes each
+  entry's output but loads a stored fit and never fits again. To change a result,
+  including a model, change a parameter. Editing output files breaks the cache. To check
+  that a stored result is the one its recipe produces, see `mosaic pipeline verify`
+  below.
 - A tracks variant, op run or model is named `<kind>.<version>-<10 hex>`, such as
   `convert-trex_npz.0.3-6bb5efbf05`. That string is what `tracks_run_id=`, `media=`,
   `model=` and `data=` take.
@@ -233,8 +241,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   as its own sequence, and writes `id1`, `id2`, `perspective`, `group` and `sequence`
   beside its states, so `fit-label-map` can score them (`prediction_column: syllable`).
   `lightning-action` trains and predicts on each `(id1, id2, perspective)` as a
-  sequence of its own, from the entries of its `templates` run's train split, so its
-  scope is part of its run id. A second step with `model` predicts further entries.
+  sequence of its own, from the entries of its `templates` run's train split. Its scope
+  is not part of its run id: the `templates` run names the training set, so a wider
+  request is the same run, which applies the stored fit to the new entries. The first
+  request must hold the training entries and is refused otherwise.
   `sequence-classifier` (`[deep-learning]`, GPU worker) is the same kind of step with a
   registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`). It takes
   `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head registered in
@@ -243,7 +253,8 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   classifier runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the
   members' out-of-fold probabilities and refuses a member fitted without `cv_folds`. It
   writes the members' fold table when they all have the same one, so an average of
-  cross-validated runs can be a member of a blend.
+  cross-validated runs can be a member of a blend. A list or `uniform` weights fit nothing,
+  so those members need no fold table, and mixed members are averaged without one.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
@@ -295,6 +306,19 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `coverage_shortfall` is answered with `--allow-partial` (`allow_partial=True`), and
   only once the user accepts results over fewer entries. Details:
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
+- A step given a fitted `model` (`arhmm`, `kpms`, `vame`, the identity models,
+  `lightning-action`) applies it to each entry alone, so its scope is not in its run id
+  and a wider request is the same run. `evaluate-labels` takes several inputs over
+  disjoint entries and scores them as one, and the plan refuses inputs asked for the
+  same entry. `extract-templates`, `extract-labeled-templates`, `fit-label-map` and a
+  `pair-posedistance-pca` without a `model` still hash the entries they cover, so scope
+  them to the training groups once.
+- `mosaic pipeline verify --manifest <manifest> --recipe <recipe>` (with the
+  `--step-scope` you ran) fits each fitting step of a finished recipe again in a scratch
+  directory and compares it with the stored run. It exits 1 on a difference and when it
+  compared nothing, and it writes nothing to the dataset. Features that train a network
+  match exactly on CPU at one thread count and otherwise within `--atol`. Propose it to
+  the user to check a result reproduces, and run it only when they ask.
 - `mosaic inventory` reports what exists, with coverage and a status such as
   `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report
   attempts. A feature run is measured over the entries it was asked for, and
@@ -313,6 +337,27 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   group onto a `pair-posedistance-pca` basis fitted on the training groups, add a second
   step of that feature with `"model": {"step": "<fit step>", "pattern":
   "model.joblib"}` and the fit's other params.
+- When the dataset gives groups roles (`splits`), the plan refuses a step that fits on
+  the entries it covers, such as `extract-templates`, `extract-labeled-templates`,
+  `fit-label-map`, `arhmm`, `kpms`, `vame` or the identity models (`fits` in
+  `describe_step_types`), when they include a `test` or `sealed` group. Scope it to the
+  `train` groups, and apply what it fitted to the others through the params reference
+  as above. A scope-free fitter such as `xgboost` is held to the same rule by its
+  templates step. A plan over the whole dataset names the groups it covers and their
+  roles in its cautions: narrow it before you submit.
+- A `sealed` group is scored once, by the user, and its labels stay outside the dataset.
+  Data added after your fits is scored with `mosaic pipeline score --manifest <manifest>
+  --recipe <recipe> --heldout <file> --answers <answers.json> --out <dir>`, which works
+  on a copy of the dataset and exits 1 with `RUN IDS CHANGED` when adding the data would
+  fit a step of your recipe again. Propose it, and run it only when the user asks. Give
+  `--step-scope` as you ran the recipe, the raw format's source options (`--src-format`,
+  `--multi-sequences-per-file`, `--group-from`, `--patterns`, `--labels-path`) and the
+  evaluation protocol (`--perspective`, `--average-over`); see `mosaic pipeline score
+  --help`. To find out beforehand, call `plan_recipe` with
+  `assume_added: [group]`: its cautions name the steps that would refit and the steps
+  that would only re-score. A `test` group that is already in the dataset is scored
+  with an `evaluate-labels` step narrowed to it, once. An `evaluate-labels` step that
+  reads a sealed group asks the user to confirm (`score_sealed`).
 
 ## Reading results with labels
 
@@ -335,15 +380,38 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `evaluate-labels` to the training groups: that score is the pooled out-of-fold one.
   For the final score widen the same `xgboost` step to the test groups, which is the
   same run, and keep the labeled templates on the training groups. Widening a
-  `sequence-classifier` or `lightning-action` step is not the same run: they fit from the
-  step's own inputs, so the wider step fits again, about 5 minutes per seed with five
-  folds on a GPU (an estimate). Splitting fitting from applying, planned for every
-  classifier, removes the refit. The score is not nested, and a fold is whole sequences
+  `sequence-classifier`, `lightning-action` or fitted-weight `probability-ensemble` step
+  is the same run too: their `templates` run (or the members' folds) names the training
+  set, so the wider request fits nothing again and computes only the new entries. Ask
+  the first request over a scope that holds the training entries. A fit does not move
+  when a training entry is converted again; only that entry's output is recomputed with
+  the stored model, so refit on purpose by changing a parameter. `fit_scope.json` lists
+  the entries of the templates run, not of the request. The score is not nested, and a
+  fold is whole sequences unless `cv_unit` is `block`
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+- With one training sequence there is nothing to hold out, and `cv_folds` refuses it. Set
+  `cv_unit: "block"` on `xgboost` or `sequence-classifier`: each sequence is cut into
+  `cv_blocks_per_sequence` blocks of frames, a fold holds blocks out, and `cv_folds.parquet`
+  has a row per block with `start` and `stop`. Set `cv_gap_frames` to the longest window
+  above the classifier. The plan refuses a gap shorter than the `temporal_reach` the steps
+  above declare, and cautions on a step that declares none while the gap is 0 or short of
+  what is known. `xgboost` needs templates from `extract-labeled-templates` 0.7, which
+  moves the run id of every classifier built on them. `lightning-action` has no `cv_unit`.
+- Choose a decision threshold on the out-of-fold probabilities, never on the test groups:
+  `tune-threshold` over a classifier fitted with `cv_folds`, then a one-member
+  `probability-ensemble` over the same classifier with `decision_threshold: {"step":
+  "<tune>"}`. The report `tune_report.json` gives `plain` (optimistic) and `nested` scores,
+  and `warnings` when a cut is the lowest or highest `grid` value, which is the edge of what
+  was tried and not a tuned value. The default class takes threshold 1.0, and a class left
+  out of `classes` has 0
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
   over sequences from them (`bootstrap_sequences`, with a required `random_state`),
   and combines the reports of separate runs (`pool_reports`, `aggregate_reports`).
+  In a recipe, give one `evaluate-labels` step several inputs over disjoint entries,
+  such as a cross-validated run over the training groups and an applied one over the
+  test groups, and it reports their union with the pooled counts of one run.
 - In Python, `load_values(ds, [ResultColumn(...), GroundTruthLabelsSource()])` gives
   each row its label, and `labels_run_id=` picks a labels variant when the dataset
   holds two.
@@ -365,6 +433,14 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 
 - Find step types with `describe_step_types` and a query, then call it with
   `names=[...]` for the params of the ones you choose.
+- A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
+  server allows it, `manage_dataset` creates a dataset (`create`, a `path` inside the
+  server's dataset roots), declares raw files (`add_source` with `kind`, `path` inside
+  its source roots, and for tracks `patterns` and `src_format`), indexes them
+  (`scan`) and sets tags (`set_tags`). Creating and changing sources ask the user.
+  Then plan a recipe that begins with `convert-tracks` (and `convert-labels`). A
+  refusal with `roots_not_configured` means the user runs `mosaic init`,
+  `mosaic sources add` and `mosaic scan` instead. Never try to change `splits`.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
   more than 100 entries) and wait for their approval, then pass its fingerprint to
@@ -373,9 +449,18 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;
   `problems`, `cautions` and the other plan-level blocks are on the first page only.
-- `entries` takes `[group, sequence]` pairs or `{"groups": [...]}`, and
-  `step_entries` narrows single steps by step id. Pass the same ones to
+- `entries` takes `[group, sequence]` pairs, `{"entries": [...]}` or
+  `{"groups": [...], "sequences": [...]}`, and `step_entries` narrows single steps by
+  step id in the same forms. A step scope is intersected with `entries`, so leave
+  `entries` unset when steps are scoped to different groups. Pass the same ones to
   `plan_recipe` and `submit_pipeline`, or the fingerprint will not match.
+- Write a step repeated over seeds, behaviors or folds once with `repeat`:
+  `{"id": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}, ..., "params": {"random_state":
+  "{seed}"}}` is three steps, and `{"step": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}}`
+  in `inputs` is three inputs. Save a long recipe with `patch_recipe` (no `ops`), then pass
+  `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with `dataset`),
+  `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
+  (`add_step`, `remove_step`, `set_param`, `replace_step`), each returning a new digest.
 - To reclaim the runs of an earlier recipe that wrote to storages this one no longer
   names, call `plan_recipe` with `cleanup: "superseded"` and read `retirable`: name,
   digest, request ids and run count; `retirable` lists the eight newest, and
@@ -393,7 +478,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - This guide is also the `mosaic://guide` resource. Read it once.
 - Set `confirm` only after the user agrees in the conversation to the conditions
   that the refusal lists.
-- After `confirmation_unanswered` or `confirmation_declined`, the call did not run.
+- After `confirmation_unanswered`, `confirmation_declined` or
+  `confirmation_unavailable` (a server over HTTP that does not take `confirm` from you),
+  the call did not run.
   Stop and report the plan and the conditions. Do not call it again, or run the same
   work through the `mosaic` CLI, unless the user asks. An operator who runs you
   unattended may approve conditions in advance with a hook

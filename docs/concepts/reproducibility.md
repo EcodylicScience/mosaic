@@ -79,9 +79,32 @@ Only the revision's *content* enters an identifier. Its number is a label, so as
 for "the latest" and asking for the number that resolves to are the same run, and
 annotations restored to an earlier state reuse what was computed for that state.
 
+## Checking that a result reproduces
+
+An identifier records inputs, so it cannot tell you that the stored answer is the one
+the recipe produces today. `mosaic pipeline verify` can. It plans a finished recipe as
+`pipeline plan` does, fits each fitting step again in a scratch directory outside the
+dataset, and compares the new fit with the stored run: the entries' outputs, the files
+the fit saves and the score of each `evaluate-labels` step, which is scored on the
+predictions of the new fit. Nothing is written under the dataset.
+
+Most features must match exactly. A feature that trains a network matches exactly on a
+CPU at one thread count, and is otherwise held to `--atol`, which is 1e-5 unless you say
+otherwise. The tolerance is a decision and not a default to loosen: the same network on
+a CPU at the same thread count repeats exactly, but across thread counts on Linux its
+probabilities moved by about 7e-3 on average while about 99% of rows kept their most
+probable class, and across a GPU and a CPU they move more. The verb fits at one thread
+count (`--n-threads`). To check a run that was fitted at another thread count or on a GPU,
+raise `--atol` on purpose and read the argmax agreement beside the largest difference. The
+verb exits 1 on a difference, and also when it compared nothing, such as a recipe that has
+not run or a `--step-scope` the run did not use.
+
 ## What this does not promise
 
 Determinism is a property of the *code*, and the identifier only records inputs. A
 feature that used unseeded randomness or depended on filesystem ordering would produce
 a different answer under the same `run_id`, and nothing would notice. mosaic's own
-features avoid that; a feature you write must too.
+features avoid that; a feature you write must too. [Checking that a result
+reproduces](#checking-that-a-result-reproduces) is how you find out, for the fits a
+recipe makes, whether the stored answer is the one the recipe gives today. It does not
+reach a feature that fits nothing, and it does not tell you why a result differs.

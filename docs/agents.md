@@ -131,29 +131,35 @@ cleanup:               # which superseded runs a cleanup keeps
 max_workers: 1         # the most entries a parallelizable step computes at once
 allow_process_mode: false   # let a submission ask for process workers
 min_free_memory_fraction: 0.10   # the share of host memory a parallel run keeps free
+dataset_roots: []      # where manage_dataset may create datasets; those below are served
+source_roots: []       # where manage_dataset may declare sources of raw files
 ```
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
-The agent cannot open a dataset outside this list. A manifest without a `uuid`, or one
+The agent cannot open a dataset outside this list, except one it creates, or that
+appears, below a `dataset_roots` directory: those are served without a restart. A manifest without a `uuid`, or one
 that does not read, is left out and reported on the server's standard error.
 
 ### The tools
 
 | Tool | Result |
 | --- | --- |
-| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags and counts |
+| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits` and counts |
 | `list_sequences` | The entries, with the tracks table each resolves to |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
+| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, or sets the dataset's tags, inside the roots you allow. Reports the dataset's `next_steps` |
+| `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document |
+| `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
 
-Only `submit_pipeline` and `cancel_request` change a dataset. A submission must name the
+Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
+`patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission must name the
 fingerprint of a plan made against the dataset as it is now. The agent therefore plans
 against the current dataset before it submits. Ask it to show you the plan. A submitted
 request runs in a background process that outlives the server and the client. Follow it
@@ -183,13 +189,43 @@ the recipe again. The server offers no tool for this
 ([When a process is gone](guides/pipelines/run-and-see-what-ran.md#when-a-process-is-gone)).
 
 `plan_recipe`, `submit_pipeline` and `get_inventory` take `entries` as a list of
-`[group, sequence]` pairs or as `{"groups": [...]}`. `plan_recipe` and
+`[group, sequence]` pairs or as the scope `--step-scope` takes: `{"entries": [...]}`, or
+`{"groups": [...], "sequences": [...]}` with either left out. `plan_recipe` and
 `submit_pipeline` also take `step_entries`, which narrows single steps by step id: a
 classifier fitted on the training groups and scored on the test groups is one request
-([Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes)).
+([Step scopes](guides/pipelines/chain-steps.md#narrow-one-step-step-scopes)). A step
+scope is intersected with `entries`, so leave `entries` unset when steps are scoped to
+different groups.
+
+A long recipe is sent once. The agent writes a step repeated over seeds or classes once,
+with `repeat` ([Repeat a step](guides/pipelines/chain-steps.md#repeat-a-step)), saves the
+recipe with `patch_recipe`, and from then on passes `{"digest": "<digest>"}` (or
+`{"saved": "<name>"}`) as the recipe and changes it with `patch_recipe` edits.
 Conversion is a recipe step too: `convert-tracks` and `convert-labels` convert the raw
-files a scan recorded. Declaring sources and scanning stay with you, so the agent
-proposes `mosaic sources add` and `mosaic scan` when a dataset has nothing scanned.
+files a scan recorded.
+
+### Datasets made by the agent
+
+With `dataset_roots` and `source_roots` in the server's configuration, `manage_dataset`
+lets the agent start from a folder of raw files: create a dataset inside a dataset root
+(`create`), declare the folder as a source inside a source root (`add_source`), index it
+(`scan`), then plan a recipe whose first step is `convert-tracks`. Without the roots,
+`create` and `add_source` are refused with `roots_not_configured`, and the agent proposes
+`mosaic init`, `mosaic sources add` and `mosaic scan` instead.
+
+- Every path is resolved, symbolic links and `..` included, and must lie inside a root.
+  A source's `patterns` and `files` are relative to its path and may not be absolute
+  or hold `..`. Keep held-out and sealed data outside the source roots: the agent can
+  declare anything inside them.
+- Creating a dataset (`create_dataset`) and declaring or removing a source
+  (`add_source`) ask you to confirm. Scanning and setting tags do not. A removed
+  source's indexed rows stay, as `mosaic sources remove` keeps them.
+- `scan` reads and checksums every file, and a large folder takes minutes.
+- `set_tags` sets dataset tags; a tag not defined yet is typed by its first value.
+- No action writes `splits`, and a managed dataset is refused.
+- `describe_dataset` and `mosaic describe` list `next_steps` for a dataset that is
+  not ready: a source to declare, sources to scan, raw files to convert.
+- Files cannot be uploaded: the raw files must already be on the server's disk.
 
 The server also offers resources (the agent guide, the step-type catalog, and per
 dataset its manifest, inventory, recipes, requests, run-logs, recorded params and a
@@ -245,19 +281,32 @@ Restart it after installing an extra or building a tool's environment.
 - the submission removes superseded runs of its steps' storage after its steps finish
   (`cleanup`). The question names how many runs, their size and their storages, and the
   retired recipes that wrote some of them. A hook that approves `cleanup` approves a
-  retirement too.
+  retirement too;
+- a step scores predictions against labels over a group that the dataset's
+  [`splits`](dataset.md#hold-groups-out-of-training) seal (`score_sealed`). A sealed
+  group allows one look, and this spends it. It fires whenever an `evaluate-labels` step
+  is planned over entries of a sealed group, whether or not the group's labels are in the
+  dataset. Keeping the labels outside the dataset until `mosaic pipeline score` adds them
+  to a copy is the stronger protection.
+
+`manage_dataset` asks to confirm creating a dataset (`create_dataset`), and declaring
+or removing a source (`add_source`).
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
 
 A plan over the whole dataset, or a step asked for more than 100 entries, does not
 ask. `plan_recipe` reports each as a caution, and the agent shows you the cautions
-with the plan before it submits.
+with the plan before it submits. When the dataset gives its groups roles, the caution
+for a whole-dataset plan names the groups it covers and their roles.
 
 A client that supports MCP elicitation shows you a form listing the conditions, and
 only your answer confirms. With any other client, the tool refuses with reason
 `confirmation_required`, the agent asks you in the conversation, and it repeats the
-call with `confirm` set once you agree. Your answer confirms only the conditions the
+call with `confirm` set once you agree. A server serving over HTTP does not take that
+`confirm` unless it was started with `--allow-model-confirm`: it refuses with
+`confirmation_unavailable` instead ([Serving another machine](#serving-another-machine-over-http)).
+Your answer confirms only the conditions the
 form named. A call that meets another condition by the time it runs, such as a request
 of the same recipe started since, shows the form again. The form has two other
 outcomes:
@@ -279,6 +328,26 @@ hook to read:
 A dataset whose manifest names a managing service (`managed_by`), such as a mosaic-api
 deployment, refuses both tools unless the server is started with
 `--allow-managed-writes` or `allow_managed_writes: true`. Every read tool still works.
+
+### Held-out groups
+
+A dataset can mark groups as held out with [`splits`](dataset.md#hold-groups-out-of-training).
+The agent reads them and never writes them: its tools cannot give a group a role or take
+one away, so you set them with `mosaic splits`. With roles set:
+
+- `plan_recipe` refuses a step that fits on the entries it covers when they include a
+  `test` or `sealed` group, and `submit_pipeline` refuses the same recipe. The problem
+  names the step, the groups and how to scope it. A step that applies a fitted model to
+  a test group is not refused.
+- `plan_recipe` takes `assume_added`, a list of groups, and notes in its cautions which
+  steps would fit again and which would only re-score if those groups joined the
+  dataset. It reads the recipe and changes nothing.
+- `submit_pipeline` asks you to confirm a step that scores a sealed group
+  (`score_sealed`).
+
+To score data the agent has never seen, keep it outside the dataset and run
+`mosaic pipeline score` yourself, on a copy of the dataset
+([the protocol](guides/pipelines/chain-steps.md#score-on-held-out-data)).
 
 ### Unattended runs: approving conditions with a hook
 
@@ -345,7 +414,10 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - `reindex` and `release`;
 - `mosaic cancel --assume-exited`, which records as cancelled an attempt that no
   machine can check, on your word that its process has exited;
-- any change to the manifest: `init`, `sources`, `tags`, `notes`, `libraries`;
+- any change to the manifest beyond `manage_dataset`'s, and every change when the
+  server has no `dataset_roots` and `source_roots`: `notes`, `libraries`, `splits`,
+  `sources add-files`;
+- `mosaic pipeline score`, which adds held-out data to a copy of the dataset;
 - `extract-frames`, whose frames annotation tools refer to by path;
 - accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`).
 
@@ -484,6 +556,48 @@ variant its events and class names, `describe_dataset`
 returns the manifest's notes and tags, and the other tools return entry names, params,
 paths and error messages. Serve only datasets whose values may leave your machine, or
 use a client with a local model.
+
+### Serving another machine over HTTP
+
+When the data and the GPUs are on a server and the MCP client runs on your laptop, the
+server can listen on HTTP instead of stdio. It serves one user, you, on a network you
+trust, such as a tailnet:
+
+```bash
+python -c 'import secrets; print(secrets.token_urlsafe(32))' > ~/.mosaic-mcp-token
+chmod 600 ~/.mosaic-mcp-token
+mosaic agent serve --config ~/mosaic-mcp.yaml \
+    --http 100.101.102.103:8765 --token-file ~/.mosaic-mcp-token \
+    --allowed-host gpu-box.tail1234.ts.net
+```
+
+The client connects to `http://gpu-box.tail1234.ts.net:8765/mcp` with the header
+`Authorization: Bearer <token>`. A request without the token, or with another, gets
+401.
+
+- **The token is required**, even on `127.0.0.1`: the other users of a shared machine
+  reach its loopback address too. The token file must be mode 0600 and hold one word of
+  at least 32 characters.
+- **Name the host clients use** with `--allowed-host` (repeatable). A request naming
+  another host is refused, which stops a web page from reaching the server through DNS
+  rebinding. On a loopback address the loopback names are checked without it; on any
+  other address the check is off without it, and the server warns.
+- **The traffic is not encrypted** unless you pass `--tls-cert` and `--tls-key`. A
+  tailnet encrypts it already; otherwise put the server behind a reverse proxy that
+  terminates TLS.
+- **Confirmations need a client that asks you.** A client that supports MCP
+  elicitation shows you the confirmation form during the call, as over stdio. A client
+  that cannot is refused with `confirmation_unavailable` for anything that needs a
+  confirmation, because only its model could set `confirm`. Start the server with
+  `--allow-model-confirm` to accept that `confirm` anyway, on your own judgement. The
+  `mosaic agent confirm-hook` is a Claude Code hook and answers only Claude Code's
+  forms.
+- A submitted request runs in a background process on the server, so it keeps running
+  when the client disconnects or the network drops. Reconnect and read it with
+  `get_request_status`.
+
+`mosaic agent install --mcp` registers the stdio server only. Register the URL in your
+client by hand.
 
 ### Shared deployments
 

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
+    StepTypeDetail,
     StepTypeNotFound,
     catalog_index,
     compact_params_schema,
@@ -84,6 +85,24 @@ def test_identifier_fields_carry_no_reference_flag() -> None:
 def test_a_feature_reports_its_class_scope_dependence() -> None:
     assert step_type_detail("extract-templates").scope_dependent
     assert not step_type_detail("speed-angvel").scope_dependent
+
+
+def test_fits_is_not_scope_dependence() -> None:
+    # A scope-free fitter learns without naming its run by its scope, and a
+    # scoring step names its run by its scope and learns nothing.
+    assert step_type_detail("xgboost").fits
+    assert not step_type_detail("xgboost").scope_dependent
+    assert step_type_detail("evaluate-labels").scope_dependent
+    assert not step_type_detail("evaluate-labels").fits
+    assert not step_type_detail("speed-angvel").fits
+
+
+def test_a_detail_served_without_fits_reads_as_not_fitting() -> None:
+    # An API older than the field serves no ``fits``; its consumers still parse.
+    served = json.loads(step_type_detail("speed-angvel").model_dump_json())
+    del served["fits"]
+
+    assert not StepTypeDetail.model_validate(served).fits
 
 
 def test_a_feature_reports_whether_it_computes_entries_in_parallel() -> None:

@@ -132,6 +132,7 @@ class PairFacing:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    temporal_reach = 0  # compares two animals within a frame
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"

@@ -62,6 +62,7 @@ from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES, load_entry_data
 from mosaic.core.pipeline.tracks_index import write_tracks_row
 from mosaic.core.pipeline.types import (
     ArtifactSpec,
+    DependencyLookup,
     Feature,
     InputStream,
     LoadSpec,
@@ -113,7 +114,9 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     },
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
     "probability-ensemble": {"default_class": 0},
+    "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
+    "tune-threshold": {"default_class": 0, "nested": False},
     "sequence-classifier": {
         "templates": {"step": "extract-labeled-templates"},
         "labels": {"kind": "behavior"},
@@ -140,6 +143,7 @@ and its declaration does not require it.
 
 ``scale-to-cm`` reads its scale from the media index when ``cm_per_pixel`` is
 unset, and the media index of :func:`_entry_dataset` records none.
+``scale-to-bl`` needs a length, stated or read from a ``body-length`` run.
 
 ``egocentric-crop`` writes its crop keypoints, its one conditional output, under
 ``transform_keypoints``. ``interaction-crop-pipeline`` writes a color crop
@@ -161,14 +165,21 @@ their one writer.
 
 SOURCES: dict[str, tuple[str, ...]] = {
     "attention-target": ("pair-facing",),
+    "nn-delta-bins": ("nn-delta-response",),
     "pair-wavelet": ("pair-posedistance-pca",),
     "probability-ensemble": ("xgboost",),
+    "tune-threshold": ("xgboost",),
 }
 """Inputs a feature reads in place of the tracks or :data:`MEASUREMENTS`.
 
 A feature reading pair rows cannot also read the tracks, whose rows are about
-individuals.
+individuals. ``nn-delta-bins`` reads the responses of ``nn-delta-response``,
+whose rows are individuals, as the category column of ``id-tag-columns`` is;
+``neighbor-delta-response`` writes the same responses as pair rows.
 """
+
+FOLD_TABLES = frozenset({"tune-threshold"})
+"""The features that read their input's ``cv_folds.parquet``, which the fixture writes."""
 
 MEASUREMENTS = "speed-angvel"
 """What a feature that does not read the tracks reads in their place.
@@ -323,6 +334,7 @@ LABELS: dict[str, Callable[[Path], Path]] = {
     "extract-labeled-templates": _behavior_labels,
     "fit-label-map": _behavior_labels,
     "label-statistics": _behavior_labels,
+    "tune-threshold": _behavior_labels,
 }
 """The labels file that a feature reads, where it is not the ``id_tags`` one."""
 
@@ -427,6 +439,19 @@ class _ReadsTheDataset(Protocol):
     def bind_dataset(self, ds: Dataset) -> None: ...
 
 
+def _fold_lookup(directory: Path) -> DependencyLookup:
+    """The input of a step that tunes on out-of-fold rows: one entry, in one fold.
+
+    The fold table is read from beside an output of the classifier run, which is
+    only named here. ``tune-threshold`` reads the table and no output.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"group": GROUP, "sequence": SEQUENCE, "fold": 0}]).to_parquet(
+        directory / "cv_folds.parquet"
+    )
+    return {(GROUP, SEQUENCE): directory / f"{GROUP}__{SEQUENCE}.parquet"}
+
+
 def _entry_dataset(directory: Path, tracks: pd.DataFrame) -> Dataset:
     """Return a dataset containing *tracks* and a video of the entry.
 
@@ -517,7 +542,9 @@ def _run(
                 dataset = _entry_dataset(directory / "dataset", tracks)
             feature.bind_dataset(dataset)
         labels = LABELS.get(step.feature, _labels)(directory)
-        lookups = {"labels": {(GROUP, SEQUENCE): labels}}
+        lookups: dict[str, DependencyLookup] = {"labels": {(GROUP, SEQUENCE): labels}}
+        if step.feature in FOLD_TABLES:
+            lookups["_input_0"] = _fold_lookup(directory / step.id / "classifier")
         state = _state(directory, step.id)
         if not feature.load_state(state, _artifacts(feature, step, directory), lookups):
             feature.fit(_stream(merged))

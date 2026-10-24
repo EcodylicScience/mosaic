@@ -14,8 +14,10 @@ import math
 from collections import Counter
 from typing import TYPE_CHECKING, Final
 
+from pydantic import Field
+
 from mosaic.core.json_value import JsonValue
-from mosaic.core.manifest import DatasetTag, LibraryLink
+from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
 from mosaic.core.pipeline.inventory import (
     ArtifactKind,
     DatasetInventory,
@@ -23,7 +25,11 @@ from mosaic.core.pipeline.inventory import (
     inventory,
     reportable_universe,
 )
+from mosaic.core.pipeline.dataset_indexes import root_subdirectories
+from mosaic.core.pipeline.label_series_index import series_index_path
+from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 from mosaic.core.schema import LEGACY_SCHEMA
 from mosaic.core.strict_model import StrictModel
 
@@ -36,6 +42,8 @@ __all__ = [
     "DatasetSummary",
     "FrameRateCount",
     "TrackSchemaCount",
+    "dataset_next_steps",
+    "raw_label_rows",
     "dataset_summary",
 ]
 
@@ -112,6 +120,8 @@ class DatasetSummary(StrictModel):
         tags: The typed dataset tags, in display order.
         libraries: The linked library datasets, in lookup order.
         continuous_groups: The groups whose sequences divide one recording.
+        splits: The role of each named group in a held-out protocol, ``train``,
+            ``test`` or ``sealed``. Empty when the manifest declares none.
         managed_by: The manifest's top-level ``managed_by`` value, verbatim.
         api_managed: Whether ``managed_by`` names a managing service.
         counts: Sequences, videos and artifacts.
@@ -120,6 +130,10 @@ class DatasetSummary(StrictModel):
             with a blank or non-positive rate are left out.
         inventory_errors: The inventory's read failures, one per kind, each
             prefixed with its kind. That kind's count omits what failed.
+        next_steps: What the dataset needs before a pipeline reads its tracks
+            or labels, from its declared sources, its raw indexes and its
+            converted tables (:func:`dataset_next_steps`). Empty when nothing
+            is missing.
     """
 
     manifest: str
@@ -134,10 +148,12 @@ class DatasetSummary(StrictModel):
     continuous_groups: tuple[str, ...]
     managed_by: JsonValue
     api_managed: bool
+    splits: dict[str, SplitRole] = Field(default_factory=dict)
     counts: DatasetCounts
     track_schemas: tuple[TrackSchemaCount, ...]
     frame_rates: tuple[FrameRateCount, ...]
     inventory_errors: tuple[str, ...]
+    next_steps: tuple[str, ...] = ()
 
 
 def dataset_summary(
@@ -172,6 +188,7 @@ def dataset_summary(
         tags=manifest.ordered_tags(),
         libraries=manifest.libraries,
         continuous_groups=manifest.continuous_groups,
+        splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
         api_managed=manifest.is_managed,
         counts=DatasetCounts(
@@ -200,6 +217,7 @@ def dataset_summary(
             )
         ),
         inventory_errors=held.errors,
+        next_steps=dataset_next_steps(ds, converted_tracks=len(tracks)),
     )
 
 
@@ -224,3 +242,89 @@ def _frame_rate(cell: str) -> float | None:
     except ValueError:
         return None
     return rate if math.isfinite(rate) and rate > 0 else None
+
+
+def dataset_next_steps(
+    ds: Dataset, *, converted_tracks: int | None = None
+) -> tuple[str, ...]:
+    """What *ds* needs before a pipeline reads its tracks or labels.
+
+    A dataset that is scanned and not converted has no entries, and a plan over
+    it covers none, so it reads as empty. Each step names what is missing:
+    a tracks source to declare, sources to scan, raw files to convert.
+
+    Args:
+        ds: The dataset. Never written to.
+        converted_tracks: The tracks tables that exist, when the caller has
+            counted them.
+    """
+    if converted_tracks is None:
+        converted_tracks = len(existing_tracks_records(ds, read_tracks_index(ds)))
+    steps: list[str] = []
+    sources = ds.manifest.sources
+    raw_tracks = _raw_rows(ds, "tracks_raw")
+    declared = sources.media or sources.tracks or sources.labels
+    if converted_tracks == 0:
+        if not raw_tracks and not declared:
+            steps.append(
+                "declare a source of raw tracks files (mosaic sources add, or "
+                "manage_dataset add_source), then scan it"
+            )
+        elif sources.tracks and not raw_tracks:
+            steps.append(
+                "scan the declared tracks sources (mosaic scan, or manage_dataset "
+                "scan): the raw tracks index is empty"
+            )
+        elif raw_tracks:
+            steps.append(
+                f"convert the {raw_tracks} raw tracks files: begin a recipe with a "
+                "convert-tracks step and read its output with tracks: {step: <id>}"
+            )
+    files = [source for source in sources.labels if source.series is None]
+    series = [source.series for source in sources.labels if source.series is not None]
+    raw_labels = _raw_rows(ds, "labels_raw")
+    unscanned = (files and not raw_labels) or any(
+        not _series_rows(ds, name) for name in series
+    )
+    if unscanned:
+        steps.append(
+            "scan the declared labels sources (mosaic scan, or manage_dataset "
+            "scan): a raw labels index is empty"
+        )
+    if files and raw_labels:
+        if not _has_converted_labels(ds):
+            steps.append(
+                f"convert the {raw_labels} raw labels files with a convert-labels "
+                "step, and read them with labels: {step: <id>}"
+            )
+    return tuple(steps)
+
+
+def raw_label_rows(ds: Dataset) -> int:
+    """The raw labels index rows: the uploaded files' and every series'."""
+    names = {source.series for source in ds.manifest.sources.labels if source.series}
+    return _raw_rows(ds, "labels_raw") + sum(
+        _series_rows(ds, name) for name in sorted(names)
+    )
+
+
+def _series_rows(ds: Dataset, series: str) -> int:
+    """The rows of one label series' index, 0 when it is absent."""
+    if not ds.has_root("labels_raw"):
+        return 0
+    return len(read_tracks_raw_index(series_index_path(ds, series)))
+
+
+def _raw_rows(ds: Dataset, root: str) -> int:
+    """The rows of a raw index, 0 when its root is undeclared or it is absent."""
+    if not ds.has_root(root):
+        return 0
+    return len(read_tracks_raw_index(ds.get_root(root) / "index.csv"))
+
+
+def _has_converted_labels(ds: Dataset) -> bool:
+    """Whether any labels kind has a converted table in its index."""
+    return any(
+        len(read_labels_index(ds, kind)) > 0
+        for kind in root_subdirectories(ds, "labels", require_index=True)
+    )
