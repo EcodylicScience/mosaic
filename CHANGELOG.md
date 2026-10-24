@@ -8,6 +8,32 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: neighbor maps over every neighbor, and body lengths as a unit
+
+**`nn-delta-bins` 0.1 to 0.2.** The two-dimensional output gained an `occupancy`
+metric: the count of neighbor positions per bin, unmirrored, with `value` the fraction
+of the binned rows in it. Every `nn-delta-bins` run id moves with the version, and a
+default run writes the new rows beside the `turn` and `speed` rows, which are
+unchanged. `start_time` and `end_time` bin only the rows in `[start_time, end_time)`
+of the `time` column, which the input must then carry. `focal_category_col` takes
+`null`, which bins every row together with `center_category` null and requires no
+category column.
+
+**`neighbor-delta-response`** writes the response of `nn-delta-response` against every
+neighbor rather than the nearest: one pair row per focal, neighbor and frame (`id1`,
+`id2`, `perspective`), with `neighbor_dist` and `neighbor_rank`. `max_neighbor_rank=1`
+reproduces the nearest-neighbor pairing. `time_shuffle` shifts each neighbor's
+trajectory circularly by its own seeded offset, the chance-level control of a map.
+`windowed_delta` in `nn_delta_response` lost its leading underscore, and the
+nn-delta-response run id does not move.
+
+**`body-length` and `scale-to-bl`.** `body-length` measures each individual's length
+along a chain of keypoints, by index or name, or reads a length column a tracker
+measured, and reports the per-individual median over the sequence. `scale-to-bl`
+divides every length column `scale-to-cm` would scale by one length per sequence, the
+median over individuals, from an explicit `length` or a referenced `body-length` run.
+`BodyLengthResult` joins `mosaic.core.pipeline.types`.
+
 ## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
 
 **`mosaic prerequisites` prints the runs that an op needs before it reads its entries.**

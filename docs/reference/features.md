@@ -3,7 +3,7 @@
 
 # Features
 
-53 features are registered. Each one runs as
+56 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -65,6 +65,19 @@ Per-frame attention target with group-membership labeling.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `id_group_map` | `object` \| `None` | `null` |  | Maps each individual id, as a string, to a group label. Unset, focal_group and target_group are always NA and attention_type is none (no facing target) or unknown (a target was picked but its group label is missing). |
+
+### `body-length`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.body_length.BodyLength`
+
+Body length of each individual, per frame and as a per-sequence median.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source` | `"keypoints"` \| `"column"` | `"keypoints"` |  | Where the length comes from. keypoints sums the distances between consecutive keypoints of the chain that keypoints names, a polyline that follows a bent body. column reads a per-row length a tracker already measured, from the column that column names. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The chain of keypoints the length runs along, from the front of the body to the back, each by index or by name. Unset, every keypoint in the table's order. A frame where any keypoint of the chain is missing has no length. Read when source is keypoints. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | Names for the table's keypoints, in index order, so that keypoints can name them. Must list one name per keypoint the table carries. |
+| `column` | `string` | `"body_length"` | min length `1` | The column holding a length already measured per row, read when source is column. |
 
 ### `body-scale`
 
@@ -185,6 +198,33 @@ Version `0.3` &middot; `mosaic.behavior.feature_library.nearestneighbor.NearestN
 Per-sequence feature computing nearest-neighbor identity and relative kinematics.
 
 No parameters.
+
+### `neighbor-delta-response`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.neighbor_delta_response.NeighborDeltaResponse`
+
+Change in a focal individual's position, heading and speed, by each neighbor.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
+| `speed_col` | `string` | `"SPEED"` |  | The focal individual's speed column. Falls back to speed when absent. |
+| `focal_col` | `string` | `"Focal_fish"` |  | The column flagging a focal individual. Passed through for the focal and looked up for the neighbor as neighbor_focal when present, the category columns nn-delta-bins splits by. |
+| `diff_numframes` | `integer` | `4` | >= `1` | How far ahead the response delta is measured. [frames] |
+| `max_neighbor_rank` | `integer` \| `None` | `null` |  | Keep only the neighbors this close in rank, 1 being the nearest in that frame. 1 reproduces the nearest-neighbor pairing of nn-delta-response. Unset, every neighbor. |
+| `wrap_angle` | `boolean` | `true` |  | Wrap the heading difference to [-pi, pi]. When False, the raw difference is kept. |
+| `divide_dangle_by_frames` | `boolean` | `true` |  | Divide the heading change by the number of frames it spans. When False, the raw windowed difference is kept. |
+| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the sampling frame rate. Together with divide_dangle_by_frames this gives radians per second. |
+| `time_shuffle` | `boolean` | `false` |  | Shift each neighbor's trajectory in time, circularly over the sequence and by its own random offset, before placing it in the focal's frame: the chance-level control of a neighbor map. The focal's own movement is not shifted. |
+| `shuffle_seed` | `integer` | `0` |  | Seed of the shuffle offsets, combined with the group and sequence so that each sequence draws its own offsets and every run draws the same. |
+| `shuffle_min_shift` | `integer` | `300` | >= `1` | The smallest time shift of a shuffled neighbor, in either direction. A sequence spanning no more than twice this shift refuses to shuffle. [frames] |
+
+??? note "`SamplingConfig`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `nn-delta-response`
 
@@ -423,6 +463,31 @@ CWT spectrograms on PairPoseDistancePCA outputs. It is the spectral stage of a b
     | --- | --- | --- | --- | --- |
     | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
+
+### `scale-to-bl`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.scale_to_bl.ScaleToBodyLength`
+
+Convert every length-bearing column into body lengths.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `length` | `number` \| `None` | `null` |  | The body length to divide by, in the units of the input positions. A value that is not positive raises. Unset, the length is read from the body-length run that body_length references. |
+| `body_length` | `BodyLengthResult` \| `None` | `null` |  | Reference to the upstream body-length run. The sequence's length is the median, over its individuals, of their body_length. Read when length is unset. |
+| `mode` | `"derive"` \| `"convert"` | `"derive"` |  | derive emits only the scaled columns, each under its own name plus suffix, alongside the metadata. convert returns the whole table with every length column converted in place, under its own name. |
+| `suffix` | `string` | `"_bl"` |  | Appended to each scaled column's name in derive mode. Names nothing in convert mode, which refuses a non-default value. |
+| `columns` | list of `string` \| `None` | `null` |  | Replace the length-bearing classifier with exactly these columns, scaling every one whether or not it is length-bearing. A name absent from the table raises. |
+
+??? note "`BodyLengthResult`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"body-length"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
 
 ### `scale-to-cm`
 
@@ -703,7 +768,7 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
 
 ### `nn-delta-bins`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins`
+Version `0.2` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins`
 
 Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
@@ -713,13 +778,15 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 | `binmax` | `number` | `14.0` | > `0` | Maximum absolute neighbor offset spanned by a bin edge, in position units. |
 | `max_for_avg` | `number` | `5.0` | > `0` | Maximum neighbor offset, in position units, used to select rows for the turn response, keeping neighbor_x between 0 and max_for_avg. The speed response uses half this value, keeping neighbor_y within plus or minus max_for_avg / 2. |
 | `antisymm` | `boolean` | `true` |  | Duplicate each row of the turn (dangle) response with its y offset and its dangle negated, which folds that response left-right. The speed (dspeed) response never reads this flag. Its one-dimensional bins select a symmetric band of y offsets, and its two-dimensional bins mirror-duplicate every row with the dspeed value unchanged. |
-| `focal_category_col` | `string` | `"Focal_fish"` |  | The column recording the focal animal's category flag. |
+| `focal_category_col` | `string` \| `None` | `"Focal_fish"` |  | The column recording the focal animal's category flag. Unset, rows are not split by the focal's category: every row is binned together, with center_category null, and no category column is required. |
 | `neighbor_category_col` | `string` | `"neighbor_focal"` |  | The column recording the neighbor's category flag. |
 | `group_size_col` | `string` | `"group_size"` |  | The column recording the group size. |
 | `exp_col` | `string` | `"Exp"` |  | The column recording the experimental condition identifier. |
 | `trial_col` | `string` | `"Trial"` |  | The column recording the trial identifier. |
 | `category_specs` | list of any | _constructed_ |  | Specs for derived category columns, each a dict with source_col, new_col, quantile (default 0.75) and op, adding a boolean column comparing source_col against its quantile. Any op value other than <= is treated as >, without raising. The specs run in list order before the category columns are read, and a spec may write focal_category_col or neighbor_category_col. A run refuses an entry whose table lacks the source_col of a spec, unless an earlier spec writes it. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Column names whose truthy rows are dropped before computation. A name absent from the table is skipped rather than raising. |
+| `start_time` | `number` \| `None` | `null` |  | Bin only rows whose time is at or after this, a window such as the dark half of a light-dark recording. Read from the time column, which the input must then carry. Unset, from the start. [s] |
+| `end_time` | `number` \| `None` | `null` |  | Bin only rows whose time is before this. Read from the time column, which the input must then carry. Unset, to the end. [s] |
 | `nonfocal_flag_col` | `string` | `"Focal_fish"` |  | Name of the column flagging nonfocal animals, read only when focal_category_col is unset or absent from the table. |
 | `nonfocal_flag_value` | `boolean` | `false` |  | The value in nonfocal_flag_col marking an animal as nonfocal, read under the same condition as nonfocal_flag_col. |
 

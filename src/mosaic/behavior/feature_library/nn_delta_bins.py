@@ -13,8 +13,10 @@ from mosaic.core.pipeline.column_contract import (
     Column,
     Derived,
     ParamColumn,
+    ParamIs,
     Provides,
     Requirement,
+    When,
     kept,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
@@ -56,7 +58,9 @@ _ANTISYMM_DESCRIPTION = (
 )
 
 _FOCAL_CATEGORY_COL_DESCRIPTION = (
-    "The column recording the focal animal's category flag."
+    "The column recording the focal animal's category flag. Unset, rows "
+    "are not split by the focal's category: every row is binned together, "
+    "with center_category null, and no category column is required."
 )
 
 _NEIGHBOR_CATEGORY_COL_DESCRIPTION = (
@@ -85,6 +89,17 @@ _EXCLUDE_COLS_DESCRIPTION = (
     "name absent from the table is skipped rather than raising."
 )
 
+_START_TIME_DESCRIPTION = (
+    "Bin only rows whose time is at or after this, a window such as the "
+    "dark half of a light-dark recording. Read from the time column, which "
+    "the input must then carry. Unset, from the start."
+)
+
+_END_TIME_DESCRIPTION = (
+    "Bin only rows whose time is before this. Read from the time column, "
+    "which the input must then carry. Unset, to the end."
+)
+
 _NONFOCAL_FLAG_COL_DESCRIPTION = (
     "Name of the column flagging nonfocal animals, read only when "
     "focal_category_col is unset or absent from the table."
@@ -95,6 +110,9 @@ _NONFOCAL_FLAG_VALUE_DESCRIPTION = (
     "under the same condition as nonfocal_flag_col."
 )
 
+
+_UNSPLIT_CENTER = "__center_unsplit__"
+"""The stand-in center category column while ``focal_category_col`` is unset."""
 
 _RESPONSE_COLUMNS: tuple[str, ...] = ("neighbor_x", "neighbor_y", "dangle", "dspeed")
 """The nn-delta-response columns that every bin is computed from."""
@@ -183,11 +201,18 @@ class NearestNeighborDeltaBins:
     """
     Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
-    Inputs: expect outputs from nn-delta-response (neighbor_x/neighbor_y in ego frame,
-    dangle, dspeed, group_size, and focal/neighbor category columns).
+    Inputs: expect outputs from nn-delta-response or neighbor-delta-response
+    (neighbor_x/neighbor_y in ego frame, dangle, dspeed, group_size, and
+    focal/neighbor category columns).
 
     Outputs: tidy DataFrame with mean turn/speed per bin for focal role and neighbor role:
       columns: [group, sequence, exp, trial, role, category, group_size, metric, bin_idx, value]
+
+    The two-dimensional rows carry three metrics. ``turn`` and ``speed`` hold
+    the sum and count of the response in each bin, mirrored as ``antisymm``
+    says. ``occupancy`` counts the neighbor positions in each bin, unmirrored,
+    with ``value`` the fraction of the binned rows that fell in it: the map of
+    where neighbors sit.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins.Params`.
@@ -195,7 +220,9 @@ class NearestNeighborDeltaBins:
 
     category = "summary"
     name = "nn-delta-bins"
-    version = "0.1"
+    # 0.2: the two-dimensional output gained the occupancy metric, so a
+    # default-params run writes rows a 0.1 run did not.
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     accepts_overlap = False  # computes within a frame, so gains nothing
@@ -208,9 +235,17 @@ class NearestNeighborDeltaBins:
     requires: ClassVar[tuple[Requirement, ...]] = (
         *(Column(name) for name in _RESPONSE_COLUMNS),
         Derived("category_specs", name_key="new_col", source_key="source_col"),
-        AnyOf(
-            (ParamColumn("focal_category_col"), ParamColumn("neighbor_category_col"))
+        When(
+            AnyOf(
+                (
+                    ParamColumn("focal_category_col"),
+                    ParamColumn("neighbor_category_col"),
+                )
+            ),
+            (ParamIs("focal_category_col"),),
         ),
+        When(Column(C.time_col), (ParamIs("start_time"),)),
+        When(Column(C.time_col), (ParamIs("end_time"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(
@@ -244,7 +279,7 @@ class NearestNeighborDeltaBins:
         )
         antisymm: Annotated[bool, Declared(_ANTISYMM_DESCRIPTION)] = True
         focal_category_col: Annotated[
-            str, Declared(_FOCAL_CATEGORY_COL_DESCRIPTION)
+            str | None, Declared(_FOCAL_CATEGORY_COL_DESCRIPTION)
         ] = "Focal_fish"
         neighbor_category_col: Annotated[
             str, Declared(_NEIGHBOR_CATEGORY_COL_DESCRIPTION)
@@ -259,6 +294,12 @@ class NearestNeighborDeltaBins:
         )
         exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
             default_factory=list
+        )
+        start_time: Annotated[
+            float | None, Declared(_START_TIME_DESCRIPTION, unit="s")
+        ] = None
+        end_time: Annotated[float | None, Declared(_END_TIME_DESCRIPTION, unit="s")] = (
+            None
         )
         nonfocal_flag_col: Annotated[str, Declared(_NONFOCAL_FLAG_COL_DESCRIPTION)] = (
             "Focal_fish"
@@ -293,6 +334,24 @@ class NearestNeighborDeltaBins:
 
     # ----------------------- Core logic --------------------------
 
+    def _in_time_window(self, df: pd.DataFrame) -> pd.DataFrame:
+        """The rows inside ``[start_time, end_time)``, or every row when neither is set."""
+        p = self.params
+        if p.start_time is None and p.end_time is None:
+            return df
+        if C.time_col not in df.columns:
+            raise ValueError(
+                f"{self.name}: start_time/end_time select rows by "
+                f"{C.time_col!r}, and this table does not carry it."
+            )
+        time = pd.to_numeric(df[C.time_col], errors="coerce")
+        keep = time.notna()
+        if p.start_time is not None:
+            keep &= time >= p.start_time
+        if p.end_time is not None:
+            keep &= time < p.end_time
+        return df.loc[keep]
+
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()
@@ -301,6 +360,7 @@ class NearestNeighborDeltaBins:
 
         # Drop rows where any exclude column is truthy (e.g., bad_frame)
         df = apply_exclude_cols(df, p.exclude_cols)
+        df = self._in_time_window(df)
         if df.empty:
             return pd.DataFrame()
 
@@ -324,6 +384,11 @@ class NearestNeighborDeltaBins:
 
         # Coalesce focal/neighbor/group_size if needed before checks
         focal_col = p.focal_category_col
+        if focal_col is None:
+            # One center category for every row. The column is a stand-in the
+            # grouping below reads and the output never carries.
+            focal_col = _UNSPLIT_CENTER
+            df = df.assign(**{_UNSPLIT_CENTER: pd.NA})
         neighbor_col = p.neighbor_category_col
         group_size_col = p.group_size_col
         if focal_col:
@@ -475,9 +540,16 @@ class NearestNeighborDeltaBins:
                 x_speed, y_speed, w_speed, x_edges, y_edges
             )
 
+            # occupancy: where the neighbors are, counted once each, unmirrored
+            occupancy, _ = _hist2d_sum_count(
+                x_base, y_base, np.ones_like(x_base), x_edges, y_edges
+            )
+            n_binned = occupancy.sum()
+
             for metric, sum_arr, cnt_arr in (
                 ("turn", turn_sum, turn_count),
                 ("speed", speed_sum, speed_count),
+                ("occupancy", occupancy, occupancy),
             ):
                 for ix in range(sum_arr.shape[0]):
                     for iy in range(sum_arr.shape[1]):
@@ -500,7 +572,11 @@ class NearestNeighborDeltaBins:
                                 ),
                                 "metric": metric,
                                 "bin_idx": np.nan,
-                                "value": np.nan,
+                                "value": (
+                                    sum_arr[ix, iy] / n_binned
+                                    if metric == "occupancy" and n_binned > 0
+                                    else np.nan
+                                ),
                                 "bin_x": ix,
                                 "bin_y": iy,
                                 "sum_value": sum_arr[ix, iy],

@@ -51,6 +51,7 @@ from mosaic.core.pipeline.types.labels import (
 )
 from mosaic.core.pipeline.types.params import GlobalModelParams
 from mosaic.core.pipeline.types.results import (
+    BodyLengthResult,
     BodyScaleResult,
     NNResult,
     Result,
@@ -61,6 +62,7 @@ from mosaic.core.pipeline.types.results import (
 __all__ = [
     "ArtifactSpec",
     "BOOKKEEPING_COLS",
+    "BodyLengthResult",
     "BodyScaleResult",
     "COLUMNS",
     "ClosesResources",

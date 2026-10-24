@@ -14,7 +14,7 @@ import pytest
 from mosaic.behavior.feature_library.nn_delta_response import (
     NearestNeighborDelta,
     _row_lags,
-    _windowed_delta,
+    windowed_delta,
 )
 
 
@@ -215,7 +215,7 @@ def test_row_lags_rounds_and_floors() -> None:
 def test_windowed_delta_boundary_rows_are_never_valid() -> None:
     vals = np.column_stack([np.arange(6.0), np.arange(6.0)])  # value, frame
     lags = np.full(6, 2, dtype=np.int64)
-    _, ok_fwd = _windowed_delta(vals, lags, frame_idx=1, forward=True)
-    _, ok_back = _windowed_delta(vals, lags, frame_idx=1, forward=False)
+    _, ok_fwd = windowed_delta(vals, lags, frame_idx=1, forward=True)
+    _, ok_back = windowed_delta(vals, lags, frame_idx=1, forward=False)
     np.testing.assert_array_equal(ok_fwd, [1, 1, 1, 1, 0, 0])
     np.testing.assert_array_equal(ok_back, [0, 0, 1, 1, 1, 1])
