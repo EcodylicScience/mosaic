@@ -92,6 +92,10 @@ def _render(summary: DatasetSummary) -> None:
     if summary.notes:
         typer.echo()
         typer.echo(summary.notes)
+    if summary.next_steps:
+        typer.echo()
+        for step in summary.next_steps:
+            typer.echo(f"next: {step}")
     for error in summary.inventory_errors:
         typer.echo(f"note: inventory read failed: {error}", err=True)
 

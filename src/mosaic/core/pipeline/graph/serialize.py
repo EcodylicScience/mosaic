@@ -226,6 +226,17 @@ def _plan_cautions(
                 f"that step {plan.deferred_by!r} converts" + _roles_named(plan),
             )
         )
+    elif plan.covers_dataset and not plan.scope:
+        cautions.append(
+            Problem(
+                "",
+                "scope",
+                "the dataset holds no converted tracks, so the plan covers no "
+                "entry. Begin the recipe with a convert-tracks step, or convert "
+                "the raw tracks first. mosaic describe and describe_dataset list "
+                "the next steps",
+            )
+        )
     elif plan.covers_dataset:
         cautions.append(
             Problem(

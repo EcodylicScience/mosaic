@@ -131,10 +131,13 @@ cleanup:               # which superseded runs a cleanup keeps
 max_workers: 1         # the most entries a parallelizable step computes at once
 allow_process_mode: false   # let a submission ask for process workers
 min_free_memory_fraction: 0.10   # the share of host memory a parallel run keeps free
+dataset_roots: []      # where manage_dataset may create datasets; those below are served
+source_roots: []       # where manage_dataset may declare sources of raw files
 ```
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
-The agent cannot open a dataset outside this list. A manifest without a `uuid`, or one
+The agent cannot open a dataset outside this list, except one it creates, or that
+appears, below a `dataset_roots` directory: those are served without a restart. A manifest without a `uuid`, or one
 that does not read, is left out and reported on the server's standard error.
 
 ### The tools
@@ -146,6 +149,7 @@ that does not read, is left out and reported on the server's standard error.
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
+| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, or sets the dataset's tags, inside the roots you allow. Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
@@ -154,8 +158,8 @@ that does not read, is left out and reported on the server's standard error.
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
 
-Only `submit_pipeline` and `cancel_request` change a dataset's data. `patch_recipe` saves
-a recipe file under `.mosaic/pipelines/` and runs nothing. A submission must name the
+Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
+`patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission must name the
 fingerprint of a plan made against the dataset as it is now. The agent therefore plans
 against the current dataset before it submits. Ask it to show you the plan. A submitted
 request runs in a background process that outlives the server and the client. Follow it
@@ -198,8 +202,30 @@ with `repeat` ([Repeat a step](guides/pipelines/chain-steps.md#repeat-a-step)), 
 recipe with `patch_recipe`, and from then on passes `{"digest": "<digest>"}` (or
 `{"saved": "<name>"}`) as the recipe and changes it with `patch_recipe` edits.
 Conversion is a recipe step too: `convert-tracks` and `convert-labels` convert the raw
-files a scan recorded. Declaring sources and scanning stay with you, so the agent
-proposes `mosaic sources add` and `mosaic scan` when a dataset has nothing scanned.
+files a scan recorded.
+
+### Datasets made by the agent
+
+With `dataset_roots` and `source_roots` in the server's configuration, `manage_dataset`
+lets the agent start from a folder of raw files: create a dataset inside a dataset root
+(`create`), declare the folder as a source inside a source root (`add_source`), index it
+(`scan`), then plan a recipe whose first step is `convert-tracks`. Without the roots,
+`create` and `add_source` are refused with `roots_not_configured`, and the agent proposes
+`mosaic init`, `mosaic sources add` and `mosaic scan` instead.
+
+- Every path is resolved, symbolic links and `..` included, and must lie inside a root.
+  A source's `patterns` and `files` are relative to its path and may not be absolute
+  or hold `..`. Keep held-out and sealed data outside the source roots: the agent can
+  declare anything inside them.
+- Creating a dataset (`create_dataset`) and declaring or removing a source
+  (`add_source`) ask you to confirm. Scanning and setting tags do not. A removed
+  source's indexed rows stay, as `mosaic sources remove` keeps them.
+- `scan` reads and checksums every file, and a large folder takes minutes.
+- `set_tags` sets dataset tags; a tag not defined yet is typed by its first value.
+- No action writes `splits`, and a managed dataset is refused.
+- `describe_dataset` and `mosaic describe` list `next_steps` for a dataset that is
+  not ready: a source to declare, sources to scan, raw files to convert.
+- Files cannot be uploaded: the raw files must already be on the server's disk.
 
 The server also offers resources (the agent guide, the step-type catalog, and per
 dataset its manifest, inventory, recipes, requests, run-logs, recorded params and a
@@ -262,6 +288,9 @@ Restart it after installing an extra or building a tool's environment.
   is planned over entries of a sealed group, whether or not the group's labels are in the
   dataset. Keeping the labels outside the dataset until `mosaic pipeline score` adds them
   to a copy is the stronger protection.
+
+`manage_dataset` asks to confirm creating a dataset (`create_dataset`), and declaring
+or removing a source (`add_source`).
 
 `cancel_request` asks to confirm when a running step loses its work (`hard_cancel`): a
 keypoint-MoSeq or VAME fit stops at once, and training loses the epoch in progress.
@@ -385,7 +414,9 @@ The server does not expose them as tools. When one is needed, the agent proposes
 - `reindex` and `release`;
 - `mosaic cancel --assume-exited`, which records as cancelled an attempt that no
   machine can check, on your word that its process has exited;
-- any change to the manifest: `init`, `sources`, `tags`, `notes`, `libraries`, `splits`;
+- any change to the manifest beyond `manage_dataset`'s, and every change when the
+  server has no `dataset_roots` and `source_roots`: `notes`, `libraries`, `splits`,
+  `sources add-files`;
 - `mosaic pipeline score`, which adds held-out data to a copy of the dataset;
 - `extract-frames`, whose frames annotation tools refer to by path;
 - accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`).

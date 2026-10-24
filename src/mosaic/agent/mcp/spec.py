@@ -102,6 +102,8 @@ __all__ = [
     "CancelRequestInput",
     "ConfirmationCondition",
     "ConfirmationFinding",
+    "DatasetAction",
+    "DatasetChange",
     "DatasetList",
     "DatasetListItem",
     "DescribeDatasetInput",
@@ -113,6 +115,7 @@ __all__ = [
     "ListActivityInput",
     "ListDatasetsInput",
     "ListSequencesInput",
+    "ManageDatasetInput",
     "ModelRef",
     "PatchRecipeInput",
     "PlanRecipeInput",
@@ -150,7 +153,7 @@ __all__ = [
     "unknown_tool",
 ]
 
-SHARED_TOOL_LIMIT: Final = 15
+SHARED_TOOL_LIMIT: Final = 16
 """The most tools the shared set may declare. Each tool costs a model context."""
 
 MAX_SCHEMA_BYTES: Final = 8192
@@ -303,6 +306,7 @@ type ToolName = Literal[
     "list_activity",
     "diagnose_failures",
     "preview_output",
+    "manage_dataset",
 ]
 """The name of each shared tool."""
 
@@ -322,6 +326,8 @@ type ConfirmationCondition = Literal[
     "cleanup",
     "score_sealed",
     "hard_cancel",
+    "create_dataset",
+    "add_source",
 ]
 """A condition under which a tool refuses until the user confirms the call."""
 
@@ -350,6 +356,11 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
     "hard_cancel": (
         "a running step loses its work when cancelled. A keypoint-MoSeq or VAME "
         "fit stops at once, and training loses the epoch in progress"
+    ),
+    "create_dataset": "the call creates a dataset: a directory and its manifest",
+    "add_source": (
+        "the call declares or removes a source, which changes the files the "
+        "dataset reads"
     ),
 }
 """What each confirmation condition means, as a person reads it."""
@@ -913,6 +924,109 @@ class PreviewOutputInput(ToolInput):
         le=MAX_PREVIEW_ROWS,
         description=f"The rows of the head to return, 0 to {MAX_PREVIEW_ROWS}.",
     )
+
+
+type DatasetAction = Literal[
+    "create", "add_source", "remove_source", "scan", "set_tags"
+]
+"""What ``manage_dataset`` does to a dataset."""
+
+type SourceKindName = Literal["media", "tracks", "labels"]
+"""Which raw files a source declares."""
+
+TagValue = str | int | float | bool | None
+"""A dataset tag's value."""
+
+
+class ManageDatasetInput(ToolInput):
+    """The arguments of ``manage_dataset``. Each action reads the fields it names."""
+
+    action: DatasetAction = Field(
+        description=(
+            "create: a new dataset at path, named name. add_source: declare the "
+            "kind's files at path. remove_source: undeclare kind's source_id "
+            "(its rows stay). scan: index the declared sources of kind, or all; "
+            "source_id narrows it to one. set_tags: set tags, remove remove_tags."
+        )
+    )
+    dataset: str | None = Field(
+        default=None, description="The dataset's uuid. Every action but create."
+    )
+    path: str | None = Field(
+        default=None,
+        description=(
+            "create: the new dataset's directory, inside the server's "
+            "dataset_roots. add_source: where the files are, inside its "
+            "source_roots."
+        ),
+    )
+    name: str | None = Field(default=None, description="create: the dataset's name.")
+    kind: SourceKindName | None = None
+    source_id: str | None = Field(
+        default=None,
+        description="The source's id. add_source: default the directory's name.",
+    )
+    files: list[str] | None = Field(
+        default=None,
+        description="add_source: only these files, relative to path.",
+    )
+    patterns: list[str] | None = Field(
+        default=None, description="add_source, tracks or labels: file globs."
+    )
+    src_format: str | None = Field(
+        default=None,
+        description=(
+            "add_source, tracks or labels: the converter that reads the files, "
+            "such as calms21_npy."
+        ),
+    )
+    extensions: list[str] | None = Field(
+        default=None, description="add_source, media: file suffixes."
+    )
+    recursive: bool = True
+    multi_sequences_per_file: bool = False
+    group_from: Literal["filename", "parent"] | None = None
+    group_pattern: str | None = None
+    tags: dict[str, TagValue] | None = Field(
+        default=None,
+        description=(
+            "set_tags: values by tag name. A tag not defined yet is defined, "
+            "typed by its value."
+        ),
+    )
+    remove_tags: list[str] = Field(default_factory=list)
+    confirm: bool = Field(
+        default=False,
+        description=(
+            "Set only after the user agreed to the conditions that a refusal "
+            "with reason confirmation_required listed."
+        ),
+    )
+
+
+class DatasetChange(StrictModel):
+    """What ``manage_dataset`` changed.
+
+    Attributes:
+        action: The action done.
+        dataset: The dataset's uuid.
+        name: The dataset's name.
+        manifest: The manifest file.
+        message: What changed, in a sentence.
+        scanned: Under ``scan``, the raw index rows of each kind scanned.
+        orphaned_rows: Under ``remove_source``, the index rows the source
+            claimed, which stay.
+        next_steps: What the dataset needs before a pipeline runs on it.
+    """
+
+    action: DatasetAction
+    dataset: str
+    name: str
+    manifest: str
+    message: str
+    scanned: dict[str, int] = Field(default_factory=dict)
+    orphaned_rows: int | None = None
+    next_steps: tuple[str, ...] = ()
 
 
 class DatasetListItem(StrictModel):
@@ -1520,6 +1634,29 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         annotations=READ,
         narrowing=("columns", "max_columns", "limit"),
     ),
+    ToolSpec(
+        name="manage_dataset",
+        title="Manage a dataset",
+        description=(
+            "Create a dataset, declare or remove a source of raw files, scan the "
+            "sources into the raw indexes, or set the dataset's tags. Paths must "
+            "lie inside the roots the server's operator allows. Converting is a "
+            "recipe step (convert-tracks, convert-labels), and next_steps says "
+            "what a dataset still needs. Creating a dataset or changing its "
+            "sources asks the user to confirm: a client that can ask the user "
+            "asks; otherwise the call is refused with reason "
+            "confirmation_required: ask the user, then call again with confirm "
+            "true. After confirmation_unanswered, confirmation_declined or "
+            "confirmation_unavailable, stop and report. A scan reads and "
+            "checksums every file and can take minutes."
+        ),
+        input_model=ManageDatasetInput,
+        output=DatasetChange,
+        annotations=ToolAnnotations(
+            read_only=False, destructive=False, idempotent=False
+        ),
+        confirm_when=("create_dataset", "add_source"),
+    ),
 )
 """The shared tools, in the order a server lists them."""
 
@@ -1612,6 +1749,10 @@ class ToolBackend(Protocol):
 
     def preview_output(self, args: PreviewOutputInput) -> ToolResult[ArtifactPreview]:
         """Answer ``preview_output``."""
+        ...
+
+    def manage_dataset(self, args: ManageDatasetInput) -> ToolResult[DatasetChange]:
+        """Answer ``manage_dataset``."""
         ...
 
 
@@ -1711,6 +1852,8 @@ def _dispatch(backend: ToolBackend, request: ToolInput) -> BaseModel:
             return backend.diagnose_failures(request)
         case PreviewOutputInput():
             return backend.preview_output(request)
+        case ManageDatasetInput():
+            return backend.manage_dataset(request)
         case _:
             msg = f"no tool takes {type(request).__name__}"
             raise TypeError(msg)

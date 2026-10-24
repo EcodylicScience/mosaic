@@ -14,6 +14,8 @@
     max_workers: 1          # most entries a feature step may compute at once
     allow_process_mode: false   # let a submission ask for process workers
     min_free_memory_fraction: 0.10   # share of host memory a parallel run keeps free
+    dataset_roots: []       # where manage_dataset may create datasets, served too
+    source_roots: []        # where manage_dataset may declare sources
 
 A relative path is read from the file's directory. :func:`served_manifests`
 joins the file's datasets with the ones named on the command line.
@@ -87,6 +89,13 @@ class ServerConfig(StrictModel):
             entries while the share is lower, and fails when it is still lower
             with none in flight, ending in a state a later run resumes. 0 turns
             the check off.
+        dataset_roots: Directories inside which ``manage_dataset`` may create a
+            dataset. The datasets below them are served, as ``discover``
+            serves them, and one created while the server runs is served at
+            once. Empty: no dataset is created.
+        source_roots: Directories inside which ``manage_dataset`` may declare a
+            source. Keep held-out data outside them. Empty: no source is
+            declared.
     """
 
     datasets: list[Path] = Field(default_factory=list)
@@ -97,6 +106,8 @@ class ServerConfig(StrictModel):
     max_workers: int = Field(default=1, ge=1, le=MAX_WORKERS_CEILING)
     allow_process_mode: bool = False
     min_free_memory_fraction: float = Field(default=0.10, ge=0.0, lt=1.0)
+    dataset_roots: list[Path] = Field(default_factory=list)
+    source_roots: list[Path] = Field(default_factory=list)
 
     @property
     def parallel_limits(self) -> ParallelLimits:
@@ -138,12 +149,21 @@ def read_server_config(path: Path) -> ServerConfig:
         update={
             "datasets": [base / user_path(given) for given in config.datasets],
             "discover": [base / user_path(given) for given in config.discover],
+            "dataset_roots": [
+                (base / user_path(given)).resolve() for given in config.dataset_roots
+            ],
+            "source_roots": [
+                (base / user_path(given)).resolve() for given in config.source_roots
+            ],
         }
     )
 
 
 def served_manifests(datasets: Iterable[Path], config: ServerConfig) -> list[Path]:
     """Return the manifests to serve: *datasets*, the file's, then those discovered.
+
+    The datasets below ``dataset_roots`` are discovered as those below
+    ``discover`` are.
 
     A dataset named twice is served once, which ``LocalBackend`` decides by uuid.
 
@@ -154,6 +174,6 @@ def served_manifests(datasets: Iterable[Path], config: ServerConfig) -> list[Pat
     from .local import discovered_manifests
 
     manifests = [*datasets, *config.datasets]
-    for root in config.discover:
+    for root in [*config.discover, *config.dataset_roots]:
         manifests.extend(discovered_manifests(root))
     return manifests

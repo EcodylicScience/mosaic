@@ -69,6 +69,8 @@ def serve(
     allow_cleanup: frozenset[CleanupClass] = frozenset(),
     cleanup_policy: CleanupPolicy | None = None,
     parallel_limits: ParallelLimits | None = None,
+    dataset_roots: Sequence[Path] = (),
+    source_roots: Sequence[Path] = (),
 ) -> None:
     """Serve the datasets of *manifests* to one client over standard input and output.
 
@@ -88,6 +90,8 @@ def serve(
             policy when ``None``.
         parallel_limits: The parallelism a submission may ask for. One worker, in
             threads, when ``None``.
+        dataset_roots: Where ``manage_dataset`` may create a dataset.
+        source_roots: Where ``manage_dataset`` may declare a source.
 
     Raises:
         MissingOptionalDependency: The ``mcp`` extra is not installed.
@@ -103,6 +107,8 @@ def serve(
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
             parallel_limits=parallel_limits,
+            dataset_roots=dataset_roots,
+            source_roots=source_roots,
         )
     )
 
@@ -114,6 +120,8 @@ async def _serve(
     allow_cleanup: frozenset[CleanupClass],
     cleanup_policy: CleanupPolicy | None,
     parallel_limits: ParallelLimits | None,
+    dataset_roots: Sequence[Path],
+    source_roots: Sequence[Path],
 ) -> None:
     from mcp.server.stdio import stdio_server
 
@@ -127,6 +135,8 @@ async def _serve(
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
             parallel_limits=parallel_limits,
+            dataset_roots=dataset_roots,
+            source_roots=source_roots,
         )
         server = bind_server(backend)
         _LOG.info("serving %d dataset manifest(s) over stdio", len(manifests))
@@ -148,6 +158,8 @@ def serve_http(
     allow_cleanup: frozenset[CleanupClass] = frozenset(),
     cleanup_policy: CleanupPolicy | None = None,
     parallel_limits: ParallelLimits | None = None,
+    dataset_roots: Sequence[Path] = (),
+    source_roots: Sequence[Path] = (),
 ) -> None:
     """Serve the datasets of *manifests* to one user over streamable HTTP.
 
@@ -172,6 +184,8 @@ def serve_http(
         allow_cleanup: As for :func:`serve`.
         cleanup_policy: As for :func:`serve`.
         parallel_limits: As for :func:`serve`.
+        dataset_roots: As for :func:`serve`.
+        source_roots: As for :func:`serve`.
 
     Raises:
         MissingOptionalDependency: The ``mcp`` extra is not installed.
@@ -189,6 +203,8 @@ def serve_http(
         allow_cleanup=allow_cleanup,
         cleanup_policy=cleanup_policy,
         parallel_limits=parallel_limits,
+        dataset_roots=dataset_roots,
+        source_roots=source_roots,
     )
     server = bind_server(backend, model_confirm=allow_model_confirm)
     app = server.streamable_http_app(

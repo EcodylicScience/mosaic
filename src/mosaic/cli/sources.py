@@ -8,6 +8,8 @@ rescan was only reproducible if the operator retyped them identically.
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -41,6 +43,23 @@ def _csv(value: str | None) -> tuple[str, ...]:
 
 
 SourceKindArg = Literal["media", "tracks", "labels"]
+
+
+_FIELD_FLAGS = re.compile(
+    r"(?<![\w-])(?<!a )(multi_sequences_per_file|exclude_patterns|group_pattern|group_from"
+    r"|match_mode|src_format|extensions|patterns|layout|series)(?![\w-])"
+)
+"""A source field named in a refusal, to spell as the flag that sets it.
+
+"a series" is the thing, not the field.
+"""
+
+
+def _flagged(message: str) -> str:
+    """*message* with each field it names spelled as the flag that sets it."""
+    return _FIELD_FLAGS.sub(
+        lambda match: "--" + match.group(1).replace("_", "-"), message
+    )
 
 
 def _check_kind(kind: str) -> SourceKindArg:
@@ -204,10 +223,10 @@ def add_source(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Declare a source. A source may point outside the dataset, unlike a root."""
-    from mosaic.core.manifest import (
-        LabelsScanSource,
-        MediaScanSource,
-        TracksScanSource,
+    from mosaic.core.source_fields import (
+        SourceFields,
+        SourceFieldsInvalid,
+        scan_source_from_fields,
     )
 
     dataset = load_dataset(manifest)
@@ -224,79 +243,32 @@ def add_source(
             if line.strip()
         )
 
-    walk_flags = {
-        "--extensions": extensions,
-        "--patterns": patterns,
-        "--exclude-patterns": exclude_patterns,
-    }
-    given_walk = [name for name, value in walk_flags.items() if value is not None]
-    if listed and given_walk:
-        fail(
-            f"a file list and {', '.join(given_walk)} cannot both be given: a "
-            "listed file is claimed whatever a glob says."
-        )
-
-    identifier = source_id or Path(path).name or "source"
-    common: dict[str, object] = {"id": identifier, "path": path}
-    if listed:
-        common["files"] = tuple(listed)
-    else:
-        common["recursive"] = recursive
-
+    fields = SourceFields(
+        kind=kind,
+        path=path,
+        id=source_id,
+        files=tuple(listed),
+        recursive=recursive,
+        extensions=None if extensions is None else _csv(extensions),
+        layout=layout,
+        match_mode=match_mode,
+        patterns=None if patterns is None else _csv(patterns),
+        src_format=src_format,
+        exclude_patterns=None if exclude_patterns is None else _csv(exclude_patterns),
+        multi_sequences_per_file=multi_sequences_per_file,
+        group_from=group_from,
+        group_pattern=group_pattern,
+        md5=md5,
+        series=series,
+    )
     try:
-        if kind == "media":
-            media: dict[str, object] = dict(common)
-            if extensions is not None:
-                media["extensions"] = _csv(extensions)
-            if layout is not None:
-                media["layout"] = layout
-            if match_mode is not None:
-                media["match_mode"] = match_mode
-            source = MediaScanSource.model_validate(media)
-        elif series is not None:
-            if kind != "labels":
-                fail("--series applies to --kind labels: a series is a kind of label.")
-            per_sequence = {
-                "--patterns": patterns,
-                "--src-format": src_format,
-                "--exclude-patterns": exclude_patterns,
-                "--group-from": group_from,
-                "--group-pattern": group_pattern,
-            }
-            given = [name for name, value in per_sequence.items() if value is not None]
-            if multi_sequences_per_file:
-                given.append("--multi-sequences-per-file")
-            if given:
-                fail(
-                    f"--series and {', '.join(given)} cannot both be given: a "
-                    "series fixes what its files are."
-                )
-            claimed: dict[str, object] = dict(common)
-            claimed["series"] = series
-            source = LabelsScanSource.model_validate(claimed)
-        else:
-            raw: dict[str, object] = dict(common)
-            raw["md5"] = md5
-            if patterns is not None:
-                raw["patterns"] = _csv(patterns)
-            if src_format is not None:
-                raw["src_format"] = src_format
-            if exclude_patterns is not None:
-                raw["exclude_patterns"] = _csv(exclude_patterns)
-            if multi_sequences_per_file:
-                raw["multi_sequences_per_file"] = True
-            if group_from is not None:
-                raw["group_from"] = group_from
-            if group_pattern is not None:
-                raw["group_pattern"] = group_pattern
-            source = (
-                TracksScanSource.model_validate(raw)
-                if kind == "tracks"
-                else LabelsScanSource.model_validate(raw)
-            )
+        source = scan_source_from_fields(fields)
         dataset.add_scan_source(source)
+    except SourceFieldsInvalid as exc:
+        fail(f"sources add failed: {_flagged(str(exc))}")
     except ValueError as exc:
         fail(f"sources add failed: {terse(exc)}")
+    identifier = source.id
 
     if as_json:
         emit_json({"kind": kind, "id": identifier, "mode": source.mode})

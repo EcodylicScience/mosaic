@@ -159,7 +159,9 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   universe the target. On a dataset with no tracks, a graph holding one leaves its
   `scope_dependent` features and its scoped ops unresolved with an
   `IdentityUnresolved` naming the conversion; scope-free features keep their identity
-  (`test_pipeline_converting_graph.py`). A step whose artifact reads complete after its
+  (`test_pipeline_converting_graph.py`). A plan over a dataset with no converted tracks and no
+  converting step covers no entry, and its whole-dataset caution says to convert first
+  (`_plan_cautions`, `tests/agent/mcp/test_dataset_tools.py`). A step whose artifact reads complete after its
   attempt is not stalled.
 
 ## Running a step

@@ -76,6 +76,6 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   stores an attribute or item named `splits`, calls `set_splits`, `remove_splits`,
   `mutate_manifest`, `write_manifest` or `save`, or updates `splits` through
   `model_copy` or `setattr`.
-- `test_shared_tool_cap.py`: more than 15 tools in `mosaic.agent.mcp.spec.TOOLS`.
+- `test_shared_tool_cap.py`: more than 16 tools in `mosaic.agent.mcp.spec.TOOLS`.
 - `test_storage_name_marker.py`: a feature slug or a literal input name that contains
   `~`, the shortened storage-name marker.

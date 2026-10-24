@@ -1437,7 +1437,7 @@ $ mosaic agent serve [OPTIONS]
 **Options**:
 
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
-* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, and the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`. Its relative paths are read from its directory.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`, and the `dataset_roots` and `source_roots` that manage_dataset may write inside. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
 * `--http HOST:PORT`: Serve one user over streamable HTTP at http://HOST:PORT/mcp instead of stdio, for a trusted network such as a tailnet. Needs --token-file. Write an IPv6 host in brackets.
@@ -1465,7 +1465,7 @@ $ mosaic agent confirm-hook [OPTIONS]
 
 **Options**:
 
-* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup, score_sealed or hard_cancel. Repeatable.
+* `--approve <str>`: A confirmation condition to accept, such as gpu_lane, training_op, tracking_op, allow_partial, bind, open_duplicate, cleanup, score_sealed, hard_cancel, create_dataset or add_source. Repeatable.
 * `--otherwise <ask|cancel|decline>`: What to answer a confirmation with a condition not approved: decline it, cancel it, or ask (print nothing and leave it to the dialog). decline keeps any other hook from accepting it.  [default: decline]
 * `--server <str>`: The name under which the client lists mosaic's server.  [default: mosaic]
 * `--help`: Show this message and exit.

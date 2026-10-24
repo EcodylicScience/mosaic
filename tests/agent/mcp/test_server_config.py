@@ -137,3 +137,22 @@ def test_a_parallelism_limit_that_does_not_fit_is_invalid(
 
     with pytest.raises(ServerConfigInvalid):
         _ = read_server_config(config)
+
+
+def test_the_dataset_and_source_roots_are_resolved_and_the_datasets_served(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "conf" / "server.yaml"
+    config.parent.mkdir()
+    found = make_dataset(tmp_path / "made" / "one", name="one")
+    _ = config.write_text(
+        "dataset_roots: [../made]\nsource_roots: [../raw]\n", encoding="utf-8"
+    )
+
+    read = read_server_config(config)
+
+    assert read.dataset_roots == [(tmp_path / "made").resolve()]
+    assert read.source_roots == [(tmp_path / "raw").resolve()]
+    assert [path.resolve() for path in served_manifests([], read)] == [
+        found.manifest_path.resolve()
+    ]

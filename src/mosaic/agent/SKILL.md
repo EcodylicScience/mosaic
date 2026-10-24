@@ -432,6 +432,14 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 
 - Find step types with `describe_step_types` and a query, then call it with
   `names=[...]` for the params of the ones you choose.
+- A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
+  server allows it, `manage_dataset` creates a dataset (`create`, a `path` inside the
+  server's dataset roots), declares raw files (`add_source` with `kind`, `path` inside
+  its source roots, and for tracks `patterns` and `src_format`), indexes them
+  (`scan`) and sets tags (`set_tags`). Creating and changing sources ask the user.
+  Then plan a recipe that begins with `convert-tracks` (and `convert-labels`). A
+  refusal with `roots_not_configured` means the user runs `mosaic init`,
+  `mosaic sources add` and `mosaic scan` instead. Never try to change `splits`.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
   more than 100 entries) and wait for their approval, then pass its fingerprint to

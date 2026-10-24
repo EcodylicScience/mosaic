@@ -203,8 +203,9 @@ def serve_command(
             help=(
                 "A YAML file listing `datasets`, `discover` directories, "
                 "`allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, "
-                "and the parallelism limits `max_workers`, `allow_process_mode` "
-                "and `min_free_memory_fraction`. "
+                "the parallelism limits `max_workers`, `allow_process_mode` "
+                "and `min_free_memory_fraction`, and the `dataset_roots` and "
+                "`source_roots` that manage_dataset may write inside. "
                 "Its relative paths are read from its directory."
             ),
         ),
@@ -364,6 +365,8 @@ def serve_command(
             allow_cleanup=granted,
             cleanup_policy=settings.cleanup,
             parallel_limits=settings.parallel_limits,
+            dataset_roots=settings.dataset_roots,
+            source_roots=settings.source_roots,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))
@@ -423,6 +426,8 @@ def _serve_http(
             allow_cleanup=allow_cleanup,
             cleanup_policy=settings.cleanup,
             parallel_limits=settings.parallel_limits,
+            dataset_roots=settings.dataset_roots,
+            source_roots=settings.source_roots,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))
@@ -437,7 +442,8 @@ def confirm_hook_command(
             help=(
                 "A confirmation condition to accept, such as gpu_lane, "
                 "training_op, tracking_op, allow_partial, bind, open_duplicate, "
-                "cleanup, score_sealed or hard_cancel. Repeatable."
+                "cleanup, score_sealed, hard_cancel, create_dataset or "
+                "add_source. Repeatable."
             ),
         ),
     ] = None,

@@ -24,7 +24,7 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 ## Tool contract
 
 - `TOOLS` in `spec.py` declares each tool once, and a backend answers it through the
-  `ToolBackend` method of the same name. The set contains at most 15 tools
+  `ToolBackend` method of the same name. The set contains at most 16 tools
   (`tests/meta/test_shared_tool_cap.py`), and each schema stays under
   `MAX_SCHEMA_BYTES`.
 - A tool wraps a library function and its wire model, which live beside their concept
@@ -44,8 +44,8 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `mosaic features describe` and `mosaic pipeline catalog <name>` print it. Each step
   type's detail stays under `MAX_STEP_TYPE_DETAIL_CHARS`, which a test measures over
   the catalog, so a new feature or op with a large params model must fit it.
-- `submit_pipeline` and `cancel_request` are the only tools that change a dataset's
-  data, and both declare `confirm_when`. `patch_recipe` writes only a content-addressed
+- `submit_pipeline`, `cancel_request` and `manage_dataset` are the tools that change
+  a dataset, and each declares `confirm_when`. `patch_recipe` writes only a content-addressed
   recipe file through `save_recipe`, is idempotent, asks nothing and is refused on a
   managed dataset. No tool takes `overwrite` (`test_tool_spec.py`).
 - A recipe argument is a document or a saved recipe named `{"digest": ...}` or
@@ -71,9 +71,16 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - A run's report is a resource, not a tool: a feature declaring `report_file` has it
   served at `.../artifacts/feature/{name}/{run_id}/report` through
   `read_run_report`.
+- `manage_dataset` (`dataset_tools.py`, `LocalBackend._manage_dataset`) creates a
+  dataset inside the operator's `dataset_roots` and declares a source inside its
+  `source_roots`, each path resolved through links and `..`. It writes the manifest
+  only through `Dataset.declare_scan_source`, `undeclare_scan_source` and
+  `update_tags`, which take the manifest's lock, and never `splits`. A dataset below a
+  dataset root is served without a restart (`_serve_new_datasets`), and a change
+  reopens the served dataset (`_reopened`) (`tests/agent/mcp/test_dataset_tools.py`).
 - `docs/agents.md` lists the operations the server leaves to the user, such as
-  deletion, `--apply` on a sweep or prune verb, and manifest writes. Do not add a tool
-  for one. The one deletion the tools make is removing superseded feature runs: the
+  deletion, `--apply` on a sweep or prune verb, and the other manifest writes. Do not
+  add a tool for one. The one deletion the tools make is removing superseded feature runs: the
   `cleanup` argument of `submit_pipeline`, refused (`cleanup_not_allowed`) unless the
   server runs with `--allow-cleanup feature-runs`, and asked about through the
   `cleanup` condition. The policy comes from the server's configuration, never from a

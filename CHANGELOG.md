@@ -195,6 +195,33 @@ no keypoints or `center_mode` was `xy`. A `trex_v1` table with keypoints, and ev
   instead of the first row of the entry.
 - No run id or tracks variant moves. `tracks_schemas` is never hashed.
 
+**An agent creates a dataset, declares and scans its sources and sets its tags through
+the MCP.** Every demo dataset was built by hand with `init`, `sources add` and `scan`, and
+a dataset that was scanned and not converted read as empty.
+
+- New MCP tool `manage_dataset` (the sixteenth; the shared-tool cap is now 16) with an
+  `action`: `create`, `add_source`, `remove_source`, `scan`, `set_tags`. The server's
+  configuration gains `dataset_roots` and `source_roots`: a dataset is created only
+  inside the first and a source declared only inside the second, each path resolved
+  through symbolic links and `..`, and a source's patterns and files may not be
+  absolute or hold `..`. Two creates of one path make one dataset. Without them both
+  actions are refused
+  (`roots_not_configured`). The datasets below a dataset root are served, and one
+  created while the server runs is served without a restart. No action writes
+  `splits`, and a managed dataset is refused.
+- New confirmation conditions `create_dataset` and `add_source` (which also covers
+  removing a source). `mosaic agent confirm-hook --approve` takes them.
+- `DatasetSummary` gains `next_steps` (default empty), which `mosaic describe` prints and
+  `describe_dataset` returns: a tracks source to declare, sources to scan, raw files to
+  convert with a `convert-tracks` or `convert-labels` step. A plan over a dataset with no
+  converted tracks and no converting step cautions that it covers no entry and says to
+  convert first, where it said "covers all 0 entries".
+- `Dataset.declare_scan_source`, `undeclare_scan_source` and `update_tags` write the
+  manifest under its lock. `mosaic.core.source_fields.scan_source_from_fields` builds a
+  source for `mosaic sources add` and the tool alike, so `sources add` now refuses a flag
+  of another kind of source (`--patterns` on media, `--layout` on tracks), which it
+  ignored.
+
 **`mosaic agent serve --http` serves the MCP tools to one user over the network.** A
 client on a laptop, such as one whose sandbox allows no SSH, could not reach data and GPUs
 on a server, because the server spoke stdio only.

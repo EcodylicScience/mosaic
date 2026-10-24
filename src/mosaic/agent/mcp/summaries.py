@@ -28,9 +28,10 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.preview import ArtifactPreview
 
-from .outputs import PlanPage, StepSuggestions, StepTypes
+from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 from .spec import (
     ActivityPage,
+    DatasetChange,
     DatasetList,
     FailureDiagnosis,
     SequencePage,
@@ -70,6 +71,8 @@ def summarize(output: BaseModel) -> str:
             return _inventory(output)
         case StepTypes():
             return _step_types(output)
+        case PatchedRecipe():
+            return _patched(output)
         case ValidationReport():
             return _validation(output)
         case StepSuggestions():
@@ -88,6 +91,8 @@ def summarize(output: BaseModel) -> str:
             return _diagnosis(output)
         case ArtifactPreview():
             return _preview(output)
+        case DatasetChange():
+            return _dataset_change(output)
         case _:
             msg = f"no shared tool returns {type(output).__name__}"
             raise TypeError(msg)
@@ -191,6 +196,34 @@ def _validation(report: ValidationReport) -> str:
         f"The recipe is {verdict}: {len(report.problems)} problem(s), "
         f"{len(report.cautions)} caution(s), {len(report.unchecked)} step(s) whose "
         f"columns are unchecked.{digest} {_STRUCTURED}"
+    )
+
+
+def _patched(patched: PatchedRecipe) -> str:
+    verdict = "valid" if patched.valid else "not valid"
+    return (
+        f"Saved the recipe as digest {patched.digest}: {patched.steps_total} "
+        f"step(s), {verdict}, {len(patched.problems)} problem(s). Pass "
+        f"{{digest: {patched.digest}}} as the recipe. {_STRUCTURED}"
+    )
+
+
+def _dataset_change(change: DatasetChange) -> str:
+    scanned = (
+        " Raw index rows: "
+        + ", ".join(f"{kind} {rows}" for kind, rows in change.scanned.items())
+        + "."
+        if change.scanned
+        else ""
+    )
+    steps = (
+        f" {len(change.next_steps)} next step(s) before a pipeline reads it."
+        if change.next_steps
+        else ""
+    )
+    return (
+        f"{change.action} done on dataset {change.dataset}.{scanned}{steps} "
+        f"{_STRUCTURED}"
     )
 
 

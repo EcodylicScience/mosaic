@@ -96,7 +96,7 @@ def test_submission_and_cancel_change_a_dataset_and_both_ask_to_confirm() -> Non
     changing = {spec.name for spec in TOOLS if not spec.annotations.read_only}
     confirming = {spec.name for spec in TOOLS if spec.needs_confirmation}
 
-    assert confirming == {"submit_pipeline", "cancel_request"}
+    assert confirming == {"submit_pipeline", "cancel_request", "manage_dataset"}
     # patch_recipe saves a recipe file and changes no data, so it asks nothing.
     assert changing == confirming | {"patch_recipe"}
     cancel = tool_spec("cancel_request")
