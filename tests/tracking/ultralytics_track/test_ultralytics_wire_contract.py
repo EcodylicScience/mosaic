@@ -112,8 +112,8 @@ def _keywords_of_call(module: ModuleType, name: str) -> set[str]:
     return sent
 
 
-def _attributes_read_from(module: ModuleType, annotation: str) -> set[str]:
-    """Every attribute *module* reads off a parameter annotated *annotation*.
+def _attributes_read_from(module: ModuleType, *annotations: str) -> set[str]:
+    """Every attribute *module* reads off a parameter annotated one of *annotations*.
 
     Scoped to the functions that take one, rather than to every local called
     ``request``: the runner's probe path takes a ``ProbeRequest`` under that same
@@ -127,7 +127,7 @@ def _attributes_read_from(module: ModuleType, annotation: str) -> set[str]:
             argument.arg
             for argument in node.args.args
             if isinstance(argument.annotation, ast.Name)
-            and argument.annotation.id == annotation
+            and argument.annotation.id in annotations
         }
         if not names:
             continue
@@ -212,13 +212,14 @@ def test_mosaic_sends_exactly_the_inference_fields_the_runner_reads(
     requests share a base: a field read only off the base, or sent only on one
     subclass, is exactly the asymmetry a single-request contract cannot express.
 
-    Reads are collected off the base annotation as well as the subclass, since the
-    runner's video path takes an ``InferRequestBase`` and only the two entry
+    Reads are collected off the base annotations as well as the subclass, since
+    the runner's video path takes an ``InferRequestBase``, its detection
+    arguments are read off a ``PredictRequestBase``, and only the two entry
     points take the narrower type.
     """
     sent = _keywords_of_call(ops_infer, name)
-    read = _attributes_read_from(runner_module, name) | _attributes_read_from(
-        runner_module, "InferRequestBase"
+    read = _attributes_read_from(
+        runner_module, name, "InferRequestBase", "PredictRequestBase"
     )
     declared = set(model.model_fields)
 
@@ -1075,8 +1076,14 @@ def _predict_images(
 def test_the_runner_reads_every_predict_images_field(
     runner_module: ModuleType,
 ) -> None:
-    """The runner reads each field of the request and fills each of the response."""
-    read = _attributes_read_from(runner_module, "PredictImagesRequest")
+    """The runner reads each field of the request and fills each of the response.
+
+    The detection arguments are read off the ``PredictRequestBase`` that the
+    image path shares with the video path.
+    """
+    read = _attributes_read_from(
+        runner_module, "PredictImagesRequest", "PredictRequestBase"
+    )
     reported = _keywords_of_call(runner_module, "PredictImagesResponse")
     declared = set(PredictImagesRequest.model_fields)
 

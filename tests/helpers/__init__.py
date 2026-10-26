@@ -25,7 +25,8 @@ What lives where:
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``labels`` writes converted label files of events, and their index rows.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
-  ``run_info.json`` records and its frames-index row.
+  ``run_info.json`` records and its frames-index row, and reads back the files
+  of a dataset's one frames row.
 - ``frame_predictions`` writes an entry camera's predictions file of a
   predict-frames run and its index row.
 - ``frame_selections`` writes an entry's ``selection.parquet`` of a select-frames
@@ -112,6 +113,7 @@ from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.extracted_frames import (
     extract_entry_camera,
     record_frames_row,
+    sole_frames_row_files,
     write_frames_run,
 )
 from tests.helpers.environment import (
@@ -237,6 +239,7 @@ from tests.helpers.recipes import (
     speed_recipe_stepping,
 )
 from tests.helpers.models import (
+    register_sleap_model,
     register_trained_model,
     rewrite_as_older_prepared_index,
 )
@@ -596,6 +599,7 @@ __all__ = [
     "read_string_golden",
     "record_variant_recipe",
     "regenerate_command",
+    "register_sleap_model",
     "register_trained_model",
     "require_ffmpeg",
     "requirements_reaching",
@@ -615,6 +619,7 @@ __all__ = [
     "self_referenced_extras",
     "set_tracks_cell",
     "sleap_instance",
+    "sole_frames_row_files",
     "source_tree",
     "speed_heading_recipe",
     "speed_recipe",

@@ -393,7 +393,7 @@ Sample representative video frames as PNGs for annotation.
 | `n_frames` | `integer` \| `None` | `null` |  | How many frames to write per camera. Required by 'uniform' and 'kmeans', and refused by 'list', whose listed frames are what is written. |
 | `frames` | list of `EntryFrames` \| `None` | `null` |  | The frames to write under 'list', one item per entry, and refused by the other methods. The list chooses the entries: a run covers every listed entry, narrowed by its scope. Each item's frames apply to every camera of the entry. |
 | `exclude` | list of `EntryFrames` \| `None` | `null` |  | Frames that 'uniform' and 'kmeans' do not write and sample around, one item per entry, on the axis of frames. Each item's frames apply to every camera of the entry, and an entry the run does not cover is ignored. Refused by 'list'. |
-| `exclude_spacing` | `integer` | `0` | >= `0` | Distance from an excluded frame within which a candidate is removed too. Refused above 0 when exclude is unset. [frames] |
+| `exclude_spacing` | `integer` | `0` | >= `0` | The largest distance from an excluded frame at which a candidate is removed too, so 0 removes each excluded frame alone. Refused above 0 when exclude is unset. [frames] |
 | `start_frame` | `integer` \| `None` | `null` |  | First frame of the range frames are chosen from, inclusive. Unset starts at the beginning of the video. Refused by 'list'. |
 | `end_frame` | `integer` \| `None` | `null` |  | Last frame of the range frames are chosen from, inclusive. Unset runs to the end of the video. Refused by 'list'. |
 | `candidate_step` | `integer` | `1` |  | Stride between candidate frames within the range. A wider stride samples a long recording without decoding every frame of it. |
@@ -427,7 +427,7 @@ Propose frames to annotate from a tracker or infer op's tracks of the full media
 | --- | --- | --- | --- | --- |
 | `source_tracks_run_id` | `string` | _required_ | min length `1` | The run id of the tracks variant to read. A tracker or infer op must have published it from the full, untrimmed media, because a converted, resampled or trimmed variant does not record a frame axis. |
 | `n_frames` | `integer` | `20` | >= `1` | The most frames chosen per entry. |
-| `min_separation_frames` | `integer` | `30` | >= `0` | The least spacing between two chosen frame indices of an entry, and between a chosen and an excluded one. [frames] |
+| `min_separation_frames` | `integer` | `30` | >= `0` | The smallest distance allowed between two chosen frame indices of an entry, and between a chosen and an excluded one. [frames] |
 | `min_event_frames` | `integer` | `1` | >= `1` | The shortest run of a criterion that is an event. [frames] |
 | `n_expected` | `integer` \| `None` | `null` |  | The animals expected in every frame. A frame that detects fewer is flagged fewer_than_expected, and unset leaves that criterion off. |
 | `head` | `integer` \| `string` \| `None` | `null` |  | The head keypoint of the body axis, by index or by name. With tail, it measures the body length, and two rows whose heads lie apart do not form a duplicate pair. |
@@ -438,7 +438,7 @@ Propose frames to annotate from a tracker or infer op's tracks of the full media
 | `low_score` | `LowScoreCriterion` | `{"enabled": true, "threshold": null, "quantile": 0.05}` |  | The row criterion of low keypoint confidence. Skipped for a table without confidence columns. |
 | `missing_keypoints` | `MissingKeypointsCriterion` | `{"enabled": true, "keypoints": []}` |  | The row criterion of a non-finite keypoint. |
 | `duplicate` | `DuplicateCriterion` | `{"enabled": true, "body_lengths": 0.2}` |  | The frame criterion of two rows of one animal. |
-| `exclude` | list of `EntryFrames` | `[]` |  | Frames already annotated, by entry. None of them is chosen, and every chosen frame keeps min_separation_frames from each of them. |
+| `exclude` | list of `EntryFrames` | `[]` |  | Frames already annotated, by entry. None of them is chosen, and every chosen frame is at least min_separation_frames from each of them. |
 | `random_state` | `integer` | `0` |  | Seeds the order in which an entry's candidates are taken, together with the entry's key. |
 
 ??? note "`DuplicateCriterion`"

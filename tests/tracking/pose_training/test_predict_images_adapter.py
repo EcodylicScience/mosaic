@@ -30,6 +30,7 @@ from mosaic.core.annotations.pose_predictions import (
 from mosaic.core.pipeline.toolenv import ToolEnv
 from mosaic.tracking.common.ultralytics_env import (
     POLO_ENV,
+    PREDICT_IDLE_SECONDS,
     ULTRALYTICS_ENV,
     PoloError,
     UltralyticsError,
@@ -148,6 +149,18 @@ def test_the_device_reaches_the_request_in_the_spelling_of_ultralytics(
     _ = _predict(tmp_path, task, [0], device=device)
 
     assert [request.device for request in fake.requests] == [sent]
+
+
+@pytest.mark.parametrize("task", ["pose", "locate"])
+def test_the_exchange_waits_through_a_cold_model_load_as_inference_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task: InferTask
+) -> None:
+    """The runner may stay silent an hour, as it may under infer-pose and infer-points."""
+    fake = install_fake_predict_images(monkeypatch, task)
+
+    _ = _predict(tmp_path, task, [0])
+
+    assert fake.idle_timeouts == [PREDICT_IDLE_SECONDS]
 
 
 def test_a_pose_request_names_the_pose_and_box_columns(

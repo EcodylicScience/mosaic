@@ -8,16 +8,25 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mosaic.core.entry import make_entry_key
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.tracking.frame_extraction.frame_runs import (
+    FrameFile,
     FramesIndexRow,
     frames_index,
     frames_index_path,
+    frames_row_files,
+    list_frame_runs,
 )
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-__all__ = ["extract_entry_camera", "record_frames_row", "write_frames_run"]
+__all__ = [
+    "extract_entry_camera",
+    "record_frames_row",
+    "sole_frames_row_files",
+    "write_frames_run",
+]
 
 
 def write_frames_run(directory: Path, sizes: Mapping[int, tuple[int, int]]) -> None:
@@ -114,3 +123,13 @@ def extract_entry_camera(
         index: Path(ds.relative_to_root(directory / f"frame_{index:06d}.png"))
         for index in sizes
     }
+
+
+def sole_frames_row_files(ds: Dataset) -> tuple[FrameFile, ...]:
+    """The extracted PNGs that the one row of *ds*'s frames indexes records.
+
+    Raises:
+        ValueError: If the frames indexes do not hold exactly one row.
+    """
+    (row,) = index_records(list_frame_runs(ds))
+    return frames_row_files(ds, row)

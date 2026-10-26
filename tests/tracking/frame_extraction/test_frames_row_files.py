@@ -1,8 +1,8 @@
 """The typed reader of an extraction run's frame files.
 
 The reader serves each frame's dataset-relative image key and size from the
-entry camera's ``run_info.json``. It reads the frames-index row's directory in
-either stored form, and creates nothing.
+``run_info.json`` of one frames-index row's entry camera. It reads the row's
+directory in either stored form, and creates nothing.
 """
 
 from __future__ import annotations
@@ -12,14 +12,20 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.scope import Scope
 from mosaic.tracking.frame_extraction.frame_runs import (
     FrameFile,
-    frame_run_files,
     frames_index_path,
+    frames_row_files,
     list_frame_runs,
 )
-from tests.helpers import make_dataset, record_frames_row, write_frames_run
+from tests.helpers import (
+    make_dataset,
+    record_frames_row,
+    sole_frames_row_files,
+    write_frames_run,
+)
 
 RUN_ID = "run0"
 SIZES = {100: (64, 48), 250: (32, 24), 40: (16, 12)}
@@ -54,7 +60,7 @@ def test_files_come_back_sorted_by_frame_index_with_their_sizes(
     _write_run(_entry_directory(dataset))
     _record(dataset, _relative_directory(dataset))
 
-    files = frame_run_files(dataset, RUN_ID, "G", "S", "cam1")
+    files = sole_frames_row_files(dataset)
 
     assert [file.frame_index for file in files] == EXPECTED_FRAME_INDICES
     assert [(file.width, file.height) for file in files] == [
@@ -69,7 +75,7 @@ def test_image_is_the_root_relative_directory_joined_with_the_file_name(
     _write_run(_entry_directory(dataset))
     _record(dataset, _relative_directory(dataset))
 
-    files = frame_run_files(dataset, RUN_ID, "G", "S", "cam1")
+    files = sole_frames_row_files(dataset)
 
     assert files[1].image == (
         f"media/frames/uniform/{RUN_ID}/G__S/cam1/frame_000100.png"
@@ -85,18 +91,14 @@ def test_an_absolute_legacy_row_gives_the_same_images_and_creates_no_directory(
 ) -> None:
     _write_run(_entry_directory(dataset))
     _record(dataset, _relative_directory(dataset))
-    relative_images = [
-        file.image for file in frame_run_files(dataset, RUN_ID, "G", "S", "cam1")
-    ]
+    relative_images = [file.image for file in sole_frames_row_files(dataset)]
 
     legacy = make_dataset(tmp_path / "legacy")
     _write_run(_entry_directory(legacy))
     _record(legacy, str(_entry_directory(legacy)))
     before = sorted(legacy.manifest_path.parent.rglob("*"))
 
-    legacy_images = [
-        file.image for file in frame_run_files(legacy, RUN_ID, "G", "S", "cam1")
-    ]
+    legacy_images = [file.image for file in sole_frames_row_files(legacy)]
 
     assert legacy_images == relative_images
     assert sorted(legacy.manifest_path.parent.rglob("*")) == before
@@ -107,9 +109,7 @@ def test_an_absolute_cell_from_another_machine_resolves_through_the_path_map(
 ) -> None:
     _write_run(_entry_directory(dataset))
     _record(dataset, _relative_directory(dataset))
-    expected = [
-        file.image for file in frame_run_files(dataset, RUN_ID, "G", "S", "cam1")
-    ]
+    expected = [file.image for file in sole_frames_row_files(dataset)]
 
     moved = make_dataset(tmp_path / "moved")
     _write_run(_entry_directory(moved))
@@ -122,7 +122,7 @@ def test_an_absolute_cell_from_another_machine_resolves_through_the_path_map(
     index_path.write_text(index_path.read_text().replace(base, old_base))
     moved.remap_roots({old_base: str(moved.manifest_path.parent)})
 
-    files = frame_run_files(moved, RUN_ID, "G", "S", "cam1")
+    files = sole_frames_row_files(moved)
 
     assert [file.image for file in files] == expected
 
@@ -135,23 +135,10 @@ def test_a_directory_outside_the_dataset_tree_raises_naming_run_and_directory(
     _record(dataset, str(outside))
 
     with pytest.raises(ValueError) as raised:
-        frame_run_files(dataset, RUN_ID, "G", "S", "cam1")
+        sole_frames_row_files(dataset)
 
     assert RUN_ID in str(raised.value)
     assert str(outside.resolve()) in str(raised.value)
-
-
-def test_an_unknown_run_or_entry_answers_nothing(dataset: Dataset) -> None:
-    _write_run(_entry_directory(dataset))
-    _record(dataset, _relative_directory(dataset))
-
-    assert frame_run_files(dataset, "other", "G", "S", "cam1") == ()
-    assert frame_run_files(dataset, RUN_ID, "G", "S", "cam2") == ()
-    assert frame_run_files(dataset, RUN_ID, "G", "T", "cam1") == ()
-
-
-def test_a_dataset_with_no_frames_index_answers_nothing(dataset: Dataset) -> None:
-    assert frame_run_files(dataset, RUN_ID, "G", "S", "cam1") == ()
 
 
 def test_a_read_only_dataset_gains_no_directory(dataset: Dataset) -> None:
@@ -161,13 +148,13 @@ def test_a_read_only_dataset_gains_no_directory(dataset: Dataset) -> None:
     reopened = open_dataset(base, ensure_roots=False)
     before = sorted(base.rglob("*"))
 
-    files = frame_run_files(reopened, RUN_ID, "G", "S", "cam1")
+    files = sole_frames_row_files(reopened)
 
     assert len(files) == len(SIZES)
     assert sorted(base.rglob("*")) == before
 
 
-def test_a_read_only_dataset_without_a_frames_root_gains_no_directory(
+def test_a_read_only_dataset_without_a_frames_root_lists_no_row(
     tmp_path: Path,
 ) -> None:
     base = tmp_path / "ro"
@@ -175,9 +162,9 @@ def test_a_read_only_dataset_without_a_frames_root_gains_no_directory(
     reopened = open_dataset(base, ensure_roots=False)
     before = sorted(base.rglob("*"))
 
-    files = frame_run_files(reopened, RUN_ID, "G", "S", "cam1")
+    rows = list_frame_runs(reopened)
 
-    assert files == ()
+    assert rows.empty
     assert sorted(base.rglob("*")) == before
 
 
@@ -190,9 +177,9 @@ def test_an_extraction_run_serves_the_files_it_wrote(
     _ = extract_frames(
         ds, n_frames=2, method="uniform", scope=Scope(entries=[("", "seq_a")])
     )
-    row = list_frame_runs(ds, method="uniform").iloc[0]
+    (row,) = index_records(list_frame_runs(ds, method="uniform"))
 
-    files = frame_run_files(ds, str(row["run_id"]), "", "seq_a", str(row["camera"]))
+    files = frames_row_files(ds, row)
 
     assert len(files) == 2
     assert [file.frame_index for file in files] == sorted(

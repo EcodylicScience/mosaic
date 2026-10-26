@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import Field
 
 from mosaic.core.annotations.bbox import BboxPolicy
 from mosaic.core.annotations.model import (
@@ -53,8 +53,9 @@ from mosaic.core.annotations.model import (
     KeypointSchema,
     ObjectOrigin,
 )
+from mosaic.core.annotations.versioned_file import read_versioned_file
 from mosaic.core.json_value import JsonValue
-from mosaic.core.strict_model import StrictModel, terse
+from mosaic.core.strict_model import StrictModel
 
 __all__ = [
     "FORMAT_NAME",
@@ -355,8 +356,9 @@ def _object_document(obj: PoseObject) -> dict[str, JsonValue]:
 
 
 # The file is mosaic's own, so a key these models do not know is a mistake rather
-# than a newer writer's addition: that is what the version field is for. Their
-# descriptions are the format's documentation, rendered into the reference by
+# than a newer writer's addition: that comes with a newer version, which
+# read_versioned_file refuses before these models see the file. Their descriptions
+# are the format's documentation, rendered into the reference by
 # pose_annotations_json_schema.
 
 
@@ -493,18 +495,12 @@ def read_pose_annotations(
         ValueError: The file is not this format, is a newer version of it than
             this mosaic reads, or holds a state the model refuses.
     """
-    path = Path(path)
-    try:
-        parsed = PoseAnnotationsFile.model_validate_json(path.read_bytes())
-    except ValidationError as exc:
-        msg = f"{path} is not a {FORMAT_NAME} file: {terse(exc)}"
-        raise ValueError(msg) from exc
-    if parsed.version > FORMAT_VERSION:
-        msg = (
-            f"{path} is {FORMAT_NAME} version {parsed.version}; this mosaic reads "
-            f"up to version {FORMAT_VERSION}. Upgrade mosaic to read it."
-        )
-        raise ValueError(msg)
+    parsed = read_versioned_file(
+        Path(path),
+        PoseAnnotationsFile,
+        format_name=FORMAT_NAME,
+        newest_version=FORMAT_VERSION,
+    )
     return PoseAnnotationSet(
         poses=tuple(
             PoseDefinition(

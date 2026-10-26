@@ -186,7 +186,7 @@ def sleap_train_config(
         # config that omits them trains to completion, writes its checkpoint,
         # and then dies on the evaluation pass with
         # ``ConfigAttributeError: Key 'preprocessing' is not in struct``.
-        # Stating them changes no behaviour and keeps the run from ending on an
+        # Stating them changes no behavior and keeps the run from ending on an
         # error after the model is already on disk.
         "preprocessing": {"ensure_rgb": False, "ensure_grayscale": False},
     }
@@ -376,7 +376,7 @@ def train_sleap(
         head: Which task to train. See :data:`SleapHead`.
         backbone: Which feature extractor. See :data:`SleapBackbone`.
         max_epochs: Training length.
-        seed: Seeds sleap-nn's own initialisation.
+        seed: Seeds sleap-nn's own initialization.
         validation_fraction: Held out from *labels_path* when no separate
             validation file is given.
         validation_labels: A ``.slp`` that sleap-nn validates on, in place of

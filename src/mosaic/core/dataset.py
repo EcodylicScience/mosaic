@@ -66,7 +66,11 @@ from .schema import (
     TrackSchema,
     ensure_track_schema,
 )
-from .stored_paths import remap_single_path as _remap_single_path, resolve_stored_path
+from .stored_paths import (
+    manifest_file_path,
+    remap_single_path as _remap_single_path,
+    resolve_stored_path,
+)
 from .track_converter import (
     TRACK_CONVERTERS,
     EntryHints,
@@ -2357,12 +2361,13 @@ class Dataset:
                         if did_change:
                             data["video_path"] = new_val
                             changed += 1
-                    # files[].path -> filename only (they're siblings of run_info.json)
+                    # files[].path -> relative to run_info.json
                     for f in data.get("files", []):
                         if "path" in f:
-                            p = Path(f["path"])
-                            if p.is_absolute():
-                                f["path"] = p.name
+                            recorded = str(f["path"])
+                            relative = manifest_file_path(recorded)
+                            if relative != recorded:
+                                f["path"] = relative
                                 changed += 1
                     if changed > 0:
                         if not dry_run:

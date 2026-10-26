@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import shutil
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -245,6 +246,12 @@ class PreparedDatasetIndexRow(RunIndexRowBase):
     ``sets`` its units remove, and ``keypoint_schema`` is the JSON
     ``{keypoints, skeleton, symmetries}`` that a model trained on the
     preparation predicts. None of the three enters the run identifier.
+
+    ``n_train``, ``n_valid`` and ``n_test`` count the frames written in each
+    split that ``split.csv`` records, and sum to ``n_frames``. A ``sleap``
+    preparation writes no ``test`` frame, so its ``n_test`` is 0. For a
+    ``litpose`` preparation the three counts are mosaic's draw, and Lightning
+    Pose redraws its own train and validation split from all ``n_frames``.
     """
 
     kind: str
@@ -882,13 +889,14 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
 
         ordered = sorted(gathered, key=lambda pair: name_of(pair[0], pair[1]))
         if params.target not in _TREE_TARGETS:
-            artifact, n_frames = _write_for_tool(
+            artifact, n_by_split = _write_for_tool(
                 params, out, ordered, name_of, plan.split_of, schema, categories
             )
             _write_split_record(out, plan.rows)
             return _register(
                 ds, index, run_id, self.kind, params, sets, out, artifact,
-                pose=pose, n_frames=n_frames, holdout=holdout,
+                pose=pose, n_frames=sum(n_by_split.values()),
+                n_by_split=n_by_split, holdout=holdout,
                 n_held_out=plan.n_held_out, predicts=schema,
             )  # fmt: skip
         written, skipped = write_split_tree(
@@ -926,8 +934,9 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         _write_split_record(out, plan.rows)
         return _register(
             ds, index, run_id, self.kind, params, sets, out, data_yaml,
-            pose=pose, n_frames=written, holdout=holdout,
-            n_held_out=plan.n_held_out, predicts=schema,
+            pose=pose, n_frames=written,
+            n_by_split={split: _count(out / split) for split in _PLACED_SPLITS},
+            holdout=holdout, n_held_out=plan.n_held_out, predicts=schema,
         )  # fmt: skip
 
 
@@ -1005,6 +1014,7 @@ def _register(
     *,
     pose: PoseDefinition,
     n_frames: int,
+    n_by_split: Mapping[str, int],
     holdout: HoldOut,
     n_held_out: int,
     predicts: KeypointSchema,
@@ -1022,6 +1032,8 @@ def _register(
         artifact: What a trainer is handed.
         pose: The pose the sets were narrowed to.
         n_frames: The frames written.
+        n_by_split: The frames written to each split, keyed ``train``,
+            ``valid`` and ``test``. A split that is absent counts 0.
         holdout: The hold-out, whose revisions the row lists.
         n_held_out: The frames of ``sets`` its units remove.
         predicts: The keypoints a model trained on the preparation predicts.
@@ -1035,9 +1047,9 @@ def _register(
                 artifact_path=ds.relative_to_root(artifact),
                 consumed_sets=consumed_sets_cell(sets),
                 n_frames=n_frames,
-                n_train=_count(out / "train"),
-                n_valid=_count(out / "valid"),
-                n_test=_count(out / "test"),
+                n_train=n_by_split.get("train", 0),
+                n_valid=n_by_split.get("valid", 0),
+                n_test=n_by_split.get("test", 0),
                 status="finished",
                 pose_id=str(pose.id),
                 pose_name=pose.name,
@@ -1060,7 +1072,7 @@ def _write_for_tool(
     split_of: Mapping[str, str],
     schema: KeypointSchema,
     categories: tuple[str, ...],
-) -> tuple[Path, int]:
+) -> tuple[Path, Counter[str]]:
     """Write the union for a tool that reads one labels artifact, not a tree.
 
     The images are copied in first, under the same collision-free names the tree
@@ -1075,7 +1087,8 @@ def _write_for_tool(
 
     Returns:
         What a trainer is handed (the ``.slp`` of training frames, or the
-        project directory), and how many frames were written for it.
+        project directory), and how many frames were written for it in each
+        split that *split_of* places them in.
     """
     images = out / "images"
     images.mkdir(parents=True, exist_ok=True)
@@ -1113,6 +1126,8 @@ def _write_for_tool(
             )
         )
 
+    n_by_split = Counter(split for split, _frame in frames)
+
     def merged(subset: Collection[str] | None = None) -> AnnotationSet:
         """Return the copied frames placed in *subset*, or every one without it."""
         return AnnotationSet(
@@ -1133,13 +1148,13 @@ def _write_for_tool(
         _ = write_slp(
             merged({"valid"}), validation_labels_path(labels), images_dir=images
         )
-        return labels, len(frames)
+        return labels, n_by_split
     from mosaic.tracking.litpose.labels import write_litpose_dataset
 
     project = write_litpose_dataset(
         merged(), out / "project", train_prob=params.split[0], copy_images=True
     )
-    return project, len(frames)
+    return project, n_by_split
 
 
 def _already_prepared(

@@ -18,6 +18,7 @@ paths and the resolve-then-skip behavior in ``manifest._resolve_feature``:
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import yaml
+from pydantic import BaseModel, TypeAdapter
 
 from mosaic.behavior.feature_library import SpeedAngvel
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -40,12 +42,15 @@ from mosaic.core.pipeline.index import (
 from mosaic.core.pipeline.manifest import _resolve_feature
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.tracks_index import tracks_index_path, write_tracks_row
+from mosaic.tracking.frame_extraction.dataset_runs import get_frame_manifests
 from mosaic.tracking.trex.dataset_runs import TRexIndexRow, trex_index, trex_index_path
 from tests.helpers import (
     MockDataset,
     add_track_sequences,
+    extract_entry_camera,
     make_dataset,
     register_trained_model,
+    sole_frames_row_files,
     write_litpose_model,
 )
 
@@ -361,6 +366,22 @@ def _set_cells(index: Path, cells: Mapping[str, str]) -> None:
     frame.to_csv(index, index=False)
 
 
+class _ManifestRecord(BaseModel):
+    """The ``path`` of one ``files`` record of a frames manifest."""
+
+    path: str
+
+
+_MANIFEST_RECORDS: Final = TypeAdapter(list[_ManifestRecord])
+
+
+def _manifest_file_paths(ds: Dataset, run_id: str) -> list[str]:
+    """The file paths that the one manifest of a ``uniform`` frames run lists."""
+    (manifest,) = get_frame_manifests(ds, "uniform", run_id=run_id)
+    records = _MANIFEST_RECORDS.validate_python(manifest["files"])
+    return [record.path for record in records]
+
+
 @pytest.mark.parametrize("kind", sorted(_ROWS))
 def test_make_portable_relativizes_every_path_column(tmp_path: Path, kind: str) -> None:
     """A legacy row of absolutes is repaired in every column, not only ``abs_path``."""
@@ -374,6 +395,37 @@ def test_make_portable_relativizes_every_path_column(tmp_path: Path, kind: str) 
     assert _cells(row.index, row.columns) == relative
     visited = {Path(key).resolve() for key in changed}
     assert row.index.resolve() in visited, f"the index was not visited: {changed}"
+
+
+def test_make_portable_names_an_absolute_manifest_file_by_its_file_name(
+    tmp_path: Path,
+) -> None:
+    """The frames readers and the repair read one legacy manifest record alike."""
+    ds = make_dataset(tmp_path / "ds")
+    images = extract_entry_camera(
+        ds,
+        run_id="run0",
+        group="G",
+        sequence="S",
+        camera="cam1",
+        sizes={100: (64, 48), 250: (64, 48)},
+    )
+    manifest = ds.base_dir / images[100].parent / "run_info.json"
+    info = json.loads(manifest.read_text())
+    names = [record["path"] for record in info["files"]]
+    info["files"][0]["path"] = f"/old/machine/ds/{images[100].parent}/{names[0]}"
+    _ = manifest.write_text(json.dumps(info))
+    read_before = sole_frames_row_files(ds)
+    expected = [str(ds.resolve_path(images[index]).resolve()) for index in (100, 250)]
+    assert _manifest_file_paths(ds, "run0") == expected
+
+    changed = ds.make_portable()
+
+    repaired = json.loads(manifest.read_text())
+    assert [record["path"] for record in repaired["files"]] == names
+    assert changed[str(manifest)] == 1
+    assert sole_frames_row_files(ds) == read_before
+    assert _manifest_file_paths(ds, "run0") == expected
 
 
 @pytest.mark.parametrize("kind", sorted(_ROWS))

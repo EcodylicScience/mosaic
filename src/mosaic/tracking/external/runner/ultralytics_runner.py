@@ -76,8 +76,8 @@ from mosaic_media.io import VideoReader
 from pydantic import BaseModel, TypeAdapter
 
 from ultralytics_protocol import (
-    POINT_COLUMNS,
     POINT_DTYPES,
+    POINT_NUMERIC_COLUMNS,
     EpochEvent,
     HeartbeatEvent,
     ImageSource,
@@ -92,6 +92,7 @@ from ultralytics_protocol import (
     Precision,
     PredictImagesRequest,
     PredictImagesResponse,
+    PredictRequestBase,
     ProbeRequest,
     ProbeResponse,
     ProgressEvent,
@@ -791,15 +792,8 @@ def run_track(request: TrackRequest) -> TrackResponse:
 # --- inference -------------------------------------------------------------
 
 
-def _infer_kwargs(
-    device: str,
-    conf: float,
-    imgsz: int,
-    max_det: int,
-    agnostic_nms: bool,
-    precision: Precision,
-) -> dict[str, object]:
-    """The arguments every frame of a run is predicted with.
+def _infer_kwargs(request: PredictRequestBase) -> dict[str, object]:
+    """The arguments every frame or image of a request is predicted with.
 
     Every detection-affecting argument is passed explicitly, for the reason
     :func:`_track_kwargs` gives: an upstream retune cannot silently re-mean an
@@ -807,16 +801,16 @@ def _infer_kwargs(
     because POLO's locate NMS never reads it.
     """
     return {
-        "device": device,
-        "conf": conf,
-        "imgsz": imgsz,
-        "max_det": max_det,
-        "agnostic_nms": agnostic_nms,
+        "device": request.device,
+        "conf": request.conf,
+        "imgsz": request.imgsz,
+        "max_det": request.max_det,
+        "agnostic_nms": request.agnostic_nms,
         "augment": False,
         # False so the tool does not chatter over the progress lines, which are
         # what mosaic's inactivity watchdog reads.
         "verbose": False,
-        **_precision_kwarg(precision),
+        **_precision_kwarg(request.precision),
     }
 
 
@@ -979,7 +973,7 @@ def _point_table(
     ``class_name`` is mapped from ``class_id`` after the numeric block is
     assembled, because it is the one column of either table that is not a number.
     """
-    table, n_rows = _numeric_frame(outcome.blocks, list(POINT_COLUMNS[:-1]))
+    table, n_rows = _numeric_frame(outcome.blocks, list(POINT_NUMERIC_COLUMNS))
     table["class_name"] = [
         outcome.names.get(class_id, f"class_{class_id}")
         for class_id in map(int, table["class_id"])
@@ -1013,14 +1007,7 @@ def _loaded_for(model_path: str, task: InferTask) -> object:
 def run_infer_pose(request: InferPoseRequest) -> InferResponse:
     """Run one entry through a YOLO pose model and write its raw predictions."""
     model: _Predictor[PoseResult] = _loaded_for(request.model_path, request.task)
-    kwargs = _infer_kwargs(
-        request.device,
-        request.conf,
-        request.imgsz,
-        request.max_det,
-        request.agnostic_nms,
-        request.precision,
-    )
+    kwargs = _infer_kwargs(request)
     kwargs["iou"] = request.iou
     outcome = _infer_entry(
         request,
@@ -1085,14 +1072,7 @@ def run_infer_points(request: InferPointsRequest) -> InferResponse:
     """Run one entry through a POLO point model and write its raw predictions."""
     model: _Predictor[PointResult] = _loaded_for(request.model_path, request.task)
     kwargs = {
-        **_infer_kwargs(
-            request.device,
-            request.conf,
-            request.imgsz,
-            request.max_det,
-            request.agnostic_nms,
-            request.precision,
-        ),
+        **_infer_kwargs(request),
         **_suppression_kwargs(request.dor, request.radii, model),
     }
     outcome = _infer_entry(request, model, kwargs, point_rows_from_result)
@@ -1266,14 +1246,7 @@ def run_predict_images(request: PredictImagesRequest) -> PredictImagesResponse:
         )
     reader = ImageListReader(request.images)
     loaded = _loaded_for(request.model_path, request.task)
-    kwargs = _infer_kwargs(
-        request.device,
-        request.conf,
-        request.imgsz,
-        request.max_det,
-        request.agnostic_nms,
-        request.precision,
-    )
+    kwargs = _infer_kwargs(request)
     if request.task == "pose":
         pose_model: _Predictor[PoseResult] = loaded
         kwargs["iou"] = request.iou

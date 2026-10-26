@@ -27,9 +27,10 @@ from mosaic.core.pipeline.inventory.model import (
     FrameRunRef,
     InventoryScope,
 )
+from mosaic.core.stored_paths import manifest_file_path
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from mosaic.core.annotations.model import AnnotationFrame
     from mosaic.core.dataset import Dataset
@@ -40,8 +41,8 @@ __all__ = [
     "FrameFile",
     "FramesIndexRow",
     "adopt_frames_columns",
-    "frame_run_files",
     "frame_run_records",
+    "frames_row_files",
     "frames_index",
     "frames_index_path",
     "frames_run_root",
@@ -261,59 +262,61 @@ def _entry_files(
 ) -> tuple[FrameFile, ...]:
     """The files that a frames row's ``run_info.json`` records, by frame index.
 
+    A record's path is read through :func:`manifest_file_path`, which takes an
+    absolute legacy record by its file name.
+
     Raises:
-        ValueError: If the row's directory lies outside the dataset tree.
+        ValueError: If the row's directory lies outside the dataset tree, or its
+            ``run_info.json`` is missing, unreadable or lacks a record field.
     """
-    directory = _entry_directory_key(ds, stored, run_id=run_id, entry=entry)
-    info = json.loads((ds.resolve_path(stored) / "run_info.json").read_text())
-    files = [
-        FrameFile(
-            frame_index=int(record["frame_index"]),
-            image=str(PurePosixPath(directory) / str(record["path"])),
-            width=int(record["width"]),
-            height=int(record["height"]),
+    directory = PurePosixPath(
+        _entry_directory_key(ds, stored, run_id=run_id, entry=entry)
+    )
+    manifest = ds.resolve_path(stored) / "run_info.json"
+    try:
+        info = json.loads(manifest.read_text())
+        files = [
+            FrameFile(
+                frame_index=int(record["frame_index"]),
+                image=str(directory / manifest_file_path(str(record["path"]))),
+                width=int(record["width"]),
+                height=int(record["height"]),
+            )
+            for record in info.get("files", [])
+        ]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        group, sequence, camera = entry
+        msg = (
+            f"Frames run {run_id!r}, entry (group={group!r}, sequence={sequence!r}, "
+            f"camera={camera!r}): its run_info.json at {manifest} cannot be read "
+            f"({type(exc).__name__}: {exc}), so the frame index of its images is "
+            "unknown."
         )
-        for record in info.get("files", [])
-    ]
+        raise ValueError(msg) from exc
     return tuple(sorted(files, key=lambda file: file.frame_index))
 
 
-def frame_run_files(
-    ds: Dataset, frames_run_id: str, group: str, sequence: str, camera: str
-) -> tuple[FrameFile, ...]:
-    """The extracted PNGs of one entry camera in a frames run.
+def frames_row_files(ds: Dataset, row: Mapping[str, str]) -> tuple[FrameFile, ...]:
+    """The extracted PNGs that one frames-index row records.
 
-    Reads the ``files`` records of the entry camera's ``run_info.json``. Nothing
-    is created or written.
+    Reads the ``files`` records of the ``run_info.json`` in the row's
+    ``abs_path`` directory. Nothing is created or written.
 
     Args:
         ds: The dataset holding the frames run.
-        frames_run_id: The extraction run's id.
-        group: The entry's group.
-        sequence: The entry's sequence.
-        camera: The entry's camera.
+        row: One record of :func:`list_frame_runs`, read for its ``run_id``,
+            ``group``, ``sequence``, ``camera`` and ``abs_path``.
 
     Returns:
-        The files sorted by frame index. Empty when the run has no frames-index
-        row for the entry camera.
+        The files sorted by frame index.
 
     Raises:
-        ValueError: If the entry's directory lies outside the dataset tree.
+        ValueError: If the row's directory lies outside the dataset tree, or its
+            ``run_info.json`` is missing, unreadable or lacks a record field.
     """
-    runs = list_frame_runs(ds)
-    rows = runs[
-        (runs["run_id"] == frames_run_id)
-        & (runs["group"] == group)
-        & (runs["sequence"] == sequence)
-        & (runs["camera"] == camera)
-    ]
-    if rows.empty:
-        return ()
+    entry = (row.get("group", ""), row.get("sequence", ""), row.get("camera", ""))
     return _entry_files(
-        ds,
-        str(rows.iloc[0]["abs_path"]),
-        run_id=frames_run_id,
-        entry=(group, sequence, camera),
+        ds, row.get("abs_path", ""), run_id=row.get("run_id", ""), entry=entry
     )
 
 
@@ -361,6 +364,9 @@ def video_frames_of(
 
     Returns:
         One recorded frame per annotation frame, in input order.
+
+    Raises:
+        ValueError: If a matched row's ``run_info.json`` cannot be read.
     """
     owner = _dataset_at(ds, image_root)
     if owner is None:
@@ -435,18 +441,11 @@ def _entries_holding(
         directory = _relative_directory(owner, stored) if stored else ""
         if directory not in directories or directory in found:
             continue
-        entry = (
-            record.get("group", ""),
-            record.get("sequence", ""),
-            record.get("camera", ""),
-        )
-        files = _entry_files(
-            owner, stored, run_id=record.get("run_id", ""), entry=entry
-        )
+        files = frames_row_files(owner, record)
         found[directory] = _ExtractedEntry(
-            group=entry[0],
-            sequence=entry[1],
-            camera=entry[2],
+            group=record.get("group", ""),
+            sequence=record.get("sequence", ""),
+            camera=record.get("camera", ""),
             index_by_image={file.image: file.frame_index for file in files},
         )
     return found

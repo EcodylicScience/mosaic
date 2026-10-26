@@ -27,13 +27,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import Field, FiniteFloat, ValidationError
+from pydantic import Field, FiniteFloat
 
 from mosaic.core.annotations.keypoint_map import KeypointMap
 from mosaic.core.annotations.model import Bbox, Keypoint, KeypointSchema
 from mosaic.core.annotations.pose_annotations import PoseObject, canonical_pairs
+from mosaic.core.annotations.versioned_file import read_versioned_file
 from mosaic.core.json_value import JsonValue
-from mosaic.core.strict_model import StrictModel, terse
+from mosaic.core.strict_model import StrictModel
 
 __all__ = [
     "FORMAT_NAME",
@@ -140,8 +141,20 @@ class FramePredictions:
     frames: tuple[PredictedFrame, ...]
 
     def __post_init__(self) -> None:
-        """Refuse two frames of one image key, and an object off the pose's layout."""
+        """Refuse an edge off the keypoints, a repeated image, or an object off layout.
+
+        A skeleton edge may name its keypoints in either order, since the payload
+        orients it, and must name two distinct positions of the pose. The reader
+        then accepts every file that the writer gives.
+        """
         expected = self.pose.schema.num_keypoints
+        for a, b in self.pose.schema.skeleton:
+            if not 0 <= min(a, b) < max(a, b) < expected:
+                msg = (
+                    f"skeleton edge {(a, b)} is not two distinct keypoints of "
+                    f"{list(self.pose.schema.names)}"
+                )
+                raise ValueError(msg)
         images: set[str] = set()
         for frame in self.frames:
             if frame.image in images:
@@ -231,9 +244,9 @@ def _object_document(obj: PredictedObject) -> dict[str, JsonValue]:
 
 
 # The file is mosaic's own. A key these models do not know is a mistake, because a
-# newer writer's additions come with a newer version. Their descriptions are the
-# format's documentation, rendered into the reference by
-# pose_predictions_json_schema.
+# newer writer's additions come with a newer version, which read_versioned_file
+# refuses before these models see the file. Their descriptions are the format's
+# documentation, rendered into the reference by pose_predictions_json_schema.
 
 
 class PredictedPoseRecord(StrictModel):
@@ -359,17 +372,12 @@ def read_pose_predictions(path: Path) -> FramePredictions:
             positions written lower first, or holds predictions that the
             in-memory types refuse.
     """
-    try:
-        parsed = PosePredictionsFile.model_validate_json(path.read_bytes())
-    except ValidationError as exc:
-        msg = f"{path} is not a {FORMAT_NAME} file: {terse(exc)}"
-        raise ValueError(msg) from exc
-    if parsed.version > FORMAT_VERSION:
-        msg = (
-            f"{path} is {FORMAT_NAME} version {parsed.version}, and this mosaic "
-            f"reads up to version {FORMAT_VERSION}. Upgrade mosaic to read it."
-        )
-        raise ValueError(msg)
+    parsed = read_versioned_file(
+        path,
+        PosePredictionsFile,
+        format_name=FORMAT_NAME,
+        newest_version=FORMAT_VERSION,
+    )
     pose = parsed.pose
     for low, high in pose.skeleton:
         if not 0 <= low < high < len(pose.keypoints):

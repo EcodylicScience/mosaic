@@ -2,9 +2,10 @@
 
 Every run index records a run's rows with ``run_id``, ``started_at`` and
 ``finished_at``. The feature scan and the media-variant records read both facts
-here, the same way. The row-keyed and run-keyed record builders of the indexes
-that read like them (frame runs, prepared datasets, trained models) live here
-too.
+here, the same way. The record builders of the indexes that read like them live
+here too: the row-keyed one of frame runs, frame predictions and frame
+selections, and the run-keyed one of prediction scores, prepared datasets and
+trained models.
 """
 
 from __future__ import annotations

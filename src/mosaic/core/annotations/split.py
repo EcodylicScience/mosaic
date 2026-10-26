@@ -22,13 +22,13 @@ so the score it earns across that line is not a score on unseen data.
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from mosaic.core.entry import to_safe_name
+from mosaic.core.seeded_digest import seeded_digest
 
 __all__ = [
     "SplitBy",
@@ -273,8 +273,7 @@ def split_filenames(
 
 def _draw(seed: int, unit: str) -> float:
     """Return the unit's position in ``[0, 1)``, drawn from the seed and its key alone."""
-    digest = hashlib.blake2b(f"{seed}\0{unit}".encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big") / 2**64
+    return seeded_digest(seed, unit) / 2**64
 
 
 def _assign_units(

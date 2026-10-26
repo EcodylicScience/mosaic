@@ -470,7 +470,7 @@ def test_a_frame_past_the_end_is_refused_before_anything_is_written(
         )
     message = str(excinfo.value)
     assert "seq_a has 12 frames" in message
-    assert "12, 40" in message
+    assert "frames 12, 40 fall past its end" in message
     assert not (two_sequences.get_root("frames") / "list").exists()
 
 

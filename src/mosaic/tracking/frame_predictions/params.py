@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params, Probability
 from mosaic.tracking.common.detection_params import (
@@ -102,3 +102,22 @@ class PredictFramesParams(Params):
     batch_size: Annotated[
         int, Field(ge=1), HASH_EXCLUDE, Declared(_BATCH_SIZE_DESCRIPTION)
     ] = 16
+
+    # A consumer that sets the device itself narrows the field out of the model it
+    # exposes; the check then has nothing to check there, and still runs here.
+    @field_validator("device", check_fields=False)
+    @classmethod
+    def _device_is_spelled(cls, value: str) -> str:
+        """Refuse a device other than ``auto``, ``cpu`` or a CUDA index, at submit time.
+
+        Each framework takes these values, except that Lightning Pose runs on
+        CUDA only and the op refuses its ``cpu`` when it plans the run. Any
+        other value is refused here, before the run takes a claim.
+        """
+        if value in ("auto", "cpu") or (value.isascii() and value.isdigit()):
+            return value
+        msg = (
+            f"unusable device {value!r}: give 'auto', 'cpu' or a CUDA index such "
+            "as '0'."
+        )
+        raise ValueError(msg)

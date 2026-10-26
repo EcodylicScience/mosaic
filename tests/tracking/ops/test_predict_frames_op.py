@@ -11,6 +11,7 @@ adapter.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -87,12 +88,12 @@ from tests.helpers import (
     install_fake_sleap_frames,
     make_dataset,
     record_frames_row,
+    register_sleap_model,
     register_trained_model,
     sleap_instance,
     ultralytics_probe_response,
     write_frames_run,
     write_litpose_model,
-    write_sleap_model,
 )
 
 register_ops()
@@ -337,19 +338,10 @@ def _register_sleap(
 
     Returns the model directory.
     """
-    directory = write_sleap_model(
-        model_run_root(ds, "train-sleap", run_id) / "model", run_id.encode(), head=head
-    )
     data_path = None if pose is None else _record_preparation(ds, pose, prepared_run)
-    register_trained_model(
-        ds,
-        "train-sleap",
-        run_id,
-        directory / "best.ckpt",
-        directory=directory,
-        data_path=data_path,
+    return register_sleap_model(
+        ds, run_id, run_id.encode(), head=head, data_path=data_path
     )
-    return directory
 
 
 @pytest.fixture
@@ -689,6 +681,38 @@ def test_an_entry_whose_frames_lie_outside_the_dataset_is_that_entrys_error(
     assert snapshot["entries_failed"] == 1
     assert snapshot["entries_written"] == 2
     assert [row["sequence"] for row in _rows(ds, run_id)] == ["s1", "s2"]
+
+
+def test_an_entry_whose_extraction_directory_is_gone_is_that_entrys_error(
+    ds: Dataset, fake_pose: FakeAdapter
+) -> None:
+    shutil.rmtree(_frames_directory(ds, S2))
+
+    run_id = _run(ds, execution_id="exec-gone")
+
+    lines = entry_error_lines(ds, "exec-gone")
+    assert len(lines) == 1
+    assert _JSON_OBJECT.validate_json(lines[0])["key"] == "s2"
+    assert "run_info.json" in lines[0]
+    snapshot = _snapshot(ds, "exec-gone")
+    assert snapshot["entries_failed"] == 1
+    assert snapshot["entries_written"] == 1
+    assert [row["sequence"] for row in _rows(ds, run_id)] == ["s1"]
+
+
+def test_an_entry_whose_manifest_record_lacks_a_field_is_that_entrys_error(
+    ds: Dataset, fake_pose: FakeAdapter
+) -> None:
+    manifest = _frames_directory(ds, S2) / "run_info.json"
+    _ = manifest.write_text(json.dumps({"files": [{"frame_index": 10}]}))
+
+    run_id = _run(ds, execution_id="exec-damaged")
+
+    lines = entry_error_lines(ds, "exec-damaged")
+    assert len(lines) == 1
+    assert _JSON_OBJECT.validate_json(lines[0])["key"] == "s2"
+    assert _snapshot(ds, "exec-damaged")["entries_written"] == 1
+    assert [row["sequence"] for row in _rows(ds, run_id)] == ["s1"]
 
 
 def test_a_run_whose_every_entry_lies_outside_the_dataset_fails_with_no_claim(

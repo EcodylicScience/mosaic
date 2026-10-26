@@ -47,6 +47,7 @@ from mosaic.core.pipeline.toolenv import ToolEnv, ToolExitError, missing_output_
 from mosaic.tracking.common.ultralytics_env import (
     POLO_BOOTSTRAP,
     POLO_ENV,
+    PREDICT_IDLE_SECONDS,
     ULTRALYTICS_BOOTSTRAP,
     ULTRALYTICS_ENV,
     PoloError,
@@ -59,6 +60,7 @@ from mosaic.tracking.common.ultralytics_env import (
     run_runner,
 )
 from mosaic.tracking.external.runner.ultralytics_protocol import (
+    POINT_NUMERIC_COLUMNS,
     ImageSource,
     InferPointsRequest,
     InferPoseRequest,
@@ -391,10 +393,11 @@ def _point_objects(rows: pd.DataFrame) -> Mapping[int, list[PredictedObject]]:
     POLO does not report a keypoint score or a box. An object's one keypoint
     therefore has a null score, and the point's confidence is the object's score.
     """
-    columns = ["frame", "detection_id", "x", "y", "confidence"]
     found: dict[int, list[PredictedObject]] = {}
-    for row in _numeric_rows(rows, columns, "detection_id"):
-        position, _detection, x, y, confidence = (float(value) for value in row)
+    for row in _numeric_rows(rows, POINT_NUMERIC_COLUMNS, "detection_id"):
+        position, _detection, x, y, confidence, _class_id = (
+            float(value) for value in row
+        )
         point = Keypoint(x=x, y=y, visibility=2)
         detection = PredictedObject(keypoints=(point,), score=confidence)
         found.setdefault(int(position), []).append(detection)
@@ -445,7 +448,11 @@ def _predict_frames(
         rows_path=str(work_dir / _ROWS_NAME),
     )
     _ = run_predict_images_tool(
-        request, work_dir=work_dir, cancel_check=cancel_check, on_output=on_output
+        request,
+        work_dir=work_dir,
+        idle_timeout=PREDICT_IDLE_SECONDS,
+        cancel_check=cancel_check,
+        on_output=on_output,
     )
     rows = pd.read_parquet(request.rows_path)
     if task == "pose":

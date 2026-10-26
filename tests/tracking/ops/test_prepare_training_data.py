@@ -520,7 +520,11 @@ def test_a_sleap_preparation_counts_the_frames_of_its_two_files(
     names_in = _names_by_split(model_run_root(library, KIND, run_id))
     written = sum(len(handed.frames) for _path, handed, _images in calls)
     assert written == len(names_in["train"]) + len(names_in["valid"]) < 16
-    assert _row_of(library, run_id)["n_frames"] == str(written)
+    row = _row_of(library, run_id)
+    assert row["n_frames"] == str(written)
+    assert row["n_train"] == str(len(names_in["train"]))
+    assert row["n_valid"] == str(len(names_in["valid"]))
+    assert row["n_test"] == "0"
 
 
 def test_a_lightning_pose_preparation_counts_every_frame_it_writes(
@@ -531,7 +535,12 @@ def test_a_lightning_pose_preparation_counts_every_frame_it_writes(
 
     run_id = _prepare(library, target="litpose", split=(0.5, 0.25, 0.25))
 
-    assert _row_of(library, run_id)["n_frames"] == "16"
+    names_in = _names_by_split(model_run_root(library, KIND, run_id))
+    row = _row_of(library, run_id)
+    assert row["n_frames"] == "16"
+    assert [row[f"n_{split}"] for split in ("train", "valid", "test")] == [
+        str(len(names_in[split])) for split in ("train", "valid", "test")
+    ]
 
 
 def test_a_sleap_preparation_without_its_validation_file_is_prepared_again(

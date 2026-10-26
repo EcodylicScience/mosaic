@@ -45,6 +45,8 @@ format that `predict-frames` writes one per entry camera, and three inventory ki
 `frame-predictions`, `prediction-score` and `frame-selection`. A manifest without the
 two roots gets them in memory, and a read creates no directory. `AnnotationObject`
 gains `origin` and `source_ref`, which default, so code that builds one is unaffected.
+`resolve_keypoint_refs` moves from `mosaic.core.pose_columns` to the standard-library
+leaf `mosaic.core.keypoint_refs`.
 
 Ids that move:
 
@@ -52,20 +54,21 @@ Ids that move:
   new preparation and retrains once. `train-sleap` (0.2 to 0.3) and `convert-points`
   (0.2 to 0.3) move too. Stored training records keep their old ids, which stay
   resolvable.
-- The ids of `train-pose`, `train-points`, `train-litpose`, `train-sleap` and
-  `train-localizer` move on the next training, because their data is a new preparation
-  or, for `train-localizer`, a dataset reconverted under the hash split. Their versions
-  do not change.
+- The ids of `train-pose`, `train-points`, `train-litpose` and `train-localizer` move
+  on the next training, because their data is a new preparation or, for
+  `train-localizer`, a dataset reconverted under the hash split. Their versions do not
+  change.
 - `extract-frames`, `infer-pose`, `infer-points` and `trajectory-smooth` keep their ids
   under this change. An `extract-frames` run without `exclude` is named as before.
 
 What changed in the data:
 
 - The train, validation and test split is a hash of the split unit, not a shuffle. The
-  first round under it does not reproduce the old shuffle, so a fine-tune from a model
-  trained before can see some of its old training frames in validation once. The split
-  of the converters (`coco_*`, `cvat_localizer` and the Lightning Pose converter)
-  changes the same way, with no op identity moving.
+  first preparation under it does not reproduce the old shuffle, so a fine-tune from a
+  model trained before can see some of its old training frames in validation once.
+  Every split through `split_filenames` changes the same way, with no op identity
+  moving: `prepare_yolo_dataset` and the converters `coco_*`, `cvat_localizer`,
+  `cvat_points` and the Lightning Pose converter.
 - A prepared frame is named by its entry and camera, with its group, so frames of two
   groups or two cameras that share a sequence name no longer collide.
 - `sequence_groups` keys are `<origin_uuid>:<group>:<sequence>`, each part
@@ -84,9 +87,10 @@ What changed in the data:
   file beside the labels is used in place of `validation_fraction`.
 - An `extract-frames` run that fails a camera ends `partial`, or raises
   `AllEntriesFailed` when every attempted entry is lost, and reports `entries_written`.
-  A failed extraction that read as finished before reads as `partial` or `failed` now.
-  `exclude` keeps frames out of a `uniform` or `kmeans` extraction, and a selection is
-  extracted with method `list`.
+  A failed extraction that read as finished before reads as `partial` or `failed` now. A
+  failed camera leaves no partial frames, where its directory stayed before and the next
+  run skipped it, so the next run extracts it again. `exclude` keeps frames out of a
+  `uniform` or `kmeans` extraction, and a selection is extracted with method `list`.
 - The prepare index gains the columns `held_out_sets`, `n_held_out` and
   `keypoint_schema`.
 
@@ -94,8 +98,10 @@ For mosaic-api: the new inventory kinds and roots above, the three new ops (lane
 `gpu-infer` for `predict-frames`, `feature-compute` for `score-predictions` and
 `select-frames`), and `check_preparation`, which now also raises the hold-out, the
 `sequence_groups` key and the small-set refusals a run raises, as `ValueError` as
-before. `predict-frames` pins `precision` to `"fp32"`, so the server-owned entries gain
-`"precision": "fp32"`. The test
+before. The new fields to pin in `SERVER_OWNED` on upgrade, so the generated forms do
+not offer them, are `extract-frames` `"exclude": None` and `"exclude_spacing": 0`, and
+`prepare-training-data` `"holdout": ()`. Once `predict-frames` is exposed, its entry
+pins `"precision": "fp32"`, as `infer-pose` and `infer-points` do. The test
 `test_split_filenames_counts_the_training_and_validation_items` pins exact counts that
 the hash split reproduces for its fixture only by coincidence (seed 7); it still passes
 but no longer states the contract. A training wizard should default the test share to 0

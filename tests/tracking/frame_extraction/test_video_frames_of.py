@@ -9,6 +9,8 @@ revision recorded and that frame's index.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,14 +20,12 @@ from mosaic.core.annotations.model import AnnotationFrame
 from mosaic.core.annotations.split import VideoFrame, frame_key
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.manifest import LibraryLink
-from mosaic.tracking.frame_extraction.frame_runs import (
-    frame_run_files,
-    video_frames_of,
-)
+from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
 from tests.helpers import (
     assert_tree_unchanged,
     extract_entry_camera,
     make_dataset,
+    sole_frames_row_files,
     tree_snapshot,
 )
 
@@ -56,7 +56,7 @@ def test_an_extracted_image_takes_its_entry_camera_and_run_index(
 ) -> None:
     """The revision's sequence and index do not override the extraction's."""
     images = _extract(dataset)
-    served = {file.image for file in frame_run_files(dataset, RUN_ID, "G", "S", "cam1")}
+    served = {file.image for file in sole_frames_row_files(dataset)}
 
     (located,) = video_frames_of(
         dataset,
@@ -142,6 +142,73 @@ def test_a_legacy_absolute_row_locates_the_frame_as_a_relative_row_does(
     ]
     assert (from_legacy[0].group, from_legacy[0].camera) == ("G", "cam1")
     assert from_legacy[0].frame_index == 100
+
+
+def test_a_legacy_manifest_of_absolute_file_paths_locates_the_frame(
+    dataset: Dataset,
+) -> None:
+    """A manifest written before relative paths names each file by an absolute path.
+
+    The path is of the machine that extracted the frames, and only its file name
+    is read.
+    """
+    images = _extract(dataset)
+    manifest = dataset.base_dir / images[100].parent / "run_info.json"
+    info = json.loads(manifest.read_text())
+    for record in info["files"]:
+        record["path"] = f"/old/machine/ds/{images[100].parent}/{record['path']}"
+    _ = manifest.write_text(json.dumps(info))
+
+    (located,) = video_frames_of(
+        dataset,
+        dataset.base_dir,
+        [_frame(images[100])],
+        revision_origin=REVISION_ORIGIN,
+    )
+    served = sole_frames_row_files(dataset)
+
+    assert (located.camera, located.frame_index) == ("cam1", 100)
+    assert [file.image for file in served] == [
+        images[index].as_posix() for index in sorted(SIZES)
+    ]
+
+
+def _remove(manifest: Path) -> None:
+    manifest.unlink()
+
+
+def _truncate(manifest: Path) -> None:
+    _ = manifest.write_text("{")
+
+
+def _drop_record_fields(manifest: Path) -> None:
+    _ = manifest.write_text('{"files": [{"path": "a.png"}]}')
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        pytest.param(_remove, id="missing"),
+        pytest.param(_truncate, id="unreadable"),
+        pytest.param(_drop_record_fields, id="incomplete-record"),
+    ],
+)
+def test_a_matched_entry_without_a_readable_manifest_raises_naming_run_and_entry(
+    dataset: Dataset, damage: Callable[[Path], None]
+) -> None:
+    images = _extract(dataset)
+    damage(dataset.base_dir / images[100].parent / "run_info.json")
+
+    with pytest.raises(ValueError, match="run_info.json") as raised:
+        _ = video_frames_of(
+            dataset,
+            dataset.base_dir,
+            [_frame(images[100])],
+            revision_origin=REVISION_ORIGIN,
+        )
+
+    assert repr(RUN_ID) in str(raised.value)
+    assert "camera='cam1'" in str(raised.value)
 
 
 def test_frames_come_back_one_per_input_in_input_order(dataset: Dataset) -> None:

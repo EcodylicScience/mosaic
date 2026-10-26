@@ -36,6 +36,7 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.scope import Scope
+from mosaic.core.stored_paths import manifest_file_path
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
@@ -85,8 +86,9 @@ _EXCLUDE_DESCRIPTION = (
 )
 
 _EXCLUDE_SPACING_DESCRIPTION = (
-    "Distance from an excluded frame within which a candidate is removed too. "
-    "Refused above 0 when exclude is unset."
+    "The largest distance from an excluded frame at which a candidate is "
+    "removed too, so 0 removes each excluded frame alone. Refused above 0 when "
+    "exclude is unset."
 )
 
 _ENTRY_GROUP_DESCRIPTION = "The entry's group; empty for a dataset with none."
@@ -236,6 +238,15 @@ def entry_frames_from_mapping(
         EntryFrames(group=group, sequence=sequence, indices=tuple(indices))
         for (group, sequence), indices in mapping.items()
     )
+
+
+def frames_by_entry(
+    items: tuple[EntryFrames, ...] | None,
+) -> dict[Entry, tuple[int, ...]] | None:
+    """Each entry's indices in *items*, or ``None`` for ``None``."""
+    if items is None:
+        return None
+    return {item.entry: item.indices for item in items}
 
 
 class ExtractFramesParams(Params):
@@ -777,7 +788,7 @@ def _refuse_out_of_range(
         more = f" and {rest} more" if rest > 0 else ""
         problems.append(
             f"{_spec_label(spec)} has {spec.n_media_frames} frames (0 to "
-            f"{spec.n_media_frames - 1}); listed {shown}{more} fall past its end"
+            f"{spec.n_media_frames - 1}); {field} {shown}{more} fall past its end"
         )
     if not problems:
         return
@@ -808,13 +819,6 @@ def _refuse_unjoined(ds: Dataset, media_scope: Sequence[ResolvedScopeEntry]) -> 
         f"join to read them through:\n{reasons}"
     )
     raise JoinedExportMissingError(message)
-
-
-def listed_frames(params: ExtractFramesParams) -> dict[Entry, tuple[int, ...]] | None:
-    """Return each listed entry's frame indices, or ``None`` when none are listed."""
-    if params.frames is None:
-        return None
-    return {item.entry: item.indices for item in params.frames}
 
 
 def listed_entries(
@@ -915,7 +919,7 @@ def frames_run_id(method: ExtractionMethod, params: ExtractFramesParams) -> str:
     Frozen in algorithm, digest width **and payload**: adding a field to
     ``ExtractFramesParams`` that reaches ``identity_dump()`` moves it just as
     surely as changing the format would. A deliberate new selection is expressed
-    as an explicit revision parameter (item 6.4), never by re-minting this.
+    through ``revision``, never by re-minting this.
 
     ``ExtractFramesOp.version`` stays declared -- ``list_ops`` and ``describe_op``
     read it -- but it is provenance here, not identity.
@@ -948,7 +952,7 @@ def _run_extract_frames(
     ctx.set_run_id(run_id)
     run_root = frames_run_root(ds, p.method, run_id)
 
-    listed = listed_frames(p)
+    listed = frames_by_entry(p.frames)
     skipped = 0
     entries = scope.op_entries
     if listed is not None:
@@ -966,9 +970,7 @@ def _run_extract_frames(
 
     # An exclude may name more entries than this run covers. Each entry without
     # a camera here is ignored, and every camera's sampling record counts them.
-    excluded = (
-        None if p.exclude is None else {item.entry: item.indices for item in p.exclude}
-    )
+    excluded = frames_by_entry(p.exclude)
     ignored = 0
     if excluded is not None:
         covered = {(entry.group, entry.sequence) for entry in media_scope}
@@ -1098,7 +1100,8 @@ def _run_extract_frames(
         # replacement with no split support, and this cell is multi-valued
         # for a multi-clip camera. Storing it relative makes it portable by
         # construction. Rows written before this stay absolute and keep
-        # resolving, per migration M1's add-do-not-rename rule.
+        # resolving, because ``Dataset.resolve_path`` reads both forms and no
+        # stored row is rewritten.
         _rewrite_manifest(ds, row.abs_path)
         index_rows.append(
             dataclasses.replace(
@@ -1266,7 +1269,7 @@ def extract_frames(
     *exclude* maps each ``(group, sequence)`` entry to frame indices that
     ``uniform`` and ``kmeans`` do not write and sample around, and becomes
     ``ExtractFramesParams.exclude``. *exclude_spacing* also removes the
-    candidates within that many frames of an excluded frame. Every entry of
+    candidates at most that many frames from an excluded frame. Every entry of
     *exclude* enters the run identifier, so narrow it to the entries in scope.
 
     *scope* is the selector every other entry point takes, and *overwrite* says
@@ -1346,7 +1349,7 @@ def get_frame_paths(
         df = pd.read_csv(idx_path)
         if df.empty:
             return []
-        run_id = df["run_id"].iloc[-1]
+        run_id = str(df["run_id"].iloc[-1])
 
     run_root = method_root / run_id
     if not run_root.exists():
@@ -1363,7 +1366,7 @@ def get_frame_paths(
 
 
 def get_frame_manifests(
-    ds,
+    ds: Dataset,
     method: str,
     run_id: str | None = None,
     group: str | None = None,
@@ -1401,7 +1404,7 @@ def get_frame_manifests(
         df = pd.read_csv(idx_path)
         if df.empty:
             return []
-        run_id = df["run_id"].iloc[-1]
+        run_id = str(df["run_id"].iloc[-1])
 
     run_root = method_root / run_id
     if not run_root.exists():
@@ -1419,16 +1422,16 @@ def get_frame_manifests(
     else:
         manifest_paths = sorted(run_root.rglob("run_info.json"))
 
-    manifests = []
+    manifests: list[dict[str, object]] = []
     for manifest_path in manifest_paths:
         data = json.loads(manifest_path.read_text())
-        # Resolve relative paths so callers always see absolute paths
+        # Resolve each file against the manifest's directory so callers always
+        # see absolute paths
         manifest_dir = manifest_path.parent
         for f in data.get("files", []):
             if "path" in f:
-                fp = Path(f["path"])
-                if not fp.is_absolute():
-                    f["path"] = str((manifest_dir / fp).resolve())
+                relative = manifest_file_path(str(f["path"]))
+                f["path"] = str((manifest_dir / relative).resolve())
         if "output_dir" in data:
             od = Path(data["output_dir"])
             if not od.is_absolute():

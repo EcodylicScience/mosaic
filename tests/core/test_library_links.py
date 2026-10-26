@@ -36,9 +36,9 @@ from mosaic.tracking.model_refs import (
 )
 from tests.helpers import (
     make_dataset,
+    register_sleap_model,
     register_trained_model,
     revision_file,
-    write_sleap_model,
 )
 
 RUN_ID = "train-pose.0.2-abcdef0123"
@@ -53,18 +53,6 @@ def _register(ds: Dataset, *, payload: bytes = b"weights") -> Path:
     _ = weights.write_bytes(payload)
     register_trained_model(ds, KIND, RUN_ID, weights)
     return weights
-
-
-def _register_sleap(ds: Dataset) -> Path:
-    """One finished ``train-sleap`` run, whose artifact is a model directory."""
-    model_dir = write_sleap_model(
-        ds.get_root("models") / "train-sleap" / SLEAP_RUN_ID / "model",
-        b"sleap-weights",
-    )
-    register_trained_model(
-        ds, "train-sleap", SLEAP_RUN_ID, model_dir / "best.ckpt", directory=model_dir
-    )
-    return model_dir
 
 
 def _library_and_project(tmp_path: Path) -> tuple[Dataset, Dataset]:
@@ -196,7 +184,7 @@ def test_an_op_accepting_several_kinds_resolves_under_the_references_own(
 
 def test_an_op_taking_a_list_resolves_one_run_id(tmp_path: Path) -> None:
     library, project = _library_and_project(tmp_path)
-    model_dir = _register_sleap(library)
+    model_dir = register_sleap_model(library, SLEAP_RUN_ID, b"sleap-weights")
     _ = project.add_library(LibraryLink(id="group", path="../libraries/7"))
 
     resolved = resolve_op_model(project, "sleap", SLEAP_RUN_ID)

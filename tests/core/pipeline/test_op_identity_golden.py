@@ -1038,8 +1038,11 @@ def _predict_frames_non_default() -> str:
 
 _SCORED_POSE = KeypointSchema(names=("nose", "tail"))
 _SCORED_RUN = "predict-frames.0.1-aaaaaaaaaa"
-_SCORED_READ = (_SCORED_RUN, "g", "s1", "", "a" * 64)
-"""The one predictions file of :data:`_SCORED_RUN` that a score reads."""
+_SCORED_READ = (_SCORED_RUN, "g", "s1", "", "a" * 16)
+"""The one predictions file of :data:`_SCORED_RUN` that a score reads.
+
+Its digest has the width of a ``file_digest``.
+"""
 
 
 def _score_predictions_run_id(
@@ -1091,7 +1094,7 @@ def _score_predictions_sources_read() -> str:
     source = "predict-frames.0.1-cccccccccc"
     return _score_predictions_run_id(
         sources=[source],
-        read=[_SCORED_READ, (source, "g", "s1", "", "c" * 64)],
+        read=[_SCORED_READ, (source, "g", "s1", "", "c" * 16)],
     )
 
 
@@ -1099,7 +1102,7 @@ def _score_predictions_pool() -> str:
     pooled = "predict-frames.0.1-bbbbbbbbbb"
     return _score_predictions_run_id(
         [_SCORED_RUN, pooled],
-        read=[_SCORED_READ, (pooled, "g", "s2", "", "b" * 64)],
+        read=[_SCORED_READ, (pooled, "g", "s2", "", "b" * 16)],
     )
 
 

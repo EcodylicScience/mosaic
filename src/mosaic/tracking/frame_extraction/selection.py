@@ -15,7 +15,6 @@ claim.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -56,6 +55,8 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.pipeline.writers import read_parquet_table, write_parquet_atomic
 from mosaic.core.pose_columns import pose_column_pairs
+from mosaic.core.scope import Scope
+from mosaic.core.seeded_digest import seeded_digest
 from mosaic.core.track_quality import (
     EVENT_COLUMNS,
     ROW_CRITERIA,
@@ -78,6 +79,7 @@ from .selection_index import (
     EXTRACT_PARAMS_FILE_NAME,
     SELECTION_FILE_NAME,
     SELECTION_KEY_COLUMNS,
+    SELECT_FRAMES_KIND,
     FrameSelectionRow,
     frame_selection_index,
     run_selected_frames,
@@ -104,8 +106,6 @@ __all__ = [
     "SelectFramesParams",
     "select_entry_frames",
 ]
-
-_KIND: Final = "select-frames"
 
 SELECTION_COLUMNS: Final[tuple[str, ...]] = ("group", "sequence", *EVENT_COLUMNS)
 """The columns of an entry's ``selection.parquet``, in order."""
@@ -166,8 +166,8 @@ _SOURCE_TRACKS_RUN_ID_DESCRIPTION = (
 _N_FRAMES_DESCRIPTION = "The most frames chosen per entry."
 
 _MIN_SEPARATION_FRAMES_DESCRIPTION = (
-    "The least spacing between two chosen frame indices of an entry, and "
-    "between a chosen and an excluded one."
+    "The smallest distance allowed between two chosen frame indices of an "
+    "entry, and between a chosen and an excluded one."
 )
 
 _MIN_EVENT_FRAMES_DESCRIPTION = "The shortest run of a criterion that is an event."
@@ -215,7 +215,7 @@ _DUPLICATE_DESCRIPTION = "The frame criterion of two rows of one animal."
 
 _EXCLUDE_DESCRIPTION = (
     "Frames already annotated, by entry. None of them is chosen, and every "
-    "chosen frame keeps min_separation_frames from each of them."
+    "chosen frame is at least min_separation_frames from each of them."
 )
 
 _RANDOM_STATE_DESCRIPTION = (
@@ -524,13 +524,6 @@ def _excluded(params: SelectFramesParams, entry: Entry) -> tuple[int, ...]:
     return ()
 
 
-def _seed(random_state: int, entry_key: str) -> int:
-    """Return the seed of an entry's permutation, from a digest of both terms."""
-    unit = f"{random_state}\0{entry_key}"
-    digest = hashlib.blake2b(unit.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big")
-
-
 def select_entry_frames(
     table: pd.DataFrame, row: CellRow, params: SelectFramesParams
 ) -> EntrySelection:
@@ -584,7 +577,7 @@ def select_entry_frames(
         n_frames=params.n_frames,
         min_separation=params.min_separation_frames,
         exclude=_excluded(params, (group, sequence)),
-        seed=_seed(params.random_state, make_entry_key(group, sequence)),
+        seed=seeded_digest(params.random_state, make_entry_key(group, sequence)),
     )
     frames = chosen.assign(group=group, sequence=sequence)
     enabled: dict[Criterion, bool] = {
@@ -767,6 +760,28 @@ def _write_entry(
     return chosen
 
 
+def _forget_entry(
+    ds: Dataset,
+    index: IndexCSV[FrameSelectionRow],
+    facts: _RunFacts,
+    entry: Entry,
+    seq_dir: Path,
+) -> None:
+    """Remove a failed entry from the run, and rebuild the run's extract-frames params.
+
+    The entry's rows of the run are dropped, then its ``selection.parquet``. An
+    overwrite removes the entry's directory before it selects again. A failed
+    entry would otherwise keep a finished row naming a file that is gone, which
+    ``selected_frames`` raises on while the params still list its old frames.
+    """
+    if not index.path.exists():
+        return
+    _ = index.drop_entries(scope=Scope(entries=[entry]), run_id=facts.run_id)
+    (seq_dir / SELECTION_FILE_NAME).unlink(missing_ok=True)
+    with index_lock(index.path):
+        _rebuild_extract_params(ds, index, facts)
+
+
 @register_op
 class SelectFramesOp(Op[SelectFramesParams]):
     """Propose frames to annotate from a tracker or infer op's tracks of the full media.
@@ -779,7 +794,7 @@ class SelectFramesOp(Op[SelectFramesParams]):
     ``list`` extraction.
     """
 
-    kind = _KIND
+    kind = SELECT_FRAMES_KIND
     category = "extract"
     domain = "tracking"
     version = "0.1"
@@ -818,9 +833,10 @@ class SelectFramesOp(Op[SelectFramesParams]):
         Without *overwrite*, an entry with a finished row of this run and its
         ``selection.parquet`` is reused. Under *overwrite*, every entry is
         selected again. An entry that another execution holds is skipped. A
-        run whose ``extract-frames.params.json`` is absent at its end rebuilds
-        it from the run's finished rows, unless the selections index does not
-        exist yet.
+        failed entry leaves no row and no selection in the run, and the run's
+        ``extract-frames.params.json`` is rebuilt without it. A run whose params
+        file is absent at its end rebuilds it from the run's finished rows,
+        unless the selections index does not exist yet.
         """
         run_id = self.plan_identity(ds, params, scope).run_id
         ctx.set_run_id(run_id)
@@ -830,8 +846,8 @@ class SelectFramesOp(Op[SelectFramesParams]):
         if scoped.skipped:
             noun = "entry has" if scoped.skipped == 1 else "entries have"
             print(
-                f"[{_KIND}] {scoped.skipped} scoped {noun} no row in the tracks "
-                f"variant {variant}; skipping them."
+                f"[{SELECT_FRAMES_KIND}] {scoped.skipped} scoped {noun} no row in the "
+                f"tracks variant {variant}; skipping them."
             )
 
         run_root = selections_kind_root(ds) / run_id
@@ -859,7 +875,7 @@ class SelectFramesOp(Op[SelectFramesParams]):
                 entry = (row.get("group", ""), row.get("sequence", ""))
                 key = make_entry_key(*entry)
                 opened = open_entry(
-                    ds, ctx, run_root, key, kind=_KIND, overwrite=overwrite
+                    ds, ctx, run_root, key, kind=SELECT_FRAMES_KIND, overwrite=overwrite
                 )
                 if opened is not None:
                     seq_dir = opened[0]
@@ -873,12 +889,16 @@ class SelectFramesOp(Op[SelectFramesParams]):
                             )
                             for criterion in chosen.skipped_criteria:
                                 reason = _SKIP_REASONS.get(criterion, "")
-                                print(f"[{_KIND}] {key} skips {criterion}: {reason}.")
+                                print(
+                                    f"[{SELECT_FRAMES_KIND}] {key} skips {criterion}: "
+                                    f"{reason}."
+                                )
                     except Cancelled:
                         raise
                     except Exception as exc:
                         ctx.entry_failed_unless_cancelled(key, exc)
                         lost.add(key)
+                        _forget_entry(ds, index, facts, entry, seq_dir)
                     finally:
                         release_entry(seq_dir, ctx.execution_id)
                         discard_if_empty(seq_dir)
@@ -893,9 +913,10 @@ class SelectFramesOp(Op[SelectFramesParams]):
             ctx.cache_hit()
         if attempted and lost == attempted:
             message = (
-                f"[{_KIND}] every one of {len(attempted)} attempted entries failed: "
-                f"{', '.join(sorted(lost))}. The run run_id={run_id} selected no "
-                "frames. The per-entry errors are in this attempt's run-log."
+                f"[{SELECT_FRAMES_KIND}] every one of {len(attempted)} attempted "
+                f"entries failed: {', '.join(sorted(lost))}. The run "
+                f"run_id={run_id} selected no frames. The per-entry errors are in "
+                "this attempt's run-log."
             )
             raise AllEntriesFailed(message)
         params_path = run_root / EXTRACT_PARAMS_FILE_NAME
@@ -906,18 +927,19 @@ class SelectFramesOp(Op[SelectFramesParams]):
         if not params_path.is_file() and held:
             noun = "entry" if held == 1 else "entries"
             print(
-                f"[{_KIND}] the selection of run_id={run_id} has no frame to "
-                f"extract yet: another execution holds {held} scoped {noun}, "
+                f"[{SELECT_FRAMES_KIND}] the selection of run_id={run_id} has no frame "
+                f"to extract yet: another execution holds {held} scoped {noun}, "
                 f"and {EXTRACT_PARAMS_FILE_NAME} is not written."
             )
         elif not params_path.is_file():
             print(
-                f"[{_KIND}] the selection of run_id={run_id} is empty: no entry "
-                f"has a frame to extract, and {EXTRACT_PARAMS_FILE_NAME} is not "
-                "written."
+                f"[{SELECT_FRAMES_KIND}] the selection of run_id={run_id} is empty: no "
+                f"entry has a frame to extract, and {EXTRACT_PARAMS_FILE_NAME} "
+                "is not written."
             )
         print(
-            f"[{_KIND}] completed run_id={run_id}: {len(attempted) - len(lost)} of "
-            f"{total} entries selected, {len(reused)} reused -> {run_root}"
+            f"[{SELECT_FRAMES_KIND}] completed run_id={run_id}: "
+            f"{len(attempted) - len(lost)} of {total} entries selected, "
+            f"{len(reused)} reused -> {run_root}"
         )
         return run_id

@@ -410,11 +410,11 @@ def _listed_scope(
     # `register_ops` loads it before a plan reads it.
     from mosaic.tracking.frame_extraction.dataset_runs import (
         ExtractFramesParams,
+        frames_by_entry,
         listed_entries,
-        listed_frames,
     )
 
-    listed = listed_frames(_validated(ExtractFramesParams, params))
+    listed = frames_by_entry(_validated(ExtractFramesParams, params).frames)
     if listed is None:
         return scope
     return listed_entries(listed, scope)[0]

@@ -309,7 +309,7 @@ class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
     The direct leak, over **every** registered op, where the dataset gate below
-    covers twenty-three. Every op now takes both as arguments and declares no
+    covers twenty-three. Every op takes both as arguments and declares no
     such field, and that is why this passes for all twenty-five. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either

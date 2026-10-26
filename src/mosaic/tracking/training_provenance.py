@@ -56,6 +56,7 @@ from mosaic.tracking.keypoint_sets import (
     read_keypoint_schema_cell,
     read_resolved_set,
     revision_image_root,
+    set_label,
 )
 
 if TYPE_CHECKING:
@@ -700,7 +701,7 @@ def _consumed_frames(walk: _Walk) -> SeenFrames:
     states: dict[str, PoseAnnotationSet] = {}
     image_roots: dict[str, Path] = {}
     for revision in revisions:
-        label = _revision_label(revision)
+        label = set_label(revision)
         try:
             state = read_resolved_set(revision)
             image_roots[label] = revision_image_root(state.image_root)
@@ -714,19 +715,18 @@ def _consumed_frames(walk: _Walk) -> SeenFrames:
         return _unknown(reason)
     keys: set[str] = set()
     for revision in revisions:
-        label = _revision_label(revision)
-        recorded = video_frames_of(
-            walk.holder,
-            image_roots[label],
-            usable[label],
-            revision_origin=revision.origin_uuid,
-        )
+        label = set_label(revision)
+        try:
+            recorded = video_frames_of(
+                walk.holder,
+                image_roots[label],
+                usable[label],
+                revision_origin=revision.origin_uuid,
+            )
+        except ValueError as exc:
+            return _unknown(f"the frames of revision {label} cannot be located: {exc}")
         keys.update(frame_key(video_frame) for video_frame in recorded)
     return SeenFrames(keys=frozenset(keys), complete=True, reason="")
-
-
-def _revision_label(revision: ResolvedSet) -> str:
-    return f"{revision.origin_uuid}:{revision.set_key} rev{revision.revision}"
 
 
 def _usable_frames(

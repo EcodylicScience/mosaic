@@ -56,10 +56,13 @@ from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.core.wording import counted
 from mosaic.tracking.common import ultralytics_env
 from mosaic.tracking.common.mint import planned_model_id
-from mosaic.tracking.common.ultralytics_env import progress_activity
+from mosaic.tracking.common.ultralytics_env import (
+    PREDICT_IDLE_SECONDS,
+    progress_activity,
+)
 from mosaic.tracking.frame_extraction.frame_runs import (
     FrameFile,
-    frame_run_files,
+    frames_row_files,
     list_frame_runs,
 )
 from mosaic.tracking.frame_predictions.adapter import (
@@ -277,7 +280,7 @@ def refuse_device_for_kind(device: str, model_kind: str) -> None:
     """Refuse a device that the framework of *model_kind* cannot run on.
 
     Lightning Pose runs on CUDA only, so a train-litpose model takes ``auto``
-    or CUDA indices.
+    or a CUDA index, the values of the run's device other than ``cpu``.
 
     Args:
         device: The requested device.
@@ -285,14 +288,18 @@ def refuse_device_for_kind(device: str, model_kind: str) -> None:
 
     Raises:
         PredictFramesInvalid: *device* is unusable for a train-litpose model,
-            with the message of :func:`litpose_device_placement`.
+            as :func:`litpose_device_placement` judges it.
     """
     if model_kind != _LITPOSE_KIND:
         return
     try:
         _ = litpose_device_placement(device)
     except ValueError as exc:
-        raise PredictFramesInvalid(str(exc)) from exc
+        msg = (
+            f"unusable device {device!r}: Lightning Pose runs on CUDA only, so "
+            "give 'auto' or a CUDA index such as '0'."
+        )
+        raise PredictFramesInvalid(msg) from exc
 
 
 def predict_frames_model(ds: Dataset, params: PredictFramesParams) -> tuple[str, str]:
@@ -374,13 +381,6 @@ def predict_frames_run_id(
 
 # --- The run ---------------------------------------------------------------------
 
-
-_PREDICT_IDLE_SECONDS: Final = 3600.0
-"""The inactivity bound of a held claim, the bound of the inference ops.
-
-Each line that the tool prints re-stamps every held claim. The bound covers the
-longest silence of a healthy run, a cold model load.
-"""
 
 _PREDICTIONS_NAME: Final = "predictions.json"
 """What an entry camera's predictions file is called, in its directory."""
@@ -622,14 +622,14 @@ def _refuse_single_frame_type(refs: Sequence[str], model_type: str) -> None:
 
 def _entry_frames(
     ds: Dataset,
-    frames_run_id: str,
     entry: Entry,
     rows: Sequence[Mapping[str, str]],
 ) -> _EntryFrames:
-    """Read the images of each camera of *entry* that the extraction run recorded.
+    """Read the images of each camera of *entry* from its frames-index *rows*.
 
     Raises:
-        ValueError: A camera's directory lies outside the dataset tree.
+        ValueError: A camera's directory lies outside the dataset tree, or its
+            ``run_info.json`` is missing, unreadable or lacks a record field.
     """
     group, sequence = entry
     cameras = tuple(
@@ -637,9 +637,7 @@ def _entry_frames(
             camera=row.get("camera", ""),
             method=row.get("method", ""),
             composition=row.get("media_composition", ""),
-            files=frame_run_files(
-                ds, frames_run_id, group, sequence, row.get("camera", "")
-            ),
+            files=frames_row_files(ds, row),
         )
         for row in sorted(rows, key=lambda row: row.get("camera", ""))
     )
@@ -696,7 +694,7 @@ def _extraction(
     unreadable: list[str] = []
     for entry in claimable:
         try:
-            entries.append(_entry_frames(ds, frames_run_id, entry, cameras[entry]))
+            entries.append(_entry_frames(ds, entry, cameras[entry]))
         except ValueError as exc:
             key = make_entry_key(*entry)
             ctx.entry_failed(key, exc)
@@ -1140,7 +1138,7 @@ class PredictFramesOp(Op[PredictFramesParams]):
                     entry.key,
                     kind=_KIND,
                     overwrite=overwrite,
-                    idle_seconds=_PREDICT_IDLE_SECONDS,
+                    idle_seconds=PREDICT_IDLE_SECONDS,
                 )
                 if opened is None:
                     done += 1
@@ -1154,7 +1152,7 @@ class PredictFramesOp(Op[PredictFramesParams]):
                     done += 1
                     _entry_done(ctx, done, total, entry.key)
                     continue
-                activity = phase_activity(ctx, seq_dir, marker, _PREDICT_IDLE_SECONDS)
+                activity = phase_activity(ctx, seq_dir, marker, PREDICT_IDLE_SECONDS)
                 held.append(
                     _HeldEntry(frames=entry, seq_dir=seq_dir, activity=activity)
                 )

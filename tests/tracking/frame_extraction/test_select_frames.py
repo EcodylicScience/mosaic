@@ -857,6 +857,50 @@ def test_overwrite_selects_every_entry_again_under_the_same_run_id(
     assert [row["finished_at"] != "" for row in _rows(ds, first)] == [True, True]
 
 
+def test_an_entry_that_fails_under_overwrite_leaves_the_run(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _run(ds)
+    original = selection.select_entry_frames
+
+    def failing_s2(
+        table: pd.DataFrame, row: CellRow, params: SelectFramesParams
+    ) -> EntrySelection:
+        if text_cell(row.get("sequence")) == "s2":
+            raise ValueError("s2 fails")
+        return original(table, row, params)
+
+    monkeypatch.setattr(selection, "select_entry_frames", failing_s2)
+
+    _ = _run(ds, overwrite=True, execution_id="exec-overwrite-lost")
+
+    assert len(entry_error_lines(ds, "exec-overwrite-lost")) == 1
+    assert [row["sequence"] for row in _rows(ds, run_id)] == ["s1"]
+    assert not _selection_file(ds, run_id, S2).exists()
+    assert selected_frames(ds, run_id) == {S1: (40,)}
+    assert _extract_params(ds, run_id)["frames"] == [_listed(S1, 40)]
+
+
+def test_an_overwrite_that_fails_every_entry_leaves_no_params(
+    ds: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = _run(ds)
+
+    def failing(
+        _table: pd.DataFrame, _row: CellRow, _params: SelectFramesParams
+    ) -> EntrySelection:
+        raise ValueError("every entry fails")
+
+    monkeypatch.setattr(selection, "select_entry_frames", failing)
+
+    with pytest.raises(AllEntriesFailed):
+        _ = _run(ds, overwrite=True)
+
+    assert _rows(ds, run_id) == []
+    assert selected_frames(ds, run_id) == {}
+    assert not (_run_root(ds, run_id) / EXTRACT_PARAMS_FILE_NAME).exists()
+
+
 def test_an_entry_held_elsewhere_is_not_attempted(
     ds: Dataset, selected: list[str]
 ) -> None:

@@ -547,7 +547,8 @@ def test_an_excluded_frame_past_the_end_is_refused_before_any_camera_starts(
     message = str(excinfo.value)
     assert "1 camera(s) have exclude indices" in message
     assert "solo has 100 frames" in message
-    assert "100, 140" in message
+    assert "exclude 100, 140 fall past its end" in message
+    assert "listed" not in message
     assert extractor.received == {}
     assert not (dataset.get_root("frames") / "uniform").exists()
 

@@ -532,6 +532,9 @@ detector localizes one thing per detection whatever it was trained on.
 appended after the numeric block rather than being part of it.
 """
 
+POINT_NUMERIC_COLUMNS: Final = POINT_COLUMNS[:-1]
+"""The numeric block of :data:`POINT_COLUMNS`: every column but ``class_name``."""
+
 
 POINT_DTYPES: Final[Mapping[str, str]] = {
     "frame": "int64",
@@ -695,7 +698,43 @@ def point_rows_from_result(result: PointResult, frame_index: int) -> np.ndarray 
     return block
 
 
-class InferRequestBase(BaseModel):
+class PredictRequestBase(BaseModel):
+    """What every inference request takes: the weights and the detection arguments.
+
+    Never sent on its own. :class:`InferRequestBase` extends it for an entry's
+    video, and :class:`PredictImagesRequest` for a list of images, so a field
+    declared here means one thing in both.
+    """
+
+    model_path: str
+    task: InferTask
+    """The task of the weights: ``pose`` for a YOLO pose model and ``locate``
+    for a POLO point model. The task the run was minted under, checked against
+    the loaded weights."""
+
+    columns: list[str]
+    """The column names of the table this program writes, in write order.
+
+    Built by mosaic and sent, rather than rebuilt here, for the reason
+    ``TrackRequest.columns`` gives: the file this program writes is read back by
+    mosaic, so the column list must exist in one place. :func:`pose_columns`
+    builds a ``pose`` list, followed by :data:`POSE_BOX_COLUMNS` for an image
+    request, and a ``locate`` list is :data:`POINT_COLUMNS`.
+    """
+
+    conf: float
+    imgsz: int
+    max_det: int
+    agnostic_nms: bool
+    device: str
+    precision: Precision
+    """Spelled for the installed Ultralytics by the runner."""
+
+    batch_size: int
+    """The most frames or images in one ``predict`` call."""
+
+
+class InferRequestBase(PredictRequestBase):
     """What both inference subcommands take. Never sent on its own.
 
     The fields ``track`` also carries mean what they mean there. What is absent
@@ -704,7 +743,6 @@ class InferRequestBase(BaseModel):
     Ultralytics computes no run directory for ``predict``.
     """
 
-    model_path: str
     sources: Annotated[list[SourceFile], Field(min_length=1)]
     """The entry's files, read in order on one frame axis."""
 
@@ -719,31 +757,10 @@ class InferRequestBase(BaseModel):
     Empty rather than nullable, so the field is one type on both sides.
     """
 
-    columns: list[str]
-    """The raw-parquet column names, in write order.
-
-    Built by mosaic from :func:`pose_columns` or :data:`POINT_COLUMNS` and sent,
-    rather than rebuilt here, for the reason ``TrackRequest.columns`` gives: the
-    file this program writes is read back by mosaic, so the column list must
-    exist in one place.
-    """
-
-    task: InferTask
-    """The task the run was minted under, checked against the loaded weights."""
-
-    conf: float
-    imgsz: int
-    max_det: int
-    agnostic_nms: bool
-    device: str
-    precision: Precision
-    """Spelled for the installed Ultralytics by the runner."""
-
     start_frame: int
     end_frame: int | None
     frame_step: int
     max_frames: int | None
-    batch_size: int
     prefetch: bool
 
 
@@ -802,44 +819,20 @@ class ImageSource(BaseModel):
     directory is not mosaic's."""
 
 
-class PredictImagesRequest(BaseModel):
+class PredictImagesRequest(PredictRequestBase):
     """A list of images, run through a pose or point model in a separate process.
 
-    A field that :class:`InferRequestBase` also declares has the same meaning
-    there. Its video fields are absent. A frame window and media facts mean nothing for
-    an image, and a list of images is neither prefetched nor drawn.
+    The video fields of :class:`InferRequestBase` are absent. A frame window and
+    media facts mean nothing for an image, and a list of images is neither
+    prefetched nor drawn. The images of one ``predict`` call share one shape.
     """
-
-    model_path: str
-    task: InferTask
-    """The task of the weights: ``pose`` for a YOLO pose model and ``locate``
-    for a POLO point model. The loaded weights are checked against it."""
 
     images: list[ImageSource]
 
-    columns: list[str]
-    """The rows file's column names, in write order.
-
-    Built by mosaic and sent, for the reason ``InferRequestBase.columns`` gives:
-    :func:`pose_columns` followed by :data:`POSE_BOX_COLUMNS` for ``pose``, and
-    :data:`POINT_COLUMNS` for ``locate``.
-    """
-
-    conf: float
     iou: float | None
     """The NMS IoU threshold of a ``pose`` model, and None for ``locate``,
     because POLO's locate NMS reads none. The runner refuses it on a ``locate``
     request and requires it on a ``pose`` request."""
-
-    imgsz: int
-    max_det: int
-    agnostic_nms: bool
-    device: str
-    precision: Precision
-    """Spelled for the installed Ultralytics by the runner."""
-
-    batch_size: int
-    """The most images in one call. The images of a call share one shape."""
 
     n_keypoints: int
     """The number of keypoints of each ``pose`` row, from the probe."""
@@ -1159,6 +1152,7 @@ class HeartbeatEvent(BaseModel):
 __all__ = [
     "POINT_COLUMNS",
     "POINT_DTYPES",
+    "POINT_NUMERIC_COLUMNS",
     "POSE_BOX_COLUMNS",
     "EpochEvent",
     "HeartbeatEvent",
@@ -1175,6 +1169,7 @@ __all__ = [
     "Precision",
     "PredictImagesRequest",
     "PredictImagesResponse",
+    "PredictRequestBase",
     "ProbeRequest",
     "ProbeResponse",
     "ProgressEvent",

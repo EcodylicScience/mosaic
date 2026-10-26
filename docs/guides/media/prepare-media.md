@@ -150,8 +150,8 @@ recording is refused before anything is written.
 ### Leave out frames you already annotated
 
 `exclude` takes the same items as `frames` and keeps those frames out of a `uniform` or
-`kmeans` sample. `exclude_spacing` also removes the candidates within that many
-frames of one:
+`kmeans` sample. `exclude_spacing` also removes the candidates at most that many
+frames from one:
 
 ```json
 {"method": "kmeans", "n_frames": 20,

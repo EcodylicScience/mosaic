@@ -1,21 +1,26 @@
-"""Resolving the path cells an index CSV stores, and remapping a moved tree.
+"""Resolving the paths an index CSV or a frame-extraction manifest stores.
+
+It also remaps a moved tree.
 
 An index stores a file's location root-relative when it lives inside the dataset
 tree and absolute otherwise, so reading one back is a two-case rule rather than a
 plain ``Path()``. That rule is shared by the dataset layer and by the media
-tooling underneath it, and a second copy of it would be free to drift.
+tooling underneath it, and a second copy of it would be free to drift. A
+frame-extraction manifest's ``files`` records are read by one rule too
+(:func:`manifest_file_path`), shared by the frames readers and the dataset's
+repair.
 
-Deliberately dependency-free and free of dataset concepts: it holds the *mechanism*,
-while which remapping applies and when it is established stays with the dataset
-that owns the manifest. ``core.helpers`` is not a home for this -- it pulls numpy
-and pandas, and a caller that needs one path rule should not pay for those. Its
-one import, ``mosaic.user_paths``, is a leaf of the same shape.
+Deliberately dependency-free and free of the ``Dataset`` object: it holds the
+*mechanism*, while which remapping applies and when it is established stays with
+the dataset that owns the manifest. ``core.helpers`` is not a home for this -- it
+pulls numpy and pandas, and a caller that needs one path rule should not pay for
+those. Its one import, ``mosaic.user_paths``, is a leaf of the same shape.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from mosaic.user_paths import user_path
 
@@ -67,3 +72,21 @@ def resolve_stored_path(
         return path
     remapped = remap_single_path(path, path_map)
     return path if remapped is None else remapped
+
+
+def manifest_file_path(recorded: str) -> str:
+    """The path of a frame-extraction manifest's ``files`` record, from its directory.
+
+    A manifest written before relative paths names each file by the absolute
+    path of the machine that extracted it. The file sits beside the manifest,
+    so only that path's file name is kept. A relative record is returned as
+    recorded.
+
+    Args:
+        recorded: The record's ``path`` as the manifest stores it.
+
+    Returns:
+        The file's path relative to the manifest's directory.
+    """
+    path = PurePosixPath(recorded)
+    return path.name if path.is_absolute() else recorded

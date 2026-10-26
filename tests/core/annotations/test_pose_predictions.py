@@ -285,9 +285,17 @@ def test_a_pose_without_provenance_reads_back_unnamed(tmp_path: Path) -> None:
     }
 
 
-def test_a_newer_version_is_refused(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "addition",
+    [{}, {"colors": [1]}],
+    ids=["same-keys", "a-key-of-the-newer-version"],
+)
+def test_a_newer_version_is_refused(
+    tmp_path: Path, addition: dict[str, object]
+) -> None:
     document = _document(_collected())
     document["version"] = FORMAT_VERSION + 1
+    document.update(addition)
     path = tmp_path / "predictions.json"
     _ = path.write_text(json.dumps(document))
 
@@ -333,6 +341,21 @@ def test_a_skeleton_edge_off_the_keypoints_is_refused(
 
     with pytest.raises(ValueError, match=re.escape(f"skeleton edge {tuple(edge)}")):
         _ = read_pose_predictions(path)
+
+
+@pytest.mark.parametrize(
+    "edge",
+    [(2, 2), (0, 4), (-1, 0)],
+    ids=["one-keypoint", "past-the-last", "negative"],
+)
+def test_predictions_with_a_skeleton_edge_off_the_keypoints_are_refused(
+    edge: tuple[int, int],
+) -> None:
+    """The writer refuses every edge that the reader would refuse once oriented."""
+    schema = KeypointSchema(names=MODEL_POSE.schema.names, skeleton=((0, 1), edge))
+
+    with pytest.raises(ValueError, match=re.escape(f"skeleton edge {edge}")):
+        _ = _predictions(pose=replace(MODEL_POSE, schema=schema))
 
 
 def test_an_object_with_another_number_of_keypoints_is_refused() -> None:

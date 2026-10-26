@@ -181,6 +181,16 @@ POLO_ENV: Final = ToolEnv(
 )
 
 
+PREDICT_IDLE_SECONDS: Final = 3600.0
+"""The inactivity bound of a runner exchange that predicts, and of its claim.
+
+A large model's cold load prints nothing for a long time, and an exchange that
+predicts waits through it. The entry claims of ``infer-pose``, ``infer-points``
+and ``predict-frames`` hold for the same bound, so a claim outlives every silence
+the exchange's watchdog allows and a live run is never read as abandoned.
+"""
+
+
 class ModelLoadError(ValueError):
     """The environment resolved, and could not load the weights it was given."""
 
@@ -512,6 +522,7 @@ def request_sources(
 __all__ = [
     "POLO_BOOTSTRAP",
     "POLO_ENV",
+    "PREDICT_IDLE_SECONDS",
     "ULTRALYTICS_BOOTSTRAP",
     "ULTRALYTICS_ENV",
     "PoloError",

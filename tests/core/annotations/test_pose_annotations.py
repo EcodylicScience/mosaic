@@ -230,9 +230,17 @@ def test_an_unplaced_keypoint_reads_back_unplaced(tmp_path: Path) -> None:
     assert second.visibility == 0 and math.isnan(second.x)
 
 
-def test_a_newer_version_is_refused_rather_than_misread(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "addition",
+    [{}, {"colors": [1]}],
+    ids=["same-keys", "a-key-of-the-newer-version"],
+)
+def test_a_newer_version_is_refused_rather_than_misread(
+    tmp_path: Path, addition: dict[str, object]
+) -> None:
     document = _document(_state())
     document["version"] = FORMAT_VERSION + 1
+    document.update(addition)
     path = tmp_path / "state.json"
     _ = path.write_text(json.dumps(document))
 

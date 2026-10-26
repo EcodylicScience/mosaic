@@ -93,7 +93,7 @@ class Exclusion:
 def excluded_mask(
     candidates: np.ndarray, excluded: np.ndarray, spacing: int
 ) -> np.ndarray:
-    """Mark the candidates within *spacing* frames of an excluded frame.
+    """Mark the candidates at most *spacing* frames from an excluded frame.
 
     Args:
         candidates: The candidate frame indices, ``(N,)``.

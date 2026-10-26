@@ -478,7 +478,26 @@ def test_a_revision_that_cannot_be_read_leaves_the_frames_incomplete(
 
     assert not found.complete
     assert found.keys == frozenset()
-    assert f"{TRAINED} rev1" in found.reason
+    assert f"{TRAINED}@rev1" in found.reason
+
+
+def test_a_frames_run_without_its_manifest_leaves_the_frames_incomplete(
+    ds: Dataset,
+) -> None:
+    """The frame index of an extracted image is read from its run's manifest."""
+    prepared = _prepare(ds)
+    model = _train(ds, POSE, MODEL, _data(ds, prepared))
+    _record(ds, prepared).unlink()
+    directory = ds.get_root("frames") / "uniform" / "uniform-1" / "A__s1"
+    (directory / "run_info.json").unlink()
+
+    found = seen_frames(ds, POSE, model)
+
+    assert not found.complete
+    assert found.keys == frozenset()
+    assert f"{TRAINED}@rev1" in found.reason
+    assert "uniform-1" in found.reason
+    assert "run_info.json" in found.reason
 
 
 def test_a_model_that_no_index_registers_has_unknown_frames(ds: Dataset) -> None:

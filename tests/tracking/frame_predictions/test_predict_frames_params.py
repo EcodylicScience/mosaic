@@ -140,6 +140,11 @@ def test_no_model_or_more_than_two_is_refused(model: list[str]) -> None:
         ("peak_threshold", 1.01),
         ("max_instances", 0),
         ("batch_size", 0),
+        ("device", ""),
+        ("device", "gpu"),
+        ("device", "cuda"),
+        ("device", "cuda:0"),
+        ("device", "0,1"),
     ],
 )
 def test_a_value_outside_its_bounds_is_refused(field: str, value: object) -> None:

@@ -177,7 +177,7 @@ sequence of a label together, named in `sequence_groups` by sequence name, or by
 that matches no sequence is refused.
 
 With target `sleap` and a test share above 0, the test frames leave SLEAP training
-altogether, where SLEAP once trained on every frame. Use `"split": [0.85, 0.15, 0]`
+altogether: neither `.slp` file holds them. Use `"split": [0.85, 0.15, 0]`
 for `sleap` when a hold-out serves evaluation. Lightning Pose keeps its own split: it
 draws validation from every frame with its own seed. For Lightning Pose only a hold-out
 gives an honest evaluation.
@@ -207,7 +207,7 @@ Then hand the trainer the **run id** the preparation returned:
 
 ```bash
 mosaic run -m libraries/lab/dataset.yaml --kind train-pose \
-    --params '{"data": "prepare-training-data.0.2-<digest>", "epochs": 100}'
+    --params '{"data": "prepare-training-data.0.3-<digest>", "epochs": 100}'
 ```
 
 Pass the run id rather than a path to its `data.yaml`. A path is a location, so the
@@ -215,8 +215,10 @@ same data at two paths would count as two different models.
 
 ### Fine-tune
 
-`train-sleap` takes `base_model`, a run id (or a weights path), and continues from those
-weights on the new annotations. Fine-tuning is a new run, with its own id.
+`train-sleap` takes `base_model`, a run id (or a weights path), and trains on the new
+annotations with its backbone and head starting from those weights, at epoch zero with a
+fresh optimizer. The base must be a training of the same head. Fine-tuning is a new run,
+with its own id.
 
 ### Predict on frames
 
@@ -243,13 +245,17 @@ duplicates), PCK at 0.05, 0.1 and 0.2 of each instance's size, mOKS, and the rat
 swapped left-right keypoints, each with a bootstrap interval. `prediction_runs` are
 the runs of one model, scored as one pool. By default the frames the model trained or
 validated on are left out, so score a hold-out or frames the model never saw, and set
-`"exclude_seen": false` only to see the optimistic number.
+`"exclude_seen": false` only to see the optimistic number. When the model's training
+frames cannot be traced, for example for a model fine-tuned from a model named by a
+path, every frame is scored and the summary's `training_frames_known` is false, with
+the reason in `training_frames_reason`.
 
 A keypoint that the annotator left where the model put it is untouched, and is left out
 of the keypoint metrics for every model, so the score does not reward the model that
-pre-filled the frame. Untouched points of a run that was not scored are compared without
-the keypoint map, which also reads a keypoint moved exactly onto another predicted
-keypoint as untouched.
+pre-filled the frame. Untouched points are recognized only on objects that record the
+predicting run, and every keypoint of any other object counts as moved. Untouched points
+of a run that was not scored are compared without the keypoint map, which also reads a
+keypoint moved exactly onto another predicted keypoint as untouched.
 
 mOKS is not Ultralytics' pose mAP, which uses sigma `1/n_keypoints` unless
 `kpt_oks_sigmas` is set, and not sleap-nn's evaluation, which drops false positives. Set

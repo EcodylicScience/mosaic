@@ -94,7 +94,9 @@ class FrameSelectionRow(RunIndexRowBase):
         producer: The ``producer`` that the variant's tracks-index row records.
         n_candidates: The candidate frames that the entry's events offered.
         n_selected: The frames chosen from them.
-        skipped_criteria: The criteria left out for the producer, a JSON list.
+        skipped_criteria: The enabled criteria left unevaluated, a JSON list:
+            ``jump`` for a producer whose ids number each frame's detections,
+            ``low_score`` for a table without confidence columns.
         body_length_px: The body length used, in pixels, ``""`` when unknown.
         params_hash: ``hash_params`` of the run's identity payload.
     """

@@ -13,11 +13,16 @@ import pandas as pd
 
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_model_index
+from tests.helpers.sleap import write_sleap_model
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-__all__ = ["register_trained_model", "rewrite_as_older_prepared_index"]
+__all__ = [
+    "register_sleap_model",
+    "register_trained_model",
+    "rewrite_as_older_prepared_index",
+]
 
 _NEWEST_PREPARED_COLUMNS: Final = ("held_out_sets", "n_held_out", "keypoint_schema")
 """The columns that the newest rows of a prepared-data index added."""
@@ -70,6 +75,41 @@ def register_trained_model(
         ]
     )
     index.mark_finished(run_id)
+
+
+def register_sleap_model(
+    ds: Dataset,
+    run_id: str,
+    weights: bytes = b"weights",
+    *,
+    head: str = "",
+    data_path: Path | None = None,
+) -> Path:
+    """Write and register one finished ``train-sleap`` model directory.
+
+    Args:
+        ds: The dataset whose model index receives the row.
+        run_id: The training run identifier.
+        weights: The checkpoint's bytes, whose digest is the model's identity.
+        head: The head that the directory's training config selects, or ``""``
+            for a directory with no training config.
+        data_path: What the run trained on, or ``None`` for nothing recorded.
+
+    Returns:
+        The model directory, which holds ``best.ckpt``.
+    """
+    directory = write_sleap_model(
+        model_run_root(ds, "train-sleap", run_id) / "model", weights, head=head
+    )
+    register_trained_model(
+        ds,
+        "train-sleap",
+        run_id,
+        directory / "best.ckpt",
+        directory=directory,
+        data_path=data_path,
+    )
+    return directory
 
 
 def rewrite_as_older_prepared_index(ds: Dataset) -> None:

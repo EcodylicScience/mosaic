@@ -381,8 +381,10 @@ def score_predictions_payload(
             validated on, or ``None`` when ``exclude_seen`` is false.
         sources: The source run ids of model-origin label objects that have a
             finished predict-frames row.
-        read: ``(run_id, group, sequence, camera, sha256)`` of each
-            predictions file that the score reads.
+        read: ``(run_id, group, sequence, camera, digest)`` of each
+            predictions file that the score reads, where ``digest`` is the
+            file's ``file_digest`` (blake2b, ``MODEL_DIGEST_HEX`` hex
+            characters).
     """
     dumped = params.identity_dump()
     _ = dumped.pop("labels", None)
@@ -425,8 +427,10 @@ def score_predictions_run_id(
             validated on, or ``None`` when ``exclude_seen`` is false.
         sources: The source run ids of model-origin label objects that have a
             finished predict-frames row.
-        read: ``(run_id, group, sequence, camera, sha256)`` of each
-            predictions file that the score reads.
+        read: ``(run_id, group, sequence, camera, digest)`` of each
+            predictions file that the score reads, where ``digest`` is the
+            file's ``file_digest`` (blake2b, ``MODEL_DIGEST_HEX`` hex
+            characters).
 
     Returns:
         ``score-predictions.<version>-<digest>``.
@@ -460,7 +464,10 @@ _UNSEEN_REASON: Final = "exclude_seen is false"
 _FRAMES_TABLE, _INSTANCES_TABLE, _SUMMARY = SCORE_RUN_OUTPUTS
 
 _ReadItem = tuple[str, str, str, str, str]
-"""``(run_id, group, sequence, camera, sha256)`` of one predictions file read."""
+"""``(run_id, group, sequence, camera, digest)`` of one predictions file read.
+
+``digest`` is the file's ``file_digest``: blake2b, ``MODEL_DIGEST_HEX`` hex characters.
+"""
 
 _MODEL_REFERENCES: Final = TypeAdapter(list[str])
 """Reads a predict-frames row's ``model`` cell, a JSON list of run ids."""
@@ -626,7 +633,9 @@ def _score_inputs(
         FileNotFoundError: A finished row of a scored run, or the identity
             payload of a pooled run, names a file that is not on disk.
         ValueError: A file of a scored run is not one that this mosaic reads,
-            or a metric setting names a keypoint that the pose does not have.
+            a metric setting names a keypoint that the pose does not have, or
+            the chain of base models of the scored model returns to a model on
+            it.
         KeyError: A label reference matches the sets of several datasets.
     """
     finished = _finished_rows(ds)
@@ -1105,18 +1114,27 @@ class ScorePredictionsOp(Op[ScorePredictionsParams]):
         when *require_data* is true and is refused otherwise.
         """
         _ = scope
+        _inputs, run_id = self._identified(ds, params, require_data=require_data)
+        return OpIdentity(run_id=run_id)
+
+    def _identified(
+        self, ds: Dataset, params: ScorePredictionsParams, *, require_data: bool
+    ) -> tuple[_ScoreInputs, str]:
+        """Read what the score reads, and name the score from that one read.
+
+        Raises what :func:`_score_inputs` raises.
+        """
         inputs = _score_inputs(ds, params, require_data=require_data)
-        return OpIdentity(
-            run_id=score_predictions_run_id(
-                self.version,
-                params,
-                labels=inputs.labels,
-                keypoint_map=inputs.keypoint_map,
-                seen_digest=inputs.seen_digest,
-                sources=inputs.untouched.sources,
-                read=inputs.read,
-            )
+        run_id = score_predictions_run_id(
+            self.version,
+            params,
+            labels=inputs.labels,
+            keypoint_map=inputs.keypoint_map,
+            seen_digest=inputs.seen_digest,
+            sources=inputs.untouched.sources,
+            read=inputs.read,
         )
+        return inputs, run_id
 
     def run(
         self,
@@ -1129,9 +1147,11 @@ class ScorePredictionsOp(Op[ScorePredictionsParams]):
         """Score the prediction runs against the revisions, and record the score.
 
         Without *overwrite*, a score whose finished row and outputs exist is
-        reused. Every refusal comes before an output is written.
+        reused. Every refusal comes before an output is written. The run id,
+        the tables and the identity payload come from one read of the inputs.
         """
-        run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
+        _ = scope
+        inputs, run_id = self._identified(ds, params, require_data=False)
         ctx.set_run_id(run_id)
         if not overwrite and _already_scored(ds, run_id):
             ctx.cache_hit()
@@ -1143,7 +1163,6 @@ class ScorePredictionsOp(Op[ScorePredictionsParams]):
             ds, ctx.execution_id, run_root, _KIND, _SCORE_IDLE_SECONDS
         )
         empty_claimed_run_root(run_root)
-        inputs = _score_inputs(ds, params, require_data=False)
         scores = score_predictions(
             inputs.truth,
             inputs.predictions,

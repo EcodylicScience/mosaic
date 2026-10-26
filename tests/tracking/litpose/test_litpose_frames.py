@@ -243,11 +243,10 @@ def test_both_snippets_are_python_programs(
         ("auto", None, None),
         ("0", None, "0"),
         ("1", None, "1"),
-        ("0,1", None, "0,1"),
         ("1", "4,6", "6"),
         ("auto", "4,6", "4,6"),
     ],
-    ids=["auto", "index-0", "index-1", "two-indices", "within-inherited", "auto-keeps"],
+    ids=["auto", "index-0", "index-1", "within-inherited", "auto-keeps"],
 )
 def test_the_device_reaches_the_snippet_as_its_visible_cuda_devices(
     tmp_path: Path,

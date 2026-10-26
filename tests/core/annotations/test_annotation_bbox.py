@@ -157,7 +157,7 @@ def _inner_head_tail_kps() -> np.ndarray:
 
 def test_isotropic_pads_by_head_to_tail_length_not_box_diagonal() -> None:
     kps = _inner_head_tail_kps()
-    cx, cy, w, h = keypoints_to_bbox_isotropic(
+    _, _, w, h = keypoints_to_bbox_isotropic(
         kps,
         IMG_W,
         IMG_H,
@@ -174,7 +174,7 @@ def test_isotropic_pads_by_head_to_tail_length_not_box_diagonal() -> None:
 def test_isotropic_falls_back_to_box_diagonal_when_tail_is_nan() -> None:
     kps = _inner_head_tail_kps()
     kps[1] = np.nan
-    cx, cy, w, h = keypoints_to_bbox_isotropic(
+    _, _, w, h = keypoints_to_bbox_isotropic(
         kps,
         IMG_W,
         IMG_H,

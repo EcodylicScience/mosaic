@@ -93,6 +93,7 @@ from mosaic.tracking.common.tool_input import (
     entry_runner_sources,
 )
 from mosaic.tracking.common.ultralytics_env import (
+    PREDICT_IDLE_SECONDS,
     progress_activity,
     reported_frames_read,
     request_sources,
@@ -137,12 +138,6 @@ def infer_run_root(ds: Dataset, kind: str, run_id: str) -> Path:
     """
     return ds.get_root(kind) / run_id
 
-
-# The inactivity bound for one video's inference. Generous, because a large model
-# over a long video can be silent for a long time and a claim that expires under
-# a live run invites a second execution into the same directory. The sweeper
-# reads the expiry the claim carries rather than this constant (item 8.3).
-_INFER_IDLE_SECONDS: Final = 3600.0
 
 _PREDICTIONS_NAME: Final = "predictions.parquet"
 """What one entry's raw predictions are called, inside its working directory.
@@ -942,7 +937,7 @@ def _run_inference_op(
                 key,
                 kind=kind,
                 overwrite=False,
-                idle_seconds=_INFER_IDLE_SECONDS,
+                idle_seconds=PREDICT_IDLE_SECONDS,
             )
             if opened is None:
                 ctx.progress.on_entry_end(i + 1, len(work), key)
@@ -958,14 +953,14 @@ def _run_inference_op(
                         facts=item.facts,
                         # Every line the model's runner writes refreshes the claim and
                         # reports position. Without it a video longer than
-                        # ``_INFER_IDLE_SECONDS`` expires its own claim mid-run and a
+                        # ``PREDICT_IDLE_SECONDS`` expires its own claim mid-run and a
                         # concurrent execution reads the directory as abandoned; an
                         # in-process op simply never had a line to hang this on.
                         on_output=progress_activity(
                             ctx,
                             key,
                             "infer",
-                            phase_activity(ctx, seq_dir, held, _INFER_IDLE_SECONDS),
+                            phase_activity(ctx, seq_dir, held, PREDICT_IDLE_SECONDS),
                         ),
                         cancel_check=ctx.cancel_token.is_cancelled,
                     )
@@ -1179,7 +1174,7 @@ class InferPoseOp(Op[PoseInferParams]):
                 outcome = run_pose_inference_tool(
                     request,
                     work_dir=item.work_dir,
-                    idle_timeout=_INFER_IDLE_SECONDS,
+                    idle_timeout=PREDICT_IDLE_SECONDS,
                     cancel_check=item.cancel_check,
                     on_output=item.on_output,
                 )
@@ -1305,7 +1300,7 @@ class InferPointsOp(Op[PointInferParams]):
                 outcome = run_point_inference_tool(
                     request,
                     work_dir=item.work_dir,
-                    idle_timeout=_INFER_IDLE_SECONDS,
+                    idle_timeout=PREDICT_IDLE_SECONDS,
                     cancel_check=item.cancel_check,
                     on_output=item.on_output,
                 )

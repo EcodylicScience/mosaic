@@ -15,7 +15,6 @@ import pytest
 
 import mosaic.tracking.model_refs as model_refs
 import mosaic.tracking.ops.predict_frames as predict_frames
-from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.op_identity import parse_op_run_id
@@ -23,7 +22,6 @@ from mosaic.core.pipeline.ops import IdentityDeferred
 from mosaic.tracking.common.mint import planned_model_id
 from mosaic.tracking.frame_predictions.errors import PredictFramesInvalid
 from mosaic.tracking.frame_predictions.params import PredictFramesParams
-from mosaic.tracking.litpose.training import litpose_device_placement
 from mosaic.tracking.model_refs import ModelReferenceRefusedError
 from mosaic.tracking.ops.predict_frames import (
     predict_frames_model,
@@ -33,7 +31,7 @@ from mosaic.tracking.ops.predict_frames import (
     refuse_mixed_kinds,
     refuse_pair_unless_sleap,
 )
-from tests.helpers import make_dataset, register_trained_model, write_sleap_model
+from tests.helpers import make_dataset, register_sleap_model
 
 KIND: Final = "predict-frames"
 VERSION: Final = "0.1"
@@ -118,16 +116,6 @@ def no_model_resolved(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail a test that resolves a model, which reads its index and its files."""
     monkeypatch.setattr(model_refs, "resolve_model", _unreachable)
     monkeypatch.setattr(model_refs, "resolve_model_set", _unreachable)
-
-
-def _register_sleap(ds: Dataset, run_id: str, weights: bytes) -> Path:
-    """Register one finished train-sleap run and return its checkpoint."""
-    model_dir = write_sleap_model(
-        ds.get_root("models") / "train-sleap" / run_id / "model", weights
-    )
-    checkpoint = model_dir / "best.ckpt"
-    register_trained_model(ds, "train-sleap", run_id, checkpoint, directory=model_dir)
-    return checkpoint
 
 
 # --- References ---------------------------------------------------------------
@@ -305,17 +293,19 @@ def test_cpu_is_refused_for_a_lightning_pose_model(tmp_path: Path) -> None:
 
     with pytest.raises(PredictFramesInvalid) as caught:
         _ = predict_frames_model(ds, params)
-    with pytest.raises(ValueError) as placement:
-        _ = litpose_device_placement("cpu")
 
     assert caught.value.error_kind == "invalid"
-    assert str(caught.value) == str(placement.value)
-    assert isinstance(caught.value.__cause__, ValueError)
+    assert str(caught.value) == (
+        "unusable device 'cpu': Lightning Pose runs on CUDA only, so give 'auto' "
+        "or a CUDA index such as '0'."
+    )
 
 
-@pytest.mark.parametrize("device", ["auto", "0", "0,1"])
+@pytest.mark.parametrize("device", ["auto", "0", "1"])
 def test_a_cuda_device_is_accepted_for_a_lightning_pose_model(device: str) -> None:
-    refuse_device_for_kind(device, "train-litpose")
+    params = _params(model=[_run_of("train-litpose")], device=device)
+
+    refuse_device_for_kind(params.device, "train-litpose")
 
 
 @pytest.mark.parametrize("kind", ["train-pose", "train-points", "train-sleap"])
@@ -342,12 +332,13 @@ def test_a_sleap_pair_is_named_by_the_digest_of_both_trainings(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path)
-    centroid = _register_sleap(ds, CENTROID_RUN_ID, b"centroid-weights")
-    instance = _register_sleap(ds, INSTANCE_RUN_ID, b"instance-weights")
+    centroid = register_sleap_model(ds, CENTROID_RUN_ID, b"centroid-weights")
+    instance = register_sleap_model(ds, INSTANCE_RUN_ID, b"instance-weights")
     pair = [CENTROID_RUN_ID, INSTANCE_RUN_ID]
-    digest = hash_params(
-        {"sleap_weights": [file_digest(centroid), file_digest(instance)]}
-    )
+    checkpoints = [
+        file_digest(directory / "best.ckpt") for directory in (centroid, instance)
+    ]
+    digest = hash_params({"sleap_weights": checkpoints})
 
     assert planned_model_id(ds, KIND, pair, "train-sleap") == digest
     assert predict_frames_model(ds, _params(model=pair)) == ("train-sleap", digest)

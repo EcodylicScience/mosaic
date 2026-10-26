@@ -54,6 +54,7 @@ from mosaic.core.pipeline.markers import (
     read_inflight,
     write_inflight,
 )
+from mosaic.core.pipeline.models import SPLIT_RECORD_FILENAME, model_run_root
 from mosaic.core.pipeline.op_identity import (
     OP_IDENTITY_SCHEME,
     op_run_id,
@@ -74,7 +75,11 @@ from mosaic.tracking.frame_predictions.index import (
     write_run_params,
 )
 from mosaic.tracking.frame_predictions.params import PredictFramesParams
-from mosaic.tracking.ops._common import RunRootHeld, empty_claimed_run_root
+from mosaic.tracking.ops._common import (
+    RunRootHeld,
+    empty_claimed_run_root,
+    resolve_training_data,
+)
 from mosaic.tracking.ops.predict_frames import predict_frames_payload
 from mosaic.tracking.ops.prepare import PrepareTrainingDataParams, check_preparation
 from mosaic.tracking.ops.score_predictions import (
@@ -85,11 +90,13 @@ from mosaic.tracking.ops.score_predictions import (
 from mosaic.tracking.training_provenance import SeenFrames
 from tests.helpers import (
     MOUSE,
+    extract_entry_camera,
     make_dataset,
     pose_frame,
     pose_object,
     pose_set,
     record_entry_predictions,
+    register_trained_model,
 )
 
 register_ops()
@@ -899,6 +906,92 @@ def test_only_a_complete_walk_excludes_the_frames_the_model_saw(
     assert summary.training_frames_reason == reason
 
 
+def test_the_frames_a_preparation_placed_to_train_or_validate_are_excluded(
+    tmp_path: Path,
+) -> None:
+    """The scorer's frame keys are the keys that the preparation's split record names.
+
+    A model trained on a real preparation of the scored set predicts every
+    annotated image, and the walk of its training is not replaced.
+    """
+    dataset = make_dataset(tmp_path / "ds")
+    images = extract_entry_camera(
+        dataset,
+        run_id=FRAMES_RUN,
+        group=GROUP,
+        sequence="s1",
+        camera="",
+        sizes={index: (64, 48) for index in range(100, 116)},
+    )
+    annotated = pose_object(NOSE, ELSEWHERE)
+    _ = _save(
+        dataset,
+        "set-a",
+        *(
+            pose_frame(image, annotated, sequence="s1", frame_index=index)
+            for index, image in images.items()
+        ),
+    )
+    prepared = run_op(
+        dataset,
+        "prepare-training-data",
+        {
+            "sets": [{"set_key": "set-a"}],
+            "holdout": [],
+            "pose": MOUSE.name,
+            "target": "yolo-pose",
+            "split_by": "frame",
+            "split": (0.1, 0.1, 0.8),
+        },
+    )
+    weights = model_run_root(dataset, "train-pose", MODEL) / "best.pt"
+    weights.parent.mkdir(parents=True)
+    _ = weights.write_bytes(b"weights")
+    register_trained_model(
+        dataset,
+        "train-pose",
+        MODEL,
+        weights,
+        data_path=resolve_training_data(dataset, prepared),
+    )
+    predictions = FramePredictions(
+        pose=PredictedPose(id=MOUSE.id, name=MOUSE.name, schema=MOUSE.schema),
+        frames_run_id=FRAMES_RUN,
+        group=GROUP,
+        sequence="s1",
+        camera="",
+        frames=tuple(
+            PredictedFrame(
+                image=image.as_posix(),
+                frame_index=index,
+                width=64,
+                height=48,
+                objects=(_predicted(NOSE, ELSEWHERE),),
+            )
+            for index, image in images.items()
+        ),
+    )
+    _ = record_entry_predictions(
+        dataset, predictions, run_id=PREDICTION_RUN, model=MODEL
+    )
+    record = model_run_root(dataset, "prepare-training-data", prepared)
+    placed = index_records(
+        pd.read_csv(
+            record / SPLIT_RECORD_FILENAME, dtype="string", keep_default_na=False
+        )
+    )
+
+    run_id = _score(dataset, exclude_seen=True)
+
+    assert {row["split"] for row in placed} == {"train", "valid", "test"}
+    frames = _frames(dataset, run_id)
+    assert dict(zip(frames["frame_key"], frames["status"], strict=True)) == {
+        row["frame_key"]: "scored" if row["split"] == "test" else "excluded_training"
+        for row in placed
+    }
+    assert _summary(dataset, run_id).training_frames_known is True
+
+
 def test_a_frame_predicted_after_a_score_names_a_new_score(tmp_path: Path) -> None:
     dataset = make_dataset(tmp_path / "ds")
     annotated = pose_object(NOSE, TAIL)
@@ -912,6 +1005,31 @@ def test_a_frame_predicted_after_a_score_names_a_new_score(tmp_path: Path) -> No
 
     assert second != first
     assert _summary(dataset, second).n_not_covered == 0
+
+
+def test_a_frame_predicted_during_a_score_stays_out_of_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run id, the tables and the identity payload come from one read."""
+    dataset = make_dataset(tmp_path / "ds")
+    annotated = pose_object(NOSE, TAIL)
+    _ = _save(dataset, "set-a", _frame("s1", annotated), _frame("s2", annotated))
+    _ = _record(dataset, _predicted(NOSE, TAIL))
+
+    def empty_then_predict(run_root: Path) -> None:
+        empty_claimed_run_root(run_root)
+        _ = _record(dataset, _predicted(NOSE, TAIL), sequence="s2")
+
+    monkeypatch.setattr(score_predictions, "empty_claimed_run_root", empty_then_predict)
+
+    run_id = _score(dataset)
+
+    root = _run_root(dataset, run_id)
+    payload = _JSON_OBJECT.validate_json((root / "run_params.json").read_bytes())
+    assert op_run_id(KIND, VERSION, payload) == run_id
+    assert _row(dataset, run_id)["params_hash"] == hash_params(payload)
+    assert _summary(dataset, run_id).n_not_covered == 1
+    assert _frames(dataset, run_id)["status"].tolist() == ["scored", "not_covered"]
 
 
 def test_a_score_whose_root_a_peer_took_over_writes_nothing(

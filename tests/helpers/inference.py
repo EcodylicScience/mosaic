@@ -290,6 +290,7 @@ class FakePredictImages:
         requests: Every request, in order.
         work_dirs: The work directory of each request, in order.
         cancel_checks: The cancel check of each request, in order.
+        idle_timeouts: The inactivity bound of each request, in order.
         probed: Every model whose environment was probed, in order.
     """
 
@@ -297,6 +298,7 @@ class FakePredictImages:
     requests: list[PredictImagesRequest] = field(default_factory=list)
     work_dirs: list[Path] = field(default_factory=list)
     cancel_checks: list[Callable[[], bool] | None] = field(default_factory=list)
+    idle_timeouts: list[float] = field(default_factory=list)
     probed: list[str] = field(default_factory=list)
 
     def run(
@@ -304,6 +306,7 @@ class FakePredictImages:
         request: PredictImagesRequest,
         *,
         work_dir: Path,
+        idle_timeout: float = 900,
         cancel_check: Callable[[], bool] | None = None,
         on_output: Callable[[str], None] | None = None,
         **_kwargs: object,
@@ -312,6 +315,7 @@ class FakePredictImages:
         self.requests.append(request)
         self.work_dirs.append(work_dir)
         self.cancel_checks.append(cancel_check)
+        self.idle_timeouts.append(idle_timeout)
         table = self.rows(request)
         rows_path = Path(request.rows_path)
         rows_path.parent.mkdir(parents=True, exist_ok=True)
