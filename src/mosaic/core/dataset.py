@@ -96,7 +96,17 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
-from .entry import Entry
+from .entry import Entry, refuse_entry_key_collision
+from .recording import (
+    OrderFacts,
+    Recording,
+    RecordingKey,
+    RecordingKind,
+    order_members,
+    recording_kind,
+    recording_of,
+    recordings,
+)
 from .json_value import JsonValue
 from .manifest import (
     AnyScanSource,
@@ -183,7 +193,14 @@ from .pipeline.sequence_index import (
     sequence_labels,
     write_sequence_compositions,
 )
-from .pipeline.dataset_indexes import iter_dataset_indexes
+from .pipeline.dataset_indexes import iter_dataset_indexes, label_kinds
+from .pipeline.entry_keys import (
+    entries_kept_beside,
+    entries_of_rows,
+    index_entries,
+    media_index_entries,
+    root_index_entries,
+)
 from .pipeline.preprocess_layout import media_variant_filter, media_variants_root
 from .pipeline.promotion import correction_revision
 from .pipeline.tracking_roots import (
@@ -205,7 +222,6 @@ from .pipeline.tracks_index import (
     frame_tail_shortfalls,
     consumed_composition_for,
     legacy_view,
-    read_frame_extents,
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
@@ -213,6 +229,7 @@ from .pipeline.tracks_index import (
 )
 from .pipeline.labels_index import (
     LABELS_INDEX_PATH_COLUMNS,
+    labels_index_path,
     read_labels_index,
     select_label_variant_rows,
     write_labels_row,
@@ -1095,6 +1112,110 @@ class Dataset:
         """Whether *group*'s sequences divide one recording. See the manifest."""
         return self.manifest.is_continuous_group(group)
 
+    def recording_kind(self, group: str) -> RecordingKind:
+        """Return whether an entry of *group* belongs to a divided recording."""
+        return recording_kind(self.manifest.continuous_groups, group)
+
+    def recording_of(self, group: str, sequence: str) -> RecordingKey:
+        """Return the key of the recording that ``(group, sequence)`` belongs to.
+
+        ``(group, "")`` for a sequence of a continuous group, and the entry's
+        own pair otherwise. See :mod:`mosaic.core.recording`.
+        """
+        return recording_of(self.manifest.continuous_groups, group, sequence)
+
+    def recordings(
+        self,
+        entries: Iterable[Entry] | None = None,
+        *,
+        order_facts: Mapping[Entry, OrderFacts] | None = None,
+    ) -> tuple[Recording, ...]:
+        """Return every recording that *entries* make up, sorted by key.
+
+        Args:
+            entries: The entries to group. ``None`` reads the media index and the
+                tracks index and takes every entry either names.
+            order_facts: What places each member in its recording. ``None``
+                orders members by a natural sort on their names. The tracks
+                frame extents of a pinned run order a hand-declared group:
+                ``facts_from_frame_extents(read_frame_extents(ds, run_id))``.
+        """
+        universe = self._recording_universe() if entries is None else entries
+        return recordings(self.manifest.continuous_groups, universe, order_facts)
+
+    def recording_members(
+        self,
+        key: RecordingKey,
+        *,
+        order_facts: Mapping[Entry, OrderFacts] | None = None,
+    ) -> tuple[Entry, ...]:
+        """Return the members of the recording that *key* names, in recording order.
+
+        An undivided recording has its one entry. A divided one has every entry
+        of its group that the media index or the tracks index names, ordered as
+        :meth:`recordings` orders them. A key that names no recording has no
+        members: ``(G, "")`` for an undeclared group, or ``(G, "s")`` for a
+        declared one.
+        """
+        if self.recording_kind(key.group) == "undivided":
+            return ((key.group, key.sequence),) if key.sequence else ()
+        if key.sequence:
+            return ()
+        group_entries = (
+            entry for entry in self._recording_universe() if entry[0] == key.group
+        )
+        return order_members(group_entries, order_facts or {})
+
+    def _recording_universe(self) -> set[Entry]:
+        """Return every entry that the media index or the tracks index names."""
+        universe = root_index_entries(self, "tracks")
+        # Named as media resolution names them, once the index contains a row.
+        if media_index_entries(self):
+            universe |= self.media_entries()
+        return universe
+
+    def _indexed_entries(self) -> set[Entry]:
+        """Return every entry of the media, tracks_raw, tracks and labels indexes."""
+        return (
+            media_index_entries(self)
+            | root_index_entries(self, "tracks_raw")
+            | self._tracks_and_labels_entries()
+        )
+
+    def _tracks_and_labels_entries(self) -> set[Entry]:
+        """Return every entry of the tracks and labels indexes."""
+        found = root_index_entries(self, "tracks")
+        for kind in label_kinds(self):
+            found |= index_entries(labels_index_path(self, kind))
+        return found
+
+    def _entries_beside_media_write(
+        self,
+        written: set[Entry],
+        committed: Iterable[Mapping[str, object]],
+        preserved: Iterable[Mapping[str, object]],
+    ) -> set[Entry]:
+        """Return the entries whose keys a replacing media write must not reuse."""
+        held_elsewhere = (
+            root_index_entries(self, "tracks_raw") | self._tracks_and_labels_entries()
+        )
+        return entries_kept_beside(
+            written, committed, preserved, held_elsewhere=held_elsewhere
+        )
+
+    def _entries_beside_tracks_raw_write(
+        self,
+        written: set[Entry],
+        committed: Iterable[Mapping[str, object]],
+        preserved: Iterable[Mapping[str, object]],
+    ) -> set[Entry]:
+        """Return the entries whose keys a replacing tracks_raw write must not reuse."""
+        media = media_index_entries(self)
+        held_elsewhere = media | self._tracks_and_labels_entries()
+        return media | entries_kept_beside(
+            written, committed, preserved, held_elsewhere=held_elsewhere
+        )
+
     def measure_frame_extents(self, *, dry_run: bool = False) -> "pd.DataFrame":
         """Record the frame extent of every tracks row that lacks one.
 
@@ -1173,13 +1294,60 @@ class Dataset:
     def set_continuous_groups(
         self, groups: Iterable[str], *, save: bool = True
     ) -> None:
-        """Declare which groups are one continuous recording.
+        """Declare which groups are each one recording divided into sequences.
+
+        The list replaces the declared one. Each name must already be the group
+        of an indexed entry. A manifest declaring a name refused here still
+        loads.
+
+        Raises:
+            ValueError: If a name is empty or repeated, contains ``__`` or
+                ``:``, is the name of a sequence in the empty group, or is the
+                group of no entry in the media, tracks_raw, tracks or labels
+                indexes.
+        """
+        named = tuple(str(group) for group in groups)
+        indexed = self._indexed_entries()
+        groups_held = {group for group, _ in indexed}
+        empty_group_keys = {
+            to_safe_name(sequence) for group, sequence in indexed if not group
+        }
+        for name in named:
+            if not name:
+                continue
+            for separator in ("__", ":"):
+                if separator in name:
+                    msg = (
+                        f"continuous group {name!r} contains {separator!r}, which "
+                        "joins a group to a sequence in an entry key or token. "
+                        "Rename the group."
+                    )
+                    raise ValueError(msg)
+            if to_safe_name(name) in empty_group_keys:
+                msg = (
+                    f"continuous group {name!r} has the name of the empty-group "
+                    f"sequence {name!r}, and the two recordings would share one "
+                    "name. Rename one of them."
+                )
+                raise ValueError(msg)
+            if name not in groups_held:
+                msg = (
+                    f"continuous group {name!r} is the group of no entry in the "
+                    "media, tracks_raw, tracks or labels indexes. Index its "
+                    "sequences first."
+                )
+                raise ValueError(msg)
+        self._declare_continuous_groups(named, save=save)
+
+    def _declare_continuous_groups(
+        self, groups: tuple[str, ...], *, save: bool = True
+    ) -> None:
+        """Record *groups* as the continuous groups under the manifest rules alone.
 
         Raises:
             ValueError: If a name is empty or repeated.
         """
-        named = tuple(str(group) for group in groups)
-        self.manifest = self.manifest.model_copy(update={"continuous_groups": named})
+        self.manifest = self.manifest.model_copy(update={"continuous_groups": groups})
         _check_manifest(self.manifest)
         if save:
             self.save()
@@ -2788,16 +2956,26 @@ class Dataset:
         """
         return sorted({str(g) for g in read_tracks_index(self)["group"]})
 
-    def list_sequences(self, group: str | None = None) -> list[str]:
-        """The sequences in ``tracks/index.csv``, optionally within one group.
+    def list_entries(self, group: str | None = None) -> list[Entry]:
+        """The ``(group, sequence)`` entries in ``tracks/index.csv``, sorted.
 
-        Empty when there are none; see :meth:`list_groups` on why absent is not
-        an error.
+        Optionally within one group. Empty when there are none; see
+        :meth:`list_groups` on why absent is not an error.
         """
         df = read_tracks_index(self)
         if group is not None:
             df = df[df["group"] == group]
-        return sorted({str(s) for s in df["sequence"]})
+        return sorted(
+            {(str(g), str(s)) for g, s in zip(df["group"], df["sequence"], strict=True)}
+        )
+
+    def list_sequences(self, group: str | None = None) -> list[str]:
+        """The sequence names in ``tracks/index.csv``, optionally within one group.
+
+        A name that two groups share is listed once. Empty when there are none;
+        see :meth:`list_groups` on why absent is not an error.
+        """
+        return sorted({sequence for _, sequence in self.list_entries(group)})
 
     def get_sequence_metadata(
         self,
@@ -3435,6 +3613,12 @@ class Dataset:
             if prune_unsourced:
                 preserved = []
             self._carry_forward_derivative_links(dedup, out_csv)
+            # Checked on the entries the rows are written under: a filename's
+            # guess that an assigned identity replaced above writes nothing.
+            written = entries_of_rows(dedup)
+            refuse_entry_key_collision(
+                written, self._entries_beside_media_write(written, committed, preserved)
+            )
             merged: list[dict[str, object]] = [*preserved, *dedup]
             # Densified over the sequences this scan touched, not over the whole
             # file: ``densify_video_order`` renumbers every row it is handed, so
@@ -3762,6 +3946,10 @@ class Dataset:
             preserved = [
                 row for row in committed if not self._row_under_dirs(row, scope_dirs)
             ]
+            written = entries_of_rows(fresh)
+            refuse_entry_key_collision(
+                written, self._entries_beside_media_write(written, committed, preserved)
+            )
 
             # Carry transcode derivative links onto the fresh rows (a re-finalize
             # of a transcoded sequence must not drop its routing links), merge
@@ -4961,13 +5149,13 @@ class Dataset:
     ) -> "pd.DataFrame | None":
         """Every media row of a continuous *group*, in recording order.
 
-        Ordered by ``(where the sequence starts, video_order)``. ``video_order``
-        alone will not do it: its dense counter restarts at zero for each
-        ``(group, sequence, camera)``, so a group whose clips are indexed one per
-        division would come back as N rows all claiming position 0. The sequence
-        term comes from the recorded frame extents -- the same key the tracks
-        adjacency uses -- so the media order and the track order are derived from
-        one fact rather than two that can disagree.
+        Ordered by ``(the sequence's place in the recording, video_order)``.
+        ``video_order`` alone will not do it: its dense counter restarts at zero
+        for each ``(group, sequence, camera)``. A group whose clips are indexed
+        one per division would come back as N rows all claiming position 0. The
+        sequence term is :func:`~mosaic.core.recording.order_members`
+        over the media alone, a natural sort on the sequence names. Tracks frame
+        extents are not read, because no tracks run is pinned here.
 
         ``None`` when the group has no rows, which sends the caller back to the
         ordinary per-sequence tiers.
@@ -4980,21 +5168,12 @@ class Dataset:
         if matched.empty:
             return None
 
-        extents = read_frame_extents(self)
-        starts = {
-            entry_sequence: extent[0]
-            for (entry_group, entry_sequence), extent in extents.items()
-            if entry_group == group
-        }
-        # An unplaced sequence sorts after every placed one, by name, so the
-        # order stays total and deterministic rather than depending on the index.
-        unplaced = max(starts.values(), default=0) + 1
-        order = (
-            matched["sequence"].fillna("").map(lambda s: starts.get(str(s), unplaced))
-        )
+        sequences = [str(value) for value in matched["sequence"].fillna("")]
+        members = order_members(((group, sequence) for sequence in sequences), {})
+        place = {sequence: index for index, (_, sequence) in enumerate(members)}
         return (
-            matched.assign(_recording_order=order)
-            .sort_values(["_recording_order", "sequence", "video_order"], kind="stable")
+            matched.assign(_recording_order=[place[sequence] for sequence in sequences])
+            .sort_values(["_recording_order", "video_order"], kind="stable")
             .drop(columns="_recording_order")
         )
 
@@ -5015,7 +5194,8 @@ class Dataset:
         filename, so an entry is matched whole -- every file of a multi-file
         recording -- and never through a file that happens to be named for a
         different sequence. A non-empty *group* narrows it to that group,
-        case-insensitively; an empty *group* names no namespace and admits any.
+        case-insensitively; an empty *group* names no namespace and admits any
+        group but a continuous one.
         With more than one entry still standing after that narrowing, the tier
         refuses rather than choosing. An empty *sequence* matches nothing there.
 
@@ -5034,7 +5214,7 @@ class Dataset:
         # resolution, rather than by listing each sequence's rows against every
         # other sequence -- that would store one file's facts once per division
         # and leave a rescan to keep the copies agreeing.
-        if group and self.is_continuous_group(str(group)):
+        if self.recording_kind(str(group)) == "divided":
             matched = self._match_continuous_group_rows(df, str(group), camera)
             if matched is not None:
                 return matched
@@ -5096,12 +5276,23 @@ class Dataset:
                     index=df.index,
                 )
             ]
-            # A request naming a group keeps this tier inside it: what it
+            # A request naming a group keeps this tier inside it: what the
             # tier bridges are differences within an entry, never across two. An
-            # empty group asks for no particular namespace and matches any. The
-            # comparison is case-insensitive like the one above, so the tier
+            # empty group asks for no particular namespace and matches any but a
+            # continuous group, whose sequences are named with their recording.
+            # The comparison is case-insensitive like the one above. The tier
             # bridges case on both axes rather than only one.
-            if group:
+            if not group:
+                candidates = candidates[
+                    pd.Series(
+                        [
+                            self.recording_kind(str(value)) == "undivided"
+                            for value in candidates["group"].fillna("")
+                        ],
+                        index=candidates.index,
+                    )
+                ]
+            else:
                 wanted_group = str(group).casefold()
                 candidates = candidates[
                     pd.Series(
@@ -6073,6 +6264,11 @@ class Dataset:
                     dict(row) for row in committed if not self._row_claimed(row, claim)
                 ]
             )
+            written = entries_of_rows(rows)
+            refuse_entry_key_collision(
+                written,
+                self._entries_beside_tracks_raw_write(written, committed, preserved),
+            )
             # Preserved rows come back from the reader as plain mappings, while
             # this pass built typed rows; the frame builder takes either.
             merged: list[dict[str, object] | TracksRawIndexRow] = [*preserved, *rows]
@@ -6308,6 +6504,11 @@ class Dataset:
             preserved = [
                 row for row in existing if not self._row_under_dirs(row, scope_dirs)
             ]
+            written = entries_of_rows(fresh)
+            refuse_entry_key_collision(
+                written,
+                self._entries_beside_tracks_raw_write(written, existing, preserved),
+            )
             # Merge preserved (string records) + fresh (typed rows).
             # _row_under_dirs already guarantees the two are disjoint by resolved
             # path, so the dedup only ever fires fresh-vs-fresh across

@@ -1118,7 +1118,11 @@ class DatasetManifest(BaseModel):
         return value
 
     def is_continuous_group(self, group: str) -> bool:
-        """Whether *group*'s sequences are time divisions of one recording.
+        """Whether *group* names one recording divided into sequences.
+
+        Every other group is a namespace, in which each entry is a recording of
+        its own. :mod:`mosaic.core.recording` names an entry's recording from
+        this declaration.
 
         A continuous group asserts two things nothing else records. Its
         sequences are ordered in time and adjacent, so a feature may read across

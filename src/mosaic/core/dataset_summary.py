@@ -4,7 +4,8 @@
 ``mosaic describe --json`` is that model dumped.
 
 A summary reads the manifest, the tracks index, the originals media index and
-an inventory of three artifact kinds. It writes nothing, takes no lock and
+an inventory of three artifact kinds. Its recordings are named by
+:mod:`mosaic.core.recording`. It writes nothing, takes no lock and
 creates no root.
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
 from pydantic import Field
@@ -30,6 +32,7 @@ from mosaic.core.pipeline.label_series_index import series_index_path
 from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
+from mosaic.core.recording import Recording
 from mosaic.core.schema import LEGACY_SCHEMA
 from mosaic.core.strict_model import StrictModel
 
@@ -41,6 +44,8 @@ __all__ = [
     "DatasetCounts",
     "DatasetSummary",
     "FrameRateCount",
+    "RecordingSequence",
+    "RecordingSummary",
     "TrackSchemaCount",
     "dataset_next_steps",
     "raw_label_rows",
@@ -61,6 +66,10 @@ class DatasetCounts(StrictModel):
     Attributes:
         sequences: The ``(group, sequence)`` entries whose tracks table exists,
             across every tracks variant.
+        recordings: The recordings of the entries that the media index or the
+            tracks index names. The sequences of a continuous group are one
+            divided recording, and every other entry is an undivided one.
+        divided_recordings: The recordings among them that are divided.
         videos: The rows of the originals media index, one per video file or
             imgstore store.
         tracks_variants: The tracks variants in the tracks index. ``None`` when
@@ -73,6 +82,8 @@ class DatasetCounts(StrictModel):
     """
 
     sequences: int
+    recordings: int
+    divided_recordings: int
     videos: int
     tracks_variants: int | None
     feature_runs: int | None
@@ -105,6 +116,37 @@ class FrameRateCount(StrictModel):
     videos: int
 
 
+class RecordingSequence(StrictModel):
+    """One sequence of a divided recording.
+
+    Attributes:
+        sequence: The sequence's name.
+        first_frame: Its first frame on the recording's frame axis, ``None``
+            when unrecorded.
+        frame_count: Its frames, ``None`` when unrecorded.
+        start_utc: When it starts, ``None`` when unrecorded.
+    """
+
+    sequence: str
+    first_frame: int | None = None
+    frame_count: int | None = None
+    start_utc: datetime | None = None
+
+
+class RecordingSummary(StrictModel):
+    """One divided recording and its sequences.
+
+    Attributes:
+        name: The recording's name, its continuous group.
+        n_sequences: The sequences it is divided into.
+        sequences: Its sequences, ordered by a natural sort of their names.
+    """
+
+    name: str
+    n_sequences: int
+    sequences: tuple[RecordingSequence, ...]
+
+
 class DatasetSummary(StrictModel):
     """What a dataset is and how much it holds.
 
@@ -122,6 +164,9 @@ class DatasetSummary(StrictModel):
         continuous_groups: The groups whose sequences divide one recording.
         splits: The role of each named group in a held-out protocol, ``train``,
             ``test`` or ``sealed``. Empty when the manifest declares none.
+        divided_recordings: The divided recordings that hold an entry, ordered
+            by name. An undivided recording is one entry, which ``counts`` counts
+            and ``mosaic sequences`` lists.
         managed_by: The manifest's top-level ``managed_by`` value, verbatim.
         api_managed: Whether ``managed_by`` names a managing service.
         counts: Sequences, videos and artifacts.
@@ -146,6 +191,7 @@ class DatasetSummary(StrictModel):
     tags: tuple[DatasetTag, ...]
     libraries: tuple[LibraryLink, ...]
     continuous_groups: tuple[str, ...]
+    divided_recordings: tuple[RecordingSummary, ...]
     managed_by: JsonValue
     api_managed: bool
     splits: dict[str, SplitRole] = Field(default_factory=dict)
@@ -175,6 +221,10 @@ def dataset_summary(
     manifest = ds.manifest
     tracks = existing_tracks_records(ds, read_tracks_index(ds))
     media = _media_rows(ds)
+    every_recording = ds.recordings()
+    divided = [
+        recording for recording in every_recording if recording.kind == "divided"
+    ]
     return DatasetSummary(
         manifest=str(ds.manifest_path.absolute()),
         name=manifest.name,
@@ -187,12 +237,17 @@ def dataset_summary(
         notes=manifest.notes,
         tags=manifest.ordered_tags(),
         libraries=manifest.libraries,
-        continuous_groups=manifest.continuous_groups,
+        continuous_groups=ds.continuous_groups,
+        divided_recordings=tuple(
+            _recording_summary(recording) for recording in divided
+        ),
         splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
         api_managed=manifest.is_managed,
         counts=DatasetCounts(
             sequences=len(reportable_universe(ds)),
+            recordings=len(every_recording),
+            divided_recordings=len(divided),
             videos=len(media),
             tracks_variants=_count(held, "tracks-variant"),
             feature_runs=_count(held, "feature"),
@@ -218,6 +273,17 @@ def dataset_summary(
         ),
         inventory_errors=held.errors,
         next_steps=dataset_next_steps(ds, converted_tracks=len(tracks)),
+    )
+
+
+def _recording_summary(recording: Recording) -> RecordingSummary:
+    """Return *recording*'s name and its sequences in its member order."""
+    return RecordingSummary(
+        name=recording.name,
+        n_sequences=len(recording.members),
+        sequences=tuple(
+            RecordingSequence(sequence=sequence) for _, sequence in recording.members
+        ),
     )
 
 

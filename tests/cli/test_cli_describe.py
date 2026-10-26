@@ -9,7 +9,13 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.dataset_summary import SUMMARY_KINDS, DatasetSummary, dataset_summary
 from mosaic.tracking import dataset_inventory
-from tests.helpers import add_tracks_variant, invoke_ok, make_dataset
+from tests.helpers import (
+    MediaClip,
+    add_tracks_variant,
+    invoke_ok,
+    make_dataset,
+    write_media_index,
+)
 
 VARIANT = "convert-trex.0.2-1111111111"
 
@@ -57,3 +63,26 @@ def test_the_plain_output_lists_the_roles_of_the_groups(dataset: Dataset) -> Non
         "a": "train",
         "b": "sealed",
     }
+
+
+def test_the_plain_output_counts_the_recordings(dataset: Dataset) -> None:
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "recordings: 2 (0 divided)" in result.stdout
+    assert "continuous_groups" not in result.stdout
+
+
+def test_the_plain_output_names_the_divided_recordings(dataset: Dataset) -> None:
+    write_media_index(
+        dataset,
+        [
+            MediaClip(group="night", sequence="s1", filename="night_s1.mp4"),
+            MediaClip(group="night", sequence="s2", filename="night_s2.mp4"),
+            MediaClip(group="day", sequence="s1", filename="day_s1.mp4"),
+        ],
+    )
+    dataset.set_continuous_groups(["night", "day"])
+
+    result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
+
+    assert "recordings: 4 (2 divided: day, night)" in result.stdout

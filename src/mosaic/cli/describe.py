@@ -1,7 +1,8 @@
 """``mosaic describe``: what a dataset is and how much it holds.
 
-The verb prints the manifest's fields, the counts of sequences, videos and
-artifacts, the track schemas and the frame rates. ``--json`` prints the
+The verb prints the manifest's fields, the counts of sequences, recordings,
+videos and artifacts, the names of the divided recordings, the track schemas
+and the frame rates. ``--json`` prints the
 :class:`~mosaic.core.dataset_summary.DatasetSummary` that
 :func:`~mosaic.core.dataset_summary.dataset_summary` returns. The verb writes
 nothing to the dataset.
@@ -56,12 +57,12 @@ def _render(summary: DatasetSummary) -> None:
             "manifest": summary.manifest,
             "manifest_version": summary.manifest_version,
             "managed_by": summary.managed_by if summary.api_managed else "none",
-            "continuous_groups": ", ".join(summary.continuous_groups) or "none",
             "splits": ", ".join(
                 f"{group}={role}" for group, role in summary.splits.items()
             )
             or "none",
             "sequences": counts.sequences,
+            "recordings": _recordings(summary),
             "videos": counts.videos,
             "tracks_variants": _shown(counts.tracks_variants),
             "feature_runs": _shown(counts.feature_runs),
@@ -98,6 +99,15 @@ def _render(summary: DatasetSummary) -> None:
             typer.echo(f"next: {step}")
     for error in summary.inventory_errors:
         typer.echo(f"note: inventory read failed: {error}", err=True)
+
+
+def _recordings(summary: DatasetSummary) -> str:
+    """Return the recordings count with the divided ones counted and named."""
+    divided = f"{summary.counts.divided_recordings} divided"
+    names = ", ".join(recording.name for recording in summary.divided_recordings)
+    if names:
+        divided = f"{divided}: {names}"
+    return f"{summary.counts.recordings} ({divided})"
 
 
 def _shown(count: int | None) -> int | str:

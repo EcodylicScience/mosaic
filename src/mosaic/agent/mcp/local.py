@@ -420,6 +420,7 @@ class LocalBackend:
         )
 
     def _list_sequences(self, args: ListSequencesInput) -> SequencePage:
+        from mosaic.core.dataset import open_dataset
         from mosaic.core.pipeline.index_csv import index_records
         from mosaic.core.pipeline.tracks_index import (
             count_cell,
@@ -427,9 +428,11 @@ class LocalBackend:
             read_tracks_index,
             select_variant_rows,
         )
+        from mosaic.core.recording import recording_name
 
-        held = self._dataset(args.dataset)
-        index = read_tracks_index(held.dataset)
+        # Opened again so that each recording follows the declaration on disk now.
+        dataset = open_dataset(self._dataset(args.dataset).manifest, ensure_roots=False)
+        index = read_tracks_index(dataset)
         if args.group is not None:
             index = index[index["group"] == args.group]
         try:
@@ -446,10 +449,13 @@ class LocalBackend:
         rows: list[SequenceRow] = []
         for record in index_records(selected):
             extent = read_frame_extent(record)
+            group = record.get("group", "")
+            sequence = record.get("sequence", "")
             rows.append(
                 SequenceRow(
-                    group=record.get("group", ""),
-                    sequence=record.get("sequence", ""),
+                    group=group,
+                    sequence=sequence,
+                    recording=recording_name(dataset.recording_of(group, sequence)),
                     tracks_variant=record.get("run_id", ""),
                     producer=record.get("producer", ""),
                     std_format=record.get("std_format", ""),

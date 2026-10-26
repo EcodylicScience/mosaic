@@ -1,0 +1,225 @@
+"""Which recording an entry belongs to, importing :mod:`mosaic.core.entry` only.
+
+A recording is divided when its group is declared in ``continuous_groups``. Its
+sequences are then time divisions of one recording, named by the group. Every
+other entry is an undivided recording of its own, whatever its group: an empty
+group, or a namespace such as a CalMS21 split or a treatment. The kind comes
+from the declaration. An empty group does not decide it.
+
+Every function takes plain inputs. A dataset, a test double and a division
+writer answer the question by one rule.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal
+
+from .entry import Entry, entry_token, make_entry_key, to_safe_name
+
+__all__ = [
+    "OrderFacts",
+    "Recording",
+    "RecordingKey",
+    "RecordingKind",
+    "facts_from_frame_extents",
+    "order_members",
+    "recording_kind",
+    "recording_name",
+    "recording_of",
+    "recording_storage_name",
+    "recordings",
+]
+
+RecordingKind = Literal["divided", "undivided"]
+"""A divided recording is a declared continuous group. An undivided one is one entry."""
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class RecordingKey:
+    """The ``(group, sequence)`` pair that names one recording.
+
+    A divided recording is ``(group, "")``. An undivided recording is its
+    entry's own pair.
+
+    Attributes:
+        group: The entry's group, or the continuous group.
+        sequence: The entry's sequence, or ``""`` for a divided recording.
+    """
+
+    group: str
+    sequence: str
+
+
+@dataclass(frozen=True, slots=True)
+class OrderFacts:
+    """What places one member in its recording, each ``None`` when unknown.
+
+    Attributes:
+        first_frame: The member's first frame on the recording's frame axis,
+            from a division record.
+        start_utc: When the member starts, timezone-aware.
+        frame_min: The first frame of the member's tracks table, read under a
+            pinned tracks run id.
+    """
+
+    first_frame: int | None = None
+    start_utc: datetime | None = None
+    frame_min: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Recording:
+    """One recording and its member sequences, in recording order.
+
+    Attributes:
+        kind: Whether the recording is divided into sequences.
+        key: The recording's key.
+        name: The continuous group for a divided recording. For an undivided
+            one, its entry token: the sequence, or ``group:sequence`` when the
+            group is non-empty.
+        members: The member entries in recording order. An undivided recording
+            has its one entry.
+    """
+
+    kind: RecordingKind
+    key: RecordingKey
+    name: str
+    members: tuple[Entry, ...]
+
+
+def recording_kind(continuous_groups: Collection[str], group: str) -> RecordingKind:
+    """Return whether an entry of *group* belongs to a divided recording."""
+    return "divided" if group in continuous_groups else "undivided"
+
+
+def recording_of(
+    continuous_groups: Collection[str], group: str, sequence: str
+) -> RecordingKey:
+    """Return the key of the recording that ``(group, sequence)`` belongs to."""
+    if recording_kind(continuous_groups, group) == "divided":
+        return RecordingKey(group, "")
+    return RecordingKey(group, sequence)
+
+
+def recording_name(key: RecordingKey) -> str:
+    """Return the name of the recording that *key* names.
+
+    A divided recording is named by its continuous group, and an undivided
+    one by its entry token, ``group:sequence`` or the bare sequence.
+    """
+    return entry_token(key.group, key.sequence) if key.sequence else key.group
+
+
+def recording_storage_name(key: RecordingKey) -> str:
+    """Return the one path component that per-recording storage is named by.
+
+    A divided recording is named by its safe group name, and an undivided one
+    by its entry key, so ``("", "a")`` and ``("ns", "a")`` stay apart. A
+    continuous group named like an empty-group sequence would share the name.
+    ``Dataset.set_continuous_groups`` refuses such a group when it is declared,
+    and no writer refuses an empty-group sequence written after it.
+    """
+    if not key.sequence:
+        return to_safe_name(key.group)
+    return make_entry_key(key.group, key.sequence)
+
+
+_DIGITS = re.compile(r"(\d+)")
+
+
+def _natural_key(name: str) -> tuple[tuple[tuple[int, int, str], ...], str]:
+    """Sort key that orders digit runs by value, so ``s2`` sorts before ``s10``.
+
+    The odd parts of the split are the captured decimal runs. A character such
+    as ``\u00b2`` that ``str.isdigit`` accepts and ``int`` refuses stays text.
+    """
+    parts = tuple(
+        (0, int(part), "") if index % 2 else (1, 0, part)
+        for index, part in enumerate(_DIGITS.split(name))
+        if part
+    )
+    return parts, name
+
+
+def _member_key(
+    entry: Entry, facts: OrderFacts | None
+) -> tuple[int, int, float, tuple[tuple[tuple[int, int, str], ...], str]]:
+    """Sort key placing *entry* by the first fact it has, then by name.
+
+    The leading rank keeps a partly recorded group total. A member placed by a
+    stronger fact sorts before one placed by a weaker fact.
+    """
+    name = _natural_key(entry[1])
+    if facts is not None:
+        if facts.first_frame is not None:
+            return (0, facts.first_frame, 0.0, name)
+        if facts.start_utc is not None:
+            return (1, 0, facts.start_utc.timestamp(), name)
+        if facts.frame_min is not None:
+            return (2, facts.frame_min, 0.0, name)
+    return (3, 0, 0.0, name)
+
+
+def order_members(
+    members: Iterable[Entry], order_facts: Mapping[Entry, OrderFacts]
+) -> tuple[Entry, ...]:
+    """Return *members* in recording order, each once.
+
+    A member sorts by its division's ``first_frame``, then by ``start_utc``,
+    then by its tracks ``frame_min``, and last by a natural sort on its
+    sequence name. A member with a fact sorts before one without it.
+    """
+    unique = set(members)
+    return tuple(
+        sorted(unique, key=lambda entry: _member_key(entry, order_facts.get(entry)))
+    )
+
+
+def facts_from_frame_extents(
+    extents: Mapping[Entry, tuple[int, int]],
+) -> dict[Entry, OrderFacts]:
+    """Return the order facts that recorded tracks frame extents give."""
+    return {entry: OrderFacts(frame_min=extent[0]) for entry, extent in extents.items()}
+
+
+def recordings(
+    continuous_groups: Collection[str],
+    entries: Iterable[Entry],
+    order_facts: Mapping[Entry, OrderFacts] | None = None,
+) -> tuple[Recording, ...]:
+    """Return every recording that *entries* make up, sorted by key.
+
+    Each entry of a continuous group is a member of that group's divided
+    recording. Every other entry is an undivided recording. A continuous group
+    without entries in *entries* is left out.
+    """
+    facts = order_facts or {}
+    divided: dict[str, list[Entry]] = {}
+    found: list[Recording] = []
+    for group, sequence in sorted(set(entries)):
+        if recording_kind(continuous_groups, group) == "divided":
+            divided.setdefault(group, []).append((group, sequence))
+            continue
+        key = RecordingKey(group, sequence)
+        found.append(
+            Recording(
+                kind="undivided",
+                key=key,
+                name=recording_name(key),
+                members=((group, sequence),),
+            )
+        )
+    found.extend(
+        Recording(
+            kind="divided",
+            key=RecordingKey(group, ""),
+            name=group,
+            members=order_members(members, facts),
+        )
+        for group, members in divided.items()
+    )
+    return tuple(sorted(found, key=lambda recording: recording.key))

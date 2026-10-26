@@ -12,7 +12,20 @@ they claimed the dataset does.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
+
+from mosaic.core.entry import Entry
+from mosaic.core.pipeline.entry_keys import index_entries
+from mosaic.core.recording import (
+    OrderFacts,
+    Recording,
+    RecordingKey,
+    RecordingKind,
+    recording_kind,
+    recording_of,
+    recordings,
+)
 
 
 class MockDataset:
@@ -28,8 +41,25 @@ class MockDataset:
     def continuous_groups(self) -> tuple[str, ...]:
         return self._continuous_groups
 
-    def is_continuous_group(self, group: str) -> bool:
-        return group in self._continuous_groups
+    def recording_kind(self, group: str) -> RecordingKind:
+        return recording_kind(self._continuous_groups, group)
+
+    def recording_of(self, group: str, sequence: str) -> RecordingKey:
+        return recording_of(self._continuous_groups, group, sequence)
+
+    def recordings(
+        self,
+        entries: Iterable[Entry] | None = None,
+        *,
+        order_facts: Mapping[Entry, OrderFacts] | None = None,
+    ) -> tuple[Recording, ...]:
+        """Return the recordings of *entries*, or of every entry the tracks index names."""
+        universe = (
+            index_entries(self._root / "tracks" / "index.csv")
+            if entries is None
+            else entries
+        )
+        return recordings(self._continuous_groups, universe, order_facts)
 
     @property
     def base_dir(self) -> Path:

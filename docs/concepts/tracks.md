@@ -60,7 +60,7 @@ family) refuse a table without them and say so by name. Features that merely pre
 
 `frame` is the 0-based position of a frame in the entry's media. For an entry recorded
 as several clips it counts across the clips in order, as every tracker mosaic drives
-reads them. In a [continuous group](../dataset.md#declare-a-continuous-recording) it
+reads them. In a [continuous group](../dataset.md#divide-a-recording) it
 counts across the whole recording. A later sequence starts where the one before it
 ended. A converter takes `frame` from the file it reads. Tracks imported as one
 file per clip therefore have to be numbered across the recording already.

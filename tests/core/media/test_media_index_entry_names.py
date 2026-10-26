@@ -15,7 +15,21 @@ name it was asked for found nothing.
 
 from pathlib import Path
 
+import pytest
+
 from mosaic.core.dataset import Dataset, new_dataset_manifest, open_dataset
+from mosaic.core.entry import EntryKeyCollisionError
+from mosaic.core.pipeline.media_index import MediaIndexScope
+from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
+from tests.helpers import (
+    MediaClip,
+    add_media_sequence,
+    add_tracks_table,
+    make_dataset,
+    track_table,
+    write_media_index,
+    write_mpeg4_mp4,
+)
 
 _HEADER = "name,group,sequence,group_safe,sequence_safe,abs_path,video_order\n"
 
@@ -88,3 +102,211 @@ def test_numeric_columns_are_still_numeric(tmp_path: Path) -> None:
 
     assert list(matched["name"]) == ["a.mp4", "b.mp4"]
     assert list(matched["video_order"]) == [2, 10]
+
+
+def test_a_media_write_refuses_a_key_another_entry_already_names(
+    tmp_path: Path,
+) -> None:
+    """``("", "R__0900")`` would be stored under the key of ``("R", "0900")``."""
+    dataset = make_dataset(tmp_path / "ds")
+    write_media_index(
+        dataset, [MediaClip(group="R", sequence="0900", filename="R-0900.mp4")]
+    )
+
+    with pytest.raises(EntryKeyCollisionError, match="R__0900"):
+        add_media_sequence(dataset, "R__0900", videos=("a.mp4",))
+
+    assert [str(row["sequence"]) for row in dataset.read_media_index()] == ["0900"]
+
+
+def test_a_rescan_keeps_an_assigned_entry_whose_filename_spells_its_key(
+    tmp_path: Path,
+) -> None:
+    """The check reads the entry a row is written under, not the filename's guess.
+
+    A scan guesses ``("", "R__0900")`` from ``R__0900.mp4`` and then restores
+    the assigned ``("R", "0900")``. The guess shares the assigned entry's key,
+    and no row is written under it.
+    """
+    dataset = make_dataset(tmp_path / "ds")
+    directory = dataset.get_root("media_raw") / "R"
+    write_mpeg4_mp4(directory / "R__0900.mp4")
+    _ = dataset.write_media_index(
+        [MediaIndexScope(directory=directory, group="R", sequence="0900")],
+        extensions=(".mp4",),
+    )
+
+    _ = dataset.index_media([directory], extensions=(".mp4",))
+
+    rows = dataset.read_media_index()
+    assert [
+        (row["group"], row["sequence"], row["assignment_source"]) for row in rows
+    ] == [("R", "0900", "assigned")]
+
+
+def test_a_media_write_may_rename_an_entry_onto_the_key_it_replaces(
+    tmp_path: Path,
+) -> None:
+    """The old entry leaves the index with its rows, so no two entries share a key."""
+    dataset = make_dataset(tmp_path / "ds")
+    directory = dataset.get_root("media_raw") / "R"
+    write_mpeg4_mp4(directory / "a.mp4")
+    for group, sequence in (("R", "0900"), ("", "R__0900")):
+        _ = dataset.write_media_index(
+            [MediaIndexScope(directory=directory, group=group, sequence=sequence)],
+            extensions=(".mp4",),
+        )
+
+    rows = dataset.read_media_index()
+    assert [(row["group"], row["sequence"]) for row in rows] == [("", "R__0900")]
+
+
+def test_a_tracks_raw_write_may_rename_an_entry_onto_the_key_it_replaces(
+    tmp_path: Path,
+) -> None:
+    dataset = make_dataset(tmp_path / "ds")
+    directory = dataset.get_root("tracks_raw") / "R"
+    directory.mkdir(parents=True)
+    _ = (directory / "a.csv").write_text("frame,x\n0,1\n")
+    for group, sequence in (("R", "0900"), ("", "R__0900")):
+        _ = dataset.write_tracks_raw_index(
+            [
+                TracksRawIndexScope(
+                    directory=directory,
+                    group=group,
+                    sequence=sequence,
+                    src_format="trex",
+                )
+            ],
+            patterns="*.csv",
+        )
+
+    rows = dataset.read_tracks_raw_index()
+    assert [(row["group"], row["sequence"]) for row in rows] == [("", "R__0900")]
+
+
+def test_a_media_write_refuses_a_rename_while_the_tracks_index_names_the_entry(
+    tmp_path: Path,
+) -> None:
+    """The old entry stays in the tracks index, so the new one would share its key."""
+    dataset = make_dataset(tmp_path / "ds")
+    directory = dataset.get_root("media_raw") / "R"
+    write_mpeg4_mp4(directory / "a.mp4")
+    _ = dataset.write_media_index(
+        [MediaIndexScope(directory=directory, group="R", sequence="0900")],
+        extensions=(".mp4",),
+    )
+    add_tracks_table(dataset, "run", track_table("R", "0900"))
+
+    with pytest.raises(EntryKeyCollisionError, match="R__0900"):
+        _ = dataset.write_media_index(
+            [MediaIndexScope(directory=directory, group="", sequence="R__0900")],
+            extensions=(".mp4",),
+        )
+
+    rows = dataset.read_media_index()
+    assert [(row["group"], row["sequence"]) for row in rows] == [("R", "0900")]
+
+
+def test_a_tracks_raw_write_refuses_a_rename_while_the_tracks_index_names_the_entry(
+    tmp_path: Path,
+) -> None:
+    dataset = make_dataset(tmp_path / "ds")
+    directory = dataset.get_root("tracks_raw") / "R"
+    directory.mkdir(parents=True)
+    _ = (directory / "a.csv").write_text("frame,x\n0,1\n")
+
+    def write_raw(group: str, sequence: str) -> None:
+        _ = dataset.write_tracks_raw_index(
+            [
+                TracksRawIndexScope(
+                    directory=directory,
+                    group=group,
+                    sequence=sequence,
+                    src_format="trex",
+                )
+            ],
+            patterns="*.csv",
+        )
+
+    write_raw("R", "0900")
+    add_tracks_table(dataset, "run", track_table("R", "0900"))
+
+    with pytest.raises(EntryKeyCollisionError, match="R__0900"):
+        write_raw("", "R__0900")
+
+    rows = dataset.read_tracks_raw_index()
+    assert [(row["group"], row["sequence"]) for row in rows] == [("R", "0900")]
+
+
+def test_a_media_write_refuses_a_rename_onto_a_key_another_row_keeps(
+    tmp_path: Path,
+) -> None:
+    """A row outside the write's directories keeps the old entry in the index."""
+    dataset = make_dataset(tmp_path / "ds")
+    media_root = dataset.get_root("media_raw")
+    for name in ("first", "second"):
+        write_mpeg4_mp4(media_root / name / "a.mp4")
+    _ = dataset.write_media_index(
+        [
+            MediaIndexScope(directory=media_root / name, group="R", sequence="0900")
+            for name in ("first", "second")
+        ],
+        extensions=(".mp4",),
+    )
+
+    with pytest.raises(EntryKeyCollisionError, match="R__0900"):
+        _ = dataset.write_media_index(
+            [
+                MediaIndexScope(
+                    directory=media_root / "first", group="", sequence="R__0900"
+                )
+            ],
+            extensions=(".mp4",),
+        )
+
+
+def test_an_empty_group_request_does_not_match_a_continuous_group(
+    tmp_path: Path,
+) -> None:
+    """A continuous group's sequence is named with its recording.
+
+    Before the declaration ``rec`` is a namespace, and a request without a group
+    matches its row through the sequence-cell tier. After it, the request
+    matches no row.
+    """
+    dataset = _dataset_with_media_rows(
+        tmp_path / "ds",
+        "rec-0900.mp4,rec,0900,rec,0900,media_raw/rec-0900.mp4,0\n",
+    )
+    assert list(dataset.match_media_rows("", "0900")["group"]) == ["rec"]
+
+    dataset.set_continuous_groups(["rec"])
+
+    with pytest.raises(FileNotFoundError, match="0900"):
+        _ = dataset.match_media_rows("", "0900")
+    assert list(dataset.match_media_rows("rec", "0900")["group"]) == ["rec"]
+
+
+def test_a_continuous_group_orders_its_media_beside_two_tracks_variants(
+    tmp_path: Path,
+) -> None:
+    """Two labelled tracks variants leave the media order readable.
+
+    Reading the frame extents without a run id refuses an entry with two
+    labelled variants. The media order is a natural sort on the sequence names
+    and reads no tracks run.
+    """
+    dataset = _dataset_with_media_rows(
+        tmp_path / "ds",
+        "s10.mp4,rec,s10,rec,s10,media_raw/s10.mp4,0\n"
+        "s2.mp4,rec,s2,rec,s2,media_raw/s2.mp4,0\n",
+    )
+    for run_id in ("convert.a", "convert.b"):
+        add_tracks_table(dataset, run_id, track_table("rec", "s2"))
+        add_tracks_table(dataset, run_id, track_table("rec", "s10", start_frame=40))
+    dataset.set_continuous_groups(["rec"])
+
+    matched = dataset.match_media_rows("rec", "s10")
+
+    assert list(matched["sequence"]) == ["s2", "s10"]

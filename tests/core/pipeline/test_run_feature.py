@@ -26,7 +26,13 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.scope import Scope
-from tests.helpers import MockDataset, add_track_sequences, result_run_root
+from mosaic.core.dataset import Dataset
+from tests.helpers import (
+    MockDataset,
+    add_track_sequences,
+    make_dataset,
+    result_run_root,
+)
 
 # --- Mock features ---
 
@@ -345,6 +351,51 @@ def test_scope_dependent_hashing(tmp_path: Path) -> None:
     result2 = run_feature(ds, feature2, scope=Scope(sequences=["s1", "s3"]))
 
     assert result1.run_id != result2.run_id
+
+
+type _RunRecord = tuple[str | None, dict[tuple[str, str], str]]
+
+
+def _run_record(ds: Dataset, result: Result) -> _RunRecord:
+    """A run's id, and the stored output path of each entry it wrote."""
+    index = feature_index(feature_index_path(ds, result.feature)).read()
+    rows = index[index["run_id"] == result.run_id]
+    return result.run_id, {
+        (str(row["group"]), str(row["sequence"])): str(row["abs_path"])
+        for _, row in rows.iterrows()
+    }
+
+
+def test_declaring_a_continuous_group_moves_no_key_run_id_or_path(
+    tmp_path: Path,
+) -> None:
+    """A dataset of undivided entries keeps its identities when a group is declared.
+
+    The empty-group and namespace entries keep their run ids and output paths,
+    and so do the declared group's own sequences, under a scope-free and a
+    scope-dependent feature.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("", "a"), ("ns", "x"), ("rec", "s1"), ("rec", "s2"))
+    undivided = Scope(entries=[("", "a"), ("ns", "x")])
+
+    def runs(*, overwrite: bool) -> list[_RunRecord]:
+        return [
+            _run_record(ds, run_feature(ds, _StatelessFeature(), overwrite=overwrite)),
+            _run_record(
+                ds,
+                run_feature(
+                    ds, _StatefulFeature(), scope=undivided, overwrite=overwrite
+                ),
+            ),
+        ]
+
+    before = runs(overwrite=False)
+    ds.set_continuous_groups(["rec"])
+    after = runs(overwrite=True)
+
+    assert after == before
+    assert set(before[0][1]) == {("", "a"), ("ns", "x"), ("rec", "s1"), ("rec", "s2")}
 
 
 def test_overlap_frame_filter_mutual_exclusion(tmp_path: Path) -> None:

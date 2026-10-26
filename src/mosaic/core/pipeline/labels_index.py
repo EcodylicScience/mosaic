@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Final
 import pandas as pd
 
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
+from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
@@ -334,7 +335,12 @@ def write_labels_row(
             ds, entry_group, entry_sequence, consumed_source_roots
         ),
     )
-    labels_index(labels_index_path(ds, label_kind)).append([row])
+    append_refusing_key_collision(
+        ds,
+        labels_index(labels_index_path(ds, label_kind)),
+        [row],
+        [(entry_group, entry_sequence)],
+    )
 
 
 # Item 6.1: reconciled through the shared registry, so ``reindex`` and the sweep

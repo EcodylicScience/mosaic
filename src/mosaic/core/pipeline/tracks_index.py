@@ -44,6 +44,7 @@ import pandas as pd
 
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
+from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
@@ -1712,7 +1713,9 @@ def write_tracks_row(
         frames_read="" if frames_read is None else str(int(frames_read)),
         known_tail_loss=("" if known_tail_loss is None else str(int(known_tail_loss))),
     )
-    tracks_index(tracks_index_path(ds)).append([row])
+    append_refusing_key_collision(
+        ds, tracks_index(tracks_index_path(ds)), [row], [(entry_group, entry_sequence)]
+    )
 
 
 # Item 6.1: reconciled through the shared registry, beside the tracker

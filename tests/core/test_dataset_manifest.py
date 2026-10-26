@@ -666,6 +666,18 @@ class TestContinuousGroups:
         with pytest.raises(ValidationError, match="more than once"):
             _ = DatasetManifest(continuous_groups=("g", "g"))
 
+    def test_a_manifest_declaring_a_joined_name_still_loads(
+        self, tmp_path: Path
+    ) -> None:
+        """A name is refused where it is declared. A read accepts it."""
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text(
+            "manifest_version: 2\nname: d\ncontinuous_groups: [a__b]\n",
+            encoding="utf-8",
+        )
+
+        assert read_manifest(path).continuous_groups == ("a__b",)
+
 
 class TestSplits:
     """The role each group has in a held-out protocol."""

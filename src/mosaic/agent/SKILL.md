@@ -183,11 +183,13 @@ A dataset is a directory with `dataset.yaml` and named roots
 - A scan replaces the rows its sources claim and keeps every other row. A files source
   (`mosaic sources add --file ...`) claims only the paths it lists.
 - A recording split into clips is one entry, with frames numbered across its clips.
-  Declare a continuous group only for parts of one recording kept as separate
-  sequences, following
-  https://ecodylicscience.github.io/mosaic/dataset/#declare-a-continuous-recording.
+  Divide a recording into the sequences of a continuous group only for parts kept as
+  separate sequences, following
+  https://ecodylicscience.github.io/mosaic/dataset/#divide-a-recording.
   `overlap_frames` reads neighbors only inside a continuous group. Other entries read
-  only their own frames, and the run notes how many on stderr.
+  only their own frames, and the run notes how many on stderr. `mosaic describe` counts
+  the recordings and names the divided ones, and `mosaic sequences --json` gives each
+  entry's recording.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables

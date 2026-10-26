@@ -6,7 +6,8 @@ directory, so a read that creates a root or takes ``index_lock`` adds a path, an
 a read that rewrites an index changes one. The assertion names each.
 
 A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
-``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet.
+``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet. A
+read that names entries from the media index also joins ``MEDIA_READS``.
 ``reprobe-media`` needs indexed videos and has a test of its own. ``features
 list``, ``features describe``, ``pipeline catalog``, ``catalog_index``,
 ``describe_step_type`` and ``step_type_detail`` take no dataset and are not listed.
@@ -45,6 +46,7 @@ from mosaic.core.pipeline.preview import preview_artifact
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.recording import RecordingKey
 from mosaic.core.scope import Scope
 from mosaic.tracking import PrerequisitePlan, plan_prerequisites
 from mosaic.tracking.frame_extraction.selection_index import selected_frames
@@ -326,6 +328,27 @@ def test_a_read_verb_writes_nothing(populated: ReadDataset, verb: str) -> None:
     assert_tree_unchanged(populated.root, before)
 
 
+MEDIA_READS: dict[str, Callable[[ReadDataset], object]] = {
+    "describe": lambda f: invoke_ok(
+        ["describe", "--manifest", str(f.dataset.manifest_path), "--json"]
+    ),
+    "recordings": lambda f: f.reopened().recordings(),
+}
+"""The reads that name entries from the media index."""
+
+
+@pytest.mark.media
+@pytest.mark.parametrize("read", sorted(MEDIA_READS))
+def test_a_read_of_indexed_media_writes_nothing(
+    with_media: ReadDataset, read: str
+) -> None:
+    before = tree_snapshot(with_media.root)
+
+    MEDIA_READS[read](with_media)
+
+    assert_tree_unchanged(with_media.root, before)
+
+
 @pytest.mark.media
 def test_a_media_dry_run_writes_nothing(with_media: ReadDataset) -> None:
     before = tree_snapshot(with_media.root)
@@ -456,6 +479,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "list_prediction_runs": lambda f: list_prediction_runs(f.reopened()),
     "list_score_runs": lambda f: list_score_runs(f.reopened()),
     "list_requests": lambda f: list_requests(f.root, limit=1),
+    "list_entries": lambda f: f.reopened().list_entries(),
     "list_runs": lambda f: list_runs(run_log_dir(f.root), limit=1),
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
     "open_dataset": ReadDataset.reopened,
@@ -474,6 +498,10 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "read_score_frames": lambda f: read_score_frames(f.reopened(), SCORE_RUN_ID),
     "read_score_summary": lambda f: read_score_summary(f.reopened(), SCORE_RUN_ID),
     "read_tracks_index": lambda f: read_tracks_index(f.reopened()),
+    "recordings": lambda f: f.reopened().recordings(),
+    "recording_members": lambda f: f.reopened().recording_members(
+        RecordingKey("", "seq_a")
+    ),
     "request_rollup": _rollup,
     "request_status_wire": _request_status,
     "run_status_wire": lambda f: run_status_wire(f.root, f.execution_id, progress=True),
@@ -499,6 +527,7 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "inventory",
         "inventory_wire",
         "list_prediction_runs",
+        "list_entries",
         "list_requests",
         "list_runs",
         "list_score_runs",
@@ -510,6 +539,7 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "read_score_summary",
         "read_tracks_index",
         "selected_frames",
+        "recordings",
     ],
 )
 def test_a_library_read_of_an_absent_index_creates_nothing(

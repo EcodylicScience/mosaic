@@ -35,10 +35,12 @@ from mosaic.tracking.model_refs import (
     resolve_op_model,
 )
 from tests.helpers import (
+    MediaClip,
     make_dataset,
     register_sleap_model,
     register_trained_model,
     revision_file,
+    write_media_index,
 )
 
 RUN_ID = "train-pose.0.2-abcdef0123"
@@ -409,6 +411,7 @@ def test_a_files_source_no_longer_kills_manifest_edits(tmp_path: Path) -> None:
     )
 
     ds.set_notes("anything")
+    write_media_index(ds, [MediaClip(group="session", sequence="s1")])
     ds.set_continuous_groups(["session"])
 
     reread = read_manifest(ds.manifest_path)

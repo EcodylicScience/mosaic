@@ -15,6 +15,7 @@ import pandas as pd
 import pyarrow as pa
 
 from ...core.helpers import make_entry_key, text_cell
+from ...core.recording import RecordingKey, facts_from_frame_extents
 from ...core.schema import LEGACY_SCHEMA, schema_family
 from ...core.scope import Scope
 from .sequence_index import read_entry_compositions
@@ -27,7 +28,6 @@ from .index import (
 from .loading import load_entry_data
 from .track_universe import current_run_id, is_track_shaped
 from .tracks_index import (
-    FrameExtents,
     read_frame_extents,
     read_tracks_index,
     select_variant_rows,
@@ -164,24 +164,6 @@ def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
     return current_run_id(ds, feature_name)
 
 
-def _temporal_key(
-    entry: tuple[str, str], extents: FrameExtents
-) -> tuple[int, int, str]:
-    """Sort an entry by where its frames sit, falling back to its name.
-
-    A measured entry sorts by its first frame; an unmeasured one sorts after
-    every measured one, by name. The leading discriminator is what keeps a
-    partially-measured group deterministic rather than interleaving two
-    incomparable keys -- and a group where nothing is measured, which is every
-    group of every dataset written before the extent was recorded, orders exactly
-    as it always did.
-    """
-    extent = extents.get(entry)
-    if extent is None:
-        return (1, 0, entry[1])
-    return (0, extent[0], entry[1])
-
-
 def build_manifest(
     ds: Dataset,
     inputs: InputsLike,
@@ -287,27 +269,24 @@ def build_manifest(
         },
     )
 
-    # Neighbors exist only inside a continuous group, whose sequences are time
-    # divisions of one recording (`DatasetManifest.is_continuous_group`). A
-    # sequence of the empty group or of an undeclared namespace group is an
-    # independent recording and has no prev/next, and adjacency does not cross
-    # from one group into another.
+    # Neighbors are the adjacent members of a divided recording
+    # (`mosaic.core.recording`). An undivided recording, whatever its group, has
+    # one member and no prev/next, and adjacency does not cross from one
+    # recording into another.
     #
-    # Within a continuous group the order comes from the recorded first frame,
-    # with the universe taken from the first input. A name sorts
-    # `seg1, seg10, seg2`, and a sequence whose parquet is missing is skipped by
-    # the resolvers above, so a name order would make `seg3` and `seg5` adjacent
-    # across the hole. A group with no recorded extents keeps the name order.
-    continuous_groups = {
-        group for group, _ in first_full_order if ds.is_continuous_group(group)
-    }
+    # Members come from the first input's universe, before the scope narrows it,
+    # and are ordered by their recorded first frame, then by a natural sort on
+    # their names. The resolvers above skip a sequence whose parquet is missing.
+    # A name order alone would then make `seg3` and `seg5` adjacent across the
+    # hole.
     frame_extents = read_frame_extents(ds, tracks_run_id)
-    group_order: dict[str, list[tuple[str, str]]] = {}
-    for entry in first_full_order:
-        if entry[0] in continuous_groups:
-            group_order.setdefault(entry[0], []).append(entry)
-    for entries_of_group in group_order.values():
-        entries_of_group.sort(key=lambda entry: _temporal_key(entry, frame_extents))
+    divided: dict[RecordingKey, tuple[tuple[str, str], ...]] = {
+        recording.key: recording.members
+        for recording in ds.recordings(
+            first_full_order, order_facts=facts_from_frame_extents(frame_extents)
+        )
+        if recording.kind == "divided"
+    }
 
     manifest: Manifest = {}
     for group, sequence in sorted(shared_entries):
@@ -317,13 +296,12 @@ def build_manifest(
             if (group, sequence) in path_map:
                 specs.append(path_map[(group, sequence)])
 
-        continuous = group in continuous_groups
+        members = divided.get(ds.recording_of(group, sequence))
+        continuous = members is not None
         prev_entry: tuple[str, str] | None = None
         next_entry: tuple[str, str] | None = None
-        if continuous:
-            prev_entry, next_entry = _neighbors(
-                (group, sequence), group_order.get(group, [])
-            )
+        if members is not None:
+            prev_entry, next_entry = _neighbors((group, sequence), members)
 
         prev_key, prev_specs = _neighbor_specs(prev_entry, per_input_paths_all)
         next_key, next_specs = _neighbor_specs(next_entry, per_input_paths_all)
@@ -380,9 +358,9 @@ def _refuse_stacked_overlap(per_input_entries: list[set[tuple[str, str]]]) -> No
 
 
 def _neighbors(
-    entry: tuple[str, str], ordered: list[tuple[str, str]]
+    entry: tuple[str, str], ordered: tuple[tuple[str, str], ...]
 ) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
-    """The entries before and after *entry* in its group's order.
+    """The entries before and after *entry* in its recording's order.
 
     An entry absent from *ordered* has neither.
     """

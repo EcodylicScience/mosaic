@@ -104,5 +104,8 @@ key and the filename (`<group>__<sequence>`, or just `<sequence>` when empty). I
 **not** the canonical way to categorize sequences for analysis — flexible, redefinable
 grouping is what tags are for.
 
-`group` keeps one structural role: it is the temporal-contiguity key. Windowed features
-pull neighboring frames only from within the same group.
+A group has a structural role only when it is declared in `continuous_groups`. It then
+names one recording divided into sequences, and only those sequences have neighbors
+that windowed features read through `overlap_frames`. Every other group is a namespace
+of undivided recordings, each entry a recording of its own
+([Divide a recording](../dataset.md#divide-a-recording)).

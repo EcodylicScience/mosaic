@@ -133,6 +133,7 @@ def _dataset_summary(summary: DatasetSummary) -> str:
     counts = summary.counts
     known = [
         f"{counts.sequences} sequence(s)",
+        f"{counts.recordings} recording(s) ({counts.divided_recordings} divided)",
         f"{counts.videos} video(s)",
         *(
             f"{count} {noun}"

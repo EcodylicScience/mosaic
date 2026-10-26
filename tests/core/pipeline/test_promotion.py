@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import EntryKeyCollisionError
 from mosaic.core.pipeline.promotion import (
     correction_revision,
     next_revision,
@@ -26,7 +27,7 @@ from mosaic.core.pipeline.sequence_index import (
 )
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 
-from tests.helpers import make_dataset, write_trex_npz
+from tests.helpers import MediaClip, make_dataset, write_media_index, write_trex_npz
 
 
 def _corrected(
@@ -447,3 +448,44 @@ def test_a_second_promotion_keeps_the_first_correction_s_lineage(
         )
 
     assert ds._promoted_from() == {"trex.1.0-aaaaaaaaaa", "trex.1.0-bbbbbbbbbb"}
+
+
+# --- an entry key another entry names ----------------------------------------
+
+
+def test_a_dry_run_reports_a_key_another_entry_names(tmp_path: Path) -> None:
+    """The collision is a blocked reason, which ``force`` does not lift."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds, [MediaClip(group="R", sequence="0900", filename="R-0900.mp4")]
+    )
+
+    report = promote_correction(
+        ds, "", "R__0900", _corrected(tmp_path), src_format="trex_npz", force=True
+    )
+
+    assert not report.applied
+    assert len(report.blocked) == 1
+    assert "'R__0900'" in report.blocked[0]
+
+
+def test_an_applied_promotion_refuses_a_key_another_entry_names(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds, [MediaClip(group="R", sequence="0900", filename="R-0900.mp4")]
+    )
+
+    with pytest.raises(EntryKeyCollisionError, match="'R__0900'"):
+        _ = promote_correction(
+            ds,
+            "",
+            "R__0900",
+            _corrected(tmp_path),
+            src_format="trex_npz",
+            apply=True,
+            force=True,
+        )
+
+    assert not (ds.get_root("tracks_raw") / "R__0900").exists()

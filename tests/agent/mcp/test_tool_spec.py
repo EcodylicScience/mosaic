@@ -379,6 +379,32 @@ def test_the_recipe_example_is_a_recipe_document() -> None:
     assert Recipe.model_validate(RECIPE_EXAMPLE).steps
 
 
+@pytest.mark.parametrize(
+    ("tool", "path"),
+    [
+        ("list_sequences", ("SequenceRow", "recording")),
+        ("describe_dataset", ("DatasetCounts", "recordings")),
+        ("describe_dataset", ("DatasetCounts", "divided_recordings")),
+        ("describe_dataset", ("RecordingSummary", "sequences")),
+        ("describe_dataset", ("RecordingSequence", "start_utc")),
+    ],
+)
+def test_the_listing_and_the_summary_name_the_recordings(
+    tool: str, path: tuple[str, str]
+) -> None:
+    spec = tool_spec(tool)
+    assert spec is not None
+    definitions = spec.output_schema()["$defs"]
+    assert isinstance(definitions, dict)
+    model, field = path
+    described = definitions[model]
+    assert isinstance(described, dict)
+    properties = described["properties"]
+    assert isinstance(properties, dict)
+
+    assert field in properties
+
+
 def test_no_tool_takes_an_overwrite_argument() -> None:
     offered = {name for spec in TOOLS for name in spec.input_model.model_fields}
 

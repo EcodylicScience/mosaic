@@ -1067,6 +1067,9 @@ class SequenceRow(StrictModel):
     Attributes:
         group: The entry's group, ``""`` when it has none.
         sequence: The entry's sequence.
+        recording: The recording the entry belongs to: its continuous group,
+            or else the entry's token: its sequence, or ``group:sequence`` when
+            the group is non-empty.
         tracks_variant: The tracks variant of the table, ``""`` for an
             unlabeled table.
         producer: What wrote the table: a conversion, a tracker or inference.
@@ -1079,6 +1082,7 @@ class SequenceRow(StrictModel):
 
     group: str
     sequence: str
+    recording: str
     tracks_variant: str
     producer: str
     std_format: str
@@ -1400,8 +1404,9 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Describe a dataset",
         description=(
             "Describe one dataset: its manifest fields, notes and tags, the counts "
-            "of sequences, videos, tracks variants, feature runs and trained models, "
-            "the track schemas of its tables and the frame rates of its videos."
+            "of sequences, recordings, videos, tracks variants, feature runs and "
+            "trained models, its divided recordings with their sequences, the "
+            "track schemas of its tables and the frame rates of its videos."
         ),
         input_model=DescribeDatasetInput,
         output=ModelRef("mosaic.core.dataset_summary", "DatasetSummary"),
@@ -1411,9 +1416,9 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         name="list_sequences",
         title="List sequences",
         description=(
-            "List a dataset's entries, (group, sequence), with the tracks table "
-            "each resolves to: its variant, producer, schema, rows, keypoints and "
-            "frame extent." + _PAGING
+            "List a dataset's entries, (group, sequence), each with its recording "
+            "and the tracks table it resolves to: its variant, producer, schema, "
+            "rows, keypoints and frame extent." + _PAGING
         ),
         input_model=ListSequencesInput,
         output=SequencePage,

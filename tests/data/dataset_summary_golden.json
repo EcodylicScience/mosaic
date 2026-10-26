@@ -2,13 +2,16 @@
   "api_managed": false,
   "continuous_groups": [],
   "counts": {
+    "divided_recordings": 0,
     "feature_runs": 1,
     "models": 1,
+    "recordings": 7,
     "sequences": 3,
     "tracks_variants": 2,
     "videos": 4
   },
   "created_at": "<varies>",
+  "divided_recordings": [],
   "frame_rates": [
     {
       "fps": 29.97,

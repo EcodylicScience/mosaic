@@ -59,9 +59,12 @@ in the root guide.
 - Dataset tags use the grammar in `typed_attribute.py`, which mosaic-api shares. It
   imports only the standard library and `json_value`. Keep dataset concepts out of it.
 - `continuous_groups` refuses an empty or repeated name
-  (`test_the_empty_group_cannot_be_continuous`). A continuous group's media resolves as
-  one timeline (`Dataset._match_continuous_group_rows`), and `overlap_frames` checks the
-  declaration against recorded frame extents (`core/pipeline/manifest.py`).
+  (`test_the_empty_group_cannot_be_continuous`). `Dataset.set_continuous_groups` also
+  refuses `__` or `:` in a name, the name of an empty-group sequence, and a group with
+  no indexed entry, and a manifest declaring such a name still loads. A continuous
+  group's media resolves as one timeline in name order
+  (`Dataset._match_continuous_group_rows`), and `overlap_frames` checks the declaration
+  against recorded frame extents (`core/pipeline/manifest.py`).
 - `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key
   and moved no `MANIFEST_VERSION`, so older code preserves it without enforcing it.
   Read it through `core/splits.py` (`role_of`, `groups_with_role`, `held_out_groups`)
@@ -85,9 +88,21 @@ in the root guide.
 
 ## The `group` column
 
-- `group` is required and may be empty. It is a namespace in the entry key. Analysis
-  grouping lives in mosaic-api's tags, and an arbitrary subset is `Scope(entries=[...])`
-  (`scope.py`), since `groups` and `sequences` combine as a cross product.
+- `group` is required and may be empty. It is a namespace in the entry key, or the name
+  of a recording declared in `continuous_groups`. Analysis grouping lives in
+  mosaic-api's tags, and an arbitrary subset is `Scope(entries=[...])` (`scope.py`),
+  since `groups` and `sequences` combine as a cross product.
+- `core/recording.py` is the one rule naming an entry's recording: its continuous group,
+  else the entry. Code does not group by the raw `group` column to mean a recording,
+  and only `manifest.py`, `recording.py`, the `Dataset` accessors and the echo of the
+  declared list in `dataset_summary` read the declaration
+  (`tests/core/test_recording.py`).
+- A write refuses a new entry whose key equals another entry's, such as `("", "a__b")`
+  beside `("a", "b")`, through `refuse_entry_key_collision` (`core/entry.py`). Rows
+  already in an index keep resolving (`tests/core/test_entry_tokens.py`). A replacing
+  media or tracks_raw write checks against the entries that survive it and those another
+  index still names (`entries_kept_beside`), and a scan checks the entries left after
+  assigned identity is restored (`tests/core/media/test_media_index_entry_names.py`).
 - Only the sequences of a continuous group have neighbors for `overlap_frames`
   (`build_manifest` in `core/pipeline/manifest.py`). A sequence of the empty group or
   of an undeclared group reads only its own frames, and the run notes their count on

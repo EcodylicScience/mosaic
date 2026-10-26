@@ -25,10 +25,14 @@ from urllib.parse import quote, unquote
 __all__ = [
     "CameraEntry",
     "Entry",
+    "EntryKeyCollisionError",
+    "entry_key_collision",
+    "entry_token",
     "from_safe_name",
     "make_entry_key",
     "parse_entry_key",
     "parse_entry_tokens",
+    "refuse_entry_key_collision",
     "to_safe_name",
 ]
 
@@ -72,6 +76,15 @@ def parse_entry_tokens(tokens: Iterable[str] | None) -> list[Entry]:
     return pairs
 
 
+def entry_token(group: str, sequence: str) -> str:
+    """Return the token that names an entry to a person: ``group:sequence``.
+
+    A sequence in the empty group is its bare name, as
+    :func:`parse_entry_tokens` reads a token without a ``:``.
+    """
+    return f"{group}:{sequence}" if group else sequence
+
+
 def to_safe_name(s: str) -> str:
     """Return *s* stripped and percent-encoded as one path component."""
     return quote(s.strip(), safe="")
@@ -88,10 +101,14 @@ def make_entry_key(group: str, sequence: str) -> str:
     The key is the filename stem that the pipeline uses throughout:
     ``{safe_group}__{safe_seq}`` when group is non-empty, else ``{safe_seq}``.
 
-    ``group`` is an optional coarse namespace, and an empty one yields a flat
-    ``{safe_seq}`` key. It is part of the on-disk identity, kept for back-compat
-    and to tell apart sequences that share a name. Sequences are categorized by
-    tags (mosaic-api) and selected with ``run_feature(scope=Scope(entries=...))``.
+    ``group`` is a namespace, or the recording that a continuous group's
+    sequences divide. An empty one yields a flat ``{safe_seq}`` key. Sequences
+    are categorized by tags (mosaic-api) and selected with
+    ``run_feature(scope=Scope(entries=...))``.
+
+    Two entries can share a key: ``("", "a__b")`` and ``("a", "b")`` both key
+    as ``a__b``. A write refuses the second through
+    :func:`refuse_entry_key_collision`.
     """
     safe_group = to_safe_name(group) if group else ""
     safe_seq = to_safe_name(sequence)
@@ -102,7 +119,8 @@ def parse_entry_key(key: str) -> tuple[str, str]:
     """Return the ``(group, sequence)`` that :func:`make_entry_key` built *key* from.
 
     A key without ``__`` is a sequence in the empty group. Every dataset the
-    control plane creates has ``group=""``.
+    control plane creates has ``group=""``. A key written before collisions were
+    refused may belong to ``("", "a__b")`` and parses as ``("a", "b")``.
 
     The key is split on the first ``__``, as it was built. The group is one level,
     and a sequence containing ``__`` (which ``parse_hierarchy`` reads as further
@@ -113,3 +131,52 @@ def parse_entry_key(key: str) -> tuple[str, str]:
     if not separator:
         return "", from_safe_name(key)
     return from_safe_name(safe_group), from_safe_name(safe_sequence)
+
+
+class EntryKeyCollisionError(ValueError):
+    """Raised when a written entry would share its key with a different entry."""
+
+
+def entry_key_collision(
+    written: Iterable[Entry], existing: Iterable[Entry]
+) -> str | None:
+    """Return why a new entry's :func:`make_entry_key` names a different entry.
+
+    An entry of *written* that *existing* already contains is not new. A
+    collision recorded before this check therefore keeps resolving, and a
+    rewrite of its rows is accepted. A new entry is checked against *existing*
+    and against the rest of *written*.
+
+    Returns:
+        A message naming both entries and their shared key, or ``None`` when
+        no new entry collides.
+    """
+    held = set(existing)
+    batch = set(written)
+    by_key: dict[str, set[Entry]] = {}
+    for entry in held | batch:
+        by_key.setdefault(make_entry_key(*entry), set()).add(entry)
+    for entry in sorted(batch - held):
+        key = make_entry_key(*entry)
+        others = sorted(by_key[key] - {entry})
+        if others:
+            return (
+                f"entry {entry!r} would be stored under the key {key!r}, which "
+                f"entry {others[0]!r} already names. A key joins the group and "
+                "the sequence with '__', and the two entries cannot be told "
+                "apart on disk. Rename one of them."
+            )
+    return None
+
+
+def refuse_entry_key_collision(
+    written: Iterable[Entry], existing: Iterable[Entry]
+) -> None:
+    """Refuse the collision that :func:`entry_key_collision` reports.
+
+    Raises:
+        EntryKeyCollisionError: Naming both entries and their shared key.
+    """
+    reason = entry_key_collision(written, existing)
+    if reason is not None:
+        raise EntryKeyCollisionError(reason)

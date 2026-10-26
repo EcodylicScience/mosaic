@@ -509,6 +509,45 @@ run prints one note to stderr with their count. No run id changes.
   earlier overlapped run in place, because the run id does not depend on the
   declaration. Re-run with `overwrite=True` to read the new neighbors.
 
+**One rule names an entry's recording, and a write refuses a key two entries share.**
+An entry's recording is its continuous group, else the entry itself
+(`mosaic.core.recording`, `Dataset.recording_of`, `Dataset.recordings`). No key, run id
+or path changes.
+
+- A write to the media, tracks_raw, tracks, labels or media-variant index, and a
+  promoted correction, refuse a new entry whose key equals that of a different entry in
+  that index or the media index, such as `("", "R__0900")` beside `("R", "0900")`.
+  Entries already indexed keep resolving. A media or tracks_raw write that replaces
+  every row of an entry may write the new entry under that entry's key, unless another
+  of the media, tracks_raw, tracks and labels indexes still names the old entry. A
+  dry-run promotion lists the collision in `blocked`, and `force` does not lift it.
+- `Dataset.set_continuous_groups` refuses a name containing `__` or `:`, the name of an
+  empty-group sequence, and a group with no entry in the media, tracks_raw, tracks or
+  labels indexes. A manifest that already declares such a name still loads.
+- A media request in the empty group no longer matches the rows of a continuous group
+  by their sequence name.
+- A continuous group's media is ordered by a natural sort on its sequence names and
+  no longer reads the tracks frame extents, which raised for an entry with two labelled
+  tracks variants.
+
+**`mosaic describe`, `mosaic sequences` and the MCP tools report recordings.** No key,
+run id or path changes.
+
+- `DatasetSummary.counts` gains `recordings` and `divided_recordings`, counted over the
+  entries of the media index and the tracks index. `DatasetSummary.divided_recordings`
+  lists each divided recording with its sequences, ordered by a natural sort of their
+  names. Each sequence's `first_frame`, `frame_count` and `start_utc` are `null`.
+  `counts.sequences` and `continuous_groups` are unchanged, and `describe_dataset`
+  returns the same fields.
+- `mosaic describe` prints `recordings: N (M divided: ...)` in place of the
+  `continuous_groups` line.
+- `mosaic sequences` looks each label up under the entry's own group, where it used the
+  `--group` value, or the empty group without one. `--json` gains `entries`, one
+  `{group, sequence, recording, display_name}` per entry. `sequences` is unchanged, and
+  `labelled` has one row per entry, so a sequence name two groups share appears twice.
+  The plain output names each entry by its `group:sequence` token.
+- `list_sequences` gives each row its `recording`.
+
 **`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
 Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
 and the inference bridge set `id` 0 on every row. Every detection of a table was then

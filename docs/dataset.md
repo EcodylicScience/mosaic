@@ -251,12 +251,13 @@ files you placed there as a source and brings them under `mosaic scan` too.
 
 ## Entry names
 
-Each recording is an **entry**, named by a `group` and a `sequence`, and `group` may be
-empty ([why](concepts/datasets.md#groups-are-an-optional-namespace)). Neither name may
-contain `/`, `\` or a NUL character, because each has to work as a single directory
-name, and mosaic raises `ValueError` rather than write one into an index. Join the
-levels of a hierarchy with `__` instead, which `parse_hierarchy` splits back into
-named levels:
+Each sequence is an **entry**, named by a `group` and a `sequence`, and `group` may be
+empty ([why](concepts/datasets.md#groups-are-an-optional-namespace)). An entry is a
+recording of its own, unless its group divides one recording into sequences
+([Divide a recording](#divide-a-recording)). Neither name may contain `/`, `\` or a
+NUL character, because each has to work as a single directory name, and mosaic raises
+`ValueError` rather than write one into an index. Join the levels of a hierarchy with
+`__` instead, which `parse_hierarchy` splits back into named levels:
 
 ```python
 from mosaic.core.helpers import parse_hierarchy
@@ -265,22 +266,30 @@ parse_hierarchy("day1__arena2", "trial07", ["day", "arena", "trial"])
 # {'day': 'day1', 'arena': 'arena2', 'trial': 'trial07'}
 ```
 
-## Declare a continuous recording
+An entry is stored under the key `<group>__<sequence>`, or `<sequence>` when the group
+is empty, so `("", "day1__0900")` and `("day1", "0900")` would share one. mosaic
+refuses to write an entry whose key another entry already has.
+
+## Divide a recording
 
 A recording split into several clips is one entry, whose frames are numbered across
-its clips. Declare a **continuous group** only when you need the parts of one
-recording as separate sequences, such as the half-hour divisions of a 6-hour session,
-and still want windowed features to read across the boundaries between them
-([why both are needed](concepts/features.md#reading-across-a-sequence-boundary)).
-mosaic makes no continuous group by itself. Build one in three steps:
+its clips. Divide a recording only when you need its parts as separate sequences, such
+as the half-hour divisions of a 6-hour session, and still want windowed features to
+read across the boundaries between them
+([why both are needed](concepts/features.md#reading-across-a-sequence-boundary)). The
+recording is then a **continuous group**: the group is the recording's name, and each
+part is one of its sequences. Every other group is a namespace, in which each entry is
+a recording of its own. mosaic divides no recording by itself. Divide one in three
+steps:
 
 1. **Number frames across the whole recording** when you convert. Each sequence starts
    at the sum of the frame counts of the files before it. The second half-hour of a
    30 fps session starts at frame 54000. No built-in converter applies such an offset,
    and [your own converter](guides/tracking/write-a-converter.md) has to.
    Sequences that each restart at frame 0 cannot form a continuous group.
-2. **Declare the group**, which must have a non-empty name. The list replaces any
-   earlier one, and is saved as `continuous_groups:` in `dataset.yaml`:
+2. **Declare the group** once its sequences are indexed. Its name must not be empty,
+   contain `__` or `:`, or be the name of a sequence in the empty group. The list
+   replaces any earlier one, and is saved as `continuous_groups:` in `dataset.yaml`:
 
     ```python
     ds.set_continuous_groups(["session1"])
@@ -368,10 +377,13 @@ mosaic describe -m ~/dataset/dataset.yaml
 ```
 
 The summary gives the manifest's name, `uuid`, notes, tags, libraries and `splits`, and
-counts the sequences, videos, tracks variants, feature runs and trained models
-the dataset holds. It also lists the track schemas of its tables and the frame
-rates of its videos. To find the datasets in a directory and up to three levels
-below it, call `discover_datasets(root)` from `mosaic.core.dataset_discovery`.
+counts the sequences, recordings, videos, tracks variants, feature runs and
+trained models the dataset holds. It names each divided recording with its
+sequences, ordered by a natural sort of their names, and lists the track schemas
+of its tables and the frame rates of its videos. `mosaic sequences` lists each
+converted entry with its label and, under `--json`, the recording it belongs to.
+To find the datasets in a directory and up to three levels below it, call
+`discover_datasets(root)` from `mosaic.core.dataset_discovery`.
 
 ## Dataset inventory
 

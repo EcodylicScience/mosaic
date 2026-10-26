@@ -13,6 +13,8 @@ from mosaic.core.dataset_summary import (
     DatasetCounts,
     DatasetSummary,
     FrameRateCount,
+    RecordingSequence,
+    RecordingSummary,
     TrackSchemaCount,
     dataset_summary,
 )
@@ -24,6 +26,7 @@ from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
+    MediaClip,
     speed_recipe,
     UPDATE_GOLDEN_ENV,
     add_tracks_variant,
@@ -33,6 +36,7 @@ from tests.helpers import (
     register_trained_model,
     updating_golden,
     write_golden,
+    write_media_index,
 )
 
 GOLDEN = "dataset_summary_golden.json"
@@ -82,7 +86,13 @@ def test_the_counts_schemas_and_frame_rates_are_read_from_the_indexes(
     )
 
     assert summary.counts == DatasetCounts(
-        sequences=3, videos=4, tracks_variants=2, feature_runs=1, models=1
+        sequences=3,
+        recordings=7,
+        divided_recordings=0,
+        videos=4,
+        tracks_variants=2,
+        feature_runs=1,
+        models=1,
     )
     assert summary.track_schemas == (
         TrackSchemaCount(name="mosaic_v1", tables=2),
@@ -128,6 +138,7 @@ def test_the_manifest_fields_are_echoed(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds", name="echoed")
     ds.set_notes("pilot sessions")
     ds.define_tag(DatasetTag(name="cohort", type="text", value="spring"))
+    write_media_index(ds, [MediaClip(group="night", sequence="s1")])
     ds.set_continuous_groups(["night"])
     ds.set_splits("test", ["held"])
     ds.set_splits("train", ["a"])
@@ -141,10 +152,56 @@ def test_the_manifest_fields_are_echoed(tmp_path: Path) -> None:
     assert [tag.name for tag in summary.tags] == ["cohort"]
     assert summary.continuous_groups == ("night",)
     assert summary.splits == {"a": "train", "held": "test"}
+    assert (summary.counts.recordings, summary.counts.divided_recordings) == (1, 1)
     assert summary.managed_by is None
     assert not summary.api_managed
     assert summary.counts.sequences == 0
-    assert summary.frame_rates == ()
+    assert summary.counts.videos == 1
+    assert summary.frame_rates == (FrameRateCount(fps=30.0, videos=1),)
+
+
+def test_a_continuous_group_is_one_divided_recording_listed_with_its_sequences(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(group="night", sequence="s10", filename="s10.mp4"),
+            MediaClip(group="night", sequence="s2", filename="s2.mp4"),
+            MediaClip(group="arena", sequence="s1", filename="arena_s1.mp4"),
+        ],
+    )
+    add_tracks_variant(ds, PIXEL_VARIANT, "s1")
+    ds.set_continuous_groups(["night"])
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert (summary.counts.recordings, summary.counts.divided_recordings) == (3, 1)
+    assert summary.counts.sequences == 1
+    assert summary.divided_recordings == (
+        RecordingSummary(
+            name="night",
+            n_sequences=2,
+            sequences=(
+                RecordingSequence(sequence="s2"),
+                RecordingSequence(sequence="s10"),
+            ),
+        ),
+    )
+
+
+def test_a_declared_group_without_entries_is_no_recording(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(group="night", sequence="s1")])
+    ds.set_continuous_groups(["night"])
+    write_media_index(ds, [MediaClip(group="day", sequence="s1")])
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert summary.continuous_groups == ("night",)
+    assert (summary.counts.recordings, summary.counts.divided_recordings) == (1, 0)
+    assert summary.divided_recordings == ()
 
 
 def test_a_managing_service_is_read_from_the_preserved_key(tmp_path: Path) -> None:

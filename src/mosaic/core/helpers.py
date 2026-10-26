@@ -85,7 +85,9 @@ def validate_entry_name(value: str, field: str) -> str:
             raise ValueError(
                 f"{field} may not contain a {name}: {value!r}. An entry name has "
                 "to be usable as a single path component. Join the levels with "
-                "'__' instead -- parse_hierarchy reads that by default."
+                "'__' instead, which parse_hierarchy reads by default. A joined "
+                "sequence in the empty group must not spell another entry's "
+                "group and sequence, which share its key."
             )
     return value
 

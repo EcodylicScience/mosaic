@@ -11,7 +11,7 @@ any entry is decoded.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -1295,23 +1295,35 @@ def test_the_later_of_two_entries_with_one_entry_key_fails(
 
 
 @pytest.mark.media
+def _refuse_nothing(
+    _self: Dataset, _written: Iterable[Entry], _existing: Iterable[Entry]
+) -> None:
+    """Stand in for the collision refusal while an older index is built."""
+
+
 def test_a_run_encodes_only_the_first_of_two_entries_with_one_entry_key(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``(a, b__c)`` and ``(a__b, c)`` both publish ``a__b__c``.
 
+    A media write now refuses the second entry, so the index is the one a dataset
+    written before that refusal holds: the refusal is lifted while it is built.
     The variant contains the first entry's frames. The later entry fails, and the
     run reports its camera once.
     """
     ds = make_dataset(tmp_path / "ds")
     _ = write_painted_entry(ds, "b__c", [(6, 30.0)], paint_frame_code, group="a")
-    _ = write_painted_entry(
-        ds,
-        "c",
-        [(6, 30.0)],
-        lambda frame: paint_frame_code(100 + frame),
-        group="a__b",
-    )
+    with monkeypatch.context() as patch:
+        patch.setattr(Dataset, "refuse_entry_key_collision", _refuse_nothing)
+        _ = write_painted_entry(
+            ds,
+            "c",
+            [(6, 30.0)],
+            lambda frame: paint_frame_code(100 + frame),
+            group="a__b",
+        )
 
     run_id = run_op(
         ds,

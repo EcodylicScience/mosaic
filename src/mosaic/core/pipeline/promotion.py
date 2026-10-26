@@ -36,6 +36,8 @@ from typing import TYPE_CHECKING, Final
 import pandas as pd
 
 from mosaic.core.helpers import entry_directory, make_entry_key, validate_entry_name
+from mosaic.core.entry import EntryKeyCollisionError
+from mosaic.core.pipeline.entry_keys import key_collision_at_write
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.provenance import reached_by
@@ -161,6 +163,9 @@ def promote_correction(
         A :class:`PromotionReport`.
 
     Raises:
+        EntryKeyCollisionError: If *apply* is set and the entry's key names a
+            different entry of ``tracks_raw`` or the media index. A dry run
+            reports the collision in ``blocked`` instead.
         FileNotFoundError: If a file to promote does not exist.
         ValueError: If *derived_from* names a tracker run that read a media
             variant. That run's output is in the variant's pixels and frames,
@@ -171,6 +176,13 @@ def promote_correction(
 
     group = validate_entry_name(group, "group")
     sequence = validate_entry_name(sequence, "sequence")
+    # Refused before any file is copied. A dry run reports it as blocked, and
+    # *force* does not lift it.
+    collision = key_collision_at_write(
+        ds, [(group, sequence)], ds.get_root("tracks_raw") / "index.csv"
+    )
+    if collision is not None and apply:
+        raise EntryKeyCollisionError(collision)
     sources = (
         [Path(source)] if isinstance(source, (str, Path)) else [Path(p) for p in source]
     )
@@ -199,9 +211,9 @@ def promote_correction(
     # Run *before* the change, where every row reads `current` and the answer is
     # membership: what this promotion would make stale.
     reached = reached_by(ds, [(group, sequence)], "tracks_raw")
-    blocked: tuple[str, ...] = ()
+    blocked: tuple[str, ...] = () if collision is None else (collision,)
     if not reached.empty and not force:
-        blocked = (
+        blocked += (
             f"{len(reached)} derived artifact(s) were built from this sequence's "
             "tracks_raw and would become stale. Re-run them, or pass force=True "
             "to promote anyway and use delete_set to remove what became wrong.",

@@ -323,8 +323,9 @@ def ensure_track_schema(
 # flexible, redefinable grouping is done with tags (owned by mosaic-api), and an
 # arbitrary tag-resolved subset can be run via
 # `run_feature(scope=Scope(entries=[(group, seq), ...]))`.
-# `group` keeps a structural meaning only as a temporal-contiguity key for the
-# future `continuous` dataset type (see core/pipeline/manifest.py).
+# `group` keeps a structural meaning only in a continuous group, which names one
+# recording divided into sequences (`DatasetManifest.continuous_groups`,
+# core/recording.py).
 register_track_schema(
     TrackSchema(
         name="trex_v1",

@@ -18,6 +18,7 @@ import pytest
 
 from mosaic.agent.mcp.local import POLL_AFTER_MIN_SECONDS, LocalBackend
 from mosaic.agent.mcp.outputs import StepSuggestions, StepTypes
+from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
     LISTING_MISSING_SAMPLE,
     MAX_PAGE_SIZE,
@@ -205,6 +206,35 @@ def test_the_sequences_are_listed_with_their_tracks_tables(
     assert {row.std_format for row in rows} == {"mosaic_v1"}
     assert all(row.frame_min is not None and row.n_keypoints for row in rows)
     assert (first.total, rest.next_cursor) == (2, None)
+
+
+def test_the_sequences_and_the_summary_name_each_entry_s_recording(
+    dataset: Dataset,
+) -> None:
+    write_media_index(
+        dataset,
+        [
+            MediaClip(group="night", sequence="s1", filename="night_s1.mp4"),
+            MediaClip(group="night", sequence="s2", filename="night_s2.mp4"),
+        ],
+    )
+    for sequence in ("s1", "s2"):
+        add_tracks_table(dataset, VARIANT, track_table("night", sequence))
+    dataset.set_continuous_groups(["night"])
+    served = LocalBackend([dataset.manifest_path], warm=False)
+
+    page = _call(served, "list_sequences", SequencePage, dataset=_uuid(dataset))
+    summary = _call(served, "describe_dataset", DatasetSummary, dataset=_uuid(dataset))
+
+    assert [(row.sequence, row.recording) for row in page.items] == [
+        ("seq_a", "seq_a"),
+        ("seq_b", "seq_b"),
+        ("s1", "night"),
+        ("s2", "night"),
+    ]
+    assert (summary.counts.recordings, summary.counts.divided_recordings) == (3, 1)
+    assert [recording.name for recording in summary.divided_recordings] == ["night"]
+    assert "3 recording(s) (1 divided)" in summarize(summary)
 
 
 def test_the_inventory_leaves_out_complete_artifacts_unless_asked(

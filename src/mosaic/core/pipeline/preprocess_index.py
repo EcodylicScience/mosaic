@@ -28,6 +28,7 @@ import pandas as pd
 from mosaic_media import MediaFacts
 
 from mosaic.core.helpers import validate_entry_name
+from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.media.facts_columns import row_to_facts
 from mosaic.core.media.preprocess.geometry import Placement
 from mosaic.core.media.probe_row import row_from_facts
@@ -214,11 +215,17 @@ def write_media_variant_row(ds: Dataset, row: MediaVariantRow) -> None:
     file exists.
 
     Raises:
-        ValueError: If the entry's group or sequence is not one path component.
+        ValueError: If the entry's group or sequence is not one path component,
+            or its key names a different entry of this index or the media index.
     """
     _ = validate_entry_name(row.group, "group")
     _ = validate_entry_name(row.sequence, "sequence")
-    media_variant_index(media_variant_index_path(ds)).append([row])
+    append_refusing_key_collision(
+        ds,
+        media_variant_index(media_variant_index_path(ds)),
+        [row],
+        [(row.group, row.sequence)],
+    )
 
 
 def read_media_variant_index(ds: Dataset) -> pd.DataFrame:
