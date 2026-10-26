@@ -662,6 +662,7 @@ _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
         "convert-labels",
         "predict-frames",
         "score-predictions",
+        "select-frames",
     }
 )
 

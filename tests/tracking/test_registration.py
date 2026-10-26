@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from mosaic.tracking.registration import REGISTERING_MODULES
 from tests.helpers import REPO_ROOT, run_fresh
 
@@ -62,13 +64,14 @@ def test_the_listed_modules_are_the_ones_that_register_at_import() -> None:
     assert registering == set(REGISTERING_MODULES)
 
 
-def test_register_ops_registers_the_frame_predictions_index() -> None:
+@pytest.mark.parametrize("root_key", ["frame_predictions", "selections"])
+def test_register_ops_registers_the_index_of_a_derived_root(root_key: str) -> None:
     """A fresh interpreter, because an earlier test may have imported the index."""
     code = (
         "from mosaic.core.pipeline.dataset_indexes import reconcilable_index\n"
         "from mosaic.tracking import register_ops\n"
         "register_ops()\n"
-        "print(reconcilable_index('frame_predictions') is not None)"
+        f"print(reconcilable_index({root_key!r}) is not None)"
     )
 
     assert run_fresh(code) == "True"

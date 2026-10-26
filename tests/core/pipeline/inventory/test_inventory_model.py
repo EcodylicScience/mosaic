@@ -22,6 +22,7 @@ from mosaic.core.pipeline.inventory.model import (
     FeatureRunRef,
     FramePredictionsRef,
     FrameRunRef,
+    FrameSelectionRef,
     InventoryScope,
     MediaDerivativeRef,
     MediaVariantRef,
@@ -160,6 +161,7 @@ def test_every_ref_kind_is_a_declared_artifact_kind() -> None:
         MediaVariantRef("preprocess.0.1-aaaaaaaaaa"),
         FramePredictionsRef("predict-frames.0.1-aaaaaaaaaa", "uniform-0123456789"),
         PredictionScoreRef("score-predictions.0.1-aaaaaaaaaa"),
+        FrameSelectionRef("select-frames.0.1-aaaaaaaaaa", "trex.0.1-0123456789"),
     ]
     assert {ref.kind for ref in refs} <= declared
 
@@ -187,6 +189,34 @@ def test_a_frame_predictions_run_is_covered_by_entry_cameras(tmp_path: Path) -> 
 
     assert ref.kind == "frame-predictions"
     assert coverage.present == keys
+
+
+def test_a_frame_selection_is_covered_by_entries(tmp_path: Path) -> None:
+    """A selection run writes one file per entry, as a feature run does."""
+    ref = FrameSelectionRef(
+        run_id="select-frames.0.1-aaaaaaaaaa",
+        source_tracks_run_id="trex.0.1-0123456789",
+    )
+    keys: frozenset[Entry] = frozenset({A, B})
+    record = ArtifactRecord[Entry](
+        ref=ref,
+        name="select-frames",
+        run_id=ref.run_id,
+        coverage=Coverage(target=keys, present=frozenset({A})),
+        status="partial",
+        rows=keys,
+    )
+    inventory = DatasetInventory(
+        dataset_root=tmp_path,
+        scope=InventoryScope(kinds=frozenset({"frame-selection"})),
+        records=(record,),
+    )
+
+    coverage: Coverage[Entry] = inventory.coverage(ref)
+    rows: frozenset[Entry] = inventory.rows(ref)
+
+    assert ref.kind == "frame-selection"
+    assert (coverage.present, coverage.missing, rows) == ({A}, {B}, keys)
 
 
 def test_a_frame_run_names_its_rows_by_entry_camera(tmp_path: Path) -> None:
@@ -267,8 +297,12 @@ def test_the_kind_vocabulary_is_spelled_once_in_two_places() -> None:
     assert len(ARTIFACT_KINDS) == len(set(ARTIFACT_KINDS))
 
 
-@pytest.mark.parametrize("kind", ["frame-predictions", "prediction-score"])
-def test_the_prediction_kinds_are_spelled_in_both_places(kind: str) -> None:
+@pytest.mark.parametrize(
+    "kind", ["frame-predictions", "prediction-score", "frame-selection"]
+)
+def test_the_prediction_and_selection_kinds_are_spelled_in_both_places(
+    kind: str,
+) -> None:
     from typing import get_args
 
     from mosaic.core.pipeline.inventory.model import ARTIFACT_KINDS, ArtifactKind

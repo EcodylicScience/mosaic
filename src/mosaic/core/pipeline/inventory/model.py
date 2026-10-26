@@ -64,6 +64,7 @@ __all__ = [
     "FeatureRunRef",
     "FramePredictionsRef",
     "FrameRunRef",
+    "FrameSelectionRef",
     "InventoryScope",
     "LabelSeriesRef",
     "LabelsVariantRef",
@@ -216,6 +217,19 @@ class PredictionScoreRef:
 
 
 @dataclass(frozen=True, slots=True)
+class FrameSelectionRef:
+    """One select-frames run: ``selections/select-frames/<run_id>/``.
+
+    A run selects frames from the entries of one tracks variant,
+    ``source_tracks_run_id``, and writes one file per entry.
+    """
+
+    kind: ClassVar[ArtifactKind] = "frame-selection"
+    run_id: str
+    source_tracks_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TrainedModelRef:
     """One trained model: ``models/<op_kind>/<run_id>/``."""
 
@@ -270,6 +284,7 @@ type ArtifactRef = (
     | FrameRunRef
     | FramePredictionsRef
     | PredictionScoreRef
+    | FrameSelectionRef
     | TrainedModelRef
     | PreparedDatasetRef
     | MediaDerivativeRef
@@ -476,7 +491,11 @@ class DatasetInventory:
     @overload
     def coverage(
         self,
-        ref: FeatureRunRef | TracksVariantRef | LabelsVariantRef | TrackerRunRef,
+        ref: FeatureRunRef
+        | TracksVariantRef
+        | LabelsVariantRef
+        | TrackerRunRef
+        | FrameSelectionRef,
     ) -> Coverage[Entry]: ...
 
     @overload
@@ -506,7 +525,11 @@ class DatasetInventory:
     @overload
     def rows(
         self,
-        ref: FeatureRunRef | TracksVariantRef | LabelsVariantRef | TrackerRunRef,
+        ref: FeatureRunRef
+        | TracksVariantRef
+        | LabelsVariantRef
+        | TrackerRunRef
+        | FrameSelectionRef,
     ) -> frozenset[Entry]: ...
 
     @overload

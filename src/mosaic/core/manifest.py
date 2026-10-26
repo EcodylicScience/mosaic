@@ -234,6 +234,7 @@ _DEFAULT_ROOTS: Final[dict[str, str]] = {
     "models": "models",
     "frames": "media/frames",
     "frame_predictions": "frame_predictions",
+    "selections": "selections",
 }
 
 default_roots: Final[Mapping[str, str]] = MappingProxyType(_DEFAULT_ROOTS)
@@ -280,7 +281,13 @@ def backfill_roots(roots: dict[str, str]) -> dict[str, str]:
     In place on the mapping it is handed, and returned for the caller to assign,
     so a manifest that needs no backfill round-trips unchanged.
     """
-    for key in (TRACKING_ROOT, *TRACKING_ROOTS, "labels_raw", "frame_predictions"):
+    for key in (
+        TRACKING_ROOT,
+        *TRACKING_ROOTS,
+        "labels_raw",
+        "frame_predictions",
+        "selections",
+    ):
         _ = roots.setdefault(key, _DEFAULT_ROOTS[key])
     return roots
 

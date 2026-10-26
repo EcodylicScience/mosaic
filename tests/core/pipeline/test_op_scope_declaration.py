@@ -223,6 +223,7 @@ GATED_OPS = frozenset(
         "prepare-training-data",
         "preprocess",
         "score-predictions",
+        "select-frames",
         "sleap",
         "train-litpose",
         "train-localizer",
@@ -238,7 +239,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-twenty-four.
+twenty-five.
 """
 
 
@@ -308,8 +309,8 @@ class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
     The direct leak, over **every** registered op, where the dataset gate below
-    covers twenty-two. Every op now takes both as arguments and declares no
-    such field, and that is why this passes for all twenty-four. It
+    covers twenty-three. Every op now takes both as arguments and declares no
+    such field, and that is why this passes for all twenty-five. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
@@ -333,12 +334,12 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective. Twenty-three ops declare independence,
-    twenty-two of them are gated here, and this dataset lets eight answer:
-    ``extract-frames``, ``trex``, ``export-joined``, ``convert-tracks`` and
-    ``convert-labels``, pure functions of their params, ``predict-frames``, whose
-    identity reads nothing from disk for one model reference, and ``transcode``
-    and ``preprocess``, whose identity is their
+    Partial today, and prospective. Twenty-four ops declare independence,
+    twenty-three of them are gated here, and this dataset lets nine answer:
+    ``extract-frames``, ``trex``, ``export-joined``, ``convert-tracks``,
+    ``convert-labels`` and ``select-frames``, pure functions of their params,
+    ``predict-frames``, whose identity reads nothing from disk for one model
+    reference, and ``transcode`` and ``preprocess``, whose identity is their
     recipe and which read the dataset only for refusals that answer the same way
     for every entry set. The other fourteen defer, each deferral recorded as a
     skip stating the reason the op gave: a training op has no data.yaml here, an
@@ -481,7 +482,7 @@ class TestPublished:
         """A client draws its controls from these fields, and a coverage is not one.
 
         Which entries a run covers is an argument to the run. No op params
-        model declares a coverage under any spelling the twenty-four have used,
+        model declares a coverage under any spelling the twenty-five have used,
         and the published schema is generated from these fields.
         """
         declaring = {
@@ -495,7 +496,7 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all twenty-four.
+        position :class:`TestOpInterface` pins for all twenty-five.
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in

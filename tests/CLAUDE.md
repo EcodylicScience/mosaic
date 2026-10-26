@@ -54,8 +54,9 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_tracking_lazy_exports.py`: `mosaic.tracking`, `tracking.common`,
   `tracking.frame_extraction`, `tracking.frame_predictions` or `tracking.ops`
   importing a submodule at import, an exported name that does not resolve, or an
-  inventory read or a frame-predictions index or reader loading a tracker
-  subpackage, a trainer, frame extraction, cv2, av or the feature library.
+  inventory read, a frame-predictions index or reader, or the selections index
+  loading a tracker subpackage, a trainer, frame extraction, cv2, av or the
+  feature library.
 - `test_media_lazy_exports.py`: `mosaic.core.media` or `core.media.preprocess`
   importing a frame reader or a step at import, an exported name that does not
   resolve, or `import mosaic.core.dataset` loading cv2 or av.

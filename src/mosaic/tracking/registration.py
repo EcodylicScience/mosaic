@@ -17,6 +17,8 @@ __all__ = ["REGISTERING_MODULES", "register_ops"]
 
 REGISTERING_MODULES: Final = (
     "mosaic.tracking.frame_extraction.dataset_runs",
+    "mosaic.tracking.frame_extraction.selection",
+    "mosaic.tracking.frame_extraction.selection_index",
     "mosaic.tracking.frame_predictions.index",
     "mosaic.tracking.litpose.dataset_runs",
     "mosaic.tracking.ops.convert",

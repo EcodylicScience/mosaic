@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import dataclasses
 import typing
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 import pandas as pd
 
 from ..scope import Scope
 from ._utils import atomic_write, now_iso
 from .index_lock import index_lock, index_lock_unless_dry_run
+
+if TYPE_CHECKING:
+    from ..dataset import Dataset
 
 RowT = TypeVar("RowT", bound="SchemaRowBase")
 
@@ -718,3 +721,77 @@ def index_records(frame: pd.DataFrame) -> list[dict[str, str]]:
         {column: str(value) for column, value in zip(columns, row, strict=True)}
         for row in frame.itertuples(index=False, name=None)
     ]
+
+
+def finished_row_file(
+    ds: Dataset,
+    record: Mapping[str, str],
+    *,
+    run_kind: str,
+    key_columns: Sequence[str] = (),
+    name: str = "",
+) -> Path:
+    """Return the file that a finished run's index row names.
+
+    Resolves the row's ``abs_path`` through ``Dataset.resolve_path``.
+
+    Args:
+        ds: The dataset that contains the run.
+        record: The row, as :func:`index_records` returns it.
+        run_kind: The op kind of the row's run, named in the message.
+        key_columns: The columns that key the row within its run. The message
+            names each with its value.
+        name: The file's name in the directory that ``abs_path`` names, or
+            ``""`` when ``abs_path`` names the file.
+
+    Raises:
+        FileNotFoundError: The file is not on disk. The message names the run,
+            the key and the path.
+    """
+    path = ds.resolve_path(record["abs_path"])
+    if name:
+        path /= name
+    if path.is_file():
+        return path
+    key = ", ".join(f"{column}={record[column]!r}" for column in key_columns)
+    recorded = f"{run_kind} run {record['run_id']!r} is recorded as finished"
+    if key:
+        recorded = f"{recorded} for ({key})"
+    msg = (
+        f"{recorded}, and {path} is not on disk. `mosaic reindex --apply` drops a "
+        "row whose file is gone."
+    )
+    raise FileNotFoundError(msg)
+
+
+def finished_rows(
+    records: Iterable[Mapping[str, str]], run_id: str, key_columns: Sequence[str]
+) -> dict[tuple[str, ...], Mapping[str, str]]:
+    """Return the rows of *run_id* that record a ``finished_at``, by their key.
+
+    Args:
+        records: An index's rows, as :func:`index_records` returns them.
+        run_id: The run whose rows are kept.
+        key_columns: The columns that key a row within its run. An index of
+            one row per run passes ``()``, which keys that row ``()``.
+
+    Returns:
+        Each finished row of *run_id*, keyed by its values of *key_columns*.
+    """
+    return {
+        tuple(record.get(column, "") for column in key_columns): record
+        for record in records
+        if record.get("run_id", "") == run_id and record.get("finished_at", "")
+    }
+
+
+def row_file_exists(ds: Dataset, record: Mapping[str, str] | None) -> bool:
+    """Return whether the ``abs_path`` of *record* resolves to a file on disk.
+
+    A blank ``abs_path`` returns false, as does a *record* of None, which the
+    lookup of a key absent from :func:`finished_rows` returns.
+    """
+    if record is None:
+        return False
+    stored = record.get("abs_path", "")
+    return bool(stored) and ds.resolve_path(stored).is_file()

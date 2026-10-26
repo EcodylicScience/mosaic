@@ -134,6 +134,9 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     ("frames", "per_subdir"),
     # One index per kind directory: ``predict-frames/`` and ``score-predictions/``.
     ("frame_predictions", "per_subdir"),
+    # ``select-frames/``, in a root apart from ``frames``, whose every child the
+    # inventory reads as an extraction method.
+    ("selections", "per_subdir"),
     *((key, "root") for key in TRACKING_ROOTS),
 )
 

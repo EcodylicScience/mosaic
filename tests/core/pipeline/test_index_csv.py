@@ -9,8 +9,16 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
-from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, SchemaRowBase
+from mosaic.core.pipeline.index_csv import (
+    IndexCSV,
+    RunIndexRowBase,
+    SchemaRowBase,
+    finished_row_file,
+    finished_rows,
+    row_file_exists,
+)
 from mosaic.core.scope import Scope
+from tests.helpers import make_dataset
 
 
 @dataclass(frozen=True, slots=True)
@@ -926,3 +934,147 @@ class TestDropRuns:
         text = (tmp_path / "index.csv").read_text()
         assert ",0.10-0123456789," in text
         assert ",0.10," in text and ",0123456789," in text
+
+
+# --- the file of a finished row ---------------------------------------------
+
+FINISHED_RUN = "select-frames.0.1-0123456789"
+MISSING_FILE_ADVICE = "`mosaic reindex --apply` drops a row whose file is gone."
+
+
+def _finished_record(abs_path: str) -> dict[str, str]:
+    return {
+        "run_id": FINISHED_RUN,
+        "abs_path": abs_path,
+        "group": "G",
+        "sequence": "S1",
+    }
+
+
+def test_a_finished_row_file_resolves_against_the_dataset(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    written = ds.base_dir / "runs" / "G__S1" / "selection.parquet"
+    written.parent.mkdir(parents=True)
+    written.touch()
+
+    found = finished_row_file(
+        ds, _finished_record("runs/G__S1/selection.parquet"), run_kind="select-frames"
+    )
+
+    assert found == written
+
+
+def test_a_named_file_is_found_in_the_directory_of_its_row(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    written = ds.base_dir / "runs" / FINISHED_RUN / "summary.json"
+    written.parent.mkdir(parents=True)
+    written.touch()
+
+    found = finished_row_file(
+        ds,
+        _finished_record(f"runs/{FINISHED_RUN}"),
+        run_kind="score-predictions",
+        name="summary.json",
+    )
+
+    assert found == written
+
+
+def test_a_missing_file_names_the_run_the_key_and_the_path(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    gone = ds.base_dir / "runs" / "G__S1" / "selection.parquet"
+
+    with pytest.raises(FileNotFoundError) as raised:
+        _ = finished_row_file(
+            ds,
+            _finished_record("runs/G__S1/selection.parquet"),
+            run_kind="select-frames",
+            key_columns=("group", "sequence"),
+        )
+
+    assert str(raised.value) == (
+        f"select-frames run {FINISHED_RUN!r} is recorded as finished for "
+        f"(group='G', sequence='S1'), and {gone} is not on disk. "
+        f"{MISSING_FILE_ADVICE}"
+    )
+
+
+def test_a_missing_file_of_an_unkeyed_row_names_the_run_and_the_path(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    gone = ds.base_dir / "runs" / FINISHED_RUN / "summary.json"
+    gone.parent.mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError) as raised:
+        _ = finished_row_file(
+            ds,
+            _finished_record(f"runs/{FINISHED_RUN}"),
+            run_kind="score-predictions",
+            name="summary.json",
+        )
+
+    assert str(raised.value) == (
+        f"score-predictions run {FINISHED_RUN!r} is recorded as finished, and "
+        f"{gone} is not on disk. {MISSING_FILE_ADVICE}"
+    )
+
+
+def test_a_directory_at_the_path_of_a_row_is_not_its_file(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    (ds.base_dir / "runs" / "G__S1").mkdir(parents=True)
+
+    with pytest.raises(FileNotFoundError, match=FINISHED_RUN):
+        _ = finished_row_file(
+            ds, _finished_record("runs/G__S1"), run_kind="select-frames"
+        )
+
+
+# --- the finished rows of a run ---------------------------------------------
+
+
+def _run_record(run_id: str, sequence: str, *, finished: bool) -> dict[str, str]:
+    return {
+        "run_id": run_id,
+        "abs_path": f"runs/G__{sequence}/selection.parquet",
+        "group": "G",
+        "sequence": sequence,
+        "finished_at": "2026-10-25T00:00:00+00:00" if finished else "",
+    }
+
+
+def test_the_finished_rows_of_a_run_are_keyed_by_their_key_columns() -> None:
+    records = [
+        _run_record(FINISHED_RUN, "S1", finished=True),
+        _run_record(FINISHED_RUN, "S2", finished=False),
+        _run_record("select-frames.0.1-ffffffffff", "S3", finished=True),
+    ]
+
+    found = finished_rows(records, FINISHED_RUN, ("group", "sequence"))
+
+    assert found == {("G", "S1"): records[0]}
+
+
+def test_a_run_keyed_by_no_column_has_its_finished_row_under_the_empty_key() -> None:
+    records = [
+        _run_record("score-predictions.0.1-ffffffffff", "S0", finished=True),
+        _run_record(FINISHED_RUN, "S1", finished=True),
+    ]
+
+    assert finished_rows(records, FINISHED_RUN, ()) == {(): records[1]}
+
+
+def test_a_row_file_exists_only_where_its_path_resolves_to_a_file(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    written = ds.base_dir / "runs" / "G__S1" / "selection.parquet"
+    written.parent.mkdir(parents=True)
+    written.touch()
+    (ds.base_dir / "runs" / "G__S2").mkdir()
+
+    assert row_file_exists(ds, _finished_record("runs/G__S1/selection.parquet"))
+    assert not row_file_exists(ds, _finished_record("runs/G__S2"))
+    assert not row_file_exists(ds, _finished_record("runs/G__S3/selection.parquet"))
+    assert not row_file_exists(ds, _finished_record(""))
+    assert not row_file_exists(ds, None)

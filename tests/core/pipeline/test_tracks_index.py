@@ -41,6 +41,7 @@ from mosaic.core.pipeline.tracks_index import (
     encode_source_roots,
     legacy_view,
     read_tracks_index,
+    row_in_scope,
     select_variant_rows,
     tracks_index,
     tracks_index_path,
@@ -747,6 +748,30 @@ def test_the_unlabelled_tables_stay_addressable_by_name() -> None:
 def test_an_empty_frame_selects_to_an_empty_frame() -> None:
     """A cold dataset must not raise on the way to reporting it has no tracks."""
     assert select_variant_rows(_rows()).empty
+
+
+# --- row_in_scope ------------------------------------------------------------
+
+
+def test_no_entry_list_covers_every_row() -> None:
+    rows = _rows(("trex.0.1-bb", "", "a"), ("trex.0.1-bb", "g", "b"))
+    assert [row_in_scope(row, None) for _, row in rows.iterrows()] == [True, True]
+
+
+def test_an_empty_entry_list_covers_no_row() -> None:
+    rows = _rows(("trex.0.1-bb", "", "a"))
+    assert not row_in_scope(rows.iloc[0], [])
+
+
+def test_an_entry_list_covers_the_rows_it_names() -> None:
+    rows = _rows(("trex.0.1-bb", "", "a"), ("trex.0.1-bb", "g", "a"))
+    covered = [row_in_scope(row, [("g", "a")]) for _, row in rows.iterrows()]
+    assert covered == [False, True]
+
+
+def test_a_blank_group_cell_is_the_empty_group() -> None:
+    row = pd.Series({"group": float("nan"), "sequence": "a"})
+    assert row_in_scope(row, [("", "a")])
 
 
 # --- legacy_view -----------------------------------------------------------

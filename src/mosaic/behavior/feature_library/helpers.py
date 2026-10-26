@@ -34,7 +34,6 @@ __all__ = [
     "chosen_payload_columns",
     "clean_animal_track",
     "clean_tracks_grouped",
-    "consecutive_runs",
     "cv_block_assignment",
     "cv_block_bounds",
     "cv_fold_assignment",
@@ -374,37 +373,6 @@ def refuse_repeated_series_rows(
         where += f" of {series}"
     msg = f"{who}: {where} appears in more than one row"
     raise ValueError(msg)
-
-
-def consecutive_runs(
-    frames: npt.ArrayLike, keep: npt.ArrayLike
-) -> list[tuple[int, int]]:
-    """Return the runs of consecutive frames that *keep* marks, as row positions.
-
-    A model that reads a window of neighboring frames reads one animal's rows at
-    a time, and only where each frame follows the one before it. A run ends at a
-    gap in *frames* and at a row that *keep* leaves out.
-
-    Args:
-        frames: The frame number of each row of one series, in increasing order.
-        keep: One flag per row. A row that is ``False`` belongs to no run.
-
-    Returns:
-        The ``(start, stop)`` positions of each run, in order, half-open as a
-        slice reads them.
-    """
-    frame = np.asarray(frames)
-    kept = np.asarray(keep, dtype=bool)
-    if frame.size == 0:
-        return []
-    follows = np.zeros(frame.size, dtype=bool)
-    follows[1:] = kept[1:] & kept[:-1] & (np.diff(frame) == 1)
-    starts = np.flatnonzero(kept & ~follows)
-    ends = np.zeros(frame.size, dtype=bool)
-    ends[:-1] = ~follows[1:]
-    ends[-1] = True
-    stops = np.flatnonzero(kept & ends) + 1
-    return list(zip(starts.tolist(), stops.tolist(), strict=True))
 
 
 def entry_identity(df: pd.DataFrame) -> tuple[str, str]:

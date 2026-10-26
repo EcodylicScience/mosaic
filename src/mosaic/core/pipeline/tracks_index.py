@@ -35,13 +35,14 @@ silently rewritten by someone merely looking at it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
@@ -116,6 +117,7 @@ __all__ = [
     "read_known_tail_loss",
     "read_media_frames",
     "read_tracks_index",
+    "row_in_scope",
     "select_variant_rows",
     "tail_allowance",
     "variant_for_producer_run",
@@ -491,6 +493,20 @@ def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataF
         # did with a duplicate before the index enforced uniqueness.
         keep.append((labelled or positions)[-1])
     return df.iloc[sorted(keep)].reset_index(drop=True)
+
+
+def row_in_scope(row: CellRow, entries: Collection[Entry] | None) -> bool:
+    """Return whether a run over *entries* covers one tracks-index row.
+
+    ``None`` covers every row, and an unset selector resolves to it. An empty
+    collection does not cover any row, and a selector naming entries that the
+    index does not contain resolves to it.
+    """
+    if entries is None:
+        return True
+    group = text_cell(row.get("group"))
+    sequence = text_cell(row.get("sequence"))
+    return (group, sequence) in entries
 
 
 def variant_for_producer_run(df: pd.DataFrame, producer_run_id: str) -> str | None:

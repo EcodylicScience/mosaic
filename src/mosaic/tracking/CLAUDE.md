@@ -18,10 +18,11 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 - `register_inventory_contributors` (`inventory.py`) is the one place a tracking
   inventory kind is registered. Each record builder lives beside the index that it
   reads, in `common/index.py`, `frame_extraction/frame_runs.py`,
-  `frame_predictions/index.py`, `ops/prepared_datasets.py` and `ops/trained_models.py`.
-  These modules leave the tracker subpackages, the trainers and the extraction code
-  unimported. Of frame extraction they import only `frame_runs.py`. The tracker kinds
-  are the `tracker` roots of `TRACKING_ROOTS`, read through `TrackerRunRowBase`.
+  `frame_extraction/selection_index.py`, `frame_predictions/index.py`,
+  `ops/prepared_datasets.py` and `ops/trained_models.py`. These modules leave the
+  tracker subpackages, the trainers and the extraction code unimported. Of frame
+  extraction they import only `frame_runs.py`. The tracker kinds are the `tracker`
+  roots of `TRACKING_ROOTS`, read through `TrackerRunRowBase`.
 
 ## Wiring a tracker
 

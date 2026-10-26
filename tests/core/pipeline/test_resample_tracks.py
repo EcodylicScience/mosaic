@@ -34,6 +34,7 @@ from mosaic.core.pipeline.resample_tracks import (
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.scope import Scope
 from mosaic.tracking.ops.resample import ResampleTracksOp, ResampleTracksParams
 
 from tests.helpers import make_dataset
@@ -461,6 +462,23 @@ def test_rerunning_is_a_no_op_and_keeps_the_identifier(tmp_path: Path) -> None:
 
     assert first == second
     assert len(read_tracks_index(ds)) == 4
+
+
+def test_a_scoped_run_reads_only_the_entries_it_names(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _seed_variant(ds, ("s1", "s2"), 34.679)
+
+    run_id = run_op(
+        ds,
+        "resample-tracks",
+        {"target_fps": 30.0},
+        track=False,
+        scope=Scope(entries=[("", "s1")]),
+    )
+
+    index = read_tracks_index(ds)
+    written = index[index["producer_run_id"] == run_id]
+    assert list(written["sequence"]) == ["s1"]
 
 
 def test_a_second_target_rate_is_a_second_variant_beside_the_first(

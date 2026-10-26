@@ -13,6 +13,7 @@ from tests.helpers import REPO_ROOT, make_dataset, register_trained_model
 TRACKING_KINDS = (
     "frame-predictions",
     "frame-run",
+    "frame-selection",
     "prediction-score",
     "prepared-dataset",
     "trained-model",

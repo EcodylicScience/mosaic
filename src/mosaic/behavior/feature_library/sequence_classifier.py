@@ -104,6 +104,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.track_quality import consecutive_runs
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .classifier_common import (
@@ -137,7 +138,6 @@ from .classifier_common import (
 )
 from .helpers import (
     check_memory_headroom,
-    consecutive_runs,
     ensure_columns,
     entry_identity,
     feature_columns,

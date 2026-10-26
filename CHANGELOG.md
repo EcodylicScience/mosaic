@@ -590,7 +590,8 @@ sat under `training`, so every fit used the package's weight decay of 0.1.
   whatever its `device`, and `device` defaults to `gpu`. The package trains on the CPU
   where there is no CUDA device.
 - `refuse_pair_rows` leaves `mosaic.behavior.feature_library.helpers`, which has
-  `consecutive_runs` and `train_entries_of_templates` in its place.
+  `train_entries_of_templates` in its place. `consecutive_runs` is in
+  `mosaic.core.track_quality`.
 
 **`arhmm` reads each ordered pair as a sequence of its own, and keeps its columns.**
 `arhmm` split a table by `id`, and a pair table has none, so its rows were one sequence

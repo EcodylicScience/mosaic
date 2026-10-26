@@ -75,6 +75,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
+from mosaic.core.track_quality import consecutive_runs
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .classifier_common import (
@@ -88,7 +89,6 @@ from .classifier_common import (
     write_bundle,
 )
 from .helpers import (
-    consecutive_runs,
     ensure_columns,
     entry_identity,
     feature_columns,

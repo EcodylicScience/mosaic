@@ -913,7 +913,7 @@ $ mosaic inventory [OPTIONS] COMMAND [ARGS]...
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).
-* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, frame-predictions, prediction-score, trained-model, prepared-dataset, media-derivative, media-variant.
+* `--kind <str>`: Restrict to an artifact kind (repeatable): feature, tracks-variant, labels-variant, label-series, tracker-run, frame-run, frame-predictions, prediction-score, frame-selection, trained-model, prepared-dataset, media-derivative, media-variant.
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--tracks-run-id <str>`: Keep the feature runs that read this tracks variant, measured over its entries. '' keeps the runs over the unlabeled tables alone.
 * `--status-not <str>`: Leave out a status (repeatable): absent, partial, complete, complete-but-drifted, inconsistent.

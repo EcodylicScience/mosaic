@@ -101,6 +101,21 @@ def test_each_frame_predictions_kind_directory_is_enumerated(tmp_path: Path) -> 
     ]
 
 
+def test_the_select_frames_index_is_enumerated(tmp_path: Path) -> None:
+    """The selections root has one index per kind directory, as frame_predictions."""
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
+    root = ds.get_root("selections")
+    (root / "select-frames").mkdir(parents=True)
+
+    paths = [
+        index.path
+        for index in iter_dataset_indexes(ds)
+        if index.root_key == "selections"
+    ]
+
+    assert paths == [root / "select-frames" / "index.csv"]
+
+
 def test_an_unset_root_is_skipped_rather_than_raising(tmp_path: Path) -> None:
     """A manifest may declare fewer roots than the defaults, and passes must run."""
     base = tmp_path / "sparse"

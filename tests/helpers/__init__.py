@@ -28,6 +28,8 @@ What lives where:
   ``run_info.json`` records and its frames-index row.
 - ``frame_predictions`` writes an entry camera's predictions file of a
   predict-frames run and its index row.
+- ``frame_selections`` writes an entry's ``selection.parquet`` of a select-frames
+  run and its index row.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
@@ -50,6 +52,7 @@ What lives where:
 - ``runner_programs`` imports a runner program under its bare name for one test,
   writes fake runners that serve a test's handlers over the runner wire, and
   checks that a runner program answers ``Ready`` and ``shutdown``.
+- ``index_locks`` probes from a child process whether an index's lock is held.
 - ``processes`` contains a child program that appends to a file, a sleeper
   command, checks of whether a process stopped writing to it or exited, the line
   children of a test, and a cancel fired once a condition is true.
@@ -147,6 +150,7 @@ from tests.helpers.frame_predictions import (
     record_entry_predictions,
     record_score_run,
 )
+from tests.helpers.frame_selections import entry_selection, record_entry_selection
 from tests.helpers.kpms import kpms_params
 from tests.helpers.latents import assert_latents_at_centers, window_centers
 from tests.helpers.fresh_interpreter import modules_loaded_by, run_fresh
@@ -332,6 +336,7 @@ from tests.helpers.tracks import (
     write_trex_npz,
 )
 from tests.helpers.identity import run_id_digest
+from tests.helpers.index_locks import index_locked_out
 from tests.helpers.inference import (
     FakeInference,
     FakePredictImages,
@@ -519,12 +524,14 @@ __all__ = [
     "entry_clips",
     "entry_error_lines",
     "entry_predictions",
+    "entry_selection",
     "exited_pid",
     "extract_entry_camera",
     "fake_tool_probe",
     "finish_media_variant",
     "functions_named",
     "image_mark",
+    "index_locked_out",
     "index_media_sequence",
     "index_session",
     "inside_a_virtualenv",
@@ -581,6 +588,7 @@ __all__ = [
     "published_table",
     "read_frame_code",
     "record_entry_predictions",
+    "record_entry_selection",
     "record_score_run",
     "record_frames_row",
     "record_slp_writes",

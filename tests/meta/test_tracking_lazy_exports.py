@@ -59,17 +59,19 @@ PRODUCER_MODULES = (
     "mosaic.tracking.common.scope",
     "mosaic.tracking.frame_extraction.dataset_runs",
     "mosaic.tracking.frame_extraction.extraction",
+    "mosaic.tracking.frame_extraction.selection",
 )
 """The trackers, trainers and frame extraction, which an inventory read leaves unloaded."""
 
 INVENTORY_BUDGET = ("cv2", "av", "mosaic.behavior.feature_library")
 """The media readers and the feature library, which an inventory read leaves unloaded."""
 
-PREDICTION_READ_MODULES = (
+INDEX_READ_MODULES = (
+    "mosaic.tracking.frame_extraction.selection_index",
     "mosaic.tracking.frame_predictions.index",
     "mosaic.tracking.frame_predictions.read",
 )
-"""The modules that define the frame-predictions indexes and read them."""
+"""The modules that define the frame-predictions and selections indexes and read them."""
 
 
 @pytest.mark.parametrize("name", sorted(tracking_package.__all__))
@@ -183,9 +185,9 @@ def test_the_inventory_reports_a_tracker_run_without_loading_a_producer(
     assert json.loads(run_fresh(code)) == {"status": "complete", "loaded": []}
 
 
-@pytest.mark.parametrize("module", PREDICTION_READ_MODULES)
-def test_a_prediction_read_module_loads_no_producer(module: str) -> None:
-    """The index and readers leave frame extraction and every tool unloaded."""
+@pytest.mark.parametrize("module", INDEX_READ_MODULES)
+def test_an_index_read_module_loads_no_producer(module: str) -> None:
+    """The indexes and readers leave the extraction code and every tool unloaded."""
     loaded = modules_loaded_by(
         f"import {module}", (*PRODUCER_MODULES, *INVENTORY_BUDGET)
     )

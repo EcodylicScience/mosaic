@@ -38,6 +38,7 @@ _MINIMAL: dict[str, dict[str, object]] = {
         "prediction_runs": ["predict-frames.0.1-abcdef0123"],
         "labels": [{"set_key": "set-a"}],
     },
+    "select-frames": {"source_tracks_run_id": "trex.0.1-abcdef0123"},
     "sleap": {"model_paths": ["models/sleap/run"]},
     "train-litpose": {"project": "models/train-litpose/project"},
     "train-localizer": {"dataset_dir": "datasets/localizer"},

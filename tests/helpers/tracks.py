@@ -508,6 +508,7 @@ def add_tracks_table(
     consumed_source_roots: tuple[str, ...] = ("tracks_raw",),
     std_format: str = "trex_v1",
     producer_run_id: str = "",
+    media_frames: int | None = None,
 ) -> None:
     """Write *table*, one entry's rows, into the tracks variant *run_id*.
 
@@ -525,6 +526,8 @@ def add_tracks_table(
         consumed_source_roots: As in :func:`add_tracks_variant`.
         std_format: As in :func:`add_tracks_variant`.
         producer_run_id: As in :func:`add_tracks_variant`.
+        media_frames: The frame count of the entry's media that the row records,
+            or ``None`` for a blank, as a conversion records it.
     """
     from mosaic.behavior.feature_library.helpers import entry_identity
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
@@ -545,6 +548,7 @@ def add_tracks_table(
         std_format=std_format,
         n_rows=len(table) if n_rows is None else n_rows,
         consumed_source_roots=consumed_source_roots,
+        media_frames=media_frames,
     )
 
 

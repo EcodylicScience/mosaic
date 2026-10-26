@@ -40,6 +40,7 @@ from mosaic.core.pipeline.tracks_identity import (
 )
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
+    row_in_scope,
     select_variant_rows,
     write_tracks_row,
 )
@@ -116,20 +117,6 @@ class ResampleTracksParams(Params):
     ] = None
 
 
-def _in_scope(row: pd.Series, entries: list[Entry] | None) -> bool:
-    """Whether one tracks-index row is one this run covers.
-
-    ``None`` covers every row. An unset selector resolves to it. An empty list
-    covers no row at all, and a selector naming entries the index does not
-    hold resolves to that.
-    """
-    if entries is None:
-        return True
-    group = text_cell(row.get("group", ""))
-    sequence = text_cell(row.get("sequence", ""))
-    return (group, sequence) in set(entries)
-
-
 def _source_rows(
     ds: Dataset,
     params: ResampleTracksParams,
@@ -165,7 +152,9 @@ def _source_rows(
     if resolved.empty:
         return resolved
     keep = [
-        i for i, (_, row) in enumerate(resolved.iterrows()) if _in_scope(row, entries)
+        i
+        for i, (_, row) in enumerate(resolved.iterrows())
+        if row_in_scope(row, entries)
     ]
     return resolved.iloc[keep].reset_index(drop=True)
 

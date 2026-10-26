@@ -47,6 +47,7 @@ from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.tracking import PrerequisitePlan, plan_prerequisites
+from mosaic.tracking.frame_extraction.selection_index import selected_frames
 from mosaic.tracking.frame_predictions.read import (
     list_prediction_runs,
     list_score_runs,
@@ -70,6 +71,7 @@ from tests.helpers import (
     invoke_ok,
     make_dataset,
     record_entry_predictions,
+    record_entry_selection,
     record_score_run,
     register_trained_model,
     tree_snapshot,
@@ -86,6 +88,7 @@ LOSSY_TARGET = SPEED_STORAGE
 LOSSY_RUN_ID = "0.2-abcdef0123"
 PREDICTION_RUN_ID = "predict-frames.0.1-0123456789"
 SCORE_RUN_ID = "score-predictions.0.1-0123456789"
+SELECTION_RUN_ID = "select-frames.0.1-0123456789"
 
 
 @dataclass(frozen=True)
@@ -125,7 +128,7 @@ def _recipe_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def populated(tmp_path: Path) -> ReadDataset:
-    """Tracks, a finished feature run, its request, a trained model, and predictions."""
+    """Tracks, a feature run, its request, a model, predictions, and a selection."""
     dataset = make_dataset(tmp_path / "populated")
     add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
     done = run_pipeline(dataset, speed_recipe())
@@ -139,6 +142,9 @@ def populated(tmp_path: Path) -> ReadDataset:
     )
     _ = record_entry_predictions(dataset, predictions, run_id=PREDICTION_RUN_ID)
     _ = record_score_run(dataset, SCORE_RUN_ID)
+    _ = record_entry_selection(
+        dataset, run_id=SELECTION_RUN_ID, group="", sequence="seq_a", frames=[4]
+    )
     _lose_an_entity(dataset.base_dir)
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
@@ -471,6 +477,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "request_rollup": _rollup,
     "request_status_wire": _request_status,
     "run_status_wire": lambda f: run_status_wire(f.root, f.execution_id, progress=True),
+    "selected_frames": lambda f: selected_frames(f.reopened(), SELECTION_RUN_ID),
 }
 
 
@@ -502,6 +509,7 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "read_score_frames",
         "read_score_summary",
         "read_tracks_index",
+        "selected_frames",
     ],
 )
 def test_a_library_read_of_an_absent_index_creates_nothing(

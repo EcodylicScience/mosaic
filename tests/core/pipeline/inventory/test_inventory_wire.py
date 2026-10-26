@@ -25,6 +25,7 @@ from mosaic.core.pipeline.inventory import (
     FeatureRunRef,
     FramePredictionsRef,
     FrameRunRef,
+    FrameSelectionRef,
     InventoryQueryInvalid,
     InventoryScope,
     InventoryWire,
@@ -429,6 +430,38 @@ def test_an_entry_scope_reports_a_prediction_score_whole(tmp_path: Path) -> None
     assert (artifact.coverage.target, artifact.status) == (1, "complete")
 
 
+def test_an_entry_scope_narrows_a_frame_selections_rows_and_orphans(
+    tmp_path: Path,
+) -> None:
+    """A selection run's scan reads only the rows in scope, as a frame run's does."""
+    ds = make_dataset(tmp_path / "selections")
+    keys: frozenset[Entry] = frozenset({("", "s1"), ("", "s2")})
+    selection = ArtifactRecord[Entry](
+        ref=FrameSelectionRef(
+            run_id="select-frames.0.1-a", source_tracks_run_id="trex.0.1-t"
+        ),
+        name="select-frames",
+        run_id="select-frames.0.1-a",
+        coverage=Coverage(target=keys, present=frozenset({("", "s2")})),
+        status="inconsistent",
+        rows=keys,
+        orphan_rows=frozenset({("", "s1")}),
+        finished_at="t1",
+    )
+    held = DatasetInventory(
+        dataset_root=ds.base_dir,
+        scope=InventoryScope(kinds=frozenset({"frame-selection"})),
+        records=(selection,),
+    )
+
+    wire = inventory_wire(
+        ds, held, kinds=["frame-selection"], scope=Scope(entries=[("", "s2")])
+    )
+
+    (artifact,) = wire.artifacts
+    assert (artifact.coverage.target, artifact.status) == (1, "complete")
+
+
 def test_status_not_leaves_out_those_statuses(computed: tuple[Dataset, str]) -> None:
     ds, _ = computed
     held = inventory(ds)
@@ -630,6 +663,10 @@ def test_the_missing_sample_follows_its_limit() -> None:
             "frame-predictions/r/uniform-f",
         ),
         (PredictionScoreRef(run_id="r"), "prediction-score/r"),
+        (
+            FrameSelectionRef(run_id="r", source_tracks_run_id="trex.0.1-t"),
+            "frame-selection/r/trex.0.1-t",
+        ),
     ],
 )
 def test_an_address_is_the_kind_and_the_key_parts(

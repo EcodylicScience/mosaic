@@ -20,6 +20,7 @@ from mosaic.agent.mcp.local import POLL_AFTER_MIN_SECONDS, LocalBackend
 from mosaic.agent.mcp.outputs import StepSuggestions, StepTypes
 from mosaic.agent.mcp.spec import (
     LISTING_MISSING_SAMPLE,
+    MAX_PAGE_SIZE,
     MAX_STEP_TYPE_DETAIL_CHARS,
     PLAN_MISSING_SAMPLE,
     PREVIEW_MAX_COLUMNS,
@@ -227,7 +228,12 @@ def test_step_types_are_searched_by_words_and_paged(backend: LocalBackend) -> No
     found = _call(backend, "describe_step_types", StepTypes, query="speed angvel")
     ops = _call(backend, "describe_step_types", StepTypes, type="op", limit=3)
     more = _call(
-        backend, "describe_step_types", StepTypes, type="op", cursor=ops.next_cursor
+        backend,
+        "describe_step_types",
+        StepTypes,
+        type="op",
+        cursor=ops.next_cursor,
+        limit=MAX_PAGE_SIZE,
     )
 
     assert "speed-angvel" in {entry.name for entry in found.entries}

@@ -3,7 +3,7 @@
 
 # Ops
 
-24 ops are registered. An op is the unit `mosaic run --kind <kind>`
+25 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -416,6 +416,67 @@ Sample representative video frames as PNGs for annotation.
     | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
     | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
     | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media axis: 0 is its first frame, and a recording in several clips counts across them in order, as its tracks' frame column does. Order and repeats do not matter. |
+
+#### `select-frames`
+
+Version `0.1` &middot; `mosaic.tracking.frame_extraction.selection.SelectFramesOp`
+
+Propose frames to annotate from a tracker or infer op's tracks of the full media.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source_tracks_run_id` | `string` | _required_ | min length `1` | The run id of the tracks variant to read. A tracker or infer op must have published it from the full, untrimmed media, because a converted, resampled or trimmed variant does not record a frame axis. |
+| `n_frames` | `integer` | `20` | >= `1` | The most frames chosen per entry. |
+| `min_separation_frames` | `integer` | `30` | >= `0` | The least spacing between two chosen frame indices of an entry, and between a chosen and an excluded one. [frames] |
+| `min_event_frames` | `integer` | `1` | >= `1` | The shortest run of a criterion that is an event. [frames] |
+| `n_expected` | `integer` \| `None` | `null` |  | The animals expected in every frame. A frame that detects fewer is flagged fewer_than_expected, and unset leaves that criterion off. |
+| `head` | `integer` \| `string` \| `None` | `null` |  | The head keypoint of the body axis, by index or by name. With tail, it measures the body length, and two rows whose heads lie apart do not form a duplicate pair. |
+| `tail` | `integer` \| `string` \| `None` | `null` |  | The tail keypoint of the body axis, by index or by name. With head, it measures the body length, and two rows whose tails lie apart do not form a duplicate pair. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | The variant's keypoint names in index order, read only to resolve a name given in head, tail or missing_keypoints.keypoints. |
+| `body_length_px` | `number` \| `None` | `null` |  | The body length that scales every criterion given in body lengths, in place of the median length measured from the keypoints. [px] |
+| `jump` | `JumpCriterion` | `{"enabled": true, "body_lengths": 0.8}` |  | The row criterion of a step between frames. Skipped for a producer whose ids number each frame's detections. |
+| `low_score` | `LowScoreCriterion` | `{"enabled": true, "threshold": null, "quantile": 0.05}` |  | The row criterion of low keypoint confidence. Skipped for a table without confidence columns. |
+| `missing_keypoints` | `MissingKeypointsCriterion` | `{"enabled": true, "keypoints": []}` |  | The row criterion of a non-finite keypoint. |
+| `duplicate` | `DuplicateCriterion` | `{"enabled": true, "body_lengths": 0.2}` |  | The frame criterion of two rows of one animal. |
+| `exclude` | list of `EntryFrames` | `[]` |  | Frames already annotated, by entry. None of them is chosen, and every chosen frame keeps min_separation_frames from each of them. |
+| `random_state` | `integer` | `0` |  | Seeds the order in which an entry's candidates are taken, together with the entry's key. |
+
+??? note "`DuplicateCriterion`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `enabled` | `boolean` | `true` |  | Whether a frame with two rows of one animal is flagged. |
+    | `body_lengths` | `number` | `0.2` | > `0.0` | Two present rows of a frame whose centers lie closer than this are a duplicate pair, when their heads and their tails do too where head and tail are given. [body lengths] |
+
+??? note "`EntryFrames`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
+    | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
+    | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media axis: 0 is its first frame, and a recording in several clips counts across them in order, as its tracks' frame column does. Order and repeats do not matter. |
+
+??? note "`JumpCriterion`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `enabled` | `boolean` | `true` |  | Whether a step of one id between frames is flagged. |
+    | `body_lengths` | `number` | `0.8` | > `0.0` | The longest step of one id between consecutive frames that is not a jump. [body lengths] |
+
+??? note "`LowScoreCriterion`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `enabled` | `boolean` | `true` |  | Whether a row of low confidence is flagged. |
+    | `threshold` | `number` \| `None` | `null` |  | A present row whose mean finite keypoint confidence is below this is flagged. |
+    | `quantile` | `number` \| `None` | `0.05` |  | A present row whose mean finite keypoint confidence is below this quantile of the entry's means is flagged. A threshold given alone clears it. |
+
+??? note "`MissingKeypointsCriterion`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `enabled` | `boolean` | `true` |  | Whether a present row with a non-finite keypoint is flagged. |
+    | `keypoints` | list of (`integer` \| `string`) | `[]` |  | The keypoints, by index or by name, that a present row must have finite. Empty reads every keypoint. Each entry resolves them against its table whether or not the criterion is enabled, and a reference that does not resolve fails the entry. |
 
 ### infer
 

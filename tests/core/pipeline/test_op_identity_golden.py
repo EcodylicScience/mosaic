@@ -325,6 +325,31 @@ OP_CASES: tuple[OpCase, ...] = (
             tracker_overrides={"track_buffer": 90},
         ),
     ),
+    # --- select-frames --------------------------------------------------------
+    OpCase(
+        case_id="select-frames/default",
+        params=_op_params("select-frames", source_tracks_run_id="trex.0.1-abcdef0123"),
+    ),
+    OpCase(
+        case_id="select-frames/exclude",
+        params=_op_params(
+            "select-frames",
+            source_tracks_run_id="trex.0.1-abcdef0123",
+            exclude=[
+                {"group": "g", "sequence": "s1", "indices": [10, 20]},
+                {"group": "g", "sequence": "s2", "indices": [5]},
+            ],
+        ),
+    ),
+    OpCase(
+        case_id="select-frames/thresholds",
+        params=_op_params(
+            "select-frames",
+            source_tracks_run_id="trex.0.1-abcdef0123",
+            jump={"body_lengths": 1.2},
+            low_score={"threshold": 0.3},
+        ),
+    ),
 )
 
 # The two transcode identifiers are minted by named, importable functions, so
@@ -1198,6 +1223,7 @@ def test_every_family_is_covered() -> None:
         "infer-localizer",
         "predict-frames",
         "score-predictions",
+        "select-frames",
         "composition",
         "tracks",
         "labels",

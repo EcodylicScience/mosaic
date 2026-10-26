@@ -28,7 +28,7 @@ from mosaic.core.pipeline.index_lock import (
     index_lock_unless_dry_run,
     lock_path_for,
 )
-from tests.helpers import wait_for
+from tests.helpers import index_locked_out, wait_for
 
 
 # --- P7: index writes are serialized ------------------------------------------
@@ -267,34 +267,7 @@ def test_the_index_lock_is_reentrant_within_a_thread() -> None:
 # --- P7: the lock survives the write it serializes ---------------------------
 #
 # The property the sidecar exists for, and the one the previous design silently
-# lacked. A subprocess rather than a thread throughout: ``index_lock`` serializes
-# threads with its own ``RLock`` and is re-entrant within one, so a thread would
-# block whether or not the *file* lock survived -- which is the thing measured.
-
-_LOCK_PROBE = """
-import sys
-from pathlib import Path
-from mosaic.core.pipeline.index_lock import IndexLockTimeout, index_lock
-
-try:
-    with index_lock(Path(sys.argv[1]), timeout=float(sys.argv[2])):
-        pass
-except IndexLockTimeout:
-    sys.exit(0)   # still held by the parent
-sys.exit(3)       # acquired: the parent's grip is gone
-"""
-
-
-def _locked_out(index_path: Path, timeout: float = 1.0) -> bool:
-    """Does a separate process fail to acquire *index_path*'s lock right now?"""
-    proc = subprocess.run(
-        [sys.executable, "-c", _LOCK_PROBE, str(index_path), str(timeout)],
-        capture_output=True,
-        timeout=120,
-    )
-    if proc.returncode not in (0, 3):
-        raise AssertionError(proc.stderr.decode()[-800:])
-    return proc.returncode == 0
+# lacked.
 
 
 def test_the_lock_survives_the_atomic_writes_it_serializes(tmp_path: Path) -> None:
@@ -319,7 +292,7 @@ def test_the_lock_survives_the_atomic_writes_it_serializes(tmp_path: Path) -> No
         # Same inode, so nothing replaced the file the lock is on...
         assert lock_file.stat().st_ino == held_inode
         # ...and, decisively, another process still cannot take it.
-        assert _locked_out(index_path), (
+        assert index_locked_out(index_path), (
             "an atomic_write dropped the block's lock: a concurrent writer can "
             "now interleave with a block that believes it holds it"
         )
@@ -327,7 +300,7 @@ def test_the_lock_survives_the_atomic_writes_it_serializes(tmp_path: Path) -> No
     assert index_path.read_text() == "key\nsecond\n"
     # The probe can succeed when the lock is free, so the assertion above is
     # about the lock and not about the probe never working.
-    assert not _locked_out(index_path), "the lock outlived its block"
+    assert not index_locked_out(index_path), "the lock outlived its block"
 
 
 def test_the_lock_file_is_created_once_and_never_removed(tmp_path: Path) -> None:
@@ -420,7 +393,7 @@ def test_two_routes_to_one_index_take_one_lock(tmp_path: Path) -> None:
     roundabout = tmp_path / "sub" / ".." / "index.csv"
 
     with index_lock(direct, timeout=10):
-        assert _locked_out(roundabout)
+        assert index_locked_out(roundabout)
 
     assert sorted(p.name for p in tmp_path.iterdir()) == [
         "index.csv",

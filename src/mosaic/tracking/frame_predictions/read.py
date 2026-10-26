@@ -22,10 +22,16 @@ from mosaic.core.annotations.pose_predictions import (
     read_pose_predictions,
 )
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
-from mosaic.core.pipeline.index_csv import index_records, project_to_schema
+from mosaic.core.pipeline.index_csv import (
+    finished_row_file,
+    finished_rows,
+    index_records,
+    project_to_schema,
+)
 from mosaic.tracking.frame_predictions.index import (
     FRAME_PREDICTIONS_COLUMNS,
     FRAME_PREDICTIONS_ROOT,
+    PREDICTION_KEY_COLUMNS,
     SCORE_RUN_COLUMNS,
     predict_frames_index,
     prediction_index_path,
@@ -96,13 +102,12 @@ def read_entry_predictions(
         FileNotFoundError: The finished row names a file that is not on disk.
         ValueError: The file is not a predictions file that this mosaic reads.
     """
-    wanted = (run_id, group, sequence, camera)
-    for record in index_records(list_prediction_runs(ds)):
-        key = (record["run_id"], record["group"], record["sequence"], record["camera"])
-        if key != wanted or not record["finished_at"]:
-            continue
-        return read_pose_predictions(predictions_file(ds, record))
-    return None
+    records = index_records(list_prediction_runs(ds))
+    finished = finished_rows(records, run_id, PREDICTION_KEY_COLUMNS)
+    record = finished.get((group, sequence, camera))
+    if record is None:
+        return None
+    return read_pose_predictions(predictions_file(ds, record))
 
 
 def predictions_file(ds: Dataset, record: Mapping[str, str]) -> Path:
@@ -116,16 +121,12 @@ def predictions_file(ds: Dataset, record: Mapping[str, str]) -> Path:
         FileNotFoundError: The file is not on disk. The message names the run,
             the entry camera and the path.
     """
-    path = ds.resolve_path(record["abs_path"])
-    if path.is_file():
-        return path
-    msg = (
-        f"predict-frames run {record['run_id']!r} records entry "
-        f"(group={record['group']!r}, sequence={record['sequence']!r}, "
-        f"camera={record['camera']!r}) as finished in {path}, and that file is "
-        "not on disk. `mosaic reindex --apply` drops a row whose file is gone."
+    return finished_row_file(
+        ds,
+        record,
+        run_kind="predict-frames",
+        key_columns=PREDICTION_KEY_COLUMNS,
     )
-    raise FileNotFoundError(msg)
 
 
 def list_score_runs(ds: Dataset, *, prediction_run: str | None = None) -> pd.DataFrame:
@@ -175,7 +176,9 @@ def read_score_summary(ds: Dataset, run_id: str) -> PoseScoreSummary | None:
     record = _finished_score_row(ds, run_id)
     if record is None:
         return None
-    path = _score_output(ds, record, "summary.json")
+    path = finished_row_file(
+        ds, record, run_kind="score-predictions", name="summary.json"
+    )
     return PoseScoreSummary.model_validate_json(path.read_bytes())
 
 
@@ -197,30 +200,12 @@ def read_score_frames(ds: Dataset, run_id: str) -> pd.DataFrame:
     record = _finished_score_row(ds, run_id)
     if record is None:
         return empty_frame_table(DEFAULT_PCK_ALPHAS)
-    return pd.read_parquet(_score_output(ds, record, "frames.parquet"))
+    path = finished_row_file(
+        ds, record, run_kind="score-predictions", name="frames.parquet"
+    )
+    return pd.read_parquet(path)
 
 
 def _finished_score_row(ds: Dataset, run_id: str) -> Mapping[str, str] | None:
     """Return the finished row of *run_id*, or ``None`` when it has none."""
-    for record in index_records(list_score_runs(ds)):
-        if record["run_id"] == run_id and record["finished_at"]:
-            return record
-    return None
-
-
-def _score_output(ds: Dataset, record: Mapping[str, str], name: str) -> Path:
-    """Return the file *name* in a finished score run's directory.
-
-    Raises:
-        FileNotFoundError: The file is not on disk. The message names the run and
-            the path.
-    """
-    path = ds.resolve_path(record["abs_path"]) / name
-    if path.is_file():
-        return path
-    msg = (
-        f"score-predictions run {record['run_id']!r} is recorded as finished, "
-        f"and {path} is not on disk. `mosaic reindex --apply` drops a row whose "
-        "files are gone."
-    )
-    raise FileNotFoundError(msg)
+    return finished_rows(index_records(list_score_runs(ds)), run_id, ()).get(())

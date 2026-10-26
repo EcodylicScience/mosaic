@@ -56,6 +56,7 @@ if TYPE_CHECKING:
 __all__ = [
     "FRAME_PREDICTIONS_COLUMNS",
     "FRAME_PREDICTIONS_ROOT",
+    "PREDICTION_KEY_COLUMNS",
     "RUN_PARAMS_NAME",
     "SCORE_RUN_COLUMNS",
     "SCORE_RUN_OUTPUTS",
@@ -78,6 +79,9 @@ FRAME_PREDICTIONS_ROOT: Final = "frame_predictions"
 
 PredictionKind = Literal["predict-frames", "score-predictions"]
 """A kind directory of the root, named for the op that writes its runs."""
+
+PREDICTION_KEY_COLUMNS: Final = ("group", "sequence", "camera")
+"""The columns that key a row of the predict-frames index within its run."""
 
 RUN_PARAMS_NAME: Final = "run_params.json"
 """What a run's identity payload is called, in its run root."""
@@ -201,7 +205,7 @@ def predict_frames_index(path: Path) -> IndexCSV[FramePredictionsRow]:
     return IndexCSV(
         path,
         FramePredictionsRow,
-        dedup_keys=["run_id", "group", "sequence", "camera"],
+        dedup_keys=["run_id", *PREDICTION_KEY_COLUMNS],
         adopt=partial(project_to_schema, columns=FRAME_PREDICTIONS_COLUMNS),
     )
 

@@ -85,6 +85,8 @@ pipeline graph are in `graph/CLAUDE.md`.
   to a labeled one, and two recipes for one entry raise. The caller answers with
   `tracks_run_id=` (`run_id=` on `load_tracks` and `drop_entries`), and `""` names the
   unlabeled tables.
+- `row_in_scope` is the one filter of resolved rows to a run's entries. `None` covers
+  every row, and an empty list covers none.
 - The writer measures `n_keypoints` and `frame_min`/`frame_max` from the parquet. The
   producer passes `media_frames`, `frames_read` and `known_tail_loss`. A blank cell on
   every count column means unknown. The `TracksIndexRow` docstring defines each

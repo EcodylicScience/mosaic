@@ -39,7 +39,11 @@ from mosaic.core.pipeline.entry_claim import (
     release_entry,
 )
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
-from mosaic.core.pipeline.index_csv import index_records
+from mosaic.core.pipeline.index_csv import (
+    finished_rows,
+    index_records,
+    row_file_exists,
+)
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.op_identity import (
     OP_IDENTITY_SCHEME,
@@ -70,6 +74,7 @@ from mosaic.tracking.frame_predictions.errors import (
     PredictFramesNotFound,
 )
 from mosaic.tracking.frame_predictions.index import (
+    PREDICTION_KEY_COLUMNS,
     FramePredictionsRow,
     predict_frames_index,
     prediction_index_path,
@@ -1005,26 +1010,16 @@ def _write_entry(
     return rows
 
 
-def _finished_files(ds: Dataset, run_id: str) -> dict[tuple[str, str, str], str]:
-    """Return the file that each finished row of *run_id* names, by entry camera."""
-    return {
-        (row.get("group", ""), row.get("sequence", ""), row.get("camera", "")): row.get(
-            "abs_path", ""
-        )
-        for row in index_records(list_prediction_runs(ds))
-        if row.get("run_id", "") == run_id and row.get("finished_at", "")
-    }
-
-
 def _is_written(
-    ds: Dataset, finished: Mapping[tuple[str, str, str], str], entry: _EntryFrames
+    ds: Dataset,
+    finished: Mapping[tuple[str, ...], Mapping[str, str]],
+    entry: _EntryFrames,
 ) -> bool:
     """Return whether every camera of *entry* has a finished row and its file."""
-    for camera in entry.cameras:
-        stored = finished.get((entry.group, entry.sequence, camera.camera), "")
-        if not stored or not ds.resolve_path(stored).is_file():
-            return False
-    return True
+    return all(
+        row_file_exists(ds, finished.get((entry.group, entry.sequence, camera.camera)))
+        for camera in entry.cameras
+    )
 
 
 def _entry_done(ctx: JobContext, done: int, total: int, key: str) -> None:
@@ -1119,7 +1114,9 @@ class PredictFramesOp(Op[PredictFramesParams]):
             params_hash=hash_params(payload),
         )
         index = predict_frames_index(prediction_index_path(ds, _KIND))
-        finished = _finished_files(ds, run_id)
+        finished = finished_rows(
+            index_records(list_prediction_runs(ds)), run_id, PREDICTION_KEY_COLUMNS
+        )
         total = len(extraction.entries)
         ctx.set_total(total)
 

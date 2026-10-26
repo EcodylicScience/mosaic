@@ -69,6 +69,7 @@ from ..inventory.model import (
     FeatureRunRef,
     FramePredictionsRef,
     FrameRunRef,
+    FrameSelectionRef,
     LabelsVariantRef,
     MediaDerivativeRef,
     MediaVariantRef,
@@ -1421,8 +1422,9 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     has no run-addressed artifact at all -- its derivatives are named by recipe
     and source -- so it is looked up per target. A media variant is a separate
     run with one file per entry. A predict-frames run has one file per entry
-    camera of the extraction run that it names. A score-predictions run is one
-    artifact, named by its run.
+    camera of the extraction run that it names, and a select-frames run one file
+    per entry of the tracks variant that it names. A score-predictions run is
+    one artifact, named by its run.
 
     ``None`` is honest rather than a gap: an op whose output nothing inventories
     reads as having no coverage answer, where reporting zero would say it had
@@ -1454,6 +1456,11 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
         )
     if kind == "score-predictions":
         return PredictionScoreRef(run_id=identity.run_id)
+    if kind == "select-frames":
+        return FrameSelectionRef(
+            run_id=identity.run_id,
+            source_tracks_run_id=str(getattr(params, "source_tracks_run_id", "")),
+        )
     return None
 
 
@@ -1640,9 +1647,11 @@ def coverage_against(
     variant then reports that entry as drifted when both compositions are known.
 
     A predict-frames run is measured over the target's entries in its
-    extraction run (:func:`_predicted_entries`). Its rows name only the entries
-    that the run was asked for and do not bound the target. A scope naming one
-    more entry of the extraction run reads short.
+    extraction run (:func:`_predicted_entries`), and a select-frames run over
+    the target's entries in its tracks variant (:func:`_selected_entries`). The
+    rows of either name only the entries that the run was asked for and do not
+    bound the target. A scope naming one more entry of the extraction run or
+    variant reads short.
     """
     record = inv.record(ref) if ref is not None else None
     if record is None:
@@ -1666,6 +1675,10 @@ def coverage_against(
     elif isinstance(ref, FramePredictionsRef):
         coverage = Coverage[Entry](
             target=target, present=_predicted_entries(inv, ref, record, target)
+        )
+    elif isinstance(ref, FrameSelectionRef):
+        coverage = Coverage[Entry](
+            target=target, present=_selected_entries(inv, ref, record, target)
         )
     else:
         coverage = Coverage[Entry](
@@ -1715,6 +1728,33 @@ def _predicted_entries(
         if all((*entry, camera) in written for camera in names)
     )
     return predicted | (target - cameras.keys())
+
+
+def _selected_entries(
+    inv: DatasetInventory,
+    ref: FrameSelectionRef,
+    record: AnyRecord,
+    target: frozenset[Entry],
+) -> frozenset[Entry]:
+    """Return the entries that the select-frames run *ref* answers for.
+
+    An entry that the source variant's rows name is present when it has a
+    finished selections row and its file. The op reuses an entry under the same
+    rule. An entry of *target* that the variant has no row for is present too,
+    because the op skips it and has nothing to write.
+
+    Args:
+        inv: The inventory, which contains the source variant's record.
+        ref: The select-frames run.
+        record: The run's record.
+        target: The entries that the step is planned over.
+
+    Returns:
+        The present entries, which may include entries outside *target*.
+    """
+    written = inv.coverage(ref).present.difference(record.unfinished_rows)
+    variant = inv.rows(TracksVariantRef(run_id=ref.source_tracks_run_id))
+    return (written & variant) | (target - variant)
 
 
 def _extraction_cameras(
