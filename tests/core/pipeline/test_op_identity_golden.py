@@ -86,9 +86,14 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.params import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
+from mosaic.tracking.keypoint_sets import ResolvedSet
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
+from mosaic.tracking.ops.convert import convert_points_run_id
 from mosaic.tracking.ops.infer import infer_run_id
-from mosaic.tracking.ops.prepare import ResolvedSet, prepare_training_data_run_id
+from mosaic.tracking.ops.prepare import (
+    PrepareTrainingDataParams,
+    prepare_training_data_run_id,
+)
 from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
@@ -155,6 +160,16 @@ MEDIA_VARIANT = "preprocess.0.1-aaaaaaaaaa"
 omits it. Each consumer folds it in where it mints, and the function cases below
 call those minters.
 """
+
+
+_CONVERT_POINTS_PARAMS = _op_params(
+    "convert-points",
+    cvat_xml="annotations/points.xml",
+    images_dir="annotations/images",
+    class_names=["bee", "feeder"],
+    radii={"bee": 10.0, "feeder": 30.0},
+)
+"""The convert-points params of both the digest case and the run-identifier case."""
 
 
 OP_CASES: tuple[OpCase, ...] = (
@@ -257,16 +272,7 @@ OP_CASES: tuple[OpCase, ...] = (
         ),
     ),
     # --- convert --------------------------------------------------------------
-    OpCase(
-        case_id="convert-points/cvat",
-        params=_op_params(
-            "convert-points",
-            cvat_xml="annotations/points.xml",
-            images_dir="annotations/images",
-            class_names=["bee", "feeder"],
-            radii={"bee": 10.0, "feeder": 30.0},
-        ),
-    ),
+    OpCase(case_id="convert-points/cvat", params=_CONVERT_POINTS_PARAMS),
     OpCase(
         case_id="resample-tracks/30fps",
         params=_op_params("resample-tracks", target_fps=30.0),
@@ -691,6 +697,36 @@ def _prepare_run_id_with_revisions_named() -> str:
     )
 
 
+def _prepare_run_id_with_a_holdout() -> str:
+    # The hold-out enters by its split units, given out of order: the minter
+    # sorts them, and the references in holdout leave the parameter dump.
+    params = _op_params(
+        "prepare-training-data",
+        sets=[{"set_key": "17-mice"}, {"set_key": "21-rats"}],
+        holdout=[{"set_key": "33-held"}],
+    )
+    assert isinstance(params, PrepareTrainingDataParams)
+    return prepare_training_data_run_id(
+        "prepare-training-data",
+        OPS["prepare-training-data"].version,
+        params,
+        _prepared_sets(),
+        holdout_units=("uuid-a::m07", "uuid-a::m03"),
+    )
+
+
+def _convert_points_run_id() -> str:
+    # The digest case above omits the version. This one mints through the op's
+    # minter with the registered version. A version bump changes its golden line.
+    return convert_points_run_id(
+        "convert-points",
+        OPS["convert-points"].version,
+        _CONVERT_POINTS_PARAMS,
+        "deadbeefcafe",
+        "0123456789abcdef",
+    )
+
+
 def _infer_run_id() -> str:
     return infer_run_id(
         "infer-points",
@@ -925,10 +961,12 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "train-pose/run-id": _train_run_id,
     "train-pose/run-id-bare-base": _train_run_id_from_a_bare_path,
     "infer-points/run-id": _infer_run_id,
+    "convert-points/run-id": _convert_points_run_id,
     "prepare-training-data/run-id": _prepare_run_id,
     "prepare-training-data/run-id-revisions-named": (
         _prepare_run_id_with_revisions_named
     ),
+    "prepare-training-data/holdout": _prepare_run_id_with_a_holdout,
     "preprocess/one-step": _preprocess_one_step,
     "preprocess/three-steps": _preprocess_three_steps,
     "preprocess/upstream": _preprocess_upstream,

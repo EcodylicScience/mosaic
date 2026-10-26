@@ -37,7 +37,7 @@ Convert one format's raw labels into a labels variant of one kind.
 
 #### `convert-points`
 
-Version `0.2` &middot; `mosaic.tracking.ops.convert.ConvertPointsOp`
+Version `0.3` &middot; `mosaic.tracking.ops.convert.ConvertPointsOp`
 
 Convert CVAT point annotations into a POLO point-detection dataset + ``data.yaml``.
 
@@ -85,7 +85,7 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 #### `prepare-training-data`
 
-Version `0.2` &middot; `mosaic.tracking.ops.prepare.PrepareTrainingDataOp`
+Version `0.3` &middot; `mosaic.tracking.ops.prepare.PrepareTrainingDataOp`
 
 Merge revisions of keypoint annotation sets into one training dataset.
 
@@ -101,7 +101,8 @@ Merge revisions of keypoint annotation sets into one training dataset.
 | `radius` | `number` | `100.0` | > `0` | polo only: the detection radius. [px] |
 | `split` | tuple of (`number`, `number`, `number`) | `[0.8, 0.15, 0.05]` | min items `3`, max items `3` | Train, validation and test fractions. |
 | `split_by` | `"sequence"` \| `"group"` \| `"frame"` | `"sequence"` |  | What is kept together when the split is drawn. sequence keeps one recording's frames in one split, which is what makes a validation score honest. group keeps a whole sequence_groups label together. frame splits image by image, and its scores are optimistic. |
-| `sequence_groups` | `object` | _constructed_ |  | group only: the group each sequence belongs to, keyed by sequence name or by '<origin_uuid>:<sequence>' where names repeat across datasets. A sequence not listed is a group of its own. |
+| `sequence_groups` | `object` | _constructed_ |  | group only: the group each sequence belongs to, keyed by sequence name or by '<origin_uuid>:<group>:<sequence>', each part percent-encoded, where names repeat. A sequence not listed is a group of its own. |
+| `holdout` | list of `KeypointSetRef` | `[]` |  | Annotation sets kept out of training for evaluation. Every frame of sets that shares a split_by unit with a hold-out frame is left out. |
 | `seed` | `integer` | `42` |  | Random seed for the split assignment. |
 | `symlink_images` | `boolean` | `false` |  | Symlink images instead of copying them. Off by default: a symlinked tree stops being reproducible the moment a source dataset moves. |
 

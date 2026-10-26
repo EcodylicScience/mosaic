@@ -23,9 +23,10 @@ Three properties are what the rest of the design leans on.
 
 from __future__ import annotations
 
+import csv
 import json
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, Literal
@@ -39,29 +40,35 @@ from mosaic.core.annotations.model import (
     KeypointSchema,
 )
 from mosaic.core.annotations.narrow import AliasRole, narrow_pose_sets, narrowed_pose
-from mosaic.core.annotations.pose_annotations import (
-    PoseAnnotationSet,
-    PoseDefinition,
-    read_pose_annotations,
+from mosaic.core.annotations.pose_annotations import PoseAnnotationSet, PoseDefinition
+from mosaic.core.annotations.split import (
+    SplitBy,
+    Subset,
+    VideoFrame,
+    frame_key,
+    sequence_key,
+    split_filenames,
+    unit_key,
 )
-from mosaic.core.annotations.projection import KEYPOINTS_SERIES
-from mosaic.core.helpers import to_safe_name
+from mosaic.core.entry import make_entry_key, to_safe_name
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
-from mosaic.core.pipeline.file_digest import file_digest
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
-    index_records,
     project_to_schema,
 )
 from mosaic.core.pipeline.job import JobContext
-from mosaic.core.pipeline.label_series_index import (
-    read_label_series,
-    read_revision_manifest,
-)
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.op_identity import op_run_id
-from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
+from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
+from mosaic.tracking.keypoint_sets import (
+    KeypointSetRef,
+    ResolvedSet,
+    read_resolved_set,
+    resolve_keypoint_sets,
+)
 
 from ._common import claim_run_root, empty_claimed_run_root, ensure_models_root
 
@@ -72,14 +79,11 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline._utils import ResolvedScope
 
 __all__ = [
-    "KeypointSetRef",
     "PrepareTrainingDataOp",
     "PrepareTrainingDataParams",
     "PreparedDatasetIndexRow",
-    "ResolvedSet",
     "prepare_training_data_run_id",
     "prepared_dataset_index",
-    "resolve_keypoint_sets",
 ]
 
 PREPARE_KIND: Final = "prepare-training-data"
@@ -96,33 +100,27 @@ naming and recording revisions is the same for all four.
 """
 
 _TREE_TARGETS: Final = frozenset({"yolo-pose", "polo"})
+_SPLIT_TARGETS: Final = frozenset({"yolo-pose", "polo", "sleap"})
+"""The targets refused a split that cannot fill both training and validation."""
 
-SplitBy = Literal["sequence", "group", "frame"]
+_UNIT_NOUNS: Final[dict[SplitBy, tuple[str, str]]] = {
+    "sequence": ("recording", "recordings"),
+    "group": ("group", "groups"),
+    "frame": ("frame", "frames"),
+}
+"""Each ``split_by`` unit's noun, singular and plural."""
+
+PlacedSplit = Subset | Literal["excluded"]
+"""Where a prepared frame is placed: a split, or left out for the hold-out."""
+
+_PLACED_SPLITS: Final[dict[str, PlacedSplit]] = {
+    "train": "train",
+    "valid": "valid",
+    "test": "test",
+}
 
 
 # --- Params --------------------------------------------------------------------
-
-
-class KeypointSetRef(Params):
-    """One annotation set, and which saved state of it to read."""
-
-    set_key: Annotated[str, Declared("The set's key in the keypoints label series.")]
-    origin_uuid: Annotated[
-        str,
-        Declared(
-            "The manifest uuid of the dataset the set was saved in. Needed only "
-            "when two datasets' sets share a key; empty matches the one that has it."
-        ),
-    ] = ""
-    revision: Annotated[
-        int | None,
-        Field(ge=1),
-        Declared(
-            "Which revision to read. Left unset, the latest one indexed when the "
-            "run is named. The number selects and is recorded; only the content "
-            "it resolves to enters the run identifier."
-        ),
-    ] = None
 
 
 class PrepareTrainingDataParams(Params):
@@ -197,10 +195,18 @@ class PrepareTrainingDataParams(Params):
         dict[str, str],
         Declared(
             "group only: the group each sequence belongs to, keyed by sequence "
-            "name or by '<origin_uuid>:<sequence>' where names repeat across "
-            "datasets. A sequence not listed is a group of its own."
+            "name or by '<origin_uuid>:<group>:<sequence>', each part "
+            "percent-encoded, where names repeat. A sequence not listed is a group "
+            "of its own."
         ),
     ] = Field(default_factory=dict)
+    holdout: Annotated[
+        tuple[KeypointSetRef, ...],
+        Declared(
+            "Annotation sets kept out of training for evaluation. Every frame of sets "
+            "that shares a split_by unit with a hold-out frame is left out."
+        ),
+    ] = ()
     seed: Annotated[int, Declared("Random seed for the split assignment.")] = 42
     # Execution knob: how images are placed, never what the dataset holds.
     symlink_images: Annotated[
@@ -224,7 +230,11 @@ class PreparedDatasetIndexRow(RunIndexRowBase):
     in ``_INDEX_PATH_COLUMNS``. ``consumed_sets`` is the provenance link from a
     prepared dataset back to the annotation revisions behind it: a JSON list of
     ``{origin_uuid, set_key, revision, digest}``, in the sorted order the run
-    identifier was taken over.
+    identifier was taken over. ``held_out_sets`` lists the hold-out's revisions
+    the same way (``"[]"`` with none), ``n_held_out`` counts the frames of
+    ``sets`` its units remove, and ``keypoint_schema`` is the JSON
+    ``{keypoints, skeleton, symmetries}`` that a model trained on the
+    preparation predicts. None of the three enters the run identifier.
     """
 
     kind: str
@@ -242,6 +252,10 @@ class PreparedDatasetIndexRow(RunIndexRowBase):
     # chose. Blank on a row written before these columns, meaning unknown.
     pose_id: str = ""
     pose_name: str = ""
+    # Blank on a row written before these columns, meaning unknown.
+    held_out_sets: str = ""
+    n_held_out: int = 0
+    keypoint_schema: str = ""
 
 
 _PREPARED_DATASET_INDEX_COLUMNS: Final = tuple(
@@ -267,129 +281,12 @@ def prepared_dataset_index(path: Path) -> IndexCSV[PreparedDatasetIndexRow]:
     )
 
 
-# --- Resolving sets ------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class ResolvedSet:
-    """A set reference, resolved to one revision on disk."""
-
-    origin_uuid: str
-    set_key: str
-    revision: int
-    digest: str
-    payload: Path
-
-    def consumed(self) -> dict[str, str | int]:
-        return {
-            "origin_uuid": self.origin_uuid,
-            "set_key": self.set_key,
-            "revision": self.revision,
-            "digest": self.digest,
-        }
-
-
-def resolve_keypoint_sets(
-    ds: Dataset, refs: tuple[KeypointSetRef, ...], *, kind: str = PREPARE_KIND
-) -> tuple[ResolvedSet, ...]:
-    """Each reference as one revision file, with its digest measured off disk.
-
-    The index says which file a reference means. The file says what is in it:
-    the digest is taken from the bytes now, never read from the index column, so
-    a revision that was edited in place cannot mint the identifier of the state
-    it used to hold.
-
-    Raises:
-        KeyError: A reference matches several datasets' sets and names none.
-        ValueError: Two references resolve to one set. Two revisions of a set
-            name the same images, so both would be placed under one name.
-        IdentityDeferred: A reference matches no indexed revision, or the
-            revision it matches is not on disk. Both are states a scan or a save
-            can still change, which is what deferring means.
-    """
-    records = index_records(read_label_series(ds, KEYPOINTS_SERIES))
-    resolved: list[ResolvedSet] = []
-    for ref in refs:
-        matching = [
-            record
-            for record in records
-            if record.get("key", "") == ref.set_key
-            and (
-                not ref.origin_uuid or record.get("origin_uuid", "") == ref.origin_uuid
-            )
-        ]
-        if not matching:
-            known = sorted({record.get("key", "") for record in records})
-            origin = f" from dataset {ref.origin_uuid}" if ref.origin_uuid else ""
-            # Deferred, like data that is not on disk yet: the revision may be
-            # claimed by a scan that has not run. The reason names the repair,
-            # because at execution this is what the failure will say.
-            raise IdentityDeferred(
-                kind,
-                f"no revision of keypoint set {ref.set_key!r}{origin} is indexed "
-                f"here (indexed sets: {known or 'none'}). A set saved in another "
-                "dataset has to be claimed first: declare a labels source with "
-                "series='keypoints' naming the revision, then scan",
-            )
-        origins = sorted({record.get("origin_uuid", "") for record in matching})
-        if len(origins) > 1:
-            msg = (
-                f"keypoint set {ref.set_key!r} is indexed from {len(origins)} "
-                f"datasets ({', '.join(origins)}); name one with origin_uuid"
-            )
-            raise KeyError(msg)
-        if ref.revision is None:
-            chosen = max(matching, key=lambda record: int(record.get("revision", "0")))
-        else:
-            wanted = [
-                record
-                for record in matching
-                if int(record.get("revision", "0")) == ref.revision
-            ]
-            if not wanted:
-                held = sorted(int(record.get("revision", "0")) for record in matching)
-                raise IdentityDeferred(
-                    kind,
-                    f"revision {ref.revision} of keypoint set {ref.set_key!r} is "
-                    f"not indexed here (indexed: {held}); claim it and scan",
-                )
-            chosen = wanted[0]
-        payload = ds.resolve_path(chosen["abs_path"])
-        if not payload.is_file():
-            raise IdentityDeferred(
-                kind,
-                f"revision {chosen.get('revision', '')} of keypoint set "
-                f"{ref.set_key!r} ({payload}) is not on disk, and this run's "
-                "identity covers the content of what it reads",
-            )
-        named = [
-            item
-            for item in resolved
-            if (item.origin_uuid, item.set_key) == (origins[0], ref.set_key)
-        ]
-        if named:
-            msg = (
-                f"keypoint set {ref.set_key!r} is named twice; one dataset reads one "
-                "revision of a set, because two revisions show the same images"
-            )
-            raise ValueError(msg)
-        resolved.append(
-            ResolvedSet(
-                origin_uuid=origins[0],
-                set_key=ref.set_key,
-                revision=int(chosen.get("revision", "0")),
-                digest=file_digest(payload),
-                payload=payload,
-            )
-        )
-    return tuple(resolved)
-
-
 def prepare_training_data_run_id(
     kind: str,
     version: str,
     params: PrepareTrainingDataParams,
     sets: tuple[ResolvedSet, ...],
+    holdout_units: Collection[str] = (),
 ) -> str:
     """Mint a preparation run identifier.
 
@@ -399,21 +296,24 @@ def prepare_training_data_run_id(
     ``sets`` leaves the parameter dump and comes back as content. What the caller
     typed there -- a revision number, or none -- is a *selector*, and two spellings
     that select the same bytes must be one run. The triples are sorted, so the
-    order sets were named in is not a difference either; the split below is drawn
-    over sorted names for the same reason.
+    order sets were named in is not a difference either; the split below draws
+    each unit from the unit's key for the same reason.
+
+    ``holdout`` leaves the dump too. The split units it removes come back sorted,
+    and only when there are any. A preparation without a hold-out keeps the
+    identifier it had before the field existed. A label correction inside the
+    hold-out names the same preparation.
     """
     dumped = params.identity_dump()
     _ = dumped.pop("sets", None)
-    return op_run_id(
-        kind,
-        version,
-        {
-            "params": dumped,
-            "sets": sorted(
-                [item.origin_uuid, item.set_key, item.digest] for item in sets
-            ),
-        },
-    )
+    _ = dumped.pop("holdout", None)
+    payload: dict[str, object] = {
+        "params": dumped,
+        "sets": sorted([item.origin_uuid, item.set_key, item.digest] for item in sets),
+    }
+    if holdout_units:
+        payload["holdout"] = sorted(holdout_units)
+    return op_run_id(kind, version, payload)
 
 
 def check_preparation(ds: Dataset, params: PrepareTrainingDataParams) -> None:
@@ -425,74 +325,344 @@ def check_preparation(ds: Dataset, params: PrepareTrainingDataParams) -> None:
     for, or that a one-class trainer is handed several.
 
     Raises:
-        ValueError: The sets cannot be narrowed to one training dataset, or the
-            split would leave a trainer with no training or validation images.
+        ValueError: The sets cannot be narrowed to one training dataset; a hold-out
+            set is also named in ``sets``, lacks a usable frame for the pose, or has
+            another keypoint layout; the hold-out removes every training frame; a
+            ``sequence_groups`` key matches none of the sequences of the sets and
+            the hold-out; or the split would leave a trainer with no training or
+            validation images.
         KeyError: A reference matches several datasets' sets and names none.
         IdentityDeferred: A revision is not indexed here, or not on disk.
     """
-    ordered_sets, narrowed, _pose = _narrowed(
-        params, resolve_keypoint_sets(ds, params.sets)
+    ordered_sets, narrowed, pose = _narrowed(
+        params, resolve_keypoint_sets(ds, params.sets, kind=PREPARE_KIND)
     )
-    _ = _split(params, ordered_sets, narrowed)
+    holdout = _resolve_holdout(ds, params, pose, ordered_sets)
+    _ = _split(ds, params, ordered_sets, narrowed, holdout)
 
 
 # --- Building the tree ---------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class SplitRow:
+    """One narrowed usable frame of the sets, and where the preparation places it.
+
+    Attributes:
+        origin_uuid: The origin of the revision the frame came from.
+        set_key: The set the frame came from.
+        revision: The revision the frame came from.
+        image: The revision's image path.
+        video_frame: The recorded frame behind the image.
+        frame_key: ``split.frame_key`` of *video_frame*.
+        unit_key: The unit that ``split_by`` keeps together.
+        placed_name: The image's file name in the prepared dataset.
+        split: Where the frame is placed.
+    """
+
+    origin_uuid: str
+    set_key: str
+    revision: int
+    image: str
+    video_frame: VideoFrame
+    frame_key: str
+    unit_key: str
+    placed_name: str
+    split: PlacedSplit
+
+
+@dataclass(frozen=True, slots=True)
+class SplitPlan:
+    """Everything a preparation writes about its split.
+
+    A placed name is not parsed back. Every fact about a frame is recorded here
+    when its name is made.
+
+    Attributes:
+        name_by_frame: Each placed frame's name, keyed by the frame's ``id``.
+        split_of: Each placed name's split.
+        rows: Every narrowed usable frame, sorted by placed name.
+        n_held_out: The rows left out for the hold-out.
+    """
+
+    name_by_frame: dict[int, str]
+    split_of: dict[str, str]
+    rows: tuple[SplitRow, ...]
+    n_held_out: int
+
+
+@dataclass(frozen=True, slots=True)
+class HoldOut:
+    """The sets kept out of training, and the split units of their frames.
+
+    Attributes:
+        sets: The hold-out's revisions, in identity order.
+        units: The ``split_by`` unit of every usable frame of the hold-out,
+            narrowed to the training pose.
+    """
+
+    sets: tuple[ResolvedSet, ...] = ()
+    units: frozenset[str] = frozenset()
+
+
+def _resolve_holdout(
+    ds: Dataset,
+    params: PrepareTrainingDataParams,
+    pose: PoseDefinition,
+    sets: Sequence[ResolvedSet],
+) -> HoldOut:
+    """Resolve ``holdout``, narrow it to the training pose, and key its units.
+
+    Reads nothing when ``holdout`` is empty. Each hold-out set is checked against
+    a set that declares only the training pose. A set without that pose is refused
+    first, then a set without a usable frame, then a set of another keypoint
+    layout. The hold-out's units are keyed at ``split_by`` as the training frames
+    are, through ``sequence_groups`` under ``split_by="group"``.
+
+    Args:
+        ds: The dataset that reads the revisions.
+        params: The preparation's parameters.
+        pose: The training pose, which the training sets were narrowed to.
+        sets: The training sets in identity order.
+
+    Raises:
+        ValueError: A hold-out set is also named in ``sets``, chose another pose,
+            lacks a usable frame or has another keypoint layout, or two references
+            resolve to one set.
+        KeyError: A reference matches several datasets' sets and names none.
+        IdentityDeferred: A hold-out revision is not indexed here, or not on disk.
+    """
+    if not params.holdout:
+        return HoldOut()
+    resolved = resolve_keypoint_sets(ds, params.holdout, kind=PREPARE_KIND)
+    trained = {(item.origin_uuid, item.set_key) for item in sets}
+    for item in resolved:
+        if (item.origin_uuid, item.set_key) in trained:
+            msg = (
+                f"keypoint set {item.set_key!r} is named in both sets and holdout. "
+                "Train on it or hold it out."
+            )
+            raise ValueError(msg)
+    ordered = _in_identity_order(resolved)
+    # The pose and layout checks compare every set with the first, the training pose's.
+    reference = {_set_label(sets[0]): PoseAnnotationSet(poses=(pose,))}
+    states = {
+        **reference,
+        **{_set_label(item): read_resolved_set(item) for item in ordered},
+    }
+    _ = narrowed_pose(states, pose=params.pose)
+    for item in ordered:
+        if not any(frame.usable for frame in states[_set_label(item)].frames):
+            msg = (
+                f"hold-out set {item.set_key!r} has no usable frames for pose "
+                f"{pose.name!r}"
+            )
+            raise ValueError(msg)
+    narrowed = narrow_pose_sets(states, pose=params.pose)
+    units: set[str] = set()
+    for item in ordered:
+        annotations = narrowed[_set_label(item)]
+        recorded = video_frames_of(
+            ds,
+            _image_root(annotations.image_root),
+            annotations.frames,
+            revision_origin=item.origin_uuid,
+        )
+        units.update(
+            unit_key(video_frame, params.split_by, params.sequence_groups)
+            for video_frame in recorded
+        )
+    return HoldOut(sets=tuple(ordered), units=frozenset(units))
+
+
 def _split(
+    ds: Dataset,
     params: PrepareTrainingDataParams,
     ordered_sets: list[ResolvedSet],
     narrowed: dict[str, AnnotationSet],
-) -> tuple[dict[int, str], dict[str, str]]:
-    """Each frame's placed name, keyed by the frame's id, and each name's split.
+    holdout: HoldOut,
+) -> SplitPlan:
+    """Name every narrowed frame, key its unit, and draw each unit's split.
 
-    Named and grouped once, here, from the frame itself. The group is never read
-    back out of the name: a set key may hold the separator, and a name parsed apart
-    on it would file a frame under the wrong recording. The names are sorted before
-    the seeded shuffle, so neither the order sets were named in nor the order a file
-    lists its frames in reaches the assignment.
+    Each frame's unit is keyed from the recorded frame behind its image, which
+    :func:`video_frames_of` reads from the extraction that wrote it. A unit key
+    omits the set and the camera. One recorded instant saved in two sets or seen
+    by two cameras is therefore one unit under ``split_by="frame"``. A frame in a
+    unit of the hold-out is excluded before the draw. Each remaining unit's
+    split is drawn from the unit's key. The order sets were named in and the
+    order a file lists its frames in do not change the assignment.
 
     Raises:
-        ValueError: A split tree would hold no training or no validation images.
-            Splitting by sequence draws whole recordings, so the frames of one
-            recording all land in one split.
+        ValueError: A ``sequence_groups`` key matches none of the sequences of the
+            sets and the hold-out under ``split_by="group"``, the hold-out removes
+            every frame, or a target that trains on this split draws fewer than two
+            units or has a validation or training share of 0.
     """
-    from mosaic.core.annotations.split import split_filenames
-
-    name_by_frame: dict[int, str] = {}
-    group_by_name: dict[str, str] = {}
+    placed: list[tuple[ResolvedSet, AnnotationFrame, VideoFrame, str]] = []
     for item in ordered_sets:
-        for frame in narrowed[_set_label(item)].frames:
-            name = _placed_name(item, frame)
-            sequence = _sequence_of(frame)
-            group = f"{item.origin_uuid}:{sequence}"
-            if params.split_by == "group":
-                group = params.sequence_groups.get(
-                    group, params.sequence_groups.get(sequence, group)
-                )
-            name_by_frame[id(frame)] = name
-            group_by_name[name] = group
-    split_of, n_train, n_valid = split_filenames(
-        sorted(group_by_name),
-        params.split,
-        params.seed,
-        split_by="image" if params.split_by == "frame" else "group",
-        group_key=group_by_name.__getitem__,
-    )
-    if params.target in _TREE_TARGETS and (n_train == 0 or n_valid == 0):
-        empty = "training" if n_train == 0 else "validation"
-        drawn = (
-            f"{len(group_by_name)} frames"
-            if params.split_by == "frame"
-            else f"{len(set(group_by_name.values()))} {params.split_by}(s)"
+        annotations = narrowed[_set_label(item)]
+        recorded = video_frames_of(
+            ds,
+            _image_root(annotations.image_root),
+            annotations.frames,
+            revision_origin=item.origin_uuid,
         )
+        placed.extend(
+            (item, frame, video_frame, _placed_name(item, frame, video_frame))
+            for frame, video_frame in zip(annotations.frames, recorded, strict=True)
+        )
+    if params.split_by == "group":
+        _refuse_unknown_sequence_groups(ds, params, [*ordered_sets, *holdout.sets])
+
+    unit_of = {
+        name: unit_key(video_frame, params.split_by, params.sequence_groups)
+        for _item, _frame, video_frame, name in placed
+    }
+    kept = {name: unit for name, unit in unit_of.items() if unit not in holdout.units}
+    if holdout.units and not kept:
         msg = (
-            f"the {empty} split would be empty: split_by={params.split_by!r} "
-            f"divides {drawn} by {params.split}, too few to fill every split. "
-            "Annotate frames from more recordings, or split by frame."
+            f"the hold-out shares a {_UNIT_NOUNS[params.split_by][0]} with every "
+            "training frame. Choose a hold-out from other recordings, or split by "
+            "frame."
         )
         raise ValueError(msg)
-    return name_by_frame, split_of
+    if params.target in _SPLIT_TARGETS:
+        _refuse_small_split(params, len(set(kept.values())))
+    split_of, _, _ = split_filenames(
+        sorted(kept),
+        params.split,
+        params.seed,
+        split_by="group",
+        group_key=kept.__getitem__,
+    )
+    rows = [
+        SplitRow(
+            origin_uuid=item.origin_uuid,
+            set_key=item.set_key,
+            revision=item.revision,
+            image=frame.image_path.as_posix(),
+            video_frame=video_frame,
+            frame_key=frame_key(video_frame),
+            unit_key=unit_of[name],
+            placed_name=name,
+            split=_PLACED_SPLITS[split_of[name]] if name in kept else "excluded",
+        )
+        for item, frame, video_frame, name in placed
+    ]
+    return SplitPlan(
+        name_by_frame={
+            id(frame): name for _item, frame, _video, name in placed if name in kept
+        },
+        split_of=split_of,
+        rows=tuple(sorted(rows, key=lambda row: row.placed_name)),
+        n_held_out=sum(row.split == "excluded" for row in rows),
+    )
+
+
+def _image_root(root: Path | None) -> Path:
+    """The image root of a set read from a revision, which always records one.
+
+    Raises:
+        ValueError: The set lacks an image root.
+    """
+    if root is None:
+        msg = (
+            "annotation set has no image root; a revision's set is always read with one"
+        )
+        raise ValueError(msg)
+    return root
+
+
+def _refuse_unknown_sequence_groups(
+    ds: Dataset, params: PrepareTrainingDataParams, revisions: list[ResolvedSet]
+) -> None:
+    """Refuse a ``sequence_groups`` key that matches no sequence of sets or hold-out.
+
+    *revisions* are the resolved revisions of ``sets`` and ``holdout``. A key
+    matches the sequence key or the bare sequence name of any of their frames, of
+    every pose and finished or not. A key for a hold-out recording puts it in its
+    group, whose training recordings the hold-out then removes. A key for a
+    recording that this preparation leaves out is accepted and unused. A two-part
+    key whose second part names a sequence is the ``<origin_uuid>:<sequence>``
+    spelling that 0.2 read, and its refusal gives the key to use instead.
+
+    Raises:
+        ValueError: A key matches none of the sequences of *revisions*.
+    """
+    if not params.sequence_groups:
+        return
+    keys_by_name: dict[str, set[str]] = {}
+    for item in revisions:
+        state = read_resolved_set(item)
+        recorded = video_frames_of(
+            ds,
+            _image_root(state.image_root),
+            [frame.as_annotation_frame() for frame in state.frames],
+            revision_origin=item.origin_uuid,
+        )
+        for video_frame in recorded:
+            keys_by_name.setdefault(video_frame.sequence, set()).add(
+                sequence_key(video_frame)
+            )
+    known = set(keys_by_name).union(*keys_by_name.values())
+    unmatched = sorted(key for key in params.sequence_groups if key not in known)
+    if not unmatched:
+        return
+    messages: list[str] = []
+    generic: list[str] = []
+    for key in unmatched:
+        parts = key.split(":")
+        if len(parts) == 2 and parts[1] in keys_by_name:
+            suggested = " or ".join(
+                repr(each) for each in sorted(keys_by_name[parts[1]])
+            )
+            messages.append(
+                f"sequence_groups key {key!r} uses the <origin_uuid>:<sequence> "
+                f"spelling, which {PREPARE_KIND} 0.3 no longer reads. Key it as "
+                f"{suggested}."
+            )
+        else:
+            generic.append(key)
+    if generic:
+        listed = ", ".join(repr(key) for key in generic)
+        messages.append(
+            "these sequence_groups keys match no sequence of sets or holdout: "
+            f"{listed}. Key a sequence by its name, or by "
+            "<origin_uuid>:<group>:<sequence> with each part percent-encoded where "
+            "names repeat."
+        )
+    raise ValueError(" ".join(messages))
+
+
+def _refuse_small_split(params: PrepareTrainingDataParams, n_units: int) -> None:
+    """Refuse a split that cannot fill both a training and a validation split.
+
+    From two units on, the splitter fills training and validation whenever both
+    shares are positive.
+
+    Raises:
+        ValueError: Fewer than two units are drawn, or the validation or the
+            training share is 0.
+    """
+    f_train, f_valid, _f_test = params.split
+    if n_units < 2:
+        msg = (
+            "the training and validation splits need at least 2 "
+            f"{_UNIT_NOUNS[params.split_by][1]} and split_by={params.split_by!r} "
+            f"draws {n_units}."
+        )
+        if params.split_by != "frame":
+            msg += " Annotate frames from another recording, or split by frame."
+        raise ValueError(msg)
+    if f_valid == 0:
+        msg = (
+            f"the validation share is 0 and {params.target} needs a validation "
+            "split. Give split a validation share above 0."
+        )
+        raise ValueError(msg)
+    if f_train == 0:
+        msg = "the training share is 0. Give split a training share above 0."
+        raise ValueError(msg)
 
 
 def _narrowed(
@@ -508,10 +678,8 @@ def _narrowed(
         ValueError: The sets cannot be narrowed to one pose's layout, or a trainer
             that learns one class is handed several.
     """
-    ordered_sets = sorted(
-        sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest)
-    )
-    states = {_set_label(item): _read_set(item) for item in ordered_sets}
+    ordered_sets = _in_identity_order(sets)
+    states = {_set_label(item): read_resolved_set(item) for item in ordered_sets}
     narrowed = narrow_pose_sets(
         states,
         pose=params.pose,
@@ -529,11 +697,9 @@ def _narrowed(
     return ordered_sets, narrowed, narrowed_pose(states, pose=params.pose)
 
 
-def _read_set(item: ResolvedSet) -> PoseAnnotationSet:
-    """One revision's saved state, its images anchored where they are."""
-    manifest = read_revision_manifest(item.payload)
-    image_root = (item.payload.parent / (manifest.image_root or ".")).resolve()
-    return read_pose_annotations(item.payload, image_root)
+def _in_identity_order(sets: Sequence[ResolvedSet]) -> list[ResolvedSet]:
+    """*sets* in the order the run identifier sorts them."""
+    return sorted(sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest))
 
 
 def _set_label(item: ResolvedSet) -> str:
@@ -541,34 +707,30 @@ def _set_label(item: ResolvedSet) -> str:
     return f"{item.origin_uuid or 'local'}:{item.set_key}@rev{item.revision}"
 
 
-def _sequence_of(frame: AnnotationFrame) -> str:
-    """Which recording a frame came from.
-
-    The revision records it. A file that does not -- a foreign COCO export claimed
-    into the series -- falls back to the image's directory, which is where
-    mosaic's own frame extraction puts a sequence's frames.
-    """
-    return frame.video or frame.image_path.parent.name
-
-
-def _placed_name(item: ResolvedSet, frame: AnnotationFrame) -> str:
+def _placed_name(
+    item: ResolvedSet, frame: AnnotationFrame, video_frame: VideoFrame
+) -> str:
     """A file name no other frame in the union can have.
 
-    ``<origin>__<set>__<sequence>__frame_<index>``: the dataset, because sets
-    from two projects may share a key; the set, because two sets may hold the same
-    frame; the sequence, because every sequence numbers its frames from the same
-    place. Each part is percent-encoded so a name with a slash stays one
-    component, and ``__frame`` is kept as the last separator because that is what
-    the default split grouping reads.
+    ``<origin>__<set>__<entry>[__<camera>]__frame_<index>``: the dataset, because
+    sets from two projects may share a key; the set, because two sets may contain
+    the same frame; the entry key, because two groups may use one sequence name
+    and every sequence numbers its frames from the same place; the camera,
+    because the cameras of one entry share every frame index. The index is the
+    recorded frame's, or its image stem when that is unknown. Each part is
+    percent-encoded so a name with a slash stays one component, and ``__frame``
+    is kept as the last separator because that is what the default split
+    grouping reads.
     """
     index = (
-        f"{frame.frame_index:06d}"
-        if frame.frame_index >= 0
-        else to_safe_name(frame.image_path.stem)
+        f"{video_frame.frame_index:06d}"
+        if video_frame.frame_index >= 0
+        else to_safe_name(video_frame.image_stem)
     )
     origin = (item.origin_uuid or "local")[:8]
-    sequence = to_safe_name(_sequence_of(frame))
-    stem = f"{origin}__{to_safe_name(item.set_key)}__{sequence}__frame_{index}"
+    entry = make_entry_key(video_frame.group, video_frame.sequence)
+    camera = f"__{to_safe_name(video_frame.camera)}" if video_frame.camera else ""
+    stem = f"{origin}__{to_safe_name(item.set_key)}__{entry}{camera}__frame_{index}"
     return f"{stem}{frame.image_path.suffix.lower() or '.png'}"
 
 
@@ -582,9 +744,16 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
     kind = PREPARE_KIND
     category = "convert"
     domain = "tracking"
+    # 0.3: the split draws each recording, group or frame by a seeded hash of its
+    # key. Adding frames leaves every unit already drawn in its split unless the
+    # small-set guard moves it. A placed name contains the entry's group and
+    # camera, read from the extraction that wrote the image. split.csv records
+    # each frame's placed name and split beside the split directories. A
+    # hold-out removes every training frame that shares a split unit with it,
+    # and its units enter the identifier only when there are any.
     # 0.2: a revision is the full saved state, narrowed here, and a derived box
     # is the annotator's padded one rather than a hull read back as drawn.
-    version = "0.2"
+    version = "0.3"
     scope_takes = "none"
     scope_dependent = False
     Params = PrepareTrainingDataParams
@@ -605,12 +774,20 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         The annotation revisions enter by content, so a changed state is a
         different dataset and an unchanged one is this one. Content has to be
         read, so a preparation whose revisions are not on disk yet is not
-        nameable, and says so.
+        nameable, and says so. A hold-out enters by the split units it removes,
+        which are keyed from the hold-out narrowed to the training pose. Only a
+        preparation with a hold-out narrows its sets here.
         """
         _ = (scope, require_data)
         sets = resolve_keypoint_sets(ds, params.sets, kind=self.kind)
+        holdout_units: frozenset[str] = frozenset()
+        if params.holdout:
+            ordered_sets, _narrowed_sets, pose = _narrowed(params, sets)
+            holdout_units = _resolve_holdout(ds, params, pose, ordered_sets).units
         return OpIdentity(
-            run_id=prepare_training_data_run_id(self.kind, self.version, params, sets)
+            run_id=prepare_training_data_run_id(
+                self.kind, self.version, params, sets, holdout_units
+            )
         )
 
     def run(
@@ -656,23 +833,26 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         empty_claimed_run_root(out)
 
         ordered_sets, narrowed, pose = _narrowed(params, sets)
+        holdout = _resolve_holdout(ds, params, pose, ordered_sets)
+        plan = _split(ds, params, ordered_sets, narrowed, holdout)
         reference = narrowed[_set_label(ordered_sets[0])]
         schema, categories = reference.schema, reference.categories
         class_ids = reference.category_ids()
 
-        # One flat list of (frame, image on disk), each carrying the set it came
-        # from so its name can say so.
-        owner: dict[int, ResolvedSet] = {}
+        # One flat list of (frame, image on disk) over the frames the plan
+        # places. The image of a frame that the hold-out removes is not read and
+        # may be missing.
         gathered: list[tuple[AnnotationFrame, Path]] = []
         missing: list[str] = []
         for item in ordered_sets:
             annotations = narrowed[_set_label(item)]
             for frame in annotations.frames:
+                if id(frame) not in plan.name_by_frame:
+                    continue
                 source = annotations.resolve(frame)
                 if not source.is_file():
                     missing.append(str(source))
                     continue
-                owner[id(frame)] = item
                 gathered.append((frame, source))
         if missing:
             shown = ", ".join(missing[:3])
@@ -684,10 +864,8 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             )
             raise FileNotFoundError(msg)
 
-        name_by_frame, split_of = _split(params, ordered_sets, narrowed)
-
         def name_of(frame: AnnotationFrame, _source: Path) -> str:
-            return name_by_frame[id(frame)]
+            return plan.name_by_frame[id(frame)]
 
         # Every box is explicit by now: narrowing derived the ones the
         # annotator did not draw, under the policy this run was given.
@@ -719,14 +897,16 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
             artifact = _write_for_tool(
                 params, out, ordered, name_of, schema, categories
             )
+            _write_split_record(out, plan.rows)
             return _register(
                 ds, index, run_id, self.kind, params, sets, out, artifact,
-                pose=pose, n_frames=len(ordered),
+                pose=pose, n_frames=len(ordered), holdout=holdout,
+                n_held_out=plan.n_held_out, predicts=schema,
             )  # fmt: skip
         written, skipped = write_split_tree(
             ordered,
             out,
-            split_of,
+            plan.split_of,
             pose_lines if params.target == "yolo-pose" else point_lines,
             symlink_images=params.symlink_images,
             name_of=name_of,
@@ -755,10 +935,90 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
                 portable=True,
             )
 
+        _write_split_record(out, plan.rows)
         return _register(
             ds, index, run_id, self.kind, params, sets, out, data_yaml,
-            pose=pose, n_frames=written,
+            pose=pose, n_frames=written, holdout=holdout,
+            n_held_out=plan.n_held_out, predicts=schema,
         )  # fmt: skip
+
+
+_SPLIT_RECORD_COLUMNS: Final = (
+    "origin_uuid",
+    "set_key",
+    "revision",
+    "image",
+    "group",
+    "sequence",
+    "camera",
+    "frame_index",
+    "frame_key",
+    "unit_key",
+    "placed_name",
+    "split",
+)
+
+
+def _write_split_record(out: Path, rows: tuple[SplitRow, ...]) -> None:
+    """Write ``split.csv``: where the preparation placed each frame.
+
+    The file sits beside the split directories and outside the roots that
+    ``data.yaml`` declares, so it does not enter the dataset's fingerprint. For
+    ``litpose`` it records the draw made here, which Lightning Pose redraws from
+    every frame not excluded.
+    """
+
+    def write(path: Path) -> None:
+        with path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(_SPLIT_RECORD_COLUMNS)
+            for row in rows:
+                frame = row.video_frame
+                writer.writerow(
+                    [
+                        row.origin_uuid,
+                        row.set_key,
+                        row.revision,
+                        row.image,
+                        frame.group,
+                        frame.sequence,
+                        frame.camera,
+                        frame.frame_index,
+                        row.frame_key,
+                        row.unit_key,
+                        row.placed_name,
+                        row.split,
+                    ]
+                )
+
+    atomic_write(out / "split.csv", write)
+
+
+def _consumed_cell(sets: Sequence[ResolvedSet]) -> str:
+    """The JSON list that names revisions in an index cell, in identity order."""
+    return json.dumps(
+        sorted(
+            (item.consumed() for item in sets),
+            key=lambda entry: (str(entry["origin_uuid"]), str(entry["set_key"])),
+        )
+    )
+
+
+def _schema_cell(params: PrepareTrainingDataParams, schema: KeypointSchema) -> str:
+    """The keypoints a model trained on this preparation predicts, as JSON.
+
+    ``polo`` predicts the one keypoint at ``point_index`` and has no edges or
+    mirror pairs. Every other target predicts the narrowed pose.
+    """
+    if params.target == "polo":
+        schema = KeypointSchema(names=(schema.names[params.point_index],))
+    return json.dumps(
+        {
+            "keypoints": list(schema.names),
+            "skeleton": [list(edge) for edge in schema.skeleton],
+            "symmetries": [list(pair) for pair in schema.symmetries],
+        }
+    )
 
 
 def _register(
@@ -773,8 +1033,27 @@ def _register(
     *,
     pose: PoseDefinition,
     n_frames: int,
+    holdout: HoldOut,
+    n_held_out: int,
+    predicts: KeypointSchema,
 ) -> str:
-    """Record a finished preparation, naming what a trainer is to be handed."""
+    """Record a finished preparation, naming what a trainer is to be handed.
+
+    Args:
+        ds: The dataset that holds the index.
+        index: The preparation index.
+        run_id: The run.
+        kind: The preparation op.
+        params: The run's parameters.
+        sets: The training sets.
+        out: The run root.
+        artifact: What a trainer is handed.
+        pose: The pose the sets were narrowed to.
+        n_frames: The frames written.
+        holdout: The hold-out, whose revisions the row lists.
+        n_held_out: The frames of ``sets`` its units remove.
+        predicts: The keypoints a model trained on the preparation predicts.
+    """
     index.append(
         [
             PreparedDatasetIndexRow(
@@ -782,15 +1061,7 @@ def _register(
                 kind=kind,
                 target=params.target,
                 artifact_path=ds.relative_to_root(artifact),
-                consumed_sets=json.dumps(
-                    sorted(
-                        (item.consumed() for item in sets),
-                        key=lambda entry: (
-                            str(entry["origin_uuid"]),
-                            str(entry["set_key"]),
-                        ),
-                    )
-                ),
+                consumed_sets=_consumed_cell(sets),
                 n_frames=n_frames,
                 n_train=_count(out / "train"),
                 n_valid=_count(out / "valid"),
@@ -798,6 +1069,9 @@ def _register(
                 status="finished",
                 pose_id=str(pose.id),
                 pose_name=pose.name,
+                held_out_sets=_consumed_cell(holdout.sets),
+                n_held_out=n_held_out,
+                keypoint_schema=_schema_cell(params, predicts),
                 abs_path=Path(ds.relative_to_root(out)),
             )
         ]

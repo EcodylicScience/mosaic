@@ -19,7 +19,12 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.annotations.bbox import BboxPolicy, derived_bbox
-from mosaic.core.annotations.model import Bbox, Keypoint, KeypointSchema
+from mosaic.core.annotations.model import (
+    AnnotationFrame,
+    Bbox,
+    Keypoint,
+    KeypointSchema,
+)
 from mosaic.core.annotations.narrow import narrow_pose_sets, narrowed_pose
 from mosaic.core.annotations.pose_annotations import (
     FORMAT_VERSION,
@@ -465,6 +470,20 @@ def test_only_finished_frames_are_kept_and_a_frame_without_the_pose_stays() -> N
     assert [len(frame.objects) for frame in narrowed.frames] == [1, 0, 0], (
         "frames 2 and 3 are finished and hold no cricket: negatives"
     )
+
+
+def test_a_saved_frame_keeps_its_image_and_recorded_place_in_the_narrow_model() -> None:
+    saved = pose_frame(
+        "frames/a/frame_000007.png", _mouse(alias=None), sequence="m3", frame_index=7
+    )
+
+    assert saved.as_annotation_frame() == AnnotationFrame(
+        image_path=Path("frames/a/frame_000007.png"),
+        width=64,
+        height=48,
+        video="m3",
+        frame_index=7,
+    ), "the objects are the caller's to give, so none are carried over"
 
 
 def test_aliases_become_sorted_classes() -> None:

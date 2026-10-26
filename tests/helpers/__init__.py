@@ -24,6 +24,8 @@ What lives where:
   validation predicts from its declaration.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``labels`` writes converted label files of events, and their index rows.
+- ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
+  ``run_info.json`` records and its frames-index row.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
@@ -95,6 +97,11 @@ from tests.helpers.column_contract import assert_writes_declared_columns
 from tests.helpers.cli import invoke_json, invoke_ok
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
+from tests.helpers.extracted_frames import (
+    extract_entry_camera,
+    record_frames_row,
+    write_frames_run,
+)
 from tests.helpers.environment import (
     CI_FERAL_MODULES,
     CI_LIGHTNING_ACTION_MODULES,
@@ -461,6 +468,7 @@ __all__ = [
     "entry_clips",
     "entry_error_lines",
     "exited_pid",
+    "extract_entry_camera",
     "finish_media_variant",
     "functions_named",
     "index_media_sequence",
@@ -513,6 +521,7 @@ __all__ = [
     "pose_set",
     "published_table",
     "read_frame_code",
+    "record_frames_row",
     "read_golden",
     "read_string_golden",
     "record_variant_recipe",
@@ -558,6 +567,7 @@ __all__ = [
     "write_templates_study",
     "write_driver_lease",
     "write_fake_runner",
+    "write_frames_run",
     "write_golden",
     "write_h264_mp4",
     "write_litpose_model",

@@ -319,11 +319,4 @@ def _narrow_frame(
                 or derived_bbox(obj.keypoints, frame.width, frame.height, policy),
             )
         )
-    return AnnotationFrame(
-        image_path=frame.image_path,
-        width=frame.width,
-        height=frame.height,
-        objects=tuple(objects),
-        video=frame.sequence,
-        frame_index=frame.frame_index,
-    )
+    return frame.as_annotation_frame(tuple(objects))

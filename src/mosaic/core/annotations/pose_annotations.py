@@ -45,6 +45,8 @@ from pydantic import Field, ValidationError
 
 from mosaic.core.annotations.bbox import BboxPolicy
 from mosaic.core.annotations.model import (
+    AnnotationFrame,
+    AnnotationObject,
     AnnotationSet,
     Bbox,
     Keypoint,
@@ -164,6 +166,24 @@ class PoseFrame:
     objects: tuple[PoseObject, ...] = ()
     sequence: str = ""
     frame_index: int = -1
+
+    def as_annotation_frame(
+        self, objects: tuple[AnnotationObject, ...] = ()
+    ) -> AnnotationFrame:
+        """This frame's image and recorded position as a narrow-model frame.
+
+        Args:
+            objects: The narrow frame's objects. This frame's own objects are not
+                carried over.
+        """
+        return AnnotationFrame(
+            image_path=self.image_path,
+            width=self.width,
+            height=self.height,
+            objects=objects,
+            video=self.sequence,
+            frame_index=self.frame_index,
+        )
 
 
 @dataclass(frozen=True, slots=True)

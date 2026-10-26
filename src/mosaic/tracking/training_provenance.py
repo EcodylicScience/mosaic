@@ -4,7 +4,7 @@ Each link of that chain is written where it is known, by a different writer:
 
 ```
 models/<train kind>/<run_id>            index row: data_path, data_fingerprint
-  -> models/prepare-training-data/<id>  index row: consumed_sets, pose_id, pose_name
+  -> models/prepare-training-data/<id>  index row: consumed_sets, held_out_sets, pose_id, pose_name
   -> labels_raw/keypoints/index.csv     the claimed revision, its path
   -> <revision>/manifest.json           origin: what the authoring store recorded
 ```
@@ -118,6 +118,10 @@ class TrainingProvenance:
             ``None`` for a model that predicts no keypoints and when that file
             cannot be read.
         sets: The annotation revisions the preparation consumed.
+        held_out_sets: The revisions the preparation kept out of training, as
+            they were when it ran. A later correction of a hold-out set does
+            not change them. Empty without a hold-out and for a row that
+            predates the column.
         stopped_at: Why the walk went no further, or ``""`` when it reached
             every revision. Never an error: an incomplete chain is an answer.
     """
@@ -134,6 +138,7 @@ class TrainingProvenance:
     pose_name: str = ""
     keypoint_count: int | None = None
     sets: tuple[ConsumedRevision, ...] = ()
+    held_out_sets: tuple[ConsumedRevision, ...] = ()
     stopped_at: str = ""
 
     def as_json(self) -> dict[str, JsonValue]:
@@ -151,19 +156,21 @@ class TrainingProvenance:
             "pose_name": self.pose_name,
             "keypoint_count": self.keypoint_count,
             "stopped_at": self.stopped_at,
-            "sets": [
-                {
-                    "origin_uuid": item.origin_uuid,
-                    "set_key": item.set_key,
-                    "revision": item.revision,
-                    "digest": item.digest,
-                    "path": str(item.path) if item.path is not None else "",
-                    "reachable": item.reachable,
-                    "origin": dict(item.origin),
-                }
-                for item in self.sets
-            ],
+            "sets": [_revision_json(item) for item in self.sets],
+            "held_out_sets": [_revision_json(item) for item in self.held_out_sets],
         }
+
+
+def _revision_json(item: ConsumedRevision) -> dict[str, JsonValue]:
+    return {
+        "origin_uuid": item.origin_uuid,
+        "set_key": item.set_key,
+        "revision": item.revision,
+        "digest": item.digest,
+        "path": str(item.path) if item.path is not None else "",
+        "reachable": item.reachable,
+        "origin": dict(item.origin),
+    }
 
 
 def _row(index_path: Path, run_id: str) -> dict[str, str] | None:
@@ -354,6 +361,7 @@ def training_provenance(ds: Dataset, kind: str, run_id: str) -> TrainingProvenan
         pose_name=prepared.get("pose_name", ""),
         keypoint_count=_keypoint_count(holder, prepared),
         sets=sets,
+        held_out_sets=_consumed(holder, prepared.get("held_out_sets", "")),
         stopped_at=reason,
     )
 

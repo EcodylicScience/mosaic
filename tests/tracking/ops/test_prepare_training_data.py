@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import fields, replace
 from pathlib import Path
+from typing import Final
 
 import pandas as pd
 import pytest
@@ -27,21 +28,29 @@ from mosaic.core.annotations.pose_annotations import (
 )
 from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import make_entry_key
 from mosaic.core.manifest import LabelsScanSource, LibraryLink
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, run_op
 from mosaic.tracking import register_ops
+from mosaic.tracking.keypoint_sets import ResolvedSet
+from mosaic.tracking.ops import prepare
 from mosaic.tracking.ops._common import (
+    fingerprint_dataset,
     fingerprint_yolo_dataset,
     resolve_training_data,
 )
 from mosaic.tracking.ops.prepare import (
     PreparedDatasetIndexRow,
     PrepareTrainingDataParams,
+    SplitPlan,
+    SplitRow,
     check_preparation,
+    prepare_training_data_run_id,
     prepared_dataset_index,
 )
 from mosaic.tracking.ops.train import PoseTrainParams, finalize_training
@@ -49,11 +58,14 @@ from mosaic.tracking.ops.trained_models import trained_model_index
 from mosaic.tracking.training_provenance import training_provenance
 from tests.helpers import (
     MOUSE,
+    assert_tree_unchanged,
+    extract_entry_camera,
     make_dataset,
     pose_frame,
     pose_object,
     pose_set,
     revision_file,
+    tree_snapshot,
 )
 
 register_ops()
@@ -643,6 +655,7 @@ def test_a_one_class_trainer_refuses_classes_by_alias(
     [
         ({"pose": None}, "name the one to train"),
         ({"class_by": "alias", "target": "sleap"}, "trains one class"),
+        ({"split": (1.0, 0.0, 0.0)}, "the validation share is 0"),
     ],
 )
 def test_the_check_refuses_what_a_run_would_and_writes_nothing(
@@ -662,36 +675,827 @@ def test_the_check_passes_what_a_run_accepts(full_state: Dataset) -> None:
     check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
 
 
+@pytest.fixture
+def small_sets(tmp_path: Path) -> Dataset:
+    """Return a library with a set of four frames of one recording and a set of one frame."""
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    _ = _save_set(library, "one-recording", {"m01": 4})
+    _ = _save_set(library, "one-frame", {"m02": 1})
+    return library
+
+
+def _refusal_of_both(library: Dataset, params: dict[str, object]) -> list[str]:
+    """Return the messages that check_preparation and a run refuse *params* with."""
+    messages: list[str] = []
+    with pytest.raises(ValueError) as checked:
+        check_preparation(library, PrepareTrainingDataParams.model_validate(params))
+    messages.append(str(checked.value))
+    with pytest.raises(ValueError) as ran:
+        _ = run_op(library, KIND, params)
+    messages.append(str(ran.value))
+    return messages
+
+
+@pytest.mark.parametrize("target", ["yolo-pose", "polo", "sleap"])
 @pytest.mark.parametrize(
-    ("overrides", "empty"),
+    ("set_key", "split_by", "refusal"),
     [
-        ({"split_by": "sequence"}, "validation"),
-        ({"split_by": "sequence", "split": (0.3, 0.3, 0.4)}, "training"),
+        (
+            "one-recording",
+            "sequence",
+            "the training and validation splits need at least 2 recordings and "
+            "split_by='sequence' draws 1. Annotate frames from another recording, "
+            "or split by frame.",
+        ),
+        (
+            "one-recording",
+            "group",
+            "the training and validation splits need at least 2 groups and "
+            "split_by='group' draws 1. Annotate frames from another recording, "
+            "or split by frame.",
+        ),
+        (
+            "one-frame",
+            "frame",
+            "the training and validation splits need at least 2 frames and "
+            "split_by='frame' draws 1.",
+        ),
     ],
+    ids=["sequence", "group", "frame"],
 )
-def test_a_split_leaving_a_tree_without_training_or_validation_images_is_refused(
-    full_state: Dataset, overrides: dict[str, object], empty: str
+def test_a_split_of_fewer_than_two_units_is_refused(
+    small_sets: Dataset, target: str, set_key: str, split_by: str, refusal: str
 ) -> None:
-    """Whole recordings are drawn, and two cannot fill three splits.
+    """One unit cannot fill both a training and a validation split.
 
     The trainer would otherwise fail on the empty directory, after the preparation
     reported success.
     """
-    params = PrepareTrainingDataParams.model_validate({**FULL, **overrides})
+    params: dict[str, object] = {
+        "sets": [{"set_key": set_key}],
+        "split_by": split_by,
+        "target": target,
+    }
 
-    with pytest.raises(ValueError, match=f"the {empty} split would be empty"):
-        check_preparation(full_state, params)
-    with pytest.raises(ValueError, match=f"the {empty} split would be empty"):
-        _ = _prepare_full(full_state, **overrides)
+    assert _refusal_of_both(small_sets, params) == [refusal, refusal]
+
+
+@pytest.mark.parametrize("target", ["yolo-pose", "polo", "sleap"])
+def test_a_split_without_a_validation_share_is_refused(
+    world: tuple[Dataset, Dataset, Dataset], target: str
+) -> None:
+    _mice, _rats, library = world
+    params: dict[str, object] = {
+        "sets": [{"set_key": "17-openfield"}, {"set_key": "21-arena"}],
+        "split": (1.0, 0.0, 0.0),
+        "target": target,
+    }
+    refusal = (
+        f"the validation share is 0 and {target} needs a validation split. "
+        "Give split a validation share above 0."
+    )
+
+    assert _refusal_of_both(library, params) == [refusal, refusal]
+
+
+@pytest.mark.parametrize("target", ["yolo-pose", "polo", "sleap"])
+def test_a_split_without_a_training_share_is_refused(
+    world: tuple[Dataset, Dataset, Dataset], target: str
+) -> None:
+    _mice, _rats, library = world
+    params: dict[str, object] = {
+        "sets": [{"set_key": "17-openfield"}, {"set_key": "21-arena"}],
+        "split": (0.0, 0.5, 0.5),
+        "target": target,
+    }
+    refusal = "the training share is 0. Give split a training share above 0."
+
+    assert _refusal_of_both(library, params) == [refusal, refusal]
+
+
+def test_two_recordings_fill_a_training_and_a_validation_split(
+    full_state: Dataset,
+) -> None:
+    """Whole recordings are drawn, and two fill both splits a tree trainer reads."""
+    out = _prepare_full(full_state, split_by="sequence")
+
+    trained = {image.name.split("__")[2] for image in out.glob("train/images/*.png")}
+    validated = {image.name.split("__")[2] for image in out.glob("valid/images/*.png")}
+    assert len(trained) == len(validated) == 1 and trained != validated
 
 
 def test_a_trainer_that_splits_for_itself_takes_one_recording(
-    full_state: Dataset,
+    small_sets: Dataset,
 ) -> None:
-    """SLEAP and Lightning Pose draw their own validation split from what they are given."""
-    params = {**FULL, "split_by": "sequence", "target": "sleap"}
+    """Lightning Pose draws the validation split from the frames it is given."""
+    params = {
+        "sets": [{"set_key": "one-recording"}],
+        "split_by": "sequence",
+        "target": "litpose",
+    }
 
-    check_preparation(full_state, PrepareTrainingDataParams.model_validate(params))
+    check_preparation(small_sets, PrepareTrainingDataParams.model_validate(params))
+
+
+def test_sleap_is_refused_one_recording(small_sets: Dataset) -> None:
+    """SLEAP is refused one recording, which cannot fill a validation split."""
+    params = PrepareTrainingDataParams.model_validate(
+        {
+            "sets": [{"set_key": "one-recording"}],
+            "split_by": "sequence",
+            "target": "sleap",
+        }
+    )
+
+    with pytest.raises(ValueError, match="need at least 2 recordings"):
+        check_preparation(small_sets, params)
+
+
+# --------------------------------------------------- split units and placed names
+
+INSTANTS = range(100, 108)
+"""The frame indices that the frames run extracted from every entry camera."""
+EXTRACTED_ENTRIES = ("A__s1", "B__s1", "C__s2__left", "C__s2__right")
+"""How a placed name spells each entry camera of the ``extracted`` set."""
+
+
+@pytest.fixture
+def extracted(tmp_path: Path) -> Dataset:
+    """Return a library with one set of frames that a frames run extracted.
+
+    ``A/s1`` and ``B/s1`` share a sequence name across two groups, and two cameras
+    record ``C/s2``. A frames run extracted frames 100 to 107 of every entry
+    camera, and the set contains each of them, frame 100 of ``A/s1``, of ``B/s1``
+    and of both cameras of ``C/s2`` among them. The revision records each frame's
+    bare sequence name.
+    """
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    sizes = {index: (64, 48) for index in INSTANTS}
+    frames: list[PoseFrame] = []
+    for group, sequence, camera in (
+        ("A", "s1", ""),
+        ("B", "s1", ""),
+        ("C", "s2", "left"),
+        ("C", "s2", "right"),
+    ):
+        images = extract_entry_camera(
+            library,
+            run_id="uniform-1",
+            group=group,
+            sequence=sequence,
+            camera=camera,
+            sizes=sizes,
+        )
+        frames.extend(
+            pose_frame(
+                image,
+                pose_object((10.0 + index - 100, 12.0), (30.0, 20.0)),
+                sequence=sequence,
+                frame_index=index,
+            )
+            for index, image in images.items()
+        )
+    _ = _save(library, "extracted", pose_set(frames, image_root=library.base_dir))
+    return library
+
+
+def _placed(library: Dataset, set_key: str, entry: str, index: int) -> str:
+    return f"{(library.uuid or '')[:8]}__{set_key}__{entry}__frame_{index:06d}.png"
+
+
+def _splits_by_name(out: Path) -> dict[str, str]:
+    """Each image of a prepared tree, by file name, and the split it was placed in."""
+    return {image.name: image.parts[-3] for image in out.rglob("images/*.png")}
+
+
+def test_two_groups_and_two_cameras_prepare_under_distinct_names(
+    extracted: Dataset,
+) -> None:
+    """Frame 100 of ``A/s1``, ``B/s1`` and both cameras of ``C/s2`` get four names."""
+    run_id = run_op(
+        extracted, KIND, {"sets": [{"set_key": "extracted"}], "split": (0.5, 0.5, 0.0)}
+    )
+    out = model_run_root(extracted, KIND, run_id)
+
+    expected = sorted(
+        _placed(extracted, "extracted", entry, index)
+        for entry in EXTRACTED_ENTRIES
+        for index in INSTANTS
+    )
+    assert sorted(_splits_by_name(out)) == expected
+    contents = {image.read_bytes() for image in out.rglob("images/*.png")}
+    assert len(contents) == len(expected)
+
+
+def test_under_split_by_frame_the_cameras_of_one_instant_fall_in_one_split(
+    extracted: Dataset,
+) -> None:
+    params: dict[str, object] = {
+        "sets": [{"set_key": "extracted"}],
+        "split_by": "frame",
+        "split": (0.5, 0.5, 0.0),
+    }
+    out = model_run_root(extracted, KIND, run_op(extracted, KIND, params))
+
+    split_of = _splits_by_name(out)
+    pairs = [
+        (
+            split_of[_placed(extracted, "extracted", "C__s2__left", index)],
+            split_of[_placed(extracted, "extracted", "C__s2__right", index)],
+        )
+        for index in INSTANTS
+    ]
+    assert all(left == right for left, right in pairs)
+    assert {left for left, _right in pairs} == {"train", "valid"}, (
+        "the instants are drawn apart"
+    )
+
+
+def test_one_frame_saved_in_two_sets_falls_in_one_split(tmp_path: Path) -> None:
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    recordings = {"m01": 8, "m02": 8}
+    _ = _save_set(library, "first", recordings)
+    _ = _save_set(library, "second", recordings, shift=1.0)
+    params: dict[str, object] = {
+        "sets": [{"set_key": "first"}, {"set_key": "second"}],
+        "split_by": "frame",
+        "split": (0.5, 0.5, 0.0),
+    }
+
+    split_of = _splits_by_name(
+        model_run_root(library, KIND, run_op(library, KIND, params))
+    )
+
+    pairs = [
+        (
+            split_of[_placed(library, "first", sequence, index)],
+            split_of[_placed(library, "second", sequence, index)],
+        )
+        for sequence, count in recordings.items()
+        for index in range(count)
+    ]
+    assert all(first == second for first, second in pairs)
+    assert {first for first, _second in pairs} == {"train", "valid"}, (
+        "the frames are drawn apart"
+    )
+
+
+SPLIT_COLUMNS = [
+    "origin_uuid",
+    "set_key",
+    "revision",
+    "image",
+    "group",
+    "sequence",
+    "camera",
+    "frame_index",
+    "frame_key",
+    "unit_key",
+    "placed_name",
+    "split",
+]
+
+
+def _split_record(out: Path) -> pd.DataFrame:
+    return pd.read_csv(out / "split.csv", dtype=str, keep_default_na=False)
+
+
+def test_split_csv_has_one_sorted_row_per_frame_with_a_unique_name(
+    extracted: Dataset,
+) -> None:
+    run_id = run_op(
+        extracted, KIND, {"sets": [{"set_key": "extracted"}], "split": (0.5, 0.5, 0.0)}
+    )
+    record = _split_record(model_run_root(extracted, KIND, run_id))
+
+    assert list(record.columns) == SPLIT_COLUMNS
+    assert len(record) == len(EXTRACTED_ENTRIES) * len(INSTANTS)
+    assert list(record["placed_name"]) == sorted(record["placed_name"])
+    assert record["placed_name"].is_unique
+    assert set(record["set_key"]) == {"extracted"}
+    assert set(record["revision"]) == {"1"}
+    assert set(record["frame_index"]) == {str(index) for index in INSTANTS}
+
+
+def test_split_csv_agrees_with_the_tree(extracted: Dataset) -> None:
+    run_id = run_op(
+        extracted, KIND, {"sets": [{"set_key": "extracted"}], "split": (0.5, 0.5, 0.0)}
+    )
+    out = model_run_root(extracted, KIND, run_id)
+    record = _split_record(out)
+
+    assert dict(zip(record["placed_name"], record["split"], strict=True)) == (
+        _splits_by_name(out)
+    )
+
+
+def test_split_csv_does_not_change_the_dataset_fingerprint(
+    extracted: Dataset,
+) -> None:
+    run_id = run_op(
+        extracted, KIND, {"sets": [{"set_key": "extracted"}], "split": (0.5, 0.5, 0.0)}
+    )
+    out = model_run_root(extracted, KIND, run_id)
+    with_file = fingerprint_yolo_dataset(out / "data.yaml")
+    (out / "split.csv").unlink()
+
+    assert fingerprint_yolo_dataset(out / "data.yaml") == with_file
+
+
+def test_split_csv_sits_beside_a_lightning_pose_project(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+    run_id = _prepare(library, target="litpose")
+    out = model_run_root(library, KIND, run_id)
+    record = _split_record(out)
+
+    assert (out / "project").is_dir()
+    assert sorted(record["placed_name"]) == sorted(
+        path.name for path in (out / "images").iterdir()
+    )
+    with_file = fingerprint_dataset(out / "project")
+    (out / "split.csv").unlink()
+    assert fingerprint_dataset(out / "project") == with_file
+
+
+@pytest.fixture
+def grouped(tmp_path: Path) -> Dataset:
+    """Return a library with one set of four recordings.
+
+    ``m01`` and ``m02`` contain a mouse on two finished frames each, ``m03``
+    contains only a cricket, and the one frame of ``m04`` is unfinished.
+    """
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    mouse = pose_object((10.0, 12.0), (30.0, 20.0))
+    frames = [
+        pose_frame(
+            _image(library, sequence, index),
+            mouse,
+            sequence=sequence,
+            frame_index=index,
+        )
+        for sequence in ("m01", "m02")
+        for index in range(2)
+    ]
+    cricket = pose_object((30.0, 40.0), (36.0, 42.0), pose_id=CRICKET.id)
+    frames.append(pose_frame(_image(library, "m03", 0), cricket, sequence="m03"))
+    frames.append(
+        pose_frame(_image(library, "m04", 0), mouse, sequence="m04", usable=False)
+    )
+    state = pose_set(frames, poses=(MOUSE, CRICKET), image_root=library.base_dir)
+    _ = _save(library, "grouped", state)
+    return library
+
+
+def _grouped(sequence_groups: dict[str, str]) -> dict[str, object]:
+    return {
+        "sets": [{"set_key": "grouped"}],
+        "pose": "mouse",
+        "split_by": "group",
+        "split": (0.5, 0.5, 0.0),
+        "sequence_groups": sequence_groups,
+    }
+
+
+def _unmatched_refusal(*keys: str) -> str:
+    listed = ", ".join(repr(key) for key in keys)
+    return (
+        f"these sequence_groups keys match no sequence of sets or holdout: {listed}. "
+        "Key a sequence by its name, or by <origin_uuid>:<group>:<sequence> with "
+        "each part percent-encoded where names repeat."
+    )
+
+
+def test_a_group_key_for_any_recording_of_the_sets_is_accepted(
+    grouped: Dataset,
+) -> None:
+    """Keys name recordings of the whole saved state, whatever the pose or finish.
+
+    ``m03`` contains only a cricket and ``m04`` only an unfinished frame, and their
+    keys are accepted and unused.
+    """
+    uuid = grouped.uuid or ""
+    params = _grouped({"m01": "a", f"{uuid}::m02": "b", "m03": "a", "m04": "b"})
+
+    check_preparation(grouped, PrepareTrainingDataParams.model_validate(params))
+    _ = run_op(grouped, KIND, params)
+
+
+@pytest.mark.parametrize(
+    "key", ["m09", "{uuid}::m0l"], ids=["unknown-name", "mistyped-key"]
+)
+def test_a_group_key_that_names_no_recording_is_refused(
+    grouped: Dataset, key: str
+) -> None:
+    """A group split does not degrade to a sequence split without a message."""
+    unmatched = key.format(uuid=grouped.uuid or "")
+    params = _grouped({unmatched: "a", "m01": "a", "m02": "b"})
+    refusal = _unmatched_refusal(unmatched)
+
+    assert _refusal_of_both(grouped, params) == [refusal, refusal]
+
+
+def test_a_group_key_in_the_older_spelling_is_refused_with_the_newer_one(
+    grouped: Dataset,
+) -> None:
+    uuid = grouped.uuid or ""
+    older = f"{uuid}:m01"
+    refusal = (
+        f"sequence_groups key {older!r} uses the <origin_uuid>:<sequence> spelling, "
+        "which prepare-training-data 0.3 no longer reads. "
+        f"Key it as {f'{uuid}::m01'!r}."
+    )
+
+    assert _refusal_of_both(grouped, _grouped({older: "a", "m02": "b"})) == [
+        refusal,
+        refusal,
+    ]
+
+
+def test_the_older_spelling_of_a_name_in_two_groups_is_given_both_keys(
+    extracted: Dataset,
+) -> None:
+    uuid = extracted.uuid or ""
+    params = PrepareTrainingDataParams.model_validate(
+        {
+            "sets": [{"set_key": "extracted"}],
+            "split_by": "group",
+            "sequence_groups": {f"{uuid}:s1": "a"},
+        }
+    )
+
+    with pytest.raises(ValueError) as refused:
+        check_preparation(extracted, params)
+
+    assert str(refused.value).endswith(
+        f"Key it as {f'{uuid}:A:s1'!r} or {f'{uuid}:B:s1'!r}."
+    )
+
+
+@pytest.mark.parametrize("key", ["m09", "{uuid}:m01"], ids=["unmatched", "older"])
+def test_the_check_refuses_a_group_key_and_writes_nothing(
+    grouped: Dataset, key: str
+) -> None:
+    params = PrepareTrainingDataParams.model_validate(
+        _grouped({key.format(uuid=grouped.uuid or ""): "a"})
+    )
+    before = tree_snapshot(grouped.base_dir)
+
+    with pytest.raises(ValueError, match="sequence_groups key"):
+        check_preparation(grouped, params)
+
+    assert_tree_unchanged(grouped.base_dir, before)
+
+
+# ------------------------------------------------------------------------ hold-out
+
+
+@pytest.fixture
+def held_out(tmp_path: Path) -> Dataset:
+    """Return a library with a set to train on and sets to hold out of it.
+
+    ``train`` contains frames 0 to 3 of each of ``m01`` to ``m04``. ``m01-start``
+    contains frames 0 and 1 of ``m01``, which ``train`` contains too, ``h01`` two
+    frames of a recording that ``train`` lacks, and ``all-four`` frame 0 of every
+    recording of ``train``. ``unfinished`` contains one unfinished frame, and
+    ``other-layout`` the mouse pose with a third keypoint.
+    """
+    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    _ = _save_set(library, "train", {"m01": 4, "m02": 4, "m03": 4, "m04": 4})
+    _ = _save_set(library, "m01-start", {"m01": 2})
+    _ = _save_set(library, "h01", {"h01": 2})
+    _ = _save_set(library, "all-four", {"m01": 1, "m02": 1, "m03": 1, "m04": 1})
+    unfinished = pose_frame(
+        _image(library, "m05", 0),
+        pose_object((10.0, 12.0), (30.0, 20.0)),
+        sequence="m05",
+        usable=False,
+    )
+    _ = _save(
+        library, "unfinished", pose_set([unfinished], image_root=library.base_dir)
+    )
+    three_points = KeypointSchema(names=("nose", "ear", "tail"))
+    _one_pose_set(library, "other-layout", replace(MOUSE, schema=three_points))
+    return library
+
+
+def _with_holdout(*holdout: str, **overrides: object) -> dict[str, object]:
+    """Return the parameters that train on ``train`` and hold out *holdout*."""
+    return {
+        "sets": [{"set_key": "train"}],
+        "holdout": [{"set_key": key} for key in holdout],
+        "split": (0.5, 0.5, 0.0),
+        **overrides,
+    }
+
+
+def _record_plans(monkeypatch: pytest.MonkeyPatch) -> list[SplitPlan]:
+    """Record every split plan that a preparation builds from now on."""
+    plans: list[SplitPlan] = []
+
+    def record(
+        *,
+        name_by_frame: dict[int, str],
+        split_of: dict[str, str],
+        rows: tuple[SplitRow, ...],
+        n_held_out: int,
+    ) -> SplitPlan:
+        plan = SplitPlan(
+            name_by_frame=name_by_frame,
+            split_of=split_of,
+            rows=rows,
+            n_held_out=n_held_out,
+        )
+        plans.append(plan)
+        return plan
+
+    monkeypatch.setattr(prepare, "SplitPlan", record)
+    return plans
+
+
+def _excluded(record: pd.DataFrame) -> list[str]:
+    """Return the placed names that a split record leaves out, sorted."""
+    return sorted(record.loc[record["split"] == "excluded", "placed_name"])
+
+
+@pytest.mark.parametrize(
+    ("split_by", "sequence_groups", "removed"),
+    [
+        ("frame", {}, [("m01", 0), ("m01", 1)]),
+        ("sequence", {}, [("m01", index) for index in range(4)]),
+        (
+            "group",
+            {"m01": "g", "m02": "g"},
+            [(sequence, index) for sequence in ("m01", "m02") for index in range(4)],
+        ),
+    ],
+    ids=["frame", "sequence", "group"],
+)
+def test_a_hold_out_removes_every_training_frame_of_its_units(
+    held_out: Dataset,
+    monkeypatch: pytest.MonkeyPatch,
+    split_by: str,
+    sequence_groups: dict[str, str],
+    removed: list[tuple[str, int]],
+) -> None:
+    """``m01-start`` contains frames 0 and 1 of ``m01``, as ``train`` does."""
+    plans = _record_plans(monkeypatch)
+    params = _with_holdout(
+        "m01-start", split_by=split_by, sequence_groups=sequence_groups
+    )
+    out = model_run_root(held_out, KIND, run_op(held_out, KIND, params))
+
+    record = _split_record(out)
+    excluded = sorted(
+        _placed(held_out, "train", sequence, index) for sequence, index in removed
+    )
+    assert _excluded(record) == excluded
+    assert set(record["set_key"]) == {"train"}, "only training frames are rows"
+    assert sorted(_splits_by_name(out)) == sorted(
+        set(record["placed_name"]) - set(excluded)
+    )
+    assert {plan.n_held_out for plan in plans} == {len(excluded)}
+
+
+def test_a_hold_out_recording_keyed_into_a_group_holds_out_the_group(
+    held_out: Dataset,
+) -> None:
+    """``h01`` is a recording of the hold-out alone, and its key is accepted."""
+    params = _with_holdout(
+        "h01", split_by="group", sequence_groups={"h01": "g", "m02": "g"}
+    )
+
+    check_preparation(held_out, PrepareTrainingDataParams.model_validate(params))
+    out = model_run_root(held_out, KIND, run_op(held_out, KIND, params))
+
+    assert _excluded(_split_record(out)) == sorted(
+        _placed(held_out, "train", "m02", index) for index in range(4)
+    )
+    without = PrepareTrainingDataParams.model_validate({**params, "holdout": []})
+    with pytest.raises(
+        ValueError, match=r"match no sequence of sets or holdout: 'h01'"
+    ):
+        check_preparation(held_out, without)
+
+
+def test_under_split_by_frame_a_hold_out_of_one_camera_holds_out_the_other(
+    extracted: Dataset,
+) -> None:
+    entry = extracted.get_root("frames") / "uniform" / "uniform-1"
+    left = entry / make_entry_key("C", "s2") / "left" / "frame_000100.png"
+    frame = pose_frame(
+        extracted.relative_to_root(left),
+        pose_object((10.0, 12.0), (30.0, 20.0)),
+        sequence="s2",
+        frame_index=100,
+    )
+    _ = _save(extracted, "left-100", pose_set([frame], image_root=extracted.base_dir))
+    params: dict[str, object] = {
+        "sets": [{"set_key": "extracted"}],
+        "holdout": [{"set_key": "left-100"}],
+        "split_by": "frame",
+        "split": (0.5, 0.5, 0.0),
+    }
+
+    out = model_run_root(extracted, KIND, run_op(extracted, KIND, params))
+
+    assert _excluded(_split_record(out)) == sorted(
+        _placed(extracted, "extracted", camera, 100)
+        for camera in ("C__s2__left", "C__s2__right")
+    )
+
+
+EVERY_GROUP: Final = {sequence: "g" for sequence in ("h01", "m01", "m02", "m03", "m04")}
+"""Groups that put ``h01`` in one group with every recording of ``train``."""
+
+HOLD_OUT_REFUSALS: Final[dict[str, tuple[tuple[str, ...], dict[str, object], str]]] = {
+    "named-twice": (
+        ("train",),
+        {},
+        "keypoint set 'train' is named in both sets and holdout. Train on it or "
+        "hold it out.",
+    ),
+    "no-usable-frame": (
+        ("unfinished",),
+        {},
+        "hold-out set 'unfinished' has no usable frames for pose 'mouse'",
+    ),
+    "every-recording": (
+        ("all-four",),
+        {},
+        "the hold-out shares a recording with every training frame. Choose a "
+        "hold-out from other recordings, or split by frame.",
+    ),
+    "every-group": (
+        ("h01",),
+        {"split_by": "group", "sequence_groups": EVERY_GROUP},
+        "the hold-out shares a group with every training frame. Choose a "
+        "hold-out from other recordings, or split by frame.",
+    ),
+}
+"""Each hold-out refusal with a fixed message: hold-out, other parameters, message."""
+
+
+@pytest.mark.parametrize(
+    ("holdout", "overrides", "refusal"),
+    list(HOLD_OUT_REFUSALS.values()),
+    ids=list(HOLD_OUT_REFUSALS),
+)
+def test_a_hold_out_is_refused_by_the_check_and_by_a_run(
+    held_out: Dataset,
+    holdout: tuple[str, ...],
+    overrides: dict[str, object],
+    refusal: str,
+) -> None:
+    params = _with_holdout(*holdout, **overrides)
+
+    assert _refusal_of_both(held_out, params) == [refusal, refusal]
+
+
+@pytest.mark.parametrize("pose", [None, "mouse"], ids=["only-pose", "named"])
+def test_a_hold_out_without_the_pose_is_refused_for_the_pose(
+    held_out: Dataset, pose: str | None
+) -> None:
+    """The pose that a hold-out lacks is named before its lack of a finished frame."""
+    uuid = held_out.uuid or ""
+    unfinished = pose_frame(
+        _image(held_out, "m06", 0),
+        pose_object((30.0, 40.0), (36.0, 42.0), pose_id=CRICKET.id),
+        sequence="m06",
+        usable=False,
+    )
+    crickets = pose_set([unfinished], poses=(CRICKET,), image_root=held_out.base_dir)
+    _ = _save(held_out, "crickets", crickets)
+    refusal = {
+        None: (
+            f"set {uuid}:crickets@rev1 chose pose 8 (cricket), but set "
+            f"{uuid}:train@rev1 chose pose 3 (mouse). One model trains one pose."
+        ),
+        "mouse": (
+            f"set {uuid}:crickets@rev1 holds no pose 'mouse' (it holds ['8:cricket'])"
+        ),
+    }[pose]
+
+    assert _refusal_of_both(held_out, _with_holdout("crickets", pose=pose)) == [
+        refusal,
+        refusal,
+    ]
+
+
+def test_a_hold_out_of_another_layout_is_refused(held_out: Dataset) -> None:
+    """The hold-out is compared with the layout of the sets it is held out of."""
+    uuid = held_out.uuid or ""
+    refusal = (
+        f"set {uuid}:other-layout@rev1 has keypoints ['nose', 'ear', 'tail'], but "
+        f"set {uuid}:train@rev1 has ['nose', 'tail']. One model has one keypoint "
+        "layout."
+    )
+
+    assert _refusal_of_both(held_out, _with_holdout("other-layout")) == [
+        refusal,
+        refusal,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("holdout", "overrides"),
+    [
+        *((holdout, overrides) for holdout, overrides, _ in HOLD_OUT_REFUSALS.values()),
+        (("other-layout",), {}),
+    ],
+    ids=[*HOLD_OUT_REFUSALS, "other-layout"],
+)
+def test_the_check_refuses_a_hold_out_and_writes_nothing(
+    held_out: Dataset, holdout: tuple[str, ...], overrides: dict[str, object]
+) -> None:
+    params = PrepareTrainingDataParams.model_validate(
+        _with_holdout(*holdout, **overrides)
+    )
+    before = tree_snapshot(held_out.base_dir)
+
+    with pytest.raises(ValueError):
+        check_preparation(held_out, params)
+
+    assert_tree_unchanged(held_out.base_dir, before)
+
+
+@pytest.mark.parametrize("target", ["yolo-pose", "litpose"])
+def test_a_held_out_frame_whose_image_is_gone_is_left_out(
+    held_out: Dataset, target: str
+) -> None:
+    """Frame 3 of ``m01`` is held out with its recording. The writers skip its image."""
+    gone = "media/frames/kmeans/kmeans-d7968c97b0/m01/frame_000003.png"
+    (held_out.base_dir / gone).unlink()
+
+    run_id = run_op(held_out, KIND, _with_holdout("m01-start", target=target))
+    out = model_run_root(held_out, KIND, run_id)
+
+    record = _split_record(out)
+    placed = _placed(held_out, "train", "m01", 3)
+    assert placed in _excluded(record)
+    written = sorted(image.name for image in out.rglob("*.png"))
+    assert written and not [name for name in written if "__m01__" in name]
+
+
+def test_a_hold_out_names_the_preparation_by_its_units(held_out: Dataset) -> None:
+    """A correction inside the hold-out keeps the name, and a new unit moves it."""
+    op = OPS[KIND]()
+
+    def plan(*holdout: str) -> str:
+        params = PrepareTrainingDataParams.model_validate(_with_holdout(*holdout))
+        return op.plan_identity(held_out, params, ResolvedScope()).run_id
+
+    without, held = plan(), plan("m01-start")
+    _ = _save_set(held_out, "m01-start", {"m01": 2}, shift=1.0, commit="c2")
+    corrected = plan("m01-start")
+    _ = _save_set(held_out, "m01-start", {"m01": 2, "m02": 1}, commit="c3")
+    widened = plan("m01-start")
+
+    assert held != without
+    assert corrected == held
+    assert widened not in {without, held}
+
+
+def test_the_hold_out_enters_the_identity_only_by_its_units() -> None:
+    """Without units the payload is the one minted before the hold-out existed."""
+    sets = (
+        ResolvedSet(
+            origin_uuid="uuid-a",
+            set_key="train",
+            revision=1,
+            digest="aaaaaaaaaaaaaaaa",
+            payload=Path("train.json"),
+        ),
+    )
+    plain = PrepareTrainingDataParams.model_validate({"sets": [{"set_key": "train"}]})
+    with_sets_held_out = PrepareTrainingDataParams.model_validate(
+        {"sets": [{"set_key": "train"}], "holdout": [{"set_key": "h01"}]}
+    )
+    dumped = plain.identity_dump()
+    for name in ("sets", "holdout"):
+        _ = dumped.pop(name)
+    version = OPS[KIND].version
+    payload: dict[str, object] = {
+        "params": dumped,
+        "sets": [["uuid-a", "train", "aaaaaaaaaaaaaaaa"]],
+    }
+
+    assert prepare_training_data_run_id(KIND, version, plain, sets) == op_run_id(
+        KIND, version, payload
+    )
+    assert prepare_training_data_run_id(
+        KIND, version, with_sets_held_out, sets, holdout_units=()
+    ) == op_run_id(KIND, version, payload)
+    assert prepare_training_data_run_id(
+        KIND,
+        version,
+        with_sets_held_out,
+        sets,
+        holdout_units=("uuid-a::m02", "uuid-a::m01"),
+    ) == op_run_id(
+        KIND, version, {**payload, "holdout": ["uuid-a::m01", "uuid-a::m02"]}
+    )
 
 
 def test_a_derived_box_trains_as_the_annotator_saw_it(full_state: Dataset) -> None:
@@ -993,3 +1797,143 @@ def test_the_provenance_command_prints_the_chain(
         ],
     )
     assert missing.exit_code != 0 and "is registered" in missing.output
+
+
+# ------------------------------------------------------------ provenance columns
+
+
+_CONSUMED_KEYS: Final = {"origin_uuid", "set_key", "revision", "digest"}
+
+
+def _row_of(library: Dataset, run_id: str) -> dict[str, str]:
+    frame = pd.read_csv(
+        model_index_path(library, KIND), dtype=str, keep_default_na=False
+    )
+    return next(row for row in index_records(frame) if row["run_id"] == run_id)
+
+
+def test_a_preparation_without_a_hold_out_records_an_empty_list(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+
+    row = _row_of(library, _prepare(library))
+
+    assert row["held_out_sets"] == "[]"
+    assert row["n_held_out"] == "0"
+
+
+def test_a_hold_out_is_recorded_with_its_revisions_and_its_frames(
+    held_out: Dataset,
+) -> None:
+    run_id = run_op(held_out, KIND, _with_holdout("m01-start", "h01"))
+
+    row = _row_of(held_out, run_id)
+
+    uuid = held_out.uuid or ""
+    recorded = json.loads(row["held_out_sets"])
+    assert [(entry["origin_uuid"], entry["set_key"]) for entry in recorded] == [
+        (uuid, "h01"),
+        (uuid, "m01-start"),
+    ]
+    assert all(
+        entry["revision"] == 1 and entry["digest"] and set(entry) == _CONSUMED_KEYS
+        for entry in recorded
+    )
+    assert row["n_held_out"] == "4", "every frame of recording m01, the unit held out"
+
+
+@pytest.mark.parametrize("target", ["yolo-pose", "sleap", "litpose"])
+def test_a_pose_target_records_the_narrowed_pose(
+    world: tuple[Dataset, Dataset, Dataset], target: str
+) -> None:
+    _mice, _rats, library = world
+
+    row = _row_of(library, _prepare(library, target=target))
+
+    assert json.loads(row["keypoint_schema"]) == {
+        "keypoints": ["nose", "tail"],
+        "skeleton": [[0, 1]],
+        "symmetries": [],
+    }
+
+
+def test_a_wider_pose_records_its_skeleton_and_mirror_pairs(
+    full_state: Dataset,
+) -> None:
+    """The three-keypoint mouse, unlike the two-keypoint worlds, keeps its pairs."""
+    run_id = run_op(full_state, KIND, FULL)
+
+    row = _row_of(full_state, run_id)
+
+    assert json.loads(row["keypoint_schema"]) == {
+        "keypoints": ["nose", "left_ear", "right_ear"],
+        "skeleton": [[0, 1], [0, 2]],
+        "symmetries": [[1, 2]],
+    }
+
+
+def test_polo_records_the_one_keypoint_it_trains_on(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+
+    row = _row_of(library, _prepare(library, target="polo", point_index=1))
+
+    assert json.loads(row["keypoint_schema"]) == {
+        "keypoints": ["tail"],
+        "skeleton": [],
+        "symmetries": [],
+    }
+
+
+def test_an_index_older_than_the_hold_out_columns_adopts_them_blank(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+    earlier = _prepare(library)
+    path = model_index_path(library, KIND)
+    written = pd.read_csv(path, dtype=str, keep_default_na=False)
+    written.drop(columns=["held_out_sets", "n_held_out", "keypoint_schema"]).to_csv(
+        path, index=False
+    )
+
+    later = _prepare(library, target="polo")
+
+    assert _row_of(library, earlier)["held_out_sets"] == ""
+    assert _row_of(library, earlier)["n_held_out"] == ""
+    assert _row_of(library, earlier)["keypoint_schema"] == ""
+    assert _row_of(library, later)["held_out_sets"] == "[]"
+
+
+def test_a_model_names_the_hold_out_it_never_saw(held_out: Dataset) -> None:
+    prepared = run_op(held_out, KIND, _with_holdout("m01-start", "h01"))
+    model = _train(held_out, prepared)
+
+    found = training_provenance(held_out, "train-pose", model)
+
+    assert [(item.set_key, item.revision) for item in found.held_out_sets] == [
+        ("h01", 1),
+        ("m01-start", 1),
+    ]
+    assert all(item.reachable for item in found.held_out_sets)
+    reported = found.as_json()["held_out_sets"]
+    assert isinstance(reported, list)
+    assert [entry["set_key"] for entry in reported if isinstance(entry, dict)] == [
+        "h01",
+        "m01-start",
+    ]
+    assert found.sets and {item.set_key for item in found.sets} == {"train"}
+
+
+def test_a_model_prepared_without_a_hold_out_reports_none(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    _mice, _rats, library = world
+
+    found = training_provenance(
+        library, "train-pose", _train(library, _prepare(library))
+    )
+
+    assert found.held_out_sets == ()
+    assert found.as_json()["held_out_sets"] == []
