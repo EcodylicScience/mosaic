@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import shutil
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -27,6 +28,7 @@ from mosaic.core.pipeline.joined_export import (
     missing_joins,
 )
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op, run_op
+from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
@@ -43,7 +45,7 @@ from .frame_runs import (
     frames_index_path,
     frames_run_root,
 )
-from .sampling import ExtractionMethod
+from .sampling import Exclusion, ExtractionMethod
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
@@ -73,6 +75,18 @@ _FRAMES_DESCRIPTION = (
     "other methods. The list chooses the entries: a run covers every listed "
     "entry, narrowed by its scope. Each item's frames apply to every camera of "
     "the entry."
+)
+
+_EXCLUDE_DESCRIPTION = (
+    "Frames that 'uniform' and 'kmeans' do not write and sample around, one item "
+    "per entry, on the axis of frames. Each item's frames apply to every camera "
+    "of the entry, and an entry the run does not cover is ignored. Refused by "
+    "'list'."
+)
+
+_EXCLUDE_SPACING_DESCRIPTION = (
+    "Distance from an excluded frame within which a candidate is removed too. "
+    "Refused above 0 when exclude is unset."
 )
 
 _ENTRY_GROUP_DESCRIPTION = "The entry's group; empty for a dataset with none."
@@ -140,9 +154,10 @@ _PARALLEL_MODE_DESCRIPTION = (
 
 
 _REVISION_DESCRIPTION = (
-    "Bump to extract a second selection under the same settings. It is the one "
-    "term allowed to move the extraction identifier, and only a non-zero value "
-    "enters it. Revision 0 reproduces every identifier already on disk."
+    "Bump to extract a second selection under the same settings. The extraction "
+    "identifier includes a non-zero revision, a frames list, and an exclude with "
+    "its exclude_spacing, and omits each when unset. Revision 0 reproduces every "
+    "identifier already on disk."
 )
 
 _PARALLEL_WORKERS_DESCRIPTION = (
@@ -152,7 +167,7 @@ _PARALLEL_WORKERS_DESCRIPTION = (
 
 
 class EntryFrames(DeclaredModel):
-    """The frames one entry contributes to a ``list`` extraction."""
+    """The frames of one entry, written by ``list`` or excluded by a sampling method."""
 
     group: Annotated[str, Declared(_ENTRY_GROUP_DESCRIPTION)] = ""
     sequence: Annotated[str, Field(min_length=1), Declared(_ENTRY_SEQUENCE_DESCRIPTION)]
@@ -185,19 +200,22 @@ def _validated_method(info: ValidationInfo) -> ExtractionMethod | None:
             return None
 
 
-def _normalised_frames(items: tuple[EntryFrames, ...]) -> tuple[EntryFrames, ...]:
+def normalized_frames(
+    items: tuple[EntryFrames, ...], *, field: str
+) -> tuple[EntryFrames, ...]:
     """*items* sorted by entry, each entry's indices sorted and de-duplicated.
 
     The identifier is hashed from this form, so the same frames listed in
     another order, or with an index repeated, name the same run. An entry named
     twice is refused rather than merged: two items for one entry is a list built
-    wrong, and merging would hide which of them was meant.
+    wrong, and merging would hide which of them was meant. *field* is the name
+    of the parameter the items came from, which the refusal names.
     """
     by_entry: dict[Entry, tuple[int, ...]] = {}
     for item in items:
         if item.entry in by_entry:
             message = (
-                f"frames names ({item.group}, {item.sequence}) twice. List each "
+                f"{field} names ({item.group}, {item.sequence}) twice. List each "
                 f"entry once, with all of its frames."
             )
             raise ValueError(message)
@@ -205,6 +223,18 @@ def _normalised_frames(items: tuple[EntryFrames, ...]) -> tuple[EntryFrames, ...
     return tuple(
         EntryFrames(group=group, sequence=sequence, indices=indices)
         for (group, sequence), indices in sorted(by_entry.items())
+    )
+
+
+def entry_frames_from_mapping(
+    mapping: Mapping[Entry, Iterable[int]] | None,
+) -> tuple[EntryFrames, ...] | None:
+    """One :class:`EntryFrames` per entry of *mapping*, or ``None`` for ``None``."""
+    if mapping is None:
+        return None
+    return tuple(
+        EntryFrames(group=group, sequence=sequence, indices=tuple(indices))
+        for (group, sequence), indices in mapping.items()
     )
 
 
@@ -216,12 +246,15 @@ class ExtractFramesParams(Params):
     rather than what comes out. One set of settings therefore shares a run_id
     and adds per-sequence subdirectories under it.
 
-    ``revision`` and ``frames`` are ``HASH_EXCLUDE`` and still name the run.
-    Each enters the payload only when set (:func:`frames_identity_payload`), so
-    every identifier already on disk is reproduced. What a run covers and
-    whether it recomputes are arguments to the run, not fields here.
+    ``revision``, ``frames``, ``exclude`` and ``exclude_spacing`` are
+    ``HASH_EXCLUDE`` and still name the run. Each enters the payload only when
+    set, and ``exclude_spacing`` only beside an ``exclude``
+    (:func:`frames_identity_payload`). Every identifier already on disk is
+    therefore reproduced. What a run covers and whether it recomputes are
+    arguments to the run, not fields here.
 
-    ``method`` is declared first because the validators below read it. Each
+    ``method`` is declared first because the validators below read it, and
+    ``exclude`` precedes ``exclude_spacing``, whose validator reads it. Each
     validator is declared with ``check_fields=False``, so a consumer can remove
     the field it checks from a subclass and supply the value itself, as
     mosaic-api does for the fields it owns.
@@ -237,6 +270,17 @@ class ExtractFramesParams(Params):
         HASH_EXCLUDE,
         Declared(_FRAMES_DESCRIPTION),
     ] = None
+    exclude: Annotated[
+        tuple[EntryFrames, ...] | None,
+        HASH_EXCLUDE,
+        Declared(_EXCLUDE_DESCRIPTION),
+    ] = None
+    exclude_spacing: Annotated[
+        int,
+        Field(ge=0),
+        HASH_EXCLUDE,
+        Declared(_EXCLUDE_SPACING_DESCRIPTION, unit="frames"),
+    ] = 0
     start_frame: Annotated[int | None, Declared(_START_FRAME_DESCRIPTION)] = None
     end_frame: Annotated[int | None, Declared(_END_FRAME_DESCRIPTION)] = None
     candidate_step: Annotated[int, Declared(_CANDIDATE_STEP_DESCRIPTION)] = 1
@@ -288,7 +332,7 @@ class ExtractFramesParams(Params):
     def _frames_agree_with_method(
         cls, value: tuple[EntryFrames, ...] | None, info: ValidationInfo
     ) -> tuple[EntryFrames, ...] | None:
-        """Required by ``list`` and refused by the others; normalised when given."""
+        """Required by ``list`` and refused by the others; normalized when given."""
         method = _validated_method(info)
         if method is None:
             return value
@@ -307,7 +351,42 @@ class ExtractFramesParams(Params):
                 "frame indices to write for it."
             )
             raise ValueError(message)
-        return _normalised_frames(value)
+        return normalized_frames(value, field="frames")
+
+    @field_validator("exclude", check_fields=False)
+    @classmethod
+    def _exclude_agrees_with_method(
+        cls, value: tuple[EntryFrames, ...] | None, info: ValidationInfo
+    ) -> tuple[EntryFrames, ...] | None:
+        """Refused by ``list``. Otherwise normalized, and ``None`` when empty."""
+        if value is None:
+            return None
+        if _validated_method(info) == "list":
+            message = (
+                "exclude is not read under method 'list', which writes exactly "
+                "the listed frames. Leave the excluded frames out of frames, and "
+                "leave exclude unset."
+            )
+            raise ValueError(message)
+        return normalized_frames(value, field="exclude") or None
+
+    @field_validator("exclude_spacing", check_fields=False)
+    @classmethod
+    def _spacing_needs_exclude(cls, value: int, info: ValidationInfo) -> int:
+        """Refused above 0 when ``exclude`` was validated as unset.
+
+        ``info.data`` omits a refused ``exclude`` and one that a subclass
+        removed, and either passes. A refused ``exclude`` is then reported
+        alone, and a consumer that supplies ``exclude`` itself accepts a spacing.
+        """
+        validated: Mapping[str, object] = info.data
+        if value > 0 and "exclude" in validated and validated["exclude"] is None:
+            message = (
+                "exclude_spacing widens exclude, which is unset. Set exclude, or "
+                "leave exclude_spacing at 0."
+            )
+            raise ValueError(message)
+        return value
 
     @field_validator("start_frame", "end_frame", check_fields=False)
     @classmethod
@@ -372,7 +451,13 @@ def _source_identity_maps(
 
 @dataclass(frozen=True, slots=True)
 class _ExtractSpec:
-    """Picklable unit of work for one (group, sequence, camera) -- process-safe."""
+    """Picklable unit of work for one (group, sequence, camera) -- process-safe.
+
+    ``exclude_indices`` is ``None`` when the run's ``exclude`` is unset, and
+    otherwise the entry's excluded frames, empty for an entry that the exclude
+    does not name. ``exclude_entries_ignored`` counts the run's exclude entries
+    without a camera in the run.
+    """
 
     group: str
     sequence: str
@@ -387,6 +472,9 @@ class _ExtractSpec:
     n_frames: int | None
     method: str
     frame_indices: tuple[int, ...] | None
+    exclude_indices: tuple[int, ...] | None
+    exclude_spacing: int
+    exclude_entries_ignored: int
     n_media_frames: int
     start_frame: int | None
     end_frame: int | None
@@ -408,18 +496,55 @@ def _spec_label(spec: _ExtractSpec) -> str:
     return f"{key}/{spec.camera}" if spec.camera else key
 
 
-def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
-    """Extract one (group, sequence, camera). Module-scope (picklable) so process
-    mode works.
+@dataclass(frozen=True, slots=True)
+class _Extracted:
+    """A camera whose frames were written, with its index row."""
 
-    Manifest path-rewriting (which needs the Dataset) is done by the caller.
+    row: FramesIndexRow
+
+
+@dataclass(frozen=True, slots=True)
+class _Skipped:
+    """A camera left as it was, and why."""
+
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Failed:
+    """A camera whose extraction raised, by the error's type name and message."""
+
+    error_type: str
+    message: str
+
+
+type _Outcome = _Extracted | _Skipped | _Failed
+"""What the worker returns for one camera. Each member pickles, for process mode."""
+
+
+class FrameExtractionFailed(RuntimeError):
+    """One or more cameras of an entry raised while their frames were extracted.
+
+    The message names each failed camera with its error's type and message. The
+    run records the entry as lost after every camera has run. The entry's
+    cameras that succeeded are still indexed.
+    """
+
+
+def _extract_one(spec: _ExtractSpec) -> _Outcome:
+    """Extract one (group, sequence, camera), and return its outcome.
+
+    It is module-scope and its outcome pickles, which process mode requires. An
+    error is returned as a :class:`_Failed`, which the caller records against
+    the entry. A failed camera's directory is removed. The next run with
+    ``overwrite=False`` then extracts the camera again. Manifest
+    path-rewriting (which needs the Dataset) is done by the caller.
     """
     seq_dir = spec.seq_dir
     if seq_dir.exists():
         # Reached only with overwrite=False: `_refuse_to_overwrite` has already
         # raised for the other case, before any worker started.
-        print(f"[extract_frames] skip {_spec_label(spec)} (exists, overwrite=False)")
-        return None
+        return _Skipped("exists, overwrite=False")
 
     kmeans_kw = dict(
         kmeans_resize=spec.kmeans_resize,
@@ -428,6 +553,13 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
         kmeans_batch_size=spec.kmeans_batch_size,
         kmeans_max_iter=spec.kmeans_max_iter,
         kmeans_n_init=spec.kmeans_n_init,
+    )
+    excluded = (
+        None
+        if spec.exclude_indices is None
+        else Exclusion(
+            spec.exclude_indices, spec.exclude_spacing, spec.exclude_entries_ignored
+        )
     )
     try:
         if len(spec.video_paths) == 1:
@@ -445,6 +577,7 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 output_dir=seq_dir,
                 facts=spec.facts[0] if spec.facts else None,
                 frame_indices=spec.frame_indices,
+                excluded=excluded,
                 **kmeans_kw,
             )
         else:
@@ -461,31 +594,42 @@ def _extract_one(spec: _ExtractSpec) -> FramesIndexRow | None:
                 output_dir=seq_dir,
                 facts=list(spec.facts),
                 frame_indices=spec.frame_indices,
+                excluded=excluded,
                 **kmeans_kw,
             )
     except Exception as exc:
-        print(
-            f"[extract_frames] ERROR processing {_spec_label(spec)}: {exc}",
-            file=sys.stderr,
-        )
-        return None
+        # The directory was absent on entry. It contains only this attempt's
+        # partial frames.
+        shutil.rmtree(seq_dir, ignore_errors=True)
+        return _Failed(error_type=type(exc).__name__, message=str(exc))
 
-    return FramesIndexRow(
-        run_id=spec.run_id,
-        method=spec.method,
-        group=spec.group,
-        sequence=spec.sequence,
-        camera=spec.camera,
-        abs_path=seq_dir,
-        n_frames_extracted=result.n_extracted,
-        n_frames_requested=result.n_requested,
-        video_abs_path=json.dumps([str(p) for p in spec.video_paths])
-        if len(spec.video_paths) > 1
-        else str(spec.video_paths[0]),
-        params_hash=spec.params_hash,
-        video_uuids=spec.video_uuids,
-        media_composition=spec.media_composition,
+    return _Extracted(
+        FramesIndexRow(
+            run_id=spec.run_id,
+            method=spec.method,
+            group=spec.group,
+            sequence=spec.sequence,
+            camera=spec.camera,
+            abs_path=seq_dir,
+            n_frames_extracted=result.n_extracted,
+            n_frames_requested=result.n_requested,
+            video_abs_path=str(spec.video_paths[0])
+            if len(spec.video_paths) == 1
+            else json.dumps([str(p) for p in spec.video_paths]),
+            params_hash=spec.params_hash,
+            video_uuids=spec.video_uuids,
+            media_composition=spec.media_composition,
+        )
     )
+
+
+def _lost_entry_message(failed: Sequence[tuple[str, _Failed]]) -> str:
+    """Name each failed camera of one entry with its error, by camera label."""
+    named = "; ".join(
+        f"{label}: {failure.error_type}: {failure.message}"
+        for label, failure in sorted(failed, key=lambda item: item[0])
+    )
+    return f"frame extraction failed for {len(failed)} camera(s): {named}"
 
 
 def _relative_video_paths(ds: Dataset, stored: str) -> str:
@@ -590,27 +734,42 @@ def _refuse_to_overwrite(specs: Sequence[_ExtractSpec]) -> None:
 
 
 class ListedFramesRefused(ValueError):
-    """A ``list`` extraction names frames or entries the run cannot write."""
+    """A ``list`` extraction names frames or entries the run cannot write.
+
+    An exclude whose frames fall past the end of a camera's media is refused
+    with it.
+    """
 
 
 _SHOWN_PER_CAMERA: Final = 5
 """How many out-of-range indices a refusal names per camera."""
 
+type _FrameListField = Literal["frames", "exclude"]
+"""A parameter that lists frame indices per entry."""
 
-def _refuse_out_of_range(specs: Sequence[_ExtractSpec]) -> None:
-    """Refuse listed indices past the end of a camera's media, naming them all.
+
+def _refuse_out_of_range(
+    specs: Sequence[_ExtractSpec], *, field: _FrameListField
+) -> None:
+    """Refuse the indices of *field* past the end of a camera's media, naming each.
+
+    *field* names the parameter that the indices came from, and the refusal
+    names it too.
 
     Checked against the clips' summed frame counts, which is the length the
     reader indexes and the length ``export-joined`` verifies a join against.
     Raised before any worker starts, for the reason :func:`_refuse_to_overwrite`
-    gives: a worker's failure is reported per camera and the run continues, so a
-    wrong index would otherwise leave that camera with no frames and no refusal.
+    gives: a worker's failure loses its entry and the run continues. A wrong
+    listed index would otherwise leave that camera with no frames and no
+    refusal. An excluded index past the end means the excluded set was cut from
+    another arrangement of the media.
     """
     problems: list[str] = []
     for spec in specs:
-        if spec.frame_indices is None:
+        indices = spec.frame_indices if field == "frames" else spec.exclude_indices
+        if indices is None:
             continue
-        past = [index for index in spec.frame_indices if index >= spec.n_media_frames]
+        past = [index for index in indices if index >= spec.n_media_frames]
         if not past:
             continue
         shown = ", ".join(str(index) for index in past[:_SHOWN_PER_CAMERA])
@@ -624,7 +783,7 @@ def _refuse_out_of_range(specs: Sequence[_ExtractSpec]) -> None:
         return
     listed = "\n  ".join(problems)
     message = (
-        f"{len(problems)} camera(s) list frames their media does not hold:\n"
+        f"{len(problems)} camera(s) have {field} indices their media does not hold:\n"
         f"  {listed}\n"
         f"Indices count from 0 across a recording's clips in order, as its "
         f"tracks' frame column does."
@@ -708,28 +867,36 @@ def _refuse_listed_without_media(
     raise ListedFramesRefused(message)
 
 
+def _entry_frames_payload(items: tuple[EntryFrames, ...]) -> list[list[object]]:
+    """One ``[group, sequence, [indices]]`` item per entry, in the order given."""
+    return [[item.group, item.sequence, list(item.indices)] for item in items]
+
+
 def frames_identity_payload(params: ExtractFramesParams) -> dict[str, object]:
     """What an extraction identifier is hashed from, and what ``run_params.json`` holds.
 
-    ``identity_dump()``, plus the two ``HASH_EXCLUDE`` terms that name a run
-    when they are set: ``_revision`` when non-zero, and ``_frames`` under
-    ``list``. Each is added only when set, the omit-when-absent rule
-    ``compute_run_id`` applies to ``_tracks`` and ``_scope_entries``, because
-    ``json.dumps(sort_keys=True)`` digests an absent key differently from a key
-    whose value is empty. So a run of either sampling method at revision 0
-    hashes exactly what it always did.
+    ``identity_dump()``, plus the four ``HASH_EXCLUDE`` terms that name a run
+    when they are set: ``_revision`` when non-zero, ``_frames`` under ``list``,
+    and ``_exclude`` with ``_exclude_spacing`` when ``exclude`` is set. Each is
+    added only when set, the omit-when-absent rule ``compute_run_id`` applies to
+    ``_tracks`` and ``_scope_entries``, because ``json.dumps(sort_keys=True)``
+    digests an absent key differently from a key whose value is empty. So a run
+    of either sampling method at revision 0 without an exclude hashes exactly
+    what it always did.
 
-    ``_frames`` is the list as the params validator normalised it -- entries in
-    order, each entry's indices sorted and unique -- so the same frames listed
-    another way name the same run.
+    ``_frames`` and ``_exclude`` are the lists as the params validators
+    normalized them, with entries in order and each entry's indices sorted and
+    unique. The same frames listed another way therefore name the same run. An
+    exclude entry without a camera in the run still enters.
     """
     payload = params.identity_dump()
     if params.revision:
         payload["_revision"] = int(params.revision)
     if params.frames is not None:
-        payload["_frames"] = [
-            [item.group, item.sequence, list(item.indices)] for item in params.frames
-        ]
+        payload["_frames"] = _entry_frames_payload(params.frames)
+    if params.exclude is not None:
+        payload["_exclude"] = _entry_frames_payload(params.exclude)
+        payload["_exclude_spacing"] = int(params.exclude_spacing)
     return payload
 
 
@@ -753,13 +920,16 @@ def frames_run_id(method: ExtractionMethod, params: ExtractFramesParams) -> str:
     ``ExtractFramesOp.version`` stays declared -- ``list_ops`` and ``describe_op``
     read it -- but it is provenance here, not identity.
 
-    **``revision`` and ``frames`` are the two terms that may enter, and only
-    when set** (:func:`frames_identity_payload`). Both are ``HASH_EXCLUDE``, so
-    ``identity_dump()`` never carries them, and each is added only when set. So
-    revision 0 of either sampling method reproduces every identifier on every
+    **``revision``, ``frames``, ``exclude`` and ``exclude_spacing`` are the
+    four terms that may enter, and only when set**
+    (:func:`frames_identity_payload`), ``exclude_spacing`` only beside an
+    ``exclude``. All four are ``HASH_EXCLUDE``, so ``identity_dump()`` never
+    carries them, and each is added only when set. So revision 0 of either
+    sampling method without an exclude reproduces every identifier on every
     dataset in existence, byte for byte, and the golden corpus proves it rather
-    than this docstring asserting it. A ``list`` run is named by its frames,
-    which is a new identifier and moves none.
+    than this docstring asserting it. A ``list`` run is named by its frames, and
+    a run with an exclude by its exclude and spacing. Each is a new identifier
+    and moves none.
     """
     return f"{method}-{hash_params(frames_identity_payload(params))}"
 
@@ -793,6 +963,20 @@ def _run_extract_frames(
         )
         return run_id
     _refuse_unjoined(ds, media_scope)
+
+    # An exclude may name more entries than this run covers. Each entry without
+    # a camera here is ignored, and every camera's sampling record counts them.
+    excluded = (
+        None if p.exclude is None else {item.entry: item.indices for item in p.exclude}
+    )
+    ignored = 0
+    if excluded is not None:
+        covered = {(entry.group, entry.sequence) for entry in media_scope}
+        ignored = len(excluded.keys() - covered)
+        print(
+            f"[extract_frames] {ignored} of {len(excluded)} exclude entries have "
+            f"no camera in this run and are ignored"
+        )
 
     # Build picklable per-(group, sequence, camera) work specs (temporal chunks
     # of one camera merged). resolve_media_scope yields one entry per camera, so
@@ -839,6 +1023,11 @@ def _run_extract_frames(
                 n_frames=p.n_frames,
                 method=p.method,
                 frame_indices=None if listed is None else listed[(group, sequence)],
+                exclude_indices=None
+                if excluded is None
+                else excluded.get((group, sequence), ()),
+                exclude_spacing=int(p.exclude_spacing),
+                exclude_entries_ignored=ignored,
                 n_media_frames=sum(int(clip.frame_count) for clip in resolved.facts),
                 start_frame=p.start_frame,
                 end_frame=p.end_frame,
@@ -855,7 +1044,8 @@ def _run_extract_frames(
             )
         )
 
-    _refuse_out_of_range(specs)
+    _refuse_out_of_range(specs, field="frames")
+    _refuse_out_of_range(specs, field="exclude")
     _refuse_to_overwrite(specs)
 
     # Created only once every refusal has passed, so a refused run leaves no
@@ -875,30 +1065,48 @@ def _run_extract_frames(
     idx = frames_index(frames_index_path(ds, p.method))
     idx.ensure()
     index_rows: list[FramesIndexRow] = []
+    # By entry key: an entry is attempted when a camera of it was not skipped,
+    # and lost when an attempted camera failed.
+    attempted: set[str] = set()
+    failures: dict[str, list[tuple[str, _Failed]]] = {}
 
-    def _collect(row: FramesIndexRow | None) -> None:
-        if row is not None:
-            # _rewrite_manifest needs the absolute seq_dir; store the row with a
-            # dataset-root-relative abs_path so the index stays portable.
-            #
-            # ``video_abs_path`` is made relative the same way and for the same
-            # reason. It was the one path cell in this row left absolute, and
-            # "frames" is absent from ``_INDEX_PATH_COLUMNS``, so no portability
-            # pass ever reached it -- a moved or synced dataset kept a frames
-            # index pointing at the old machine's tree. Registering it there
-            # instead would not work: those passes do prefix substring
-            # replacement with no split support, and this cell is multi-valued
-            # for a multi-clip camera. Storing it relative makes it portable by
-            # construction. Rows written before this stay absolute and keep
-            # resolving, per migration M1's add-do-not-rename rule.
-            _rewrite_manifest(ds, row.abs_path)
-            index_rows.append(
-                dataclasses.replace(
-                    row,
-                    abs_path=Path(ds.relative_to_root(row.abs_path)),
-                    video_abs_path=_relative_video_paths(ds, row.video_abs_path),
-                )
+    def _collect(spec: _ExtractSpec, outcome: _Outcome) -> None:
+        label = _spec_label(spec)
+        if isinstance(outcome, _Skipped):
+            print(f"[extract_frames] skip {label} ({outcome.reason})")
+            return
+        key = make_entry_key(spec.group, spec.sequence)
+        attempted.add(key)
+        if isinstance(outcome, _Failed):
+            print(
+                f"[extract_frames] ERROR processing {label}: "
+                f"{outcome.error_type}: {outcome.message}",
+                file=sys.stderr,
             )
+            failures.setdefault(key, []).append((label, outcome))
+            return
+        row = outcome.row
+        # _rewrite_manifest needs the absolute seq_dir; store the row with a
+        # dataset-root-relative abs_path so the index stays portable.
+        #
+        # ``video_abs_path`` is made relative the same way and for the same
+        # reason. It was the one path cell in this row left absolute, and
+        # "frames" is absent from ``_INDEX_PATH_COLUMNS``, so no portability
+        # pass ever reached it -- a moved or synced dataset kept a frames
+        # index pointing at the old machine's tree. Registering it there
+        # instead would not work: those passes do prefix substring
+        # replacement with no split support, and this cell is multi-valued
+        # for a multi-clip camera. Storing it relative makes it portable by
+        # construction. Rows written before this stay absolute and keep
+        # resolving, per migration M1's add-do-not-rename rule.
+        _rewrite_manifest(ds, row.abs_path)
+        index_rows.append(
+            dataclasses.replace(
+                row,
+                abs_path=Path(ds.relative_to_root(row.abs_path)),
+                video_abs_path=_relative_video_paths(ds, row.video_abs_path),
+            )
+        )
 
     max_workers = _resolve_max_workers(p.parallel_workers)
     p_mode = (p.parallel_mode or "thread").lower()
@@ -916,29 +1124,49 @@ def _run_extract_frames(
                         for f in futures:
                             f.cancel()
                         raise Cancelled()
-                    row = future.result()
+                    outcome = future.result()
                     done += 1
                     spec = futures[future]
                     ctx.progress.on_entry_end(done, len(specs), _spec_label(spec))
                     ctx.heartbeat(done)
-                    _collect(row)
+                    _collect(spec, outcome)
         else:
             for i, spec in enumerate(specs):
                 ctx.check_cancel()
                 key = _spec_label(spec)
                 ctx.progress.on_entry_start(i, len(specs), key)
-                _collect(_extract_one(spec))
+                _collect(spec, _extract_one(spec))
                 ctx.progress.on_entry_end(i + 1, len(specs), key)
                 ctx.heartbeat(i + 1)
     finally:
         if index_rows:
             idx.append(index_rows)
             idx.mark_finished(run_id)
+        # Raised and caught so that the run-log record of each lost entry
+        # includes a traceback, which only an exception being handled has.
+        for key in sorted(failures):
+            try:
+                raise FrameExtractionFailed(_lost_entry_message(failures[key]))
+            except FrameExtractionFailed as exc:
+                ctx.entry_failed(key, exc)
+        # Emitted in the `finally`, because a cancelled run keeps its written entries.
+        ctx.entries_written(len(attempted) - len(failures))
 
+    # Raised after the `finally`, which has already indexed the rows of the
+    # successful cameras.
+    if attempted and failures.keys() == attempted:
+        message = (
+            f"[extract_frames:{p.method}] every one of {len(attempted)} attempted "
+            f"entries lost a camera. run_id={run_id} completed none of them: "
+            f"{', '.join(sorted(failures))}. The cameras that succeeded are "
+            f"indexed, and the per-entry errors are in this attempt's run-log."
+        )
+        raise AllEntriesFailed(message)
     unlisted = f"; {skipped} scoped entries list no frames" if skipped else ""
+    lost = f"; {len(failures)} entries lost a camera" if failures else ""
     print(
         f"[extract_frames:{p.method}] completed run_id={run_id} "
-        f"({len(index_rows)}/{len(specs)} sequences{unlisted}) -> {run_root}"
+        f"({len(index_rows)}/{len(specs)} sequences{unlisted}{lost}) -> {run_root}"
     )
     return run_id
 
@@ -992,6 +1220,8 @@ def extract_frames(
     method: ExtractionMethod = "uniform",
     *,
     frames: Mapping[Entry, Iterable[int]] | None = None,
+    exclude: Mapping[Entry, Iterable[int]] | None = None,
+    exclude_spacing: int = 0,
     revision: int = 0,
     scope: Scope | None = None,
     overwrite: bool = False,
@@ -1033,23 +1263,23 @@ def extract_frames(
     becomes ``ExtractFramesParams.frames``. ``n_frames`` is then left unset. The
     list chooses the entries, and *scope* can only narrow it.
 
+    *exclude* maps each ``(group, sequence)`` entry to frame indices that
+    ``uniform`` and ``kmeans`` do not write and sample around, and becomes
+    ``ExtractFramesParams.exclude``. *exclude_spacing* also removes the
+    candidates within that many frames of an excluded frame. Every entry of
+    *exclude* enters the run identifier, so narrow it to the entries in scope.
+
     *scope* is the selector every other entry point takes, and *overwrite* says
     whether an existing frame set is recomputed. Both reach the op through
     ``run_op`` and neither enters the params. What a run covers and whether it
     recomputes describe the attempt, where the params describe the recipe.
     """
-    listed = (
-        None
-        if frames is None
-        else tuple(
-            EntryFrames(group=group, sequence=sequence, indices=tuple(indices))
-            for (group, sequence), indices in frames.items()
-        )
-    )
     params = ExtractFramesParams(
         n_frames=n_frames,
         method=method,
-        frames=listed,
+        frames=entry_frames_from_mapping(frames),
+        exclude=entry_frames_from_mapping(exclude),
+        exclude_spacing=exclude_spacing,
         start_frame=start_frame,
         end_frame=end_frame,
         candidate_step=candidate_step,

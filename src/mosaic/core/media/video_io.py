@@ -17,7 +17,7 @@ proceeds. Open one through this module.
 from __future__ import annotations
 
 import bisect
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional, Protocol, Sequence
@@ -254,6 +254,31 @@ def apply_crop(
     return frame[y : y + h, x : x + w]
 
 
+def frame_feature(
+    frame: np.ndarray,
+    crop: tuple[int, int, int, int] | None,
+    size: tuple[int, int],
+    gray: bool,
+) -> np.ndarray:
+    """Return the k-means feature vector of one BGR frame.
+
+    Args:
+        frame: The BGR frame, ``uint8``.
+        crop: The (x, y, w, h) rectangle cropped before the resize, or ``None``.
+        size: The (width, height) that the frame is resized to, with
+            :data:`RESIZE_INTERPOLATION`.
+        gray: Whether the resized frame is converted to grayscale.
+
+    Returns:
+        The flattened frame as ``float32`` values in ``[0, 1]``.
+    """
+    work = apply_crop(frame, crop)
+    work = cv2.resize(work, size, interpolation=RESIZE_INTERPOLATION)
+    if gray:
+        work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
+    return work.reshape(-1).astype(np.float32, copy=False) / 255.0
+
+
 def extract_candidate_features(
     video_path: Path | str,
     start_frame: int,
@@ -290,14 +315,9 @@ def extract_candidate_features(
     max_n = None if max_candidates is None else max(1, int(max_candidates))
 
     def _accumulate(frame_idx: int, frame: np.ndarray) -> bool:
-        """Crop/resize/flatten one candidate frame; return True once max_n is hit."""
-        work = apply_crop(frame, crop_rect)
-        work = cv2.resize(work, resize, interpolation=RESIZE_INTERPOLATION)
-        if grayscale:
-            work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-        vec = work.reshape(-1).astype(np.float32, copy=False) / 255.0
+        """Record one candidate frame's feature, and return True once max_n is hit."""
         indices.append(frame_idx)
-        features.append(vec)
+        features.append(frame_feature(frame, crop_rect, resize, grayscale))
         return max_n is not None and len(indices) >= max_n
 
     if is_imgstore(resolved):
@@ -360,16 +380,9 @@ def save_frames_as_png(
     become pose-annotation training data: a caller must not be able to declare
     ``"raw"`` for this read.
     """
-    from .imgstore_io import ImgStoreCapture, is_imgstore
-
     out_dir = user_path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    resolved = user_path(video_path).resolve()
-    target_indices = sorted(set(int(i) for i in frame_indices))
     records: list[dict[str, Any]] = []
-    if not target_indices:
-        return records
 
     def _write(frame_idx: int, frame: np.ndarray) -> None:
         frame = apply_crop(frame, crop_rect)
@@ -388,34 +401,60 @@ def save_frames_as_png(
             }
         )
 
-    if is_imgstore(resolved):
-        # imgstore is always randomly addressable by frame_index, so a plain
-        # seek-then-read per target mirrors the old seekable branch exactly.
-        capture: SupportsSeekRead = ImgStoreCapture(resolved)
-        try:
-            for frame_idx in target_indices:
-                capture.seek(frame_idx)
-                ok, frame = capture.read()
-                if not ok or frame is None:
-                    message = f"Failed to decode frame {frame_idx} from {video_path}"
-                    raise MediaProbeError(message)
-                _write(frame_idx, frame)
-        finally:
-            capture.close()
-    else:
-        # read_frames groups targets by GOP and seeks/decodes in one pass,
-        # regardless of whether the container is seekable metadata-wise.
-        with VideoReader(
-            resolved, facts=verified_read_facts(resolved, facts, "analysis")[0]
-        ) as reader:
-            for frame_idx, frame in reader.read_frames(target_indices):
-                _write(frame_idx, frame)
+    for frame_idx, frame in read_frames_at(video_path, frame_indices, facts):
+        _write(frame_idx, frame)
 
     # Restore original order from frame_indices
     record_map = {r["frame_index"]: r for r in records}
     records = [record_map[int(i)] for i in frame_indices if int(i) in record_map]
 
     return records
+
+
+def read_frames_at(
+    video_path: Path | str,
+    frame_indices: Iterable[int],
+    facts: MediaFacts | None = None,
+) -> Generator[tuple[int, np.ndarray], None, None]:
+    """Yield ``(frame, image)`` for each distinct index of *frame_indices*, ascending.
+
+    An imgstore is read by a seek per frame. Any other file is read by
+    ``VideoReader.read_frames``, which decodes each group of pictures once. *facts*,
+    when supplied, is gated against the fixed ``"analysis"`` target, because the
+    frames are addressed by index. A caller passing ``None`` has the file probed
+    and gated. The reader is closed when the iteration ends or is abandoned.
+
+    Args:
+        video_path: The video file or imgstore directory.
+        frame_indices: The frames to read.
+        facts: The stored media facts of *video_path*, or ``None``.
+
+    Raises:
+        MediaProbeError: If a frame fails to decode.
+    """
+    from .imgstore_io import ImgStoreCapture, is_imgstore
+
+    resolved = user_path(video_path).resolve()
+    targets = sorted({int(index) for index in frame_indices})
+    if not targets:
+        return
+    if is_imgstore(resolved):
+        capture: SupportsSeekRead = ImgStoreCapture(resolved)
+        try:
+            for frame_idx in targets:
+                capture.seek(frame_idx)
+                ok, frame = capture.read()
+                if not ok or frame is None:
+                    message = f"Failed to decode frame {frame_idx} from {video_path}"
+                    raise MediaProbeError(message)
+                yield frame_idx, frame
+        finally:
+            capture.close()
+        return
+    with VideoReader(
+        resolved, facts=verified_read_facts(resolved, facts, "analysis")[0]
+    ) as reader:
+        yield from reader.read_frames(targets)
 
 
 # --- Multi-video support ---
@@ -874,16 +913,11 @@ def extract_candidate_features_multi(
 
     while frame_idx <= end_frame:
         ok, frame = reader.read()
-        if not ok:
+        if not ok or frame is None:
             break
         if (frame_idx - start_frame) % candidate_step == 0:
-            work = apply_crop(frame, crop_rect)
-            work = cv2.resize(work, resize, interpolation=RESIZE_INTERPOLATION)
-            if grayscale:
-                work = cv2.cvtColor(work, cv2.COLOR_BGR2GRAY)
-            vec = work.reshape(-1).astype(np.float32, copy=False) / 255.0
             indices.append(frame_idx)
-            features.append(vec)
+            features.append(frame_feature(frame, crop_rect, resize, grayscale))
             if max_n is not None and len(indices) >= max_n:
                 break
         frame_idx += 1
@@ -894,6 +928,29 @@ def extract_candidate_features_multi(
     return np.asarray(indices, dtype=np.int32), np.vstack(features).astype(
         np.float32, copy=False
     )
+
+
+def read_frames_at_multi(
+    reader: "MultiVideoReaderLike", frame_indices: Iterable[int]
+) -> Generator[tuple[int, np.ndarray], None, None]:
+    """Yield ``(frame, image)`` for each distinct global frame index, ascending.
+
+    Each frame is read by a seek of *reader* to it. The reader stays open.
+
+    Args:
+        reader: The open reader over the sequence.
+        frame_indices: The global frames to read, counted across the files.
+
+    Raises:
+        MediaProbeError: If a frame fails to decode.
+    """
+    for frame_idx in sorted({int(index) for index in frame_indices}):
+        reader.seek(frame_idx)
+        ok, frame = reader.read()
+        if not ok or frame is None:
+            message = f"Failed to decode global frame {frame_idx}"
+            raise MediaProbeError(message)
+        yield frame_idx, frame
 
 
 def save_frames_as_png_multi(
@@ -909,16 +966,9 @@ def save_frames_as_png_multi(
     """
     out_dir = user_path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    target_indices = sorted(set(int(i) for i in frame_indices))
     records: list[dict[str, Any]] = []
 
-    for frame_idx in target_indices:
-        reader.seek(frame_idx)
-        ok, frame = reader.read()
-        if not ok:
-            message = f"Failed to decode global frame {frame_idx}"
-            raise MediaProbeError(message)
+    for frame_idx, frame in read_frames_at_multi(reader, frame_indices):
         frame = apply_crop(frame, crop_rect)
         out_name = f"frame_{frame_idx:06d}.png"
         out_path = out_dir / out_name

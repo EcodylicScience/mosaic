@@ -57,6 +57,7 @@ from mosaic.tracking.frame_extraction.dataset_runs import (
     ExtractFramesParams,
     frames_run_id,
 )
+from mosaic.tracking.frame_extraction.sampling import SamplingMethod
 from mosaic.core.pipeline.composition import (
     MediaMember,
     SourceMember,
@@ -838,6 +839,30 @@ def _frames_run_id_list() -> str:
     return frames_run_id(params.method, params)
 
 
+def _frames_run_id_exclude(method: SamplingMethod) -> str:
+    """A sampling run that excludes frames is named by its exclude and spacing."""
+    params = ExtractFramesParams.model_validate(
+        {
+            "method": method,
+            "n_frames": 20,
+            "exclude": [
+                {"sequence": "seq_b", "indices": [40, 7]},
+                {"group": "g", "sequence": "seq_a", "indices": [0, 1745, 3487]},
+            ],
+            "exclude_spacing": 5,
+        }
+    )
+    return frames_run_id(params.method, params)
+
+
+def _frames_run_id_exclude_kmeans() -> str:
+    return _frames_run_id_exclude("kmeans")
+
+
+def _frames_run_id_exclude_uniform() -> str:
+    return _frames_run_id_exclude("uniform")
+
+
 def _ultralytics_settings_case(media: str = "") -> dict[str, object]:
     """The one settings dict both Ultralytics golden cases are built from.
 
@@ -1057,6 +1082,8 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
     "frames/run-id-list": _frames_run_id_list,
+    "frames/run-id-exclude-kmeans": _frames_run_id_exclude_kmeans,
+    "frames/run-id-exclude-uniform": _frames_run_id_exclude_uniform,
     "transcode/recipe-hash": _recipe_hash,
     "transcode/run-id": _run_id,
     "tracks/convert-variant": _convert_variant,

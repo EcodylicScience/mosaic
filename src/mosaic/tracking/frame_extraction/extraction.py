@@ -5,32 +5,188 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any, Final, Optional, get_args
 import json
-import math
 import uuid
 
 import numpy as np
 from mosaic_media import MediaFacts, probe_media
 from mosaic.user_paths import user_path
 
+from mosaic.core.json_value import JsonValue
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import (
     MultiVideoReader,
+    MultiVideoReaderLike,
     extract_candidate_features,
     extract_candidate_features_multi,
+    frame_feature,
     normalize_crop_rect,
     normalize_frame_range,
+    read_frames_at,
+    read_frames_at_multi,
     save_frames_as_png,
     save_frames_as_png_multi,
     video_metadata_or_probe,
 )
 
-from .sampling import ExtractionMethod, select_kmeans_frames, select_uniform_frames
+from .sampling import (
+    Exclusion,
+    ExtractionMethod,
+    KmeansSettings,
+    SamplingMethod,
+    select_frame_indices,
+)
 
 
 CropSpec = tuple[int, int, int, int] | dict[str, Any]
+
+
+def _features_in_order(
+    frames: Iterable[tuple[int, np.ndarray]],
+    indices: np.ndarray,
+    *,
+    crop_rect: tuple[int, int, int, int] | None,
+    resize: tuple[int, int],
+    grayscale: bool,
+) -> np.ndarray:
+    """Return the feature of each frame of *indices*, in the order of *indices*.
+
+    Args:
+        frames: The ``(frame, image)`` pairs read for *indices*.
+        indices: The frame indices, one or more.
+        crop_rect: The (x, y, w, h) crop applied before the resize, or ``None``.
+        resize: The (width, height) that each frame is resized to.
+        grayscale: Whether frames are converted to grayscale.
+
+    Returns:
+        The ``(M, D)`` features, one row per index.
+    """
+    features = {
+        frame: frame_feature(image, crop_rect, resize, grayscale)
+        for frame, image in frames
+    }
+    return np.vstack([features[int(index)] for index in indices.tolist()])
+
+
+@dataclass(frozen=True, slots=True)
+class SingleFileFeatures:
+    """The candidate frames of one video file or imgstore, with their features.
+
+    Attributes:
+        path: The video file or imgstore directory.
+        facts: The stored media facts of *path*, or ``None`` to probe it.
+        resize: The (width, height) that each frame is resized to.
+        grayscale: Whether frames are converted to grayscale.
+        crop_rect: The (x, y, w, h) crop applied before the resize, or ``None``.
+    """
+
+    path: Path
+    facts: MediaFacts | None
+    resize: tuple[int, int]
+    grayscale: bool
+    crop_rect: tuple[int, int, int, int] | None
+
+    def candidates(
+        self, start: int, end: int, step: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Decode every *step*-th frame from *start* to *end* inclusive.
+
+        Args:
+            start: The first frame of the range.
+            end: The last frame of the range.
+            step: The stride between candidates.
+
+        Returns:
+            The candidate indices, ``(N,)``, and their features, ``(N, D)``.
+        """
+        return extract_candidate_features(
+            video_path=self.path,
+            start_frame=start,
+            end_frame=end,
+            candidate_step=step,
+            resize=self.resize,
+            grayscale=self.grayscale,
+            crop_rect=self.crop_rect,
+            max_candidates=None,
+            facts=self.facts,
+        )
+
+    def at(self, indices: np.ndarray) -> np.ndarray:
+        """Decode the frames at *indices*, through the seek of each file type.
+
+        Args:
+            indices: One or more frame indices, in any order.
+
+        Returns:
+            The ``(M, D)`` features, one row per index in the order of *indices*.
+        """
+        return _features_in_order(
+            read_frames_at(self.path, indices, self.facts),
+            indices,
+            crop_rect=self.crop_rect,
+            resize=self.resize,
+            grayscale=self.grayscale,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MultiClipFeatures:
+    """The candidate frames of a sequence of files, indexed across them.
+
+    Attributes:
+        reader: The open reader over the sequence.
+        resize: The (width, height) that each frame is resized to.
+        grayscale: Whether frames are converted to grayscale.
+        crop_rect: The (x, y, w, h) crop applied before the resize, or ``None``.
+    """
+
+    reader: MultiVideoReaderLike
+    resize: tuple[int, int]
+    grayscale: bool
+    crop_rect: tuple[int, int, int, int] | None
+
+    def candidates(
+        self, start: int, end: int, step: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Decode every *step*-th frame from *start* to *end* inclusive.
+
+        Args:
+            start: The first frame of the range.
+            end: The last frame of the range.
+            step: The stride between candidates.
+
+        Returns:
+            The candidate indices, ``(N,)``, and their features, ``(N, D)``.
+        """
+        return extract_candidate_features_multi(
+            reader=self.reader,
+            start_frame=start,
+            end_frame=end,
+            candidate_step=step,
+            resize=self.resize,
+            grayscale=self.grayscale,
+            crop_rect=self.crop_rect,
+            max_candidates=None,
+        )
+
+    def at(self, indices: np.ndarray) -> np.ndarray:
+        """Decode the frames at the global *indices*, by a seek to each.
+
+        Args:
+            indices: One or more global frame indices, in any order.
+
+        Returns:
+            The ``(M, D)`` features, one row per index in the order of *indices*.
+        """
+        return _features_in_order(
+            read_frames_at_multi(self.reader, indices),
+            indices,
+            crop_rect=self.crop_rect,
+            resize=self.resize,
+            grayscale=self.grayscale,
+        )
 
 
 @dataclass(frozen=True)
@@ -105,6 +261,15 @@ def _checked_method(
     return method_norm
 
 
+def _sampling_method(method: str) -> SamplingMethod:
+    """Return *method* as a sampling method, refused when it names another method."""
+    match method:
+        case "uniform" | "kmeans":
+            return method
+        case _:
+            raise ValueError(f"method {method!r} is not a sampling method")
+
+
 def _listed_selection(frame_indices: Sequence[int], total_frames: int) -> np.ndarray:
     """The listed frames, sorted and de-duplicated, refused past either end.
 
@@ -157,6 +322,7 @@ def extract_frames(
     output_dir: Optional[Path | str] = None,
     facts: MediaFacts | None = None,
     frame_indices: Sequence[int] | None = None,
+    excluded: Exclusion | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a single video.
@@ -199,6 +365,10 @@ def extract_frames(
     frame_indices
         The frames to write under "list", and given only then. Sorted and
         de-duplicated; an index outside the video raises ``ValueError``.
+    excluded
+        The frames that "uniform" or "kmeans" sampling avoids and samples around,
+        or ``None``. Its keys extend the ``sampling`` record. Not read under
+        "list".
     """
     method_norm = _checked_method(method, n_frames, candidate_step, frame_indices)
 
@@ -214,57 +384,37 @@ def extract_frames(
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
 
-    sampling_details: dict[str, Any] = {}
     if frame_indices is not None:
         selected = _listed_selection(frame_indices, meta.frame_count)
         n_requested = int(selected.size)
-    elif method_norm == "uniform":
-        n_requested = _requested_count(n_frames)
-        candidates = np.arange(start, end + 1, int(candidate_step), dtype=np.int32)
-        selected = select_uniform_frames(candidates, n_requested)
+        sampling_details: dict[str, JsonValue] = {}
     else:
-        n_requested = _requested_count(n_frames)
-        effective_step = int(candidate_step)
-        if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
-            approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
-            if approx_candidates > int(kmeans_max_candidates):
-                stride_mult = int(
-                    math.ceil(approx_candidates / float(kmeans_max_candidates))
-                )
-                effective_step = int(candidate_step) * max(1, stride_mult)
-
-        candidates, features = extract_candidate_features(
-            video_path=meta.path,
-            start_frame=start,
-            end_frame=end,
-            candidate_step=int(effective_step),
-            resize=(int(kmeans_resize[0]), int(kmeans_resize[1])),
-            grayscale=bool(kmeans_grayscale),
-            crop_rect=crop_rect,
-            max_candidates=None,
-            facts=resolved_facts,
-        )
-        selected = select_kmeans_frames(
-            candidate_indices=candidates,
-            features=features,
-            n_frames=n_requested,
-            random_state=int(random_state),
-            batch_size=int(kmeans_batch_size),
-            max_iter=int(kmeans_max_iter),
+        kmeans = KmeansSettings(
+            resize=kmeans_resize,
+            grayscale=kmeans_grayscale,
+            max_candidates=kmeans_max_candidates,
+            batch_size=kmeans_batch_size,
+            max_iter=kmeans_max_iter,
             n_init=kmeans_n_init,
         )
-        sampling_details = {
-            "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
-            "kmeans_grayscale": bool(kmeans_grayscale),
-            "kmeans_max_candidates": None
-            if kmeans_max_candidates is None
-            else int(kmeans_max_candidates),
-            "kmeans_effective_candidate_step": int(effective_step),
-            "kmeans_batch_size": int(kmeans_batch_size),
-            "kmeans_max_iter": int(kmeans_max_iter),
-            "kmeans_n_init": kmeans_n_init,
-            "candidate_count": int(candidates.size),
-        }
+        n_requested = _requested_count(n_frames)
+        selected, sampling_details = select_frame_indices(
+            _sampling_method(method_norm),
+            start=start,
+            end=end,
+            candidate_step=int(candidate_step),
+            n_frames=n_requested,
+            source=SingleFileFeatures(
+                path=meta.path,
+                facts=resolved_facts,
+                resize=kmeans.resize,
+                grayscale=kmeans.grayscale,
+                crop_rect=crop_rect,
+            ),
+            kmeans=kmeans,
+            random_state=int(random_state),
+            excluded=excluded,
+        )
 
     run = run_id or _make_run_id()
     if output_dir is not None:
@@ -337,6 +487,7 @@ def extract_frames_multi(
     output_dir: Optional[Path | str] = None,
     facts: Sequence[MediaFacts] | None = None,
     frame_indices: Sequence[int] | None = None,
+    excluded: Exclusion | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a multi-video sequence.
@@ -355,6 +506,8 @@ def extract_frames_multi(
         so it does not re-probe. ``None`` for bare-path callers.
     frame_indices : sequence of int, optional
         Global frame indices to write under "list", counted across the clips.
+    excluded : Exclusion, optional
+        The global frames that sampling avoids and samples around.
     """
     method_norm = _checked_method(method, n_frames, candidate_step, frame_indices)
 
@@ -368,56 +521,36 @@ def extract_frames_multi(
     start, end = normalize_frame_range(total_frames, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, reader.width, reader.height)
 
-    sampling_details: dict[str, Any] = {}
     if frame_indices is not None:
         selected = _listed_selection(frame_indices, total_frames)
         n_requested = int(selected.size)
-    elif method_norm == "uniform":
-        n_requested = _requested_count(n_frames)
-        candidates = np.arange(start, end + 1, int(candidate_step), dtype=np.int32)
-        selected = select_uniform_frames(candidates, n_requested)
+        sampling_details: dict[str, JsonValue] = {}
     else:
-        n_requested = _requested_count(n_frames)
-        effective_step = int(candidate_step)
-        if kmeans_max_candidates is not None and int(kmeans_max_candidates) > 0:
-            approx_candidates = ((int(end) - int(start)) // int(candidate_step)) + 1
-            if approx_candidates > int(kmeans_max_candidates):
-                stride_mult = int(
-                    math.ceil(approx_candidates / float(kmeans_max_candidates))
-                )
-                effective_step = int(candidate_step) * max(1, stride_mult)
-
-        candidates, features = extract_candidate_features_multi(
-            reader=reader,
-            start_frame=start,
-            end_frame=end,
-            candidate_step=int(effective_step),
-            resize=(int(kmeans_resize[0]), int(kmeans_resize[1])),
-            grayscale=bool(kmeans_grayscale),
-            crop_rect=crop_rect,
-            max_candidates=None,
-        )
-        selected = select_kmeans_frames(
-            candidate_indices=candidates,
-            features=features,
-            n_frames=n_requested,
-            random_state=int(random_state),
-            batch_size=int(kmeans_batch_size),
-            max_iter=int(kmeans_max_iter),
+        kmeans = KmeansSettings(
+            resize=kmeans_resize,
+            grayscale=kmeans_grayscale,
+            max_candidates=kmeans_max_candidates,
+            batch_size=kmeans_batch_size,
+            max_iter=kmeans_max_iter,
             n_init=kmeans_n_init,
         )
-        sampling_details = {
-            "kmeans_resize": [int(kmeans_resize[0]), int(kmeans_resize[1])],
-            "kmeans_grayscale": bool(kmeans_grayscale),
-            "kmeans_max_candidates": None
-            if kmeans_max_candidates is None
-            else int(kmeans_max_candidates),
-            "kmeans_effective_candidate_step": int(effective_step),
-            "kmeans_batch_size": int(kmeans_batch_size),
-            "kmeans_max_iter": int(kmeans_max_iter),
-            "kmeans_n_init": kmeans_n_init,
-            "candidate_count": int(candidates.size),
-        }
+        n_requested = _requested_count(n_frames)
+        selected, sampling_details = select_frame_indices(
+            _sampling_method(method_norm),
+            start=start,
+            end=end,
+            candidate_step=int(candidate_step),
+            n_frames=n_requested,
+            source=MultiClipFeatures(
+                reader=reader,
+                resize=kmeans.resize,
+                grayscale=kmeans.grayscale,
+                crop_rect=crop_rect,
+            ),
+            kmeans=kmeans,
+            random_state=int(random_state),
+            excluded=excluded,
+        )
 
     run = run_id or _make_run_id()
     if output_dir is not None:

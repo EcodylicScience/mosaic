@@ -392,6 +392,8 @@ Sample representative video frames as PNGs for annotation.
 | `method` | `"uniform"` \| `"kmeans"` \| `"list"` | `"uniform"` |  | How the frames are chosen: 'uniform' spaces them evenly over the candidate range, 'kmeans' clusters the candidates by pixel content and keeps one frame per cluster, and 'list' writes exactly the frames listed in frames. |
 | `n_frames` | `integer` \| `None` | `null` |  | How many frames to write per camera. Required by 'uniform' and 'kmeans', and refused by 'list', whose listed frames are what is written. |
 | `frames` | list of `EntryFrames` \| `None` | `null` |  | The frames to write under 'list', one item per entry, and refused by the other methods. The list chooses the entries: a run covers every listed entry, narrowed by its scope. Each item's frames apply to every camera of the entry. |
+| `exclude` | list of `EntryFrames` \| `None` | `null` |  | Frames that 'uniform' and 'kmeans' do not write and sample around, one item per entry, on the axis of frames. Each item's frames apply to every camera of the entry, and an entry the run does not cover is ignored. Refused by 'list'. |
+| `exclude_spacing` | `integer` | `0` | >= `0` | Distance from an excluded frame within which a candidate is removed too. Refused above 0 when exclude is unset. [frames] |
 | `start_frame` | `integer` \| `None` | `null` |  | First frame of the range frames are chosen from, inclusive. Unset starts at the beginning of the video. Refused by 'list'. |
 | `end_frame` | `integer` \| `None` | `null` |  | Last frame of the range frames are chosen from, inclusive. Unset runs to the end of the video. Refused by 'list'. |
 | `candidate_step` | `integer` | `1` |  | Stride between candidate frames within the range. A wider stride samples a long recording without decoding every frame of it. |
@@ -403,7 +405,7 @@ Sample representative video frames as PNGs for annotation.
 | `kmeans_batch_size` | `integer` | `1024` |  | How many feature vectors one mini-batch k-means update reads. |
 | `kmeans_max_iter` | `integer` | `100` |  | Ceiling on mini-batch k-means iterations. |
 | `kmeans_n_init` | `string` \| `integer` | `"auto"` |  | How many centroid seedings k-means tries before keeping the best. 'auto' leaves the count to scikit-learn. |
-| `revision` | `integer` | `0` |  | Bump to extract a second selection under the same settings. It is the one term allowed to move the extraction identifier, and only a non-zero value enters it. Revision 0 reproduces every identifier already on disk. |
+| `revision` | `integer` | `0` |  | Bump to extract a second selection under the same settings. The extraction identifier includes a non-zero revision, a frames list, and an exclude with its exclude_spacing, and omits each when unset. Revision 0 reproduces every identifier already on disk. |
 | `parallel_workers` | `integer` \| `string` \| `None` | `"auto"` |  | How many cameras are extracted at once. 'auto' reads the machine, and an integer pins the count. |
 | `parallel_mode` | `"thread"` \| `"process"` | `"thread"` |  | Which executor runs the cameras: 'thread' shares one process, 'process' forks, which a decoder holding the interpreter lock needs. |
 

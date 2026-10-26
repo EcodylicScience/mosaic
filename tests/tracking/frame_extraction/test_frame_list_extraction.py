@@ -5,6 +5,9 @@ method would land on. A list names, per entry, the frame indices to write, on
 the entry's media axis -- counted across its clips in order, as its tracks'
 ``frame`` column is. The list chooses the entries and the scope narrows it.
 
+A sampling run's ``exclude`` names frames in the same per-entry form, frames
+that the run does not write and samples around.
+
 A recording whose clips differ in frame rate is read through its
 ``export-joined`` file, under every method: ``MultiVideoReader`` refuses such
 clips and stays strict.
@@ -23,20 +26,28 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.joined_export import JoinedExportMissingError
 from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.run_log import run_log_dir
 from mosaic.core.scope import Scope
+from mosaic.runlog import read_entry_errors
 from mosaic.tracking import extract_frames
 from mosaic.tracking.frame_extraction import list_frame_runs
 from mosaic.tracking.frame_extraction.dataset_runs import (
+    EntryFrames,
     ExtractFramesParams,
     ListedFramesRefused,
+    entry_frames_from_mapping,
     frames_identity_payload,
     frames_run_id,
     listed_entries,
+    normalized_frames,
 )
+from mosaic.tracking.frame_extraction.sampling import SamplingMethod
 from tests.helpers import (
     add_media_sequence,
+    invoke_json,
     write_painted_entry,
     paint_frame_code,
     read_frame_code,
@@ -45,6 +56,8 @@ from tests.helpers import (
 runner = CliRunner()
 
 LIST_A = {"method": "list", "frames": [{"sequence": "a", "indices": [1]}]}
+
+EXCLUDE_A: list[dict[str, object]] = [{"sequence": "a", "indices": [2]}]
 
 
 # --- the params ----------------------------------------------------------------
@@ -62,6 +75,10 @@ LIST_A = {"method": "list", "frames": [{"sequence": "a", "indices": [1]}]}
         ({"method": "kmeans", "n_frames": 2, "frames": LIST_A["frames"]}, "frames"),
         ({}, "n_frames"),
         ({"method": "kmeans"}, "n_frames"),
+        ({**LIST_A, "exclude": EXCLUDE_A}, "exclude"),
+        ({**LIST_A, "exclude": []}, "exclude"),
+        ({"n_frames": 2, "exclude_spacing": 5}, "exclude_spacing"),
+        ({"n_frames": 2, "exclude": [], "exclude_spacing": 5}, "exclude_spacing"),
     ],
 )
 def test_a_field_that_disagrees_with_the_method_is_refused_by_name(
@@ -91,6 +108,38 @@ def test_an_entry_listed_twice_is_refused() -> None:
         _ = ExtractFramesParams.model_validate({"method": "list", "frames": twice})
 
 
+def test_the_duplicate_entry_message_names_the_field_it_checks() -> None:
+    twice = (
+        EntryFrames(sequence="a", indices=(1,)),
+        EntryFrames(sequence="a", indices=(2,)),
+    )
+    with pytest.raises(ValueError, match=r"^exclude names \(, a\) twice"):
+        _ = normalized_frames(twice, field="exclude")
+
+
+def test_normalized_frames_sorts_entries_and_deduplicates_indices() -> None:
+    items = (
+        EntryFrames(sequence="b", indices=(3, 1, 3)),
+        EntryFrames(sequence="a", indices=(2,)),
+    )
+    assert normalized_frames(items, field="frames") == (
+        EntryFrames(sequence="a", indices=(2,)),
+        EntryFrames(sequence="b", indices=(1, 3)),
+    )
+
+
+def test_no_mapping_is_no_entry_frames() -> None:
+    assert entry_frames_from_mapping(None) is None
+
+
+def test_a_mapping_converts_to_one_item_per_entry() -> None:
+    converted = entry_frames_from_mapping({("g", "a"): [4, 2], ("", "b"): (0,)})
+    assert converted == (
+        EntryFrames(group="g", sequence="a", indices=(4, 2)),
+        EntryFrames(sequence="b", indices=(0,)),
+    )
+
+
 def test_a_negative_index_is_refused_where_it_sits() -> None:
     with pytest.raises(ValidationError) as excinfo:
         _ = ExtractFramesParams.model_validate(
@@ -117,6 +166,67 @@ def test_a_consumer_can_remove_a_checked_field_from_a_subclass() -> None:
     assert Exposed.model_validate({"method": "list"}).method == "list"
     with pytest.raises(ValidationError, match="n_frames is not read"):
         _ = Exposed.model_validate({"method": "list", "n_frames": 2})
+
+
+class TestTheExcludeParams:
+    def test_an_empty_exclude_is_no_exclude(self) -> None:
+        params = ExtractFramesParams.model_validate({"n_frames": 2, "exclude": []})
+        assert params.exclude is None
+
+    def test_exclude_is_normalized(self) -> None:
+        params = ExtractFramesParams.model_validate(
+            {
+                "n_frames": 2,
+                "exclude": [
+                    {"sequence": "b", "indices": [3, 1, 3]},
+                    {"sequence": "a", "indices": [2]},
+                ],
+            }
+        )
+        assert params.exclude == (
+            EntryFrames(sequence="a", indices=(2,)),
+            EntryFrames(sequence="b", indices=(1, 3)),
+        )
+
+    def test_an_entry_excluded_twice_is_refused_by_name(self) -> None:
+        twice = [{"sequence": "a", "indices": [1]}, {"sequence": "a", "indices": [2]}]
+        with pytest.raises(ValidationError) as excinfo:
+            _ = ExtractFramesParams.model_validate({"n_frames": 2, "exclude": twice})
+        assert [e["loc"] for e in excinfo.value.errors()] == [("exclude",)]
+        assert "exclude names (, a) twice" in str(excinfo.value)
+
+    def test_a_negative_spacing_is_refused(self) -> None:
+        with pytest.raises(ValidationError) as excinfo:
+            _ = ExtractFramesParams.model_validate(
+                {"n_frames": 2, "exclude": EXCLUDE_A, "exclude_spacing": -1}
+            )
+        assert [e["loc"] for e in excinfo.value.errors()] == [("exclude_spacing",)]
+
+    def test_a_spacing_beside_an_exclude_is_kept(self) -> None:
+        params = ExtractFramesParams.model_validate(
+            {"n_frames": 2, "exclude": EXCLUDE_A, "exclude_spacing": 5}
+        )
+        assert params.exclude_spacing == 5
+
+    def test_a_refused_exclude_is_reported_alone(self) -> None:
+        """A positive spacing beside a refused exclude raises no second error."""
+        with pytest.raises(ValidationError) as excinfo:
+            _ = ExtractFramesParams.model_validate(
+                {**LIST_A, "exclude": EXCLUDE_A, "exclude_spacing": 5}
+            )
+        assert [e["loc"] for e in excinfo.value.errors()] == [("exclude",)]
+
+    def test_a_model_without_exclude_accepts_a_spacing(self) -> None:
+        """A consumer that supplies exclude itself removes it from its exposed model."""
+
+        class Exposed(ExtractFramesParams):
+            pass
+
+        _ = Exposed.model_fields.pop("exclude")
+        _ = Exposed.model_rebuild(force=True)
+
+        params = Exposed.model_validate({"n_frames": 2, "exclude_spacing": 5})
+        assert params.exclude_spacing == 5
 
 
 # --- the identifier ------------------------------------------------------------
@@ -154,10 +264,64 @@ class TestTheListIdentifier:
         frames: list[dict[str, object]] = [{"sequence": "a", "indices": [1]}]
         assert _list_id(frames, revision=1) != _list_id(frames)
 
-    def test_a_sampling_method_hashes_no_frames_term(self) -> None:
-        """The payload a uniform run always hashed, key for key."""
-        params = ExtractFramesParams(n_frames=100)
+    @pytest.mark.parametrize(
+        "unset",
+        [{}, {"exclude": None}, {"exclude": [], "exclude_spacing": 0}],
+        ids=["absent", "none", "empty"],
+    )
+    @pytest.mark.parametrize("method", ["uniform", "kmeans"])
+    def test_a_sampling_method_hashes_no_frames_term(
+        self, method: SamplingMethod, unset: dict[str, object]
+    ) -> None:
+        """The payload a sampling run always hashed, key for key, without exclude."""
+        params = ExtractFramesParams.model_validate(
+            {"method": method, "n_frames": 100, **unset}
+        )
         assert frames_identity_payload(params) == params.identity_dump()
+
+
+def _exclude_id(exclude: list[dict[str, object]], **extra: object) -> str:
+    params = ExtractFramesParams.model_validate(
+        {"n_frames": 10, "exclude": exclude, **extra}
+    )
+    return frames_run_id(params.method, params)
+
+
+class TestTheExcludeIdentifier:
+    def test_a_set_exclude_adds_its_two_terms(self) -> None:
+        params = ExtractFramesParams.model_validate(
+            {
+                "n_frames": 10,
+                "exclude": [{"group": "g", "sequence": "a", "indices": [9, 4]}],
+                "exclude_spacing": 3,
+            }
+        )
+        assert frames_identity_payload(params) == {
+            **params.identity_dump(),
+            "_exclude": [["g", "a", [4, 9]]],
+            "_exclude_spacing": 3,
+        }
+
+    def test_the_spacing_enters_beside_an_exclude(self) -> None:
+        assert _exclude_id(EXCLUDE_A) != _exclude_id(EXCLUDE_A, exclude_spacing=2)
+
+    def test_an_exclude_names_another_run(self) -> None:
+        unexcluded = ExtractFramesParams(n_frames=10)
+        assert _exclude_id(EXCLUDE_A) != frames_run_id("uniform", unexcluded)
+        assert _exclude_id([{"sequence": "a", "indices": [3]}]) != _exclude_id(
+            EXCLUDE_A
+        )
+
+    def test_order_and_repeats_name_the_same_run(self) -> None:
+        tidy: list[dict[str, object]] = [
+            {"sequence": "a", "indices": [1, 5]},
+            {"sequence": "b", "indices": [2]},
+        ]
+        messy: list[dict[str, object]] = [
+            {"sequence": "b", "indices": [2, 2]},
+            {"sequence": "a", "indices": [5, 1, 5]},
+        ]
+        assert _exclude_id(tidy) == _exclude_id(messy)
 
 
 # --- a run -----------------------------------------------------------------------
@@ -337,6 +501,107 @@ def test_the_command_line_reads_a_list_from_a_file(
     assert result.exit_code == 0, result.output
     pngs = sorted(p.name for p in two_sequences.get_root("frames").rglob("*.png"))
     assert pngs == ["frame_000000.png", "frame_000003.png"]
+
+
+# --- a run that excludes frames --------------------------------------------------
+
+
+def _manifests(ds: Dataset, run_id: str) -> dict[str, dict[str, JsonValue]]:
+    """Each camera's ``run_info.json`` of the uniform run *run_id*, by directory."""
+    manifests: dict[str, dict[str, JsonValue]] = {}
+    run_root = ds.get_root("frames") / "uniform" / run_id
+    for path in sorted(run_root.rglob("run_info.json")):
+        manifest: dict[str, JsonValue] = json.loads(path.read_text())
+        manifests[path.parent.name] = manifest
+    return manifests
+
+
+def test_every_camera_records_the_exclude_entries_the_run_ignores(
+    two_sequences: Dataset,
+) -> None:
+    """``seq_b`` has no media and ``ghost`` is no entry: neither has a camera."""
+    ds = two_sequences
+    run_id = extract_frames(
+        ds,
+        n_frames=2,
+        exclude={("", "seq_a"): [3], ("", "seq_b"): [1], ("", "ghost"): [0]},
+    )
+
+    manifests = _manifests(ds, run_id)
+    assert sorted(manifests) == ["seq_a", "seq_c"]
+    for name, manifest in manifests.items():
+        sampling = manifest["sampling"]
+        assert isinstance(sampling, dict), name
+        assert sampling["exclude_entries_ignored"] == 2, name
+    seq_a, seq_c = manifests["seq_a"]["sampling"], manifests["seq_c"]["sampling"]
+    assert isinstance(seq_a, dict) and isinstance(seq_c, dict)
+    assert (seq_a["exclude_count"], seq_c["exclude_count"]) == (1, 0)
+    selected = manifests["seq_a"]["selected_frame_indices"]
+    assert isinstance(selected, list)
+    assert 3 not in selected
+
+    run_params = ds.get_root("frames") / "uniform" / run_id / "run_params.json"
+    params: dict[str, JsonValue] = json.loads(run_params.read_text())
+    assert params["_exclude"] == [
+        ["", "ghost", [0]],
+        ["", "seq_a", [3]],
+        ["", "seq_b", [1]],
+    ]
+
+
+def test_a_camera_left_too_few_candidates_writes_the_rest(
+    two_sequences: Dataset,
+) -> None:
+    """Twelve frames less four excluded leave eight of the ten requested."""
+    ds = two_sequences
+    run_id = extract_frames(
+        ds,
+        n_frames=10,
+        exclude={("", "seq_a"): [3, 4, 5, 6]},
+        scope=Scope(entries=[("", "seq_a")]),
+    )
+
+    seq_dir = ds.get_root("frames") / "uniform" / run_id / "seq_a"
+    names = sorted(p.name for p in seq_dir.glob("*.png"))
+    assert names == [f"frame_{i:06d}.png" for i in (0, 1, 2, 7, 8, 9, 10, 11)]
+    rows = list_frame_runs(ds, method="uniform")
+    assert (
+        int(rows.iloc[0]["n_frames_extracted"]),
+        int(rows.iloc[0]["n_frames_requested"]),
+    ) == (8, 10)
+
+
+def test_a_camera_with_every_candidate_excluded_loses_its_entry(
+    two_sequences: Dataset,
+) -> None:
+    """``seq_c``'s six frames all lie within three of frame 2."""
+    params = {
+        "n_frames": 2,
+        "parallel_workers": 1,
+        "exclude": [{"sequence": "seq_c", "indices": [2]}],
+        "exclude_spacing": 3,
+    }
+
+    payload = invoke_json(
+        [
+            "run",
+            "--kind",
+            "extract-frames",
+            "-m",
+            str(two_sequences.manifest_path),
+            "--params",
+            json.dumps(params),
+            "--json",
+        ]
+    )
+
+    assert payload["status"] == "partial"
+    assert (payload["entries_failed"], payload["entries_written"]) == (1, 1)
+    execution_id = payload["execution_id"]
+    assert isinstance(execution_id, str)
+    errors = read_entry_errors(run_log_dir(two_sequences.base_dir), execution_id)
+    assert [error["key"] for error in errors["items"]] == ["seq_c"]
+    assert "all 6 candidate frames are excluded" in errors["items"][0]["message"]
 
 
 # --- a recording whose clips differ in frame rate ---------------------------------
