@@ -181,6 +181,17 @@ class TestTheRecordingAxis:
         assert shifted["X"].tolist() == [1.5, 2.5]
         assert shifted["id"].tolist() == [3, 3]
 
+    def test_a_timestamp_is_shifted_with_the_time(self) -> None:
+        """TRex's ``timestamp`` is the frame's time in microseconds."""
+        table = pd.DataFrame(
+            {"frame": [0, 1], "time": [0.0, 0.05], "timestamp": [0.0, 50000.0]}
+        )
+
+        shifted = shift_to_recording_axis(table, 100, 20.0)
+
+        assert shifted["time"].tolist() == pytest.approx([5.0, 5.05])
+        assert shifted["timestamp"].tolist() == pytest.approx([5e6, 5.05e6])
+
     def test_an_offset_inside_a_store_chunk_shifts_like_any_other(self) -> None:
         """The shift accepts an offset that is not a multiple of the chunk size."""
         shifted = shift_to_recording_axis(_recording_rows(), 44540, 20.0)

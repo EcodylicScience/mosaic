@@ -357,8 +357,8 @@ class TestSetContinuousGroups:
 
 
 # Each module that may read the declaration, and the functions of it that may.
-# ``None`` admits the whole module. The summary and ``describe`` display the
-# declared list and decide nothing from it.
+# ``None`` admits the whole module. The summary echoes the declared list and
+# decides nothing from it.
 _DECLARATION_READERS: dict[str, frozenset[str] | None] = {
     "core/manifest.py": None,
     "core/recording.py": None,

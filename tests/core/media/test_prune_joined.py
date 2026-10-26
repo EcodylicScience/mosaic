@@ -13,12 +13,13 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from mosaic_media import MediaProbeError
+from mosaic_media import MediaFacts, MediaProbeError
 from typer.testing import CliRunner
 
 from mosaic.cli import app
-from mosaic.core.dataset import Dataset, ResolvedMedia
+from mosaic.core.dataset import Dataset
 from mosaic.core.media.prune_joined import JoinedPruneClass, deletable
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.joined_export import (
@@ -167,14 +168,20 @@ def test_an_entry_that_cannot_be_resolved_leaves_its_joins_kept(
 ) -> None:
     """A resolution failure can prevent a deletion and never cause one."""
     stale = _join(ds, EARLIER)
-    resolve = ds.resolve_media
+    route = ds.route_media_row
 
-    def failing(group: str, sequence: str) -> ResolvedMedia:
+    def failing(
+        group: str,
+        sequence: str,
+        row: pd.Series,
+        route_derivatives: bool,
+        derivative_df: pd.DataFrame | None,
+    ) -> tuple[Path, MediaFacts]:
         if sequence == "sess":
             raise MediaProbeError("a clip requires a transcode it does not have")
-        return resolve(group, sequence)
+        return route(group, sequence, row, route_derivatives, derivative_df)
 
-    monkeypatch.setattr(ds, "resolve_media", failing)
+    monkeypatch.setattr(ds, "route_media_row", failing)
     report = ds.prune_joined_exports(apply=True, min_age_hours=0.0)
 
     assert [e.verdict for e in report.entries] == ["unsourced"]
@@ -202,6 +209,43 @@ def test_a_multi_camera_entry_is_skipped_rather_than_unresolved(
 
     assert report.considered
     assert report.unresolved == []
+
+
+def test_each_clip_of_a_divided_recording_is_routed_at_most_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once for its own sequence and once to place the sequences after it."""
+    dataset = make_dataset(
+        (tmp_path / "dataset").resolve(), roots=["media_raw", "media", "tracks"]
+    )
+    sequences = [f"s{index}" for index in range(1, 6)]
+    write_media_index(
+        dataset,
+        [
+            MediaClip(group="rec", sequence=sequence, filename=f"{sequence}.mp4")
+            for sequence in sequences
+        ],
+    )
+    dataset.set_continuous_groups(["rec"])
+    routed: list[str] = []
+    route = Dataset.route_media_row
+
+    def counting(
+        self: Dataset,
+        group: str,
+        sequence: str,
+        row: pd.Series,
+        route_derivatives: bool,
+        derivative_df: pd.DataFrame | None,
+    ) -> tuple[Path, MediaFacts]:
+        routed.append(sequence)
+        return route(self, group, sequence, row, route_derivatives, derivative_df)
+
+    monkeypatch.setattr(Dataset, "route_media_row", counting)
+    report = dataset.prune_joined_exports(apply=False)
+
+    assert report.unresolved == []
+    assert len(routed) <= 2 * len(sequences)
 
 
 # --- strays -------------------------------------------------------------------

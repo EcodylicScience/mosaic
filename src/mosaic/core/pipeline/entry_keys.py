@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from mosaic.core.entry import Entry
+from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.index_csv import IndexCSV, SchemaRowBase, index_records
 from mosaic.core.pipeline.index_lock import index_lock
 
@@ -38,7 +39,9 @@ __all__ = [
 
 def entries_of_rows(rows: Iterable[Mapping[str, object]]) -> set[Entry]:
     """Return the ``(group, sequence)`` of each row, a blank cell read as ``""``."""
-    return {(_text(row.get("group")), _text(row.get("sequence"))) for row in rows}
+    return {
+        (text_cell(row.get("group")), text_cell(row.get("sequence"))) for row in rows
+    }
 
 
 def entries_kept_beside(
@@ -59,13 +62,6 @@ def entries_kept_beside(
     """
     remaining = set(written) | set(held_elsewhere)
     return entries_of_rows(preserved) | (entries_of_rows(committed) & remaining)
-
-
-def _text(value: object) -> str:
-    """Return a cell as text, with an absent or NaN cell as ``""``."""
-    if value is None or (isinstance(value, float) and value != value):
-        return ""
-    return str(value)
 
 
 def index_entries(path: Path) -> set[Entry]:

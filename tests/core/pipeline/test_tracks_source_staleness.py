@@ -88,19 +88,19 @@ def _cache_serving_stderr(
 
 
 def test_the_tracks_rows_composition_is_readable_per_entry(
-    scenario_dataset: object,
+    scenario_dataset: Dataset,
 ) -> None:
     """The comparison's right-hand side comes from the tracks index, not a digest."""
     ds = scenario_dataset
-    add_tracks_variant(ds, "conv.0.1-aaaaaaaaaa", "seq_a")  # pyright: ignore[reportArgumentType]
+    add_tracks_variant(ds, "conv.0.1-aaaaaaaaaa", "seq_a")
 
     # Through the typed reader, not read_csv: an empty cell comes back as NaN from
     # a raw read and ``str(NaN)`` is the word "nan", which is the trap
     # ``text_cell`` exists to close.
-    index = read_tracks_index(ds)  # pyright: ignore[reportArgumentType]
+    index = read_tracks_index(ds)
     recorded = text_cell(index.iloc[0].get("consumed_composition", ""))
 
-    per_entry = tracks_compositions(ds, ("conv.0.1-aaaaaaaaaa",))  # pyright: ignore[reportArgumentType]
+    per_entry = tracks_compositions(ds, ("conv.0.1-aaaaaaaaaa",))
 
     # Whatever the row recorded is what a consumer sees -- including "" on a dataset
     # with no source projection, which is the honest unknown rather than a claim.
@@ -122,7 +122,7 @@ def test_a_moved_tracks_composition_is_a_recompute() -> None:
 
 
 def test_a_row_predating_the_column_is_not_forced_to_recompute(
-    scenario_dataset: object,
+    scenario_dataset: Dataset,
 ) -> None:
     """Both sides empty stays ``undetectable``, which is served.
 
@@ -132,7 +132,7 @@ def test_a_row_predating_the_column_is_not_forced_to_recompute(
     ds = scenario_dataset
     assert cached_entry_disposition("", "") == "undetectable"
     # And nothing is recorded for a run that never wrote the column.
-    assert recorded_tracks_reads(ds, "no-such-feature", "0.1-x") == {}  # pyright: ignore[reportArgumentType]
+    assert recorded_tracks_reads(ds, "no-such-feature", "0.1-x") == {}
 
 
 def test_a_computed_row_records_the_tracks_cell() -> None:

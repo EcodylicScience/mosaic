@@ -834,34 +834,32 @@ class _ScopedMediaRows:
 class _MemberPlacement:
     """Places the sequences of one divided recording, for one camera, on its frame axis.
 
-    The members are the recording's sequences that the originals index or the
-    tracks index names, in member order without order facts
-    (:func:`~mosaic.core.recording.order_members`): a natural sort on their
-    names, as for a recording that no tracks run is pinned for. A member's
-    clips are routed the first time a later member is placed.
+    The members are :meth:`Dataset.recording_members` of the recording, in member
+    order without order facts: a natural sort on their names, as for a
+    recording that no tracks run is pinned for. A member's clips are routed the
+    first time a later member is placed.
     """
 
     def __init__(
         self,
         group: str,
         camera: str,
+        members: Sequence[str],
         rows: pd.DataFrame,
         tracks: pd.DataFrame,
         route: Callable[[str, pd.DataFrame], ResolvedMedia],
     ) -> None:
-        """Hold the originals *rows* and the *tracks* index rows of *group*.
+        """Hold *group*'s *members*, its originals *rows* and its *tracks* index rows.
 
-        *route* resolves a member's ``video_order``-sorted rows, as
-        :meth:`Dataset.resolve_media` routes them.
+        *rows* only route a member's clips. *route* resolves a member's
+        ``video_order``-sorted rows, as :meth:`Dataset.resolve_media` routes them.
         """
         self._group = group
         self._camera = camera
         self._rows = rows[rows["camera"] == camera]
         self._tracks = tracks
         self._route = route
-        named = {(group, str(sequence)) for sequence in rows["sequence"]}
-        named |= {(group, str(sequence)) for sequence in tracks["sequence"]}
-        self._members = tuple(sequence for _, sequence in order_members(named, {}))
+        self._members = tuple(members)
         self._clips: dict[str, tuple[MediaFacts, ...] | str | None] = {}
         self._extents: dict[str, dict[str, tuple[int, int]]] | None = None
 
@@ -883,7 +881,7 @@ class _MemberPlacement:
         disorder = self._frame_order_disagreement(sequence)
         if disorder is not None:
             return UnplacedSequence(disorder)
-        earlier = self._members[: self._members.index(sequence)]
+        earlier = self._earlier(sequence)
         total = 0
         rates: list[float] = []
         for member in earlier:
@@ -907,6 +905,28 @@ class _MemberPlacement:
         if store_rate_mismatch([*rates, *own_rates]) is not None:
             return UnplacedSequence(self._mixed_rates(sequence, rates, own_rates))
         return total
+
+    def opening(self, sequence: str) -> int | UnplacedSequence | None:
+        """Return 0 when *sequence* starts the recording, read without its media.
+
+        *sequence* starts the recording when no member sorts before it, and
+        need not be a member. A tracks variant that numbers the frames of
+        another member before it leaves it unplaced, as :meth:`place` does.
+
+        Returns:
+            0, why a tracks variant leaves *sequence* unplaced, or ``None``
+            when a member sorts before it.
+        """
+        if self._earlier(sequence):
+            return None
+        disorder = self._frame_order_disagreement(sequence)
+        return 0 if disorder is None else UnplacedSequence(disorder)
+
+    def _earlier(self, sequence: str) -> tuple[str, ...]:
+        """Return the members before *sequence* in member order."""
+        named = {(self._group, member) for member in (*self._members, sequence)}
+        order = tuple(member for _, member in order_members(named, {}))
+        return order[: order.index(sequence)]
 
     def _member_clips(self, member: str) -> tuple[MediaFacts, ...] | str | None:
         """Return the routed facts of *member*'s clips, why they cannot be read, or ``None``.
@@ -1439,24 +1459,31 @@ class Dataset:
     def recording_members(
         self,
         key: RecordingKey,
+        entries: Iterable[Entry] | None = None,
         *,
         order_facts: Mapping[Entry, OrderFacts] | None = None,
     ) -> tuple[Entry, ...]:
         """Return the members of the recording that *key* names, in recording order.
 
         An undivided recording has its one entry. A divided one has every entry
-        of its group that the media index or the tracks index names, ordered as
-        :meth:`recordings` orders them. A key that names no recording has no
-        members: ``(G, "")`` for an undeclared group, or ``(G, "s")`` for a
-        declared one.
+        of its group among *entries*, ordered as :meth:`recordings` orders them.
+        A key that names no recording has no members: ``(G, "")`` for an
+        undeclared group, or ``(G, "s")`` for a declared one.
+
+        Args:
+            key: The recording.
+            entries: The entries to find a divided recording's members among.
+                ``None`` reads the media index and the tracks index and takes
+                every entry either names.
+            order_facts: What places each member in its recording, as for
+                :meth:`recordings`.
         """
         if self.recording_kind(key.group) == "undivided":
             return ((key.group, key.sequence),) if key.sequence else ()
         if key.sequence:
             return ()
-        group_entries = (
-            entry for entry in self.recording_entries() if entry[0] == key.group
-        )
+        universe = self.recording_entries() if entries is None else entries
+        group_entries = (entry for entry in universe if entry[0] == key.group)
         return order_members(group_entries, order_facts or {})
 
     def recording_entries(self) -> set[Entry]:
@@ -5149,12 +5176,13 @@ class Dataset:
     def _joined_clip_sets(self) -> tuple[dict[str, str], list[str]]:
         """Every clip set a join could hold today, mapped to its entry's label.
 
-        Resolved exactly as ``export-joined`` resolves one entry, through
-        :meth:`resolve_media` with no camera, so the digests match the names the
-        op writes. A multi-camera entry is skipped, since the op cannot join one.
-        An entry that fails to resolve is returned in the second list with its
-        error. Its joins then read as unsourced and are kept, so a failure here
-        can only prevent a deletion.
+        Each single-camera entry's clips are routed as ``export-joined`` routes
+        them through :meth:`resolve_media`, so the digests match the names the
+        op writes. One :meth:`resolve_media_scope` read routes them all, and
+        places a divided recording's sequences once. A multi-camera entry is
+        skipped, since the op cannot join one. An entry that fails to resolve
+        is returned in the second list with its error. Its joins then read as
+        unsourced and are kept, so a failure here can only prevent a deletion.
         """
         from .pipeline.joined_export import joined_source_uid
 
@@ -5162,23 +5190,27 @@ class Dataset:
             df = self._load_media_index()
         except FileNotFoundError:
             return {}, []
+        single_camera = sorted(
+            (str(group), str(sequence))
+            for (group, sequence), rows in df.groupby(["group", "sequence"])
+            if len({camera for camera in rows["camera"] if camera}) <= 1
+        )
+        failed: dict[Entry, MediaProbeError] = {}
+        try:
+            scope = self.resolve_media_scope(single_camera, errors=failed)
+        except FileNotFoundError:
+            return {}, []
         clip_sets: dict[str, str] = {}
-        unresolved: list[str] = []
-        for (group, sequence), rows in df.groupby(["group", "sequence"], sort=True):
-            group, sequence = str(group), str(sequence)
-            if len({camera for camera in rows["camera"] if camera}) > 1:
+        for media in scope:
+            if len(media.resolved.facts) < 2:
                 continue
-            label = f"{group}/{sequence}"
-            try:
-                resolved = self.resolve_media(group, sequence)
-            except (FileNotFoundError, MediaProbeError) as error:
-                unresolved.append(f"{label}: {error}")
-                continue
-            if len(resolved.facts) < 2:
-                continue
-            source_uid = joined_source_uid(list(resolved.facts))
+            source_uid = joined_source_uid(list(media.resolved.facts))
             if source_uid:
-                clip_sets[source_uid] = label
+                clip_sets[source_uid] = f"{media.group}/{media.sequence}"
+        unresolved = [
+            f"{group}/{sequence}: {failed[group, sequence]}"
+            for group, sequence in sorted(failed)
+        ]
         return clip_sets, unresolved
 
     # Identity cells: what a row says it *is*, as opposed to what was measured
@@ -6105,10 +6137,15 @@ class Dataset:
     ) -> _MemberPlacement:
         """Return the placement of the divided recording *group*'s sequences, for *camera*.
 
-        *df* is the originals index, and *routing* is
-        :meth:`media_routing_context`.
+        The sequences are :meth:`recording_members`, found among the rows of
+        *df* and of the tracks index. *df* is the originals index, which routes
+        their clips, and *routing* is :meth:`media_routing_context`.
         """
-        tracks = read_tracks_index(self) if self.has_root("tracks") else None
+        tracks = (
+            read_tracks_index(self)
+            if self.has_root("tracks")
+            else pd.DataFrame(columns=["run_id", "group", "sequence"])
+        )
         route_derivatives, derivative_df = routing
 
         def route(sequence: str, rows: pd.DataFrame) -> ResolvedMedia:
@@ -6116,13 +6153,22 @@ class Dataset:
                 group, sequence, rows, route_derivatives, derivative_df
             )
 
+        rows = df[df["group"] == group]
+        # Named as recording_entries names them: media rows as media resolution
+        # names them, tracks rows as their index's cells read.
+        indexed = {(group, str(sequence)) for sequence in rows["sequence"]} | {
+            (text_cell(row_group), text_cell(sequence))
+            for row_group, sequence in zip(
+                tracks["group"], tracks["sequence"], strict=True
+            )
+        }
+        members = self.recording_members(RecordingKey(group, ""), indexed)
         return _MemberPlacement(
             group,
             camera,
-            df[df["group"] == group],
-            pd.DataFrame(columns=["run_id", "group", "sequence"])
-            if tracks is None
-            else tracks[tracks["group"] == group],
+            [sequence for _, sequence in members],
+            rows,
+            tracks[tracks["group"] == group],
             route,
         )
 
@@ -6332,21 +6378,56 @@ class Dataset:
         """Return the first frame of each divided-recording entry, or why it has none.
 
         The first frame is the latest of :meth:`sequence_first_frames` over the
-        entry's cameras. An undivided entry starts at frame 0 and is left out.
+        entry's cameras. An entry that no member of its recording precedes is
+        read without its media (:meth:`_opening_starts`). An undivided entry
+        starts at frame 0 and is left out.
         """
         divided = {
             entry for entry in entries if self.recording_kind(entry[0]) == "divided"
         }
         errors: dict[Entry, str] = {}
         found = self.sequence_first_frames(divided, errors=errors)
+        opened = self._opening_starts(
+            {entry for entry in divided if entry in errors or entry not in found}
+        )
         starts: dict[Entry, int | str] = {}
         for entry in divided:
-            if entry in errors:
+            if entry in opened:
+                starts[entry] = opened[entry]
+            elif entry in errors:
                 starts[entry] = errors[entry]
             elif entry in found:
                 starts[entry] = max(found[entry])
             else:
                 starts[entry] = "its media is not indexed"
+        return starts
+
+    def _opening_starts(self, entries: Collection[Entry]) -> dict[Entry, int | str]:
+        """Return the first frame of each entry that no member of its recording precedes.
+
+        Such an entry is at frame 0 of its divided recording
+        (:meth:`_MemberPlacement.opening`), so its own media need be neither
+        indexed nor routable, unless a tracks variant orders it apart, which is
+        returned as the reason. An entry that a member precedes is left out.
+        """
+        if not entries:
+            return {}
+        try:
+            df = self._load_media_index()
+        except FileNotFoundError:
+            df = pd.DataFrame(columns=["group", "sequence", "camera"])
+        routing = self.media_routing_context()
+        placements = {
+            group: self._member_placement(df, group, "", routing)
+            for group in {group for group, _ in entries}
+        }
+        starts: dict[Entry, int | str] = {}
+        for group, sequence in entries:
+            opening = placements[group].opening(sequence)
+            if isinstance(opening, UnplacedSequence):
+                starts[group, sequence] = opening.reason
+            elif opening is not None:
+                starts[group, sequence] = opening
         return starts
 
     def media_entries(self) -> frozenset[Entry]:

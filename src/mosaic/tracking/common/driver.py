@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
+from mosaic_media import MediaProbeError
+
 from mosaic.core.pipeline.entry_claim import (
     discard_if_empty,
     open_entry,
@@ -43,7 +45,12 @@ from mosaic.core.pipeline.tracks_index import recorded_first_frames
 from mosaic.core.pipeline.variant_source import unreadable_variant_refusal
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.mint import MintedRun
-from mosaic.tracking.common.scope import TrackerWorkItem, UnresolvedEntry, WorkItems
+from mosaic.tracking.common.scope import (
+    TrackerWorkItem,
+    UnresolvedEntry,
+    WorkItems,
+    never_handed_refusal,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -106,9 +113,9 @@ def run_tracker(
             abort before any of it is written.
         work_items: The return value of
             :func:`~mosaic.tracking.common.scope.build_work_items`: one item per
-            entry, and the entries whose media variant could not be read. Each
-            of those is recorded as a failed entry before the first item runs,
-            and counts as lost.
+            entry, and the entries whose media variant could not be read or
+            whose sequence could not be placed. Each of those is recorded as a
+            failed entry before the first item runs, and counts as lost.
         index: This tracker's run index, already ensured.
         run_entry: The tool-specific work for one entry, returning the row
             that records it -- or ``None`` for an entry worth no row. ``None`` is
@@ -124,9 +131,10 @@ def run_tracker(
     items = work_items.items
     rows: list[RowT] = []
     skipped: list[str] = []
-    # Entries that this run opened, and those whose variant it could not read. Not
-    # every item: one held by another execution was never this run's to lose,
-    # and counting it would let a contended run declare itself a total failure.
+    # Entries that this run opened, and those it could not hand to the tool (an
+    # unreadable variant or an unplaceable sequence). Not every item: one held by
+    # another execution was never this run's to lose, and counting it would let a
+    # contended run declare itself a total failure.
     attempted: set[str] = {failure.key for failure in work_items.failures}
 
     managed: AbstractContextManager[JobContext] = (
@@ -232,8 +240,8 @@ def run_tracker(
         # finished directories rather than recomputing them.
         #
         # When every lost entry is one whose media variant could not be read,
-        # the tool did not run and did not write output to adopt. The message
-        # then says that instead.
+        # or one the tool was never handed, the tool did not run and did not
+        # write output to adopt. The message then says that instead.
         if attempted and lost == attempted:
             unreadable = unreadable_variant_refusal(
                 ds,
@@ -242,9 +250,14 @@ def run_tracker(
                 minted.run_id,
                 lost=lost,
                 unresolved={
-                    failure.key: failure.run_entry for failure in work_items.failures
+                    failure.key: failure.run_entry
+                    for failure in work_items.failures
+                    if failure.variant_unreadable
                 },
             )
+            never_handed = {failure.key for failure in work_items.failures}
+            if not unreadable and lost <= never_handed:
+                unreadable = never_handed_refusal(kind, minted.run_id, lost)
             raise AllEntriesFailed(
                 unreadable
                 or f"[{kind}] every one of {len(attempted)} attempted entries failed "
@@ -256,18 +269,23 @@ def run_tracker(
             )
 
     held = f", {len(skipped)} held by another execution" if skipped else ""
-    unread = work_items.failures
-    unresolved = f", {len(unread)} without a readable media variant" if unread else ""
+    failures = work_items.failures
+    unread = sum(failure.variant_unreadable for failure in failures)
+    unplaced = len(failures) - unread
+    unresolved = f", {unread} without a readable media variant" if unread else ""
+    unplaceable = (
+        f", {unplaced} not placed on the recording's frame axis" if unplaced else ""
+    )
     print(
         f"[{kind}] completed run_id={minted.run_id} "
-        f"({len(rows)}/{len(items) + len(unread)} sequences{held}{unresolved}) "
-        f"-> {minted.run_root}"
+        f"({len(rows)}/{len(items) + len(failures)} sequences{held}{unresolved}"
+        f"{unplaceable}) -> {minted.run_root}"
     )
     return minted.run_id
 
 
 def _record_unresolved(job: JobContext, failures: tuple[UnresolvedEntry, ...]) -> None:
-    """Record each entry whose media variant could not be read as failed.
+    """Record each entry that the tool could not be handed as failed.
 
     Each error is raised again inside a handler, because ``entry_failed`` records
     the traceback of the exception being handled.
@@ -275,5 +293,9 @@ def _record_unresolved(job: JobContext, failures: tuple[UnresolvedEntry, ...]) -
     for failure in failures:
         try:
             raise failure.error
-        except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
+        except (
+            MediaVariantMissingError,
+            MediaVariantDriftedError,
+            MediaProbeError,
+        ) as exc:
             job.entry_failed(failure.key, exc)

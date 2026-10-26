@@ -18,6 +18,7 @@ from mosaic_media import MediaProbeError, probe_media
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
+from mosaic.core.pipeline import entry_keys
 from mosaic.core.pipeline.joined_export import (
     JoinedExportParams,
     joined_export_path,
@@ -104,6 +105,21 @@ def test_the_originals_rows_are_the_sequence_s_own(recording: Dataset) -> None:
 
     assert set(rows["sequence"]) == {"s2"}
     assert list(rows["name"]) == ["clip0.mp4", "clip1.mp4"]
+
+
+def test_a_resolution_finds_the_members_in_the_rows_it_read(
+    recording: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Placing ``s2`` reads neither the media index nor the tracks index again."""
+    add_tracks_table(recording, "convert.a", track_table("rec", "s1"))
+    monkeypatch.setattr(Dataset, "media_entries", _unexpected_read)
+    monkeypatch.setattr(entry_keys, "index_entries", _unexpected_read)
+
+    assert recording.resolve_media("rec", "s2").first_frame == _FIRST_FRAMES
+
+
+def _unexpected_read(*_: object) -> set[Entry]:
+    raise AssertionError("an index was read again")
 
 
 def test_a_sequence_after_a_member_without_media_is_not_placed(

@@ -37,6 +37,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final, Literal
 
 import numpy as np
@@ -107,6 +108,15 @@ _RETIMED_BASES: Final = frozenset({"time", "frame_rate"})
 
 _DROPPED_BY_RETIMING_BASES: Final = frozenset({"timestamp"})
 """Base fields that :func:`retime` drops, minted from a frame index and one rate."""
+
+_TIME_UNITS_PER_SECOND: Final[Mapping[str, float]] = MappingProxyType(
+    {"time": 1.0, "timestamp": 1e6}
+)
+"""Base fields with a frame's time, by their units per second.
+
+``time`` is in seconds and TRex's ``timestamp`` in microseconds. Each is on the
+same axis as ``frame``, so a shift of the frame axis shifts both.
+"""
 
 RATE_DEPENDENT_BASES: Final[frozenset[str]] = (
     PER_SECOND_FIELDS | PER_SECOND_SQUARED_FIELDS
@@ -607,9 +617,10 @@ def shift_to_recording_axis(
     """Return *df*, on its sequence's axes, on its recording's axes.
 
     Each frame column (``frame``, ``frames``, ``tracklet_start``, as
-    :func:`classify_column` names them) gains *first_frame*, and ``time`` gains
-    ``first_frame / fps``. NA in a nullable frame column stays NA. Every other
-    column is unchanged. The offset may fall anywhere, inside a store chunk
+    :func:`classify_column` names them) gains *first_frame*, and each time column
+    gains ``first_frame / fps`` seconds: ``time`` in seconds and TRex's
+    ``timestamp`` in microseconds. NA in a nullable frame column stays NA. Every
+    other column is unchanged. The offset may fall anywhere, inside a store chunk
     included.
 
     Args:
@@ -626,8 +637,8 @@ def shift_to_recording_axis(
             is not classified, since it may contain a sequence frame. Every such
             column is named.
         ValueError: If *first_frame* is negative, if a frame column contains a
-            value that is not a whole number, or if the table has a ``time``
-            column and *fps* is ``None``.
+            value that is not a whole number, or if the table has a time column
+            and *fps* is ``None``.
     """
     _refuse_negative_first_frame(first_frame)
     if first_frame == 0:
@@ -643,21 +654,31 @@ def shift_to_recording_axis(
         "Such a column may contain a frame of the sequence, and left unshifted it "
         "names another moment of the recording.",
     )
+    time_columns = {
+        name: _TIME_UNITS_PER_SECOND[base_field(name)]
+        for name in names
+        if base_field(name) in _TIME_UNITS_PER_SECOND
+    }
+    if time_columns and fps is None:
+        message = (
+            f"Cannot move this table's time onto its recording's axis: the "
+            f"sequence starts at frame {first_frame}, and the frame rate that "
+            f"converts that frame to seconds is not measured."
+        )
+        raise ValueError(message)
     out = df.copy()
     for name in names:
         if kinds[name] == "frame":
             out[name] = _mapped_frame_column(
                 df, name, lambda frames: frames + first_frame
             )
-    if "time" in names:
-        if fps is None:
-            message = (
-                f"Cannot move this table's time onto its recording's axis: the "
-                f"sequence starts at frame {first_frame}, and the frame rate that "
-                f"converts that frame to seconds is not measured."
+    if fps is not None:
+        offset_seconds = first_frame / fps
+        for name, units_per_second in time_columns.items():
+            out[name] = (
+                column_array(df, name).astype(np.float64)
+                + offset_seconds * units_per_second
             )
-            raise ValueError(message)
-        out["time"] = column_array(df, "time").astype(np.float64) + first_frame / fps
     return out
 
 

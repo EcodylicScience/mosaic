@@ -44,10 +44,12 @@ reader needs one rate.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from mosaic_media import MediaProbeError
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.imgstore_io import is_imgstore
@@ -269,7 +271,10 @@ class TrackerWorkItem:
 
 @dataclass(frozen=True, slots=True)
 class UnresolvedEntry:
-    """An entry whose media variant could not be read, and why.
+    """An entry that a tool cannot be handed, and why.
+
+    Either its media variant could not be read, or its sequence could not be
+    placed on its recording's frame axis.
 
     Attributes:
         group: The entry's group.
@@ -277,18 +282,43 @@ class UnresolvedEntry:
         run_entry: The entry as a run's scope names it, by its indexed key. It
             differs from *group* and *sequence* for a nameless entry, which a
             scope labels by its first file's stem.
-        error: The error that resolving the variant raised.
+        error: The error that resolving the variant, or placing the sequence,
+            raised.
     """
 
     group: str
     sequence: str
     run_entry: Entry
-    error: MediaVariantMissingError | MediaVariantDriftedError
+    error: MediaVariantMissingError | MediaVariantDriftedError | MediaProbeError
+
+    @property
+    def variant_unreadable(self) -> bool:
+        """Whether the entry was lost because its media variant could not be read."""
+        return not isinstance(self.error, MediaProbeError)
 
     @property
     def key(self) -> str:
         """The entry's ``<group>__<sequence>`` key."""
         return make_entry_key(self.group, self.sequence)
+
+
+def never_handed_refusal(kind: str, run_id: str, lost: Iterable[str]) -> str:
+    """Return the refusal for a run of *kind* whose tool was handed no entry it lost.
+
+    Each lost entry's media variant could not be read, or its sequence could not
+    be placed on its recording's frame axis, so the tool did not run for it and
+    wrote no output to keep.
+
+    Args:
+        kind: The op kind of the run.
+        run_id: The run's identifier.
+        lost: The keys of every entry that the run attempted and lost.
+    """
+    return (
+        f"[{kind}] run_id={run_id} did not produce tracks, because no attempted "
+        f"entry could be handed to the tool: {', '.join(sorted(lost))}. The "
+        f"per-entry errors are in this attempt's run-log."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,8 +327,9 @@ class WorkItems:
 
     Attributes:
         items: One work item per entry, in scope order.
-        failures: The entries whose media variant is missing or out of date.
-            They fail alone, and the other entries run.
+        failures: The entries whose media variant is missing or out of date,
+            and those whose sequence cannot be placed on its recording's frame
+            axis. They fail alone, and the other entries run.
         media: The media variant that the items read, or ``""`` for the entry media.
     """
 
@@ -332,7 +363,8 @@ def build_work_items(
             the dataset's ``fps_default``.
 
     Returns:
-        The work items, and each entry whose variant is missing or out of date.
+        The work items, each entry whose variant is missing or out of date, and
+        each entry whose sequence cannot be placed on its recording's frame axis.
 
     Raises:
         JoinedSourceMismatchError: If an entry has clips that disagree on frame
@@ -347,7 +379,10 @@ def build_work_items(
     )
     items: list[TrackerWorkItem] = []
     lost: list[
-        tuple[ResolvedScopeEntry, MediaVariantMissingError | MediaVariantDriftedError]
+        tuple[
+            ResolvedScopeEntry,
+            MediaVariantMissingError | MediaVariantDriftedError | MediaProbeError,
+        ]
     ] = []
 
     # Reduced first. An entry that is dropped is then not also warned about for
@@ -361,13 +396,18 @@ def build_work_items(
     for entry in kept:
         group, sequence, resolved = entry.group, entry.sequence, entry.resolved
         key = make_entry_key(group, sequence)
+        try:
+            first_frame = resolved.first_frame
+        except MediaProbeError as exc:
+            lost.append((entry, exc))
+            continue
         if variants is not None:
             try:
                 variant = variants.resolve(ds, entry)
             except (MediaVariantMissingError, MediaVariantDriftedError) as exc:
                 lost.append((entry, exc))
                 continue
-            items.append(_variant_item(entry, key, variant))
+            items.append(_variant_item(entry, key, variant, first_frame))
             continue
         paths = list(resolved.paths)
         facts = list(resolved.facts)
@@ -383,7 +423,7 @@ def build_work_items(
                 fps=facts[0].fps if facts and facts[0].fps > 0 else fallback_fps,
                 source_facts=tuple(facts),
                 camera=entry.camera,
-                first_frame=resolved.first_frame,
+                first_frame=first_frame,
             )
         )
 
@@ -415,12 +455,13 @@ def run_entries(
 
 
 def _variant_item(
-    entry: ResolvedScopeEntry, key: str, variant: VariantSource
+    entry: ResolvedScopeEntry, key: str, variant: VariantSource, first_frame: int
 ) -> TrackerWorkItem:
     """Return the work item that reads *variant*'s file for *entry*.
 
     The item has one source, the variant file, at the rate that the file is
-    labeled at. An entry of several clips is read as one file and is not joined.
+    labeled at, and starts at *first_frame* on the recording's axis. An entry of
+    several clips is read as one file and is not joined.
     """
     return TrackerWorkItem(
         group=entry.group,
@@ -431,7 +472,7 @@ def _variant_item(
         source_facts=(variant.facts,),
         camera=entry.camera,
         variant=variant,
-        first_frame=entry.resolved.first_frame,
+        first_frame=first_frame,
     )
 
 

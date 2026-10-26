@@ -31,11 +31,13 @@ from mosaic.core.pipeline.labels_index import (
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
 from tests.helpers import (
     add_track_sequences,
+    add_tracks_table,
     calms21_dataset,
     functions_named,
     make_dataset,
     names_read,
     source_tree,
+    track_table,
     write_painted_recording,
 )
 
@@ -580,15 +582,56 @@ def test_a_refused_dense_entry_leaves_no_label_written(
     _assert_no_label_written(ds)
 
 
-def test_dense_labels_of_a_sequence_without_media_are_refused(
+def test_dense_labels_of_a_first_sequence_without_media_convert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without media, the first frame of each sequence of ``g`` is unknown."""
+    """``s1`` sorts first in ``g``, so it starts at frame 0 without media."""
     ds = _dense_dataset(tmp_path, monkeypatch, _DenseFirstMember, media=False)
 
+    outcome = ds.convert_all_labels(
+        kind="behavior", source_format=_DenseFirstMember.src_format
+    )
+
+    assert outcome.written == 2
+    entries = read_labels_index(ds, "behavior")[["group", "sequence"]]
+    assert sorted(map(tuple, entries.to_numpy().tolist())) == [("", "a"), ("g", "s1")]
+
+
+def test_dense_labels_of_a_later_sequence_without_media_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without media, the first frame of ``s2``, after ``s1``, is unknown."""
+    ds = _dense_dataset(tmp_path, monkeypatch, _DenseLabels, media=False)
+
     with pytest.raises(
-        ValueError, match="'g:s1'.*lacks a known first frame.*media is not indexed"
+        ValueError, match="'g:s2'.*lacks a known first frame.*media is not indexed"
     ):
+        _ = ds.convert_all_labels(
+            kind="behavior", source_format=_DenseLabels.src_format
+        )
+
+    _assert_no_label_written(ds)
+
+
+def test_dense_labels_of_a_first_sequence_that_tracks_number_later_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tracks variant numbers ``s2`` before ``s1``, so ``s1`` may not start at 0."""
+    monkeypatch.setitem(
+        LABEL_CONVERTERS, (_DenseFirstMember.src_format, "behavior"), _DenseFirstMember
+    )
+    ds = make_dataset(tmp_path / "ds")
+    src = tmp_path / "uploads"
+    src.mkdir()
+    np.save(src / "f1.npy", np.zeros(1))
+    ds.index_labels_raw(
+        [src], patterns=["*.npy"], src_format=_DenseFirstMember.src_format
+    )
+    add_tracks_table(ds, "convert.a", track_table("g", "s1", n_rows=5, start_frame=4))
+    add_tracks_table(ds, "convert.a", track_table("g", "s2", n_rows=4))
+    ds.set_continuous_groups(["g"])
+
+    with pytest.raises(ValueError, match="'g:s1'.*dense.*Rename the sequences"):
         _ = ds.convert_all_labels(
             kind="behavior", source_format=_DenseFirstMember.src_format
         )

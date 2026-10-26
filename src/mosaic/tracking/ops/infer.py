@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Callable, Final, TypeAlias
 
 import pandas as pd
-from mosaic_media import MediaFacts
+from mosaic_media import MediaFacts, MediaProbeError
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.individuals import refuse_repeated_rows
@@ -87,7 +87,11 @@ from mosaic.tracking.common.detection_params import (
     MaxDetections,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
-from mosaic.tracking.common.scope import refuse_unjoinable, run_entries
+from mosaic.tracking.common.scope import (
+    never_handed_refusal,
+    refuse_unjoinable,
+    run_entries,
+)
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
     entry_runner_sources,
@@ -672,6 +676,8 @@ def _inference_entry(
     which the entry's :class:`EntryAxis` needs to know.
 
     Raises:
+        MediaProbeError: If the entry's sequence cannot be placed on its
+            recording's frame axis.
         MediaVariantMissingError: If the variant lacks a file for the entry.
         MediaVariantDriftedError: If the entry's media changed after the
             variant's file was written.
@@ -688,11 +694,12 @@ def _inference_entry(
     """
     in_process = tracking_root(kind).reads == "in-process"
     group, sequence, resolved = entry.group, entry.sequence, entry.resolved
+    first_frame = resolved.first_frame
     variant = variants.resolve(ds, entry) if variants is not None else None
     if variant is not None:
         paths, stored = (variant.path,), (variant.facts,)
         consumed_media = variant.consumed_media
-        axis = EntryAxis.of_variant(variant.mapping(), first_frame=resolved.first_frame)
+        axis = EntryAxis.of_variant(variant.mapping(), first_frame=first_frame)
     else:
         # Before a join is looked up, so that clips no join can hold are named
         # for what is wrong with them rather than reported as unjoined.
@@ -708,7 +715,7 @@ def _inference_entry(
         paths, stored = tuple(resolved.paths), tuple(resolved.facts)
         consumed_media = paths
         axis = EntryAxis.of_entry_media(
-            resolved.facts, windowed=windowed, first_frame=resolved.first_frame
+            resolved.facts, windowed=windowed, first_frame=first_frame
         )
     source_uid = entry_source_uid(stored)
     targets: tuple[Path, ...]
@@ -827,9 +834,11 @@ def _run_inference_op(
         return run_id
 
     work: list[_InferenceEntry] = []
-    # Entries whose variant could not be read, by key. Each is recorded as
+    # Entries whose variant could not be read, by key, and those whose sequence
+    # could not be placed on its recording's frame axis. Each is recorded as
     # failed here, and counts as attempted and lost below.
     unread: dict[str, ResolvedScopeEntry] = {}
+    unplaced: set[str] = set()
     # Entries whose join or store export cannot be read. They fail the run
     # together, before any model runs.
     unbuilt: list[JoinedExportMissingError | StoreExportMissingError] = []
@@ -856,6 +865,10 @@ def _run_inference_op(
             key = make_entry_key(entry.group, entry.sequence)
             ctx.entry_failed(key, exc)
             unread[key] = entry
+        except MediaProbeError as exc:
+            key = make_entry_key(entry.group, entry.sequence)
+            ctx.entry_failed(key, exc)
+            unplaced.add(key)
         except (JoinedExportMissingError, StoreExportMissingError) as exc:
             unbuilt.append(exc)
     _refuse_unbuilt(kind, unbuilt)
@@ -865,15 +878,16 @@ def _run_inference_op(
     )
     unresolved = dict(zip(unread, named, strict=True))
 
-    # When every entry is lost before a model runs, the variant that the run
-    # names is unreadable for all of them. The run then raises before it probes
-    # a file or records a variant.
-    if not work and (
-        unreadable := unreadable_variant_refusal(
-            ds, kind, params.media, run_id, lost=set(unresolved), unresolved=unresolved
+    # When every entry is lost before a model runs, the run raises before it
+    # probes a file or records a variant.
+    never_handed = set(unresolved) | unplaced
+    if not work and never_handed:
+        unreadable = unreadable_variant_refusal(
+            ds, kind, params.media, run_id, lost=never_handed, unresolved=unresolved
         )
-    ):
-        raise AllEntriesFailed(unreadable)
+        raise AllEntriesFailed(
+            unreadable or never_handed_refusal(kind, run_id, never_handed)
+        )
 
     # Preflight after the scope and before anything is written. Two orderings
     # matter here. It follows the scope because resolving media is local and
@@ -912,11 +926,11 @@ def _run_inference_op(
     write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
     done = 0
-    # Entries that this run opened or could not read a variant for, and those whose
+    # Entries that this run opened or could not hand to the model, and those whose
     # predictions it could not publish. An entry held by another execution was
     # never this run's to lose.
-    attempted: set[str] = set(unresolved)
-    lost: set[str] = set(unresolved)
+    attempted: set[str] = set(never_handed)
+    lost: set[str] = set(never_handed)
     try:
         for i, item in enumerate(work):
             ctx.check_cancel()
@@ -1051,6 +1065,8 @@ def _run_inference_op(
         unreadable = unreadable_variant_refusal(
             ds, kind, params.media, run_id, lost=lost, unresolved=unresolved
         )
+        if not unreadable and lost <= never_handed:
+            unreadable = never_handed_refusal(kind, run_id, lost)
         message = unreadable or (
             f"[{kind}] every one of {len(attempted)} attempted entries failed to "
             f"publish: {', '.join(sorted(lost))}. The run run_id={run_id} did not "

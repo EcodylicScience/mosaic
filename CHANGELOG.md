@@ -528,7 +528,8 @@ run id changes. No known dataset declares `continuous_groups`.
   of unknown frame count or has clips at a frame rate outside the store tolerance. It
   also raises when a tracks variant numbers the group's sequences in another order
   than their names. The sequence still resolves, and `export-joined`, `preprocess` and
-  a store export read it. Playback, the crops, trackers and inference refuse it. A
+  a store export read it. Playback and the crops refuse it. A tracker or `infer-*` run
+  records it as a failed entry, runs the other entries and reports `partial`. A
   sequence that lacks media rows fails with a message naming its divided recording.
 - Extract-frames indices and annotation frame indices count from 0 in each sequence's
   own media.
@@ -554,13 +555,13 @@ run prints one note to stderr with their count. No run id changes.
   cell is empty at `overlap_frames=0`. No run id changes.
 
 **A feature run reads frame extents only for continuous groups, under the variant its
-inputs read.** A run whose only input is another feature's output raised "tracks/index.csv
-holds 2 variants" on a dataset where an entry has two labelled tracks variants, even at
-`overlap_frames=0`, because every manifest read every entry's extent without a pinned
-variant. The extents of a continuous group's members alone are read now, each under the
-variant that a `tracks` input resolved or that the upstream run recorded in its
-`params.json`. The run refuses only when such a member has two labelled variants and
-neither `tracks_run_id` nor the upstream names one. No run id changes.
+inputs read.** A run whose only input is another feature's output raised
+"tracks/index.csv holds 2 variants" on a dataset where an entry has two labelled tracks
+variants, even at `overlap_frames=0`, because every manifest read every entry's extent
+without a pinned variant. The extents of a continuous group's members alone are read
+now, each under the variant that a `tracks` input resolved or that the upstream run
+recorded in its `params.json`. The run refuses only when such a member has two labelled
+variants and neither `tracks_run_id` nor the upstream names one. No run id changes.
 
 **One rule names an entry's recording, and a write refuses a key two entries share.**
 An entry's recording is its continuous group, else the entry itself
@@ -593,7 +594,8 @@ run id or path changes.
   `null`.
   `counts.sequences` and `continuous_groups` are unchanged, and `describe_dataset`
   returns the same fields.
-- `mosaic describe` prints `recordings: N (M divided: ...)` in place of the
+- `mosaic describe` prints `sequences: N with a tracks table`, and
+  `recordings: N in the media or tracks index (M divided: a, b)` in place of the
   `continuous_groups` line.
 - `mosaic sequences` looks each label up under the entry's own group, where it used the
   `--group` value, or the empty group without one. `--json` gains `entries`, one
@@ -607,8 +609,6 @@ run id or path changes.
 - `list_sequences` lists an entry that has media and no tracks table, with `null`
   `tracks_variant`, `producer`, `std_format` and counts, unless `tracks_variant` is
   given. Those three `SequenceRow` fields are now nullable.
-- `mosaic describe` prints `sequences: N with a tracks table` and
-  `recordings: N in the media or tracks index (M divided)`, saying what each counts.
 - A divided recording's sequences are ordered as an overlapped run reads them: by the
   first frame of each tracks table, then by name. Each sequence's `first_frame` and
   `frame_count` come from its tracks table's frame extent. A recording with a member of
@@ -624,20 +624,30 @@ three convert sites: a file of one sequence, a sequence of a multi-sequence file
 the merge of a sequence's files. Nothing is written for it. Tracker publishes are
 unchanged, and the inference bridge already refused a repeated pair. No run id changes.
 
-**The recording frame axis is placed end to end at frame 0.** A divided recording's
-tracks number `frame` and `time` across the recording. `EntryAxis` and `EntryHints` gain
+**Tracks and labels have a recording frame axis.** A divided recording's tracks number
+`frame` and `time` across the recording. `EntryAxis` and `EntryHints` gain
 `first_frame`, a sequence's first frame on that axis, which `shift_to_recording_axis`
-(`core/pipeline/placement.py`) adds to every frame column and to `time` after every
-other mapping. Converters and label conversion pass 0, and their outputs, keys, run ids
+(`core/pipeline/placement.py`) adds to every frame column after every other mapping.
+`time` gains `first_frame / fps` seconds, and TRex's `timestamp` the same offset in
+microseconds. Converters and label conversion pass 0, and their outputs, keys, run ids
 and paths are unchanged. Trackers and inference pass the sequence's first frame, which
-is 0 outside a continuous group (see the entry above). Label conversion now refuses
-dense labels, one label per position, for a sequence of a declared continuous group
-that starts past frame 0 of its recording (`ResolvedMedia.first_frame`), since their
-positions count from the sequence's first frame. It also refuses them for a sequence
-whose first frame is unknown, such as one without indexed media. The group's first
-sequence starts at frame 0, and its dense labels convert. The refusal comes before the
-first label file is written. A refused conversion leaves the labels root and index as
-they were. Event labels (`individual_pair_v1`) convert as before.
+is 0 outside a continuous group (see the first entry).
+
+- Label conversion refuses dense labels, one label per position, for a sequence of a
+  declared continuous group that starts past frame 0 of its recording
+  (`ResolvedMedia.first_frame`), since their positions count from the sequence's first
+  frame. It also refuses them for a sequence whose first frame is unknown, such as a
+  later sequence without indexed media. The group's first sequence, the first in a
+  natural sort of the names that the media and tracks indexes give, starts at frame 0,
+  and its dense labels convert with or without media. The refusal comes before the
+  first label file is written, and a refused conversion leaves the labels root and
+  index as they were. Event labels (`individual_pair_v1`) convert as before.
+- Renamed and new public names: `ProbedEntry.camera` is `camera_serial`.
+  `recorded_tracks_composition` is `recorded_tracks_reads`, which returns
+  `RecordedTracksReads`. `Dataset.list_entries` is new. The tracker bridges
+  `_bridge_npz_to_tracks`, `_bridge_analysis_h5_to_tracks`, `_bridge_csv_to_tracks`
+  and `_bridge_predictions_to_tracks` are public as `bridge_*` and take a required
+  `recorded_first_frame`. `EntryJob.recorded_first_frame` is a new required field.
 
 **A refused manifest setter leaves the dataset as it was.** `set_notes`,
 `set_continuous_groups`, `define_tag`, `set_tag_value` and `add_library` held the new

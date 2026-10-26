@@ -72,7 +72,8 @@ in the root guide.
   `first_frame` raises (`tests/core/media/test_continuous_group_media.py`).
   `Dataset.sequence_first_frames` reads it for many entries, one per camera, and is
   the one reader for media drift and label conversion. Label conversion refuses dense
-  labels for a sequence that starts past frame 0 or cannot be placed
+  labels for a sequence that starts past frame 0 or cannot be placed, and reads a
+  sequence that no member precedes as frame 0 without its media
   (`tests/core/pipeline/test_labels_index.py`).
   `overlap_frames` checks the declaration against recorded frame extents
   (`core/pipeline/manifest.py`).

@@ -21,6 +21,8 @@ import mosaic.tracking.sleap.dataset_runs as sleap_runs
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.pipeline.tracks_index import (
     media_drift,
     read_tracks_index,
@@ -30,14 +32,18 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
+from mosaic_media import MediaProbeError
 from mosaic.tracking.sleap.params import SleapParams
 
 from tests.helpers import (
     FakeSleap,
+    add_tracks_table,
+    install_fake_pose_inference,
     install_fake_sleap,
     make_dataset,
     paint_frame_code,
     scope_over,
+    track_table,
     write_painted_entry,
     write_painted_recording,
     write_sleap_model,
@@ -69,6 +75,31 @@ def recording(undeclared: Dataset) -> Dataset:
     """A dataset whose continuous group ``rec`` has two sequences with media."""
     undeclared.set_continuous_groups(["rec"])
     return undeclared
+
+
+@pytest.fixture
+def unplaceable(recording: Dataset) -> Dataset:
+    """``rec`` gains ``s0``, with tracks and no media, beside the entry ``solo``.
+
+    ``s0``'s frame count is unknown, so neither ``s1`` nor ``s2`` can be placed.
+    ``solo`` is in the empty group and starts at frame 0.
+    """
+    add_tracks_table(recording, "convert.a", track_table("rec", "s0"))
+    _ = write_painted_entry(
+        recording,
+        "solo",
+        [(_SECOND_FRAMES, 30.0)],
+        lambda frame: paint_frame_code(frame, _SIZE),
+        size=_SIZE,
+    )
+    return recording
+
+
+@pytest.fixture
+def nothing_placeable(recording: Dataset) -> Dataset:
+    """``rec`` gains ``s0``, with tracks and no media, and no other entry exists."""
+    add_tracks_table(recording, "convert.a", track_table("rec", "s0"))
+    return recording
 
 
 @pytest.fixture
@@ -152,6 +183,159 @@ class TestTheWorkItem:
         assert item.variant is not None
         assert item.first_frame == _FIRST_FRAMES
         assert item.entry_axis(windowed=False).first_frame == _FIRST_FRAMES
+
+
+class TestAnUnplaceableSequence:
+    """A sequence that cannot be placed fails alone, and the other entries run."""
+
+    def test_its_work_item_is_a_failure_beside_the_other_items(
+        self, unplaceable: Dataset
+    ) -> None:
+        built = build_work_items(
+            unplaceable, unplaceable.resolve_media_scope(None), kind="sleap"
+        )
+
+        assert [item.key for item in built.items] == ["solo"]
+        assert [failure.key for failure in built.failures] == ["rec__s1", "rec__s2"]
+        assert all(
+            isinstance(failure.error, MediaProbeError) for failure in built.failures
+        )
+
+    def test_a_tracker_run_reports_it_lost(
+        self, unplaceable: Dataset, sleap: FakeSleap, sleap_model: Path
+    ) -> None:
+        params = SleapParams(model_paths=[str(sleap_model)])
+
+        _ = sleap_runs.run_sleap(unplaceable, params, scope_over())
+
+        assert [row["sequence"] for row in _sleap_rows(unplaceable)] == ["solo"]
+        assert _lost(unplaceable, "sleap") == [("finished", 2)]
+
+    def test_an_inference_run_reports_it_lost(
+        self, unplaceable: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        model = _pose_model(tmp_path)
+        _ = install_fake_pose_inference(monkeypatch)
+
+        _ = run_op(unplaceable, "infer-pose", {"model": str(model)})
+
+        rows = read_tracks_index(unplaceable)
+        assert list(rows[rows["producer"] == "infer-pose"]["sequence"]) == ["solo"]
+        assert _lost(unplaceable, "infer-pose") == [("finished", 2)]
+
+
+class TestNoPlaceableSequence:
+    """A run whose every entry is unplaceable fails, and says the tool saw none.
+
+    No tool output exists to adopt, so the refusal does not point at one.
+    """
+
+    _NEVER_HANDED = "no attempted entry could be handed to the tool: rec__s1, rec__s2"
+
+    def test_a_tracker_run_fails_with_the_never_handed_refusal(
+        self, nothing_placeable: Dataset, sleap: FakeSleap, sleap_model: Path
+    ) -> None:
+        params = SleapParams(model_paths=[str(sleap_model)])
+
+        with pytest.raises(AllEntriesFailed, match=self._NEVER_HANDED):
+            _ = sleap_runs.run_sleap(nothing_placeable, params, scope_over())
+
+        assert sleap.tracked == []
+        assert _lost(nothing_placeable, "sleap") == [("failed", 2)]
+
+    def test_an_inference_run_fails_with_the_never_handed_refusal(
+        self,
+        nothing_placeable: Dataset,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        model = _pose_model(tmp_path)
+        _ = install_fake_pose_inference(monkeypatch)
+
+        with pytest.raises(AllEntriesFailed, match=self._NEVER_HANDED):
+            _ = run_op(nothing_placeable, "infer-pose", {"model": str(model)})
+
+        assert _lost(nothing_placeable, "infer-pose") == [("failed", 2)]
+
+
+class TestAnUnreadableVariantBesideAnUnplaceableSequence:
+    """Losing an unreadable variant and an unplaceable sequence names neither cause alone.
+
+    ``s2`` has a variant and cannot be placed. ``solo`` has no file of the variant.
+    The variant refusal covers only runs whose every lost entry lacks the variant,
+    so the run refuses as one whose tool was handed no entry.
+    """
+
+    _NEVER_HANDED = "no attempted entry could be handed to the tool: rec__s2, solo"
+
+    def test_a_tracker_run_fails_with_the_never_handed_refusal(
+        self, recording: Dataset, sleap: FakeSleap, sleap_model: Path
+    ) -> None:
+        variant = _unplaceable_beside_an_unreadable_variant(recording)
+        params = SleapParams(model_paths=[str(sleap_model)], media=variant)
+        built = build_work_items(
+            recording,
+            recording.resolve_media_scope([_SECOND, ("", "solo")]),
+            kind="sleap",
+            media=variant,
+        )
+        assert sorted(
+            (failure.key, failure.variant_unreadable) for failure in built.failures
+        ) == [("rec__s2", False), ("solo", True)]
+
+        with pytest.raises(AllEntriesFailed, match=self._NEVER_HANDED):
+            _ = sleap_runs.run_sleap(
+                recording, params, scope_over(_SECOND, ("", "solo"))
+            )
+
+        assert sleap.tracked == []
+
+    def test_an_inference_run_fails_with_the_never_handed_refusal(
+        self, recording: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        variant = _unplaceable_beside_an_unreadable_variant(recording)
+        model = _pose_model(tmp_path)
+        _ = install_fake_pose_inference(monkeypatch)
+
+        with pytest.raises(AllEntriesFailed, match=self._NEVER_HANDED):
+            _ = run_op(
+                recording,
+                "infer-pose",
+                {"model": str(model), "media": variant},
+                scope=Scope(entries=[_SECOND, ("", "solo")]),
+            )
+
+
+def _unplaceable_beside_an_unreadable_variant(ds: Dataset) -> str:
+    """Make ``s2``'s variant, then make ``s2`` unplaceable and add ``solo`` without one.
+
+    Returns:
+        The variant's id.
+    """
+    variant = _variant(ds)
+    add_tracks_table(ds, "convert.a", track_table("rec", "s0"))
+    _ = write_painted_entry(
+        ds,
+        "solo",
+        [(_SECOND_FRAMES, 30.0)],
+        lambda frame: paint_frame_code(frame, _SIZE),
+        size=_SIZE,
+    )
+    return variant
+
+
+def _pose_model(tmp_path: Path) -> Path:
+    """Write a stand-in pose checkpoint and return its path."""
+    model = tmp_path / "weights" / "best.pt"
+    model.parent.mkdir(parents=True)
+    _ = model.write_bytes(b"weights")
+    return model
+
+
+def _lost(ds: Dataset, kind: str) -> list[tuple[str, int]]:
+    """The status and lost-entry count of each run of *kind*."""
+    runs = read_runs(run_log_dir(ds.base_dir), kind=kind)
+    return [(str(run["status"]), int(run["entries_failed"])) for run in runs]
 
 
 class TestAPublishedTable:
