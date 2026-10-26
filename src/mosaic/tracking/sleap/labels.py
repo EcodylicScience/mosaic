@@ -28,6 +28,7 @@ import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import Final
 
 from mosaic.core.annotations.model import AnnotationSet
 from mosaic.core.annotations.writers import write_coco_keypoints
@@ -40,7 +41,15 @@ from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["write_slp"]
+__all__ = [
+    "SLEAP_VALIDATION_SUFFIX",
+    "validation_labels_beside",
+    "validation_labels_path",
+    "write_slp",
+]
+
+SLEAP_VALIDATION_SUFFIX: Final = ".val.slp"
+"""The suffix of the validation file written beside a ``.slp`` of training labels."""
 
 # Run by the SLEAP interpreter. Its only inputs are argv -- the COCO json, the
 # directory its file_name values are relative to, and where to write -- so no
@@ -54,6 +63,20 @@ _labels = sleap_io.load_coco(_json, dataset_root=_root)
 sleap_io.save_slp(_labels, _out)
 print(f"wrote {len(_labels.labeled_frames)} labeled frames to {_out}")
 """
+
+
+def validation_labels_path(labels_path: Path) -> Path:
+    """Return the path of the validation file beside *labels_path*.
+
+    The validation file of ``labels.slp`` is ``labels.val.slp``.
+    """
+    return labels_path.with_name(labels_path.stem + SLEAP_VALIDATION_SUFFIX)
+
+
+def validation_labels_beside(labels_path: Path) -> Path | None:
+    """Return the validation file beside *labels_path* when it exists, else ``None``."""
+    validation = validation_labels_path(labels_path)
+    return validation if validation.is_file() else None
 
 
 def write_slp(

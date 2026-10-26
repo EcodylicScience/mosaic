@@ -448,32 +448,120 @@ def test_a_lightning_pose_project_holds_every_frame_under_its_own_name(
     )
 
 
-def test_the_sleap_writer_is_handed_one_set_with_collision_free_images(
-    world: tuple[Dataset, Dataset, Dataset], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The ``.slp`` itself needs the SLEAP environment; what it is given does not."""
-    _mice, _rats, library = world
-    seen: dict[str, object] = {}
+SlpWrite = tuple[Path, AnnotationSet, object]
+"""One ``write_slp`` call: the file, the set and the ``images_dir`` it was given."""
+
+
+def _fake_write_slp(monkeypatch: pytest.MonkeyPatch) -> list[SlpWrite]:
+    """Stand in for ``write_slp``, which runs in the SLEAP environment."""
+    calls: list[SlpWrite] = []
 
     def fake_write_slp(
         annotations: AnnotationSet, out_path: Path, **kwargs: object
     ) -> Path:
-        seen["names"] = [frame.image_path.name for frame in annotations.frames]
-        seen["root"] = annotations.image_root
-        seen["images_dir"] = kwargs.get("images_dir")
+        calls.append((Path(out_path), annotations, kwargs.get("images_dir")))
         _ = Path(out_path).write_bytes(b"slp")
         return Path(out_path)
 
     monkeypatch.setattr("mosaic.tracking.sleap.labels.write_slp", fake_write_slp)
+    return calls
 
-    run_id = _prepare(library, target="sleap")
+
+SLEAP_SPLIT: Final[dict[str, object]] = {
+    "target": "sleap",
+    "split_by": "frame",
+    "split": (0.5, 0.25, 0.25),
+}
+"""A sleap preparation of the ``world`` sets that places frames in all three splits."""
+
+
+def _names_by_split(out: Path) -> dict[str, list[str]]:
+    """The placed names that ``split.csv`` records in each split, sorted."""
+    record = _split_record(out)
+    split_of = dict(zip(record["placed_name"], record["split"], strict=True))
+    return {
+        split: sorted(name for name, placed in split_of.items() if placed == split)
+        for split in ("train", "valid", "test")
+    }
+
+
+def test_the_sleap_writer_is_handed_two_sets_with_collision_free_images(
+    world: tuple[Dataset, Dataset, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Write the training frames to ``labels.slp`` and the validation frames beside it.
+
+    The ``.slp`` itself needs the SLEAP environment; what it is given does not. A
+    test frame is written to neither file.
+    """
+    _mice, _rats, library = world
+    calls = _fake_write_slp(monkeypatch)
+
+    run_id = _prepare(library, **SLEAP_SPLIT)
 
     out = model_run_root(library, KIND, run_id)
-    names = seen["names"]
-    assert isinstance(names, list) and len(names) == 16 and len(set(names)) == 16
-    assert seen["root"] == out / "images" == seen["images_dir"]
-    assert all((out / "images" / str(name)).is_file() for name in names)
+    names_in = _names_by_split(out)
+    assert names_in["test"], "the split under test places a test frame"
+    assert [path for path, _set, _images in calls] == [
+        out / "labels.slp",
+        out / "labels.val.slp",
+    ]
+    for (_path, handed, images_dir), split in zip(
+        calls, ("train", "valid"), strict=True
+    ):
+        names = sorted(frame.image_path.name for frame in handed.frames)
+        assert names == names_in[split], split
+        assert handed.image_root == out / "images" == images_dir
+    written = [
+        frame.image_path.name
+        for _path, handed, _images in calls
+        for frame in handed.frames
+    ]
+    assert len(set(written)) == len(written) == 16 - len(names_in["test"])
+    assert all((out / "images" / name).is_file() for name in written)
     assert resolve_training_data(library, run_id) == out / "labels.slp"
+
+
+def test_a_sleap_preparation_counts_the_frames_of_its_two_files(
+    world: tuple[Dataset, Dataset, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Count the training and validation frames on the row, and no test frame."""
+    _mice, _rats, library = world
+    calls = _fake_write_slp(monkeypatch)
+
+    run_id = _prepare(library, **SLEAP_SPLIT)
+
+    names_in = _names_by_split(model_run_root(library, KIND, run_id))
+    written = sum(len(handed.frames) for _path, handed, _images in calls)
+    assert written == len(names_in["train"]) + len(names_in["valid"]) < 16
+    assert _row_of(library, run_id)["n_frames"] == str(written)
+
+
+def test_a_lightning_pose_preparation_counts_every_frame_it_writes(
+    world: tuple[Dataset, Dataset, Dataset],
+) -> None:
+    """Lightning Pose draws its own split from every frame it is given."""
+    _mice, _rats, library = world
+
+    run_id = _prepare(library, target="litpose", split=(0.5, 0.25, 0.25))
+
+    assert _row_of(library, run_id)["n_frames"] == "16"
+
+
+def test_a_sleap_preparation_without_its_validation_file_is_prepared_again(
+    world: tuple[Dataset, Dataset, Dataset], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mice, _rats, library = world
+    calls = _fake_write_slp(monkeypatch)
+    first = _prepare(library, target="sleap")
+    assert _prepare(library, target="sleap") == first
+    assert len(calls) == 2, "a whole preparation is reused"
+
+    validation = model_run_root(library, KIND, first) / "labels.val.slp"
+    validation.unlink()
+
+    assert _prepare(library, target="sleap") == first
+    assert len(calls) == 4, "both files are written again"
+    assert validation.is_file()
 
 
 # ---------------------------------------------- choosing from the full saved state
@@ -600,14 +688,7 @@ def test_a_preparation_records_the_pose_it_chose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Recorded on both write paths: the split tree, and a tool's own format."""
-
-    def fake_write_slp(
-        annotations: AnnotationSet, out_path: Path, **kwargs: object
-    ) -> Path:
-        _ = out_path.write_bytes(b"slp")
-        return out_path
-
-    monkeypatch.setattr("mosaic.tracking.sleap.labels.write_slp", fake_write_slp)
+    _ = _fake_write_slp(monkeypatch)
 
     run_id = run_op(full_state, KIND, {**FULL, "pose": pose, "target": target})
 

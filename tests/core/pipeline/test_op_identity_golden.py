@@ -647,6 +647,18 @@ def _train_run_id_from_a_bare_path() -> str:
     )
 
 
+def _train_sleap_run_id() -> str:
+    # The registered version, for the reason ``_train_run_id`` gives: a version
+    # bump changes this golden line.
+    return train_run_id(
+        "train-sleap",
+        OPS["train-sleap"].version,
+        _op_params("train-sleap", labels="labels/session.slp", max_epochs=10),
+        "deadbeefcafe",
+        "",
+    )
+
+
 def _prepared_sets() -> tuple[ResolvedSet, ...]:
     # Two sets from two datasets, given out of order on purpose: the minter sorts
     # them, so the order sets are named in is not a difference.
@@ -960,6 +972,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "composition/labels-raw-two-files": _labels_raw_two_files,
     "train-pose/run-id": _train_run_id,
     "train-pose/run-id-bare-base": _train_run_id_from_a_bare_path,
+    "train-sleap/run-id": _train_sleap_run_id,
     "infer-points/run-id": _infer_run_id,
     "convert-points/run-id": _convert_points_run_id,
     "prepare-training-data/run-id": _prepare_run_id,

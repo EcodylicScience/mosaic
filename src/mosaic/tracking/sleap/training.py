@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Final, Literal, TypedDict
+from typing import Final, Literal, NotRequired, TypedDict
 
 import yaml
 
@@ -116,7 +116,9 @@ class _PreprocessingConfig(TypedDict):
 
 class _DataConfig(TypedDict):
     train_labels_path: list[str]
-    validation_fraction: float
+    # sleap_train_config writes exactly one of these two.
+    val_labels_path: NotRequired[list[str]]
+    validation_fraction: NotRequired[float]
     provider: str
     preprocessing: _PreprocessingConfig
 
@@ -124,6 +126,9 @@ class _DataConfig(TypedDict):
 class _ModelConfig(TypedDict):
     backbone_config: dict[str, dict[str, object]]
     head_configs: dict[str, dict[str, object]]
+    # sleap_train_config writes both or neither, from one base checkpoint.
+    pretrained_backbone_weights: NotRequired[str]
+    pretrained_head_weights: NotRequired[str]
 
 
 class _TrainerConfig(TypedDict):
@@ -156,37 +161,52 @@ def sleap_train_config(
     max_epochs: int,
     seed: int,
     validation_fraction: float,
+    validation_labels: Path | None,
+    base_weights: Path | None,
     run_name: str,
 ) -> SleapTrainConfig:
     """The training configuration, as the mapping that is written to YAML.
 
     Built rather than templated so it can be asserted on without running
-    anything, which is what the tests do.
+    anything, which is what the tests do. A *validation_labels* file is
+    written as ``val_labels_path``, and *validation_fraction* only without one.
+    A *base_weights* checkpoint is written as both
+    ``model_config.pretrained_backbone_weights`` and
+    ``model_config.pretrained_head_weights``, sleap-nn's fine-tune mapping. The
+    run starts from the base's weights at epoch zero.
     """
+    data_config: _DataConfig = {
+        "train_labels_path": [str(labels_path)],
+        "provider": "LabelsReader",
+        # Written at sleap-nn's own defaults, and only because sleap-nn reads
+        # these two off the *unmerged* document. ``run_training`` completes the
+        # config through ``verify_training_cfg`` and keeps the result on
+        # ``trainer.config``, but its post-training evaluation reaches back to
+        # the raw ``config`` for ``ensure_rgb`` / ``ensure_grayscale`` -- so a
+        # config that omits them trains to completion, writes its checkpoint,
+        # and then dies on the evaluation pass with
+        # ``ConfigAttributeError: Key 'preprocessing' is not in struct``.
+        # Stating them changes no behaviour and keeps the run from ending on an
+        # error after the model is already on disk.
+        "preprocessing": {"ensure_rgb": False, "ensure_grayscale": False},
+    }
+    if validation_labels is None:
+        data_config["validation_fraction"] = validation_fraction
+    else:
+        data_config["val_labels_path"] = [str(validation_labels)]
+    model_config: _ModelConfig = {
+        # The backbone takes an empty block: its fields carry real defaults, so
+        # merging one over sleap-nn's structured config yields those. A head
+        # does not -- see ``_HEAD_SECTIONS``.
+        "backbone_config": {backbone: {}},
+        "head_configs": {head: {section: {} for section in _HEAD_SECTIONS[head]}},
+    }
+    if base_weights is not None:
+        model_config["pretrained_backbone_weights"] = str(base_weights)
+        model_config["pretrained_head_weights"] = str(base_weights)
     return {
-        "data_config": {
-            "train_labels_path": [str(labels_path)],
-            "validation_fraction": validation_fraction,
-            "provider": "LabelsReader",
-            # Written at sleap-nn's own defaults, and only because sleap-nn reads
-            # these two off the *unmerged* document. ``run_training`` completes the
-            # config through ``verify_training_cfg`` and keeps the result on
-            # ``trainer.config``, but its post-training evaluation reaches back to
-            # the raw ``config`` for ``ensure_rgb`` / ``ensure_grayscale`` -- so a
-            # config that omits them trains to completion, writes its checkpoint,
-            # and then dies on the evaluation pass with
-            # ``ConfigAttributeError: Key 'preprocessing' is not in struct``.
-            # Stating them changes no behaviour and keeps the run from ending on an
-            # error after the model is already on disk.
-            "preprocessing": {"ensure_rgb": False, "ensure_grayscale": False},
-        },
-        "model_config": {
-            # The backbone takes an empty block: its fields carry real defaults,
-            # so merging one over sleap-nn's structured config yields those. A
-            # head does not -- see ``_HEAD_SECTIONS``.
-            "backbone_config": {backbone: {}},
-            "head_configs": {head: {section: {} for section in _HEAD_SECTIONS[head]}},
-        },
+        "data_config": data_config,
+        "model_config": model_config,
         "trainer_config": {
             "max_epochs": max_epochs,
             "seed": seed,
@@ -334,6 +354,8 @@ def train_sleap(
     max_epochs: int = 200,
     seed: int = 42,
     validation_fraction: float = 0.1,
+    validation_labels: str | Path | None = None,
+    base_weights: Path | None = None,
     run_name: str = "model",
     overrides: Mapping[str, JsonValue] | None = None,
     sleap_conda_env: str | None = None,
@@ -357,6 +379,11 @@ def train_sleap(
         seed: Seeds sleap-nn's own initialisation.
         validation_fraction: Held out from *labels_path* when no separate
             validation file is given.
+        validation_labels: A ``.slp`` that sleap-nn validates on, in place of
+            the *validation_fraction* held out of *labels_path*.
+        base_weights: A checkpoint that initializes both the backbone and the
+            head. The config names it under both pretrained keys. An override
+            naming either key is assigned bare and replaces it.
         run_name: The directory name under *run_root*.
         overrides: Hydra assignments applied on top, for anything sleap-nn
             exposes that this signature does not.
@@ -399,6 +426,10 @@ def train_sleap(
         max_epochs=max_epochs,
         seed=seed,
         validation_fraction=validation_fraction,
+        validation_labels=(
+            None if validation_labels is None else Path(validation_labels)
+        ),
+        base_weights=base_weights,
         run_name=run_name,
     )
     config_path = run_root / "config.yaml"

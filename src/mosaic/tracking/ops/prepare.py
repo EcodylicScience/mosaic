@@ -26,7 +26,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final, Literal
@@ -93,10 +93,12 @@ PrepareTarget = Literal["yolo-pose", "polo", "sleap", "litpose"]
 """Which trainer the dataset is written for, and so what the artifact is.
 
 ``yolo-pose`` and ``polo`` are a split directory tree named by its ``data.yaml``.
-``sleap`` is one ``labels.slp`` file, and ``litpose`` a Lightning Pose project
-directory; both of those tools draw their own train and validation split, so
-``split_by`` and the fractions beyond the first do not apply to them. Selecting,
-naming and recording revisions is the same for all four.
+``sleap`` is a ``labels.slp`` of the training frames with a ``labels.val.slp`` of
+the validation frames beside it, split by ``split_by`` and the first two
+fractions, and its test frames are written to neither. ``litpose`` is a Lightning
+Pose project directory. Only Lightning Pose draws its own train and validation
+split, so ``split_by`` and the fractions beyond the first do not apply to it.
+Selecting, naming and recording revisions is the same for all four.
 """
 
 _TREE_TARGETS: Final = frozenset({"yolo-pose", "polo"})
@@ -750,7 +752,9 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
     # camera, read from the extraction that wrote the image. split.csv records
     # each frame's placed name and split beside the split directories. A
     # hold-out removes every training frame that shares a split unit with it,
-    # and its units enter the identifier only when there are any.
+    # and its units enter the identifier only when there are any. For sleap, the
+    # training frames are written to labels.slp and the validation frames to
+    # labels.val.slp beside it, and the test frames to neither.
     # 0.2: a revision is the full saved state, narrowed here, and a derived box
     # is the annotator's padded one rather than a hull read back as drawn.
     version = "0.3"
@@ -822,7 +826,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         data_yaml = out / "data.yaml"
 
         index = prepared_dataset_index(model_index_path(ds, self.kind))
-        if not overwrite and _already_prepared(ds, index, run_id):
+        if not overwrite and _already_prepared(ds, index, run_id, params.target):
             ctx.cache_hit()
             return run_id
 
@@ -894,13 +898,13 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
 
         ordered = sorted(gathered, key=lambda pair: name_of(pair[0], pair[1]))
         if params.target not in _TREE_TARGETS:
-            artifact = _write_for_tool(
-                params, out, ordered, name_of, schema, categories
+            artifact, n_frames = _write_for_tool(
+                params, out, ordered, name_of, plan.split_of, schema, categories
             )
             _write_split_record(out, plan.rows)
             return _register(
                 ds, index, run_id, self.kind, params, sets, out, artifact,
-                pose=pose, n_frames=len(ordered), holdout=holdout,
+                pose=pose, n_frames=n_frames, holdout=holdout,
                 n_held_out=plan.n_held_out, predicts=schema,
             )  # fmt: skip
         written, skipped = write_split_tree(
@@ -1085,9 +1089,10 @@ def _write_for_tool(
     out: Path,
     ordered: list[tuple[AnnotationFrame, Path]],
     name_of: Callable[[AnnotationFrame, Path], str],
+    split_of: Mapping[str, str],
     schema: KeypointSchema,
     categories: tuple[str, ...],
-) -> Path:
+) -> tuple[Path, int]:
     """Write the union for a tool that reads one labels artifact, not a tree.
 
     The images are copied in first, under the same collision-free names the tree
@@ -1095,15 +1100,24 @@ def _write_for_tool(
     writer then sees one ordinary annotation set whose images sit beside it, and
     what it produces does not reach back into the datasets the sets came from.
 
+    ``sleap`` is written as two files: the frames that *split_of* places in
+    ``train`` to ``labels.slp``, and those in ``valid`` to ``labels.val.slp``. A
+    ``test`` frame is written to neither, and its image is not copied.
+    ``litpose`` is handed every frame of *ordered*.
+
     Returns:
-        What a trainer is handed: the ``.slp`` file, or the project directory.
+        What a trainer is handed (the ``.slp`` of training frames, or the
+        project directory), and how many frames were written for it.
     """
     images = out / "images"
     images.mkdir(parents=True, exist_ok=True)
     placed: dict[str, Path] = {}
-    frames: list[AnnotationFrame] = []
+    frames: list[tuple[str, AnnotationFrame]] = []
     for frame, source in ordered:
         name = name_of(frame, source)
+        split = split_of[name]
+        if params.target == "sleap" and split == "test":
+            continue
         earlier = placed.get(name)
         if earlier is not None:
             msg = (
@@ -1117,42 +1131,61 @@ def _write_for_tool(
         else:
             _ = shutil.copy2(source, images / name)
         frames.append(
-            AnnotationFrame(
-                image_path=Path(name),
-                width=frame.width,
-                height=frame.height,
-                objects=frame.objects,
-                video=frame.video,
-                frame_index=frame.frame_index,
-                split=frame.split,
+            (
+                split,
+                AnnotationFrame(
+                    image_path=Path(name),
+                    width=frame.width,
+                    height=frame.height,
+                    objects=frame.objects,
+                    video=frame.video,
+                    frame_index=frame.frame_index,
+                    split=frame.split,
+                ),
             )
         )
-    merged = AnnotationSet(
-        schema=schema,
-        frames=tuple(frames),
-        categories=categories or ("animal",),
-        image_root=images,
-        source_format="coco",
-    )
-    if params.target == "sleap":
-        from mosaic.tracking.sleap.labels import write_slp
 
-        return write_slp(merged, out / "labels.slp", images_dir=images)
+    def merged(subset: Collection[str] | None = None) -> AnnotationSet:
+        """Return the copied frames placed in *subset*, or every one without it."""
+        return AnnotationSet(
+            schema=schema,
+            frames=tuple(
+                frame for split, frame in frames if subset is None or split in subset
+            ),
+            categories=categories or ("animal",),
+            image_root=images,
+            source_format="coco",
+        )
+
+    if params.target == "sleap":
+        from mosaic.tracking.sleap.labels import validation_labels_path, write_slp
+
+        labels = out / "labels.slp"
+        _ = write_slp(merged({"train"}), labels, images_dir=images)
+        _ = write_slp(
+            merged({"valid"}), validation_labels_path(labels), images_dir=images
+        )
+        return labels, len(frames)
     from mosaic.tracking.litpose.labels import write_litpose_dataset
 
-    return write_litpose_dataset(
-        merged, out / "project", train_prob=params.split[0], copy_images=True
+    project = write_litpose_dataset(
+        merged(), out / "project", train_prob=params.split[0], copy_images=True
     )
+    return project, len(frames)
 
 
 def _already_prepared(
-    ds: Dataset, index: IndexCSV[PreparedDatasetIndexRow], run_id: str
+    ds: Dataset,
+    index: IndexCSV[PreparedDatasetIndexRow],
+    run_id: str,
+    target: PrepareTarget,
 ) -> bool:
     """Did this exact preparation finish, and is what it wrote still there?
 
     The row and the artifact both, for the reason a trained model needs both:
     the row is the only thing that means the writer returned, and a row can
-    outlive the directory it names.
+    outlive the directory it names. For ``sleap`` the artifact is the training
+    labels and the validation file beside them.
     """
     if not index.path.exists():
         return False
@@ -1167,7 +1200,16 @@ def _already_prepared(
     if rows.empty:
         return False
     stored = str(rows.iloc[-1].get("artifact_path", "") or "")
-    return bool(stored) and ds.resolve_path(stored).exists()
+    if not stored:
+        return False
+    artifact = ds.resolve_path(stored)
+    if not artifact.exists():
+        return False
+    if target == "sleap":
+        from mosaic.tracking.sleap.labels import validation_labels_beside
+
+        return validation_labels_beside(artifact) is not None
+    return True
 
 
 def _count(split_dir: Path) -> int:

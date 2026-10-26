@@ -14,10 +14,12 @@ additionally write a tracks variant naming a table that does not exist.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
 
 from pydantic import Field, field_validator
 
+from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.entry_claim import phase_activity
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
@@ -51,6 +53,7 @@ from mosaic.tracking.ops._train_descriptions import (
     LOADER_WORKERS_DESCRIPTION,
     MAX_RUNTIME_DESCRIPTION,
 )
+from mosaic.tracking.sleap.labels import validation_labels_beside
 from mosaic.tracking.sleap.probe import (
     probe_sleap,
     require_identity_labels,
@@ -70,14 +73,25 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline._utils import ResolvedScope
     from mosaic.core.pipeline.job import JobContext
 
+# 0.3 initializes the backbone and the head from base_model's weights, where 0.2
+# resumed base_model's run. 0.3 also validates on the validation file beside the
+# labels when there is one, such as the labels.val.slp that prepare-training-data
+# writes beside labels.slp, in place of holding out validation_fraction of the
+# labels. That file enters the data fingerprint. ``train-sleap.0.2-*`` runs stay
+# readable and resolve as models and as bases under their own ids.
 # 0.2 fingerprints the labels by their own bytes, where 0.1 listed every file
 # under their folder and so moved with anything written beside them. That moves
 # the digest, so the visible segment moves with it: ``train-sleap.0.1-*`` runs
 # stay readable and keep their index rows rather than sitting under a name that
 # now means something else.
-TRAIN_SLEAP_VERSION: str = "0.2"
+TRAIN_SLEAP_VERSION: str = "0.3"
 
 _LABELS_DESCRIPTION = "The .slp file to train on."
+
+_BASE_MODEL_DESCRIPTION = BASE_MODEL_DESCRIPTION + (
+    " Both the backbone and the head start from these weights. The base must "
+    "be a training of the same head."
+)
 
 _HEAD_DESCRIPTION = (
     "Which task the network is trained for. centroid and centered_instance "
@@ -93,8 +107,9 @@ _BACKBONE_DESCRIPTION = "The feature extractor architecture, independent of the 
 _SEED_DESCRIPTION = "Seeds sleap-nn's initialization."
 
 _VALIDATION_FRACTION_DESCRIPTION = (
-    "Fraction of labels held out for validation, when no separate "
-    "validation file is given."
+    "Fraction of labels held out for validation. It applies only when the labels "
+    "have no validation file beside them, such as the labels.val.slp that "
+    "prepare-training-data writes beside labels.slp."
 )
 
 _SLEAP_OVERRIDES_DESCRIPTION = (
@@ -120,6 +135,25 @@ _NUM_WORKERS_DESCRIPTION = LOADER_WORKERS_DESCRIPTION + (
 )
 
 
+def fingerprint_sleap_labels(path: Path) -> str:
+    """Return the content digest of a ``.slp`` and of the validation file beside it.
+
+    Labels without a validation file are digested as
+    :func:`~mosaic.tracking.ops._common.fingerprint_dataset` digests any file.
+    With one, the digest covers both files' digests, so a changed validation file
+    names a different model.
+    """
+    validation = validation_labels_beside(path)
+    if validation is None:
+        return fingerprint_dataset(path)
+    return hash_params(
+        {
+            "labels": fingerprint_dataset(path),
+            "validation": fingerprint_dataset(validation),
+        }
+    )
+
+
 class TrainSleapParams(Params):
     """Parameters for the ``train-sleap`` op.
 
@@ -131,7 +165,7 @@ class TrainSleapParams(Params):
     """
 
     labels: Annotated[str, Declared(_LABELS_DESCRIPTION)]
-    base_model: Annotated[str, Declared(BASE_MODEL_DESCRIPTION)] = ""
+    base_model: Annotated[str, Declared(_BASE_MODEL_DESCRIPTION)] = ""
     head: Annotated[SleapHead, Declared(_HEAD_DESCRIPTION)] = "centered_instance"
     backbone: Annotated[SleapBackbone, Declared(_BACKBONE_DESCRIPTION)] = "unet"
     max_epochs: Annotated[int, Declared(EPOCHS_DESCRIPTION, unit="epochs")] = 200
@@ -236,7 +270,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             version=self.version,
             params=params,
             data_path=resolve_training_data(ds, params.labels),
-            fingerprint=fingerprint_dataset,
+            fingerprint=fingerprint_sleap_labels,
             base_model=params.base_model,
             require_data=require_data,
         )
@@ -257,14 +291,15 @@ class TrainSleapOp(Op[TrainSleapParams]):
         base_run_id = ""
         base_digest = ""
         base_origin = ""
-        resume_from = ""
+        base_head = ""
+        base_weights: Path | None = None
         if params.base_model:
             base = resolve_model(ds, params.base_model, self.kind)
             base_run_id = base.model_id
             base_digest = base.digest
             base_origin = observed_model_source(base).get("model_source", "")
-            weights = base.artifacts[0].file_for("weights")
-            resume_from = str(weights) if weights is not None else ""
+            base_head = base.model_type
+            base_weights = base.artifacts[0].file_for("weights")
 
         run_id = self.plan_identity(ds, params, scope, require_data=False).run_id
         ctx.set_run_id(run_id)
@@ -273,7 +308,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
             ctx.cache_hit()
             return run_id
         # Before training, never after: see TrainPoseOp.run.
-        data_fingerprint = fingerprint_dataset(labels_path)
+        data_fingerprint = fingerprint_sleap_labels(labels_path)
 
         # After the reuse gate and before the root is claimed. A cache hit pays
         # for no cold import, and a refusal is a message rather than a claim
@@ -288,6 +323,14 @@ class TrainSleapOp(Op[TrainSleapParams]):
         )
         require_sleap_nn(probe)
         require_identity_labels(probe, params.head, labels_path)
+        # A base whose config does not read reports an empty model_type, which
+        # names no head to compare.
+        if base_head and base_head != params.head:
+            msg = (
+                f"base_model {params.base_model!r} is a {base_head} model. A "
+                f"{params.head} run fine-tunes only from a {params.head} model."
+            )
+            raise ValueError(msg)
 
         ctx.set_total(params.max_epochs)
         run_root = model_run_root(ds, self.kind, run_id)
@@ -298,8 +341,6 @@ class TrainSleapOp(Op[TrainSleapParams]):
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
         overrides: dict[str, JsonValue] = dict(params.sleap_overrides or {})
-        if resume_from:
-            overrides.setdefault("trainer_config.resume_ckpt_path", resume_from)
         for key, value in sleap_device_overrides(params.device).items():
             overrides.setdefault(key, value)
         # The bag refuses these keys, so there is nothing here to defer to.
@@ -313,6 +354,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
             max_epochs=params.max_epochs,
             seed=params.seed,
             validation_fraction=params.validation_fraction,
+            validation_labels=validation_labels_beside(labels_path),
+            base_weights=base_weights,
             overrides=overrides,
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,

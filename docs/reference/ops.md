@@ -538,19 +538,19 @@ Train a YOLO pose model, registering the directory it produces.
 
 #### `train-sleap`
 
-Version `0.2` &middot; `mosaic.tracking.ops.train_sleap.TrainSleapOp` &middot; resource class `gpu`
+Version `0.3` &middot; `mosaic.tracking.ops.train_sleap.TrainSleapOp` &middot; resource class `gpu`
 
 Train a SLEAP model, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `labels` | `string` | _required_ |  | The .slp file to train on. |
-| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. |
+| `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. Both the backbone and the head start from these weights. The base must be a training of the same head. |
 | `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification, so they need labels that carry it: a .slp whose instances have no track trains one of them against no classes at all, which succeeds and produces a model that learned nothing. |
 | `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  | The feature extractor architecture, independent of the head. |
 | `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
-| `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation, when no separate validation file is given. |
+| `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation. It applies only when the labels have no validation file beside them, such as the labels.val.slp that prepare-training-data writes beside labels.slp. |
 | `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. |
 | `device` | `string` | `"auto"` |  | Which accelerator trains the model. auto leaves the choice to sleap-nn; cpu, gpu and mps each name a family; a comma-separated list of CUDA indices such as 0 or 0,1 names devices within the gpu family. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |

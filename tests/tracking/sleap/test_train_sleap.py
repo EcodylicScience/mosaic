@@ -10,22 +10,26 @@ have is a row that lies about what was trained.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.narrowing import is_str_mapping
+from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.job import Cancelled
-from mosaic.core.pipeline.models import model_index_path
-from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.ops import OPS, run_op
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking import register_ops
+from mosaic.tracking.ops._common import fingerprint_dataset
+from mosaic.tracking.ops.train import TRAINING_PROVENANCE_FILENAME, train_run_id
 from mosaic.tracking.ops.trained_models import trained_model_index
-from mosaic.tracking.ops.train_sleap import TrainSleapParams
+from mosaic.tracking.ops.train_sleap import TrainSleapParams, fingerprint_sleap_labels
 from mosaic.tracking.sleap import probe as probe_module
 from mosaic.tracking.sleap.probe import (
     SleapProbeResponse,
@@ -129,15 +133,59 @@ def test_the_config_says_what_the_parameters_said() -> None:
         max_epochs=30,
         seed=7,
         validation_fraction=0.25,
+        validation_labels=None,
+        base_weights=None,
         run_name="model",
     )
     assert config["data_config"]["train_labels_path"] == ["session.slp"]
-    assert config["data_config"]["validation_fraction"] == 0.25
+    assert config["data_config"].get("validation_fraction") == 0.25
+    assert "val_labels_path" not in config["data_config"]
     assert config["model_config"]["backbone_config"] == {"convnext": {}}
     assert config["model_config"]["head_configs"] == {"centroid": {"confmaps": {}}}
+    assert "pretrained_backbone_weights" not in config["model_config"]
+    assert "pretrained_head_weights" not in config["model_config"]
     assert config["trainer_config"]["max_epochs"] == 30
     assert config["trainer_config"]["seed"] == 7
     assert config["trainer_config"]["save_ckpt"] is True, "otherwise nothing is written"
+
+
+def test_base_weights_initialize_the_backbone_and_the_head() -> None:
+    """sleap-nn's fine-tune mapping, which SLEAP's GUI and --base_checkpoint set."""
+    config = sleap_train_config(
+        Path("labels.slp"),
+        Path("/runs/r1"),
+        head="centroid",
+        backbone="unet",
+        max_epochs=30,
+        seed=7,
+        validation_fraction=0.25,
+        validation_labels=None,
+        base_weights=Path("/models/base/best.ckpt"),
+        run_name="model",
+    )
+    model_config = config["model_config"]
+    assert model_config.get("pretrained_backbone_weights") == "/models/base/best.ckpt"
+    assert model_config.get("pretrained_head_weights") == "/models/base/best.ckpt"
+    assert "resume_ckpt_path" not in config["trainer_config"]
+
+
+def test_a_validation_file_takes_the_place_of_the_validation_fraction() -> None:
+    """sleap-nn validates on the file, so no fraction of the labels is held out."""
+    config = sleap_train_config(
+        Path("labels.slp"),
+        Path("/runs/r1"),
+        head="centroid",
+        backbone="unet",
+        max_epochs=30,
+        seed=7,
+        validation_fraction=0.25,
+        validation_labels=Path("labels.val.slp"),
+        base_weights=None,
+        run_name="model",
+    )
+    assert config["data_config"]["train_labels_path"] == ["labels.slp"]
+    assert config["data_config"].get("val_labels_path") == ["labels.val.slp"]
+    assert "validation_fraction" not in config["data_config"]
 
 
 def test_the_config_states_the_preprocessing_sleap_nn_reads_unmerged() -> None:
@@ -159,6 +207,8 @@ def test_the_config_states_the_preprocessing_sleap_nn_reads_unmerged() -> None:
         max_epochs=1,
         seed=1,
         validation_fraction=0.1,
+        validation_labels=None,
+        base_weights=None,
         run_name="model",
     )
     assert config["data_config"]["preprocessing"] == {
@@ -196,6 +246,8 @@ def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> 
         max_epochs=1,
         seed=1,
         validation_fraction=0.1,
+        validation_labels=None,
+        base_weights=None,
         run_name="model",
     )
     written = config["model_config"]["head_configs"]
@@ -371,18 +423,68 @@ def _assignments(argv: Sequence[str]) -> list[str]:
     return list(argv[list(argv).index("--config-name") + 2 :])
 
 
+def _labels_and_fake_trainer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    head: str = "centered_instance",
+    writes_training_log: bool = False,
+) -> tuple[Dataset, Path, list[list[str]]]:
+    """Make a dataset, labels outside it and a faked trainer of *head*.
+
+    Returns:
+        The dataset, the labels, and the list that the trainer appends each
+        argv to.
+    """
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(
+        monkeypatch, head=head, writes_training_log=writes_training_log
+    )
+    labels = tmp_path / "labels" / "session.slp"
+    labels.parent.mkdir()
+    _ = labels.write_bytes(b"slp")
+    return ds, labels, seen
+
+
 def _run_and_capture(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, params: dict[str, object]
 ) -> list[str]:
     """Run ``train-sleap`` once and return the argv the trainer was given."""
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    seen = _fake_trainer(monkeypatch)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
     _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1, **params})
     return seen[0]
+
+
+def _written_config(argv: Sequence[str]) -> Mapping[str, object]:
+    """The document the trainer was handed."""
+    config_dir = Path(argv[argv.index("--config-dir") + 1])
+    written: object = yaml.safe_load((config_dir / "config.yaml").read_text())
+    assert is_str_mapping(written)
+    return written
+
+
+def _written_section(argv: Sequence[str], section: str) -> Mapping[str, object]:
+    """One section of the document the trainer was handed."""
+    written = _written_config(argv)[section]
+    assert is_str_mapping(written)
+    return written
+
+
+def _train_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: str = "centered_instance"
+) -> tuple[Dataset, Path, str, list[list[str]]]:
+    """Train a *head* base, and return what a run fine-tuning from it needs.
+
+    Returns:
+        The dataset, the labels, the base's run id, and the trainer's argv list
+        with the base's own call cleared from it.
+    """
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch, head=head)
+    base = run_op(
+        ds, "train-sleap", {"labels": str(labels), "max_epochs": 1, "head": head}
+    )
+    seen.clear()
+    return ds, labels, base, seen
 
 
 def test_an_override_the_config_carries_is_assigned_bare(
@@ -438,18 +540,11 @@ def test_every_injected_override_composes_against_the_config(
     that is wrong renders wrongly and reads wrongly, instead of agreeing with
     itself.
 
-    A resume and a device are both exercised, since both inject keys the
-    minimal document has never carried.
+    The run under test names a base model, a device and an override. Its base
+    adds declared keys to the document and injects no assignment. Its device
+    injects keys that the document does not carry.
     """
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    seen = _fake_trainer(monkeypatch)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
-
-    base = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
-    seen.clear()
+    ds, labels, base, seen = _train_base(tmp_path, monkeypatch)
     _ = run_op(
         ds,
         "train-sleap",
@@ -463,10 +558,7 @@ def test_every_injected_override_composes_against_the_config(
     )
 
     argv = seen[0]
-    config_dir = Path(argv[argv.index("--config-dir") + 1])
-    written = yaml.safe_load((config_dir / "config.yaml").read_text())
-    assert is_str_mapping(written)
-    declared = dotted_values(written)
+    declared = dotted_values(_written_config(argv))
     assignments = _assignments(argv)
     assert assignments, "the run under test must inject something"
     for assignment in assignments:
@@ -474,29 +566,104 @@ def test_every_injected_override_composes_against_the_config(
         assert key.startswith(("+", "~")) or key in declared, assignment
 
 
-def test_a_base_model_resume_names_the_checkpoint(
+def test_a_base_model_initializes_the_backbone_and_the_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Resuming injects a key the minimal document has never carried."""
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    seen = _fake_trainer(monkeypatch)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
+    """A fine-tune starts a new run from the base's checkpoint.
 
-    base = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
-    seen.clear()
+    Both pretrained keys name the checkpoint. The base's run is not resumed,
+    which would continue its epoch count and optimizer state.
+    """
+    ds, labels, base, seen = _train_base(tmp_path, monkeypatch)
     _ = run_op(
         ds, "train-sleap", {"labels": str(labels), "max_epochs": 1, "base_model": base}
     )
-    resumes = [
-        arg
-        for arg in _assignments(seen[0])
-        if arg.startswith("+trainer_config.resume_ckpt_path=")
-    ]
-    assert len(resumes) == 1, _assignments(seen[0])
-    assert resumes[0].endswith("best.ckpt")
+
+    checkpoint = str(model_run_root(ds, "train-sleap", base) / "model" / "best.ckpt")
+    model_config = _written_section(seen[0], "model_config")
+    assert model_config["pretrained_backbone_weights"] == checkpoint
+    assert model_config["pretrained_head_weights"] == checkpoint
+    written = dotted_values(_written_config(seen[0]))
+    assert not [key for key in written if key.endswith("resume_ckpt_path")]
+    assert not [arg for arg in _assignments(seen[0]) if "resume_ckpt_path" in arg]
+
+
+@pytest.mark.parametrize("weights_name", ["best.ckpt", "best_model.h5"])
+def test_a_base_with_no_readable_head_is_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, weights_name: str
+) -> None:
+    """A base whose config does not read reports no head and is not refused.
+
+    Its weights are the checkpoint its directory holds, ``best_model.h5`` for a
+    classic SLEAP model.
+    """
+    base = tmp_path / "base"
+    base.mkdir()
+    weights = base / weights_name
+    _ = weights.write_bytes(b"weights")
+
+    argv = _run_and_capture(
+        tmp_path, monkeypatch, {"head": "centroid", "base_model": str(base)}
+    )
+
+    model_config = _written_section(argv, "model_config")
+    assert model_config["pretrained_backbone_weights"] == str(weights)
+    assert model_config["pretrained_head_weights"] == str(weights)
+
+
+def test_a_base_of_another_head_is_refused_before_the_run_root_is_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A centroid base cannot initialize a centered_instance network.
+
+    The refusal leaves no run root, no index row and no trainer call.
+    """
+    ds, labels, base, seen = _train_base(tmp_path, monkeypatch, head="centroid")
+
+    with pytest.raises(ValueError, match="centroid model.*centered_instance run"):
+        _ = run_op(
+            ds,
+            "train-sleap",
+            {
+                "labels": str(labels),
+                "max_epochs": 1,
+                "head": "centered_instance",
+                "base_model": base,
+            },
+        )
+
+    assert seen == [], "the trainer must not run"
+    index_path = model_index_path(ds, "train-sleap")
+    run_roots = sorted(
+        path.name for path in index_path.parent.iterdir() if path.is_dir()
+    )
+    assert run_roots == [base]
+    assert list(trained_model_index(index_path).read()["run_id"]) == [base]
+
+
+def test_an_override_of_the_pretrained_head_weights_beats_the_base_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The document declares the key, and Hydra applies the bare assignment over it."""
+    ds, labels, base, seen = _train_base(tmp_path, monkeypatch)
+    _ = run_op(
+        ds,
+        "train-sleap",
+        {
+            "labels": str(labels),
+            "max_epochs": 1,
+            "base_model": base,
+            "sleap_overrides": {
+                "model_config.pretrained_head_weights": "/models/other/best.ckpt"
+            },
+        },
+    )
+
+    assignments = _assignments(seen[0])
+    assert "model_config.pretrained_head_weights=/models/other/best.ckpt" in assignments
+    checkpoint = str(model_run_root(ds, "train-sleap", base) / "model" / "best.ckpt")
+    model_config = _written_section(seen[0], "model_config")
+    assert model_config["pretrained_backbone_weights"] == checkpoint
 
 
 @pytest.mark.parametrize(
@@ -633,13 +800,8 @@ def test_an_identity_head_with_no_tracks_never_reaches_the_trainer(
     behind would hold the run root for the next half hour over a run that was
     never going to start.
     """
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    seen = _fake_trainer(monkeypatch)
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
     _ = _fake_probe(monkeypatch, n_tracks=0)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
 
     with pytest.raises(ValueError, match="carries a track"):
         _ = run_op(
@@ -660,13 +822,8 @@ def test_an_identity_head_with_tracked_labels_trains(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The mirror, so the refusal is not simply refusing everything."""
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    seen = _fake_trainer(monkeypatch)
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
     _ = _fake_probe(monkeypatch, n_tracks=4)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
 
     _ = run_op(
         ds,
@@ -680,13 +837,8 @@ def test_a_finished_run_pays_for_no_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Probed after the reuse gate, so a cache hit costs no cold import."""
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    _ = _fake_trainer(monkeypatch)
+    ds, labels, _ = _labels_and_fake_trainer(tmp_path, monkeypatch)
     probed = _fake_probe(monkeypatch)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
     params = {"labels": str(labels), "max_epochs": 1}
 
     first = run_op(ds, "train-sleap", dict(params))
@@ -700,13 +852,8 @@ def test_the_probe_is_handed_the_labels_it_reports_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Both questions are answered from one launch, so both need the file."""
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    _ = _fake_trainer(monkeypatch)
+    ds, labels, _ = _labels_and_fake_trainer(tmp_path, monkeypatch)
     probed = _fake_probe(monkeypatch)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
 
     _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
     assert str(labels) in probed[0]
@@ -720,12 +867,9 @@ def test_the_recorded_metrics_path_holds_metrics(
     A reader has to open the file to discover it holds no metric, where an
     empty cell says so at a glance.
     """
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    _ = _fake_trainer(monkeypatch, writes_training_log=True)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
+    ds, labels, _ = _labels_and_fake_trainer(
+        tmp_path, monkeypatch, writes_training_log=True
+    )
 
     _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
     row = trained_model_index(model_index_path(ds, "train-sleap")).read().iloc[0]
@@ -736,13 +880,99 @@ def test_a_run_that_logged_no_metrics_records_no_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The empty cell is a real state, and the only honest one here."""
-    ds = make_dataset(tmp_path / "ds", save=False)
-    _point_at_sleap(tmp_path, monkeypatch)
-    _ = _fake_trainer(monkeypatch)
-    labels = tmp_path / "labels" / "session.slp"
-    labels.parent.mkdir()
-    _ = labels.write_bytes(b"slp")
+    ds, labels, _ = _labels_and_fake_trainer(tmp_path, monkeypatch)
 
     _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
     row = trained_model_index(model_index_path(ds, "train-sleap")).read().iloc[0]
     assert row["metrics_path"] == ""
+
+
+# --- the validation file ---------------------------------------------------
+
+
+def _labels_with_validation(tmp_path: Path) -> Path:
+    """Write ``labels.slp`` and ``labels.val.slp`` beside it, as a preparation does."""
+    labels = tmp_path / "labels" / "labels.slp"
+    labels.parent.mkdir()
+    _ = labels.write_bytes(b"slp")
+    _ = (labels.parent / "labels.val.slp").write_bytes(b"validation slp")
+    return labels
+
+
+def test_a_validation_file_beside_the_labels_reaches_the_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch)
+    labels = _labels_with_validation(tmp_path)
+
+    _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+
+    data_config = _written_section(seen[0], "data_config")
+    assert data_config["val_labels_path"] == [str(labels.parent / "labels.val.slp")]
+    assert "validation_fraction" not in data_config
+
+
+def test_labels_without_a_validation_file_hold_out_the_fraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    argv = _run_and_capture(tmp_path, monkeypatch, {"validation_fraction": 0.2})
+
+    data_config = _written_section(argv, "data_config")
+    assert data_config["validation_fraction"] == 0.2
+    assert "val_labels_path" not in data_config
+
+
+def test_labels_without_a_validation_file_are_fingerprinted_by_their_bytes(
+    tmp_path: Path,
+) -> None:
+    labels = tmp_path / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+
+    assert fingerprint_sleap_labels(labels) == fingerprint_dataset(labels)
+
+
+def test_the_validation_file_enters_the_fingerprint(tmp_path: Path) -> None:
+    labels = _labels_with_validation(tmp_path)
+    validation = labels.parent / "labels.val.slp"
+
+    with_validation = fingerprint_sleap_labels(labels)
+
+    assert with_validation == hash_params(
+        {
+            "labels": fingerprint_dataset(labels),
+            "validation": fingerprint_dataset(validation),
+        }
+    )
+    assert with_validation != fingerprint_dataset(labels)
+    _ = validation.write_bytes(b"other validation slp")
+    assert fingerprint_sleap_labels(labels) != with_validation
+
+
+def test_the_recorded_data_fingerprint_is_the_one_in_the_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row and ``training.json`` record the digest that named the run."""
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    _ = _fake_trainer(monkeypatch)
+    labels = _labels_with_validation(tmp_path)
+
+    run_id = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+
+    row = trained_model_index(model_index_path(ds, "train-sleap")).read().iloc[0]
+    recorded = str(row["data_fingerprint"])
+    assert recorded == fingerprint_sleap_labels(labels)
+    params = TrainSleapParams(labels=str(labels), max_epochs=1)
+    assert run_id == train_run_id(
+        "train-sleap", OPS["train-sleap"].version, params, recorded, ""
+    )
+    document: object = json.loads(
+        (
+            model_run_root(ds, "train-sleap", run_id) / TRAINING_PROVENANCE_FILENAME
+        ).read_text()
+    )
+    assert is_str_mapping(document)
+    data = document["data"]
+    assert is_str_mapping(data) and data["fingerprint"] == recorded

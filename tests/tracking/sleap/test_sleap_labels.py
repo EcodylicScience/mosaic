@@ -23,7 +23,11 @@ from mosaic.core.annotations import (
     KeypointSchema,
 )
 from mosaic.tracking.sleap import labels as labels_module
-from mosaic.tracking.sleap.labels import write_slp
+from mosaic.tracking.sleap.labels import (
+    SLEAP_VALIDATION_SUFFIX,
+    validation_labels_beside,
+    write_slp,
+)
 from mosaic.tracking.sleap.run import SleapError
 
 SCHEMA = KeypointSchema(names=("nose", "thorax", "tail"), skeleton=((0, 1), (1, 2)))
@@ -227,3 +231,21 @@ def test_a_set_with_no_image_root_must_be_told_one(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="images_dir is required"):
         _ = write_slp(rootless, tmp_path / "out.slp")
+
+
+def test_labels_alone_have_no_validation_file(tmp_path: Path) -> None:
+    labels = tmp_path / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+
+    assert validation_labels_beside(labels) is None
+
+
+def test_the_validation_file_beside_the_labels_is_found_by_its_suffix(
+    tmp_path: Path,
+) -> None:
+    labels = tmp_path / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+    validation = tmp_path / f"labels{SLEAP_VALIDATION_SUFFIX}"
+    _ = validation.write_bytes(b"slp")
+
+    assert validation_labels_beside(labels) == validation == tmp_path / "labels.val.slp"
