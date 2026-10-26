@@ -317,6 +317,8 @@ def _narrow_frame(
                 track_id=alias if track_by == "alias" else obj.track_id,
                 bbox=obj.bbox
                 or derived_bbox(obj.keypoints, frame.width, frame.height, policy),
+                origin=obj.origin,
+                source_ref=obj.source_ref,
             )
         )
     return frame.as_annotation_frame(tuple(objects))

@@ -53,6 +53,7 @@ PRODUCER_MODULES = (
     *TRACKER_SUBPACKAGES,
     "mosaic.tracking.ops.train",
     "mosaic.tracking.ops.predict_frames",
+    "mosaic.tracking.ops.score_predictions",
     "mosaic.tracking.model_refs",
     "mosaic.tracking.common.bridge",
     "mosaic.tracking.common.scope",

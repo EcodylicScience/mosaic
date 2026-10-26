@@ -12,9 +12,8 @@ from pathlib import Path
 from typing import Final
 
 from mosaic.core.annotations.bbox import BboxPolicy
-from mosaic.core.annotations.model import Bbox, Keypoint, KeypointSchema
+from mosaic.core.annotations.model import Bbox, Keypoint, KeypointSchema, ObjectOrigin
 from mosaic.core.annotations.pose_annotations import (
-    ObjectOrigin,
     PoseAnnotationSet,
     PoseDefinition,
     PoseFrame,
@@ -53,6 +52,7 @@ def pose_object(
     alias_id: int | None = None,
     bbox: Bbox | None = None,
     origin: ObjectOrigin | None = "human",
+    source_ref: str | None = None,
 ) -> PoseObject:
     """An object whose keypoints are all placed and visible, at *points*."""
     return PoseObject(
@@ -60,6 +60,7 @@ def pose_object(
         keypoints=tuple(Keypoint(x=x, y=y, visibility=2) for x, y in points),
         alias_id=alias_id,
         origin=origin,
+        source_ref=source_ref,
         bbox=bbox,
     )
 

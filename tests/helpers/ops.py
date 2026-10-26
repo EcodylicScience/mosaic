@@ -34,6 +34,10 @@ _MINIMAL: dict[str, dict[str, object]] = {
         "steps": [{"step": "crop", "x": 0, "y": 0, "width": 320, "height": 240}]
     },
     "resample-tracks": {"target_fps": 30.0},
+    "score-predictions": {
+        "prediction_runs": ["predict-frames.0.1-abcdef0123"],
+        "labels": [{"set_key": "set-a"}],
+    },
     "sleap": {"model_paths": ["models/sleap/run"]},
     "train-litpose": {"project": "models/train-litpose/project"},
     "train-localizer": {"dataset_dir": "datasets/localizer"},

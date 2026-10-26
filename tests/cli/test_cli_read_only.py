@@ -49,7 +49,10 @@ from mosaic.core.scope import Scope
 from mosaic.tracking import PrerequisitePlan, plan_prerequisites
 from mosaic.tracking.frame_predictions.read import (
     list_prediction_runs,
+    list_score_runs,
     read_entry_predictions,
+    read_score_frames,
+    read_score_summary,
 )
 from tests.helpers import (
     CONVERT_LABELS_STEP,
@@ -67,6 +70,7 @@ from tests.helpers import (
     invoke_ok,
     make_dataset,
     record_entry_predictions,
+    record_score_run,
     register_trained_model,
     tree_snapshot,
     write_calms21_npy,
@@ -81,6 +85,7 @@ SPEED_STORAGE = "speed-angvel__from__tracks"
 LOSSY_TARGET = SPEED_STORAGE
 LOSSY_RUN_ID = "0.2-abcdef0123"
 PREDICTION_RUN_ID = "predict-frames.0.1-0123456789"
+SCORE_RUN_ID = "score-predictions.0.1-0123456789"
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,7 @@ def populated(tmp_path: Path) -> ReadDataset:
         frames_run_id="uniform-0123456789", group="", sequence="seq_a"
     )
     _ = record_entry_predictions(dataset, predictions, run_id=PREDICTION_RUN_ID)
+    _ = record_score_run(dataset, SCORE_RUN_ID)
     _lose_an_entity(dataset.base_dir)
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
@@ -442,6 +448,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "inventory": _inventory,
     "inventory_wire": _inventory_wire,
     "list_prediction_runs": lambda f: list_prediction_runs(f.reopened()),
+    "list_score_runs": lambda f: list_score_runs(f.reopened()),
     "list_requests": lambda f: list_requests(f.root, limit=1),
     "list_runs": lambda f: list_runs(run_log_dir(f.root), limit=1),
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
@@ -458,6 +465,8 @@ LIBRARY_READS: dict[str, LibraryRead] = {
         f.reopened(), PREDICTION_RUN_ID, "", "seq_a"
     ),
     "read_runs": lambda f: read_runs(run_log_dir(f.root)),
+    "read_score_frames": lambda f: read_score_frames(f.reopened(), SCORE_RUN_ID),
+    "read_score_summary": lambda f: read_score_summary(f.reopened(), SCORE_RUN_ID),
     "read_tracks_index": lambda f: read_tracks_index(f.reopened()),
     "request_rollup": _rollup,
     "request_status_wire": _request_status,
@@ -485,10 +494,13 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "list_prediction_runs",
         "list_requests",
         "list_runs",
+        "list_score_runs",
         "open_dataset",
         "plan_prerequisites",
         "read_entry_predictions",
         "read_runs",
+        "read_score_frames",
+        "read_score_summary",
         "read_tracks_index",
     ],
 )

@@ -187,6 +187,21 @@ def test_a_source_box_is_optional_and_distinguishable_from_a_derived_one() -> No
     assert supplied.bbox is not None
 
 
+def test_a_reader_built_object_has_no_origin_or_source_reference() -> None:
+    obj = AnnotationObject(keypoints=tuple(Keypoint.absent() for _ in range(3)))
+    assert obj.origin is None
+    assert obj.source_ref is None
+
+
+def test_an_object_can_name_who_placed_it_and_what_produced_it() -> None:
+    obj = AnnotationObject(
+        keypoints=tuple(Keypoint.absent() for _ in range(3)),
+        origin="model",
+        source_ref="run-1",
+    )
+    assert (obj.origin, obj.source_ref) == ("model", "run-1")
+
+
 # --- the Lightning Pose default skeleton ------------------------------------
 
 

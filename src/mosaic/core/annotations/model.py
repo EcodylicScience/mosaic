@@ -45,6 +45,7 @@ __all__ = [
     "Bbox",
     "Keypoint",
     "KeypointSchema",
+    "ObjectOrigin",
     "Split",
     "Visibility",
 ]
@@ -56,6 +57,9 @@ Chosen over a bare bool because YOLO writes the flag through unchanged and COCO
 round-trips it, so collapsing the middle value would lose information mosaic was
 handed. A source with no notion of occlusion simply never produces ``1``.
 """
+
+ObjectOrigin = Literal["human", "model", "heuristic"]
+"""Who placed an object: a person, a model's prediction, or a rule."""
 
 Split = Literal["train", "valid", "test", "unassigned"]
 """Which subset a frame belongs to.
@@ -219,6 +223,8 @@ class AnnotationObject:
         bbox: The source's own box, when it supplied one. ``None`` means derive
             it, which is what a :class:`~mosaic.core.annotations.bbox.BboxPolicy`
             is for.
+        origin: Who placed the instance, or ``None`` when the source did not say.
+        source_ref: What produced it -- a model run, a rule -- when not a person.
     """
 
     keypoints: tuple[Keypoint, ...]
@@ -226,6 +232,8 @@ class AnnotationObject:
     track_id: str = ""
     source_id: str = ""
     bbox: Bbox | None = None
+    origin: ObjectOrigin | None = None
+    source_ref: str | None = None
 
     @property
     def placed_keypoints(self) -> tuple[Keypoint, ...]:

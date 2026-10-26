@@ -3,7 +3,7 @@
 
 # Ops
 
-23 ops are registered. An op is the unit `mosaic run --kind <kind>`
+24 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -138,6 +138,50 @@ Place a dataset's tracks tables on one uniform frame rate.
 | `target_fps` | `number` | _required_ |  | The uniform frame rate every table is re-gridded onto, which is what makes one constant expressed in frames mean one duration dataset-wide. [fps] |
 | `source_tracks_run_id` | `string` \| `None` | `null` |  | Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves whichever variant the scope's entries hold, and refuses when they hold two. |
 | `prefilter` | `number` \| `None` | `null` |  | Displacement from the predecessor above which a native sample is rejected before interpolating. A rejected mis-detection is dropped instead of blended into its neighbors. Unset interpolates the samples as they are. [units/s] |
+
+#### `score-predictions`
+
+Version `0.1` &middot; `mosaic.tracking.ops.score_predictions.ScorePredictionsOp`
+
+Score the predictions of one model's predict-frames runs against annotations.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `prediction_runs` | list of `string` | _required_ | min items `1` | The predict-frames run ids to score, all of one model, scored as one pool. Give one run per extraction run, so a set built from several extraction runs is scored as a whole. |
+| `labels` | list of `KeypointSetRef` | _required_ | min items `1` | The annotation sets that the predictions are scored against. |
+| `pose` | `integer` \| `string` \| `None` | `null` |  | Which pose of the sets is scored, by its id or its name. Left unset, every set must hold exactly one pose. |
+| `keypoint_map` | `KeypointMapParams` | _constructed_ |  | How the model's keypoints map onto the scored pose. Unset, by name. |
+| `exclude_seen` | `boolean` | `true` |  | Leave out the frames that the model trained or validated on. |
+| `match_radius` | `number` | `0.5` | > `0.0` | How far from an annotated instance's center a prediction's center matches it, as a fraction of the instance's normalizer. [body lengths] |
+| `match_radius_px` | `number` \| `None` | `null` |  | A fixed matching radius, used in place of match_radius. [px] |
+| `duplicate_radius` | `number` | `0.2` | > `0.0` | How near a matched prediction's center an unmatched prediction counts as a duplicate, as a fraction of the matched instance's normalizer. [body lengths] |
+| `center` | `integer` \| `string` \| `None` | `null` |  | The keypoint, by index or name, whose position is an instance's center when placed. Unset, the mean of the placed keypoints. |
+| `head` | `integer` \| `string` \| `None` | `null` |  | The keypoint at the head of the instance's axis, by index or name. Unset, the set's bbox_policy head_index. |
+| `tail` | `integer` \| `string` \| `None` | `null` |  | The keypoint at the tail of the instance's axis, by index or name. Unset, the set's bbox_policy tail_index. |
+| `oks_sigma` | `number` | `0.025` | > `0.0` | The OKS sigma of a keypoint that oks_sigmas does not name. |
+| `oks_sigmas` | `object` | _constructed_ |  | The OKS sigma of a keypoint of the scored pose, by its name. A name that is not a keypoint of the pose is refused. |
+| `pck_alphas` | list of `number` | `[0.05, 0.1, 0.2]` | min items `1` | The PCK thresholds, as fractions of each annotated instance's normalizer. Each is a multiple of 0.0001, and the thresholds are stored sorted. |
+| `min_instance_score` | `number` \| `None` | `null` |  | The lowest instance score kept. Predictions below it are dropped before matching. Unset keeps every prediction. |
+| `min_keypoint_score` | `number` \| `None` | `null` |  | The lowest keypoint score that counts as placed. Unset, every predicted keypoint counts as placed. |
+| `untouched_tol_px` | `number` | `0.01` | >= `0.0` | The largest offset on each axis at which an annotated keypoint still lies where a model placed it. Such a keypoint is untouched and is left out of the keypoint metrics. [px] |
+| `n_boot` | `integer` | `1000` | >= `1` | The number of bootstrap replicates of the pooled rates. |
+| `confidence` | `number` | `0.95` | > `0.0`, < `1.0` | The confidence of the bootstrap intervals. |
+| `random_state` | `integer` | `0` |  | The seed of the bootstrap. |
+
+??? note "`KeypointMapParams`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `keypoints` | `object` | _constructed_ |  | Target keypoint name to source keypoint name or index. |
+    | `by_name` | `boolean` | `true` |  | Map every target name that is also a source name to it. |
+
+??? note "`KeypointSetRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `set_key` | `string` | _required_ |  | The set's key in the keypoints label series. |
+    | `origin_uuid` | `string` | `""` |  | The manifest uuid of the dataset the set was saved in. Needed only when two datasets' sets share a key; empty matches the one that has it. |
+    | `revision` | `integer` \| `None` | `null` |  | Which revision to read. Left unset, the latest one indexed when the run is named. The number selects and is recorded; only the content it resolves to enters the run identifier. |
 
 #### `sleap`
 

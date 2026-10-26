@@ -31,6 +31,7 @@ def register_trained_model(
     *,
     directory: Path | None = None,
     data_path: Path | None = None,
+    base_run_id: str = "",
 ) -> None:
     """Append a finished row for *run_id* to ``models/<kind>/index.csv``.
 
@@ -44,6 +45,7 @@ def register_trained_model(
         directory: The model directory holding *weights*, for a kind whose
             artifact is a directory. ``None`` registers the file itself.
         data_path: What the run trained on, or ``None`` for nothing recorded.
+        base_run_id: The model that the run fine-tuned, or ``""`` for none.
     """
     artifact = directory if directory is not None else weights
     index = trained_model_index(model_index_path(ds, kind))
@@ -54,7 +56,7 @@ def register_trained_model(
                 run_id=run_id,
                 kind=kind,
                 base_model="",
-                base_run_id="",
+                base_run_id=base_run_id,
                 best_model_path=ds.relative_to_root(weights),
                 metrics_path="",
                 n_epochs=1,

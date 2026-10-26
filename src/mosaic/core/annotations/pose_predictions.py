@@ -43,11 +43,14 @@ __all__ = [
     "PredictedObject",
     "PredictedPose",
     "accepted_object",
+    "finite_or_none",
+    "keypoint_accepted",
     "parse_prediction_source_ref",
     "pose_predictions_json_schema",
     "pose_predictions_payload",
     "prediction_source_ref",
     "read_pose_predictions",
+    "score_passes",
 ]
 
 FORMAT_NAME: Final = "mosaic-pose-predictions"
@@ -186,13 +189,6 @@ def pose_predictions_payload(predictions: FramePredictions) -> bytes:
     return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _finite(value: float | None) -> float | None:
-    """Return *value* as a float, or ``None`` when it is absent or not finite."""
-    if value is None or not math.isfinite(value):
-        return None
-    return float(value)
-
-
 def _placed(point: Keypoint) -> bool:
     """Return :attr:`Keypoint.is_placed`, false also for an infinite coordinate."""
     return point.is_placed and math.isfinite(point.x) and math.isfinite(point.y)
@@ -219,11 +215,11 @@ def _box_document(box: Bbox | None) -> JsonValue:
 
 def _object_document(obj: PredictedObject) -> dict[str, JsonValue]:
     return {
-        "score": _finite(obj.score),
+        "score": finite_or_none(obj.score),
         "track_id": obj.track_id,
         "bbox": _box_document(obj.bbox),
         "keypoints": [
-            [float(point.x), float(point.y), _finite(point.score)]
+            [float(point.x), float(point.y), finite_or_none(point.score)]
             if _placed(point)
             else None
             for point in obj.keypoints
@@ -507,7 +503,7 @@ def accepted_object(
     mapped = keypoint_map.apply(predicted.keypoints)
     keypoints = tuple(
         Keypoint(x=point.x, y=point.y, visibility=2)
-        if _placed(point) and _passes(point, min_keypoint_score)
+        if keypoint_accepted(point, min_keypoint_score)
         else Keypoint.absent()
         for point in mapped
     )
@@ -533,6 +529,27 @@ def accepted_object(
     )
 
 
-def _passes(point: Keypoint, min_keypoint_score: float | None) -> bool:
-    score = _finite(point.score)
-    return min_keypoint_score is None or score is None or score >= min_keypoint_score
+def keypoint_accepted(point: Keypoint, min_keypoint_score: float | None) -> bool:
+    """Return whether *point* is placed and its score passes *min_keypoint_score*.
+
+    A placed point has finite coordinates. :func:`score_passes` applies the
+    threshold.
+    """
+    return _placed(point) and score_passes(point.score, min_keypoint_score)
+
+
+def score_passes(score: float | None, threshold: float | None) -> bool:
+    """Return whether *score* is at or above *threshold*.
+
+    A score that is absent or not finite passes, because the tool reported no
+    confidence to compare. Every score passes when *threshold* is ``None``.
+    """
+    finite = finite_or_none(score)
+    return threshold is None or finite is None or finite >= threshold
+
+
+def finite_or_none(value: float | None) -> float | None:
+    """Return *value* as a float, or ``None`` when it is absent or not finite."""
+    if value is None or not math.isfinite(value):
+        return None
+    return float(value)

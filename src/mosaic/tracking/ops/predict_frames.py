@@ -31,7 +31,7 @@ from mosaic.core.annotations.pose_predictions import (
 )
 from mosaic.core.entry import make_entry_key
 from mosaic.core.helpers import entry_camera_path
-from mosaic.core.pipeline._utils import atomic_write, hash_params, json_ready
+from mosaic.core.pipeline._utils import atomic_write, hash_params
 from mosaic.core.pipeline.entry_claim import (
     discard_if_empty,
     open_entry,
@@ -74,6 +74,7 @@ from mosaic.tracking.frame_predictions.index import (
     predict_frames_index,
     prediction_index_path,
     prediction_kind_root,
+    write_run_params,
 )
 from mosaic.tracking.frame_predictions.params import PredictFramesParams
 from mosaic.tracking.frame_predictions.read import list_prediction_runs
@@ -378,9 +379,6 @@ longest silence of a healthy run, a cold model load.
 
 _PREDICTIONS_NAME: Final = "predictions.json"
 """What an entry camera's predictions file is called, in its directory."""
-
-_RUN_PARAMS_NAME: Final = "run_params.json"
-"""What the identity payload is called, in the run root."""
 
 _WORK_PREFIX: Final = ".mosaic-predict-"
 """The name of an attempt's work directory in the run root, before its execution id."""
@@ -1029,12 +1027,6 @@ def _is_written(
     return True
 
 
-def _write_run_params(run_root: Path, payload: Mapping[str, object]) -> None:
-    """Write the run's identity payload as ``run_params.json``."""
-    text = json.dumps(json_ready(dict(payload)), indent=2, sort_keys=True)
-    atomic_write(run_root / _RUN_PARAMS_NAME, lambda target: target.write_text(text))
-
-
 def _entry_done(ctx: JobContext, done: int, total: int, key: str) -> None:
     """Report that *done* of the run's *total* entries have ended, *key* last."""
     ctx.progress.on_entry_end(done, total, key)
@@ -1115,7 +1107,7 @@ class PredictFramesOp(Op[PredictFramesParams]):
         payload = predict_frames_payload(
             params, model_id=model.model_id, model_kind=model_kind
         )
-        _write_run_params(run_root, payload)
+        write_run_params(run_root, payload)
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
         facts = _RunFacts(
             run_id=run_id,

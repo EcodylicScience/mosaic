@@ -36,11 +36,11 @@ from mosaic.core.annotations.pose_annotations import (
     read_pose_annotations,
 )
 from mosaic.core.annotations.readers.coco import read_coco_keypoints
-from mosaic.core.json_value import JsonValue
 from mosaic.core.annotations.writers.coco import (
     coco_keypoints_document,
     coco_keypoints_payload,
 )
+from mosaic.core.json_value import JsonValue
 from tests.helpers import (
     MOUSE,
     golden_path,
@@ -484,6 +484,46 @@ def test_a_saved_frame_keeps_its_image_and_recorded_place_in_the_narrow_model() 
         video="m3",
         frame_index=7,
     ), "the objects are the caller's to give, so none are carried over"
+
+
+def test_narrowing_keeps_an_objects_origin_and_source_reference() -> None:
+    predicted = pose_object(
+        (20.0, 20.0), (15.0, 15.0), (25.0, 15.0), (20.0, 40.0),
+        origin="model",
+        source_ref="run-7",
+    )  # fmt: skip
+    state = pose_set(
+        [pose_frame("a.png", predicted, _mouse(alias=None))],
+        poses=(MOUSE_WITH_ALIASES,),
+    )
+
+    objects = narrow_pose_sets({"s": state}, pose="mouse")["s"].frames[0].objects
+
+    assert [(obj.origin, obj.source_ref) for obj in objects] == [
+        ("model", "run-7"),
+        ("human", None),
+    ]
+
+
+def test_the_coco_export_records_origin_only_in_attributes() -> None:
+    plain = pose_object((10.0, 10.0), (20.0, 30.0), origin=None)
+    tagged = replace(plain, origin="model", source_ref="run-7")
+
+    def annotation(obj: PoseObject) -> dict[str, JsonValue]:
+        document = coco_keypoints_document(pose_set([pose_frame("a.png", obj)]))
+        records = document["annotations"]
+        assert isinstance(records, list)
+        record = records[0]
+        assert isinstance(record, dict)
+        return record
+
+    plain_record, tagged_record = annotation(plain), annotation(tagged)
+    tagged_attributes = tagged_record.pop("attributes")
+    assert isinstance(tagged_attributes, dict)
+    assert tagged_attributes["origin"] == "model"
+    assert tagged_attributes["source_ref"] == "run-7"
+    _ = plain_record.pop("attributes")
+    assert tagged_record == plain_record
 
 
 def test_aliases_become_sorted_classes() -> None:

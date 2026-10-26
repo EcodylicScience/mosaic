@@ -38,6 +38,12 @@ import numpy as np
 import pandas as pd
 
 from .helpers import UNLABELED
+from .resample import (
+    Interval,
+    check_bootstrap_settings,
+    percentile_interval,
+    resampled_sums,
+)
 from .strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -59,7 +65,6 @@ __all__ = [
     "ClassificationScores",
     "CountScores",
     "EvaluationReport",
-    "Interval",
     "LabelMapSource",
     "MetricSpread",
     "Perspective",
@@ -682,8 +687,6 @@ def perspective_consistency(
 # --- Pooling and spread --------------------------------------------------------------
 
 _COUNT_KINDS = ("tp", "fp", "fn")
-_DRAW_CELLS = 1 << 22
-"""How many resample weights :func:`bootstrap_sequences` holds at once."""
 _COUNT_COLUMN = re.compile(r"^(tp|fp|fn)_(-?[0-9]+)$")
 
 
@@ -832,14 +835,6 @@ def pool_entry_counts(
     return _score_totals(totals, classes, average_over)
 
 
-class Interval(TypedDict):
-    """A score and the percentile interval of its bootstrap."""
-
-    estimate: float
-    lower: float
-    upper: float
-
-
 class ClassInterval(TypedDict):
     """One class's F1 interval in :class:`BootstrapScores`."""
 
@@ -912,12 +907,7 @@ def bootstrap_sequences(
             holds no count columns, only some of a class's or a missing count, or
             no entry scored a row.
     """
-    if n_boot < 1:
-        msg = f"n_boot must be at least 1, not {n_boot}."
-        raise ValueError(msg)
-    if not 0.0 < confidence < 1.0:
-        msg = f"confidence must lie between 0 and 1, not {confidence}."
-        raise ValueError(msg)
+    check_bootstrap_settings(n_boot, confidence)
     classes = _count_classes(table)
     counts = _count_array(table, classes)
     counts = counts[counts.sum(axis=(1, 2)) > 0]
@@ -928,15 +918,8 @@ def bootstrap_sequences(
 
     point = _score_totals(counts.sum(axis=0), classes, average_over)
     averaged = point["average_over"]
-    rng = np.random.default_rng(random_state)
-    chances = np.full(n_entries, 1.0 / n_entries)
-    flat = counts.reshape(n_entries, -1)
-    step = max(1, _DRAW_CELLS // n_entries)
-    pooled = np.concatenate(
-        [
-            rng.multinomial(n_entries, chances, size=min(step, n_boot - start)) @ flat
-            for start in range(0, n_boot, step)
-        ]
+    pooled = resampled_sums(
+        counts.reshape(n_entries, -1), n_boot=n_boot, random_state=random_state
     ).reshape(n_boot, len(classes), 3)
 
     hit = pooled[:, :, 0].astype(np.float64)
@@ -958,24 +941,18 @@ def bootstrap_sequences(
         hit.sum(axis=1), labeled, out=np.zeros(n_boot), where=labeled > 0
     )
 
-    tail = (1.0 - confidence) / 2.0
-
-    def interval(estimate: float, replicates: np.ndarray) -> Interval:
-        lower, upper = np.quantile(replicates, [tail, 1.0 - tail])
-        return {"estimate": estimate, "lower": float(lower), "upper": float(upper)}
-
     return {
         "n_entries": n_entries,
         "n_boot": n_boot,
         "confidence": confidence,
         "random_state": random_state,
         "average_over": averaged,
-        "accuracy": interval(point["accuracy"], accuracy),
-        "macro_f1": interval(point["macro_f1"], macro),
+        "accuracy": percentile_interval(point["accuracy"], accuracy, confidence),
+        "macro_f1": percentile_interval(point["macro_f1"], macro, confidence),
         "per_class": [
             {
                 "label": row["label"],
-                "f1": interval(row["f1"], f1[:, index]),
+                "f1": percentile_interval(row["f1"], f1[:, index], confidence),
             }
             for index, row in enumerate(point["per_class"])
         ],

@@ -40,10 +40,11 @@ What lives where:
   ``infer-points`` and for the ``predict-images`` call of a yolo-pose or POLO
   frame adapter. ``ultralytics`` also writes the marked PNGs of a
   ``predict-images`` request. ``sleap`` also stands in for the SLEAP
-  environment's probe and for the input writer, ``sleap-nn track`` and the
-  readback of a SLEAP frame adapter. ``litpose`` also stands in for the
-  Lightning Pose interpreter that runs the version probe and the prediction
-  snippet of a Lightning Pose frame adapter.
+  environment's probe, for the input writer, ``sleap-nn track`` and the
+  readback of a SLEAP frame adapter, and for the labels writer of a sleap
+  preparation. ``litpose`` also stands in for the Lightning Pose interpreter
+  that runs the version probe and the prediction snippet of a Lightning Pose
+  frame adapter.
 - ``decode_probe`` contains a fake ``python`` for a tool environment, which stands
   in for the interpreter that runs the codec check's decode probe.
 - ``runner_programs`` imports a runner program under its bare name for one test,
@@ -144,6 +145,7 @@ from tests.helpers.features import (
 from tests.helpers.frame_predictions import (
     entry_predictions,
     record_entry_predictions,
+    record_score_run,
 )
 from tests.helpers.kpms import kpms_params
 from tests.helpers.latents import assert_latents_at_centers, window_centers
@@ -358,8 +360,10 @@ from tests.helpers.sleap import (
     FakeSleapFrames,
     SleapInput,
     SleapTrackCall,
+    SlpWrite,
     install_fake_sleap,
     install_fake_sleap_frames,
+    record_slp_writes,
     sleap_instance,
     write_sleap_model,
 )
@@ -451,6 +455,7 @@ __all__ = [
     "SeparatedTool",
     "SleapInput",
     "SleapTrackCall",
+    "SlpWrite",
     "TESTS_ROOT",
     "ULTRALYTICS_KEYPOINTS",
     "ULTRALYTICS_PROTOCOL",
@@ -576,7 +581,9 @@ __all__ = [
     "published_table",
     "read_frame_code",
     "record_entry_predictions",
+    "record_score_run",
     "record_frames_row",
+    "record_slp_writes",
     "read_golden",
     "read_string_golden",
     "record_variant_recipe",

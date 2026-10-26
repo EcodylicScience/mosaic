@@ -109,6 +109,7 @@ class TestTheDeclarationsAreWhatWeIntend:
             "convert-points",
             "convert-tracks",
             "prepare-training-data",
+            "score-predictions",
             "train-pose",
             "train-points",
             "train-localizer",
@@ -198,11 +199,11 @@ OPS_THE_FIXTURE_CANNOT_FEED = frozenset(["export-store"])
 
 ``export-store`` reads imgstore recordings and ``three_entry_dataset`` holds
 plain videos, so ``_stores_for`` refuses every scope the op admits before an
-identity exists. Thirteen of the gated ops are skipped for the same kind of reason --
-no weights, no ``data.yaml`` -- and say so through ``IdentityDeferred``, which
-this one cannot: nothing upstream writes a recording, so an entry holding no
-store is a refusal rather than a deferral. Its invariance is measured against a
-store dataset instead, by
+identity exists. Fourteen of the gated ops are skipped for the same kind of reason --
+no weights, no ``data.yaml``, no prediction run -- and say so through
+``IdentityDeferred``, which this one cannot: nothing upstream writes a recording,
+so an entry holding no store is a refusal rather than a deferral. Its invariance
+is measured against a store dataset instead, by
 ``tests/core/media/test_store_export.py::test_two_single_entry_scopes_name_one_run``.
 """
 
@@ -221,6 +222,7 @@ GATED_OPS = frozenset(
         "predict-frames",
         "prepare-training-data",
         "preprocess",
+        "score-predictions",
         "sleap",
         "train-litpose",
         "train-localizer",
@@ -236,7 +238,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-twenty-three.
+twenty-four.
 """
 
 
@@ -306,8 +308,8 @@ class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
     The direct leak, over **every** registered op, where the dataset gate below
-    covers twenty-one. Every op now takes both as arguments and declares no
-    such field, and that is why this passes for all twenty-three. It
+    covers twenty-two. Every op now takes both as arguments and declares no
+    such field, and that is why this passes for all twenty-four. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
@@ -331,17 +333,18 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective. Twenty-two ops declare independence,
-    twenty-one of them are gated here, and this dataset lets eight answer:
+    Partial today, and prospective. Twenty-three ops declare independence,
+    twenty-two of them are gated here, and this dataset lets eight answer:
     ``extract-frames``, ``trex``, ``export-joined``, ``convert-tracks`` and
     ``convert-labels``, pure functions of their params, ``predict-frames``, whose
     identity reads nothing from disk for one model reference, and ``transcode``
     and ``preprocess``, whose identity is their
     recipe and which read the dataset only for refusals that answer the same way
-    for every entry set. The other thirteen defer, each deferral recorded as a
+    for every entry set. The other fourteen defer, each deferral recorded as a
     skip stating the reason the op gave: a training op has no data.yaml here, an
-    inference op no weights. It proves nothing the payload check does not, and it
-    grows as the fixture gains those artifacts.
+    inference op no weights, and ``score-predictions`` no prediction run. It
+    proves nothing the payload check does not, and it grows as the fixture gains
+    those artifacts.
 
     Whole :class:`OpIdentity` values are compared. ``run_id`` alone leaves a
     ``tracks_variant`` free to move with the scope, which mints one variant
@@ -478,7 +481,7 @@ class TestPublished:
         """A client draws its controls from these fields, and a coverage is not one.
 
         Which entries a run covers is an argument to the run. No op params
-        model declares a coverage under any spelling the twenty-three have used,
+        model declares a coverage under any spelling the twenty-four have used,
         and the published schema is generated from these fields.
         """
         declaring = {
@@ -492,7 +495,7 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all twenty-three.
+        position :class:`TestOpInterface` pins for all twenty-four.
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in
@@ -549,7 +552,7 @@ class TestOpInterface:
     def test_plan_identity_keeps_require_data(self, kind: str) -> None:
         """An override that drops it raises TypeError where a run body passes it.
 
-        Five run bodies call ``plan_identity(..., require_data=False)``.
+        Six run bodies call ``plan_identity(..., require_data=False)``.
         Only basedpyright catches an override that omits the parameter, and
         CI does not gate basedpyright.
         """

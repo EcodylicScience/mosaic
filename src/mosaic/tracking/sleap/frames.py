@@ -20,7 +20,6 @@ never imports ``sleap_io``.
 from __future__ import annotations
 
 import logging
-import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +31,7 @@ from mosaic.core.annotations.model import (
     Keypoint,
     KeypointSchema,
 )
-from mosaic.core.annotations.pose_predictions import PredictedObject
+from mosaic.core.annotations.pose_predictions import PredictedObject, finite_or_none
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.toolenv import (
     missing_output_error,
@@ -228,27 +227,20 @@ def read_sleap_predictions(
     return SleapReadback.model_validate_json(answer.read_text(encoding="utf-8"))
 
 
-def _finite(value: float | None) -> float | None:
-    """Return *value*, or ``None`` when it is absent or not finite."""
-    if value is None or not math.isfinite(value):
-        return None
-    return value
-
-
 def _keypoint(x: float | None, y: float | None, score: float | None) -> Keypoint:
     """Return a node's point, unplaced when either coordinate is not finite."""
-    placed_x = _finite(x)
-    placed_y = _finite(y)
+    placed_x = finite_or_none(x)
+    placed_y = finite_or_none(y)
     if placed_x is None or placed_y is None:
         return Keypoint.absent()
-    return Keypoint(x=placed_x, y=placed_y, visibility=2, score=_finite(score))
+    return Keypoint(x=placed_x, y=placed_y, visibility=2, score=finite_or_none(score))
 
 
 def _predicted_object(instance: SleapInstanceReadback) -> PredictedObject:
     """Return *instance* as a predicted object with its track's name."""
     return PredictedObject(
         keypoints=tuple(_keypoint(x, y, score) for x, y, score in instance.points),
-        score=_finite(instance.score),
+        score=finite_or_none(instance.score),
         track_id=instance.track or None,
     )
 

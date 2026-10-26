@@ -5,14 +5,17 @@ series. An op that consumes one names it by a :class:`KeypointSetRef`, resolves 
 to a file whose digest is measured off disk, and reads it back through
 :func:`read_resolved_set`, which is the one place the image root is applied.
 
-A preparation of those revisions records the keypoints that a model trained on
-it predicts. :func:`keypoint_schema_cell` writes that index cell, and
-:func:`read_keypoint_schema_cell` reads it.
+An op that reads several revisions orders them by :func:`in_identity_order`,
+names each in an error by :func:`set_label`, and records them in an index cell
+through :func:`consumed_sets_cell`. A preparation of those revisions records the
+keypoints that a model trained on it predicts. :func:`keypoint_schema_cell` writes
+that index cell, and :func:`read_keypoint_schema_cell` reads it.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar
@@ -40,10 +43,14 @@ if TYPE_CHECKING:
 __all__ = [
     "KeypointSetRef",
     "ResolvedSet",
+    "consumed_sets_cell",
+    "in_identity_order",
     "keypoint_schema_cell",
     "read_keypoint_schema_cell",
     "read_resolved_set",
     "resolve_keypoint_sets",
+    "revision_image_root",
+    "set_label",
 ]
 
 
@@ -184,6 +191,26 @@ def resolve_keypoint_sets(
     return tuple(resolved)
 
 
+def in_identity_order(sets: Sequence[ResolvedSet]) -> list[ResolvedSet]:
+    """*sets* in the order a run identifier sorts them."""
+    return sorted(sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest))
+
+
+def set_label(item: ResolvedSet) -> str:
+    """How a set is named in an error: which dataset, which set, which revision."""
+    return f"{item.origin_uuid or 'local'}:{item.set_key}@rev{item.revision}"
+
+
+def consumed_sets_cell(sets: Sequence[ResolvedSet]) -> str:
+    """The JSON list that names revisions in an index cell, in identity order."""
+    return json.dumps(
+        sorted(
+            (item.consumed() for item in sets),
+            key=lambda entry: (str(entry["origin_uuid"]), str(entry["set_key"])),
+        )
+    )
+
+
 def read_resolved_set(item: ResolvedSet) -> PoseAnnotationSet:
     """One revision's saved state, its images anchored where they are.
 
@@ -193,6 +220,20 @@ def read_resolved_set(item: ResolvedSet) -> PoseAnnotationSet:
     manifest = read_revision_manifest(item.payload)
     image_root = (item.payload.parent / (manifest.image_root or ".")).resolve()
     return read_pose_annotations(item.payload, image_root)
+
+
+def revision_image_root(root: Path | None) -> Path:
+    """Return the image root of a set read from a revision.
+
+    :func:`read_resolved_set` always applies one, and narrowing keeps it.
+
+    Raises:
+        ValueError: *root* is ``None``, which no set read from a revision has.
+    """
+    if root is None:
+        msg = "annotation set lacks an image root. A revision's set is read with one"
+        raise ValueError(msg)
+    return root
 
 
 class _KeypointSchemaCell(BaseModel):

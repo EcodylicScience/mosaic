@@ -148,3 +148,41 @@ def test_isotropic_enforces_min_pad() -> None:
     # pad = 20 px, so bbox is 40x40 = 0.04 x 0.04
     assert w == pytest.approx(0.04, abs=0.005)
     assert h == pytest.approx(0.04, abs=0.005)
+
+
+def _inner_head_tail_kps() -> np.ndarray:
+    """Head and tail 20 px apart inside a 400 px wide, colinear set."""
+    return np.array([[500.0, 500.0], [520.0, 500.0], [300.0, 500.0], [700.0, 500.0]])
+
+
+def test_isotropic_pads_by_head_to_tail_length_not_box_diagonal() -> None:
+    kps = _inner_head_tail_kps()
+    cx, cy, w, h = keypoints_to_bbox_isotropic(
+        kps,
+        IMG_W,
+        IMG_H,
+        head_idx=0,
+        tail_idx=1,
+        pad_frac_of_body=0.3,
+        min_pad_px=0.0,
+    )
+    # body = 20 px; pad = 6 px
+    assert w == pytest.approx(412 / IMG_W)
+    assert h == pytest.approx(12 / IMG_H)
+
+
+def test_isotropic_falls_back_to_box_diagonal_when_tail_is_nan() -> None:
+    kps = _inner_head_tail_kps()
+    kps[1] = np.nan
+    cx, cy, w, h = keypoints_to_bbox_isotropic(
+        kps,
+        IMG_W,
+        IMG_H,
+        head_idx=0,
+        tail_idx=1,
+        pad_frac_of_body=0.3,
+        min_pad_px=0.0,
+    )
+    # body = 400 px (diagonal of the finite points); pad = 120 px
+    assert w == pytest.approx(640 / IMG_W)
+    assert h == pytest.approx(240 / IMG_H)

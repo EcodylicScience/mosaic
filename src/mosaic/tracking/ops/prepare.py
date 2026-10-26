@@ -24,7 +24,6 @@ Three properties are what the rest of the design leans on.
 from __future__ import annotations
 
 import csv
-import json
 import shutil
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -59,16 +58,24 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.job import JobContext
-from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.models import (
+    SPLIT_RECORD_FILENAME,
+    model_index_path,
+    model_run_root,
+)
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
 from mosaic.tracking.keypoint_sets import (
     KeypointSetRef,
     ResolvedSet,
+    consumed_sets_cell,
+    in_identity_order,
     keypoint_schema_cell,
     read_resolved_set,
     resolve_keypoint_sets,
+    revision_image_root,
+    set_label,
 )
 
 from ._common import claim_run_root, empty_claimed_run_root, ensure_models_root
@@ -446,16 +453,16 @@ def _resolve_holdout(
                 "Train on it or hold it out."
             )
             raise ValueError(msg)
-    ordered = _in_identity_order(resolved)
+    ordered = in_identity_order(resolved)
     # The pose and layout checks compare every set with the first, the training pose's.
-    reference = {_set_label(sets[0]): PoseAnnotationSet(poses=(pose,))}
+    reference = {set_label(sets[0]): PoseAnnotationSet(poses=(pose,))}
     states = {
         **reference,
-        **{_set_label(item): read_resolved_set(item) for item in ordered},
+        **{set_label(item): read_resolved_set(item) for item in ordered},
     }
     _ = narrowed_pose(states, pose=params.pose)
     for item in ordered:
-        if not any(frame.usable for frame in states[_set_label(item)].frames):
+        if not any(frame.usable for frame in states[set_label(item)].frames):
             msg = (
                 f"hold-out set {item.set_key!r} has no usable frames for pose "
                 f"{pose.name!r}"
@@ -464,10 +471,10 @@ def _resolve_holdout(
     narrowed = narrow_pose_sets(states, pose=params.pose)
     units: set[str] = set()
     for item in ordered:
-        annotations = narrowed[_set_label(item)]
+        annotations = narrowed[set_label(item)]
         recorded = video_frames_of(
             ds,
-            _image_root(annotations.image_root),
+            revision_image_root(annotations.image_root),
             annotations.frames,
             revision_origin=item.origin_uuid,
         )
@@ -503,10 +510,10 @@ def _split(
     """
     placed: list[tuple[ResolvedSet, AnnotationFrame, VideoFrame, str]] = []
     for item in ordered_sets:
-        annotations = narrowed[_set_label(item)]
+        annotations = narrowed[set_label(item)]
         recorded = video_frames_of(
             ds,
-            _image_root(annotations.image_root),
+            revision_image_root(annotations.image_root),
             annotations.frames,
             revision_origin=item.origin_uuid,
         )
@@ -562,20 +569,6 @@ def _split(
     )
 
 
-def _image_root(root: Path | None) -> Path:
-    """The image root of a set read from a revision, which always records one.
-
-    Raises:
-        ValueError: The set lacks an image root.
-    """
-    if root is None:
-        msg = (
-            "annotation set has no image root; a revision's set is always read with one"
-        )
-        raise ValueError(msg)
-    return root
-
-
 def _refuse_unknown_sequence_groups(
     ds: Dataset, params: PrepareTrainingDataParams, revisions: list[ResolvedSet]
 ) -> None:
@@ -599,7 +592,7 @@ def _refuse_unknown_sequence_groups(
         state = read_resolved_set(item)
         recorded = video_frames_of(
             ds,
-            _image_root(state.image_root),
+            revision_image_root(state.image_root),
             [frame.as_annotation_frame() for frame in state.frames],
             revision_origin=item.origin_uuid,
         )
@@ -681,8 +674,8 @@ def _narrowed(
         ValueError: The sets cannot be narrowed to one pose's layout, or a trainer
             that learns one class is handed several.
     """
-    ordered_sets = _in_identity_order(sets)
-    states = {_set_label(item): read_resolved_set(item) for item in ordered_sets}
+    ordered_sets = in_identity_order(sets)
+    states = {set_label(item): read_resolved_set(item) for item in ordered_sets}
     narrowed = narrow_pose_sets(
         states,
         pose=params.pose,
@@ -690,7 +683,7 @@ def _narrowed(
         track_by=params.track_by if params.target == "sleap" else None,
         bbox=params.bbox,
     )
-    categories = narrowed[_set_label(ordered_sets[0])].categories
+    categories = narrowed[set_label(ordered_sets[0])].categories
     if params.target not in _TREE_TARGETS and len(categories) > 1:
         msg = (
             f"{params.target} trains one class, and class_by="
@@ -698,16 +691,6 @@ def _narrowed(
         )
         raise ValueError(msg)
     return ordered_sets, narrowed, narrowed_pose(states, pose=params.pose)
-
-
-def _in_identity_order(sets: Sequence[ResolvedSet]) -> list[ResolvedSet]:
-    """*sets* in the order the run identifier sorts them."""
-    return sorted(sets, key=lambda item: (item.origin_uuid, item.set_key, item.digest))
-
-
-def _set_label(item: ResolvedSet) -> str:
-    """How a set is named in an error: which dataset, which set, which revision."""
-    return f"{item.origin_uuid or 'local'}:{item.set_key}@rev{item.revision}"
 
 
 def _placed_name(
@@ -840,7 +823,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         ordered_sets, narrowed, pose = _narrowed(params, sets)
         holdout = _resolve_holdout(ds, params, pose, ordered_sets)
         plan = _split(ds, params, ordered_sets, narrowed, holdout)
-        reference = narrowed[_set_label(ordered_sets[0])]
+        reference = narrowed[set_label(ordered_sets[0])]
         schema, categories = reference.schema, reference.categories
         class_ids = reference.category_ids()
 
@@ -850,7 +833,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         gathered: list[tuple[AnnotationFrame, Path]] = []
         missing: list[str] = []
         for item in ordered_sets:
-            annotations = narrowed[_set_label(item)]
+            annotations = narrowed[set_label(item)]
             for frame in annotations.frames:
                 if id(frame) not in plan.name_by_frame:
                     continue
@@ -996,17 +979,7 @@ def _write_split_record(out: Path, rows: tuple[SplitRow, ...]) -> None:
                     ]
                 )
 
-    atomic_write(out / "split.csv", write)
-
-
-def _consumed_cell(sets: Sequence[ResolvedSet]) -> str:
-    """The JSON list that names revisions in an index cell, in identity order."""
-    return json.dumps(
-        sorted(
-            (item.consumed() for item in sets),
-            key=lambda entry: (str(entry["origin_uuid"]), str(entry["set_key"])),
-        )
-    )
+    atomic_write(out / SPLIT_RECORD_FILENAME, write)
 
 
 def _schema_cell(params: PrepareTrainingDataParams, schema: KeypointSchema) -> str:
@@ -1060,7 +1033,7 @@ def _register(
                 kind=kind,
                 target=params.target,
                 artifact_path=ds.relative_to_root(artifact),
-                consumed_sets=_consumed_cell(sets),
+                consumed_sets=consumed_sets_cell(sets),
                 n_frames=n_frames,
                 n_train=_count(out / "train"),
                 n_valid=_count(out / "valid"),
@@ -1068,7 +1041,7 @@ def _register(
                 status="finished",
                 pose_id=str(pose.id),
                 pose_name=pose.name,
-                held_out_sets=_consumed_cell(holdout.sets),
+                held_out_sets=consumed_sets_cell(holdout.sets),
                 n_held_out=n_held_out,
                 keypoint_schema=_schema_cell(params, predicts),
                 abs_path=Path(ds.relative_to_root(out)),

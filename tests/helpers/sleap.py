@@ -1,4 +1,4 @@
-"""Stand in for SLEAP in the tests of the SLEAP tracker and frame adapter.
+"""Stand in for SLEAP in the tests of the SLEAP tracker, frame adapter and preparation.
 
 ``run_sleap`` calls SLEAP through two module-level seams in
 ``sleap/dataset_runs.py``: ``sleap-nn track`` and ``sleap-convert``.
@@ -6,6 +6,8 @@
 inference writes a ``.slp`` and whose export writes a small, converter-readable
 analysis ``.h5``. A test runs the whole tracker protocol without a model.
 :func:`write_sleap_model` writes the model directory that a run names.
+:func:`record_slp_writes` stands in for the labels writer of a sleap
+preparation.
 
 :func:`install_fake_sleap_frames` stands in for the SLEAP environment's probe and
 for the three calls of a SLEAP frame adapter: the frames-only ``.slp`` writer,
@@ -97,6 +99,29 @@ def write_sleap_model(
             f"head_configs:\n  {head}: {{}}\n"
         )
     return directory
+
+
+SlpWrite = tuple[Path, AnnotationSet, object]
+"""One ``write_slp`` call: the file, the set and the ``images_dir`` it was given."""
+
+
+def record_slp_writes(monkeypatch: pytest.MonkeyPatch) -> list[SlpWrite]:
+    """Stand in for ``write_slp``, which runs in the SLEAP environment.
+
+    Each call of a sleap preparation is recorded in the returned list and writes
+    a placeholder file.
+    """
+    calls: list[SlpWrite] = []
+
+    def fake_write_slp(
+        annotations: AnnotationSet, out_path: Path, **kwargs: object
+    ) -> Path:
+        calls.append((Path(out_path), annotations, kwargs.get("images_dir")))
+        _ = Path(out_path).write_bytes(b"slp")
+        return Path(out_path)
+
+    monkeypatch.setattr("mosaic.tracking.sleap.labels.write_slp", fake_write_slp)
+    return calls
 
 
 def sleap_instance(

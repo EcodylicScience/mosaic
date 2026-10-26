@@ -42,7 +42,7 @@ it, and a moved ``frames/`` line is a bug, not a diff to accept.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,6 +50,8 @@ import pytest
 from mosaic_media import CHROME_149
 from mosaic_media.transcode import ANALYSIS_ENCODING
 
+from mosaic.core.annotations.keypoint_map import KeypointMap, resolve_keypoint_map
+from mosaic.core.annotations.model import KeypointSchema
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.tracking.frame_extraction.dataset_runs import (
     ExtractFramesParams,
@@ -95,6 +97,10 @@ from mosaic.tracking.ops.predict_frames import predict_frames_run_id
 from mosaic.tracking.ops.prepare import (
     PrepareTrainingDataParams,
     prepare_training_data_run_id,
+)
+from mosaic.tracking.ops.score_predictions import (
+    ScorePredictionsParams,
+    score_predictions_run_id,
 )
 from mosaic.tracking.ops.train import train_run_id
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
@@ -980,6 +986,73 @@ def _predict_frames_non_default() -> str:
     )
 
 
+_SCORED_POSE = KeypointSchema(names=("nose", "tail"))
+_SCORED_RUN = "predict-frames.0.1-aaaaaaaaaa"
+_SCORED_READ = (_SCORED_RUN, "g", "s1", "", "a" * 64)
+"""The one predictions file of :data:`_SCORED_RUN` that a score reads."""
+
+
+def _score_predictions_run_id(
+    prediction_runs: Sequence[str] = (_SCORED_RUN,),
+    *,
+    resolved: KeypointMap | None = None,
+    seen_digest: str | None = None,
+    sources: Collection[str] = (),
+    read: Collection[tuple[str, str, str, str, str]] = (_SCORED_READ,),
+    **values: object,
+) -> str:
+    """The identifier of a score of *prediction_runs* against one revision.
+
+    The seen frames are excluded when *seen_digest* is given, and the map is
+    the identity unless *resolved* is given.
+    """
+    params = _op_params(
+        "score-predictions",
+        prediction_runs=list(prediction_runs),
+        labels=[{"set_key": "17-mice"}],
+        exclude_seen=seen_digest is not None,
+        **values,
+    )
+    assert isinstance(params, ScorePredictionsParams)
+    return score_predictions_run_id(
+        OPS["score-predictions"].version,
+        params,
+        labels=[("uuid-a", "17-mice", "aaaaaaaaaaaaaaaa")],
+        keypoint_map=resolved or resolve_keypoint_map(_SCORED_POSE, _SCORED_POSE.names),
+        seen_digest=seen_digest,
+        sources=sources,
+        read=read,
+    )
+
+
+def _score_predictions_map() -> str:
+    # The model names its keypoints by index, and an override table maps them.
+    overrides = {"nose": "kp0", "tail": "kp1"}
+    return _score_predictions_run_id(
+        resolved=resolve_keypoint_map(
+            _SCORED_POSE, ("kp0", "kp1"), overrides=overrides
+        ),
+        keypoint_map={"keypoints": overrides},
+    )
+
+
+def _score_predictions_sources_read() -> str:
+    # A label object accepted from another run, whose file the score also reads.
+    source = "predict-frames.0.1-cccccccccc"
+    return _score_predictions_run_id(
+        sources=[source],
+        read=[_SCORED_READ, (source, "g", "s1", "", "c" * 64)],
+    )
+
+
+def _score_predictions_pool() -> str:
+    pooled = "predict-frames.0.1-bbbbbbbbbb"
+    return _score_predictions_run_id(
+        [_SCORED_RUN, pooled],
+        read=[_SCORED_READ, (pooled, "g", "s2", "", "b" * 64)],
+    )
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
@@ -1041,6 +1114,13 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "predict-frames/single": _predict_frames_single,
     "predict-frames/pair": _predict_frames_pair,
     "predict-frames/non-default": _predict_frames_non_default,
+    "score-predictions/default": _score_predictions_run_id,
+    "score-predictions/map": _score_predictions_map,
+    "score-predictions/seen": lambda: _score_predictions_run_id(
+        seen_digest="0123456789"
+    ),
+    "score-predictions/sources-read": _score_predictions_sources_read,
+    "score-predictions/pool": _score_predictions_pool,
 }
 
 
@@ -1090,6 +1170,7 @@ def test_every_family_is_covered() -> None:
         "infer-points",
         "infer-localizer",
         "predict-frames",
+        "score-predictions",
         "composition",
         "tracks",
         "labels",

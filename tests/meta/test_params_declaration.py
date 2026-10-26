@@ -72,6 +72,7 @@ import mosaic
 import pytest
 from pydantic import Field
 
+from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.core.params import (
     HASH_EXCLUDE,
     NEEDS_DESCRIPTION,
@@ -81,6 +82,7 @@ from mosaic.core.params import (
     Params,
     own_declaration,
 )
+from mosaic.core.pipeline.ops import OPS
 from mosaic.core.strict_model import StrictModel
 from mosaic.tracking import register_ops
 from tests.helpers import (
@@ -102,7 +104,6 @@ UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
     "mosaic.core.media.preprocess.registry",
     "mosaic.core.media.preprocess.steps",
     "mosaic.core.track_library.track_converter_template",
-    "mosaic.tracking.frame_predictions.params",
 )
 """Modules holding a ``Params`` subclass that neither registry reaches.
 
@@ -111,8 +112,8 @@ through the same ``identity_dump()``. The ``*_template`` modules are the classes
 a person copies to add a converter or a feature, which is where an undescribed
 field propagates from. The media steps are parameter models in a list on the
 pre-processing op, and each step's fields are published to a client as that
-list's items. The predict-frames parameters are declared in
-``tracking.frame_predictions``, which no registry imports.
+list's items. :func:`test_no_listed_module_declares_a_registered_params_model`
+fails on an entry whose module declares the model of a registered op or feature.
 """
 
 # The op registry fills on an explicit call rather than on importing the
@@ -721,6 +722,42 @@ def test_the_import_list_reaches_every_declared_params_model() -> None:
         f"client."
     )
     assert not unreached, missing
+
+
+def registered_params_models() -> list[type[Params]]:
+    """Return the ``Params`` model of every registered op and feature."""
+    models: list[type[Params]] = [op.Params for op in OPS.values()]
+    for feature in FEATURES.values():
+        model: object = getattr(feature, "Params", None)
+        if isinstance(model, type) and issubclass(model, Params):
+            models.append(model)
+    return models
+
+
+def test_no_listed_module_declares_a_registered_params_model() -> None:
+    """A module that a registry reaches leaves ``UNREGISTERED_PARAMS_MODULES``.
+
+    The list's docstring gives each entry's reason for being unreached. A later
+    op or feature registered with a model from a listed module makes that reason
+    false, and every other guard here still passes.
+    """
+    modules = {model.__module__ for model in registered_params_models()}
+    canary = (
+        "the op and feature registries hold no model of speed_angvel or "
+        "predict-frames. This guard is agreeing with itself over an empty set."
+    )
+    assert {
+        "mosaic.behavior.feature_library.speed_angvel",
+        "mosaic.tracking.frame_predictions.params",
+    } <= modules, canary
+
+    reached = sorted(modules & set(UNREGISTERED_PARAMS_MODULES))
+    stale = (
+        f"{reached} declare the Params of a registered op or feature. Delete "
+        f"each entry and the sentence giving its reason from "
+        f"UNREGISTERED_PARAMS_MODULES."
+    )
+    assert not reached, stale
 
 
 class DeclarationSample(Params):

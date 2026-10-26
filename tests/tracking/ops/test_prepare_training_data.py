@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from mosaic.core.annotations.bbox import BboxPolicy, derived_bbox
-from mosaic.core.annotations.model import AnnotationSet, KeypointSchema
+from mosaic.core.annotations.model import KeypointSchema
 from mosaic.core.annotations.pose_annotations import (
     Alias,
     PoseAnnotationSet,
@@ -33,7 +33,11 @@ from mosaic.core.manifest import LabelsScanSource, LibraryLink
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.inventory import inventory
-from mosaic.core.pipeline.models import model_index_path, model_run_root
+from mosaic.core.pipeline.models import (
+    SPLIT_RECORD_FILENAME,
+    model_index_path,
+    model_run_root,
+)
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, run_op
 from mosaic.tracking import register_ops
@@ -64,6 +68,7 @@ from tests.helpers import (
     pose_frame,
     pose_object,
     pose_set,
+    record_slp_writes,
     revision_file,
     rewrite_as_older_prepared_index,
     tree_snapshot,
@@ -449,25 +454,6 @@ def test_a_lightning_pose_project_holds_every_frame_under_its_own_name(
     )
 
 
-SlpWrite = tuple[Path, AnnotationSet, object]
-"""One ``write_slp`` call: the file, the set and the ``images_dir`` it was given."""
-
-
-def _fake_write_slp(monkeypatch: pytest.MonkeyPatch) -> list[SlpWrite]:
-    """Stand in for ``write_slp``, which runs in the SLEAP environment."""
-    calls: list[SlpWrite] = []
-
-    def fake_write_slp(
-        annotations: AnnotationSet, out_path: Path, **kwargs: object
-    ) -> Path:
-        calls.append((Path(out_path), annotations, kwargs.get("images_dir")))
-        _ = Path(out_path).write_bytes(b"slp")
-        return Path(out_path)
-
-    monkeypatch.setattr("mosaic.tracking.sleap.labels.write_slp", fake_write_slp)
-    return calls
-
-
 SLEAP_SPLIT: Final[dict[str, object]] = {
     "target": "sleap",
     "split_by": "frame",
@@ -495,7 +481,7 @@ def test_the_sleap_writer_is_handed_two_sets_with_collision_free_images(
     test frame is written to neither file.
     """
     _mice, _rats, library = world
-    calls = _fake_write_slp(monkeypatch)
+    calls = record_slp_writes(monkeypatch)
 
     run_id = _prepare(library, **SLEAP_SPLIT)
 
@@ -527,7 +513,7 @@ def test_a_sleap_preparation_counts_the_frames_of_its_two_files(
 ) -> None:
     """Count the training and validation frames on the row, and no test frame."""
     _mice, _rats, library = world
-    calls = _fake_write_slp(monkeypatch)
+    calls = record_slp_writes(monkeypatch)
 
     run_id = _prepare(library, **SLEAP_SPLIT)
 
@@ -552,7 +538,7 @@ def test_a_sleap_preparation_without_its_validation_file_is_prepared_again(
     world: tuple[Dataset, Dataset, Dataset], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _mice, _rats, library = world
-    calls = _fake_write_slp(monkeypatch)
+    calls = record_slp_writes(monkeypatch)
     first = _prepare(library, target="sleap")
     assert _prepare(library, target="sleap") == first
     assert len(calls) == 2, "a whole preparation is reused"
@@ -689,7 +675,7 @@ def test_a_preparation_records_the_pose_it_chose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Recorded on both write paths: the split tree, and a tool's own format."""
-    _ = _fake_write_slp(monkeypatch)
+    _ = record_slp_writes(monkeypatch)
 
     run_id = run_op(full_state, KIND, {**FULL, "pose": pose, "target": target})
 
@@ -1039,7 +1025,7 @@ SPLIT_COLUMNS = [
 
 
 def _split_record(out: Path) -> pd.DataFrame:
-    return pd.read_csv(out / "split.csv", dtype=str, keep_default_na=False)
+    return pd.read_csv(out / SPLIT_RECORD_FILENAME, dtype=str, keep_default_na=False)
 
 
 def test_split_csv_has_one_sorted_row_per_frame_with_a_unique_name(
@@ -1079,7 +1065,7 @@ def test_split_csv_does_not_change_the_dataset_fingerprint(
     )
     out = model_run_root(extracted, KIND, run_id)
     with_file = fingerprint_yolo_dataset(out / "data.yaml")
-    (out / "split.csv").unlink()
+    (out / SPLIT_RECORD_FILENAME).unlink()
 
     assert fingerprint_yolo_dataset(out / "data.yaml") == with_file
 
@@ -1097,7 +1083,7 @@ def test_split_csv_sits_beside_a_lightning_pose_project(
         path.name for path in (out / "images").iterdir()
     )
     with_file = fingerprint_dataset(out / "project")
-    (out / "split.csv").unlink()
+    (out / SPLIT_RECORD_FILENAME).unlink()
     assert fingerprint_dataset(out / "project") == with_file
 
 

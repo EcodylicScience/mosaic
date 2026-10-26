@@ -25,6 +25,7 @@ REGISTERING_MODULES: Final = (
     "mosaic.tracking.ops.predict_frames",
     "mosaic.tracking.ops.prepare",
     "mosaic.tracking.ops.resample",
+    "mosaic.tracking.ops.score_predictions",
     "mosaic.tracking.ops.sleap",
     "mosaic.tracking.ops.train",
     "mosaic.tracking.ops.train_litpose",

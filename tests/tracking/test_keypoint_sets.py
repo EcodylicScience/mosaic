@@ -17,6 +17,7 @@ from mosaic.tracking.keypoint_sets import (
     ResolvedSet,
     read_resolved_set,
     resolve_keypoint_sets,
+    revision_image_root,
 )
 from mosaic.tracking.ops import prepare
 from mosaic.tracking.ops.prepare import PrepareTrainingDataParams, check_preparation
@@ -76,11 +77,16 @@ def test_read_resolved_set_anchors_images_at_the_manifest_image_root(
     )
 
     state = read_resolved_set(item)
+    root = revision_image_root(state.image_root)
 
-    assert state.image_root is not None
-    assert state.image_root.resolve() == project.base_dir.resolve()
+    assert root.resolve() == project.base_dir.resolve()
     for frame in state.frames:
-        assert (state.image_root / frame.image_path).is_file()
+        assert (root / frame.image_path).is_file()
+
+
+def test_revision_image_root_refuses_a_set_without_one() -> None:
+    with pytest.raises(ValueError, match="lacks an image root"):
+        _ = revision_image_root(None)
 
 
 def test_resolve_keypoint_sets_requires_kind_as_a_keyword() -> None:

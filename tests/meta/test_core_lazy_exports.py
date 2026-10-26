@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 import mosaic.core as core_package
-from tests.helpers import run_fresh
+from tests.helpers import modules_loaded_by, run_fresh
 
 LEAF_IMPORT = "from mosaic.core.scope import SCOPE_PARAM_KEYS"
 """A leaf under ``core``, imported for a name that needs pydantic and nothing else."""
@@ -96,3 +96,9 @@ def test_what_the_queue_imports_loads_neither_pandas_nor_h5py(statement: str) ->
         )
         == "neither"
     )
+
+
+def test_the_box_rule_and_its_body_length_leaf_load_no_pandas() -> None:
+    """``bbox`` imports ``track_quality``, and neither may pull pandas in."""
+    statement = "import mosaic.core.annotations.bbox\nimport mosaic.core.track_quality"
+    assert modules_loaded_by(statement, ("pandas",)) == []

@@ -566,6 +566,63 @@ def test_a_bootstrap_over_entries_is_repeatable_from_its_random_state() -> None:
     )
 
 
+def test_a_bootstrap_spanning_several_draw_chunks_keeps_its_exact_result() -> None:
+    """600 entries and 8,000 resamples draw more than one chunk of the multinomial."""
+    true, pred = _noisy(5, 3000, n_classes=3, error=0.3)
+    table = _entry_table(true, pred, [5] * 600, [0, 1, 2])
+
+    scores = bootstrap_sequences(table, n_boot=8000, random_state=11)
+
+    def approx(value: float) -> object:
+        return pytest.approx(value, rel=1e-12)
+
+    assert scores["n_entries"] == 600
+    assert scores["average_over"] == [0, 1, 2]
+    assert scores["accuracy"] == {
+        "estimate": approx(0.784),
+        "lower": approx(0.7696666666666667),
+        "upper": approx(0.7983333333333333),
+    }
+    assert scores["macro_f1"] == {
+        "estimate": approx(0.7590187466712971),
+        "lower": approx(0.7428674341369436),
+        "upper": approx(0.7749001695671882),
+    }
+    assert scores["per_class"] == [
+        {
+            "label": 0,
+            "f1": {
+                "estimate": approx(0.8329246935201402),
+                "lower": approx(0.8182146729309723),
+                "upper": approx(0.847067236204099),
+            },
+        },
+        {
+            "label": 1,
+            "f1": {
+                "estimate": approx(0.7862137862137862),
+                "lower": approx(0.7669320907584135),
+                "upper": approx(0.805247225025227),
+            },
+        },
+        {
+            "label": 2,
+            "f1": {
+                "estimate": approx(0.657917760279965),
+                "lower": approx(0.62488805245008),
+                "upper": approx(0.6888694483938512),
+            },
+        },
+    ]
+    replicates = scores["replicates"]
+    assert replicates["accuracy"].shape == (8000,)
+    assert replicates["f1"].shape == (8000, 3)
+    assert float(replicates["accuracy"].sum()) == approx(6271.944666666666)
+    assert float(replicates["macro_f1"].sum()) == approx(6071.311093137474)
+    assert float(replicates["f1"].sum()) == approx(18213.93327941242)
+    assert float(replicates["macro_f1"][-1]) == approx(0.7580767768247768)
+
+
 def test_a_bootstrap_interval_brackets_the_pooled_estimate() -> None:
     table = _bootstrap_table()
 

@@ -6,17 +6,21 @@ one :class:`FramePredictionsRow` per run and entry camera, and
 under ``index_lock`` through :class:`~mosaic.core.pipeline.index_csv.IndexCSV`.
 Reconcile opens both through :func:`frame_predictions_index`, and the inventory
 reads them through :func:`frame_prediction_records` and
-:func:`prediction_score_records`. This module imports no tool or trainer code. Of
-frame extraction it imports only the frames index, which the drift check reads.
+:func:`prediction_score_records`. Each run root also contains the run's identity
+payload, which :func:`write_run_params` writes. This module imports no tool or
+trainer code. Of frame extraction it imports only the frames index, which the
+drift check reads.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, fields
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal
 
+from mosaic.core.pipeline._utils import atomic_write, json_ready
 from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.dataset_indexes import (
     register_reconcilable_index,
@@ -52,6 +56,7 @@ if TYPE_CHECKING:
 __all__ = [
     "FRAME_PREDICTIONS_COLUMNS",
     "FRAME_PREDICTIONS_ROOT",
+    "RUN_PARAMS_NAME",
     "SCORE_RUN_COLUMNS",
     "SCORE_RUN_OUTPUTS",
     "FramePredictionsRow",
@@ -64,6 +69,8 @@ __all__ = [
     "prediction_kind_root",
     "prediction_score_records",
     "score_predictions_index",
+    "score_run_is_complete",
+    "write_run_params",
 ]
 
 FRAME_PREDICTIONS_ROOT: Final = "frame_predictions"
@@ -71,6 +78,9 @@ FRAME_PREDICTIONS_ROOT: Final = "frame_predictions"
 
 PredictionKind = Literal["predict-frames", "score-predictions"]
 """A kind directory of the root, named for the op that writes its runs."""
+
+RUN_PARAMS_NAME: Final = "run_params.json"
+"""What a run's identity payload is called, in its run root."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +184,12 @@ def prediction_kind_root(ds: Dataset, kind: PredictionKind) -> Path:
 def prediction_index_path(ds: Dataset, kind: PredictionKind) -> Path:
     """Return the index of the *kind* runs, which may not exist yet."""
     return prediction_kind_root(ds, kind) / "index.csv"
+
+
+def write_run_params(run_root: Path, payload: Mapping[str, object]) -> None:
+    """Write a run's identity payload to :data:`RUN_PARAMS_NAME` in *run_root*."""
+    text = json.dumps(json_ready(dict(payload)), indent=2, sort_keys=True)
+    atomic_write(run_root / RUN_PARAMS_NAME, lambda target: target.write_text(text))
 
 
 def predict_frames_index(path: Path) -> IndexCSV[FramePredictionsRow]:
@@ -357,7 +373,7 @@ def prediction_score_records(
             run_id=run_id,
             row=rows[run_id],
             recorded_finished=bool(rows[run_id].get("finished_at", "")),
-            complete=_score_run_is_complete(ds, rows[run_id]),
+            complete=score_run_is_complete(ds, rows[run_id]),
             index_path=index_path,
             run_root=run_roots / run_id,
         )
@@ -365,7 +381,7 @@ def prediction_score_records(
     ]
 
 
-def _score_run_is_complete(ds: Dataset, row: Mapping[str, str]) -> bool:
+def score_run_is_complete(ds: Dataset, row: Mapping[str, str]) -> bool:
     """Return whether a score-predictions row finished and its outputs exist."""
     stored = row.get("abs_path", "")
     if not row.get("finished_at", "") or not stored:

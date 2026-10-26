@@ -32,6 +32,7 @@ from mosaic.core.pipeline.markers import (
     inflight_state,
     new_inflight,
     read_inflight,
+    refresh_inflight,
     try_create_inflight,
 )
 
@@ -318,6 +319,35 @@ def claim_run_root(
         f"{held.execution_id if held else '?'} on {where}; not training it again.",
         held=held,
     )
+
+
+def renew_run_root_claim(
+    run_root: Path, marker: InflightMarker, kind: str, idle_seconds: float
+) -> InflightMarker:
+    """Re-stamp this execution's claim on *run_root* before it writes, or raise.
+
+    An op whose work in this process gives no activity signal calls this between
+    that work and its first write. When the work outlived the claim and another
+    execution took the root over, that execution keeps it and this one writes
+    nothing.
+
+    Returns:
+        The re-stamped claim.
+
+    Raises:
+        RunRootHeld: Another execution holds *run_root*.
+    """
+    renewed = refresh_inflight(run_root, marker, idle_seconds)
+    if renewed is not None:
+        return renewed
+    held = read_inflight(run_root)
+    holder = held.execution_id if held is not None else "?"
+    where = f"{held.host}:{held.pid}" if held is not None else "another host"
+    msg = (
+        f"[{kind}] execution {holder} on {where} took {run_root.name} over while "
+        "this execution worked; not writing into it."
+    )
+    raise RunRootHeld(msg, held=held)
 
 
 def empty_claimed_run_root(run_root: Path) -> None:

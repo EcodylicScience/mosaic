@@ -51,6 +51,7 @@ from mosaic.core.annotations.model import (
     Bbox,
     Keypoint,
     KeypointSchema,
+    ObjectOrigin,
 )
 from mosaic.core.json_value import JsonValue
 from mosaic.core.strict_model import StrictModel, terse
@@ -59,7 +60,6 @@ __all__ = [
     "FORMAT_NAME",
     "FORMAT_VERSION",
     "Alias",
-    "ObjectOrigin",
     "PoseAnnotationSet",
     "PoseDefinition",
     "PoseFrame",
@@ -77,9 +77,6 @@ FORMAT_NAME: Final = "mosaic-pose-annotations"
 
 FORMAT_VERSION: Final = 1
 """The version this module writes, and the newest it reads."""
-
-ObjectOrigin = Literal["human", "model", "heuristic"]
-"""Who placed an object: a person, a model's prediction, or a rule."""
 
 
 @dataclass(frozen=True, slots=True)

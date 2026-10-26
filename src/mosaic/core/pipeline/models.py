@@ -58,6 +58,14 @@ Lightning Pose project depending on the target.
 """
 
 
+SPLIT_RECORD_FILENAME: Final = "split.csv"
+"""The file in a ``prepare-training-data`` run root that records each frame's split.
+
+A preparation writes it, and the seen frames of a model trained on the
+preparation are read from it.
+"""
+
+
 def prepared_artifact_cell(row: Mapping[str, str]) -> str:
     """The stored path of what a trainer is handed, from one prepared-data row."""
     for column in PREPARED_ARTIFACT_COLUMNS:

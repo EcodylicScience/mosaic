@@ -22,6 +22,7 @@ from pydantic import Field
 
 from mosaic.core.annotations.model import Bbox, Keypoint
 from mosaic.core.params import Declared, Params
+from mosaic.core.track_quality import instance_body_lengths
 
 __all__ = [
     "BBoxMethod",
@@ -203,17 +204,7 @@ def keypoints_to_bbox_isotropic(
     x_min, y_min = pts.min(axis=0)
     x_max, y_max = pts.max(axis=0)
 
-    def _valid_at(idx: int | None) -> bool:
-        return (
-            idx is not None
-            and 0 <= idx < len(kps_xy)
-            and bool(np.isfinite(kps_xy[idx]).all())
-        )
-
-    if _valid_at(head_idx) and _valid_at(tail_idx):
-        body = float(np.linalg.norm(kps_xy[head_idx] - kps_xy[tail_idx]))
-    else:
-        body = float(np.hypot(x_max - x_min, y_max - y_min))
+    body = float(instance_body_lengths(kps_xy[None], head_idx, tail_idx)[0])
 
     pad = max(float(min_pad_px), float(pad_frac_of_body) * body)
     return _aabb_to_norm_cxcywh(

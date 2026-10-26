@@ -72,6 +72,7 @@ from ..inventory.model import (
     LabelsVariantRef,
     MediaDerivativeRef,
     MediaVariantRef,
+    PredictionScoreRef,
     TracksVariantRef,
     TrainedModelRef,
     reclassify,
@@ -1420,7 +1421,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     has no run-addressed artifact at all -- its derivatives are named by recipe
     and source -- so it is looked up per target. A media variant is a separate
     run with one file per entry. A predict-frames run has one file per entry
-    camera of the extraction run that it names.
+    camera of the extraction run that it names. A score-predictions run is one
+    artifact, named by its run.
 
     ``None`` is honest rather than a gap: an op whose output nothing inventories
     reads as having no coverage answer, where reporting zero would say it had
@@ -1450,6 +1452,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
             run_id=identity.run_id,
             frames_run_id=str(getattr(params, "frames_run_id", "")),
         )
+    if kind == "score-predictions":
+        return PredictionScoreRef(run_id=identity.run_id)
     return None
 
 
