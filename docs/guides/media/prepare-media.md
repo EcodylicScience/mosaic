@@ -101,6 +101,29 @@ For `mosaic track <kind>`, pass `--kind <kind>` and give its `--set` settings as
 `--params` object, such as `--params '{"media": "<run_id>"}'`. Of a tracker's settings,
 `mosaic prerequisites` reads only `media`.
 
+### Imgstores from several cameras
+
+The synchronized cameras of one Motif recording are one entry. `scan_media()` groups the
+stores that share a `synchronizationuuid` under their shared base name (`rec` for
+`rec.CAM1` and `rec.CAM2`), and each store becomes a `camera` row of that entry, named by
+its `camera_serial`. A store recorded by an independent camera is an entry of its own.
+The index records each store's serial in `camera_serial`.
+
+A scan refuses stores it cannot group, and writes nothing:
+
+- The stores of one synchronized recording have different base names.
+- A synchronized recording has two or more stores and one of them has no
+  `camera_serial`, whether its folders are scanned together or one after another.
+- Two stores that are not one synchronized recording derive the same entry, as when
+  each camera's folder holds a store named by its start time alone
+  (`cam1/20210219_112253` and `cam2/20210219_112253`). This holds whether the folders
+  are scanned together or one after another, and for two stores of one camera as well.
+  Rename the store directories apart, or assign each store its entry with
+  `write_media_index`.
+
+`write_media_index` refuses a scope holding unsynchronized stores of different cameras.
+The stores of one camera under one scope join its entry as clips.
+
 ## Extract frames to annotate
 
 ```bash

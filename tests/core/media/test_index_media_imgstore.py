@@ -10,15 +10,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tests.helpers import make_dataset, write_mpeg4_mp4
+from mosaic.core.pipeline.media_index import (
+    MediaIndexScope,
+    StoreGroupingError,
+    media_members_from_rows,
+    read_media_index,
+    refuse_merged_store_recordings,
+)
+from tests.helpers import MOTIF_SYNC_UUID, MakeStore, make_dataset, write_mpeg4_mp4
 
 pytest.importorskip("imgstore")
 
 from mosaic_media import VIDEO_EXTENSIONS, MediaProbeError  # noqa: E402
 
 from mosaic.core.media.imgstore_io import imgstore_store_identity  # noqa: E402
-
-_SYNC_UUID = "f064059f9ea046429f227bc7addab1eb"
 
 # No ``media_raw``: ``index_media`` resolves through ``resolve_media_root``, so a
 # dataset declaring only ``media`` writes the originals index to
@@ -127,10 +132,14 @@ def test_index_media_synced_cameras_collapse_to_one_sequence(tmp_path, make_imgs
     ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"
     make_imgstore(
-        name="rec.CAMA", parent=search, extra_metadata=_camera_meta("CAMA", _SYNC_UUID)
+        name="rec.CAMA",
+        parent=search,
+        extra_metadata=_camera_meta("CAMA", MOTIF_SYNC_UUID),
     )
     make_imgstore(
-        name="rec.CAMB", parent=search, extra_metadata=_camera_meta("CAMB", _SYNC_UUID)
+        name="rec.CAMB",
+        parent=search,
+        extra_metadata=_camera_meta("CAMB", MOTIF_SYNC_UUID),
     )
 
     out_csv = ds.index_media([search])
@@ -142,7 +151,7 @@ def test_index_media_synced_cameras_collapse_to_one_sequence(tmp_path, make_imgs
     assert set(store_rows["sequence"]) == {"rec"}
     assert set(store_rows["camera"]) == {"CAMA", "CAMB"}
     # Shared, populated provenance.
-    assert set(store_rows["sync_uuid"]) == {_SYNC_UUID}
+    assert set(store_rows["sync_uuid"]) == {MOTIF_SYNC_UUID}
     # Each camera is numbered from 0 -- never a cross-camera concatenation.
     assert set(store_rows["video_order"].astype(int)) == {0}
 
@@ -164,7 +173,7 @@ def test_index_media_gives_each_store_its_own_mint(tmp_path, make_imgstore):
         serial: make_imgstore(
             name=f"rec.{serial}",
             parent=search,
-            extra_metadata=_camera_meta(serial, _SYNC_UUID),
+            extra_metadata=_camera_meta(serial, MOTIF_SYNC_UUID),
         )[0]
         for serial in ("CAMA", "CAMB")
     }
@@ -234,7 +243,7 @@ def test_resolve_media_multicamera_requires_camera(tmp_path, make_imgstore):
         make_imgstore(
             name=f"rec.{serial}",
             parent=search,
-            extra_metadata=_camera_meta(serial, _SYNC_UUID),
+            extra_metadata=_camera_meta(serial, MOTIF_SYNC_UUID),
         )
     ds.index_media([search])
 
@@ -265,7 +274,7 @@ def test_extract_frames_runs_per_camera(tmp_path, make_imgstore):
             name=f"rec.{serial}",
             nframes=12,
             parent=search,
-            extra_metadata=_camera_meta(serial, _SYNC_UUID),
+            extra_metadata=_camera_meta(serial, MOTIF_SYNC_UUID),
         )
     ds.index_media([search])
 
@@ -285,3 +294,322 @@ def test_extract_frames_runs_per_camera(tmp_path, make_imgstore):
     # The read path descends the camera subdirs and returns both cameras' frames.
     pngs = get_frame_paths(ds, method="uniform", group="", sequence="rec")
     assert len(pngs) == 8  # 4 per camera, no concatenated timeline
+
+
+def _store_rows(out_csv: Path) -> pd.DataFrame:
+    """The imgstore rows of the media index at *out_csv*, read as text."""
+    df = pd.read_csv(out_csv, keep_default_na=False, dtype=str)
+    return df[df["media_type"] == "imgstore"]
+
+
+def _unsynced_meta(serial: str) -> dict[str, object]:
+    """Motif document-root metadata for a store recorded by one camera alone."""
+    return {"camera_serial": serial, "synchronization": "none"}
+
+
+def test_index_media_records_each_store_camera_serial(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    for serial in ("CAMA", "CAMB"):
+        _ = make_imgstore(
+            name=f"rec.{serial}",
+            parent=search,
+            extra_metadata=_camera_meta(serial, MOTIF_SYNC_UUID),
+        )
+    _ = make_imgstore(name="lone", parent=search, extra_metadata=_unsynced_meta("C1"))
+    _ = make_imgstore(name="plain", parent=search)
+
+    rows = _store_rows(ds.index_media([search]))
+
+    serials = dict(zip(rows["name"], rows["camera_serial"], strict=True))
+    assert serials == {
+        "rec.CAMA": "CAMA",
+        "rec.CAMB": "CAMB",
+        "lone": "C1",
+        "plain": "",
+    }
+
+
+def test_write_media_index_records_the_camera_serial(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    scope_dir = tmp_path / "raw" / "tank1"
+    _ = make_imgstore(name="rec", parent=scope_dir, extra_metadata=_unsynced_meta("C1"))
+
+    result = ds.write_media_index(
+        [MediaIndexScope(directory=scope_dir, group="g", sequence="tank1")]
+    )
+
+    rows = _store_rows(result.index_path)
+    assert list(rows["camera_serial"]) == ["C1"]
+
+
+def test_the_camera_serial_leaves_the_media_composition_unchanged() -> None:
+    row: dict[str, object] = {
+        "group": "g",
+        "sequence": "s",
+        "camera": "C1",
+        "video_order": "0",
+        "video_uuid": "a" * 32,
+    }
+
+    without = media_members_from_rows([row])
+    with_serial = media_members_from_rows([{**row, "camera_serial": "C1"}])
+
+    assert with_serial == without
+
+
+def test_index_media_refuses_a_sync_set_with_divergent_base_names(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    _ = make_imgstore(
+        name="recA.CAMA",
+        parent=search,
+        extra_metadata=_camera_meta("CAMA", MOTIF_SYNC_UUID),
+    )
+    _ = make_imgstore(
+        name="recB.CAMB",
+        parent=search,
+        extra_metadata=_camera_meta("CAMB", MOTIF_SYNC_UUID),
+    )
+
+    with pytest.raises(StoreGroupingError, match="recA.*recB"):
+        _ = ds.index_media([search])
+    assert read_media_index(tmp_path / "media" / "index.csv") == []
+
+
+def test_index_media_refuses_a_sync_set_with_an_empty_serial(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    _ = make_imgstore(
+        name="rec.CAMA",
+        parent=search,
+        extra_metadata=_camera_meta("CAMA", MOTIF_SYNC_UUID),
+    )
+    _ = make_imgstore(
+        name="rec", parent=search, extra_metadata=_camera_meta("", MOTIF_SYNC_UUID)
+    )
+
+    with pytest.raises(StoreGroupingError, match="camera_serial"):
+        _ = ds.index_media([search])
+    assert read_media_index(tmp_path / "media" / "index.csv") == []
+
+
+def test_index_media_indexes_a_lone_synced_store_without_a_serial(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    """A sync set of one store needs no serial to tell its cameras apart."""
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    _ = make_imgstore(
+        name="rec", parent=search, extra_metadata=_camera_meta("", MOTIF_SYNC_UUID)
+    )
+
+    rows = _store_rows(ds.index_media([search]))
+
+    assert list(rows["sequence"]) == ["rec"]
+    assert list(rows["camera"]) == [""]
+    assert list(rows["camera_serial"]) == [""]
+
+
+@pytest.mark.parametrize("serials", [("C1", "C2"), ("C1", "C1"), ("", "")])
+def test_index_media_refuses_unsynced_stores_that_derive_one_entry(
+    tmp_path: Path, make_imgstore: MakeStore, serials: tuple[str, str]
+) -> None:
+    """Two stores named by their start time alone stay two entries.
+
+    A scan's entry is derived from the name, so it refuses the stores of one
+    camera too: a copy of one store derives the same entry as the original.
+    """
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    for camera, serial in zip(("cam1", "cam2"), serials, strict=True):
+        _ = make_imgstore(
+            name="20210219_112253",
+            parent=search / camera,
+            extra_metadata=_unsynced_meta(serial) if serial else None,
+        )
+
+    with pytest.raises(StoreGroupingError, match="20210219_112253"):
+        _ = ds.index_media([search])
+    assert read_media_index(tmp_path / "media" / "index.csv") == []
+
+
+def test_index_media_refuses_a_store_that_joins_the_entry_of_an_earlier_scan(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    """A scan of each camera's directory compares the entry the first scan wrote."""
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    for camera in ("cam1", "cam2"):
+        _ = make_imgstore(
+            name="20210219_112253",
+            parent=search / camera,
+            extra_metadata=_unsynced_meta(camera.upper()),
+        )
+    index_path = ds.index_media([search / "cam1"])
+    first = read_media_index(index_path)
+
+    with pytest.raises(StoreGroupingError, match="cam1.*cam2"):
+        _ = ds.index_media([search / "cam2"])
+    assert read_media_index(index_path) == first
+
+
+def test_index_media_joins_a_sync_set_scanned_one_camera_at_a_time(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    for camera, serial in (("cam1", "CAMA"), ("cam2", "CAMB")):
+        _ = make_imgstore(
+            name=f"rec.{serial}",
+            parent=search / camera,
+            extra_metadata=_camera_meta(serial, MOTIF_SYNC_UUID),
+        )
+    _ = ds.index_media([search / "cam1"])
+
+    rows = _store_rows(ds.index_media([search / "cam2"]))
+
+    assert list(rows["sequence"]) == ["rec", "rec"]
+    assert sorted(rows["camera"]) == ["CAMA", "CAMB"]
+
+
+@pytest.mark.parametrize("serials", [("", ""), ("CAMA", ""), ("", "CAMB")])
+def test_index_media_refuses_a_serialless_camera_across_scans(
+    tmp_path: Path, make_imgstore: MakeStore, serials: tuple[str, str]
+) -> None:
+    """A store without a serial cannot join a sync set an earlier scan wrote."""
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    for camera, serial in zip(("cam1", "cam2"), serials, strict=True):
+        _ = make_imgstore(
+            name=f"rec.{serial}" if serial else "rec",
+            parent=search / camera,
+            extra_metadata=_camera_meta(serial, MOTIF_SYNC_UUID),
+        )
+    index_path = ds.index_media([search / "cam1"])
+    first = read_media_index(index_path)
+
+    with pytest.raises(StoreGroupingError, match="camera_serial"):
+        _ = ds.index_media([search / "cam2"])
+    assert read_media_index(index_path) == first
+
+
+def test_merged_store_refusal_names_a_kept_camera_by_its_camera_column() -> None:
+    """A kept row of an index older than camera_serial is named by its camera."""
+
+    def store(path: str, camera: str, serial: str | None) -> dict[str, object]:
+        row: dict[str, object] = {
+            "media_type": "imgstore",
+            "assignment_source": "scan-imgstore-sync",
+            "group": "",
+            "sequence": "rec",
+            "camera": camera,
+            "sync_uuid": MOTIF_SYNC_UUID,
+            "abs_path": path,
+        }
+        if serial is not None:
+            row["camera_serial"] = serial
+        return row
+
+    refuse_merged_store_recordings(
+        [store("cam2/rec.CAMB", "CAMB", "CAMB")],
+        beside=[store("cam1/rec.CAMA", "CAMA", None)],
+    )
+    with pytest.raises(StoreGroupingError, match="camera_serial"):
+        refuse_merged_store_recordings(
+            [store("cam2/rec.CAMB", "CAMB", "CAMB")],
+            beside=[store("cam1/rec", "", None)],
+        )
+
+
+def test_merged_store_refusal_compares_kept_rows_only_on_written_entries() -> None:
+    """A kept entry that this write does not touch is left as it is."""
+
+    def store(path: str, sequence: str) -> dict[str, object]:
+        return {
+            "media_type": "imgstore",
+            "assignment_source": "scan-imgstore-sync",
+            "group": "",
+            "sequence": sequence,
+            "sync_uuid": "",
+            "abs_path": path,
+        }
+
+    kept = [store("cam1/a", "a"), store("cam2/a", "a")]
+
+    refuse_merged_store_recordings([store("cam1/b", "b")], beside=kept)
+    with pytest.raises(StoreGroupingError, match="cam1/a.*cam2/a.*cam3/a"):
+        refuse_merged_store_recordings([store("cam3/a", "a")], beside=kept)
+
+
+def test_index_media_keeps_the_assigned_entries_of_stores_that_share_a_name(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    """A scan restores assigned identity before it compares derived entries."""
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    scopes: list[MediaIndexScope] = []
+    for camera in ("cam1", "cam2"):
+        _ = make_imgstore(
+            name="20210219_112253",
+            parent=search / camera,
+            extra_metadata=_unsynced_meta(camera.upper()),
+        )
+        scopes.append(
+            MediaIndexScope(directory=search / camera, group=camera, sequence="rec")
+        )
+    _ = ds.write_media_index(scopes)
+
+    rows = _store_rows(ds.index_media([search]))
+
+    assert sorted(zip(rows["group"], rows["sequence"], strict=True)) == [
+        ("cam1", "rec"),
+        ("cam2", "rec"),
+    ]
+
+
+def test_write_media_index_refuses_unsynced_cameras_under_one_scope(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    scope_dir = tmp_path / "raw" / "upload"
+    for serial in ("C1", "C2"):
+        _ = make_imgstore(
+            name=f"rec_{serial}",
+            parent=scope_dir,
+            extra_metadata=_unsynced_meta(serial),
+        )
+
+    with pytest.raises(StoreGroupingError, match="C1.*C2"):
+        _ = ds.write_media_index(
+            [MediaIndexScope(directory=scope_dir, group="", sequence="rec")]
+        )
+    assert read_media_index(tmp_path / "media" / "index.csv") == []
+
+
+def test_write_media_index_joins_one_camera_stores_as_clips(
+    tmp_path: Path, make_imgstore: MakeStore
+) -> None:
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    scope_dir = tmp_path / "raw" / "upload"
+    for name in ("part1", "part2"):
+        _ = make_imgstore(
+            name=name, parent=scope_dir, extra_metadata=_unsynced_meta("C1")
+        )
+
+    result = ds.write_media_index(
+        [MediaIndexScope(directory=scope_dir, group="", sequence="rec")]
+    )
+
+    rows = _store_rows(result.index_path).sort_values("name")
+    assert set(rows["sequence"]) == {"rec"}
+    assert set(rows["camera"]) == {"C1"}
+    assert list(rows["video_order"]) == ["0", "1"]

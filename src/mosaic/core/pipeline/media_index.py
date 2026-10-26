@@ -46,6 +46,87 @@ MEDIA_NUMERIC_COLUMNS = frozenset(
 _UNORDERED_PRIOR_RANK = 2**31
 
 
+class StoreGroupingError(ValueError):
+    """Imgstores whose metadata leaves their recording undecided.
+
+    A media index write raises it before it writes anything, when stores of
+    different recordings would join one entry or a synchronized set cannot tell
+    its cameras apart.
+    """
+
+
+def unnamed_cameras_error(sync_uuid: str, paths: Sequence[str]) -> StoreGroupingError:
+    """The refusal of a synchronized recording with stores that record no serial.
+
+    Args:
+        sync_uuid: The recording's ``sync_uuid``.
+        paths: The stores without a ``camera_serial``.
+    """
+    message = (
+        f"imgstore recording {sync_uuid!r} has stores with no camera_serial "
+        f"{list(paths)}, so its cameras cannot be told apart. Record each "
+        "camera's camera_serial in its store's metadata.yaml."
+    )
+    return StoreGroupingError(message)
+
+
+def refuse_merged_store_recordings(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    beside: Iterable[Mapping[str, object]] = (),
+) -> None:
+    """Refuse the stores a scan derived into one entry that it cannot group.
+
+    Only imgstore rows whose entry is still derived (``scan-imgstore-sync``) are
+    compared, so an entry a caller assigned is kept. A store's recording is its
+    ``sync_uuid``, else the store itself, so two stores of one camera that
+    derive one entry are refused too. A synchronized recording of two or more
+    stores is refused when one of them names no camera: its ``camera_serial``
+    and ``camera`` are both empty (an index older than ``camera_serial`` names
+    the camera in ``camera``). *beside* holds the index rows the write keeps,
+    compared only on an entry that *rows* write.
+
+    Raises:
+        StoreGroupingError: Naming the entry and the stores of each recording,
+            or the recording and its stores without a camera.
+    """
+    fresh = list(rows)
+    written = {
+        (str(row.get("group", "")), str(row.get("sequence", ""))) for row in fresh
+    }
+    stores: dict[tuple[str, str], dict[str, list[str]]] = {}
+    unnamed: dict[tuple[tuple[str, str], str], list[str]] = {}
+    for row in [*beside, *fresh]:
+        if row.get("media_type") != "imgstore":
+            continue
+        if row.get("assignment_source") != "scan-imgstore-sync":
+            continue
+        entry = (str(row.get("group", "")), str(row.get("sequence", "")))
+        if entry not in written:
+            continue
+        path = str(row.get("abs_path", ""))
+        sync_uuid = str(row.get("sync_uuid", ""))
+        stores.setdefault(entry, {}).setdefault(sync_uuid or path, []).append(path)
+        if sync_uuid and not (row.get("camera_serial") or row.get("camera")):
+            unnamed.setdefault((entry, sync_uuid), []).append(path)
+    for entry, recordings in sorted(stores.items()):
+        for sync_uuid, members in sorted(recordings.items()):
+            if len(members) > 1 and (entry, sync_uuid) in unnamed:
+                paths = sorted(unnamed[entry, sync_uuid])
+                raise unnamed_cameras_error(sync_uuid, paths)
+        group, sequence = entry
+        if len(recordings) < 2:
+            continue
+        paths = sorted(path for members in recordings.values() for path in members)
+        message = (
+            f"imgstores {paths} belong to {len(recordings)} recordings but all "
+            f"derive the entry ({group!r}, {sequence!r}). Rename the store "
+            "directories apart, or assign each recording its entry with "
+            "write_media_index."
+        )
+        raise StoreGroupingError(message)
+
+
 def _empty_order() -> dict[str, int]:
     """Typed default for :attr:`MediaIndexScope.order_by_name` (bare ``dict`` as a
     default_factory infers ``dict[Unknown, Unknown]`` under strict typing)."""
@@ -70,8 +151,11 @@ class MediaIndexScope:
     maps a file's basename to an already-measured ``MediaFacts``; a file present
     in it is turned into its row from those facts instead of being re-probed.
     ``camera`` is an explicit override for a plain video the caller tags with a
-    camera axis; a probed imgstore supplies its own ``camera``/``sync_uuid`` from
-    store metadata, so this override applies only when the probe carries none.
+    camera axis; a probed imgstore supplies its own ``camera_serial`` and
+    ``sync_uuid`` from store metadata, and its serial names its camera, so this
+    override applies only when the probe carries none. Unsynchronized stores
+    under one scope must share one ``camera_serial``, and stores of one camera
+    join the sequence as clips.
     """
 
     directory: Path
@@ -152,6 +236,7 @@ def build_media_index_row(
     name: str | None = None,
     camera: str = "",
     sync_uuid: str = "",
+    camera_serial: str = "",
     media_type: str = "video",
     assignment_source: AssignmentSource = "",
     source_path: str | None = None,
@@ -180,6 +265,8 @@ def build_media_index_row(
     media) and *sync_uuid* the recording id that groups a recording's cameras;
     both feed :func:`densify_video_order` (which numbers ``video_order`` per
     ``(group, sequence, camera)``) and persist as schema columns.
+    *camera_serial* is the serial an imgstore's metadata records, empty for a
+    plain video. It is written as a fact and enters no composition.
     *assignment_source* records how this row's ``(group, sequence)`` was arrived
     at; it defaults to ``""`` so a caller that has not been taught the column
     writes an honest unknown rather than a wrong claim.
@@ -194,6 +281,7 @@ def build_media_index_row(
         "sequence_safe": sequence_safe,
         "camera": camera,
         "sync_uuid": sync_uuid,
+        "camera_serial": camera_serial,
         "abs_path": to_store_path(path),
         "size_bytes": size_bytes,
         "mtime_iso": mtime_iso(mtime),

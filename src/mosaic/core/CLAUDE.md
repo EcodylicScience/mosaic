@@ -85,6 +85,13 @@ in the root guide.
   through `MediaIndexScope` (`Dataset._keep_assigned_identity`) unless `reassign=True`.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
+- A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for
+  imgstores it cannot group: a synchronized set of two or more stores with divergent
+  base names or a store without `camera_serial`, two recordings that derive one entry,
+  and unsynchronized stores of distinct serials under one `MediaIndexScope`. A scan
+  checks the serial and entry rules after it restores assigned identity, against the
+  kept rows of each entry it writes as well. `camera_serial` is a fact column outside
+  every composition (`tests/core/media/test_index_media_imgstore.py`).
 
 ## The `group` column
 

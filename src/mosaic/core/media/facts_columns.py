@@ -70,6 +70,10 @@ MEDIA_INDEX_COLUMNS: list[str] = [
     # synchronizationuuid) that groups a recording's cameras; both are text.
     "camera",
     "sync_uuid",
+    # The Motif camera_serial an imgstore's metadata records, empty for a plain
+    # video. A store fact kept apart from the camera axis, which a caller may
+    # assign. Text, and outside every composition.
+    "camera_serial",
     "abs_path",
     "size_bytes",
     "mtime_iso",

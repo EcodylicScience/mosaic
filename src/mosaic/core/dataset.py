@@ -145,6 +145,7 @@ from .pipeline.index_stamp import IndexStamp
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
+    StoreGroupingError,
     build_media_index_row,
     build_prior_order,
     media_members_from_rows,
@@ -152,6 +153,8 @@ from .pipeline.media_index import (
     frame_from_rows,
     mtime_iso,
     read_media_index as _read_media_index,
+    refuse_merged_store_recordings,
+    unnamed_cameras_error,
     write_media_index_rows,
 )
 from .pipeline.tracks_identity import (
@@ -675,10 +678,10 @@ class ProbedEntry:
 
     Produced by :meth:`Dataset._probe_dir_rows` and consumed by both
     :meth:`Dataset.index_media` (scan-and-derive) and
-    :meth:`Dataset.write_media_index` (assignment-driven). ``camera`` and
-    ``sync_uuid`` are store *facts* read from imgstore metadata (empty for a
-    plain video); deriving the sequence identity from them is the caller's job,
-    so this stays identity-free.
+    :meth:`Dataset.write_media_index` (assignment-driven). ``camera_serial``
+    and ``sync_uuid`` are store *facts* read from imgstore metadata (empty for a
+    plain video); deriving the sequence identity and the camera axis from them
+    is the caller's job, so this stays identity-free.
 
     ``origin`` says where ``probe`` came from, and it is load-bearing rather than
     diagnostic: item 5.2's drift check cannot tell a file whose bytes moved from a
@@ -690,7 +693,7 @@ class ProbedEntry:
     stat: os.stat_result
     probe: ProbeMetadata
     media_type: str
-    camera: str = ""
+    camera_serial: str = ""
     sync_uuid: str = ""
     origin: MeasurementOrigin = "probed"
 
@@ -3161,7 +3164,7 @@ class Dataset:
         Returns one :class:`ProbedEntry` per entry -- plain video files first
         (deterministically ordered by resolved path), then one entry per
         imgstore directory (sorted). An imgstore entry carries its Motif
-        ``camera`` (= ``camera_serial``) and ``sync_uuid``
+        ``camera_serial`` and ``sync_uuid``
         (= ``synchronizationuuid``) read from store metadata; a plain video
         carries neither. Identity assignment (group/sequence) is left to the
         caller. Shared by :meth:`index_media` (scan-and-derive) and
@@ -3335,7 +3338,7 @@ class Dataset:
                     st,
                     probe,
                     "imgstore",
-                    camera=identity.camera_serial,
+                    camera_serial=identity.camera_serial,
                     sync_uuid=(
                         identity.sync_uuid
                         if identity.synchronization.lower() != "none"
@@ -3379,14 +3382,25 @@ class Dataset:
           store becomes one entry (``media_type="imgstore"``). The cameras of one
           synchronized recording (a shared Motif ``synchronizationuuid``) collapse
           into a single sequence with one ``camera`` row per store; each store's
-          internal chunk files are excluded from the plain file glob.
+          internal chunk files are excluded from the plain file glob. A scan
+          refuses, with :class:`StoreGroupingError`, a synchronized recording
+          whose stores have different base names, a synchronized recording of
+          two or more stores that include one without a ``camera_serial``, and
+          stores of different recordings that derive one ``(group, sequence)``,
+          such as two cameras' stores both named by their start time. The last
+          two compare the stores of this scan with those the index keeps under
+          each entry the scan writes. Each
+          unsynchronized store is a recording of its own here, whatever its
+          ``camera_serial``.
         - Columns: name, group, sequence, group_safe, sequence_safe, camera,
-          sync_uuid, abs_path, size_bytes, mtime_iso, width, height, fps, codec,
-          media_type, frame_count, analysis_transcode, stream_transcode,
-          analysis_derivative_path, playback_derivative_path, source_path,
-          media_facts, video_order. ``camera`` is the within-sequence camera
-          axis (``""`` for single-camera media) and ``sync_uuid`` the recording
-          id that groups a recording's cameras. ``media_facts`` is the full
+          sync_uuid, camera_serial, abs_path, size_bytes, mtime_iso, width,
+          height, fps, codec, media_type, frame_count, analysis_transcode,
+          stream_transcode, analysis_derivative_path, playback_derivative_path,
+          source_path, media_facts, video_order. ``camera`` is the
+          within-sequence camera axis (``""`` for single-camera media),
+          ``sync_uuid`` the recording id that groups a recording's cameras, and
+          ``camera_serial`` the serial an imgstore's metadata records (``""``
+          for a plain video). ``media_facts`` is the full
           injectable MediaFacts serialized as JSON; the other new columns
           duplicate a few of its fields (plus the verdict) for untyped pandas
           readers and routing.
@@ -3612,6 +3626,7 @@ class Dataset:
             self._keep_calibration(dedup, committed)
             if prune_unsourced:
                 preserved = []
+            refuse_merged_store_recordings(dedup, beside=preserved)
             self._carry_forward_derivative_links(dedup, out_csv)
             # Checked on the entries the rows are written under: a filename's
             # guess that an assigned identity replaced above writes nothing.
@@ -3651,6 +3666,37 @@ class Dataset:
         return out_csv
 
     @staticmethod
+    def _refuse_unsynced_cameras(
+        scope: MediaIndexScope, entries: Sequence[ProbedEntry]
+    ) -> None:
+        """Refuse a scope that would join independent cameras into one sequence.
+
+        Unsynchronized imgstores under one scope become clips of one sequence,
+        which is right for one camera's stores. Stores of distinct non-empty
+        ``camera_serial`` values record separate recordings.
+
+        Raises:
+            StoreGroupingError: Naming the scope's entry and the serials.
+        """
+        serials = sorted(
+            {
+                entry.camera_serial
+                for entry in entries
+                if entry.media_type == "imgstore"
+                and not entry.sync_uuid
+                and entry.camera_serial
+            }
+        )
+        if len(serials) < 2:
+            return
+        message = (
+            f"the scope for ({scope.group!r}, {scope.sequence!r}) holds "
+            f"unsynchronized imgstores of cameras {serials}, which are separate "
+            "recordings. Give each camera's stores a scope of their own."
+        )
+        raise StoreGroupingError(message)
+
+    @staticmethod
     def _store_base_name(entry: ProbedEntry, *, strip_camera: bool) -> str:
         """The sequence base name of an imgstore directory.
 
@@ -3663,8 +3709,8 @@ class Dataset:
         different or absent sync ids) never collapse into one bogus 2-camera
         sequence.
         """
-        if strip_camera and entry.camera:
-            return entry.path.name.removesuffix("." + entry.camera)
+        if strip_camera and entry.camera_serial:
+            return entry.path.name.removesuffix("." + entry.camera_serial)
         return entry.path.name
 
     def _imgstore_rows(
@@ -3676,14 +3722,21 @@ class Dataset:
         """Build media-index rows for imgstore stores, grouping cameras.
 
         Stores sharing a non-empty ``sync_uuid`` are one recording -> one
-        sequence with a ``camera`` row per store; an unsynced store forms its own
-        singleton sequence. The sequence name is each store's base name
-        (:meth:`_store_base_name`); all cameras of a recording reduce to the same
-        base, and a divergent base warns and falls back to the deterministic
-        minimum. The canonical base is matched once against the track keymap so a
-        keymap hit assigns every camera the same ``(group, sequence)``. Emission
-        is deterministic: groups and their member stores sort by
-        ``(sync_uuid, camera_serial, path)``.
+        sequence with a ``camera`` row per store, the camera named by the store's
+        ``camera_serial``; an unsynced store forms its own singleton sequence.
+        The sequence name is each store's base name (:meth:`_store_base_name`),
+        matched once against the track keymap so a keymap hit assigns every
+        camera the same ``(group, sequence)``. Emission is deterministic: groups
+        and their member stores sort by ``(sync_uuid, camera_serial, path)``.
+        Two recordings that derive one entry, and a store without a serial that
+        joins the cameras of its recording kept in the index, are refused by
+        the caller after assigned identity is restored
+        (:func:`refuse_merged_store_recordings`).
+
+        Raises:
+            StoreGroupingError: If the stores of one synchronized recording
+                reduce to different base names, or two or more of them include
+                a store with an empty ``camera_serial``.
         """
         groups: dict[str, list[ProbedEntry]] = {}
         for entry in entries:
@@ -3695,20 +3748,24 @@ class Dataset:
         rows: list[dict[str, object]] = []
         for _key, members in sorted(groups.items()):
             members = sorted(
-                members, key=lambda e: (e.sync_uuid, e.camera, str(e.path))
+                members, key=lambda e: (e.sync_uuid, e.camera_serial, str(e.path))
             )
             # A non-empty group key is a shared sync_uuid: these stores are one
             # recording's cameras, so strip the serial to their shared base name.
             synced = bool(members[0].sync_uuid)
+            if synced and len(members) > 1:
+                unnamed = [str(e.path) for e in members if not e.camera_serial]
+                if unnamed:
+                    raise unnamed_cameras_error(members[0].sync_uuid, unnamed)
             bases = {self._store_base_name(e, strip_camera=synced) for e in members}
-            base = min(bases)
-            if synced and len(bases) > 1:
-                print(
-                    f"[index_media] imgstore recording {members[0].sync_uuid!r} "
-                    f"has cameras with divergent base names {sorted(bases)}; "
-                    f"using {base!r}.",
-                    file=sys.stderr,
+            if len(bases) > 1:
+                message = (
+                    f"imgstore recording {members[0].sync_uuid!r} has cameras "
+                    f"with divergent base names {sorted(bases)}. Name each store "
+                    "<recording>.<camera_serial>."
                 )
+                raise StoreGroupingError(message)
+            base = bases.pop()
             meta = self._match_media_sequence(
                 seq_key_map, base, mode=sequence_match_mode
             )
@@ -3730,8 +3787,9 @@ class Dataset:
                         sequence=sequence,
                         group_safe=group_safe,
                         sequence_safe=sequence_safe,
-                        camera=entry.camera,
+                        camera=entry.camera_serial,
                         sync_uuid=entry.sync_uuid,
+                        camera_serial=entry.camera_serial,
                         probe=entry.probe,
                         media_type=entry.media_type,
                         # A store's identity is its directory name (minus the
@@ -3774,6 +3832,14 @@ class Dataset:
         The return carries the written index path and any
         :class:`MediaIndexDisagreement`s -- files whose stored uuid differed from
         the injected one, reported not raised.
+
+        Unsynchronized imgstores under one scope join its sequence as clips when
+        they share a ``camera_serial``. A scope holding unsynchronized stores of
+        two or more distinct serials is refused before anything is written.
+
+        Raises:
+            StoreGroupingError: If a scope holds unsynchronized imgstores of
+                distinct non-empty ``camera_serial`` values.
         """
         media_root = self.get_root(self.resolve_media_root())
         index_path = media_root / index_filename
@@ -3841,16 +3907,18 @@ class Dataset:
         for scope in scope_list:
             group_safe = to_safe_name(scope.group) if scope.group else ""
             sequence_safe = to_safe_name(scope.sequence)
-            for entry in self._probe_dir_rows(
+            entries = self._probe_dir_rows(
                 [scope.directory],
                 exts,
                 recursive,
                 scope.facts_by_name,
                 cached_facts_by_path,
-            ):
-                # A probed imgstore supplies its own camera/sync_uuid from store
-                # metadata (read once in _probe_dir_rows); scope.camera is only
-                # an override for a plain video the caller tags with a camera.
+            )
+            self._refuse_unsynced_cameras(scope, entries)
+            for entry in entries:
+                # A probed imgstore supplies its own camera_serial/sync_uuid from
+                # store metadata (read once in _probe_dir_rows); scope.camera is
+                # only an override for a plain video the caller tags with a camera.
                 #
                 # The same inequality means two different things, and only
                 # `entry.origin` tells them apart. Against an INJECTED
@@ -3901,8 +3969,9 @@ class Dataset:
                         sequence=scope.sequence,
                         group_safe=group_safe,
                         sequence_safe=sequence_safe,
-                        camera=entry.camera or scope.camera,
+                        camera=entry.camera_serial or scope.camera,
                         sync_uuid=entry.sync_uuid,
+                        camera_serial=entry.camera_serial,
                         probe=entry.probe,
                         media_type=entry.media_type,
                         assignment_source="assigned",

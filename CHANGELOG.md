@@ -548,6 +548,26 @@ run id or path changes.
   The plain output names each entry by its `group:sequence` token.
 - `list_sequences` gives each row its `recording`.
 
+**A media index write refuses imgstores it cannot group, and records each store's
+`camera_serial`.** No key, run id, path or media composition changes.
+
+- A scan of a synchronized recording whose stores have different base names warned and
+  used the smallest name. It now refuses the recording. It also refuses a synchronized
+  recording of two or more stores where one has no `camera_serial`, counting the
+  stores an earlier scan indexed under its entry.
+- A scan refuses stores of different recordings that derive one `(group, sequence)`,
+  such as two cameras' stores both named by their start time. They joined one entry as
+  two cameras. The scan compares the stores an earlier scan indexed under that entry, so
+  scanning each camera's directory on its own is refused too. Each unsynchronized store
+  counts as its own recording, so two stores of one camera that derive one entry, as a
+  copy of a store does, are refused as well. An entry restored from an assignment is not
+  compared.
+- `write_media_index` refuses a scope holding unsynchronized stores of two or more
+  distinct `camera_serial` values. The stores of one camera still join as clips.
+- The media index gains a text column `camera_serial`, filled for an imgstore from its
+  metadata and empty for a plain video. An index written before it reads the column as
+  empty until the next scan or write. It enters no media composition.
+
 **`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
 Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
 and the inference bridge set `id` 0 on every row. Every detection of a table was then
