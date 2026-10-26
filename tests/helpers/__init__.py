@@ -37,7 +37,13 @@ What lives where:
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
-  ``infer-points``.
+  ``infer-points`` and for the ``predict-images`` call of a yolo-pose or POLO
+  frame adapter. ``ultralytics`` also writes the marked PNGs of a
+  ``predict-images`` request. ``sleap`` also stands in for the SLEAP
+  environment's probe and for the input writer, ``sleap-nn track`` and the
+  readback of a SLEAP frame adapter. ``litpose`` also stands in for the
+  Lightning Pose interpreter that runs the version probe and the prediction
+  snippet of a Lightning Pose frame adapter.
 - ``decode_probe`` contains a fake ``python`` for a tool environment, which stands
   in for the interpreter that runs the codec check's decode probe.
 - ``runner_programs`` imports a runner program under its bare name for one test,
@@ -236,6 +242,7 @@ from tests.helpers.paths import (
     REPO_ROOT,
     SOURCE_ROOT,
     TESTS_ROOT,
+    ULTRALYTICS_PROTOCOL,
     VAME_PROTOCOL,
     VAME_RUNNER,
 )
@@ -325,25 +332,48 @@ from tests.helpers.tracks import (
 from tests.helpers.identity import run_id_digest
 from tests.helpers.inference import (
     FakeInference,
+    FakePredictImages,
+    fake_tool_probe,
     install_fake_point_inference,
     install_fake_point_probe,
     install_fake_pose_inference,
     install_fake_pose_probe,
+    install_fake_predict_images,
+    point_image_rows,
     point_predictions,
+    pose_image_rows,
     pose_per_frame,
     pose_predictions,
 )
-from tests.helpers.litpose import FakeLitpose, install_fake_litpose, write_litpose_model
-from tests.helpers.sleap import FakeSleap, install_fake_sleap, write_sleap_model
+from tests.helpers.litpose import (
+    FakeLitpose,
+    FakeLitposeFrames,
+    LitposeSnippetRun,
+    install_fake_litpose,
+    install_fake_litpose_frames,
+    write_litpose_model,
+)
+from tests.helpers.sleap import (
+    FakeSleap,
+    FakeSleapFrames,
+    SleapInput,
+    SleapTrackCall,
+    install_fake_sleap,
+    install_fake_sleap_frames,
+    sleap_instance,
+    write_sleap_model,
+)
 from tests.helpers.trex import FakeTrex, install_fake_trex, write_pv_header
 from tests.helpers.ultralytics import (
     FakeDetections,
     FakeResult,
     FakeUltralytics,
     ULTRALYTICS_KEYPOINTS,
+    image_mark,
     install_fake_ultralytics,
     install_ultralytics_config,
     ultralytics_probe_response,
+    write_marked_images,
     write_ultralytics_predictions,
 )
 from tests.helpers.variants import (
@@ -401,6 +431,7 @@ __all__ = [
     "StudyEntry",
     "TemplatesStudy",
     "LineChildren",
+    "LitposeSnippetRun",
     "LossyFeature",
     "MOUSE",
     "PairClusterFeature",
@@ -418,15 +449,21 @@ __all__ = [
     "ScopedFeature",
     "SeparatedEnvironment",
     "SeparatedTool",
+    "SleapInput",
+    "SleapTrackCall",
     "TESTS_ROOT",
     "ULTRALYTICS_KEYPOINTS",
+    "ULTRALYTICS_PROTOCOL",
     "ULTRALYTICS_TOOL",
     "VAME_PROTOCOL",
     "VAME_RUNNER",
     "VAME_TOOL",
     "FakeInference",
     "FakeLitpose",
+    "FakeLitposeFrames",
+    "FakePredictImages",
     "FakeSleap",
+    "FakeSleapFrames",
     "FakeTrainer",
     "FakeTrex",
     "FakeToolPython",
@@ -479,17 +516,22 @@ __all__ = [
     "entry_predictions",
     "exited_pid",
     "extract_entry_camera",
+    "fake_tool_probe",
     "finish_media_variant",
     "functions_named",
+    "image_mark",
     "index_media_sequence",
     "index_session",
     "inside_a_virtualenv",
     "install_fake_litpose",
+    "install_fake_litpose_frames",
     "install_fake_point_inference",
     "install_fake_point_probe",
     "install_fake_pose_inference",
     "install_fake_pose_probe",
+    "install_fake_predict_images",
     "install_fake_sleap",
+    "install_fake_sleap_frames",
     "install_fake_tool_python",
     "install_fake_trex",
     "fit_lightning_action",
@@ -520,10 +562,12 @@ __all__ = [
     "names_read",
     "paint_frame_code",
     "point_at_a_store",
+    "point_image_rows",
     "point_predictions",
     "printed_command_words",
     "printed_scope_files",
     "project_requirements",
+    "pose_image_rows",
     "pose_per_frame",
     "pose_predictions",
     "pose_frame",
@@ -555,6 +599,7 @@ __all__ = [
     "scope_over",
     "self_referenced_extras",
     "set_tracks_cell",
+    "sleap_instance",
     "source_tree",
     "speed_heading_recipe",
     "speed_recipe",
@@ -584,6 +629,7 @@ __all__ = [
     "write_h264_mp4",
     "write_litpose_model",
     "write_media_index",
+    "write_marked_images",
     "write_mpeg4_mp4",
     "write_painted_entry",
     "write_pv_header",

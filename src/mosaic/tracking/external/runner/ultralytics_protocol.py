@@ -504,6 +504,17 @@ def pose_columns(n_keypoints: int) -> list[str]:
     return columns
 
 
+def request_columns(task: InferTask, n_keypoints: int) -> list[str]:
+    """The columns of a *task* request's rows file, in write order.
+
+    :func:`pose_columns` followed by :data:`POSE_BOX_COLUMNS` for ``pose``, and
+    :data:`POINT_COLUMNS` for ``locate``.
+    """
+    if task == "pose":
+        return [*pose_columns(n_keypoints), *POSE_BOX_COLUMNS]
+    return list(POINT_COLUMNS)
+
+
 POINT_COLUMNS: Final = (
     "frame",
     "detection_id",
@@ -569,6 +580,8 @@ class PoseResult(InferenceResult, Protocol):
     """What pose inference additionally reads."""
 
     @property
+    def boxes(self) -> Boxes | None: ...
+    @property
     def keypoints(self) -> Keypoints | None: ...
 
 
@@ -579,14 +592,32 @@ class PointResult(InferenceResult, Protocol):
     def locations(self) -> Locations | None: ...
 
 
+POSE_BOX_COLUMNS: Final = ("det_conf", "bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2")
+"""The box columns a pose row gains after :func:`pose_columns`, in write order."""
+
+_PREDICTED_BOX_COLUMNS: Final = 6
+"""Columns an untracked ``Boxes`` carries: x1, y1, x2, y2, confidence, class."""
+
+
 def pose_rows_from_result(
-    result: PoseResult, frame_index: int, *, n_keypoints: int
+    result: PoseResult,
+    frame_index: int,
+    *,
+    n_keypoints: int,
+    with_box: bool = False,
+    missing_score: float = 1.0,
 ) -> np.ndarray | None:
     """One frame's pose detections as a ``(n, 2 + 3K)`` block, or None.
 
     *frame_index* is the frame's entry frame, as :func:`rows_from_result`
-    takes it. A run with ``start_frame`` or ``frame_step`` set numbers its rows by
-    the frames it read, not by their places among them.
+    takes it, or the image's position in a list of images. A run with
+    ``start_frame`` or ``frame_step`` set numbers its rows by the frames it read,
+    not by their places among them.
+
+    *missing_score* is every keypoint's score when the predictions have no
+    visibility channel. With *with_box*, each row continues with its detection's
+    confidence and box corners from ``result.boxes``, in
+    :data:`POSE_BOX_COLUMNS` order, a ``(n, 7 + 3K)`` block.
     """
     keypoints = result.keypoints
     if keypoints is None:
@@ -603,13 +634,34 @@ def pose_rows_from_result(
         )
 
     n = data.shape[0]
-    block = np.empty((n, 2 + 3 * n_keypoints), dtype=np.float64)
+    pose_width = 2 + 3 * n_keypoints
+    width = pose_width + len(POSE_BOX_COLUMNS) if with_box else pose_width
+    block = np.empty((n, width), dtype=np.float64)
     block[:, 0] = float(frame_index)
     block[:, 1] = np.arange(n, dtype=np.float64)
     kp = np.empty((n, n_keypoints, 3), dtype=np.float64)
     kp[:, :, 0:2] = data[:, :, 0:2]
-    kp[:, :, 2] = data[:, :, 2] if data.shape[2] > 2 else 1.0
-    block[:, 2:] = kp.reshape(n, -1)
+    kp[:, :, 2] = data[:, :, 2] if data.shape[2] > 2 else missing_score
+    block[:, 2:pose_width] = kp.reshape(n, -1)
+    if with_box:
+        boxes = result.boxes
+        box = None if boxes is None else boxes.cpu().numpy().data
+        if box is None or box.shape[0] != n:
+            found = 0 if box is None else box.shape[0]
+            raise UltralyticsInteropError(
+                f"frame {frame_index}: {found} boxes for {n} poses. A pose row is "
+                "written with the box of its own detection, which takes one box "
+                "per pose."
+            )
+        if box.shape[1] < _PREDICTED_BOX_COLUMNS:
+            raise UltralyticsInteropError(
+                f"frame {frame_index}: a box should carry {_PREDICTED_BOX_COLUMNS} "
+                f"columns (box, confidence, class); got {box.shape[1]}."
+            )
+        # A box row is x1, y1, x2, y2, a track id when tracked, the confidence
+        # and the class. The confidence is the second column from the end.
+        block[:, pose_width] = box[:, -2]
+        block[:, pose_width + 1 :] = box[:, 0:4]
     return block
 
 
@@ -733,6 +785,85 @@ class InferResponse(BaseModel):
 
     n_rows: int
     """Detections written across every frame."""
+
+
+# --- predicting on images --------------------------------------------------
+
+
+class ImageSource(BaseModel):
+    """One image of a :class:`PredictImagesRequest`, and its position in it."""
+
+    position: int
+    """The ``frame`` of the image's rows in the rows file, distinct for each
+    image of a request."""
+
+    path: str
+    """The PNG to read, as an absolute path, because this program's working
+    directory is not mosaic's."""
+
+
+class PredictImagesRequest(BaseModel):
+    """A list of images, run through a pose or point model in a separate process.
+
+    A field that :class:`InferRequestBase` also declares has the same meaning
+    there. Its video fields are absent. A frame window and media facts mean nothing for
+    an image, and a list of images is neither prefetched nor drawn.
+    """
+
+    model_path: str
+    task: InferTask
+    """The task of the weights: ``pose`` for a YOLO pose model and ``locate``
+    for a POLO point model. The loaded weights are checked against it."""
+
+    images: list[ImageSource]
+
+    columns: list[str]
+    """The rows file's column names, in write order.
+
+    Built by mosaic and sent, for the reason ``InferRequestBase.columns`` gives:
+    :func:`pose_columns` followed by :data:`POSE_BOX_COLUMNS` for ``pose``, and
+    :data:`POINT_COLUMNS` for ``locate``.
+    """
+
+    conf: float
+    iou: float | None
+    """The NMS IoU threshold of a ``pose`` model, and None for ``locate``,
+    because POLO's locate NMS reads none. The runner refuses it on a ``locate``
+    request and requires it on a ``pose`` request."""
+
+    imgsz: int
+    max_det: int
+    agnostic_nms: bool
+    device: str
+    precision: Precision
+    """Spelled for the installed Ultralytics by the runner."""
+
+    batch_size: int
+    """The most images in one call. The images of a call share one shape."""
+
+    n_keypoints: int
+    """The number of keypoints of each ``pose`` row, from the probe."""
+
+    dor: float | None
+    """The distance-over-radius threshold of a ``locate`` model's point
+    suppression, or None for the threshold the checkpoint was trained with. The
+    radii are the checkpoint's."""
+
+    rows_path: str
+    """Where the rows parquet is published, atomically."""
+
+
+class PredictImagesResponse(BaseModel):
+    """What one list of images produced."""
+
+    n_images: int
+    """Images read and run through the model."""
+
+    n_rows: int
+    """Detections written across every image."""
+
+    rows_path: str
+    """The rows parquet, at the path the request named."""
 
 
 # --- training --------------------------------------------------------------
@@ -1028,8 +1159,10 @@ class HeartbeatEvent(BaseModel):
 __all__ = [
     "POINT_COLUMNS",
     "POINT_DTYPES",
+    "POSE_BOX_COLUMNS",
     "EpochEvent",
     "HeartbeatEvent",
+    "ImageSource",
     "InferPointsRequest",
     "InferPoseRequest",
     "InferRequestBase",
@@ -1040,6 +1173,8 @@ __all__ = [
     "PointResult",
     "PoseResult",
     "Precision",
+    "PredictImagesRequest",
+    "PredictImagesResponse",
     "ProbeRequest",
     "ProbeResponse",
     "ProgressEvent",
@@ -1059,5 +1194,6 @@ __all__ = [
     "point_rows_from_result",
     "pose_columns",
     "pose_rows_from_result",
+    "request_columns",
     "rows_from_result",
 ]

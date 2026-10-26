@@ -37,6 +37,7 @@ from mosaic.tracking.litpose.run import LITPOSE_ENV, LitposeError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CUDA_VISIBLE_DEVICES",
     "LITPOSE_LOADER_WORKER_KEY",
     "LitposeDevicePlacement",
     "epoch_coupled_assignments",
@@ -155,7 +156,7 @@ def epoch_coupled_assignments(max_epochs: int) -> dict[str, JsonValue]:
     }
 
 
-_CUDA_VISIBLE_DEVICES: Final = "CUDA_VISIBLE_DEVICES"
+CUDA_VISIBLE_DEVICES: Final = "CUDA_VISIBLE_DEVICES"
 """What selects a GPU for Lightning Pose, because nothing in its config does.
 
 ``training.num_gpus`` is a *count*, and ``lightning_pose.train`` builds its
@@ -222,7 +223,7 @@ def litpose_device_placement(
     if parts and all(part.isdigit() for part in parts):
         return LitposeDevicePlacement(
             assignments={"training.num_gpus": len(parts)},
-            env_overlay={_CUDA_VISIBLE_DEVICES: _visible(parts, inherited)},
+            env_overlay={CUDA_VISIBLE_DEVICES: _visible(parts, inherited)},
         )
     msg = (
         f"unusable device {device!r}: Lightning Pose trains on CUDA, fixing "
@@ -337,7 +338,7 @@ def train_litpose(
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
 
-    placement = litpose_device_placement(device, os.environ.get(_CUDA_VISIBLE_DEVICES))
+    placement = litpose_device_placement(device, os.environ.get(CUDA_VISIBLE_DEVICES))
     assignments: dict[str, JsonValue] = {
         "model.model_type": model_type,
         "model.backbone": backbone,

@@ -21,16 +21,22 @@ process. An environment declares a mosaic-authored distribution only where that
 distribution's license permits the combination, as
 :data:`tests.helpers.ULTRALYTICS_TOOL` records for ``mosaic-media``.
 
+Mosaic and the Ultralytics runner share their vocabulary through the protocol
+module beside the runner. The protocol module imports neither side, and declares
+the request and the response of each subcommand that mosaic launches.
+
 The checks that read files are unmarked and run in CI's ``test`` job. The check of
 a built environment is marked with the job that builds it.
 """
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tomllib
 from pathlib import Path, PurePosixPath
-from typing import Final, TypedDict
+from types import ModuleType
+from typing import Final, TypedDict, get_args, get_type_hints
 
 import pytest
 from pydantic import TypeAdapter
@@ -41,11 +47,13 @@ from mosaic.core.pipeline.toolenv import (
     subprocess_env,
     tool_invocation,
 )
+from mosaic.tracking.common.ultralytics_env import RunnerSubcommand
 
 from tests.helpers import (
     REPO_ROOT,
     SEPARATED_TOOLS,
     SOURCE_ROOT,
+    ULTRALYTICS_PROTOCOL,
     EnvironmentMarker,
     ImportedName,
     SeparatedEnvironment,
@@ -256,6 +264,42 @@ def test_every_python_file_beside_a_program_is_a_program() -> None:
     assert present == programs, (
         f"undeclared: {sorted(present - programs)}; missing: "
         f"{sorted(programs - present)}"
+    )
+
+
+def test_each_ultralytics_subcommand_exchanges_models_of_the_protocol_module(
+    runner_module: ModuleType,
+) -> None:
+    """Checks the runner's subcommands against mosaic's, and the models each exchanges.
+
+    The runner's parser accepts the subcommands that ``RunnerSubcommand`` names,
+    and no others. Each subcommand's request and response are models of the
+    protocol module. Mosaic then builds each request and reads each response
+    without importing the runner, and the runner validates each request without
+    importing mosaic.
+    """
+    usage = re.search(r"\{([^}]*)\}", runner_module._parser().format_usage())
+    assert usage is not None, "the runner's usage omits its subcommands"
+    launched = set(get_args(RunnerSubcommand))
+    assert set(usage.group(1).split(",")) == launched
+
+    protocol = PurePosixPath(ULTRALYTICS_PROTOCOL).stem
+    outside: dict[str, list[str]] = {}
+    for subcommand in sorted(launched):
+        answer = getattr(runner_module, f"run_{subcommand.replace('-', '_')}")
+        hints = get_type_hints(answer)
+        foreign = [
+            model.__qualname__
+            for model in (hints["request"], hints["return"])
+            if model.__module__ != protocol
+        ]
+        if foreign:
+            outside[subcommand] = foreign
+    assert not outside, (
+        f"these subcommands exchange models that {protocol} does not declare: "
+        f"{outside}. A model declared in the runner is unreachable from mosaic "
+        "without importing the runner, and one declared in mosaic is unreachable "
+        "from the runner without importing mosaic."
     )
 
 

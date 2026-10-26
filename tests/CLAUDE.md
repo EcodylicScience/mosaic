@@ -43,7 +43,9 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   pandas, cv2, av or the feature library, or `import mosaic.runlog` loading
   pydantic.
 - `test_external_tool_separation.py`: an import across a separated tool's
-  boundary, or a declaration of the tool in mosaic's dependencies.
+  boundary, a declaration of the tool in mosaic's dependencies, Ultralytics runner
+  subcommands that differ from `RunnerSubcommand`, or a subcommand's request or
+  response declared outside the protocol module.
 - `test_behavior_import_is_torch_free.py`: `import mosaic.behavior` importing torch.
 - `test_core_lazy_exports.py`: `mosaic.core` binding a name at import, or a leaf
   import loading pandas or h5py.

@@ -72,7 +72,7 @@ def keyed_run_records[KeyT](
 
     A run's coverage target is the keys of its rows inside the scope, and a key is
     present when its row's ``abs_path`` exists. A row without its file is an
-    orphan row.
+    orphan row. A key none of whose rows records a finish is an unfinished row.
 
     Args:
         ds: The dataset.
@@ -101,6 +101,7 @@ def keyed_run_records[KeyT](
             continue
         rows_by_run: dict[str, set[KeyT]] = {}
         present_by_run: dict[str, set[KeyT]] = {}
+        finished_by_run: dict[str, set[KeyT]] = {}
         positions: dict[str, list[int]] = {}
         started: dict[str, str] = {}
         finished: dict[str, str] = {}
@@ -121,6 +122,7 @@ def keyed_run_records[KeyT](
             started.setdefault(run_id, record.get("started_at", ""))
             if record.get("finished_at", ""):
                 finished.setdefault(run_id, record.get("finished_at", ""))
+                finished_by_run.setdefault(run_id, set()).add(key)
             stored = record.get("abs_path", "")
             if stored and ds.resolve_path(stored).exists():
                 present_by_run.setdefault(run_id, set()).add(key)
@@ -147,6 +149,7 @@ def keyed_run_records[KeyT](
                     index_path=index_path,
                     rows=rows,
                     orphan_rows=rows - present,
+                    unfinished_rows=rows - finished_by_run.get(run_id, set()),
                     drift=drift,
                     started_at=started.get(run_id, ""),
                     finished_at=finished.get(run_id, ""),

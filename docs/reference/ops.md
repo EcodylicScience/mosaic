@@ -3,7 +3,7 @@
 
 # Ops
 
-22 ops are registered. An op is the unit `mosaic run --kind <kind>`
+23 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -446,6 +446,28 @@ Run a trained YOLO pose model over scoped videos, bridging into ``tracks/``.
 | `agnostic_nms` | `boolean` | `false` |  | Suppress overlapping detections across classes instead of within each one. |
 | `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  | The numeric precision inference runs at. fp16 halves the memory a batch needs and can move a detection across a threshold. |
 | `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` | The NMS IoU threshold for suppressing overlapping detections. |
+
+#### `predict-frames`
+
+Version `0.1` &middot; `mosaic.tracking.ops.predict_frames.PredictFramesOp`
+
+Predict a trained model on the frames of one extraction run, per entry camera.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `model` | list of `string` | _required_ | min items `1`, max items `2` | The run ids of the trained models to predict with: one run, or a SLEAP top-down pair given as its centroid run, then its centered-instance run. |
+| `frames_run_id` | `string` | _required_ | min length `1` | The run id of the extraction run whose frames are predicted. |
+| `conf_threshold` | `number` | `0.05` | >= `0.0`, <= `1.0` | yolo-pose and POLO: the instance confidence below which a detection is dropped. Lower than the 0.25 of the inference ops, to keep weak detections for an annotator to correct. |
+| `imgsz` | `integer` | `640` | > `0` | yolo-pose and POLO: the longest side an image is resized to before the model reads it. [px] |
+| `iou` | `number` | `0.7` | >= `0.0`, <= `1.0` | The NMS IoU threshold for suppressing overlapping detections. |
+| `max_det` | `integer` | `300` | > `0` | The most detections kept from one frame. |
+| `agnostic_nms` | `boolean` | `false` |  | Suppress overlapping detections across classes instead of within each one. |
+| `precision` | `"fp32"` \| `"fp16"` | `"fp32"` |  | The numeric precision inference runs at. fp16 halves the memory a batch needs and can move a detection across a threshold. |
+| `dor` | `number` \| `None` | `null` |  | Distance-over-radius threshold of POLO's point suppression. A point whose distance to a higher-scoring point, divided by its radius, is below it is dropped. Unset uses the threshold the checkpoint was trained with, or POLO's 0.3 for a checkpoint that records none. |
+| `peak_threshold` | `number` | `0.2` | >= `0.0`, <= `1.0` | SLEAP: the minimum confidence-map peak that is kept as a keypoint. |
+| `max_instances` | `integer` \| `None` | `null` |  | SLEAP: the most instances kept in one frame. Unset keeps every one. |
+| `device` | `string` | `"auto"` |  | Where the model runs: auto, cpu, or a GPU index. auto leaves the choice to the tool, which takes the first CUDA device it finds, else the CPU. Lightning Pose runs on CUDA only. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
+| `batch_size` | `integer` | `16` | >= `1` | How many images the model reads in one forward pass. |
 
 ### train
 

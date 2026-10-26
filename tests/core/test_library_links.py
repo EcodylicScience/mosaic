@@ -22,11 +22,15 @@ from mosaic.core.manifest import (
     MediaScanSource,
     read_manifest,
 )
+from mosaic.core.pipeline.error_envelope import error_envelope
+from mosaic.core.pipeline.ops import ModelReference, registered_op
+from mosaic.tracking import register_ops
 from mosaic.tracking.model_refs import (
     ModelNotFoundError,
     ModelReferenceRefusedError,
     model_id_for_ref,
     observed_model_source,
+    refuse_unless_run_ids,
     resolve_model,
     resolve_op_model,
 )
@@ -212,6 +216,49 @@ def test_an_op_is_never_handed_a_path(tmp_path: Path) -> None:
 
     assert caught.value.reason == "not_a_run_id"
     assert caught.value.accepted_kinds == ("train-pose",)
+
+
+def test_the_first_reference_that_is_not_a_run_id_is_refused() -> None:
+    declared = ModelReference(
+        field="model", kinds=("train-pose", "train-sleap"), many=True
+    )
+    refs = [SLEAP_RUN_ID, "models/best.pt", "other.pt"]
+
+    with pytest.raises(ModelReferenceRefusedError) as caught:
+        refuse_unless_run_ids("predict-frames", declared, refs)
+
+    assert str(caught.value) == (
+        "'models/best.pt' is not a run id. predict-frames takes a model by the run "
+        "id of the train-pose or train-sleap run that trained it."
+    )
+    assert caught.value.reason == "not_a_run_id"
+    assert caught.value.op_kind == "predict-frames"
+    assert caught.value.reference == "models/best.pt"
+    assert caught.value.accepted_kinds == ("train-pose", "train-sleap")
+
+
+def test_run_ids_of_any_kind_pass_the_run_id_check() -> None:
+    """Whether the op accepts each kind is checked later, by ``model_kind_for``."""
+    declared = ModelReference(field="model", kinds=("train-pose",), many=True)
+
+    refuse_unless_run_ids("predict-frames", declared, [RUN_ID, SLEAP_RUN_ID])
+
+
+def test_an_op_and_the_run_id_check_refuse_a_path_alike(tmp_path: Path) -> None:
+    """Plan time and the run report a bare weights path as one error."""
+    project = make_dataset(tmp_path / "52", name="project")
+    register_ops()
+    declared = registered_op("infer-pose").model_reference
+    assert declared is not None
+    ref = str(tmp_path / "best.pt")
+
+    with pytest.raises(ModelReferenceRefusedError) as from_op:
+        _ = resolve_op_model(project, "infer-pose", ref)
+    with pytest.raises(ModelReferenceRefusedError) as from_check:
+        refuse_unless_run_ids("infer-pose", declared, [ref])
+
+    assert error_envelope(from_op.value) == error_envelope(from_check.value)
+    assert from_op.value.reason == from_check.value.reason == "not_a_run_id"
 
 
 def test_a_file_named_like_a_run_id_is_not_read(

@@ -21,6 +21,7 @@ from mosaic.core.pipeline.inventory.model import (
     Entry,
     FeatureRunRef,
     FramePredictionsRef,
+    FrameRunRef,
     InventoryScope,
     MediaDerivativeRef,
     MediaVariantRef,
@@ -132,7 +133,7 @@ def test_partial_is_not_absent() -> None:
 # --- lookups never raise ------------------------------------------------------
 
 
-def test_an_artifact_the_dataset_does_not_hold_reads_absent(tmp_path) -> None:
+def test_an_artifact_the_dataset_does_not_hold_reads_absent(tmp_path: Path) -> None:
     """Absence has to be something a caller can act on, not something it has to
     guard every lookup against."""
     inventory = DatasetInventory(
@@ -186,6 +187,31 @@ def test_a_frame_predictions_run_is_covered_by_entry_cameras(tmp_path: Path) -> 
 
     assert ref.kind == "frame-predictions"
     assert coverage.present == keys
+
+
+def test_a_frame_run_names_its_rows_by_entry_camera(tmp_path: Path) -> None:
+    """A run's rows are typed by its ref's key, and an absent run names none."""
+    ref = FrameRunRef(method="uniform", run_id="uniform-0123456789")
+    keys: frozenset[CameraEntry] = frozenset({("", "seq_a", "c1"), ("", "seq_b", "c1")})
+    record = ArtifactRecord[CameraEntry](
+        ref=ref,
+        name="uniform",
+        run_id=ref.run_id,
+        coverage=Coverage(target=keys, present=keys),
+        status="complete",
+        rows=keys,
+    )
+    inventory = DatasetInventory(
+        dataset_root=tmp_path,
+        scope=InventoryScope(kinds=frozenset({"frame-run"})),
+        records=(record,),
+    )
+    absent = FrameRunRef(method="uniform", run_id="uniform-aaaaaaaaaa")
+
+    rows: frozenset[CameraEntry] = inventory.rows(ref)
+
+    assert rows == keys
+    assert inventory.rows(absent) == frozenset()
 
 
 def test_a_prediction_score_is_covered_by_its_own_run_id(tmp_path: Path) -> None:

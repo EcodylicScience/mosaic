@@ -102,6 +102,7 @@ UNREGISTERED_PARAMS_MODULES: tuple[str, ...] = (
     "mosaic.core.media.preprocess.registry",
     "mosaic.core.media.preprocess.steps",
     "mosaic.core.track_library.track_converter_template",
+    "mosaic.tracking.frame_predictions.params",
 )
 """Modules holding a ``Params`` subclass that neither registry reaches.
 
@@ -110,7 +111,8 @@ through the same ``identity_dump()``. The ``*_template`` modules are the classes
 a person copies to add a converter or a feature, which is where an undescribed
 field propagates from. The media steps are parameter models in a list on the
 pre-processing op, and each step's fields are published to a client as that
-list's items.
+list's items. The predict-frames parameters are declared in
+``tracking.frame_predictions``, which no registry imports.
 """
 
 # The op registry fills on an explicit call rather than on importing the

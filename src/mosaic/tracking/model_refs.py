@@ -63,6 +63,7 @@ __all__ = [
     "model_id_for_ref_set",
     "model_kind_for",
     "observed_model_source",
+    "refuse_unless_run_ids",
     "resolve_model",
     "resolve_model_set",
     "resolve_op_model",
@@ -336,15 +337,24 @@ class ResolvedModel:
     digest over all its artifacts, which differs from every member's. The members
     are therefore recorded as provenance, where a search for the tracks that a
     model made finds them.
+
+    ``model_types`` records the model type that each artifact's config selects,
+    in reference order, ``""`` for an artifact without one. It is provenance,
+    read from the configs while the references resolve.
     """
 
     artifacts: tuple[ModelArtifact, ...]
     run_id: str
     digest: str
     members: tuple[str, ...]
-    model_type: str = ""
+    model_types: tuple[str, ...] = ()
     library_id: str = ""
     library_uuid: str = ""
+
+    @property
+    def model_type(self) -> str:
+        """The first model type that an artifact's config selects, else ``""``."""
+        return next((found for found in self.model_types if found), "")
 
     @property
     def path(self) -> Path:
@@ -708,7 +718,7 @@ def resolve_model(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
         run_id="",
         digest=digest,
         members=(digest,),
-        model_type=_model_type_of(artifact, spec),
+        model_types=(_model_type_of(artifact, spec),),
     )
 
 
@@ -759,7 +769,7 @@ def _resolve_registered(ds: Dataset, ref: str, kind: str) -> ResolvedModel:
         run_id=ref,
         digest=_identity((artifact,), spec),
         members=(ref,),
-        model_type=_model_type_of(artifact, spec),
+        model_types=(_model_type_of(artifact, spec),),
         library_id=registered.library_id,
         library_uuid=registered.library_uuid,
     )
@@ -829,7 +839,6 @@ def resolve_model_set(
     members: list[str] = []
     registered: list[str] = []
     served: list[_RegisteredArtifact] = []
-    model_type = ""
     for ref in refs:
         reference = user_path(ref)
         by_run = _looked_up(ref, reference, spec)
@@ -847,8 +856,6 @@ def resolve_model_set(
         artifacts.append(artifact)
         # Named as resolving this reference alone names it.
         members.append(ref if by_run else _identity((artifact,), spec))
-        if not model_type:
-            model_type = _model_type_of(artifact, spec)
 
     # A run identity names one run. A set assembled from several has no single
     # one to name, so it falls back to the content digest -- exactly as
@@ -860,7 +867,7 @@ def resolve_model_set(
         run_id=run_id,
         digest=_identity(artifacts, spec),
         members=tuple(members),
-        model_type=model_type,
+        model_types=tuple(_model_type_of(artifact, spec) for artifact in artifacts),
         library_id=served[0].library_id if single else "",
         library_uuid=served[0].library_uuid if single else "",
     )
@@ -1071,6 +1078,41 @@ def model_kind_for(
     return path_kind if path_kind is not None else declared.kinds[0]
 
 
+def refuse_unless_run_ids(
+    kind: str, declared: ModelReference, refs: Sequence[str]
+) -> None:
+    """Refuse the first of *refs* that is not a run identifier.
+
+    It reads the references alone. An op that takes its models by run
+    identifier calls it to refuse a weights path before any file is read.
+    :func:`model_kind_for` checks whether *declared* accepts each run's kind.
+
+    Args:
+        kind: The registered op kind the references are offered to.
+        declared: That op's declaration. A refusal names its kinds.
+        refs: The references as given, in order.
+
+    Raises:
+        ModelReferenceRefusedError: A reference is not a run identifier, with
+            ``reason="not_a_run_id"``.
+    """
+    for ref in refs:
+        if parse_op_run_id(ref) is not None:
+            continue
+        accepted = " or ".join(declared.kinds)
+        message = (
+            f"{ref!r} is not a run id. {kind} takes a model by the run id of "
+            f"the {accepted} run that trained it."
+        )
+        raise ModelReferenceRefusedError(
+            message,
+            reason="not_a_run_id",
+            op_kind=kind,
+            reference=ref,
+            accepted_kinds=declared.kinds,
+        )
+
+
 def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
     """Check that op *kind* can run the model run *ref* names, and resolve it.
 
@@ -1111,19 +1153,7 @@ def resolve_op_model(ds: Dataset, kind: str, ref: str) -> ResolvedModel:
             reference=ref,
             accepted_kinds=(),
         )
-    if parse_op_run_id(ref) is None:
-        accepted = " or ".join(declared.kinds)
-        message = (
-            f"{ref!r} is not a run id. {kind} takes a model by the run id of "
-            f"the {accepted} run that trained it."
-        )
-        raise ModelReferenceRefusedError(
-            message,
-            reason="not_a_run_id",
-            op_kind=kind,
-            reference=ref,
-            accepted_kinds=declared.kinds,
-        )
+    refuse_unless_run_ids(kind, declared, [ref])
     model_kind = model_kind_for(kind, declared, [ref])
     try:
         return _resolve_registered(ds, ref, model_kind)

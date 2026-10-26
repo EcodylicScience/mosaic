@@ -198,7 +198,7 @@ OPS_THE_FIXTURE_CANNOT_FEED = frozenset(["export-store"])
 
 ``export-store`` reads imgstore recordings and ``three_entry_dataset`` holds
 plain videos, so ``_stores_for`` refuses every scope the op admits before an
-identity exists. Twelve of the gated ops sit out for the same kind of reason --
+identity exists. Thirteen of the gated ops are skipped for the same kind of reason --
 no weights, no ``data.yaml`` -- and say so through ``IdentityDeferred``, which
 this one cannot: nothing upstream writes a recording, so an entry holding no
 store is a refusal rather than a deferral. Its invariance is measured against a
@@ -218,6 +218,7 @@ GATED_OPS = frozenset(
         "infer-points",
         "infer-pose",
         "litpose",
+        "predict-frames",
         "prepare-training-data",
         "preprocess",
         "sleap",
@@ -235,7 +236,7 @@ GATED_OPS = frozenset(
 
 Every op declaring independence, less the one
 :data:`OPS_THE_FIXTURE_CANNOT_FEED` names. The payload gate runs over all
-twenty-two and needs no population.
+twenty-three.
 """
 
 
@@ -304,9 +305,9 @@ regression names which one came back.
 class TestNoScopeReachesTheHashedPayload:
     """What a run covers and whether it recomputes never name the run.
 
-    The direct leak, over **every** registered op rather than the twenty the
-    dataset gate below covers. Every op now takes both as arguments and declares no
-    such field, and that is why this passes for all twenty-two. It
+    The direct leak, over **every** registered op, where the dataset gate below
+    covers twenty-one. Every op now takes both as arguments and declares no
+    such field, and that is why this passes for all twenty-three. It
     stays as the gate an op reintroducing one meets. The field would be
     ``HASH_EXCLUDE`` or the payload would name it, and a payload naming either
     gives one computation two names as soon as a caller narrows it.
@@ -330,10 +331,11 @@ class TestADeclaredIndependenceHoldsAgainstTheDataset:
     has that shape. Its scope filters the tracks index and the surviving variant
     enters every identifier, while its params payload holds no scope at all.
 
-    Partial today, and prospective rather than additive. Twenty-one ops declare
-    independence, twenty of them are gated here, and this dataset lets seven
-    answer: ``extract-frames``, ``trex``, ``export-joined``, ``convert-tracks``
-    and ``convert-labels``, pure functions of their params, and ``transcode``
+    Partial today, and prospective. Twenty-two ops declare independence,
+    twenty-one of them are gated here, and this dataset lets eight answer:
+    ``extract-frames``, ``trex``, ``export-joined``, ``convert-tracks`` and
+    ``convert-labels``, pure functions of their params, ``predict-frames``, whose
+    identity reads nothing from disk for one model reference, and ``transcode``
     and ``preprocess``, whose identity is their
     recipe and which read the dataset only for refusals that answer the same way
     for every entry set. The other thirteen defer, each deferral recorded as a
@@ -476,7 +478,7 @@ class TestPublished:
         """A client draws its controls from these fields, and a coverage is not one.
 
         Which entries a run covers is an argument to the run. No op params
-        model declares a coverage under any spelling the twenty-two have used,
+        model declares a coverage under any spelling the twenty-three have used,
         and the published schema is generated from these fields.
         """
         declaring = {
@@ -490,14 +492,15 @@ class TestPublished:
         Two attempts differing only in whether they redo the work are one
         recipe. Every op takes the decision as the ``overwrite`` argument
         :meth:`~mosaic.core.pipeline.ops.Op.run` receives, whose name and
-        position :class:`TestOpInterface` pins for all twenty-two.
+        position :class:`TestOpInterface` pins for all twenty-three.
 
         That a body reads it is measured per op, in both directions, wherever
         an op has a reuse gate: the five training ops and ``convert-points`` in
         ``tests/tracking/ops/test_training_reuse.py``,
         ``tests/tracking/sleap/test_train_sleap.py`` and
         ``tests/tracking/litpose/test_train_litpose.py``, ``transcode`` and
-        ``export-store`` in their own suites, and ``extract-frames`` in
+        ``export-store`` in their suites, ``predict-frames`` in
+        ``tests/tracking/ops/test_predict_frames_op.py``, and ``extract-frames`` in
         ``tests/tracking/frame_extraction/test_frame_extraction.py``, where the
         argument answers a refusal instead of a recompute.
         """

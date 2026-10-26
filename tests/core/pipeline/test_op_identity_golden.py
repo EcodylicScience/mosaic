@@ -86,10 +86,12 @@ from mosaic.core.pipeline.tracks_identity import (
 from mosaic.core.params import Params
 from mosaic.media_probe_config import media_thresholds
 from mosaic.tracking import register_ops
+from mosaic.tracking.frame_predictions.params import PredictFramesParams
 from mosaic.tracking.keypoint_sets import ResolvedSet
 from mosaic.tracking.litpose.version import LITPOSE_KIND, LITPOSE_VERSION
 from mosaic.tracking.ops.convert import convert_points_run_id
 from mosaic.tracking.ops.infer import infer_run_id
+from mosaic.tracking.ops.predict_frames import predict_frames_run_id
 from mosaic.tracking.ops.prepare import (
     PrepareTrainingDataParams,
     prepare_training_data_run_id,
@@ -943,6 +945,41 @@ def _preprocess_h264() -> str:
     return preprocess_identity(params).run_id
 
 
+def _predict_frames_run_id(
+    model_kind: str, model_id: str, model: list[str], **values: object
+) -> str:
+    """The identifier of a predict-frames run of *model* on one extraction run."""
+    params = _op_params(
+        "predict-frames", model=model, frames_run_id="kmeans-0123456789", **values
+    )
+    assert isinstance(params, PredictFramesParams)
+    return predict_frames_run_id(
+        OPS["predict-frames"].version,
+        params,
+        model_id=model_id,
+        model_kind=model_kind,
+    )
+
+
+def _predict_frames_single() -> str:
+    # One run id is the model's identity.
+    run = "train-pose.0.2-aaaaaaaaaa"
+    return _predict_frames_run_id("train-pose", run, [run])
+
+
+def _predict_frames_pair() -> str:
+    # A SLEAP pair is named by the content digest of both trainings.
+    pair = ["train-sleap.0.3-aaaaaaaaaa", "train-sleap.0.3-bbbbbbbbbb"]
+    return _predict_frames_run_id("train-sleap", "0123abcdef", pair)
+
+
+def _predict_frames_non_default() -> str:
+    run = "train-points.0.2-aaaaaaaaaa"
+    return _predict_frames_run_id(
+        "train-points", run, [run], dor=2.0, conf_threshold=0.1
+    )
+
+
 FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "frames/run-id": _frames_run_id,
     "frames/run-id-revision-1": _frames_run_id_revised,
@@ -1001,6 +1038,9 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "infer-localizer/run-id-media": _infer_run_id_on_media(
         "infer-localizer", "0.3", "train-localizer.0.1-aaaaaaaaaa"
     ),
+    "predict-frames/single": _predict_frames_single,
+    "predict-frames/pair": _predict_frames_pair,
+    "predict-frames/non-default": _predict_frames_non_default,
 }
 
 
@@ -1049,6 +1089,7 @@ def test_every_family_is_covered() -> None:
         "infer-pose",
         "infer-points",
         "infer-localizer",
+        "predict-frames",
         "composition",
         "tracks",
         "labels",

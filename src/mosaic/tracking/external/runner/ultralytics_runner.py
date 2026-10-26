@@ -14,6 +14,7 @@ Invoked as::
     <env>/bin/python ultralytics_runner.py track --request <req.json> --out <result.json>
     <env>/bin/python ultralytics_runner.py infer-pose --request <req.json> --out <result.json>
     <env>/bin/python ultralytics_runner.py infer-points --request <req.json> --out <result.json>
+    <env>/bin/python ultralytics_runner.py predict-images --request <req.json> --out <result.json>
     <env>/bin/python ultralytics_runner.py train-pose --request <req.json> --out <result.json>
     <env>/bin/python ultralytics_runner.py train-points --request <req.json> --out <result.json>
 
@@ -62,10 +63,11 @@ import queue
 import sys
 import tempfile
 import threading
-from collections.abc import Callable, Generator, Iterator, Sequence
+from collections import Counter
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, Protocol, TypeAlias, TypeVar
+from typing import Final, Literal, Protocol, Self, TypeAlias, TypeVar
 
 import numpy as np
 import pandas as pd
@@ -78,14 +80,18 @@ from ultralytics_protocol import (
     POINT_DTYPES,
     EpochEvent,
     HeartbeatEvent,
+    ImageSource,
     InferenceResult,
     InferPointsRequest,
     InferPoseRequest,
     InferRequestBase,
     InferResponse,
+    InferTask,
     PointResult,
     PoseResult,
     Precision,
+    PredictImagesRequest,
+    PredictImagesResponse,
     ProbeRequest,
     ProbeResponse,
     ProgressEvent,
@@ -417,6 +423,18 @@ class BatchReader(Protocol):
     """What the batch loops read from: ``(indices, frames)``, empty at the end."""
 
     def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]: ...
+
+
+class SizedBatchReader(BatchReader, Protocol):
+    """A :class:`BatchReader` that counts the frames it delivers and closes on exit.
+
+    The inference loop reports progress against the count, and reads inside a
+    ``with`` block.
+    """
+
+    def __len__(self) -> int: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(self, *_args: object) -> None: ...
 
 
 class EntryReader:
@@ -773,25 +791,32 @@ def run_track(request: TrackRequest) -> TrackResponse:
 # --- inference -------------------------------------------------------------
 
 
-def _infer_kwargs(request: InferRequestBase) -> dict[str, object]:
-    """The arguments every frame of this video is predicted with.
+def _infer_kwargs(
+    device: str,
+    conf: float,
+    imgsz: int,
+    max_det: int,
+    agnostic_nms: bool,
+    precision: Precision,
+) -> dict[str, object]:
+    """The arguments every frame of a run is predicted with.
 
     Every detection-affecting argument is passed explicitly, for the reason
     :func:`_track_kwargs` gives: an upstream retune cannot silently re-mean an
-    identifier mosaic already minted. ``iou`` is added by the pose op alone,
+    identifier mosaic already minted. ``iou`` is added by a pose caller alone,
     because POLO's locate NMS never reads it.
     """
     return {
-        "device": request.device,
-        "conf": request.conf,
-        "imgsz": request.imgsz,
-        "max_det": request.max_det,
-        "agnostic_nms": request.agnostic_nms,
+        "device": device,
+        "conf": conf,
+        "imgsz": imgsz,
+        "max_det": max_det,
+        "agnostic_nms": agnostic_nms,
         "augment": False,
         # False so the tool does not chatter over the progress lines, which are
         # what mosaic's inactivity watchdog reads.
         "verbose": False,
-        **_precision_kwarg(request.precision),
+        **_precision_kwarg(precision),
     }
 
 
@@ -823,17 +848,24 @@ class _InferOutcome:
 
 
 def _infer_frames(
-    request: InferRequestBase,
+    reader: SizedBatchReader,
     model: _Predictor[ResultT],
     kwargs: dict[str, object],
     rows: Callable[[ResultT, int], np.ndarray | None],
+    *,
+    batch_size: int,
+    prefetch: bool,
+    max_frames: int | None,
+    annotated_dir: Path | None,
 ) -> _InferOutcome:
-    """Read *request*'s window in batches, predict each, and keep only the rows.
+    """Read *reader* in batches, predict each, and keep only the rows.
 
-    Each frame's rows are numbered by the frame's index on the entry's axis, which
-    the reader returns with it, so a run with ``start_frame`` or ``frame_step`` set
-    numbers its rows by the frames that it read. The tracker numbers its rows the
-    same way.
+    Each frame's rows are numbered by the index that the reader returns with the
+    frame. An entry's reader returns the frame's index on the entry's axis, so a
+    run with ``start_frame`` or ``frame_step`` set numbers its rows by the frames
+    that it read. The tracker numbers its rows the same way. Reading stops after
+    *max_frames* frames, and each frame is drawn into *annotated_dir* when one is
+    given.
 
     The results themselves are dropped as each batch is converted. That is the
     one thing this loop does that the in-process path did not: it accumulated
@@ -850,24 +882,17 @@ def _infer_frames(
     pixels.
     """
     outcome = _InferOutcome()
-    annotated = Path(request.annotated_dir) if request.annotated_dir else None
-    if annotated is not None:
-        annotated.mkdir(parents=True, exist_ok=True)
+    if annotated_dir is not None:
+        annotated_dir.mkdir(parents=True, exist_ok=True)
 
-    reader = EntryReader(
-        request.sources,
-        start_frame=request.start_frame,
-        end_frame=request.end_frame,
-        frame_step=request.frame_step,
-    )
     with reader:
         total = len(reader)
-        if request.max_frames is not None:
-            total = min(total, request.max_frames)
-        with _decoded_batches(reader, request.batch_size, request.prefetch) as batches:
+        if max_frames is not None:
+            total = min(total, max_frames)
+        with _decoded_batches(reader, batch_size, prefetch) as batches:
             for indices, frames in batches:
-                if request.max_frames is not None:
-                    remaining = request.max_frames - outcome.n_frames
+                if max_frames is not None:
+                    remaining = max_frames - outcome.n_frames
                     if remaining <= 0:
                         break
                     indices = indices[:remaining]
@@ -881,16 +906,38 @@ def _infer_frames(
                     block = rows(result, int(indices[offset]))
                     if block is not None:
                         outcome.blocks.append(block)
-                    if annotated is not None:
-                        _write_annotated(result, annotated, int(indices[offset]))
+                    if annotated_dir is not None:
+                        _write_annotated(result, annotated_dir, int(indices[offset]))
                 outcome.n_frames += len(indices)
                 _report("progress", outcome.n_frames, total)
-                if (
-                    request.max_frames is not None
-                    and outcome.n_frames >= request.max_frames
-                ):
+                if max_frames is not None and outcome.n_frames >= max_frames:
                     break
     return outcome
+
+
+def _infer_entry(
+    request: InferRequestBase,
+    model: _Predictor[ResultT],
+    kwargs: dict[str, object],
+    rows: Callable[[ResultT, int], np.ndarray | None],
+) -> _InferOutcome:
+    """Run :func:`_infer_frames` over the frame window of *request*'s entry."""
+    reader = EntryReader(
+        request.sources,
+        start_frame=request.start_frame,
+        end_frame=request.end_frame,
+        frame_step=request.frame_step,
+    )
+    return _infer_frames(
+        reader,
+        model,
+        kwargs,
+        rows,
+        batch_size=request.batch_size,
+        prefetch=request.prefetch,
+        max_frames=request.max_frames,
+        annotated_dir=Path(request.annotated_dir) if request.annotated_dir else None,
+    )
 
 
 def _numeric_frame(
@@ -916,8 +963,34 @@ def _numeric_frame(
     return pd.DataFrame(stacked, columns=list(columns)), int(stacked.shape[0])
 
 
-def _loaded_for(request: InferRequestBase) -> object:
-    """The weights this run declares, loaded, with the declared task checked.
+def _pose_table(
+    blocks: list[np.ndarray], columns: Sequence[str]
+) -> tuple[pd.DataFrame, int]:
+    """*blocks* of pose rows under *columns*, with ``frame`` and ``id`` as integers."""
+    table, n_rows = _numeric_frame(blocks, columns)
+    return table.astype({"frame": "int64", "id": "int64"}), n_rows
+
+
+def _point_table(
+    outcome: _InferOutcome, columns: Sequence[str]
+) -> tuple[pd.DataFrame, int]:
+    """*outcome*'s point rows in the order of *columns*, cast to :data:`POINT_DTYPES`.
+
+    ``class_name`` is mapped from ``class_id`` after the numeric block is
+    assembled, because it is the one column of either table that is not a number.
+    """
+    table, n_rows = _numeric_frame(outcome.blocks, list(POINT_COLUMNS[:-1]))
+    table["class_name"] = [
+        outcome.names.get(class_id, f"class_{class_id}")
+        for class_id in map(int, table["class_id"])
+    ]
+    # Every column is cast to its declared type after ``class_name`` exists. An
+    # empty run would otherwise get a float64 ``class_name`` from an empty list.
+    return table[list(columns)].astype(POINT_DTYPES), n_rows
+
+
+def _loaded_for(model_path: str, task: InferTask) -> object:
+    """The weights at *model_path*, loaded, with the declared *task* checked.
 
     Announced before the load for the reason :func:`run_track` gives: a cold
     checkpoint is the longest silence a healthy run contains, and mosaic's
@@ -926,12 +999,12 @@ def _loaded_for(request: InferRequestBase) -> object:
     from ultralytics import YOLO
 
     _report("started")
-    loaded = YOLO(request.model_path)
-    task = str(getattr(loaded, "task", ""))
-    if task != request.task:
+    loaded = YOLO(model_path)
+    loaded_task = str(getattr(loaded, "task", ""))
+    if loaded_task != task:
         raise RunnerError(
-            f"{request.model_path} is a {task!r} model but the run declares "
-            f"task={request.task!r}. The declared task is part of the run "
+            f"{model_path} is a {loaded_task!r} model but the run declares "
+            f"task={task!r}. The declared task is part of the run "
             "identifier, so it has to match what the weights actually are."
         )
     return loaded
@@ -939,10 +1012,17 @@ def _loaded_for(request: InferRequestBase) -> object:
 
 def run_infer_pose(request: InferPoseRequest) -> InferResponse:
     """Run one entry through a YOLO pose model and write its raw predictions."""
-    model: _Predictor[PoseResult] = _loaded_for(request)
-    kwargs = _infer_kwargs(request)
+    model: _Predictor[PoseResult] = _loaded_for(request.model_path, request.task)
+    kwargs = _infer_kwargs(
+        request.device,
+        request.conf,
+        request.imgsz,
+        request.max_det,
+        request.agnostic_nms,
+        request.precision,
+    )
     kwargs["iou"] = request.iou
-    outcome = _infer_frames(
+    outcome = _infer_entry(
         request,
         model,
         kwargs,
@@ -950,8 +1030,7 @@ def run_infer_pose(request: InferPoseRequest) -> InferResponse:
             result, frame_index, n_keypoints=request.n_keypoints
         ),
     )
-    table, n_rows = _numeric_frame(outcome.blocks, request.columns)
-    table = table.astype({"frame": "int64", "id": "int64"})
+    table, n_rows = _pose_table(outcome.blocks, request.columns)
     _publish_parquet(table, request.output_parquet)
     return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
 
@@ -972,11 +1051,11 @@ _RADII: Final = TypeAdapter(dict[int, float])
 
 
 def _suppression_kwargs(
-    request: InferPointsRequest, model: object
+    dor: float | None, radii: Mapping[int, float] | None, model: object
 ) -> dict[str, object]:
-    """The ``dor`` and ``radii`` this run's point suppression applies.
+    """The ``dor`` and ``radii`` that point suppression by *model* applies.
 
-    Each is the request's when it states one, and otherwise what the checkpoint
+    Each is the stated *dor* or *radii* when given, and otherwise what the checkpoint
     recorded at training: ``train_args.dor``, and the radii POLO's trainer copies
     from the dataset onto the model it saves. The fork's predictor reads radii
     from the dataset config the checkpoint names. When that path is absent, as it
@@ -987,14 +1066,12 @@ def _suppression_kwargs(
     defaults.
     """
     kwargs: dict[str, object] = {}
-    dor = request.dor
     if dor is None:
         checkpoint: object = getattr(model, "ckpt", None)
         if checkpoint:
             dor = _Checkpoint.model_validate(checkpoint).train_args.dor
     if dor is not None:
         kwargs["dor"] = dor
-    radii = request.radii
     if radii is None:
         stored: object = getattr(getattr(model, "model", None), "radii", None)
         if stored:
@@ -1005,27 +1082,230 @@ def _suppression_kwargs(
 
 
 def run_infer_points(request: InferPointsRequest) -> InferResponse:
-    """Run one entry through a POLO point model and write its raw predictions.
-
-    ``class_name`` is mapped from ``class_id`` after the numeric block is
-    assembled, because it is the one column of either table that is not a number
-    and so cannot travel in one.
-    """
-    model: _Predictor[PointResult] = _loaded_for(request)
-    kwargs = {**_infer_kwargs(request), **_suppression_kwargs(request, model)}
-    outcome = _infer_frames(request, model, kwargs, point_rows_from_result)
-
-    numeric = list(POINT_COLUMNS[:-1])
-    table, n_rows = _numeric_frame(outcome.blocks, numeric)
-    table["class_name"] = [
-        outcome.names.get(class_id, f"class_{class_id}")
-        for class_id in map(int, table["class_id"])
-    ]
-    # Every column is cast to its declared type after ``class_name`` exists. An
-    # empty run would otherwise get a float64 ``class_name`` from an empty list.
-    table = table[list(request.columns)].astype(POINT_DTYPES)
+    """Run one entry through a POLO point model and write its raw predictions."""
+    model: _Predictor[PointResult] = _loaded_for(request.model_path, request.task)
+    kwargs = {
+        **_infer_kwargs(
+            request.device,
+            request.conf,
+            request.imgsz,
+            request.max_det,
+            request.agnostic_nms,
+            request.precision,
+        ),
+        **_suppression_kwargs(request.dor, request.radii, model),
+    }
+    outcome = _infer_entry(request, model, kwargs, point_rows_from_result)
+    table, n_rows = _point_table(outcome, request.columns)
     _publish_parquet(table, request.output_parquet)
     return InferResponse(n_frames=outcome.n_frames, n_rows=n_rows)
+
+
+# --- predicting on images --------------------------------------------------
+
+
+_PNG_SIGNATURE: Final = b"\x89PNG\r\n\x1a\n"
+"""The eight bytes that open every PNG file."""
+
+_PNG_HEADER_BYTES: Final = 24
+"""The signature, then the header chunk's length, type, width and height."""
+
+
+def _png_shape(path: str) -> tuple[int, int]:
+    """The ``(height, width)`` that the PNG at *path* declares in its header.
+
+    The header chunk follows the signature: four bytes of length, the type
+    ``IHDR``, then the width and the height as big-endian integers. Reading them
+    leaves the pixels undecoded.
+    """
+    try:
+        with Path(path).open("rb") as handle:
+            head = handle.read(_PNG_HEADER_BYTES)
+    except OSError as error:
+        raise RunnerError(f"{path} could not be opened: {error.strerror}.") from error
+    if (
+        len(head) < _PNG_HEADER_BYTES
+        or head[:8] != _PNG_SIGNATURE
+        or head[12:16] != b"IHDR"
+    ):
+        raise RunnerError(
+            f"{path} is not a PNG image. predict-images reads PNG images, and "
+            "batches each by the shape that its header declares."
+        )
+    return int.from_bytes(head[20:24], "big"), int.from_bytes(head[16:20], "big")
+
+
+def _decoded_image(image: ImageSource, shape: tuple[int, int]) -> np.ndarray:
+    """The pixels of *image* in BGR order, refused unless they are of *shape*.
+
+    ``cv2`` is imported here, as :func:`_write_annotated` imports it. An
+    environment without it then still answers every other subcommand.
+    """
+    import cv2
+
+    pixels = cv2.imread(image.path, cv2.IMREAD_COLOR)
+    if pixels is None:
+        raise RunnerError(f"{image.path} could not be decoded.")
+    height, width = pixels.shape[:2]
+    if (height, width) != shape:
+        raise RunnerError(
+            f"{image.path} decodes to {width}x{height} pixels and its header "
+            f"declares {shape[1]}x{shape[0]}. Its batch is chosen by the header."
+        )
+    return pixels
+
+
+class ImageListReader:
+    """Read a list of PNG images in batches of one shape, numbered by position.
+
+    ``read_batch`` stacks a batch into one array. The images of a batch therefore
+    share one ``(height, width)``. The images are grouped by shape, the groups read
+    in ascending order of shape and each group in ascending order of position, and a
+    batch ends where its group ends. The batches are the same whatever order the
+    request lists the images in. Within one shape, Ultralytics letterboxes each
+    image the same way, whatever the other images of its batch.
+
+    Each shape is read from the image's PNG header when the reader is made. Each
+    image is decoded when its batch is read, by ``cv2.imread`` in BGR order, the
+    channel order of the video reader. An image is refused when it cannot be
+    opened, when it is not a PNG, when it does not decode, or when it decodes to
+    another shape than its header declares. Two images at one position are
+    refused, because a row is numbered by its image's position.
+    """
+
+    def __init__(self, images: Sequence[ImageSource]) -> None:
+        counts = Counter(image.position for image in images)
+        repeated = sorted(position for position, count in counts.items() if count > 1)
+        if repeated:
+            raise RunnerError(
+                f"positions {repeated} each name more than one image. Each row "
+                "is numbered by the position of its one image."
+            )
+        self._queue: list[tuple[tuple[int, int], ImageSource]] = sorted(
+            ((_png_shape(image.path), image) for image in images),
+            key=lambda shaped: (shaped[0], shaped[1].position),
+        )
+        self._next: int = 0
+
+    def __len__(self) -> int:
+        """The number of images the reader delivers."""
+        return len(self._queue)
+
+    def read_batch(self, batch_size: int) -> tuple[np.ndarray, np.ndarray]:
+        """Return up to *batch_size* images of one shape and their positions.
+
+        Both arrays are empty once every image has been read.
+        """
+        start = self._next
+        if start >= len(self._queue):
+            return np.empty(0, dtype=np.int64), np.empty((0, 0, 0, 3), np.uint8)
+        shape = self._queue[start][0]
+        stop = min(len(self._queue), start + max(1, batch_size))
+        end = start + 1
+        while end < stop and self._queue[end][0] == shape:
+            end += 1
+        self._next = end
+        batch = [image for _, image in self._queue[start:end]]
+        return (
+            np.array([image.position for image in batch], dtype=np.int64),
+            np.stack([_decoded_image(image, shape) for image in batch]),
+        )
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        """Read nothing more. No file stays open between batches."""
+        self._next = len(self._queue)
+
+
+def _infer_images(
+    reader: ImageListReader,
+    model: _Predictor[ResultT],
+    kwargs: dict[str, object],
+    rows: Callable[[ResultT, int], np.ndarray | None],
+    *,
+    batch_size: int,
+) -> _InferOutcome:
+    """Run :func:`_infer_frames` over *reader*'s images, numbered by position."""
+    return _infer_frames(
+        reader,
+        model,
+        kwargs,
+        rows,
+        batch_size=batch_size,
+        prefetch=False,
+        max_frames=None,
+        annotated_dir=None,
+    )
+
+
+def run_predict_images(request: PredictImagesRequest) -> PredictImagesResponse:
+    """Run a list of images through a pose or point model and write their rows.
+
+    Each row is numbered by its image's position. A ``pose`` row continues with its
+    detection's confidence and box, and a keypoint's score is NaN when the model
+    predicts keypoints without visibility. A ``locate`` model suppresses points at
+    the request's ``dor``, else at its checkpoint's, and at the radii that its
+    checkpoint recorded. The rows file has the columns of ``request.columns``, in
+    that order, even when it is empty.
+
+    The refusals that need no pixels come before the weights load: an ``iou``
+    that its task does not read, two images at one position, and an image without
+    a readable PNG header.
+    """
+    if request.task == "locate" and request.iou is not None:
+        raise RunnerError(
+            f"a locate request sets iou={request.iou}, and POLO's point "
+            "suppression ignores iou. A locate request sends iou as null."
+        )
+    if request.task == "pose" and request.iou is None:
+        raise RunnerError(
+            "a pose request leaves iou unset, and a pose model's NMS reads it. "
+            "The runner passes every detection argument explicitly."
+        )
+    reader = ImageListReader(request.images)
+    loaded = _loaded_for(request.model_path, request.task)
+    kwargs = _infer_kwargs(
+        request.device,
+        request.conf,
+        request.imgsz,
+        request.max_det,
+        request.agnostic_nms,
+        request.precision,
+    )
+    if request.task == "pose":
+        pose_model: _Predictor[PoseResult] = loaded
+        kwargs["iou"] = request.iou
+        outcome = _infer_images(
+            reader,
+            pose_model,
+            kwargs,
+            lambda result, position: pose_rows_from_result(
+                result,
+                position,
+                n_keypoints=request.n_keypoints,
+                with_box=True,
+                missing_score=math.nan,
+            ),
+            batch_size=request.batch_size,
+        )
+        table, n_rows = _pose_table(outcome.blocks, request.columns)
+    else:
+        point_model: _Predictor[PointResult] = loaded
+        kwargs.update(_suppression_kwargs(request.dor, None, point_model))
+        outcome = _infer_images(
+            reader,
+            point_model,
+            kwargs,
+            point_rows_from_result,
+            batch_size=request.batch_size,
+        )
+        table, n_rows = _point_table(outcome, request.columns)
+    _publish_parquet(table, request.rows_path)
+    return PredictImagesResponse(
+        n_images=outcome.n_frames, n_rows=n_rows, rows_path=request.rows_path
+    )
 
 
 # --- training --------------------------------------------------------------
@@ -1297,7 +1577,7 @@ def run_train_points(request: TrainPointsRequest) -> TrainResponse:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ultralytics_runner",
-        description="Probe the Ultralytics environment, or run one entry through it.",
+        description="Probe the Ultralytics environment, or run a model through it.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (
@@ -1306,6 +1586,7 @@ def _parser() -> argparse.ArgumentParser:
         ("track", "track one entry and write its raw predictions"),
         ("infer-pose", "run a pose model over one entry"),
         ("infer-points", "run a point model over one entry"),
+        ("predict-images", "run a pose or point model over a list of images"),
         ("train-pose", "train a pose model on one dataset"),
         ("train-points", "train a point model on one dataset"),
     ):
@@ -1329,6 +1610,8 @@ def _answer(command: str, payload: str) -> BaseModel:
         return run_infer_pose(InferPoseRequest.model_validate_json(payload))
     if command == "infer-points":
         return run_infer_points(InferPointsRequest.model_validate_json(payload))
+    if command == "predict-images":
+        return run_predict_images(PredictImagesRequest.model_validate_json(payload))
     if command == "train-pose":
         return run_train_pose(TrainPoseRequest.model_validate_json(payload))
     if command == "train-points":

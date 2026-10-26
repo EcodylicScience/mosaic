@@ -29,7 +29,8 @@ with it -- and two programs exchanging files are two programs.
 launches `runner/` inside it; `ultralytics_track/run.py`,
 `pose_training/ultralytics_infer.py` and `pose_training/ultralytics_train.py`
 are the tracker's, the inference ops' and the training ops' sides of that
-exchange. None of the four imports Ultralytics.
+exchange. `ultralytics_infer.py` is also the side of the frame adapters that
+predict on extracted frames. None of the four imports Ultralytics.
 
 **Every path that reaches Ultralytics runs here**, so no mosaic install carries
 it: there is no extra to install, and `pip install -e ".[all]"` resolves no
@@ -184,7 +185,7 @@ the package without importing the module that imports Ultralytics.
   standard library, numpy and pydantic and nothing else. It imports neither
   `ultralytics` nor `mosaic`.
 - `runner/ultralytics_runner.py` -- the program that imports Ultralytics, and
-  the only one mosaic reaches that does. Seven subcommands, each reading one JSON
+  the only program of mosaic's that does. Eight subcommands, each reading one JSON
   request file and writing one JSON response file:
 
   ```bash
@@ -193,6 +194,7 @@ the package without importing the module that imports Ultralytics.
   .venv/bin/python ../runner/ultralytics_runner.py track --request req.json --out result.json
   .venv/bin/python ../runner/ultralytics_runner.py infer-pose --request req.json --out result.json
   .venv/bin/python ../runner/ultralytics_runner.py infer-points --request req.json --out result.json
+  .venv/bin/python ../runner/ultralytics_runner.py predict-images --request req.json --out result.json
   .venv/bin/python ../runner/ultralytics_runner.py train-pose --request req.json --out result.json
   .venv/bin/python ../runner/ultralytics_runner.py train-points --request req.json --out result.json
   ```
@@ -200,7 +202,10 @@ the package without importing the module that imports Ultralytics.
   The two inference subcommands write their predictions parquet themselves, the
   way `track` does, and convert each batch as it arrives rather than keeping the
   results: a video's worth of live tensors cannot cross the boundary, and holding
-  them was a memory profile that grew with the recording.
+  them was a memory profile that grew with the recording. `predict-images` runs a
+  pose or point model over a list of PNG images the same way, and writes the same
+  progress lines. It batches the images by shape and numbers each image's rows by
+  its position in the request.
 
   The response goes to a file rather than to standard output because
   Ultralytics' own logger is a stream handler on standard output -- a weights

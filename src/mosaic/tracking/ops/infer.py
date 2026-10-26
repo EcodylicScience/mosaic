@@ -81,6 +81,7 @@ from mosaic.tracking.common.bridge import (
 )
 from mosaic.tracking.common.detection_params import (
     AgnosticNms,
+    DistanceOverRadiusThreshold,
     InferencePrecision,
     IouThreshold,
     MaxDetections,
@@ -331,20 +332,12 @@ class PoseInferParams(_UltralyticsInferParams):
     iou: IouThreshold = 0.7
 
 
-_DOR_DESCRIPTION = (
-    "Distance-over-radius threshold of POLO's point suppression. A point whose "
-    "distance to a higher-scoring point, divided by its radius, is below it is "
-    "dropped. Unset uses the threshold the checkpoint was trained with, or "
-    "POLO's 0.3 for a checkpoint that records none."
-)
-
-
 # No `iou`: POLO's locate NMS suppresses by distance over radius and never reads
 # one, so the field would key a run and change nothing.
 class PointInferParams(_UltralyticsInferParams):
     op_kind = "infer-points"
 
-    dor: Annotated[float | None, Declared(_DOR_DESCRIPTION)] = None
+    dor: DistanceOverRadiusThreshold = None
 
 
 _NUM_CLASSES_DESCRIPTION = (

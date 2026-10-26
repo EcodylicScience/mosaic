@@ -660,6 +660,7 @@ _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
         "train-litpose",
         "convert-tracks",
         "convert-labels",
+        "predict-frames",
     }
 )
 

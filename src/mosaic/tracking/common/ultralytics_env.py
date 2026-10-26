@@ -70,6 +70,7 @@ RunnerSubcommand: TypeAlias = Literal[
     "track",
     "infer-pose",
     "infer-points",
+    "predict-images",
     "train-pose",
     "train-points",
 ]

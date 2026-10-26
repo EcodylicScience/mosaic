@@ -80,11 +80,15 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 - `tests/meta/test_external_tool_separation.py` fails when a mosaic module outside the
   runner imports the tool, when a mosaic dependency, extra, group or `uv.lock` declares
   it, or when a runner program imports mosaic. `SEPARATED_TOOLS` in
-  `tests/helpers/environment.py` lists each tool.
+  `tests/helpers/environment.py` lists each tool. It also fails when the runner's
+  subcommands differ from `RunnerSubcommand` (`common/ultralytics_env.py`), or when a
+  subcommand's request or response is declared outside `ultralytics_protocol.py`.
 - POLO ships under the distribution name `ultralytics`. One environment holds
   upstream or POLO, not both. Upstream (`ULTRALYTICS_ENV`) runs the tracker,
-  `infer-pose` and `train-pose`. POLO (`POLO_ENV`) runs `infer-points` and
-  `train-points`. Both are in `common/ultralytics_env.py`.
+  `infer-pose`, `train-pose` and `predict_pose_frames`. POLO (`POLO_ENV`) runs
+  `infer-points`, `train-points` and `predict_point_frames`. Both are in
+  `common/ultralytics_env.py`, and both frame adapters in
+  `pose_training/ultralytics_infer.py`.
 - Both ship the same `yolo` script. The `$PATH` rung of the location ladder cannot
   tell them apart. The runner's probe reports `has_locate`. `require_points_model`
   (`pose_training/ultralytics_infer.py`) and `require_points_training_env`

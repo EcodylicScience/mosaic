@@ -67,6 +67,8 @@ from ..inventory.model import (
     Coverage,
     Entry,
     FeatureRunRef,
+    FramePredictionsRef,
+    FrameRunRef,
     LabelsVariantRef,
     MediaDerivativeRef,
     MediaVariantRef,
@@ -127,7 +129,7 @@ if TYPE_CHECKING:
     from mosaic.core.manifest import SplitRole
     from mosaic.core.params import Params
 
-    from ..inventory.model import DatasetInventory
+    from ..inventory.model import AnyRecord, DatasetInventory
     from .cleanup import CleanupPlan
     from .compatibility import Declaration, DeclarationCatalog
 
@@ -1417,7 +1419,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     ``tracks/`` variant, and what follows a training op is its model. Transcode
     has no run-addressed artifact at all -- its derivatives are named by recipe
     and source -- so it is looked up per target. A media variant is a separate
-    run with one file per entry.
+    run with one file per entry. A predict-frames run has one file per entry
+    camera of the extraction run that it names.
 
     ``None`` is honest rather than a gap: an op whose output nothing inventories
     reads as having no coverage answer, where reporting zero would say it had
@@ -1442,6 +1445,11 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
         )
     if kind == PREPROCESS_KIND:
         return MediaVariantRef(run_id=identity.run_id)
+    if kind == "predict-frames":
+        return FramePredictionsRef(
+            run_id=identity.run_id,
+            frames_run_id=str(getattr(params, "frames_run_id", "")),
+        )
     return None
 
 
@@ -1626,6 +1634,11 @@ def coverage_against(
     only an entry's consumed camera, and the camera is dropped here. A camera that
     stops being the consumed one changes the entry's media composition, and the
     variant then reports that entry as drifted when both compositions are known.
+
+    A predict-frames run is measured over the target's entries in its
+    extraction run (:func:`_predicted_entries`). Its rows name only the entries
+    that the run was asked for and do not bound the target. A scope naming one
+    more entry of the extraction run reads short.
     """
     record = inv.record(ref) if ref is not None else None
     if record is None:
@@ -1646,6 +1659,10 @@ def coverage_against(
                 (group, sequence) for group, sequence, _ in inv.coverage(ref).present
             ),
         )
+    elif isinstance(ref, FramePredictionsRef):
+        coverage = Coverage[Entry](
+            target=target, present=_predicted_entries(inv, ref, record, target)
+        )
     else:
         coverage = Coverage[Entry](
             target=target, present=frozenset(), covers_all=record.coverage.is_satisfied
@@ -1662,6 +1679,62 @@ def coverage_against(
         drift=record.drift,
         finished=bool(record.finished_at),
     )
+
+
+def _predicted_entries(
+    inv: DatasetInventory,
+    ref: FramePredictionsRef,
+    record: AnyRecord,
+    target: frozenset[Entry],
+) -> frozenset[Entry]:
+    """Return the entries that the predict-frames run *ref* answers for.
+
+    An entry of the extraction run is present when every camera that its frames
+    rows name has a finished predictions row and its file. The op reuses an
+    entry under the same rule. An entry of *target* outside the extraction run
+    is present too, because the op skips it and has nothing to write.
+
+    Args:
+        inv: The inventory, which contains the extraction run's records.
+        ref: The predict-frames run.
+        record: The run's record.
+        target: The entries that the step is planned over.
+
+    Returns:
+        The present entries, which may include entries outside *target*.
+    """
+    written = inv.coverage(ref).present.difference(record.unfinished_rows)
+    cameras = _extraction_cameras(inv, ref.frames_run_id)
+    predicted = frozenset(
+        entry
+        for entry, names in cameras.items()
+        if all((*entry, camera) in written for camera in names)
+    )
+    return predicted | (target - cameras.keys())
+
+
+def _extraction_cameras(
+    inv: DatasetInventory, frames_run_id: str
+) -> dict[Entry, frozenset[str]]:
+    """Return the cameras that the rows of an extraction run name, by entry.
+
+    The rows are read from every frame-run record of *frames_run_id*, whatever
+    its method directory.
+
+    Args:
+        inv: The inventory, which contains the extraction run's records.
+        frames_run_id: The extraction run.
+
+    Returns:
+        Each entry that the run's rows name, mapped to its cameras.
+    """
+    cameras: dict[Entry, set[str]] = {}
+    for record in inv.records:
+        ref = record.ref
+        if isinstance(ref, FrameRunRef) and ref.run_id == frames_run_id:
+            for group, sequence, camera in inv.rows(ref):
+                cameras.setdefault((group, sequence), set()).add(camera)
+    return {entry: frozenset(names) for entry, names in cameras.items()}
 
 
 def _op_scope(kind: str, target: frozenset[Entry]) -> Scope:

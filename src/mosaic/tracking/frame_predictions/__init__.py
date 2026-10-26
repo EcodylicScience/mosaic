@@ -4,5 +4,7 @@ A predict-frames run stores one model's predictions on the frames of an extracti
 run, one ``mosaic-pose-predictions`` file per entry camera, under the dataset's
 ``frame_predictions`` root. A score-predictions run compares predictions with
 annotated keypoint sets. :mod:`.index` defines both indexes and :mod:`.read` the
-readers. This file imports no submodule.
+readers. :mod:`.params` declares a predict-frames run's parameters, :mod:`.errors`
+its errors and :mod:`.adapter` the call that runs a tool. This file imports no
+submodule.
 """

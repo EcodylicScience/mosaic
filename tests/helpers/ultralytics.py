@@ -12,6 +12,8 @@ and a test can compute the table that the bridge publishes from them.
 
 :class:`FakeResult` and :class:`FakeDetections` stand in one level lower, for the
 result objects Ultralytics returns per frame, which the runner reads rows from.
+:func:`write_marked_images` writes the PNGs of a ``predict-images`` request, each
+painted with the :func:`image_mark` of its position.
 """
 
 from __future__ import annotations
@@ -23,12 +25,14 @@ from pathlib import Path
 from types import ModuleType
 from typing import Final
 
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
 from mosaic.tracking.external.runner.ultralytics_protocol import (
+    ImageSource,
     ProbeResponse,
     SourceFile,
     TrackRequest,
@@ -77,6 +81,33 @@ class FakeResult:
 
     boxes: FakeDetections | None
     keypoints: FakeDetections | None = None
+
+
+def image_mark(position: int) -> tuple[int, int, int]:
+    """Return the blue, green and red of every pixel of the image at *position*.
+
+    The blue names the position. The three channels differ, and a frame read in
+    another channel order then fails to match.
+    """
+    return (10 + position, 100, 200)
+
+
+def write_marked_images(
+    directory: Path, shapes: Sequence[tuple[int, int]]
+) -> list[ImageSource]:
+    """Write a PNG of each ``(height, width)`` and return the images, by position.
+
+    The image at position *p* is ``image_<p>.png`` in *directory*, painted with
+    :func:`image_mark` of *p*.
+    """
+    images: list[ImageSource] = []
+    for position, (height, width) in enumerate(shapes):
+        pixels = np.empty((height, width, 3), np.uint8)
+        pixels[...] = image_mark(position)
+        path = directory / f"image_{position}.png"
+        assert cv2.imwrite(str(path), pixels), path
+        images.append(ImageSource(position=position, path=str(path)))
+    return images
 
 
 def write_ultralytics_predictions(

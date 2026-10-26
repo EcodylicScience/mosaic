@@ -55,14 +55,23 @@ def dataset(tmp_path: Path) -> Dataset:
 
 
 def _predict(
-    ds: Dataset, sequence: str, camera: str = "", *, consumed: str = ""
+    ds: Dataset,
+    sequence: str,
+    camera: str = "",
+    *,
+    consumed: str = "",
+    finished: bool = True,
 ) -> Path:
     """Record the run's predictions of one entry camera, read from *consumed*."""
     predictions = entry_predictions(
         frames_run_id=FRAMES_RUN, group="G", sequence=sequence, camera=camera
     )
     return record_entry_predictions(
-        ds, predictions, run_id=RUN, consumed_frames_composition=consumed
+        ds,
+        predictions,
+        run_id=RUN,
+        finished=finished,
+        consumed_frames_composition=consumed,
     )
 
 
@@ -167,6 +176,21 @@ def test_a_predictions_row_without_its_file_is_an_orphan_row(
     assert record is not None
     assert record.orphan_rows == {("G", "S1", "")}
     assert record.status == "inconsistent"
+
+
+def test_a_predictions_row_without_a_finish_is_an_unfinished_row(
+    dataset: Dataset,
+) -> None:
+    _ = _predict(dataset, "S1")
+    _ = _predict(dataset, "S2", finished=False)
+
+    found = dataset_inventory(dataset, kinds=["frame-predictions"])
+
+    record = found.record(REF)
+    assert record is not None
+    assert record.unfinished_rows == {("G", "S2", "")}
+    assert found.coverage(REF).present == {("G", "S1", ""), ("G", "S2", "")}
+    assert record.status == "complete"
 
 
 def test_a_reextracted_entry_drifts_the_run(dataset: Dataset) -> None:

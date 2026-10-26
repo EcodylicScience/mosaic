@@ -306,6 +306,13 @@ class ArtifactRecord[KeyT]:
     """What the index says this run holds, as against what disk holds."""
     orphan_rows: frozenset[KeyT] = frozenset()
     orphan_files: frozenset[KeyT] = frozenset()
+    unfinished_rows: frozenset[KeyT] = frozenset()
+    """The rows that record no finish, filled for a run index keyed by row.
+
+    A run writes a key's file before it marks the key's row finished. A reader
+    that reuses only finished rows counts such a key as unwritten. Every other
+    kind leaves it empty.
+    """
     drift: tuple[Entry, ...] = ()
     """Entries whose recorded source composition no longer matches the present.
 
@@ -495,6 +502,33 @@ class DatasetInventory:
         if found is None:
             return Coverage[Entry](target=frozenset(), present=frozenset())
         return found.coverage
+
+    @overload
+    def rows(
+        self,
+        ref: FeatureRunRef | TracksVariantRef | LabelsVariantRef | TrackerRunRef,
+    ) -> frozenset[Entry]: ...
+
+    @overload
+    def rows(
+        self, ref: FrameRunRef | FramePredictionsRef | MediaVariantRef
+    ) -> frozenset[CameraEntry]: ...
+
+    @overload
+    def rows(
+        self, ref: TrainedModelRef | PredictionScoreRef | MediaDerivativeRef
+    ) -> frozenset[str]: ...
+
+    def rows(
+        self, ref: ArtifactRef
+    ) -> frozenset[Entry] | frozenset[CameraEntry] | frozenset[str]:
+        """The keys that *ref*'s index rows name, typed by *ref*'s kind.
+
+        A key appears whether or not its file exists. An artifact the dataset
+        does not hold names none.
+        """
+        found = self.record(ref)
+        return frozenset() if found is None else found.rows
 
     def status(self, ref: ArtifactRef) -> ArtifactStatus:
         """*ref*'s status, ``absent`` when the dataset holds no such artifact."""

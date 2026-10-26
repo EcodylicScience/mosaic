@@ -41,6 +41,7 @@ from mosaic.core.pose_columns import (
     keypoint_arrays,
     reindex_contiguous,
 )
+from mosaic.core.wording import counted
 
 from .external.vame_protocol import (
     check_distinct_references,
@@ -222,7 +223,7 @@ class GapRows:
 
     def describe(self) -> str:
         """Return the rows' count and the condition at their frames, as one line."""
-        return f"{_counted(self.count, 'row')} at frames where {self.reason}"
+        return f"{counted(self.count, 'row')} at frames where {self.reason}"
 
 
 @dataclass(frozen=True)
@@ -404,8 +405,8 @@ def place_latents(
     """
     if len(latents) != len(entry.sessions):
         msg = (
-            f"vame: {_counted(len(latents), 'latent array')} for "
-            f"{_counted(len(entry.sessions), 'session')}, and each session needs one"
+            f"vame: {counted(len(latents), 'latent array')} for "
+            f"{counted(len(entry.sessions), 'session')}, and each session needs one"
         )
         raise ValueError(msg)
     rows = df.reset_index(drop=True)
@@ -420,14 +421,14 @@ def place_latents(
             msg = (
                 f"vame: the latents of {_session_frames(session)} have shape "
                 f"{values.shape}, and those frames contain "
-                f"{_counted(windows, 'window')} of time_window={time_window}"
+                f"{counted(windows, 'window')} of time_window={time_window}"
             )
             raise ValueError(msg)
         # The first array passed the shape check in the first iteration.
         if values.shape[1] != vectors[0].shape[1]:
             msg = (
                 f"vame: the latents of {_session_frames(session)} have "
-                f"{_counted(values.shape[1], 'dimension')}, and those of "
+                f"{counted(values.shape[1], 'dimension')}, and those of "
                 f"{_session_frames(entry.sessions[0])} have {vectors[0].shape[1]}"
             )
             raise ValueError(msg)
@@ -512,7 +513,7 @@ def _check_table(df: pd.DataFrame, pose: PoseConfig, keypoints: VameKeypoints) -
         n_without = int(df[COLUMNS.id_col].isna().sum())
         if n_without:
             verb = "lacks" if n_without == 1 else "lack"
-            msg = f"vame: {_counted(n_without, 'row')} {verb} an id"
+            msg = f"vame: {counted(n_without, 'row')} {verb} an id"
             raise ValueError(msg)
     refuse_repeated_rows(df, "vame")
 
@@ -662,7 +663,7 @@ def _exclusion_reason(
             if purpose == "fit"
             else f"time_window={settings.time_window}"
         )
-        return f"{_counted(n_frames, 'frame')}, fewer than {needed}"
+        return f"{counted(n_frames, 'frame')}, fewer than {needed}"
     unkept = [
         name
         for name, any_kept in zip(keypoints.names, kept.any(axis=0))
@@ -673,11 +674,6 @@ def _exclusion_reason(
         verb = "lacks" if len(unkept) == 1 else "lack"
         return f"{named} {unkept} {verb} {_kept_point(settings)}"
     return None
-
-
-def _counted(count: int, noun: str) -> str:
-    """Return *count* and *noun*, the noun plural unless *count* is 1."""
-    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
 def _frames_of(individual: Scalar | None, first_frame: int, last_frame: int) -> str:

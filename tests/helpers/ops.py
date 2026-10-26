@@ -25,6 +25,10 @@ _MINIMAL: dict[str, dict[str, object]] = {
     "infer-points": {"model": "models/infer-points/run/best.pt"},
     "infer-pose": {"model": "models/infer-pose/run/best.pt"},
     "litpose": {"model_path": "models/litpose/run"},
+    "predict-frames": {
+        "model": ["train-pose.0.2-abcdef0123"],
+        "frames_run_id": "kmeans-0123456789",
+    },
     "prepare-training-data": {"sets": [{"set_key": "set-a"}]},
     "preprocess": {
         "steps": [{"step": "crop", "x": 0, "y": 0, "width": 320, "height": 240}]

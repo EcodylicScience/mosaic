@@ -7,6 +7,11 @@ runner's layout, at the path that the request names, because the op reads it bac
 to bridge it. The table is fixed unless a test passes a function of the video. A
 request of several files gets each file's table, its frames moved onto the
 entry's frame axis as the runner numbers them.
+
+:func:`install_fake_predict_images` stands in for the same probe and for the
+``predict-images`` call of a yolo-pose or POLO frame adapter. Its fake writes the
+rows of a list of images, in the runner's layout, at the request's rows path.
+:func:`fake_tool_probe` is the :class:`ToolProbe` that the installed probe reports.
 """
 
 from __future__ import annotations
@@ -22,8 +27,12 @@ from mosaic_media import probe_media
 from mosaic.tracking.external.runner.ultralytics_protocol import (
     InferPointsRequest,
     InferPoseRequest,
+    InferTask,
+    PredictImagesRequest,
+    PredictImagesResponse,
     ProbeResponse,
 )
+from mosaic.tracking.frame_predictions.adapter import ToolProbe
 from mosaic.tracking.pose_training.ultralytics_infer import InferenceOutcome
 
 from tests.helpers.ultralytics import (
@@ -140,6 +149,18 @@ class FakeInference:
         )
 
 
+def _pose_probe_response() -> ProbeResponse:
+    """Return the fake pose probe's report: a two-keypoint model."""
+    return ultralytics_probe_response("pose", n_keypoints=2)
+
+
+def _point_probe_response() -> ProbeResponse:
+    """Return the fake point probe's report: a POLO model of one keypoint."""
+    return ultralytics_probe_response(
+        "locate", has_locate=True, version="8.4.84", n_keypoints=1
+    )
+
+
 def install_fake_pose_probe(
     monkeypatch: pytest.MonkeyPatch, probed: list[str] | None = None
 ) -> list[str]:
@@ -153,7 +174,7 @@ def install_fake_pose_probe(
 
     def probe(model_path: str, **_kwargs: object) -> ProbeResponse:
         calls.append(model_path)
-        return ultralytics_probe_response("pose", n_keypoints=2)
+        return _pose_probe_response()
 
     monkeypatch.setattr(tool_env, "probe_environment", probe)
     return calls
@@ -172,9 +193,7 @@ def install_fake_point_probe(
 
     def probe(model_path: str, **_kwargs: object) -> ProbeResponse:
         calls.append(model_path)
-        return ultralytics_probe_response(
-            "locate", has_locate=True, version="8.4.84", n_keypoints=1
-        )
+        return _point_probe_response()
 
     monkeypatch.setattr(tool_env, "probe_environment", probe)
     return calls
@@ -207,4 +226,129 @@ def install_fake_point_inference(
     fake = FakeInference(predictions or (lambda _video: point_predictions()))
     _ = install_fake_point_probe(monkeypatch, fake.probed)
     monkeypatch.setattr(infer_run, "run_point_inference_tool", fake.run)
+    return fake
+
+
+def pose_image_rows(request: PredictImagesRequest) -> pd.DataFrame:
+    """Return one detection per image of *request*, as the runner writes pose rows.
+
+    The detection at position ``p`` has keypoint ``k`` at ``(10p + k, 20p + k)``
+    with score 0.5, confidence 0.9, and the box from ``(p, 2p)`` to
+    ``(p + 30, 2p + 40)``. The columns are ``request.columns``, in their order.
+    """
+    rows: list[dict[str, float]] = []
+    for image in request.images:
+        position = float(image.position)
+        row = {"frame": position, "id": 0.0, "det_conf": 0.9}
+        for k in range(request.n_keypoints):
+            row |= {
+                f"poseX{k}": 10 * position + k,
+                f"poseY{k}": 20 * position + k,
+                f"poseP{k}": 0.5,
+            }
+        row |= {
+            "bbox_x1": position,
+            "bbox_y1": 2 * position,
+            "bbox_x2": position + 30,
+            "bbox_y2": 2 * position + 40,
+        }
+        rows.append(row)
+    table = pd.DataFrame(rows, columns=request.columns)
+    return table.astype({"frame": "int64", "id": "int64"})
+
+
+def point_image_rows(request: PredictImagesRequest) -> pd.DataFrame:
+    """Return one point per image of *request*, as the runner writes point rows.
+
+    The point at position ``p`` is at ``(10p, 20p)`` with confidence 0.8.
+    """
+    rows = [
+        {
+            "frame": image.position,
+            "detection_id": 0,
+            "x": 10.0 * image.position,
+            "y": 20.0 * image.position,
+            "confidence": 0.8,
+            "class_id": 0,
+            "class_name": "bee",
+        }
+        for image in request.images
+    ]
+    return pd.DataFrame(rows, columns=request.columns)
+
+
+type ImageRowsFor = Callable[[PredictImagesRequest], pd.DataFrame]
+"""Return the rows table that a fake runner writes for a ``predict-images`` request."""
+
+
+@dataclass
+class FakePredictImages:
+    """Stand in for ``run_predict_images_tool``, and record every request.
+
+    Attributes:
+        rows: The rows table for a request.
+        requests: Every request, in order.
+        work_dirs: The work directory of each request, in order.
+        cancel_checks: The cancel check of each request, in order.
+        probed: Every model whose environment was probed, in order.
+    """
+
+    rows: ImageRowsFor
+    requests: list[PredictImagesRequest] = field(default_factory=list)
+    work_dirs: list[Path] = field(default_factory=list)
+    cancel_checks: list[Callable[[], bool] | None] = field(default_factory=list)
+    probed: list[str] = field(default_factory=list)
+
+    def run(
+        self,
+        request: PredictImagesRequest,
+        *,
+        work_dir: Path,
+        cancel_check: Callable[[], bool] | None = None,
+        on_output: Callable[[str], None] | None = None,
+        **_kwargs: object,
+    ) -> PredictImagesResponse:
+        """Write ``rows(request)`` at the request's rows path, and report one line."""
+        self.requests.append(request)
+        self.work_dirs.append(work_dir)
+        self.cancel_checks.append(cancel_check)
+        table = self.rows(request)
+        rows_path = Path(request.rows_path)
+        rows_path.parent.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(rows_path, index=False)
+        if on_output is not None:
+            on_output(f"predicted {len(request.images)} images")
+        return PredictImagesResponse(
+            n_images=len(request.images), n_rows=len(table), rows_path=request.rows_path
+        )
+
+
+def fake_tool_probe(task: InferTask) -> ToolProbe:
+    """Return the :class:`ToolProbe` of the fake probe of a *task* model."""
+    response = _pose_probe_response() if task == "pose" else _point_probe_response()
+    return ToolProbe(
+        tool_version=response.ultralytics_version, n_keypoints=response.n_keypoints
+    )
+
+
+def install_fake_predict_images(
+    monkeypatch: pytest.MonkeyPatch,
+    task: InferTask,
+    rows: ImageRowsFor | None = None,
+) -> FakePredictImages:
+    """Stand in for the probe and ``predict-images`` call of a *task* model.
+
+    Without *rows*, a ``pose`` request gets :func:`pose_image_rows` and a
+    ``locate`` request :func:`point_image_rows`. The probe is the fake of
+    ``infer-pose`` or ``infer-points``, and reports :func:`fake_tool_probe`.
+    """
+    import mosaic.tracking.pose_training.ultralytics_infer as infer_run
+
+    if task == "pose":
+        fake = FakePredictImages(rows or pose_image_rows)
+        _ = install_fake_pose_probe(monkeypatch, fake.probed)
+    else:
+        fake = FakePredictImages(rows or point_image_rows)
+        _ = install_fake_point_probe(monkeypatch, fake.probed)
+    monkeypatch.setattr(infer_run, "run_predict_images_tool", fake.run)
     return fake

@@ -27,6 +27,11 @@ _MODEL_REFERENCES = {
     "infer-pose": ModelReference(field="model", kinds=("train-pose",)),
     "infer-points": ModelReference(field="model", kinds=("train-points",)),
     "infer-localizer": ModelReference(field="model", kinds=("train-localizer",)),
+    "predict-frames": ModelReference(
+        field="model",
+        kinds=("train-pose", "train-points", "train-sleap", "train-litpose"),
+        many=True,
+    ),
 }
 
 _DECLARING_OPS = sorted(
@@ -103,6 +108,9 @@ def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> N
     mosaic-api removes those fields from a subclass of the op's params and rebuilds
     it. A validator naming a removed field without ``check_fields=False`` refuses
     that rebuild. Every such field must therefore leave the subclass buildable.
+    The rebuilt model is validated with the rest of the op's smallest params,
+    which supply any other required field, such as predict-frames'
+    ``frames_run_id``.
     """
     from pydantic import create_model
 
@@ -122,8 +130,13 @@ def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> N
     for name in owned:
         _ = exposed.model_fields.pop(name)
     _ = exposed.model_rebuild(force=True)
+    others = {
+        name: value
+        for name, value in minimal_op_params(kind).items()
+        if name not in owned
+    }
 
-    assert not owned & set(exposed.model_validate({}).model_dump())
+    assert not owned & set(exposed.model_validate(others).model_dump())
 
 
 def test_a_refused_model_reference_is_an_invalid_request() -> None:

@@ -103,6 +103,19 @@ def test_an_ordered_pair_carries_both_artifacts(tmp_path: Path) -> None:
     assert resolved.paths == [centroid, instance], "order is the caller's, preserved"
     assert len(resolved.significant_files) == 2
     assert resolved.model_type == "centroid", "provenance from the first that has one"
+    assert resolved.model_types == ("centroid", "centered_instance")
+
+
+def test_each_artifact_of_a_set_reports_its_own_model_type(tmp_path: Path) -> None:
+    unconfigured = write_sleap_model(tmp_path / "unconfigured", b"unconfigured")
+    instance = write_sleap_model(
+        tmp_path / "instance", b"instance", head="centered_instance"
+    )
+
+    resolved = resolve_model_set(None, [str(unconfigured), str(instance)], "sleap")
+
+    assert resolved.model_types == ("", "centered_instance")
+    assert resolved.model_type == "centered_instance"
 
 
 def test_the_order_of_an_ordered_pair_is_identity(tmp_path: Path) -> None:
@@ -254,6 +267,7 @@ def test_a_sleap_model_needs_no_config(tmp_path: Path) -> None:
 
     resolved = resolve_model_set(None, [str(model)], "sleap")
     assert resolved.model_type == "", "nothing to read, so nothing claimed"
+    assert resolved.model_types == ("",)
     assert len(resolved.significant_files) == 1
 
 
