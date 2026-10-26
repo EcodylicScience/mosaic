@@ -103,6 +103,11 @@ A top-level key that mosaic does not use survives a load and a save. A key you a
 │   └── preprocess/         media variants, one directory per variant
 ├── labels/
 ├── tracks/
+├── frame_predictions/
+│   ├── predict-frames/     model predictions on extracted frames
+│   └── score-predictions/  those predictions scored against annotations
+├── selections/
+│   └── select-frames/      frame lists chosen from tracks
 ├── _tracking/
 │   ├── trex/  trex-convert/  sleap/  litpose/  ultralytics/
 │   └── infer-pose/  infer-points/  infer-localizer/
@@ -121,7 +126,8 @@ Directory assignments:
 - **Derived files**, computed by mosaic and recomputable — `media/` transcode
   derivatives, `media/frames/` extracted PNGs for annotation, `media/preprocess/`
   media variants, `tracks/` standardized parquet, `labels/` converted labels,
-  `features/`, `models/`.
+  `frame_predictions/` model predictions on extracted frames and their scores,
+  `selections/` frame lists chosen from tracks, `features/`, `models/`.
 - **Temporary files** — `_tracking/` raw tracker output before conversion, reclaimed
   by `mosaic sweep-tracking` once a run is finished.
 - **Run records**, in `.mosaic/`: what was attempted and submitted here, as

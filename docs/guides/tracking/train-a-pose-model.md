@@ -168,8 +168,27 @@ mosaic run -m libraries/lab/dataset.yaml --kind prepare-training-data \
 This merges the sets into one training dataset and **copies the images in**, so the
 library can be moved, and the datasets it drew from can be archived, without breaking
 the model. `target` is `yolo-pose`, `polo`, `sleap` or `litpose`. Frames from one
-recording are kept together in one split, which is what makes a validation score
-honest; `"split_by": "frame"` turns that off, and its scores are optimistic.
+recording are kept together in one split, which is what makes a validation score honest;
+`"split_by": "frame"` turns that off, and its scores are optimistic. The split is a hash
+of each recording and the `"seed"`, so a recording keeps its split when others are
+added, and a different `"seed"` changes the draw. `"split_by": "group"` keeps every
+sequence of a label together, named in `sequence_groups` by sequence name, or by
+`<origin_uuid>:<group>:<sequence>` (each part percent-encoded) where names repeat. A key
+that matches no sequence is refused.
+
+With target `sleap` and a test share above 0, the test frames leave SLEAP training
+altogether, where SLEAP once trained on every frame. Use `"split": [0.85, 0.15, 0]`
+for `sleap` when a hold-out serves evaluation. Lightning Pose keeps its own split: it
+draws validation from every frame with its own seed. For Lightning Pose only a hold-out
+gives an honest evaluation.
+
+### Keep annotations out for evaluation
+
+`"holdout": [{"set_key": "arena"}]` keeps the named annotation sets out of training and
+validation. Every frame that shares a split unit with a held-out frame (its recording,
+or its group under `"split_by": "group"`) leaves training and validation, so the model
+has not seen the recordings it is scored on. The model's provenance lists the held-out
+sets.
 
 Only frames marked finished are trained on. A set whose objects use more than one pose
 needs the one to train named, as `"pose": "mouse"`; objects of other poses are then
@@ -193,6 +212,49 @@ mosaic run -m libraries/lab/dataset.yaml --kind train-pose \
 
 Pass the run id rather than a path to its `data.yaml`. A path is a location, so the
 same data at two paths would count as two different models.
+
+### Fine-tune
+
+`train-sleap` takes `base_model`, a run id (or a weights path), and continues from those
+weights on the new annotations. Fine-tuning is a new run, with its own id.
+
+### Predict on frames
+
+```bash
+mosaic run -m libraries/lab/dataset.yaml --kind predict-frames \
+    --params '{"model": ["<run_id>"], "frames_run_id": "<extract-frames run id>"}'
+```
+
+Runs a trained model on the frames of an extraction run, to pre-fill an annotation
+tool or to score the model. Name a model by its run id, and a SLEAP top-down pair as two
+ids, the centroid run and then the centered-instance run. The predictions land in
+`frame_predictions/predict-frames/`. The default `conf_threshold` (0.05) is lower than
+the inference ops' (0.25), to keep weak detections for an annotator to correct.
+
+### Score a model
+
+```bash
+mosaic run -m libraries/lab/dataset.yaml --kind score-predictions \
+    --params '{"prediction_runs": ["<predict-frames run id>"], "labels": [{"set_key": "arena"}]}'
+```
+
+Compares the predictions with the annotated frames: detection (found, false positives,
+duplicates), PCK at 0.05, 0.1 and 0.2 of each instance's size, mOKS, and the rate of
+swapped left-right keypoints, each with a bootstrap interval. `prediction_runs` are
+the runs of one model, scored as one pool. By default the frames the model trained or
+validated on are left out, so score a hold-out or frames the model never saw, and set
+`"exclude_seen": false` only to see the optimistic number.
+
+A keypoint that the annotator left where the model put it is untouched, and is left out
+of the keypoint metrics for every model, so the score does not reward the model that
+pre-filled the frame. Untouched points of a run that was not scored are compared without
+the keypoint map, which also reads a keypoint moved exactly onto another predicted
+keypoint as untouched.
+
+mOKS is not Ultralytics' pose mAP, which uses sigma `1/n_keypoints` unless
+`kpt_oks_sigmas` is set, and not sleap-nn's evaluation, which drops false positives. Set
+`oks_sigma` or `oks_sigmas` to compare. Read the result with
+`mosaic.tracking.frame_predictions.read.read_score_summary`.
 
 ### Use the model from any dataset
 

@@ -147,6 +147,38 @@ every listed entry is extracted, and `--entries` narrows the list. `n_frames`,
 `start_frame` and `end_frame` are refused under `list`, and an index past the end of a
 recording is refused before anything is written.
 
+### Leave out frames you already annotated
+
+`exclude` takes the same items as `frames` and keeps those frames out of a `uniform` or
+`kmeans` sample. `exclude_spacing` also removes the candidates within that many
+frames of one:
+
+```json
+{"method": "kmeans", "n_frames": 20,
+ "exclude": [{"sequence": "trial01", "indices": [1745, 3487]}]}
+```
+
+An entry the run does not cover is ignored, and `list` refuses `exclude`.
+
+### Extract frames that `select-frames` chose
+
+`select-frames` proposes frames from a tracks variant: where an id jumps, keypoint
+confidence is low or a keypoint is missing, two rows are one animal, or fewer animals
+than `n_expected` are found. It reads a variant that a tracker or an infer op
+published from the full media, and refuses a converted, resampled or trimmed one,
+because only the full media has a frame axis that matches the video.
+
+```bash
+mosaic run -m dataset.yaml --kind select-frames \
+    --params '{"source_tracks_run_id": "<tracks run id>", "n_frames": 20}'
+mosaic run -m dataset.yaml --kind extract-frames \
+    --params @selections/select-frames/<run id>/extract-frames.params.json
+```
+
+The second command extracts the selection with method `list`. Pass `exclude` to
+`select-frames` with the frames already annotated, and the selection stays clear of
+them.
+
 ### A recording whose clips differ in frame rate
 
 A recording split into clips at different rates (30, 29.95 and 31 fps, say) cannot be

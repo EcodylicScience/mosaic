@@ -34,7 +34,72 @@ divides every length column `scale-to-cm` would scale by one length per sequence
 median over individuals, from an explicit `length` or a referenced `body-length` run.
 `BodyLengthResult` joins `mosaic.core.pipeline.types`.
 
-## Unreleased: mosaic-media 0.3.5 and the conda install line without an `av` pin
+## Unreleased: frame predictions, scores, hold-outs and selections, mosaic-media 0.3.5 and the conda install line without an `av` pin
+
+**A model predicts on extracted frames, the predictions are scored against annotations,
+a hold-out stays out of training, and frames are selected from tracks.** Three ops are
+new: `predict-frames` (0.1), `score-predictions` (0.1) and `select-frames` (0.1). The
+dataset gains two roots, `frame_predictions/` (`predict-frames/` and
+`score-predictions/`) and `selections/` (`select-frames/`), the pose-predictions file
+format that `predict-frames` writes one per entry camera, and three inventory kinds,
+`frame-predictions`, `prediction-score` and `frame-selection`. A manifest without the
+two roots gets them in memory, and a read creates no directory. `AnnotationObject`
+gains `origin` and `source_ref`, which default, so code that builds one is unaffected.
+
+Ids that move:
+
+- Every `prepare-training-data` id moves (0.2 to 0.3), so each "Train again" builds a
+  new preparation and retrains once. `train-sleap` (0.2 to 0.3) and `convert-points`
+  (0.2 to 0.3) move too. Stored training records keep their old ids, which stay
+  resolvable.
+- The ids of `train-pose`, `train-points`, `train-litpose`, `train-sleap` and
+  `train-localizer` move on the next training, because their data is a new preparation
+  or, for `train-localizer`, a dataset reconverted under the hash split. Their versions
+  do not change.
+- `extract-frames`, `infer-pose`, `infer-points` and `trajectory-smooth` keep their ids
+  under this change. An `extract-frames` run without `exclude` is named as before.
+
+What changed in the data:
+
+- The train, validation and test split is a hash of the split unit, not a shuffle. The
+  first round under it does not reproduce the old shuffle, so a fine-tune from a model
+  trained before can see some of its old training frames in validation once. The split
+  of the converters (`coco_*`, `cvat_localizer` and the Lightning Pose converter)
+  changes the same way, with no op identity moving.
+- A prepared frame is named by its entry and camera, with its group, so frames of two
+  groups or two cameras that share a sequence name no longer collide.
+- `sequence_groups` keys are `<origin_uuid>:<group>:<sequence>`, each part
+  percent-encoded, or a bare sequence name. A key in the old
+  `<origin_uuid>:<sequence>` spelling, and any key that matches no sequence, is refused
+  with a message naming the spelling, where an unknown key was ignored before.
+- `holdout` names annotation sets that stay out of training. Every frame of a set that
+  shares a split unit with a held-out frame leaves training and validation, and the
+  model's provenance records the held-out sets.
+- With target `sleap` and a test share above 0, the `test` frames go to neither `.slp`
+  file, where SLEAP trained on every frame before. About the test share of the annotated
+  frames leaves SLEAP training. Use a test share of 0 for `sleap` when a hold-out
+  serves evaluation. `prepare-training-data` writes a validation file beside the
+  training file, and refuses a split in which SLEAP would have an empty one.
+- `train-sleap` fine-tunes from `base_model` in place of resuming, and a validation
+  file beside the labels is used in place of `validation_fraction`.
+- An `extract-frames` run that fails a camera ends `partial`, or raises
+  `AllEntriesFailed` when every attempted entry is lost, and reports `entries_written`.
+  A failed extraction that read as finished before reads as `partial` or `failed` now.
+  `exclude` keeps frames out of a `uniform` or `kmeans` extraction, and a selection is
+  extracted with method `list`.
+- The prepare index gains the columns `held_out_sets`, `n_held_out` and
+  `keypoint_schema`.
+
+For mosaic-api: the new inventory kinds and roots above, the three new ops (lanes
+`gpu-infer` for `predict-frames`, `feature-compute` for `score-predictions` and
+`select-frames`), and `check_preparation`, which now also raises the hold-out, the
+`sequence_groups` key and the small-set refusals a run raises, as `ValueError` as
+before. `predict-frames` pins `precision` to `"fp32"`, so the server-owned entries gain
+`"precision": "fp32"`. The test
+`test_split_filenames_counts_the_training_and_validation_items` pins exact counts that
+the hash split reproduces for its fixture only by coincidence (seed 7); it still passes
+but no longer states the contract. A training wizard should default the test share to 0
+for target `sleap`, or say that frames leave training.
 
 **`mosaic prerequisites` prints the runs that an op needs before it reads its entries.**
 A user chained `export-joined`, `export-store` and H.264 `preprocess` runs by hand, from

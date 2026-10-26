@@ -152,6 +152,7 @@ src/mosaic/
   core/pipeline/                run_feature, indexes, locks, inventory, ops, placement
   core/pipeline/graph/          a pipeline as a JSON recipe: validate, plan, run a step
   core/media/                   frame read/decode/encode; preprocess media steps
+  core/track_quality.py         the criteria that flag track rows and frames
   behavior/feature_library/     registered features; sandboxed kpms and VAME runners
   behavior/label_library/       label converters (BORIS, CalMS21)
   behavior/model_library/       identity networks
@@ -161,7 +162,8 @@ src/mosaic/
   tracking/{trex,sleap,litpose,ultralytics_track}/  one package per tracker
   tracking/external/            the Ultralytics and POLO environments and runner
   tracking/pose_training/       annotation prep and pose-model training
-  tracking/frame_extraction/    frame sampling for annotation (`extract_frames`)
+  tracking/frame_extraction/    frame sampling (`extract_frames`) and `select-frames`
+  tracking/frame_predictions/   predictions on extracted frames, and their scores
 ```
 
 ## Registries

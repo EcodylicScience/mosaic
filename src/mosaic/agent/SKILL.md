@@ -146,9 +146,10 @@ A dataset is a directory with `dataset.yaml` and named roots
 
 - The user's files go in `media_raw/`, `tracks_raw/` or `labels_raw/`, or stay where
   they are as a declared source. Mosaic writes everything else.
-- Do not write into `tracks/`, `labels/`, `features/`, `models/`, `media/` or
-  `_tracking/`. Produce outputs through `run_feature`, `mosaic run` and the ops, which
-  keep the indexes and run ids consistent.
+- Do not write into `tracks/`, `labels/`, `features/`, `models/`, `media/`,
+  `frame_predictions/`, `selections/` or `_tracking/`. Produce outputs through
+  `run_feature`, `mosaic run` and the ops, which keep the indexes and run ids
+  consistent.
 - Do not hand-edit an `index.csv`, delete a `*.lock` file, or edit `.mosaic/`. Keep
   `.mosaic/claims/`, the only record of which entries are known to fail.
 - Change `dataset.yaml` with `mosaic sources`, `mosaic tags`, `mosaic notes` and
@@ -286,7 +287,24 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - Lightning Pose cannot decode AV1. Give it a variant made with `"codec": "h264"`.
   `mosaic prerequisites --kind litpose` plans that variant and names it in `media`.
 - Frame extraction is `mosaic run --kind extract-frames`, or the function
-  `mosaic.tracking.extract_frames(ds, ...)`, which is not a `Dataset` method.
+  `mosaic.tracking.extract_frames(ds, ...)`, which is not a `Dataset` method. Its
+  `exclude` keeps already annotated frames out of a `uniform` or `kmeans` sample.
+- `select-frames` proposes frames from a tracks variant (jumps, low confidence,
+  missing keypoints, duplicates, fewer animals than expected). It reads only a variant
+  that a tracker or an infer op published from the full media, and refuses a converted,
+  resampled or trimmed one. Extract its frames with method `list`, using the
+  `extract-frames.params.json` it writes in its run directory.
+- `predict-frames` runs trained models on the frames of an extraction run
+  (`frames_run_id`). Name each model by its run id, and a SLEAP top-down pair as two
+  ids, the centroid run and then the centered-instance run. `score-predictions`
+  scores the prediction runs of one model against annotation sets. It leaves out the
+  frames the model trained or validated on, and `keypoint_map` maps the model's
+  keypoints onto the scored pose. Read the results with
+  `mosaic.tracking.frame_predictions.read`.
+- `prepare-training-data` takes `holdout`, annotation sets kept out of training for
+  evaluation. With target `sleap`, a test share above 0 removes about that share of the
+  frames from training, so use 0 when a hold-out serves evaluation. `train-sleap`'s
+  `base_model` fine-tunes an earlier run.
 - Annotation revisions (`labels_raw/keypoints/<set>/rev<N>/`) are immutable. A changed
   save becomes a new revision, and an edited revision is refused.
 - Refer to a model by its run id. To use a model trained in another dataset, link that
