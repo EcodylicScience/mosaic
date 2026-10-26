@@ -9,8 +9,11 @@ result is published atomically, and that nothing is left behind either way.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -151,6 +154,101 @@ def test_an_identified_instance_hands_over_its_track(
 
     assert records, "an instance was written"
     assert [r["track_id"] for r in records] == ["1", "1"], "one animal, two frames"
+
+
+FAKE_SLEAP_IO: Final = """
+import json
+from types import SimpleNamespace
+
+PREFIX = {prefix!r}
+
+
+def load_coco(path, dataset_root):
+    with open(path, encoding="utf-8") as file:
+        annotations = json.load(file)["annotations"]
+    tracks = {{}}
+    for annotation in annotations:
+        value = annotation.get("track_id")
+        if value is not None and value not in tracks:
+            tracks[value] = SimpleNamespace(name=f"{{PREFIX}}{{value}}")
+    return SimpleNamespace(tracks=list(tracks.values()), labeled_frames=annotations)
+
+
+def save_slp(labels, path):
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump([track.name for track in labels.tracks], file)
+"""
+"""A ``sleap_io`` package whose COCO reader names each track *prefix* plus its value.
+
+sleap-io 0.7 and 0.9 name a track read from COCO ``track_<value>``. Its ``.slp``
+writer here writes the track names as JSON.
+"""
+
+
+def _two_aliases(tmp_path: Path) -> AnnotationSet:
+    """Two frames, each holding the animals whose tracks are ``first`` and ``track_7``."""
+    images = tmp_path / "images"
+    images.mkdir(exist_ok=True)
+    frames: list[AnnotationFrame] = []
+    for index in range(2):
+        name = f"f{index}.png"
+        _ = (images / name).write_bytes(b"not really a png")
+        frames.append(
+            AnnotationFrame(
+                image_path=Path(name),
+                width=160,
+                height=120,
+                objects=tuple(
+                    AnnotationObject(
+                        keypoints=(
+                            Keypoint(40.0 + x, 50.0, 2),
+                            Keypoint(52.0 + x, 56.0, 2),
+                            Keypoint(60.0 + x, 58.0, 2),
+                        ),
+                        track_id=alias,
+                    )
+                    for x, alias in ((0.0, "first"), (60.0, "track_7"))
+                ),
+            )
+        )
+    return AnnotationSet(
+        schema=SCHEMA, frames=tuple(frames), categories=("mouse",), image_root=images
+    )
+
+
+@pytest.mark.parametrize("prefix", ["track_", ""], ids=["prefixed", "bare"])
+def test_each_track_of_the_slp_is_named_by_its_track_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    """The conversion runs against a ``sleap_io`` that names tracks *prefix* + value.
+
+    A SLEAP identity model reports the names of the tracks it was trained on, so a
+    preparation by alias names each track by the alias. A reader that keeps the
+    value as the name is left as it is.
+    """
+    fake = tmp_path / "environment"
+    (fake / "sleap_io").mkdir(parents=True)
+    _ = (fake / "sleap_io" / "__init__.py").write_text(
+        FAKE_SLEAP_IO.format(prefix=prefix)
+    )
+
+    def run(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
+        snippet = argv[argv.index("-c") + 1]
+        done = subprocess.run(
+            [sys.executable, "-c", snippet, *argv[-3:]],
+            cwd=fake,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return (done.stdout, done.stderr, done.returncode)
+
+    monkeypatch.setattr(labels_module, "run_supervised", run)
+    _stub_sleap(tmp_path, monkeypatch)
+
+    written = write_slp(_two_aliases(tmp_path), tmp_path / "out.slp")
+
+    assert json.loads(written.read_text()) == ["first", "track_7"]
 
 
 def test_an_unidentified_instance_omits_the_key_entirely(

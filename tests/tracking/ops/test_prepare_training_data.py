@@ -135,12 +135,29 @@ def _claim(library: Dataset, project: Dataset, key: str, revision: int) -> None:
     _ = library.scan_labels()
 
 
+WORLD_UUIDS: Final = {
+    "mice": "52000000-0000-4000-8000-000000000000",
+    "rats": "53000000-0000-4000-8000-000000000000",
+    "library": "07000000-0000-4000-8000-000000000000",
+}
+"""The manifest ``uuid`` of each dataset of the ``world`` fixture.
+
+Their first eight characters differ, because a placed name begins with them.
+"""
+
+
 @pytest.fixture
 def world(tmp_path: Path) -> tuple[Dataset, Dataset, Dataset]:
-    """Two projects with a saved set each, and a library that has claimed both."""
-    mice = make_dataset(tmp_path / "52", name="mice")
-    rats = make_dataset(tmp_path / "53", name="rats")
-    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    """Two projects with a saved set each, and a library that has claimed both.
+
+    The ``uuid`` of each project enters the key of every unit it holds, so the
+    split of every frame is fixed. ``SLEAP_SPLIT`` places frames in all three splits.
+    """
+    mice = make_dataset(tmp_path / "52", name="mice", uuid=WORLD_UUIDS["mice"])
+    rats = make_dataset(tmp_path / "53", name="rats", uuid=WORLD_UUIDS["rats"])
+    library = make_dataset(
+        tmp_path / "libraries" / "7", name="library", uuid=WORLD_UUIDS["library"]
+    )
     _claim(
         library,
         mice,
@@ -459,7 +476,10 @@ SLEAP_SPLIT: Final[dict[str, object]] = {
     "split_by": "frame",
     "split": (0.5, 0.25, 0.25),
 }
-"""A sleap preparation of the ``world`` sets that places frames in all three splits."""
+"""A sleap preparation of the ``world`` sets.
+
+Under the ``uuid`` values of ``WORLD_UUIDS``, it places frames in all three splits.
+"""
 
 
 def _names_by_split(out: Path) -> dict[str, list[str]]:
@@ -689,6 +709,22 @@ def test_a_preparation_records_the_pose_it_chose(
     run_id = run_op(full_state, KIND, {**FULL, "pose": pose, "target": target})
 
     assert _recorded_pose(full_state, run_id) == (str(chosen.id), chosen.name)
+
+
+def test_a_sleap_preparation_by_alias_hands_each_object_its_alias_as_its_track(
+    full_state: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writer names each track by its ``track_id``, so a model reports the alias."""
+    calls = record_slp_writes(monkeypatch)
+
+    _ = run_op(full_state, KIND, {**FULL, "target": "sleap", "track_by": "alias"})
+
+    tracks = [
+        sorted(obj.track_id for obj in frame.objects)
+        for _path, handed, _images in calls
+        for frame in handed.frames
+    ]
+    assert tracks and all(found == ["intruder", "resident"] for found in tracks)
 
 
 def test_a_state_holding_two_poses_needs_one_named(full_state: Dataset) -> None:
@@ -1234,12 +1270,15 @@ def held_out(tmp_path: Path) -> Dataset:
 
     ``train`` contains frames 0 to 3 of each of ``m01`` to ``m04``. ``m01-start``
     contains frames 0 and 1 of ``m01``, which ``train`` contains too, ``h01`` two
-    frames of a recording that ``train`` lacks, and ``all-four`` frame 0 of every
-    recording of ``train``. ``unfinished`` contains one unfinished frame, and
-    ``other-layout`` the mouse pose with a third keypoint.
+    frames of a recording that ``train`` lacks, ``all-four`` frame 0 of every
+    recording of ``train``, and ``every-frame`` every frame of ``train``.
+    ``unfinished`` contains one unfinished frame, and ``other-layout`` the mouse
+    pose with a third keypoint.
     """
     library = make_dataset(tmp_path / "libraries" / "7", name="library")
-    _ = _save_set(library, "train", {"m01": 4, "m02": 4, "m03": 4, "m04": 4})
+    every_recording = {"m01": 4, "m02": 4, "m03": 4, "m04": 4}
+    _ = _save_set(library, "train", every_recording)
+    _ = _save_set(library, "every-frame", every_recording, shift=1.0)
     _ = _save_set(library, "m01-start", {"m01": 2})
     _ = _save_set(library, "h01", {"h01": 2})
     _ = _save_set(library, "all-four", {"m01": 1, "m02": 1, "m03": 1, "m04": 1})
@@ -1409,6 +1448,12 @@ HOLD_OUT_REFUSALS: Final[dict[str, tuple[tuple[str, ...], dict[str, object], str
         {"split_by": "group", "sequence_groups": EVERY_GROUP},
         "the hold-out shares a group with every training frame. Choose a "
         "hold-out from other recordings, or split by frame.",
+    ),
+    "every-frame": (
+        ("every-frame",),
+        {"split_by": "frame"},
+        "the hold-out shares a frame with every training frame. Choose a "
+        "hold-out from other recordings.",
     ),
 }
 """Each hold-out refusal with a fixed message: hold-out, other parameters, message."""

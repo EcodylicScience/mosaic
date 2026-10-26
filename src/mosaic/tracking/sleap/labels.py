@@ -53,13 +53,27 @@ SLEAP_VALIDATION_SUFFIX: Final = ".val.slp"
 
 # Run by the SLEAP interpreter. Its only inputs are argv -- the COCO json, the
 # directory its file_name values are relative to, and where to write -- so no
-# path is ever interpolated into this source.
+# path is ever interpolated into this source. sleap-io's COCO reader names the
+# track of each track_id value "track_<value>". When every track carries such a
+# name, each is renamed to its value, which is what a SLEAP identity model then
+# reports. A reader that names tracks otherwise is left as it is.
 _TO_SLP_SNIPPET: str = """
+import json
 import sys
 import sleap_io
 
 _json, _root, _out = sys.argv[1], sys.argv[2], sys.argv[3]
 _labels = sleap_io.load_coco(_json, dataset_root=_root)
+with open(_json, encoding="utf-8") as _file:
+    _annotations = json.load(_file)["annotations"]
+_values = {
+    f"track_{_each['track_id']}": str(_each["track_id"])
+    for _each in _annotations
+    if "track_id" in _each
+}
+if {_track.name for _track in _labels.tracks} <= set(_values):
+    for _track in _labels.tracks:
+        _track.name = _values[_track.name]
 sleap_io.save_slp(_labels, _out)
 print(f"wrote {len(_labels.labeled_frames)} labeled frames to {_out}")
 """
@@ -97,7 +111,8 @@ def write_slp(
     ``Track``, which is what the ``multi_class_topdown`` and
     ``multi_class_bottomup`` heads classify against; a set carrying none produces
     a ``.slp`` with no tracks, and those two heads then have nothing to learn.
-    A track named ``N`` arrives as ``track_N`` -- sleap-io's naming, not mosaic's.
+    Each track is named by its ``track_id``, so a model trained on the file
+    reports those names.
 
     Args:
         annotations: What to write. Frames with no instances are written too --

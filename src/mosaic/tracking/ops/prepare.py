@@ -539,9 +539,9 @@ def _split(
     if holdout.units and not kept:
         msg = (
             f"the hold-out shares a {_UNIT_NOUNS[params.split_by][0]} with every "
-            "training frame. Choose a hold-out from other recordings, or split by "
-            "frame."
+            "training frame. Choose a hold-out from other recordings"
         )
+        msg += "." if params.split_by == "frame" else ", or split by frame."
         raise ValueError(msg)
     if params.target in _SPLIT_TARGETS:
         _refuse_small_split(params, len(set(kept.values())))
@@ -745,7 +745,8 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
     # hold-out removes every training frame that shares a split unit with it,
     # and its units enter the identifier only when there are any. For sleap, the
     # training frames are written to labels.slp and the validation frames to
-    # labels.val.slp beside it, and the test frames to neither.
+    # labels.val.slp beside it, and the test frames to neither. Under
+    # track_by="alias", each track of those files is named by its alias.
     # 0.2: a revision is the full saved state, narrowed here, and a derived box
     # is the annotator's padded one rather than a hull read back as drawn.
     version = "0.3"

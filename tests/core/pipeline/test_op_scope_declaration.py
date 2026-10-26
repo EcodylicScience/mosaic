@@ -553,7 +553,7 @@ class TestOpInterface:
     def test_plan_identity_keeps_require_data(self, kind: str) -> None:
         """An override that drops it raises TypeError where a run body passes it.
 
-        Six run bodies call ``plan_identity(..., require_data=False)``.
+        Five run bodies call ``plan_identity(..., require_data=False)``.
         Only basedpyright catches an override that omits the parameter, and
         CI does not gate basedpyright.
         """

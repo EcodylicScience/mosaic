@@ -906,6 +906,13 @@ def test_only_a_complete_walk_excludes_the_frames_the_model_saw(
     assert summary.training_frames_reason == reason
 
 
+SPLIT_UUID: Final = "00000000-0000-4000-8000-000000000001"
+"""The ``uuid`` of the dataset whose preparation is scored, which enters every unit key.
+
+Under it, the preparation places frames in every split.
+"""
+
+
 def test_the_frames_a_preparation_placed_to_train_or_validate_are_excluded(
     tmp_path: Path,
 ) -> None:
@@ -914,7 +921,7 @@ def test_the_frames_a_preparation_placed_to_train_or_validate_are_excluded(
     A model trained on a real preparation of the scored set predicts every
     annotated image, and the walk of its training is not replaced.
     """
-    dataset = make_dataset(tmp_path / "ds")
+    dataset = make_dataset(tmp_path / "ds", uuid=SPLIT_UUID)
     images = extract_entry_camera(
         dataset,
         run_id=FRAMES_RUN,

@@ -81,6 +81,11 @@ SPLIT: Final = (0.1, 0.1, 0.8)
 The small-set guard fills the training and the validation split, and the test
 split takes most of the rest.
 """
+SEEN_UUID: Final = "00000000-0000-4000-8000-000000000005"
+"""The ``uuid`` of the ``ds`` dataset, which enters every unit key of its frames.
+
+Under it, ``SPLIT`` places frames in every split.
+"""
 
 MODEL: Final = "train-pose.0.2-feedfacade"
 BASE: Final = "train-pose.0.2-ba5eba5e00"
@@ -122,7 +127,7 @@ def ds(tmp_path: Path) -> Dataset:
     Frame 115 of ``B/s2`` is unfinished. ``held`` holds frames 100 and 101 of
     ``A/s1``, and ``other`` holds frames 100 to 115 of ``C/s3``.
     """
-    dataset = make_dataset(tmp_path / "ds", name="seen")
+    dataset = make_dataset(tmp_path / "ds", name="seen", uuid=SEEN_UUID)
     first = _extract(dataset, "A", "s1")
     second = _extract(dataset, "B", "s2", "left")
     third = _extract(dataset, "C", "s3")

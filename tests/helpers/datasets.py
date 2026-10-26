@@ -23,6 +23,7 @@ def make_dataset(
     roots: Sequence[str] | None = None,
     save: bool = True,
     ensure_roots: bool = True,
+    uuid: str | None = None,
 ) -> Dataset:
     """A saved `Dataset` rooted at *base*.
 
@@ -41,6 +42,9 @@ def make_dataset(
             that genuinely test the unsaved state pass `save=False` and say why.
         ensure_roots: Whether to create the root directories. A test asserting
             that a root is *absent* passes False.
+        uuid: The manifest's ``uuid``, or None for a freshly minted one. A test
+            whose assertions depend on a hash of the ``uuid``, such as which split
+            a frame is drawn into, names one.
 
     Returns:
         The dataset, ready to use.
@@ -55,17 +59,16 @@ def make_dataset(
     if roots is None:
         manifest = new_dataset_manifest(name=name, base_dir=base)
         dataset = Dataset(manifest_path=manifest).load(ensure_roots=ensure_roots)
-        if save:
-            dataset.save()
-        return dataset
-
-    base.mkdir(parents=True, exist_ok=True)
-    dataset = Dataset(
-        manifest_path=base / "dataset.yaml",
-        roots={key: str(base / key) for key in roots},
-    )
-    if ensure_roots:
-        dataset.ensure_roots()
+    else:
+        base.mkdir(parents=True, exist_ok=True)
+        dataset = Dataset(
+            manifest_path=base / "dataset.yaml",
+            roots={key: str(base / key) for key in roots},
+        )
+        if ensure_roots:
+            dataset.ensure_roots()
+    if uuid is not None:
+        dataset.manifest = dataset.manifest.model_copy(update={"uuid": uuid})
     if save:
         dataset.save()
     return dataset
