@@ -186,6 +186,8 @@ A dataset is a directory with `dataset.yaml` and named roots
   Declare a continuous group only for parts of one recording kept as separate
   sequences, following
   https://ecodylicscience.github.io/mosaic/dataset/#declare-a-continuous-recording.
+  `overlap_frames` reads neighbors only inside a continuous group. Other entries read
+  only their own frames, and the run notes how many on stderr.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables

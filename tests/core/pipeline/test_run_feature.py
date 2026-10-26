@@ -369,17 +369,119 @@ def _setup_continuous(
     _ = backfill_frame_extents(ds)
 
 
-def test_overlap_refuses_a_group_not_declared_continuous(tmp_path: Path) -> None:
-    """Independent sequences are not neighbours, however their frames are numbered.
+def _written_by_entry(
+    ds: MockDataset, result: Result
+) -> dict[tuple[str, str], pd.DataFrame]:
+    """Each entry's written output for *result*, read through the feature index."""
+    index = feature_index(feature_index_path(ds, result.feature)).read()
+    rows = index[index["run_id"] == result.run_id]
+    return {
+        (str(row["group"]), str(row["sequence"])): pd.read_parquet(
+            ds.resolve_path(row["abs_path"])
+        )
+        for _, row in rows.iterrows()
+    }
 
-    Nothing measurable separates "two divisions of one recording" from "two
-    recordings numbered consecutively", so without the declaration overlap would
-    splice unrelated data in as context and report success.
+
+def test_overlap_reads_no_context_outside_a_continuous_group(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Independent sequences are not neighbors, however their frames are numbered.
+
+    No measurement separates "two divisions of one recording" from "two
+    recordings numbered consecutively". Without the declaration each entry reads
+    only its own frames, writes the rows an overlap-0 run writes, and the run
+    says how many entries read no context.
     """
     ds = MockDataset(tmp_path)
     _setup_continuous(ds)
+    _OverlapAwareFeature.seen = []
 
-    with pytest.raises(ValueError, match="not declared continuous"):
+    with_overlap = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    note = capsys.readouterr().err
+
+    assert sorted(_OverlapAwareFeature.seen) == [
+        list(range(0, 10)),
+        list(range(10, 20)),
+        list(range(20, 30)),
+    ]
+    assert "3 entries" in note
+    assert "ds.set_continuous_groups" in note
+
+    without = run_feature(ds, _OverlapAwareFeature(), overlap_frames=0)
+    written_with = _written_by_entry(ds, with_overlap)
+    written_without = _written_by_entry(ds, without)
+    assert written_with.keys() == written_without.keys()
+    for entry, frame in written_with.items():
+        pd.testing.assert_frame_equal(frame, written_without[entry])
+
+
+def test_overlap_note_counts_one_entry_in_the_singular(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One entry outside a continuous group is named as one entry."""
+    ds = MockDataset(tmp_path)
+    add_track_sequences(ds, ("g", "s1"), n_rows=10)
+    _ = backfill_frame_extents(ds)
+
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    note = capsys.readouterr().err
+
+    assert "1 entry outside a continuous group reads no context" in note
+
+
+def _setup_mixed(ds: MockDataset, *, contiguous: bool = True) -> None:
+    """A continuous group ``g`` beside namespace and empty-group sequences.
+
+    ``g`` and the namespace group ``ns`` record frame extents. ``ns`` restarts
+    its numbering at 0 in each sequence. The empty-group entries are added after
+    the extents are measured, so they record none.
+    """
+    for index, name in enumerate(("s1", "s2", "s3")):
+        start = index * 10 if contiguous else 0
+        add_track_sequences(ds, ("g", name), n_rows=10, start_frame=start)
+    add_track_sequences(ds, ("ns", "x"), ("ns", "y"), n_rows=10)
+    _ = backfill_frame_extents(ds)
+    add_track_sequences(ds, ("", "a"), ("", "b"), n_rows=10)
+
+
+def test_overlap_reads_context_only_inside_the_continuous_group_of_a_mixed_dataset(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dataset-wide overlap run succeeds beside sequences that are not divisions.
+
+    The declared group's middle sequence sees its neighbors' frames. Every other
+    entry sees only its own frames, whether its group is empty or a namespace,
+    and whether or not it records a frame extent.
+    """
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_mixed(ds)
+    _OverlapAwareFeature.seen = []
+
+    result = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    note = capsys.readouterr().err
+
+    seen = _OverlapAwareFeature.seen
+    assert list(range(0, 13)) in seen
+    assert list(range(7, 23)) in seen
+    assert list(range(17, 30)) in seen
+    assert seen.count(list(range(0, 10))) == 4
+    assert "4 entries" in note
+
+    written = _written_by_entry(ds, result)
+    assert sorted(written[("g", "s2")]["frame"].unique()) == list(range(10, 20))
+    for entry in (("", "a"), ("", "b"), ("ns", "x"), ("ns", "y")):
+        assert sorted(written[entry]["frame"].unique()) == list(range(0, 10))
+
+
+def test_overlap_refuses_a_continuous_group_that_restarts_its_numbering_in_a_mixed_dataset(
+    tmp_path: Path,
+) -> None:
+    """Undivided entries beside a declared group leave its checks in force."""
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_mixed(ds, contiguous=False)
+
+    with pytest.raises(ValueError, match="one frame axis"):
         run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
 
 

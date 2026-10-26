@@ -87,9 +87,11 @@ in the root guide.
 
 - `group` is required and may be empty. It is a namespace in the entry key. Analysis
   grouping lives in mosaic-api's tags, and an arbitrary subset is `Scope(entries=[...])`
-  (`scope.py`), since `groups` and `sequences` combine as a cross product. The one
-  structural role of `group` is to bound the neighbors an overlapping feature reads
-  (`build_manifest` in `core/pipeline/manifest.py`).
+  (`scope.py`), since `groups` and `sequences` combine as a cross product.
+- Only the sequences of a continuous group have neighbors for `overlap_frames`
+  (`build_manifest` in `core/pipeline/manifest.py`). A sequence of the empty group or
+  of an undeclared group reads only its own frames, and the run notes their count on
+  stderr instead of refusing (`tests/core/pipeline/test_run_feature.py`).
 
 ## Track converters and schemas
 

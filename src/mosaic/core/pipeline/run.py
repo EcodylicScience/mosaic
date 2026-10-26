@@ -684,6 +684,26 @@ def _blind_roots_warning(feature_name: str, roots: Sequence[str], count: int) ->
     )
 
 
+def _no_context_note(feature_name: str, overlap_frames: int, count: int) -> str:
+    """What to say when an overlapped run reads entries outside a continuous group.
+
+    Those entries have no neighbors and read only their own frames. A note
+    instead of a refusal lets one overlapped step run over a dataset that mixes
+    divided and undivided recordings.
+    """
+    counted = (
+        "1 entry outside a continuous group reads"
+        if count == 1
+        else f"{count} entries outside a continuous group read"
+    )
+    return (
+        f"[feature:{feature_name}] overlap_frames={overlap_frames}: {counted} "
+        f"no context from neighboring sequences. Declare the groups whose "
+        f"sequences are time divisions of one recording with "
+        f"ds.set_continuous_groups([...])."
+    )
+
+
 def _variant_producer(variant: str) -> str:
     """Which producer minted a tracks variant, for the repair that reaches it.
 
@@ -1207,10 +1227,11 @@ def run_feature(
         Frames, not rows: the window is the neighbour's last (or first) N frame
         *numbers*, however many individuals each holds.
 
-        Only meaningful inside a **continuous group** -- one whose sequences are
-        time divisions of a single recording, numbered on one frame axis. A run
-        that asks for context elsewhere is refused rather than approximated,
-        because sequences that restart their numbering are not one axis and
+        Neighbors exist only inside a **continuous group**, one whose sequences
+        are time divisions of a single recording, numbered on one frame axis. An
+        entry outside one reads only its own frames, and the run prints one note
+        to stderr counting such entries. A continuous group whose sequences
+        restart their numbering is refused, because they are not one axis and
         splicing them produces plausible, wrong numbers. The feature must also
         declare ``accepts_overlap``. Mutually exclusive with frame/time filters.
     filter_start_frame : int | None
@@ -1393,10 +1414,17 @@ def _run_feature_impl(
     # iteration reaches each entry: a run that cannot do what was asked should
     # fail before it writes half its outputs. Both halves are checked here --
     # whether the feature can be handed a frame spanning several entries, and
-    # whether the data forms the single axis that makes the neighbours meaningful.
+    # whether each continuous group forms the single axis that makes the
+    # neighbors meaningful. Entries outside a continuous group read no context.
     if overlap_frames > 0:
         require_overlap_capable(feature, overlap_frames)
         verify_overlap_supported(manifest, overlap_frames)
+        without_context = sum(not entry.continuous for entry in manifest.values())
+        if without_context:
+            print(
+                _no_context_note(feature.name, overlap_frames, without_context),
+                file=sys.stderr,
+            )
 
     # Labels are a params dependency, not a manifest input, so they are resolved
     # here rather than inside build_manifest -- and *before* compute_run_id, so a

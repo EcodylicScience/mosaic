@@ -1098,8 +1098,9 @@ class Dataset:
     def measure_frame_extents(self, *, dry_run: bool = False) -> "pd.DataFrame":
         """Record the frame extent of every tracks row that lacks one.
 
-        A dataset converted before the extent was recorded reads blank, and blank
-        refuses ``overlap_frames``. Run this once to make such a dataset eligible.
+        A dataset converted before the extent was recorded reads blank, and an
+        ``overlap_frames`` run refuses a continuous group with a blank extent. Run
+        this once to make such a dataset eligible.
         Returns the rows filled, with their measured values.
         """
         return backfill_frame_extents(self, dry_run=dry_run)
@@ -8159,10 +8160,12 @@ class Dataset:
                 backend when *parallel_workers* > 1.
             overlap_frames: Frames of context from the sequences on either side,
                 for a feature computing across frames. Trimmed back off the
-                output. Only meaningful inside a continuous group, whose
-                sequences are time divisions of one recording on one frame axis;
-                refused elsewhere, as is a feature that has not declared
-                ``accepts_overlap``. Mutually exclusive with frame/time filters.
+                output. Neighbors exist only inside a continuous group, whose
+                sequences are time divisions of one recording on one frame axis.
+                Any other entry reads only its own frames, and the run notes how
+                many did on stderr. A feature that has not declared
+                ``accepts_overlap`` is refused. Mutually exclusive with
+                frame/time filters.
                 See :func:`~mosaic.core.pipeline.run.run_feature`.
             filter_start_frame: Only include frames >= this value.
             filter_end_frame: Only include frames < this value.

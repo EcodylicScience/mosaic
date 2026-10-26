@@ -287,32 +287,28 @@ def build_manifest(
         },
     )
 
-    # Build per-group ordering: the universe from the first input, the *order*
-    # from the recorded frame extents.
+    # Neighbors exist only inside a continuous group, whose sequences are time
+    # divisions of one recording (`DatasetManifest.is_continuous_group`). A
+    # sequence of the empty group or of an undeclared namespace group is an
+    # independent recording and has no prev/next, and adjacency does not cross
+    # from one group into another.
     #
-    # `group` defines *temporal contiguity*: the prev/next adjacency below (used
-    # for overlap_frames) is computed only within a group, never across group
-    # boundaries. This is the one structural role of `group`, load-bearing for a
-    # continuous group, whose sequences are time divisions of one recording --
-    # see `DatasetManifest.is_continuous_group`. Preserve when softening `group`
-    # elsewhere.
-    #
-    # Ordering by the recorded first frame rather than by the sequence *name* is
-    # what makes "the next sequence" mean the next one in time. A name sorts
-    # `seg1, seg10, seg2`, which named `seg10` as `seg1`'s successor; and a
-    # sequence whose parquet is missing is skipped by the resolvers above, so a
-    # name order silently closed over the hole and made `seg3` and `seg5`
-    # adjacent. Neither is detectable downstream. A group with no recorded
-    # extents -- every group of every dataset written before they were -- keeps
-    # the name order it has always had.
+    # Within a continuous group the order comes from the recorded first frame,
+    # with the universe taken from the first input. A name sorts
+    # `seg1, seg10, seg2`, and a sequence whose parquet is missing is skipped by
+    # the resolvers above, so a name order would make `seg3` and `seg5` adjacent
+    # across the hole. A group with no recorded extents keeps the name order.
+    continuous_groups = {
+        group for group, _ in first_full_order if ds.is_continuous_group(group)
+    }
     frame_extents = read_frame_extents(ds, tracks_run_id)
     group_order: dict[str, list[tuple[str, str]]] = {}
     for entry in first_full_order:
-        group_order.setdefault(entry[0], []).append(entry)
+        if entry[0] in continuous_groups:
+            group_order.setdefault(entry[0], []).append(entry)
     for entries_of_group in group_order.values():
         entries_of_group.sort(key=lambda entry: _temporal_key(entry, frame_extents))
 
-    # Build manifest with adjacency
     manifest: Manifest = {}
     for group, sequence in sorted(shared_entries):
         key = make_entry_key(group, sequence)
@@ -321,38 +317,16 @@ def build_manifest(
             if (group, sequence) in path_map:
                 specs.append(path_map[(group, sequence)])
 
-        # Find prev/next in the same group using the full ordering
-        current = (group, sequence)
-        ordered = group_order.get(group, [])
-        try:
-            idx = ordered.index(current)
-        except ValueError:
-            idx = -1
+        continuous = group in continuous_groups
+        prev_entry: tuple[str, str] | None = None
+        next_entry: tuple[str, str] | None = None
+        if continuous:
+            prev_entry, next_entry = _neighbors(
+                (group, sequence), group_order.get(group, [])
+            )
 
-        prev_entry: tuple[str, str] | None = ordered[idx - 1] if idx > 0 else None
-        next_entry: tuple[str, str] | None = (
-            ordered[idx + 1] if 0 <= idx < len(ordered) - 1 else None
-        )
-
-        prev_specs: FileSpecs | None = None
-        prev_key: str | None = None
-        if prev_entry is not None:
-            prev_key = make_entry_key(prev_entry[0], prev_entry[1])
-            collected: FileSpecs = []
-            for path_map_all in per_input_paths_all:
-                if prev_entry in path_map_all:
-                    collected.append(path_map_all[prev_entry])
-            prev_specs = collected if collected else None
-
-        next_specs: FileSpecs | None = None
-        next_key: str | None = None
-        if next_entry is not None:
-            next_key = make_entry_key(next_entry[0], next_entry[1])
-            collected_next: FileSpecs = []
-            for path_map_all in per_input_paths_all:
-                if next_entry in path_map_all:
-                    collected_next.append(path_map_all[next_entry])
-            next_specs = collected_next if collected_next else None
+        prev_key, prev_specs = _neighbor_specs(prev_entry, per_input_paths_all)
+        next_key, next_specs = _neighbor_specs(next_entry, per_input_paths_all)
 
         manifest[key] = ManifestEntry(
             file_specs=specs,
@@ -363,7 +337,7 @@ def build_manifest(
             entry_key=key,
             group=group,
             sequence=sequence,
-            continuous=ds.is_continuous_group(group),
+            continuous=continuous,
             core_extent=frame_extents.get((group, sequence)),
             prev_extent=None if prev_entry is None else frame_extents.get(prev_entry),
             next_extent=None if next_entry is None else frame_extents.get(next_entry),
@@ -403,6 +377,37 @@ def _refuse_stacked_overlap(per_input_entries: list[set[tuple[str, str]]]) -> No
         "input its own entries."
     )
     raise StackedEntryOverlap(msg)
+
+
+def _neighbors(
+    entry: tuple[str, str], ordered: list[tuple[str, str]]
+) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
+    """The entries before and after *entry* in its group's order.
+
+    An entry absent from *ordered* has neither.
+    """
+    try:
+        idx = ordered.index(entry)
+    except ValueError:
+        return None, None
+    prev_entry = ordered[idx - 1] if idx > 0 else None
+    next_entry = ordered[idx + 1] if idx < len(ordered) - 1 else None
+    return prev_entry, next_entry
+
+
+def _neighbor_specs(
+    neighbor: tuple[str, str] | None,
+    per_input_paths_all: list[dict[tuple[str, str], tuple[Path, LoadSpec]]],
+) -> tuple[str | None, FileSpecs | None]:
+    """A neighbor's entry key and the files every input holds for it."""
+    if neighbor is None:
+        return None, None
+    collected: FileSpecs = [
+        path_map_all[neighbor]
+        for path_map_all in per_input_paths_all
+        if neighbor in path_map_all
+    ]
+    return make_entry_key(neighbor[0], neighbor[1]), collected or None
 
 
 def order_values(df: pd.DataFrame, order_col: str) -> npt.NDArray[np.float64]:
@@ -462,13 +467,13 @@ class CoreSelector:
 
 
 class OverlapUnsupported(ValueError):
-    """``overlap_frames > 0`` was asked for where it cannot mean anything.
+    """``overlap_frames > 0`` was asked of a continuous group that cannot support it.
 
-    Every case this covers produced a plausible, wrong, silent answer before it
-    existed: a neighbour spliced in from an unrelated recording, a context window
-    measured in rows rather than frames, an output trimmed against a frame axis
-    three segments share. It is a ``ValueError`` because the request is the thing
-    that is wrong, not the state of the world.
+    Raised when an entry of a continuous group, or a neighbor it reads, records
+    no frame extent, or when two neighboring extents share frame numbers. Each
+    case would otherwise measure the context window in rows or trim the output
+    against a frame axis that several sequences share. It is a ``ValueError``
+    because the request is wrong, not the state of the world.
     """
 
 
@@ -480,41 +485,43 @@ def _describe(entry: str, extent: tuple[int, int] | None) -> str:
 
 
 def verify_overlap_supported(manifest: Manifest, overlap_frames: int) -> None:
-    """Refuse *manifest* if it cannot support reading across a sequence boundary.
+    """Refuse *manifest* if its continuous groups cannot be read across a boundary.
 
-    Checked once, up front, over the whole manifest rather than per entry as the
-    iteration reaches it: a run that cannot do what was asked should fail before
-    it writes half its outputs.
+    Checked once over the whole manifest before any entry is computed, so a run
+    that cannot do what was asked fails before it writes half its outputs.
 
-    Three conditions, each of which was a silent wrong answer before:
+    An entry outside a continuous group has no neighbors (:func:`build_manifest`)
+    and reads only its own frames, so it is not checked. Every entry of a
+    continuous group must pass two checks:
 
-    - **The group is declared continuous.** Its sequences must be time divisions
-      of one recording. No measurement establishes that -- two unrelated
-      recordings can be numbered consecutively -- so the dataset has to say so.
-    - **Every entry involved records a frame extent.** Without it there is no
-      way to know which neighbour comes first, or whether the axis is shared.
-    - **The extents are disjoint and increase across the boundary.** Sequences
+    - **It and each neighbor it reads record a frame extent.** Without one there
+      is no way to know which neighbor comes first, or whether the axis is shared.
+    - **The extents are disjoint and increase across each boundary.** Sequences
       that restart their numbering, which is what every mosaic converter writes,
-      do not form one axis: concatenating them hands ``apply`` three rows for
+      do not form one axis. Concatenating them hands ``apply`` three rows for
       frame 7, and every feature that sorts or groups by frame then interleaves
       or merges three recordings. No trim can repair numbers computed from that.
 
-    A group whose entries fail the last check while being declared continuous is
-    a dataset error, and the message names both sequences and both ranges.
+    The message of a failed check names both sequences and both ranges.
+
+    Raises:
+        OverlapUnsupported: An entry of a continuous group fails a check.
+        RuntimeError: An entry outside a continuous group names a neighbor,
+            which :func:`build_manifest` does not produce.
     """
     if overlap_frames <= 0:
         return
     for entry in manifest.values():
         if not entry.continuous:
-            msg = (
-                f"overlap_frames={overlap_frames} but group {entry.group!r} is "
-                f"not declared continuous, so its sequences are independent and "
-                f"reading across their boundary would splice unrelated "
-                f"recordings together. Declare it with "
-                f"ds.set_continuous_groups([...]) if its sequences really are "
-                f"time divisions of one recording, or leave overlap_frames at 0."
-            )
-            raise OverlapUnsupported(msg)
+            if entry.prev_entry_key is not None or entry.next_entry_key is not None:
+                msg = (
+                    f"{entry.entry_key} is outside a continuous group but names "
+                    f"a neighbor ({entry.prev_entry_key!r} before, "
+                    f"{entry.next_entry_key!r} after). The manifest is "
+                    f"inconsistent."
+                )
+                raise RuntimeError(msg)
+            continue
         if entry.core_extent is None:
             msg = (
                 f"overlap_frames={overlap_frames} but {entry.entry_key} records "

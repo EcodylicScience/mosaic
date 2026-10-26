@@ -495,6 +495,20 @@ verb act on it. No run id, version or parameter moves, and the manifest version 
   A mistyped `--answers` path is reported as a missing file. `mosaic splits set` warns of
   a group with no indexed entry and echoes each group once.
 
+**`overlap_frames` reads neighbors only inside a continuous group.** A run with
+`overlap_frames > 0` refused every entry outside a group declared in
+`continuous_groups`, so one overlapped step could not run over a dataset with undivided
+sequences. Such an entry now has no neighbors and reads only its own frames, and the
+run prints one note to stderr with their count. No run id changes.
+
+- A continuous group keeps every check: each of its entries and their neighbors must
+  record a frame extent, and the extents must be disjoint and increasing.
+- An entry outside a continuous group writes the rows an `overlap_frames=0` run writes,
+  under the overlapped run's own run id.
+- Declaring a group, or adding a sequence to one, leaves the cached entries of an
+  earlier overlapped run in place, because the run id does not depend on the
+  declaration. Re-run with `overwrite=True` to read the new neighbors.
+
 **`infer-points` and `infer-localizer` number the detections of each frame in `id`.**
 Both wrote each detection's number within its frame as `detection_id` and wrote no `id`,
 and the inference bridge set `id` 0 on every row. Every detection of a table was then

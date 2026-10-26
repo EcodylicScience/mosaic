@@ -498,9 +498,10 @@ Measure the frame axis of this dataset's tracks tables, and their media's.
 Four passes over ``tracks/index.csv``, none touching a table:
 
 * the **frame extent** (``frame_min`` / ``frame_max``), read from each
-  parquet into the cells that are blank. Blank refuses ``overlap_frames``,
-  so a dataset converted before the columns existed has to be measured once
-  before it can use overlap.
+  parquet into the cells that are blank. ``overlap_frames`` refuses a
+  continuous group with a blank extent, so a dataset converted before the
+  columns existed has to be measured once before its continuous groups can
+  use overlap.
 * the **media length** (``media_frames``): how many frames the tool should
   have read, from the media index, by the rule that a producer records it
   by. A table whose run read less on purpose is given a blank cell: a frame

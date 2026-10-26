@@ -1313,11 +1313,11 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
     """Measure and record the frame extent of every row that lacks one.
 
     The migration path for a dataset converted before the columns existed. Its
-    rows read blank, and blank refuses ``overlap_frames`` -- correctly, since
-    nothing knows whether those sequences share one frame axis -- so a dataset
-    that wants to use overlap has to be measured once. Rows written by the
-    current writer already carry it, so a dataset built after this change never
-    needs the pass.
+    rows read blank, and ``overlap_frames`` refuses a continuous group with a
+    blank extent, since nothing knows whether its sequences share one frame
+    axis. A dataset whose continuous groups use overlap has to be measured once.
+    Rows written by the current writer already carry it, so a dataset built
+    after this change never needs the pass.
 
     The only thing in the toolkit that re-measures an index column: ``reindex``
     prunes rows and never opens a file, and ``reconcile`` re-addresses runs from

@@ -17,6 +17,7 @@ from mosaic.core.pipeline.manifest import (
     ManifestEntry,
     build_manifest,
     iter_manifest,
+    verify_overlap_supported,
 )
 from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
 from mosaic.core.scope import Scope
@@ -247,13 +248,13 @@ def test_build_manifest_entries_feature_input(tmp_path):
     assert set(manifest.keys()) == {"g1__s2", "g2__s1"}
 
 
-def test_build_manifest_adjacency(tmp_path):
-    """Verify prev/next adjacency pointers are set correctly."""
-    ds = MockDataset(tmp_path)
+def test_build_manifest_adjacency(tmp_path: Path) -> None:
+    """A continuous group's entries name their neighbors in frame order."""
+    ds = MockDataset(tmp_path, continuous_groups=("g1",))
     add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), ("g1", "s3"))
 
     inputs = Inputs(("tracks",))
-    manifest, scope = build_manifest(ds, inputs)
+    manifest, _ = build_manifest(ds, inputs)
     assert len(manifest) == 3
 
     entry_s1 = manifest["g1__s1"]
@@ -275,9 +276,9 @@ def test_build_manifest_adjacency(tmp_path):
     assert entry_s3.next_file_specs is None
 
 
-def test_build_manifest_adjacency_cross_group(tmp_path):
-    """Adjacency does not cross group boundaries."""
-    ds = MockDataset(tmp_path)
+def test_build_manifest_adjacency_cross_group(tmp_path: Path) -> None:
+    """Adjacency does not cross from one continuous group into another."""
+    ds = MockDataset(tmp_path, continuous_groups=("g1", "g2"))
     add_track_sequences(ds, ("g1", "s1"), ("g1", "s2"), ("g2", "s3"))
 
     inputs = Inputs(("tracks",))
@@ -290,6 +291,40 @@ def test_build_manifest_adjacency_cross_group(tmp_path):
     # g2__s3 prev should be None (s2 is in g1)
     assert manifest["g2__s3"].prev_entry_key is None
     assert manifest["g2__s3"].prev_file_specs is None
+
+
+def test_build_manifest_gives_no_neighbors_outside_a_continuous_group(
+    tmp_path: Path,
+) -> None:
+    """The empty group and an undeclared named group hold independent sequences.
+
+    Only the declared group's entries name neighbors. Every other entry has no
+    neighbor key, file or extent on either side, however its group is named.
+    """
+    ds = MockDataset(tmp_path, continuous_groups=("rec",))
+    add_track_sequences(
+        ds,
+        ("rec", "s1"),
+        ("rec", "s2"),
+        ("", "a"),
+        ("", "b"),
+        ("ns", "x"),
+        ("ns", "y"),
+    )
+
+    manifest, _ = build_manifest(ds, Inputs(("tracks",)))
+
+    assert manifest["rec__s1"].next_entry_key == "rec__s2"
+    assert manifest["rec__s2"].prev_entry_key == "rec__s1"
+    for key in ("a", "b", "ns__x", "ns__y"):
+        entry = manifest[key]
+        assert not entry.continuous
+        assert entry.prev_entry_key is None
+        assert entry.prev_file_specs is None
+        assert entry.prev_extent is None
+        assert entry.next_entry_key is None
+        assert entry.next_file_specs is None
+        assert entry.next_extent is None
 
 
 def test_iter_manifest_yields_keydata(tmp_path):
@@ -411,6 +446,20 @@ def _build_three_seq_manifest(
 
 
 # --- overlap_frames tests ---
+
+
+def test_verify_overlap_refuses_a_neighbor_outside_a_continuous_group(
+    tmp_path: Path,
+) -> None:
+    """A neighbor on an entry outside a continuous group is an inconsistent manifest.
+
+    ``build_manifest`` gives such an entry no neighbor, so the check and the
+    builder cannot disagree about which entries read context.
+    """
+    manifest = _build_three_seq_manifest(tmp_path, continuous=False)
+
+    with pytest.raises(RuntimeError, match="outside a continuous group"):
+        verify_overlap_supported(manifest, 3)
 
 
 def test_iter_manifest_overlap_frames_zero(tmp_path):

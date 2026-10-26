@@ -297,7 +297,9 @@ mosaic makes no continuous group by itself. Build one in three steps:
     mosaic measure-tracks -m dataset.yaml --apply
     ```
 
-A feature run with `overlap_frames` then reads across the boundaries.
+A feature run with `overlap_frames` then reads across the boundaries. Sequences
+outside a continuous group have no neighbors and read only their own frames, and the
+run prints one note to stderr counting them.
 
 ## Hold groups out of training
 

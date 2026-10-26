@@ -279,9 +279,10 @@ class CollectiveMotionMetrics:
         **``overlap_frames`` is supported, and worth using on a continuous
         group.** ``centroid_speed`` and ``group_angvel`` are backward differences,
         so without context they are NaN on the first frame of every sequence --
-        the artifact overlap exists to remove. It needs the group's sequences to
-        be declared continuous and numbered on one frame axis; a run that asks
-        for it otherwise is refused rather than approximated.
+        the artifact overlap exists to remove. Only the sequences of a continuous
+        group read context. They must be numbered on one frame axis, or the run
+        is refused. Any other sequence reads only its own frames and keeps NaN
+        on its first frame.
     """
 
     category = "summary"

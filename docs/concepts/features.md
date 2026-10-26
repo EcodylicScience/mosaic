@@ -80,8 +80,11 @@ recipe can never be mistaken for the same feature computed from another.
 ## Reading across a sequence boundary
 
 A windowed feature needs frames from beyond its sequence's edge. `overlap_frames`
-supplies them — but only within a **continuous group**, a group whose sequences are
-declared to be time divisions of one recording rather than independent trials.
+supplies them within a **continuous group**, a group whose sequences are declared to be
+time divisions of one recording rather than independent trials. Only those sequences
+have neighbors. Every other sequence, in the empty group or in a group used as a
+namespace, reads only its own frames, and the run prints one note counting them. One
+overlapped step can therefore run over a dataset that mixes both.
 
 The declaration is checked, not trusted. mosaic verifies that the recorded frame
 extents are disjoint and increasing, and names both sequences and both ranges when they
