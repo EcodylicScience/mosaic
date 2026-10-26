@@ -50,6 +50,7 @@ from mosaic.tracking.common.bridge import (
     publish_or_record,
     publish_tracks_table,
     readable_tracks_table,
+    reusable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -112,6 +113,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "UltralyticsIndexRow",
+    "bridge_predictions_to_tracks",
     "list_ultralytics_runs",
     "run_ultralytics",
     "ultralytics_index",
@@ -227,7 +229,7 @@ def ultralytics_settings(
 # --- the bridge ------------------------------------------------------------
 
 
-def _bridge_predictions_to_tracks(
+def bridge_predictions_to_tracks(
     ds: Dataset,
     group: str,
     sequence: str,
@@ -241,12 +243,15 @@ def _bridge_predictions_to_tracks(
     overwrite: bool,
     axis: EntryAxis,
     frames_read: int | None,
+    recorded_first_frame: int | None,
 ) -> BridgeCounts | None:
     """Convert one entry's raw predictions into its standardized table.
 
     *consumed_media* are the media files that the table derives from, and *axis*
     places the table on the entry's axes. *frames_read* is how many frames the
     runner reported reading, or ``None`` when it did not run in this attempt.
+    *recorded_first_frame* decides whether a published table is reused
+    (:func:`~mosaic.tracking.common.bridge.reusable_tracks_table`).
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.ultralytics_tracks import UltralyticsTracksParams
@@ -256,7 +261,9 @@ def _bridge_predictions_to_tracks(
         # Reuse only what reads. An unreadable table -- torn by a kill before the
         # writes here became atomic, or by an external tool -- falls through and is
         # republished, rather than being adopted as a valid empty result.
-        reusable = readable_tracks_table(out_path)
+        reusable = reusable_tracks_table(
+            out_path, recorded_first_frame=recorded_first_frame, axis=axis
+        )
         if reusable is not None:
             return reusable
 
@@ -578,7 +585,7 @@ def run_ultralytics(
         bridged = publish_or_record(
             job.ctx,
             item.key,
-            lambda: _bridge_predictions_to_tracks(
+            lambda: bridge_predictions_to_tracks(
                 job.ds,
                 item.group,
                 item.sequence,
@@ -591,6 +598,7 @@ def run_ultralytics(
                 overwrite=job.overwrite or recomputed,
                 axis=item.entry_axis(windowed=bool(params.frame_window)),
                 frames_read=frames_read,
+                recorded_first_frame=job.recorded_first_frame,
             ),
             kind=ULTRALYTICS_KIND,
         )

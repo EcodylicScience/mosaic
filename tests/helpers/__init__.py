@@ -192,6 +192,7 @@ from tests.helpers.media import (
     write_media_index,
     write_mpeg4_mp4,
     write_painted_entry,
+    write_painted_recording,
 )
 from tests.helpers.driver_leases import write_driver_lease
 from tests.helpers.guide_recipes import (
@@ -652,6 +653,7 @@ __all__ = [
     "write_marked_images",
     "write_mpeg4_mp4",
     "write_painted_entry",
+    "write_painted_recording",
     "write_pv_header",
     "write_sleap_analysis_h5",
     "write_sleap_model",

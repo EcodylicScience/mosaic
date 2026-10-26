@@ -251,6 +251,8 @@ def recorded_media_frames(
         return "not-established"
     (entry,) = kept
     media = recorded_media(sidecar)
+    # The axis is read for its length alone, which counts the sequence's media
+    # whatever frame the sequence starts at on its recording's axis.
     if not media:
         axis = EntryAxis.of_entry_media(
             entry.resolved.facts, windowed=False, first_frame=0

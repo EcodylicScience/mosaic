@@ -656,7 +656,7 @@ def test_an_entry_with_no_detections_is_a_success_not_a_loss(
     _ = install_fake_trex(monkeypatch)
     monkeypatch.setattr(
         trex_runs,
-        "_bridge_npz_to_tracks",
+        "bridge_npz_to_tracks",
         lambda *_args, **_kwargs: BridgeCounts(n_rows=0, n_ids=0),
     )
 

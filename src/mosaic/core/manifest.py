@@ -1127,8 +1127,9 @@ class DatasetManifest(BaseModel):
         A continuous group asserts two things nothing else records. Its
         sequences are ordered in time and adjacent, so a feature may read across
         a sequence boundary (``overlap_frames``); and its ``frame`` column is one
-        axis spanning the whole group rather than restarting per sequence, so its
-        media resolves as one shared timeline rather than per sequence.
+        axis spanning the whole group rather than restarting per sequence. Each
+        sequence still resolves to its own media, which starts at the sequence's
+        ``first_frame`` on that axis.
 
         The assertion is the caller's; mosaic verifies it against the recorded
         frame ranges before acting on it, and refuses where the two disagree.
@@ -1324,9 +1325,10 @@ def manifest_header() -> str:
 # continuous_groups
 #          Groups whose sequences are time divisions of ONE recording, not
 #          independent trials. Their `frame` column is one axis spanning the
-#          group, and their media resolves as one shared timeline. This is what
-#          `overlap_frames` reads across; mosaic verifies it against the
-#          recorded frame ranges and refuses where the two disagree.
+#          group, and each sequence's media starts at the sequence's first
+#          frame on that axis. This is what `overlap_frames` reads across;
+#          mosaic verifies it against the recorded frame ranges and refuses
+#          where the two disagree.
 # splits   The role of each named group in a held-out protocol: `train`,
 #          `test` or `sealed`. Written by an operator (`mosaic splits set`);
 #          the agent tools never write it. A group not listed has no role.

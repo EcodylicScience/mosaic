@@ -23,12 +23,19 @@ from mosaic_media import probe_media
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.tracks_axis import BackfillReads, recorded_media_frames
+from mosaic.core.pipeline.tracks_index import (
+    frame_axis_verdict,
+    media_drift,
+    read_tracks_index,
+)
 from mosaic.core.scope import Scope
 from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerDetection,
     run_localizer_inference,
 )
 from tests.helpers import (
+    index_media_sequence,
     install_fake_point_inference,
     install_fake_pose_inference,
     make_dataset,
@@ -36,12 +43,14 @@ from tests.helpers import (
     pose_per_frame,
     published_table,
     write_painted_entry,
+    write_painted_recording,
 )
 
 pytestmark = pytest.mark.media
 
 _SIZE = (64, 48)
 _ENTRY = ("", "sess")
+_GROUPED = ("rec", "s2")
 
 
 def _dataset(tmp_path: Path, clips: list[tuple[int, float]]) -> Dataset:
@@ -185,3 +194,123 @@ def test_the_localizer_reads_one_video_given_as_a_bare_path(
     for bare in (clip, str(clip)):
         found = run_localizer_inference("unused.pt", bare, save_images=False)
         assert [frame.frame for frame in found] == list(range(6)), bare
+
+
+class TestAContinuousGroup:
+    """A sequence of a continuous group is inferred on its media, at its place.
+
+    Its rows are on the recording's frame axis, which starts the sequence at the
+    frames of the members before it. A row made when the sequence's media contained
+    the whole group reads as made from other media, and the next run replaces
+    it with rows placed on the sequence's frames.
+    """
+
+    def test_the_rows_start_at_the_sequence_s_first_frame(
+        self,
+        tmp_path: Path,
+        model: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        requires_ffmpeg: None,
+    ) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        _ = write_painted_recording(
+            ds, "rec", [("s1", [(5, 25.0)]), ("s2", [(4, 25.0)])], size=_SIZE
+        )
+        ds.set_continuous_groups(["rec"])
+        _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
+
+        _ = run_op(
+            ds, "infer-pose", {"model": str(model)}, scope=Scope(entries=[_GROUPED])
+        )
+
+        times = _times_by_frame(published_table(ds, "infer-pose"))
+        assert sorted(times) == [5, 6, 7, 8]
+        assert times[5] == pytest.approx(5 / 25.0)
+
+    def test_rows_from_a_media_variant_start_at_the_sequence_s_first_frame(
+        self,
+        tmp_path: Path,
+        model: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        requires_ffmpeg: None,
+    ) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        _ = write_painted_recording(
+            ds, "rec", [("s1", [(5, 25.0)]), ("s2", [(4, 25.0)])], size=_SIZE
+        )
+        ds.set_continuous_groups(["rec"])
+        crop = {"step": "crop", "x": 8, "y": 4, "width": 32, "height": 24}
+        scope = Scope(entries=[_GROUPED])
+        variant = run_op(
+            ds, "preprocess", {"steps": [crop], "codec": "h264"}, scope=scope
+        )
+        _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
+
+        _ = run_op(
+            ds, "infer-pose", {"model": str(model), "media": variant}, scope=scope
+        )
+
+        times = _times_by_frame(published_table(ds, "infer-pose"))
+        assert sorted(times) == [5, 6, 7, 8]
+        assert times[5] == pytest.approx(5 / 25.0)
+
+    def test_a_row_made_from_the_whole_group_reads_as_stale_and_is_replaced(
+        self,
+        tmp_path: Path,
+        model: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        requires_ffmpeg: None,
+    ) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        whole = write_painted_entry(
+            ds, "s2", [(5, 25.0), (4, 25.0)], paint_frame_code, size=_SIZE, group="rec"
+        )
+        _ = run_op(ds, "export-joined", {}, scope=Scope(entries=[_GROUPED]))
+        _ = install_fake_pose_inference(monkeypatch, pose_per_frame)
+        scope = Scope(entries=[_GROUPED])
+        _ = run_op(ds, "infer-pose", {"model": str(model)}, scope=scope)
+        (made,) = [row for _, row in read_tracks_index(ds).iterrows()]
+        assert int(made["media_frames"]) == 9
+
+        # The first clip becomes the sequence s1, and s2 keeps the rest.
+        first = ds.get_root("media_raw") / "rec" / "s1" / "clip0.mp4"
+        first.parent.mkdir(parents=True)
+        _ = whole[0].rename(first)
+        index_media_sequence(ds, "s2", ["clip1.mp4"], group="rec")
+        index_media_sequence(ds, "s1", ["clip0.mp4"], group="rec")
+        ds.set_continuous_groups(["rec"])
+
+        rows = read_tracks_index(ds)
+        assert media_drift(ds, rows) == (_GROUPED,)
+        reads = BackfillReads(ds, [_GROUPED])
+        recorded = recorded_media_frames(
+            ds,
+            producer="infer-pose",
+            variant=str(made["run_id"]),
+            group="rec",
+            sequence="s2",
+            consumed_media=str(made["consumed_media_composition"]),
+            reads=reads,
+        )
+        assert recorded == "not-established"
+        media = ds.resolve_media(*_GROUPED).frame_count
+        assert media == 4
+        verdict = frame_axis_verdict(
+            "infer-pose",
+            read=int(made["frames_read"]),
+            media=media,
+            known_tail_loss=None,
+        )
+        assert verdict == "mismatch"
+
+        _ = run_op(ds, "infer-pose", {"model": str(model)}, scope=scope)
+
+        (replaced,) = [row for _, row in read_tracks_index(ds).iterrows()]
+        assert int(replaced["media_frames"]) == 4
+        assert media_drift(ds, read_tracks_index(ds)) == ()
+        assert sorted(_times_by_frame(published_table(ds, "infer-pose"))) == [
+            5,
+            6,
+            7,
+            8,
+        ]

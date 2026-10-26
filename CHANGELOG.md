@@ -495,6 +495,47 @@ verb act on it. No run id, version or parameter moves, and the manifest version 
   A mistyped `--answers` path is reported as a missing file. `mosaic splits set` warns of
   a group with no indexed entry and echoes each group once.
 
+**Each sequence of a continuous group reads its own media.** A sequence of a group
+declared in `continuous_groups` resolved to every media row of the group. A join, a
+transcode, a store export, playback and the crops each read the whole recording once
+for each of its sequences. A sequence now resolves to the rows of its entry, and
+`ResolvedMedia.first_frame` is its first frame on the recording's frame axis: the summed
+media frames of the group's sequences before it, in a natural sort on their names. No
+run id changes. No known dataset declares `continuous_groups`.
+
+- Playback, `overlay`, `egocentric-crop` and `interaction-crop` find a tracks frame at
+  media frame `frame - first_frame`, and refuse a frame outside the sequence with
+  `FrameOutsideSequenceError`. A window that starts before the sequence draws from its
+  first frame. Outside a continuous group the crops stop at the end of the file, as
+  before. Playback now refuses a start past an entry's last frame, which wrote an
+  empty video.
+- A tracker or `infer-*` run on such a sequence reads the sequence's media and numbers
+  its table from `first_frame`. `tracks/index.csv` gains a `first_frame` column, the
+  first frame that a tracker or inference table was numbered from. It is blank for a
+  conversion. A row that records a media composition and has a blank cell reads as
+  numbered from 0.
+- Media drift reports a tracker or inference table whose sequence now starts at
+  another frame, as when a sequence before it changes length, and the next tracker
+  run publishes it again from the tool output without running the tool. A table made
+  from the whole group's media therefore reads as stale for every sequence after the
+  first. Its `frames_read` also differs from the sequence's media frames, and the next
+  run recomputes it. A table numbered past frame 0 also reads as stale once its group
+  is no longer declared continuous.
+- A feature of a tracker or inference table numbered past frame 0 records that first
+  frame with the table's composition, so a table published again at a moved first
+  frame recomputes its features instead of serving them from the cache.
+- `ResolvedMedia.first_frame` raises when a sequence before it lacks media, has a clip
+  of unknown frame count or has clips at a frame rate outside the store tolerance. It
+  also raises when a tracks variant numbers the group's sequences in another order
+  than their names. The sequence still resolves, and `export-joined`, `preprocess` and
+  a store export read it. Playback, the crops, trackers and inference refuse it. A
+  sequence that lacks media rows fails with a message naming its divided recording.
+- Extract-frames indices and annotation frame indices count from 0 in each sequence's
+  own media.
+- `mosaic describe` counts frame rates within the store tolerance as one rate, listed
+  at the lowest of them. Stores of one camera that measure 20.0000797 and 20.0001013
+  fps share a row.
+
 **`overlap_frames` reads neighbors only inside a continuous group.** A run with
 `overlap_frames > 0` refused every entry outside a group declared in
 `continuous_groups`, so one overlapped step could not run over a dataset with undivided
@@ -539,9 +580,6 @@ or path changes.
   resolving.
 - A media request in the empty group no longer matches the rows of a continuous group
   by their sequence name.
-- A continuous group's media is ordered by a natural sort on its sequence names and
-  no longer reads the tracks frame extents, which raised for an entry with two labelled
-  tracks variants.
 
 **`mosaic describe`, `mosaic sequences` and the MCP tools report recordings.** No key,
 run id or path changes.
@@ -584,15 +622,16 @@ the merge of a sequence's files. Nothing is written for it. Tracker publishes ar
 unchanged, and the inference bridge already refused a repeated pair. No run id changes.
 
 **The recording frame axis is placed end to end at frame 0.** A divided recording's
-tracks number `frame` and `time` across the recording. `EntryAxis` and `EntryHints`
-gain `first_frame`, a sequence's first frame on that axis, which
-`shift_to_recording_axis` (`core/pipeline/placement.py`) adds to every frame column and
-to `time` after every other mapping. Every producer passes 0, so no output, key, run id
-or path changes. One behavior changes: label conversion refuses dense labels, one label
-per position, for a sequence of a declared continuous group, since no rule places them
-on the recording's axis. The refusal comes before the first label file is written, so
-a refused conversion writes no label file and no index row. Event labels
-(`individual_pair_v1`) convert as before.
+tracks number `frame` and `time` across the recording. `EntryAxis` and `EntryHints` gain
+`first_frame`, a sequence's first frame on that axis, which `shift_to_recording_axis`
+(`core/pipeline/placement.py`) adds to every frame column and to `time` after every
+other mapping. Converters and label conversion pass 0, and their outputs, keys, run ids
+and paths are unchanged. Trackers and inference pass the sequence's first frame, which
+is 0 outside a continuous group (see the entry above). Label conversion now refuses
+dense labels, one label per position, for a sequence of a declared continuous group,
+since no rule places them on the recording's axis. The refusal comes before the first
+label file is written, so a refused conversion writes no label file and no index row.
+Event labels (`individual_pair_v1`) convert as before.
 
 **A refused manifest setter leaves the dataset as it was.** `set_notes`,
 `set_continuous_groups`, `define_tag`, `set_tag_value` and `add_library` held the new

@@ -66,11 +66,15 @@ _HIDE_UNLABELED_DESCRIPTION = (
     "Skip drawing individuals that lack a label after filtering and mapping."
 )
 
-_START_DESCRIPTION = "The first frame to draw."
+_START_DESCRIPTION = (
+    "The first frame to draw, on the tracks frame axis. A sequence of a "
+    "continuous group starts at its first frame on that axis, and an earlier "
+    "start draws from there."
+)
 
 _END_DESCRIPTION = (
-    "The last frame to draw, inclusive. Unset, drawing continues to the end "
-    "of the video."
+    "The last frame to draw, inclusive, on the tracks frame axis. Unset, "
+    "drawing continues to the end of the video."
 )
 
 _DOWNSCALE_DESCRIPTION = (

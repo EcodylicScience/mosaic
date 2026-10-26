@@ -53,7 +53,7 @@ from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
     publish_tracks_table,
-    readable_tracks_table,
+    reusable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -166,7 +166,7 @@ def litpose_settings(params: LitposeParams, *, model_id: str) -> dict[str, objec
 # --- predictions-CSV -> standardized tracks bridge ------------------------
 
 
-def _bridge_csv_to_tracks(
+def bridge_csv_to_tracks(
     ds: Dataset,
     group: str,
     sequence: str,
@@ -179,6 +179,7 @@ def _bridge_csv_to_tracks(
     fps: float,
     overwrite: bool,
     axis: EntryAxis,
+    recorded_first_frame: int | None,
 ) -> BridgeCounts | None:
     """Bridge a Lightning Pose CSV into ``tracks/<variant>/<group>__<seq>.parquet``.
 
@@ -186,8 +187,10 @@ def _bridge_csv_to_tracks(
     same ``(scorer, bodypart, coord)`` layout -- with the authoritative (group,
     sequence) known from the media index, so no name is guessed from a filename.
     *consumed_media* are the media files that the table derives from, and *axis*
-    places the table on the entry's axes. Returns ``None`` when the conversion
-    failed and did not publish a table.
+    places the table on the entry's axes. *recorded_first_frame* decides whether
+    a published table is reused
+    (:func:`~mosaic.tracking.common.bridge.reusable_tracks_table`). Returns
+    ``None`` when the conversion failed and did not publish a table.
     """
     from mosaic.core.track_converter import EntryHints, get_track_converter
     from mosaic.core.track_library.deeplabcut import DlcParams
@@ -197,7 +200,9 @@ def _bridge_csv_to_tracks(
         # Reuse only what reads. An unreadable table -- torn by a kill before the
         # writes here became atomic, or by an external tool -- falls through and is
         # republished, rather than being adopted as a valid empty result.
-        reusable = readable_tracks_table(out_path)
+        reusable = reusable_tracks_table(
+            out_path, recorded_first_frame=recorded_first_frame, axis=axis
+        )
         if reusable is not None:
             return reusable
 
@@ -437,7 +442,7 @@ def run_litpose(
         bridged = publish_or_record(
             job.ctx,
             item.key,
-            lambda: _bridge_csv_to_tracks(
+            lambda: bridge_csv_to_tracks(
                 job.ds,
                 item.group,
                 item.sequence,
@@ -449,6 +454,7 @@ def run_litpose(
                 fps=item.fps,
                 overwrite=job.overwrite or recomputed,
                 axis=item.entry_axis(windowed=bool(params.frame_window)),
+                recorded_first_frame=job.recorded_first_frame,
             ),
             kind=LITPOSE_KIND,
         )

@@ -106,11 +106,14 @@ pipeline graph are in `graph/CLAUDE.md`.
   composition through `cached_entry_disposition` (`run.py`). A difference, or one
   known side beside a blank one, recomputes the entry. A re-conversion from changed
   sources therefore recomputes (`tests/core/pipeline/test_tracks_source_staleness.py`).
+  `tracks_compositions` adds a tracks row's `first_frame` past 0 to its composition,
+  so a table published again at a moved first frame recomputes its features.
 - `drifted_entries` (`index.py`) compares the declared-root `consumed_composition`,
   and `consumed_media_composition` on tracks rows, media variant rows and tracker run
   rows is compared the same way, through `compositions_disagree` (`composition.py`).
   There a blank side is unknown and not drift
-  (`tests/core/pipeline/test_tracks_media_drift.py`).
+  (`tests/core/pipeline/test_tracks_media_drift.py`). `media_drift` also reports a
+  tracks row whose recorded `first_frame` differs from the sequence's current one.
 
 ## Inputs and claims
 

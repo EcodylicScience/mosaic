@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
+from mosaic_media import MediaProbeError
 
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
@@ -114,11 +115,13 @@ __all__ = [
     "frame_tail_shortfalls",
     "legacy_view",
     "media_drift",
+    "read_first_frame",
     "read_frames_read",
     "read_known_tail_loss",
     "read_media_frames",
     "read_tracks_index",
     "row_in_scope",
+    "recorded_first_frames",
     "select_variant_rows",
     "tail_allowance",
     "variant_for_producer_run",
@@ -262,6 +265,16 @@ class TracksIndexRow(RunIndexRowBase):
     producer that declares no loss, and for a file whose header was not read,
     which is then allowed the most the producer loses on any file
     (:func:`tail_allowance`).
+
+    ``first_frame`` is the sequence's first frame on its recording's frame axis
+    that a producer reading media numbered the table from
+    (:attr:`~mosaic.core.pipeline.placement.EntryAxis.first_frame`). It moves
+    when a member before the sequence in a continuous group changes length.
+    :func:`media_drift` then reports the table, and a first frame past 0 enters
+    the composition that a feature compares (:func:`tracks_compositions`). Text,
+    blank-is-unknown and read by :func:`read_first_frame`: blank for a
+    conversion, which keeps the frame numbers of its source. A row that records a
+    media composition and was written before this column was placed at frame 0.
     """
 
     group: str
@@ -281,6 +294,7 @@ class TracksIndexRow(RunIndexRowBase):
     media_frames: str = ""
     frames_read: str = ""
     known_tail_loss: str = ""
+    first_frame: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -300,6 +314,9 @@ _FRAMES_READ: Final = "frames_read"
 
 _KNOWN_TAIL_LOSS: Final = "known_tail_loss"
 """The cell of the tool's known loss at the end of its file, named once likewise."""
+
+_FIRST_FRAME: Final = "first_frame"
+"""The cell of the first frame that a table was numbered from, named once likewise."""
 
 TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("source_abs_path",)
 """Path-bearing columns beyond ``abs_path``.
@@ -976,6 +993,41 @@ def read_known_tail_loss(row: CellRow) -> int | None:
     header was not read, and a value that will not parse.
     """
     return count_cell(row.get(_KNOWN_TAIL_LOSS))
+
+
+def read_first_frame(row: CellRow) -> int | None:
+    """Return the first frame that one row's table was numbered from, or ``None``.
+
+    A row with a blank cell and a recorded media composition was written by a
+    producer reading media before the column existed, which numbered every
+    table from frame 0. ``None`` covers a conversion, a row whose media
+    composition is unknown, and a value that will not parse.
+    """
+    recorded = count_cell(row.get(_FIRST_FRAME))
+    if recorded is not None:
+        return recorded
+    if text_cell(row.get(_FIRST_FRAME)) or not text_cell(
+        row.get("consumed_media_composition")
+    ):
+        return None
+    return 0
+
+
+def recorded_first_frames(ds: Dataset, run_id: str) -> dict[tuple[str, str], int]:
+    """Return the first frame that variant *run_id*'s table of each entry was numbered from.
+
+    Read by :func:`read_first_frame` from each entry's last row. An entry whose
+    row does not establish it is left out.
+    """
+    found: dict[tuple[str, str], int] = {}
+    for _, row in _variant_rows(ds, run_id).iterrows():
+        entry = (str(row.get("group", "")), str(row.get("sequence", "")))
+        first_frame = read_first_frame(row)
+        if first_frame is None:
+            _ = found.pop(entry, None)
+        else:
+            found[entry] = first_frame
+    return found
 
 
 def count_cell(value: object) -> int | None:
@@ -1667,6 +1719,7 @@ def write_tracks_row(
     media_frames: int | None = None,
     frames_read: int | None = None,
     known_tail_loss: int | None = None,
+    first_frame: int | None = None,
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
@@ -1699,7 +1752,9 @@ def write_tracks_row(
     same reason, and ``None`` records a blank for a producer that cannot know it.
     ``known_tail_loss`` is how many frames short of the end of the file it read
     the tool is known to stop, and ``None`` records a blank where no loss is
-    declared or the file's header was not read.
+    declared or the file's header was not read. ``first_frame`` is the
+    sequence's first frame that a producer reading media numbered the table
+    from, and ``None`` records a blank for a conversion.
 
     ``records_media`` says whether this producer read video. A **bridge** did --
     a tracker or an inference run opens the entry's media -- so its row records
@@ -1749,6 +1804,7 @@ def write_tracks_row(
         media_frames="" if media_frames is None else str(int(media_frames)),
         frames_read="" if frames_read is None else str(int(frames_read)),
         known_tail_loss=("" if known_tail_loss is None else str(int(known_tail_loss))),
+        first_frame="" if first_frame is None else str(int(first_frame)),
     )
     append_refusing_key_collision(
         ds, tracks_index(tracks_index_path(ds)), [row], [(entry_group, entry_sequence)]
@@ -1791,7 +1847,12 @@ def media_drift(ds: Dataset, rows: pd.DataFrame) -> tuple[tuple[str, str], ...]:
     """Entries of *rows*, one variant's tracks rows, whose media moved since written.
 
     What :func:`drifted_media_entries` reports, for a caller that already holds
-    the rows.
+    the rows. An entry has drifted when its media composition differs from the
+    recorded one, or when the table was numbered from a first frame
+    (:func:`read_first_frame`) that the sequence no longer starts at. The first
+    frame is compared for a sequence of a divided recording, and for a table
+    numbered past frame 0, whose group may no longer be divided. A first frame
+    that cannot be established now is not drift.
     """
     from mosaic.core.pipeline.sequence_index import media_compositions_for
 
@@ -1803,7 +1864,45 @@ def media_drift(ds: Dataset, rows: pd.DataFrame) -> tuple[tuple[str, str], ...]:
         )
         for record in index_records(rows)
     }
-    return composition_drift(recorded, media_compositions_for(ds, recorded))
+    drifted = set(composition_drift(recorded, media_compositions_for(ds, recorded)))
+    numbered: dict[tuple[str, str], int] = {}
+    for _, row in rows.iterrows():
+        entry = (str(row.get("group", "")), str(row.get("sequence", "")))
+        first_frame = read_first_frame(row)
+        if first_frame is None:
+            continue
+        if first_frame or ds.recording_kind(entry[0]) == "divided":
+            numbered[entry] = first_frame
+    current = _current_first_frames(ds, numbered)
+    drifted.update(
+        entry
+        for entry, first_frame in numbered.items()
+        if current.get(entry) and first_frame not in current[entry]
+    )
+    return tuple(sorted(drifted))
+
+
+def _current_first_frames(
+    ds: Dataset, entries: Collection[tuple[str, str]]
+) -> dict[tuple[str, str], frozenset[int]]:
+    """Return the first frame that each of *entries* starts at, one per camera.
+
+    An entry whose media cannot be resolved or placed is left out.
+    """
+    if not entries:
+        return {}
+    try:
+        scope = ds.resolve_media_scope(sorted(entries), errors={})
+    except FileNotFoundError:
+        return {}
+    found: dict[tuple[str, str], set[int]] = {}
+    for item in scope:
+        try:
+            first_frame = item.resolved.first_frame
+        except MediaProbeError:
+            continue
+        found.setdefault((item.group, item.sequence), set()).add(first_frame)
+    return {entry: frozenset(frames) for entry, frames in found.items()}
 
 
 def tracks_compositions(
@@ -1816,6 +1915,12 @@ def tracks_compositions(
     the table itself. Content-digesting the parquet would also catch a table edited
     with its inputs unchanged, at the cost of making a nondeterministic tracker's
     re-run invalidate everything downstream -- see the deferred issue.
+
+    A table numbered from a first frame past 0 (:attr:`TracksIndexRow.first_frame`)
+    adds it to its cell: a tracker publishes a later sequence of a continuous
+    group again when a member before it changes length, and the media that the
+    table was made from is unchanged. Every other table keeps the bare
+    composition.
 
     Joined across variants when a feature reads several, sorted so one set of inputs
     has one spelling.
@@ -1831,7 +1936,16 @@ def tracks_compositions(
         if str(row.get("run_id", "")) not in wanted:
             continue
         entry = (str(row.get("group", "")), str(row.get("sequence", "")))
-        digest = str(row.get("consumed_composition", ""))
+        digest = _numbered_composition(row)
         if digest:
             per_entry.setdefault(entry, set()).add(digest)
     return {entry: "|".join(sorted(d)) for entry, d in per_entry.items()}
+
+
+def _numbered_composition(row: CellRow) -> str:
+    """Return one row's source composition, with the first frame of a table placed past 0."""
+    composition = text_cell(row.get("consumed_composition"))
+    first_frame = count_cell(row.get(_FIRST_FRAME))
+    if not first_frame:
+        return composition
+    return f"{composition};{_FIRST_FRAME}={first_frame}"

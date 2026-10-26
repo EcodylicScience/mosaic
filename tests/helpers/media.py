@@ -224,14 +224,14 @@ def write_painted_entry(
     size: tuple[int, int] = (64, 48),
     group: str = "",
 ) -> list[Path]:
-    """Write and index *sequence*'s clips, each ``(frames, fps)``, in order.
+    """Write and index the clips of ``(group, sequence)``, each ``(frames, fps)``, in order.
 
     Frame ``i`` of the entry, counted across all its clips, is ``paint(i)``. The clips
     continue one another, and a decoded frame identifies its entry frame. The clips are
-    ``clip0.mp4``, ``clip1.mp4``, ... under ``media_raw/<group>/<sequence>/``,
-    returned in order. An empty *group* is no directory level.
+    ``clip0.mp4``, ``clip1.mp4``, ... under :func:`_entry_media_directory`,
+    returned in order.
     """
-    directory = dataset.get_root("media_raw") / group / sequence
+    directory = _entry_media_directory(dataset, group, sequence)
     paths: list[Path] = []
     offset = 0
     for position, (frames, fps) in enumerate(clips):
@@ -245,6 +245,37 @@ def write_painted_entry(
         offset += frames
     index_media_sequence(dataset, sequence, [path.name for path in paths], group=group)
     return paths
+
+
+def write_painted_recording(
+    dataset: Dataset,
+    group: str,
+    members: Sequence[tuple[str, Sequence[tuple[int, float]]]],
+    *,
+    size: tuple[int, int] = (64, 48),
+) -> dict[str, list[Path]]:
+    """Write and index the sequences of *group* as one recording of painted frames.
+
+    *members* names each sequence and its clips, each ``(frames, fps)``, in
+    recording order. Frame ``i`` of the recording, counted across every clip of
+    every member, is ``paint_frame_code(i)``. A decoded frame identifies its
+    recording frame. The group is not declared continuous here.
+
+    Returns:
+        Each sequence's clip paths, in order.
+    """
+    written: dict[str, list[Path]] = {}
+    first = 0
+    for sequence, clips in members:
+
+        def paint(frame: int, offset: int = first) -> npt.NDArray[np.uint8]:
+            return paint_frame_code(offset + frame, size)
+
+        written[sequence] = write_painted_entry(
+            dataset, sequence, clips, paint, size=size, group=group
+        )
+        first += sum(frames for frames, _ in clips)
+    return written
 
 
 def dot_image(size: tuple[int, int], center: tuple[int, int]) -> npt.NDArray[np.uint8]:
@@ -317,8 +348,9 @@ def add_media_sequence(
     *,
     videos: tuple[str, ...] = ("a.mp4", "b.mp4"),
     frames: int = 6,
+    group: str = "",
 ) -> None:
-    """Give *sequence* real videos under ``media_raw`` and index them.
+    """Give ``(group, sequence)`` real videos under ``media_raw`` and index them.
 
     Driven through ``Dataset.write_media_index``, the assignment path the control
     plane uses, so the media index and the composition it projects are the ones
@@ -336,20 +368,28 @@ def add_media_sequence(
     """
     require_ffmpeg()
 
-    directory = dataset.get_root("media_raw") / sequence
+    directory = _entry_media_directory(dataset, group, sequence)
     directory.mkdir(parents=True, exist_ok=True)
     for name in videos:
         write_h264_mp4(directory / name, frames=frames, shade=_shade_for_name(name))
-    index_media_sequence(dataset, sequence, videos)
+    index_media_sequence(dataset, sequence, videos, group=group)
+
+
+def _entry_media_directory(dataset: Dataset, group: str, sequence: str) -> Path:
+    """Return the directory under ``media_raw`` that contains the clips of one entry.
+
+    It is ``media_raw/<sequence>/`` for the empty group, and
+    ``media_raw/<group>/<sequence>/`` otherwise. Two groups may then name a
+    sequence alike.
+    """
+    root = dataset.get_root("media_raw")
+    return root / group / sequence if group else root / sequence
 
 
 def index_media_sequence(
     dataset: Dataset, sequence: str, videos: Sequence[str], *, group: str = ""
 ) -> None:
-    """Index the *videos* already written under ``media_raw/<group>/<sequence>/``.
-
-    The videos are indexed in the order given, and an empty *group* is no
-    directory level.
+    """Index the *videos* already written in :func:`_entry_media_directory`, in order.
 
     It is the indexing half of :func:`add_media_sequence`, for a test that writes
     its own clips: at another rate, with painted frames, or replaced after a first
@@ -357,7 +397,7 @@ def index_media_sequence(
     """
     from mosaic.core.pipeline.media_index import MediaIndexScope
 
-    directory = dataset.get_root("media_raw") / group / sequence
+    directory = _entry_media_directory(dataset, group, sequence)
     _ = dataset.write_media_index(
         [
             MediaIndexScope(

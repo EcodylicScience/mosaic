@@ -149,6 +149,34 @@ def test_overwrite_rewrites_it(ds: Dataset) -> None:
     assert joined.stat().st_size > len(b"not a video")
 
 
+def test_a_sequence_of_a_continuous_group_joins_its_own_clips(
+    tmp_path: Path, requires_ffmpeg: None
+) -> None:
+    """Each sequence of a continuous group joins its clips alone."""
+    dataset = make_dataset(tmp_path, roots=["media_raw", "media", "tracks"])
+    for sequence in ("s1", "s2"):
+        add_media_sequence(
+            dataset,
+            sequence,
+            videos=(f"{sequence}a.mp4", f"{sequence}b.mp4"),
+            frames=CLIP_FRAMES,
+            group="rec",
+        )
+    dataset.set_continuous_groups(["rec"])
+
+    _ = run_op(dataset, "export-joined", {}, scope=Scope(entries=[("rec", "s2")]))
+
+    resolved = dataset.resolve_media("rec", "s2")
+    assert [path.name for path in resolved.paths] == ["s2a.mp4", "s2b.mp4"]
+    joined = joined_export_path(
+        dataset,
+        joined_source_uid(list(resolved.facts)),
+        joined_recipe_hash(JoinedExportParams()),
+    )
+    assert int(probe_media(joined).frame_count) == 2 * CLIP_FRAMES
+    assert sorted(path.name for path in joined.parent.glob("*.mp4")) == [joined.name]
+
+
 def test_a_single_clip_entry_is_a_no_op(tmp_path: Path, requires_ffmpeg: None) -> None:
     """A correct answer to "join it", not a failure.
 

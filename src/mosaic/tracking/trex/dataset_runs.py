@@ -72,7 +72,7 @@ from mosaic.tracking.common.bridge import (
     BridgeCounts,
     publish_or_record,
     publish_tracks_table,
-    readable_tracks_table,
+    reusable_tracks_table,
     tracks_table_path,
 )
 from mosaic.tracking.common.driver import EntryJob, run_tracker
@@ -318,7 +318,7 @@ def detect_model_kind(ref: str) -> str:
 # --- NPZ -> standardized tracks bridge ------------------------------------
 
 
-def _bridge_npz_to_tracks(
+def bridge_npz_to_tracks(
     ds: Dataset,
     group: str,
     sequence: str,
@@ -331,6 +331,7 @@ def _bridge_npz_to_tracks(
     fps: float | None,
     conversion: PvHeader | None,
     overwrite: bool,
+    recorded_first_frame: int | None,
 ) -> BridgeCounts | None:
     """Merge per-individual TREx NPZ into ``tracks/<variant>/<group>__<seq>.parquet``.
 
@@ -348,7 +349,9 @@ def _bridge_npz_to_tracks(
     *axis* places the merged table on the entry's axes, as it does every
     tracker's: a joined entry's ``time`` goes onto the clips' own measured rates
     instead of the single rate TREx took from the first of them, and a media
-    variant's table is mapped into source space.
+    variant's table is mapped into source space. *recorded_first_frame* decides
+    whether a published table is reused
+    (:func:`~mosaic.tracking.common.bridge.reusable_tracks_table`).
 
     *consumed_media* are the media files that the table derives from, and
     *conversion* is the header of the ``.pv`` that TREx tracked
@@ -382,7 +385,9 @@ def _bridge_npz_to_tracks(
         # `known_tail_loss` existed is a blank. `mosaic measure-tracks` fills those
         # in, and a republish (`overwrite=True` here) re-bridges the table and
         # records all three.
-        reusable = readable_tracks_table(out_path)
+        reusable = reusable_tracks_table(
+            out_path, recorded_first_frame=recorded_first_frame, axis=axis
+        )
         if reusable is not None:
             return reusable
 
@@ -512,7 +517,7 @@ def _republish_entry(
             "nothing to republish from. Only re-tracking can recover it."
         )
         raise NothingToRepublishError(msg)
-    return _bridge_npz_to_tracks(
+    return bridge_npz_to_tracks(
         job.ds,
         item.group,
         item.sequence,
@@ -524,6 +529,7 @@ def _republish_entry(
         fps=item.measured_fps,
         conversion=_recorded_conversion(job.ds, work_dir),
         overwrite=True,
+        recorded_first_frame=job.recorded_first_frame,
     )
 
 
@@ -1190,7 +1196,7 @@ def run_trex(
             _ = publish_or_record(
                 job.ctx,
                 item.key,
-                lambda: _bridge_npz_to_tracks(
+                lambda: bridge_npz_to_tracks(
                     job.ds,
                     item.group,
                     item.sequence,
@@ -1202,6 +1208,7 @@ def run_trex(
                     fps=item.measured_fps,
                     conversion=_recorded_conversion(job.ds, work_dir),
                     overwrite=job.overwrite or recomputed,
+                    recorded_first_frame=job.recorded_first_frame,
                 ),
                 kind=TREX_KIND,
             )

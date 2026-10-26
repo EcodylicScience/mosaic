@@ -128,6 +128,26 @@ def test_a_media_row_shorter_than_its_header_counts_without_a_rate(
     )
 
 
+def test_rates_within_the_store_tolerance_are_counted_as_one_rate(
+    tmp_path: Path,
+) -> None:
+    """Each store reports the rate measured from its timestamps.
+
+    Stores of one 20 fps camera measure 20.0000797 and 20.0001013, which differ
+    by less than the store tolerance. 29.97 and 30 differ by more.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    _index_media(ds, [20.0001013, 20.0000797, 20.0, 30.0, 29.97])
+
+    summary = dataset_summary(ds, found=dataset_inventory(ds, kinds=SUMMARY_KINDS))
+
+    assert summary.frame_rates == (
+        FrameRateCount(fps=20.0, videos=3),
+        FrameRateCount(fps=29.97, videos=1),
+        FrameRateCount(fps=30.0, videos=1),
+    )
+
+
 def test_a_kind_the_inventory_did_not_report_counts_as_unknown(
     populated: Dataset,
 ) -> None:

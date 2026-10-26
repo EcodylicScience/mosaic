@@ -12,12 +12,11 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, ClassVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 
 import cv2
 import numpy as np
 import pandas as pd
-from mosaic_media import MediaFacts
 from pydantic import Field
 
 from mosaic.core.media.preprocess.appearance import apply_clahe, make_clahe, to_gray
@@ -75,6 +74,9 @@ from .helpers import (
     require_pixel_positions,
     safe_crop_with_padding,
 )
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset, ResolvedMedia
 
 _TARGET_ID_DESCRIPTION = (
     "ID of the individual to center the crop on. Unset, the feature "
@@ -274,7 +276,7 @@ class EgocentricCrop:
 
     # ----------------------- Dataset hooks -----------------------
 
-    def bind_dataset(self, ds: Any) -> None:
+    def bind_dataset(self, ds: Dataset) -> None:
         """Called by Dataset.run_feature before any fit/transform."""
         self._ds = ds
 
@@ -341,6 +343,13 @@ class EgocentricCrop:
         if df is None or df.empty:
             return pd.DataFrame()
 
+        ds = self._ds
+        if ds is None:
+            message = (
+                f"[{self.name}] no dataset bound; run this through run_feature, "
+                "which binds the dataset."
+            )
+            raise RuntimeError(message)
         p = self.params
         group, sequence = entry_identity(df)
 
@@ -350,7 +359,7 @@ class EgocentricCrop:
         # without keypoints or under ``xy``, which let a trex_v1 table, whose
         # keypoints are centimetres too, be cropped at centimetre coordinates.
         require_pixel_positions(
-            self._ds,
+            ds,
             group,
             sequence,
             self.name,
@@ -358,7 +367,7 @@ class EgocentricCrop:
         )
 
         # Resolve video paths (supports multi-video sequences)
-        resolved = self._ds.resolve_media(group, sequence)
+        resolved = ds.resolve_media(group, sequence)
 
         # Determine which IDs to process
         if p.target_id is None:
@@ -366,11 +375,11 @@ class EgocentricCrop:
             unique_ids = df[COLUMNS.id_col].dropna().unique()
             all_metadata = []
             for uid in unique_ids:
-                df_target = df[df[COLUMNS.id_col] == uid].copy()
+                df_target = df.loc[df[COLUMNS.id_col].eq(uid)].copy()
                 if df_target.empty:
                     continue
                 metadata = self._process_single_id(
-                    resolved.paths, resolved.facts, df_target, group, sequence, uid
+                    resolved, df_target, group, sequence, uid
                 )
                 all_metadata.append(metadata)
             if all_metadata:
@@ -382,7 +391,7 @@ class EgocentricCrop:
             if df_target.empty:
                 raise ValueError(f"No data for target_id={p.target_id}")
             return self._process_single_id(
-                resolved.paths, resolved.facts, df_target, group, sequence, p.target_id
+                resolved, df_target, group, sequence, p.target_id
             )
 
     # ----------------------- Internal methods --------------------
@@ -745,8 +754,7 @@ class EgocentricCrop:
 
     def _process_single_id(
         self,
-        video_paths: list[Path],
-        facts: list[MediaFacts],
+        resolved: ResolvedMedia,
         df_target: pd.DataFrame,
         group: str,
         sequence: str,
@@ -757,13 +765,18 @@ class EgocentricCrop:
 
         Parameters
         ----------
-        video_paths : list[Path]
-            Ordered list of video paths for this sequence.
-        facts : list[MediaFacts]
-            Stored media facts parallel to *video_paths*, injected into the
-            reader so it does not re-probe.
+        resolved : ResolvedMedia
+            The sequence's media, whose stored facts are injected into the
+            reader so it does not re-probe. Its ``first_frame`` is subtracted
+            from each tracks frame to find the media frame.
 
-        Returns metadata DataFrame with crop info per frame.
+        Returns metadata DataFrame with crop info per frame, on the tracks
+        frame axis.
+
+        Raises
+        ------
+        FrameOutsideSequenceError
+            If a tracks frame is outside the sequence's media.
         """
         from mosaic.core.media.video_io import MultiVideoReader
 
@@ -776,13 +789,22 @@ class EgocentricCrop:
         # from the track table and joined by frame index, so a rotated,
         # variable-rate, or mistimed source would crop the wrong pixels of the
         # wrong frame -- an analysis read, not a browser-delivery one.
-        reader = MultiVideoReader(video_paths, facts=facts, target="analysis")
-        output_fps = p.output_fps or reader.fps
-
-        # Build frame -> row position lookup (for precomputed geometry arrays
-        # and for optional per-frame lookups like transform_keypoints)
-        frame_array = df_target[COLUMNS.frame_col].to_numpy(dtype=int)
+        # Build media frame -> row position lookup (for precomputed geometry
+        # arrays and for optional per-frame lookups like transform_keypoints).
+        # Tracks frames count from the recording's first frame, and the media
+        # from the sequence's.
+        tracks_frames = df_target[COLUMNS.frame_col].to_numpy(dtype=int)
+        if len(tracks_frames):
+            _ = resolved.sequence_frame(int(tracks_frames.min()))
+            _ = resolved.sequence_frame(int(tracks_frames.max()))
+        first_frame = resolved.first_frame
+        frame_array = tracks_frames - first_frame
         frame_to_pos = {int(f): i for i, f in enumerate(frame_array)}
+
+        reader = MultiVideoReader(
+            resolved.paths, facts=resolved.facts, target="analysis"
+        )
+        output_fps = p.output_fps or reader.fps
 
         # Prepare output paths
         run_root = self._get_run_root(group, sequence)
@@ -888,12 +910,13 @@ class EgocentricCrop:
 
                     if frames_dir is not None:
                         frame_path = (
-                            frames_dir / f"frame_{frame_idx:06d}.{p.frame_format}"
+                            frames_dir
+                            / f"frame_{frame_idx + first_frame:06d}.{p.frame_format}"
                         )
                         cv2.imwrite(str(frame_path), crop)
 
                     meta = {
-                        "frame": frame_idx,
+                        "frame": frame_idx + first_frame,
                         "center_x": center[0],
                         "center_y": center[1],
                         "heading_angle": angle,

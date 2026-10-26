@@ -65,6 +65,14 @@ counts across the whole recording. A later sequence starts where the one before 
 ended. A converter takes `frame` from the file it reads. Tracks imported as one
 file per clip therefore have to be numbered across the recording already.
 
+Each sequence of a continuous group has media of its own, which contains its frames
+only. Its first frame on the recording's axis is the sum of the media frame counts of
+the sequences before it. A tracker reads the sequence's media and numbers its table from
+there. When a sequence before it changes length, the table reads as out of date, and the
+next run renumbers it. Playback and the crops find tracks frame `f` at media frame
+`f - first_frame`, and refuse a frame outside the sequence. Extract-frames indices and
+annotation frame indices count from 0 in each sequence's media.
+
 For a Motif or Loopbio imgstore, `frame` is the store's `frame_index`, its contiguous
 running count. It is not the `frame_number` the camera stamped on each frame, which
 skips where the camera dropped frames. A camera log keyed by `frame_number` therefore

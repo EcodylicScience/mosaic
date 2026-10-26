@@ -21,6 +21,7 @@ from typing import Literal
 from .entry import Entry, entry_token, make_entry_key, to_safe_name
 
 __all__ = [
+    "FrameOutsideSequenceError",
     "OrderFacts",
     "Recording",
     "RecordingKey",
@@ -33,6 +34,8 @@ __all__ = [
     "recording_of",
     "recording_storage_name",
     "recordings",
+    "sequence_frame",
+    "sequence_window",
 ]
 
 RecordingKind = Literal["divided", "undivided"]
@@ -263,3 +266,72 @@ def recordings(
         for group, members in divided.items()
     )
     return tuple(sorted(found, key=lambda recording: recording.key))
+
+
+class FrameOutsideSequenceError(ValueError):
+    """A frame on the recording's axis lies outside the sequence whose media is read."""
+
+
+def sequence_frame(frame: int, *, first_frame: int, frame_count: int | None) -> int:
+    """Return the frame of a sequence's media that recording frame *frame* is.
+
+    The tracks of a divided recording count ``frame`` across the recording, and a
+    sequence's media counts from the sequence's first frame, *first_frame* on the
+    recording's axis. An undivided recording starts at 0, and its frames are
+    the media's.
+
+    Args:
+        frame: The frame on the recording's axis.
+        first_frame: The sequence's first frame on that axis.
+        frame_count: The frames of the sequence's media, ``None`` when unknown,
+            which bounds the sequence below only.
+
+    Raises:
+        FrameOutsideSequenceError: If *frame* is before the sequence, or at or
+            past its end.
+    """
+    local = frame - first_frame
+    if local < 0 or (frame_count is not None and local >= frame_count):
+        message = f"frame {frame} is {_outside(first_frame, frame_count)}"
+        raise FrameOutsideSequenceError(message)
+    return local
+
+
+def sequence_window(
+    start: int, end: int | None, *, first_frame: int, frame_count: int | None
+) -> tuple[int, int | None]:
+    """Return the media frames of a sequence that recording frames *start* to *end* are.
+
+    The window is the part of the requested frames that the sequence contains, so
+    a *start* before the sequence reads from its first frame. *end* is inclusive,
+    and ``None`` reads to the end of the media, as does an *end* past it.
+
+    Args:
+        start: The first recording frame to read.
+        end: The last recording frame to read, or ``None``.
+        first_frame: The sequence's first frame on the recording's axis.
+        frame_count: The frames of the sequence's media, ``None`` when unknown.
+
+    Returns:
+        The first and last media frames, the last ``None`` to read to the end.
+
+    Raises:
+        FrameOutsideSequenceError: If the sequence contains none of the frames.
+    """
+    first = max(start, first_frame) - first_frame
+    past_end = frame_count is not None and first >= frame_count
+    if past_end or (end is not None and end < max(start, first_frame)):
+        requested = f"frames {start} to {'the end' if end is None else end}"
+        message = f"{requested} are {_outside(first_frame, frame_count)}"
+        raise FrameOutsideSequenceError(message)
+    return first, None if end is None else end - first_frame
+
+
+def _outside(first_frame: int, frame_count: int | None) -> str:
+    """Say which recording frames a sequence's media contains, for a refusal."""
+    contained = (
+        f"from frame {first_frame}"
+        if frame_count is None
+        else f"frames {first_frame} to {first_frame + frame_count - 1}"
+    )
+    return f"outside the sequence, whose media contains {contained} of its recording."

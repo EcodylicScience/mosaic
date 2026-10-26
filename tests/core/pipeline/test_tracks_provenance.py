@@ -203,7 +203,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
     It used to be ``str(npz_paths[0].parent)`` -- a bare absolute directory that
     did not survive a move or a sync between machines.
     """
-    from mosaic.tracking.trex.dataset_runs import _bridge_npz_to_tracks
+    from mosaic.tracking.trex.dataset_runs import bridge_npz_to_tracks
 
     ds = _dataset(tmp_path)
     seq_dir = ds.get_root("trex") / "trex.0.1-aaaaaaaaaa" / "vid1" / "data"
@@ -213,7 +213,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
     video.parent.mkdir(parents=True, exist_ok=True)
     video.write_bytes(b"v")
 
-    written = _bridge_npz_to_tracks(
+    written = bridge_npz_to_tracks(
         ds,
         "",
         "vid1",
@@ -227,6 +227,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
         fps=None,
         conversion=None,
         overwrite=True,
+        recorded_first_frame=None,
     )
 
     assert written is not None
@@ -244,7 +245,7 @@ def test_the_tracker_bridge_records_the_run_and_a_portable_source(
 
 def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> None:
     """``trex`` nests under ``_tracking``; naming the parent would lose which."""
-    from mosaic.tracking.trex.dataset_runs import _bridge_npz_to_tracks
+    from mosaic.tracking.trex.dataset_runs import bridge_npz_to_tracks
 
     ds = _dataset(tmp_path)
     npz = ds.get_root("trex") / "run" / "vid1" / "data" / "vid1_fish0.npz"
@@ -253,7 +254,7 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
     video.parent.mkdir(parents=True, exist_ok=True)
     video.write_bytes(b"v")
 
-    _ = _bridge_npz_to_tracks(
+    _ = bridge_npz_to_tracks(
         ds,
         "",
         "vid1",
@@ -267,6 +268,7 @@ def test_the_tracker_bridge_prefers_the_deepest_root_it_read(tmp_path: Path) -> 
         fps=None,
         conversion=None,
         overwrite=True,
+        recorded_first_frame=None,
     )
 
     roots = set(str(_one_row(ds)["consumed_source_roots"]).split(","))
@@ -781,7 +783,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     tmp_path: Path,
 ) -> None:
     """The SLEAP bridge writes the fifth tracks producer path with full provenance."""
-    from mosaic.tracking.sleap.dataset_runs import _bridge_analysis_h5_to_tracks
+    from mosaic.tracking.sleap.dataset_runs import bridge_analysis_h5_to_tracks
 
     ds = _dataset(tmp_path)
     seq_dir = ds.get_root("sleap") / "sleap.1.6-aaaaaaaaaa" / "vid1"
@@ -791,7 +793,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
     video.parent.mkdir(parents=True, exist_ok=True)
     video.write_bytes(b"v")
 
-    written = _bridge_analysis_h5_to_tracks(
+    written = bridge_analysis_h5_to_tracks(
         ds,
         "",
         "vid1",
@@ -803,6 +805,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
         fps=30.0,
         overwrite=True,
         axis=EntryAxis(),
+        recorded_first_frame=None,
     )
 
     assert written is not None
@@ -826,7 +829,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
     tmp_path: Path,
 ) -> None:
     """The Lightning Pose bridge writes a tracks producer path with full provenance."""
-    from mosaic.tracking.litpose.dataset_runs import _bridge_csv_to_tracks
+    from mosaic.tracking.litpose.dataset_runs import bridge_csv_to_tracks
 
     ds = _dataset(tmp_path)
     seq_dir = ds.get_root("litpose") / "litpose.2.3-aaaaaaaaaa" / "vid1"
@@ -836,7 +839,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
     video.parent.mkdir(parents=True, exist_ok=True)
     video.write_bytes(b"v")
 
-    written = _bridge_csv_to_tracks(
+    written = bridge_csv_to_tracks(
         ds,
         "",
         "vid1",
@@ -848,6 +851,7 @@ def test_the_litpose_bridge_records_the_run_and_a_portable_source(
         fps=30.0,
         overwrite=True,
         axis=EntryAxis(),
+        recorded_first_frame=None,
     )
 
     assert written is not None

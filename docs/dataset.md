@@ -310,6 +310,15 @@ A feature run with `overlap_frames` then reads across the boundaries. Sequences
 outside a continuous group have no neighbors and read only their own frames, and the
 run prints one note to stderr counting them.
 
+Index each sequence's media under the group, one entry per sequence. A sequence reads
+its own media, and starts at the summed frame counts of the sequences before it in a
+natural sort on their names. Name the sequences so that they sort in recording order. A
+tracks table that numbers them in another order cannot be drawn or cropped. A sequence
+without media cannot be drawn, cropped or tracked, and neither can a sequence after it.
+Every sequence of the group must also be recorded at one frame rate. When a sequence's
+media changes length, the tracker tables of the sequences after it read as out of date,
+and the next tracker run renumbers them.
+
 ## Hold groups out of training
 
 Give a group a role when some of the data must never train a model, so that a score on

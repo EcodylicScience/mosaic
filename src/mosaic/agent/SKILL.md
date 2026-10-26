@@ -186,10 +186,12 @@ A dataset is a directory with `dataset.yaml` and named roots
   Divide a recording into the sequences of a continuous group only for parts kept as
   separate sequences, following
   https://ecodylicscience.github.io/mosaic/dataset/#divide-a-recording.
-  `overlap_frames` reads neighbors only inside a continuous group. Other entries read
-  only their own frames, and the run notes how many on stderr. `mosaic describe` counts
-  the recordings and names the divided ones, and `mosaic sequences --json` gives each
-  entry's recording, a media-only entry included.
+  Index each sequence's media under the group. A sequence's tracks frame `f` is
+  media frame `f - first_frame` of that media, and extract-frames indices count from 0
+  in it. `overlap_frames` reads neighbors only inside a continuous group. Other entries
+  read only their own frames, and the run notes how many on stderr. `mosaic describe`
+  counts the recordings and names the divided ones, and `mosaic sequences --json` gives
+  each entry's recording, a media-only entry included.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables

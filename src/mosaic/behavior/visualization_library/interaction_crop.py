@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, final
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, final
 
 import cv2
 import numpy as np
@@ -76,6 +76,9 @@ from mosaic.behavior.visualization_library.helpers import (
     safe_crop_with_padding,
 )
 from mosaic.user_paths import user_path
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset, ResolvedMedia
 
 _CROP_BOTH_INDIVIDUALS_DESCRIPTION = (
     "Crop both individuals of each pair. False keeps only the first "
@@ -262,7 +265,7 @@ class InteractionCropPipeline:
 
     # --- Dataset hooks ---
 
-    def bind_dataset(self, ds: Any) -> None:
+    def bind_dataset(self, ds: Dataset) -> None:
         self._ds = ds
 
     def set_scope(self, scope: ResolvedScope) -> None:
@@ -323,6 +326,13 @@ class InteractionCropPipeline:
 
         cv2.setNumThreads(2)  # prevent OpenCV from saturating all cores
 
+        ds = self._ds
+        if ds is None:
+            message = (
+                f"[{self.name}] no dataset bound; run this through run_feature, "
+                "which binds the dataset."
+            )
+            raise RuntimeError(message)
         p = self.params
         group, sequence = entry_identity(df)
 
@@ -332,7 +342,7 @@ class InteractionCropPipeline:
         # without keypoints or under ``xy``, which let a trex_v1 table, whose
         # keypoints are centimetres too, be cropped at centimetre coordinates.
         require_pixel_positions(
-            self._ds,
+            ds,
             group,
             sequence,
             self.name,
@@ -340,7 +350,7 @@ class InteractionCropPipeline:
         )
 
         # Resolve video
-        resolved = self._ds.resolve_media(group, sequence)
+        resolved = ds.resolve_media(group, sequence)
 
         # Group by interaction segment
         required = [
@@ -380,6 +390,7 @@ class InteractionCropPipeline:
             for (focal_id, other_id, seg_id), seg_df in seg_groups:
                 record = self._crop_segment(
                     reader=reader,
+                    resolved=resolved,
                     output_fps=output_fps,
                     df_tracks=df,
                     focal_id=focal_id,
@@ -403,6 +414,7 @@ class InteractionCropPipeline:
     def _crop_segment(
         self,
         reader: Any,
+        resolved: ResolvedMedia,
         output_fps: float,
         df_tracks: pd.DataFrame,
         focal_id: Any,
@@ -414,8 +426,19 @@ class InteractionCropPipeline:
         group: str,
         sequence: str,
     ) -> dict | None:
-        """Crop one segment around the focal individual of one ordered pair."""
+        """Crop one segment around the focal individual of one ordered pair.
+
+        *start_frame* and *end_frame* are tracks frames. *resolved* is the
+        sequence's media, whose ``first_frame`` is subtracted from them to find
+        the media frames.
+
+        Raises:
+            FrameOutsideSequenceError: If the segment starts or ends outside the
+                sequence's media.
+        """
         p = self.params
+        media_start = resolved.sequence_frame(start_frame)
+        _ = resolved.sequence_frame(end_frame)
 
         # Filter tracks for the focal individual and frame range
         df_target = df_tracks[
@@ -470,7 +493,7 @@ class InteractionCropPipeline:
 
         n_written = 0
         try:
-            reader.seek(start_frame)
+            reader.seek(media_start)
             for frame_idx in range(start_frame, end_frame + 1):
                 ret, frame = reader.read()
                 if not ret:

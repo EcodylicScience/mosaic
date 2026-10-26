@@ -25,6 +25,7 @@ recomputed, so no existing dataset is forced to redo work.
 
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
@@ -36,7 +37,12 @@ from mosaic.core.pipeline.run import cached_entry_disposition, run_feature
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.sequence_index import read_sequence_index
-from mosaic.core.pipeline.tracks_index import read_tracks_index, tracks_compositions
+from mosaic.core.pipeline.tracks_index import (
+    read_tracks_index,
+    tracks_compositions,
+    write_tracks_row,
+)
+from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.types import Feature
 from tests.helpers import (
     CropLike,
@@ -310,3 +316,56 @@ class TestWhichChannelIsBlind:
         assert tracks_compositions(ds, (VARIANT,)).get(("", "seq_a"), "")
 
         assert SAID_ANYTHING not in _cache_serving_stderr(ds, CropLike(), capsys)
+
+
+class TestTheFirstFrameATableWasNumberedFrom:
+    """A table published again at a moved first frame reads as another composition.
+
+    A tracker's table of a later sequence in a continuous group is numbered from
+    the sequence's first frame. When a member before it changes length, the
+    table is published again at the new first frame from the same media, so the
+    source composition alone is unchanged.
+    """
+
+    @staticmethod
+    def _composition(ds: Dataset, first_frame: int | None) -> str:
+        write_trex_npz(ds.get_root("tracks_raw") / "seq_a.npz", n=8)
+        _ = ds.index_tracks_raw(
+            [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+        )
+        out = ds.get_root("tracks") / VARIANT / "seq_a.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        _ = write_parquet_atomic(pd.DataFrame({"frame": [0, 1], "id": [0, 0]}), out)
+        write_tracks_row(
+            ds,
+            run_id=VARIANT,
+            group="",
+            sequence="seq_a",
+            out_path=out,
+            producer="convert-trex_npz",
+            std_format="mosaic_v1",
+            n_rows=2,
+            consumed_source_roots=("tracks_raw",),
+            first_frame=first_frame,
+        )
+        return tracks_compositions(ds, (VARIANT,))[("", "seq_a")]
+
+    @pytest.mark.parametrize("first_frame", [None, 0], ids=["blank", "zero"])
+    def test_a_table_at_frame_0_keeps_the_source_composition(
+        self, scenario_dataset: Dataset, first_frame: int | None
+    ) -> None:
+        composition = self._composition(scenario_dataset, first_frame)
+
+        rows = read_tracks_index(scenario_dataset)
+        (recorded,) = rows[rows["run_id"] == VARIANT]["consumed_composition"]
+        assert recorded
+        assert composition == recorded
+
+    def test_another_first_frame_is_another_composition(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        at_30 = self._composition(scenario_dataset, 30)
+        at_40 = self._composition(scenario_dataset, 40)
+
+        assert at_30 != at_40
+        assert cached_entry_disposition(at_30, at_40) == "recompute"

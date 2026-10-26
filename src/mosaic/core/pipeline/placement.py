@@ -26,8 +26,10 @@ A divided recording numbers ``frame`` and ``time`` across the whole recording.
 :func:`shift_to_recording_axis` moves a table from its sequence's axis onto the
 recording's by the sequence's first frame, after every other mapping.
 :class:`EntryAxis` applies it to a tool's table and :func:`place_converted` to a
-converter's. A sequence's first frame comes from a division record, and without
-one it is 0.
+converter's. A tracker or inference table is moved by
+``ResolvedMedia.first_frame``: in a declared continuous group, the media frames of
+the sequences before it, and 0 otherwise. A converter's table keeps the frame
+numbers of its source, and :func:`place_converted` is passed 0.
 """
 
 from __future__ import annotations

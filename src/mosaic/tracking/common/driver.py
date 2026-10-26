@@ -39,6 +39,7 @@ from mosaic.core.pipeline.preprocess_index import (
 )
 from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
+from mosaic.core.pipeline.tracks_index import recorded_first_frames
 from mosaic.core.pipeline.variant_source import unreadable_variant_refusal
 from mosaic.tracking.common.index import TrackerRunRowBase
 from mosaic.tracking.common.mint import MintedRun
@@ -68,6 +69,13 @@ class EntryJob:
     work_dir: Path
     minted: MintedRun
     overwrite: bool
+    recorded_first_frame: int | None
+    """The first frame that the entry's published table was numbered from.
+
+    What the run's tracks variant records for the entry, read once per run
+    (:func:`~mosaic.core.pipeline.tracks_index.recorded_first_frames`). ``None``
+    when no row establishes it.
+    """
 
 
 def run_tracker(
@@ -139,6 +147,7 @@ def run_tracker(
         job.set_run_id(minted.run_id)
         job.set_total(len(items))
         _record_unresolved(job, work_items.failures)
+        placed = recorded_first_frames(ds, minted.tracks_variant)
 
         try:
             for i, item in enumerate(items):
@@ -170,6 +179,9 @@ def run_tracker(
                             work_dir=work_dir,
                             minted=minted,
                             overwrite=overwrite,
+                            recorded_first_frame=placed.get(
+                                (item.group, item.sequence)
+                            ),
                         )
                     )
                 finally:

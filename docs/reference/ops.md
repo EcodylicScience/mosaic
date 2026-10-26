@@ -415,7 +415,7 @@ Sample representative video frames as PNGs for annotation.
     | --- | --- | --- | --- | --- |
     | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
     | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
-    | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media axis: 0 is its first frame, and a recording in several clips counts across them in order, as its tracks' frame column does. Order and repeats do not matter. |
+    | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media: 0 is its first frame, and an entry in several clips counts across them in order. A sequence of a continuous group counts from 0 too. A frame of its tracks is the index plus the sequence's first frame. Order and repeats do not matter. |
 
 #### `select-frames`
 
@@ -454,7 +454,7 @@ Propose frames to annotate from a tracker or infer op's tracks of the full media
     | --- | --- | --- | --- | --- |
     | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
     | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
-    | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media axis: 0 is its first frame, and a recording in several clips counts across them in order, as its tracks' frame column does. Order and repeats do not matter. |
+    | `indices` | list of `integer` | _required_ | min items `1` | Frame indices on the entry's media: 0 is its first frame, and an entry in several clips counts across them in order. A sequence of a continuous group counts from 0 too. A frame of its tracks is the index plus the sequence's first frame. Order and repeats do not matter. |
 
 ??? note "`JumpCriterion`"
 

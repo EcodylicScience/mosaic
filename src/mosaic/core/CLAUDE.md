@@ -64,10 +64,14 @@ in the root guide.
 - `continuous_groups` refuses an empty or repeated name
   (`test_the_empty_group_cannot_be_continuous`). `Dataset.set_continuous_groups` also
   refuses `__` or `:` in a name, the name of an empty-group sequence, and a group with
-  no indexed entry, and a manifest declaring such a name still loads. A continuous
-  group's media resolves as one timeline in name order
-  (`Dataset._match_continuous_group_rows`), and `overlap_frames` checks the declaration
-  against recorded frame extents (`core/pipeline/manifest.py`).
+  no indexed entry, and a manifest declaring such a name still loads. Each sequence of a
+  continuous group resolves to its own media rows. `ResolvedMedia.first_frame` sums the
+  media frames of the sequences before it in name order (`_MemberPlacement` in
+  `dataset.py`), and readers map a tracks frame through `ResolvedMedia.sequence_frame`.
+  A sequence that cannot be placed still resolves for a join or a transcode, and its
+  `first_frame` raises (`tests/core/media/test_continuous_group_media.py`).
+  `overlap_frames` checks the declaration against recorded frame extents
+  (`core/pipeline/manifest.py`).
 - `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key
   and moved no `MANIFEST_VERSION`, so older code preserves it without enforcing it.
   Read it through `core/splits.py` (`role_of`, `groups_with_role`, `held_out_groups`)

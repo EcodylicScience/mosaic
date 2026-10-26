@@ -136,6 +136,14 @@ class TrackerWorkItem:
     camera: str = ""
     """The camera of the entry that this item reads, ``""`` for single-camera media."""
 
+    first_frame: int = 0
+    """The sequence's first frame on its recording's frame axis.
+
+    The tool reads the sequence's media, and :meth:`entry_axis` moves its
+    table onto the recording's axis by this many frames. 0 for an undivided
+    recording.
+    """
+
     variant: VariantSource | None = None
     """The media variant that this item reads, or ``None`` for the entry media.
 
@@ -250,12 +258,12 @@ class TrackerWorkItem:
             The variant's mapping for a variant item, and otherwise the entry's
             clips, whose join a tool read when there are several.
         """
-        # A sequence's first frame on its recording's axis comes from a division
-        # record. No entry has one, so every table stays at frame 0.
         if self.variant is not None:
-            return EntryAxis.of_variant(self.variant.mapping(), first_frame=0)
+            return EntryAxis.of_variant(
+                self.variant.mapping(), first_frame=self.first_frame
+            )
         return EntryAxis.of_entry_media(
-            self.source_facts, windowed=windowed, first_frame=0
+            self.source_facts, windowed=windowed, first_frame=self.first_frame
         )
 
 
@@ -375,6 +383,7 @@ def build_work_items(
                 fps=facts[0].fps if facts and facts[0].fps > 0 else fallback_fps,
                 source_facts=tuple(facts),
                 camera=entry.camera,
+                first_frame=resolved.first_frame,
             )
         )
 
@@ -422,6 +431,7 @@ def _variant_item(
         source_facts=(variant.facts,),
         camera=entry.camera,
         variant=variant,
+        first_frame=entry.resolved.first_frame,
     )
 
 

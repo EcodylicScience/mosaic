@@ -410,6 +410,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
         fps: object,
         conversion: object,
         overwrite: bool,
+        recorded_first_frame: int | None,
     ) -> BridgeCounts | None:
         written.append(Path(f"{group}__{sequence}"))
         assert overwrite is True, "a recomputed entry must overwrite its parquet"
@@ -422,7 +423,7 @@ def test_a_forced_recompute_refreshes_the_tracks_parquet(
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
     write_media_index(ds, [MediaClip(sequence="vid1", filename="vid2.mp4")])
 
-    monkeypatch.setattr(dr, "_bridge_npz_to_tracks", record_bridge)
+    monkeypatch.setattr(dr, "bridge_npz_to_tracks", record_bridge)
     dr.run_trex(ds, TrexParams(), scope_over(("", "vid1")))
 
     assert written == [Path("__vid1")]

@@ -288,28 +288,31 @@ def test_an_empty_group_request_does_not_match_a_continuous_group(
     assert list(dataset.match_media_rows("rec", "0900")["group"]) == ["rec"]
 
 
-def test_a_continuous_group_orders_its_media_beside_two_tracks_variants(
+def test_a_continuous_group_places_its_media_beside_two_tracks_variants(
     tmp_path: Path,
 ) -> None:
-    """Two labelled tracks variants leave the media order readable.
+    """Two labelled tracks variants leave each sequence's place readable.
 
     Reading the frame extents without a run id refuses an entry with two
-    labelled variants. The media order is a natural sort on the sequence names
-    and reads no tracks run.
+    labelled variants. A sequence's first frame counts the media frames of the
+    sequences before it in a natural sort on their names, without reading a
+    tracks run. Each sequence resolves to the rows of its entry.
     """
-    dataset = _dataset_with_media_rows(
-        tmp_path / "ds",
-        "s10.mp4,rec,s10,rec,s10,media_raw/s10.mp4,0\n"
-        "s2.mp4,rec,s2,rec,s2,media_raw/s2.mp4,0\n",
+    dataset = make_dataset(tmp_path / "ds")
+    write_media_index(
+        dataset,
+        [
+            MediaClip(sequence="s10", group="rec", filename="s10.mp4", frame_count=30),
+            MediaClip(sequence="s2", group="rec", filename="s2.mp4", frame_count=40),
+        ],
     )
     for run_id in ("convert.a", "convert.b"):
         add_tracks_table(dataset, run_id, track_table("rec", "s2"))
         add_tracks_table(dataset, run_id, track_table("rec", "s10", start_frame=40))
     dataset.set_continuous_groups(["rec"])
 
-    matched = dataset.match_media_rows("rec", "s10")
-
-    assert list(matched["sequence"]) == ["s2", "s10"]
+    assert list(dataset.match_media_rows("rec", "s10")["sequence"]) == ["s10"]
+    assert dataset.resolve_media("rec", "s10").first_frame == 40
 
 
 @pytest.fixture

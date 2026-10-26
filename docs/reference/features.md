@@ -2076,8 +2076,8 @@ Render one annotated video per sequence, from tracks and drawn labels.
 | `color_by` | `string` \| `None` | `null` |  | Name of an input feature to color the drawing by, matched without regard to case. The reserved value gt colors by the ground-truth label. |
 | `label_maps` | `object` | _constructed_ |  | Names to render per feature, keyed by the label value written as text. |
 | `hide_unlabeled` | `boolean` | `false` |  | Skip drawing individuals that lack a label after filtering and mapping. |
-| `start` | `integer` | `0` |  | The first frame to draw. |
-| `end` | `integer` \| `None` | `null` |  | The last frame to draw, inclusive. Unset, drawing continues to the end of the video. |
+| `start` | `integer` | `0` |  | The first frame to draw, on the tracks frame axis. A sequence of a continuous group starts at its first frame on that axis, and an earlier start draws from there. |
+| `end` | `integer` \| `None` | `null` |  | The last frame to draw, inclusive, on the tracks frame axis. Unset, drawing continues to the end of the video. |
 | `downscale` | `number` | `1.0` |  | Downscale factor applied to the frame, where 1.0 is no scaling. |
 | `show_individual_bboxes` | `boolean` | `true` |  | Draw a bounding box for each individual. Pose points and labels are drawn regardless. |
 | `pair_box_feature` | `string` \| `None` | `null` |  | Name of the pair-label feature that determines when to draw a union box around both individuals of a pair. |

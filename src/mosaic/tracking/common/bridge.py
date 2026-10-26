@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 __all__ = [
     "BridgeCounts",
     "readable_tracks_table",
+    "reusable_tracks_table",
     "frame_counts",
     "publish_or_record",
     "publish_tracks_table",
@@ -155,6 +156,24 @@ def readable_tracks_table(path: Path) -> BridgeCounts | None:
     return frame_counts(existing)
 
 
+def reusable_tracks_table(
+    out_path: Path, *, recorded_first_frame: int | None, axis: EntryAxis
+) -> BridgeCounts | None:
+    """Return the counts of a published table to reuse, or ``None`` to publish again.
+
+    A table is reused when it reads (:func:`readable_tracks_table`) and was
+    numbered from the first frame that *axis* places the entry at.
+    *recorded_first_frame* is the first frame that its tracks row records
+    (:attr:`~mosaic.tracking.common.driver.EntryJob.recorded_first_frame`), or
+    ``None`` when the row does not establish one. A sequence of a continuous
+    group moves when a member before it changes length, and its table is then
+    published again from the tool output that it was made from.
+    """
+    if recorded_first_frame is not None and recorded_first_frame != axis.first_frame:
+        return None
+    return readable_tracks_table(out_path)
+
+
 def publish_tracks_table(
     ds: Dataset,
     df: pd.DataFrame,
@@ -251,6 +270,7 @@ def publish_tracks_table(
         media_frames=media_frames,
         frames_read=frames_read,
         known_tail_loss=known_tail_loss,
+        first_frame=axis.first_frame,
         # A bridge opens the entry's media, so its row records what that
         # media was. The variant identity has no term for the pixels, so
         # this cell is the only thing that notices a re-transcode.

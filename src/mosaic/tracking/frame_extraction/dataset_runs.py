@@ -96,9 +96,10 @@ _ENTRY_GROUP_DESCRIPTION = "The entry's group; empty for a dataset with none."
 _ENTRY_SEQUENCE_DESCRIPTION = "The entry's sequence."
 
 _ENTRY_INDICES_DESCRIPTION = (
-    "Frame indices on the entry's media axis: 0 is its first frame, and a "
-    "recording in several clips counts across them in order, as its tracks' "
-    "frame column does. Order and repeats do not matter."
+    "Frame indices on the entry's media: 0 is its first frame, and an "
+    "entry in several clips counts across them in order. A sequence of a "
+    "continuous group counts from 0 too. A frame of its tracks is the index "
+    "plus the sequence's first frame. Order and repeats do not matter."
 )
 
 _START_FRAME_DESCRIPTION = (

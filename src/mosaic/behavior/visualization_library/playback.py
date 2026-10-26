@@ -115,9 +115,11 @@ def play_video(
         Precomputed overlay from prepare_overlay(). If provided, skips rebuilding overlay
         (useful when you want to pre-filter labels before playback).
     start : int
-        Starting frame index.
+        Starting frame, on the tracks frame axis. The sequence of a continuous
+        group starts at its recording's ``first_frame``, and a start before it
+        draws from there.
     end : int, optional
-        Ending frame index.
+        Ending frame (inclusive), on the tracks frame axis.
     downscale : float
         Downscale factor (1.0 = no scaling).
     draw_options : dict, optional
@@ -213,6 +215,7 @@ def play_video(
         pair_box_behaviors=pair_box_behaviors,
         hide_individual_bboxes_for_pair=hide_individual_bboxes_for_pair,
         facts=resolved.facts,
+        first_frame=resolved.first_frame,
     )
     writer = None
     out_path = None

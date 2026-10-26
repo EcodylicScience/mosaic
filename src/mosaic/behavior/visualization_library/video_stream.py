@@ -11,6 +11,8 @@ from typing import Tuple, Optional, Iterable, Any, Dict, Sequence, Union
 import cv2
 from mosaic_media import MediaFacts
 
+from mosaic.core.recording import FrameOutsideSequenceError, sequence_window
+
 from .helpers import _scaled_size
 from .overlay import draw_frame
 
@@ -28,8 +30,8 @@ class _FrameStream:
         scaled_size,
         per_frame,
         id_colors,
-        start,
-        end,
+        start: int,
+        end: int | None,
         color_feature=None,
         color_mode=None,
         show_individual_bboxes: bool = True,
@@ -37,6 +39,7 @@ class _FrameStream:
         pair_box_behaviors: Optional[Iterable[Any]] = None,
         hide_individual_bboxes_for_pair: bool = False,
         draw_options: Optional[Dict[str, Any]] = None,
+        first_frame: int = 0,
     ):
         self._reader = reader
         self._fps = fps or 30.0
@@ -47,8 +50,9 @@ class _FrameStream:
         self._scale = (sx, sy)
         self._per_frame = per_frame
         self._id_colors = id_colors
-        self._start = max(0, int(start))
-        self._end = int(end) if end is not None else None
+        self._start = start
+        self._end = end
+        self._first_frame = first_frame
         self._started = False
         self._frame_idx = 0
         self._released = False
@@ -88,7 +92,9 @@ class _FrameStream:
             raise StopIteration
         if self._scaled_size != self._base_size:
             frame = cv2.resize(frame, self._scaled_size, interpolation=cv2.INTER_AREA)
-        idx = self._frame_idx
+        # The reader counts the sequence's media frames, and the overlay is keyed
+        # by tracks frames, which count from the recording's first frame.
+        idx = self._frame_idx + self._first_frame
         self._frame_idx += 1
         frame_overlay = self._per_frame.get(idx)
         if frame_overlay:
@@ -118,7 +124,7 @@ class _FrameStream:
 
 def render_stream(
     video_paths: Union[list[Path], Path, str],
-    overlay_data: dict,
+    overlay_data: dict[str, object],
     start: int = 0,
     end: Optional[int] = None,
     downscale: float = 1.0,
@@ -128,6 +134,7 @@ def render_stream(
     hide_individual_bboxes_for_pair: bool = False,
     draw_options: Optional[Dict[str, Any]] = None,
     facts: Sequence[MediaFacts] | None = None,
+    first_frame: int = 0,
 ) -> _FrameStream:
     """
     Return an iterable that yields (frame_index, frame_bgr_with_overlay).
@@ -144,9 +151,11 @@ def render_stream(
     overlay_data : dict
         Output from prepare_overlay()
     start : int
-        Starting frame index
+        Starting frame, on the tracks frame axis. A frame before the
+        sequence's first starts the stream at the sequence's first frame.
     end : int, optional
-        Ending frame index (inclusive). If None, streams to end of video.
+        Ending frame (inclusive), on the tracks frame axis. If None, streams
+        to the end of the video.
     downscale : float
         Downscale factor (1.0 = no scaling, 0.5 = half size)
     show_individual_bboxes : bool
@@ -160,11 +169,20 @@ def render_stream(
     draw_options : dict, optional
         Optional frame-drawing options. Allowed keys: "show_labels",
         "point_radius", "bbox_thickness", "font_scale".
+    first_frame : int
+        The sequence's first frame on its recording's frame axis
+        (``ResolvedMedia.first_frame``). The media contains the sequence's frames
+        from there, and the stream yields each frame on the tracks axis.
 
     Returns
     -------
     _FrameStream
         Iterator yielding (frame_index, frame_bgr) tuples
+
+    Raises
+    ------
+    FrameOutsideSequenceError
+        If the sequence's media contains none of the frames *start* to *end*.
     """
     from mosaic.core.media.video_io import MultiVideoReader
 
@@ -173,6 +191,16 @@ def render_stream(
     # this an analysis read, even though it feeds a human-facing player and an
     # overlay export rather than a browser-delivery read.
     reader = MultiVideoReader(video_paths, facts=facts, target="analysis")
+    try:
+        media_start, media_end = sequence_window(
+            start,
+            end,
+            first_frame=first_frame,
+            frame_count=reader.total_frames or None,
+        )
+    except FrameOutsideSequenceError:
+        reader.close()
+        raise
     base_size = (reader.width, reader.height)
     fps = reader.fps
     scaled_size = _scaled_size(base_size, downscale)
@@ -202,8 +230,8 @@ def render_stream(
         scaled_size,
         per_frame,
         id_colors,
-        start,
-        end,
+        media_start,
+        media_end,
         color_feature=color_feature,
         color_mode=color_mode,
         show_individual_bboxes=show_individual_bboxes,
@@ -211,4 +239,5 @@ def render_stream(
         pair_box_behaviors=pair_box_behaviors,
         hide_individual_bboxes_for_pair=hide_individual_bboxes_for_pair,
         draw_options=merged_draw_options,
+        first_frame=first_frame,
     )

@@ -21,6 +21,7 @@ from pydantic import Field
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
+from mosaic.core.media.store_rate import store_rate_mismatch
 from mosaic.core.pipeline.inventory import (
     ArtifactKind,
     DatasetInventory,
@@ -117,8 +118,9 @@ class FrameRateCount(StrictModel):
     """One frame rate and the number of indexed videos recorded at it.
 
     Attributes:
-        fps: The frame rate, as the media index records it.
-        videos: The media index rows that record it.
+        fps: The frame rate, as the media index records it. Rates within the
+            store tolerance of it count as it, and it is the lowest of them.
+        videos: The media index rows that record it or a rate counted as it.
     """
 
     fps: float
@@ -279,15 +281,10 @@ def dataset_summary(
                 ).items()
             )
         ),
-        frame_rates=tuple(
-            FrameRateCount(fps=fps, videos=videos)
-            for fps, videos in sorted(
-                Counter(
-                    fps
-                    for fps in (_frame_rate(row.get("fps") or "") for row in media)
-                    if fps is not None
-                ).items()
-            )
+        frame_rates=_frame_rate_counts(
+            fps
+            for fps in (_frame_rate(row.get("fps") or "") for row in media)
+            if fps is not None
         ),
         inventory_errors=held.errors,
         next_steps=dataset_next_steps(ds, converted_tracks=len(tracks)),
@@ -351,6 +348,26 @@ def _media_rows(ds: Dataset) -> list[dict[str, str]]:
     if not ds.has_root(ds.resolve_media_root()):
         return []
     return ds.read_media_index()
+
+
+def _frame_rate_counts(rates: Iterable[float]) -> tuple[FrameRateCount, ...]:
+    """Count *rates* by rate, ascending, one count for rates within the store tolerance.
+
+    A store's rate is measured from its timestamps. Two stores of one camera
+    report rates a few parts per million apart. A rate joins the count of the
+    lowest rate before it unless the two differ by more than
+    :data:`~mosaic.core.media.store_rate.STORE_RATE_TOLERANCE`
+    (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
+    """
+    counts: list[FrameRateCount] = []
+    for rate in sorted(rates):
+        if counts and store_rate_mismatch([counts[-1].fps, rate]) is None:
+            counts[-1] = FrameRateCount(
+                fps=counts[-1].fps, videos=counts[-1].videos + 1
+            )
+        else:
+            counts.append(FrameRateCount(fps=rate, videos=1))
+    return tuple(counts)
 
 
 def _frame_rate(cell: str) -> float | None:
