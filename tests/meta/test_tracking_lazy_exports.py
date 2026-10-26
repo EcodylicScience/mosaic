@@ -22,7 +22,7 @@ from mosaic.tracking.common.index import (
     tracker_index,
     tracker_index_path,
 )
-from tests.helpers import make_dataset, run_fresh
+from tests.helpers import make_dataset, modules_loaded_by, run_fresh
 
 HEAVY_MODULES = ("cv2", "av", "pandas")
 """The modules that importing the package must not load."""
@@ -42,7 +42,11 @@ EXPORTING_PACKAGES = (
 )
 """The packages under ``mosaic.tracking`` that re-export names from submodules."""
 
-LAZY_PACKAGES = (*EXPORTING_PACKAGES, "mosaic.tracking.ops")
+LAZY_PACKAGES = (
+    *EXPORTING_PACKAGES,
+    "mosaic.tracking.frame_predictions",
+    "mosaic.tracking.ops",
+)
 """The packages under ``mosaic.tracking`` whose ``__init__`` imports no submodule."""
 
 PRODUCER_MODULES = (
@@ -58,6 +62,12 @@ PRODUCER_MODULES = (
 
 INVENTORY_BUDGET = ("cv2", "av", "mosaic.behavior.feature_library")
 """The media readers and the feature library, which an inventory read leaves unloaded."""
+
+PREDICTION_READ_MODULES = (
+    "mosaic.tracking.frame_predictions.index",
+    "mosaic.tracking.frame_predictions.read",
+)
+"""The modules that define the frame-predictions indexes and read them."""
 
 
 @pytest.mark.parametrize("name", sorted(tracking_package.__all__))
@@ -169,3 +179,13 @@ def test_the_inventory_reports_a_tracker_run_without_loading_a_producer(
     )
 
     assert json.loads(run_fresh(code)) == {"status": "complete", "loaded": []}
+
+
+@pytest.mark.parametrize("module", PREDICTION_READ_MODULES)
+def test_a_prediction_read_module_loads_no_producer(module: str) -> None:
+    """The index and readers leave frame extraction and every tool unloaded."""
+    loaded = modules_loaded_by(
+        f"import {module}", (*PRODUCER_MODULES, *INVENTORY_BUDGET)
+    )
+
+    assert loaded == []

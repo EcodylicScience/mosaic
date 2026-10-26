@@ -10,21 +10,27 @@ import pytest
 
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import (
     ARTIFACT_KINDS,
     ARTIFACT_STATUSES,
     ArtifactKind,
     ArtifactNotFound,
+    ArtifactRecord,
     ArtifactRef,
     ArtifactStatus,
     Coverage,
+    DatasetInventory,
     FeatureRunRef,
+    FramePredictionsRef,
     FrameRunRef,
     InventoryQueryInvalid,
+    InventoryScope,
     InventoryWire,
     LabelSeriesRef,
     MediaDerivativeRef,
+    PredictionScoreRef,
     ResolvedWire,
     TracksVariantRef,
     TrainedModelRef,
@@ -354,6 +360,75 @@ def test_an_entry_scope_narrows_a_media_variants_orphans_as_the_scan_does(
     assert projected.artifacts[0].status == scanned.artifacts[0].status == "complete"
 
 
+def _predictions_inventory(tmp_path: Path) -> tuple[Dataset, DatasetInventory]:
+    """A predictions run over two entries, one of them drifted, and a score run."""
+    ds = make_dataset(tmp_path / "predictions")
+    keys: frozenset[CameraEntry] = frozenset({("", "s1", "c1"), ("", "s2", "c1")})
+    predictions = ArtifactRecord[CameraEntry](
+        ref=FramePredictionsRef(run_id="predict-frames.0.1-a", frames_run_id="u-f"),
+        name="predict-frames",
+        run_id="predict-frames.0.1-a",
+        coverage=Coverage(target=keys, present=keys),
+        status="complete-but-drifted",
+        rows=keys,
+        drift=(("", "s1"),),
+        finished_at="t1",
+    )
+    score = ArtifactRecord[str](
+        ref=PredictionScoreRef(run_id="score-predictions.0.1-b"),
+        name="score-predictions",
+        run_id="score-predictions.0.1-b",
+        coverage=Coverage(
+            target=frozenset({"score-predictions.0.1-b"}),
+            present=frozenset({"score-predictions.0.1-b"}),
+        ),
+        status="complete",
+        rows=frozenset({"score-predictions.0.1-b"}),
+        finished_at="t1",
+    )
+    held = DatasetInventory(
+        dataset_root=ds.base_dir,
+        scope=InventoryScope(
+            kinds=frozenset({"frame-predictions", "prediction-score"})
+        ),
+        records=(predictions, score),
+    )
+    return ds, held
+
+
+@pytest.mark.parametrize(
+    ("entry", "drift", "status"),
+    [(("", "s1"), 1, "complete-but-drifted"), (("", "s2"), 0, "complete")],
+)
+def test_an_entry_scope_narrows_a_frame_predictions_rows_and_drift(
+    tmp_path: Path, entry: Entry, drift: int, status: ArtifactStatus
+) -> None:
+    """A predictions run's scan reads only the rows in scope, as a frame run's does."""
+    ds, held = _predictions_inventory(tmp_path)
+
+    wire = inventory_wire(
+        ds, held, kinds=["frame-predictions"], scope=Scope(entries=[entry])
+    )
+
+    (artifact,) = wire.artifacts
+    assert (artifact.coverage.target, artifact.drift, artifact.status) == (
+        1,
+        drift,
+        status,
+    )
+
+
+def test_an_entry_scope_reports_a_prediction_score_whole(tmp_path: Path) -> None:
+    ds, held = _predictions_inventory(tmp_path)
+
+    wire = inventory_wire(
+        ds, held, kinds=["prediction-score"], scope=Scope(entries=[("", "s1")])
+    )
+
+    (artifact,) = wire.artifacts
+    assert (artifact.coverage.target, artifact.status) == (1, "complete")
+
+
 def test_status_not_leaves_out_those_statuses(computed: tuple[Dataset, str]) -> None:
     ds, _ = computed
     held = inventory(ds)
@@ -550,6 +625,11 @@ def test_the_missing_sample_follows_its_limit() -> None:
             "trained-model/train-pose/r",
         ),
         (MediaDerivativeRef(target="analysis"), "media-derivative/analysis"),
+        (
+            FramePredictionsRef(run_id="r", frames_run_id="uniform-f"),
+            "frame-predictions/r/uniform-f",
+        ),
+        (PredictionScoreRef(run_id="r"), "prediction-score/r"),
     ],
 )
 def test_an_address_is_the_kind_and_the_key_parts(

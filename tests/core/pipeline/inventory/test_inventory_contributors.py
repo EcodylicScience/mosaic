@@ -8,19 +8,29 @@ why one ``reconcile`` call makes three full passes over every index it has.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.pipeline.inventory._read import IndexReader
+from mosaic.core.pipeline.inventory._runs import keyed_run_records, run_keyed_record
 from mosaic.core.pipeline.inventory.contributors import (
     inventory_contributor,
     register_inventory_contributor,
     registered_inventory_kinds,
 )
+from mosaic.core.pipeline.inventory.model import (
+    ArtifactRecord,
+    FrameRunRef,
+    InventoryScope,
+    PreparedDatasetRef,
+)
+from mosaic.core.scope import Scope
 
-from tests.helpers import imports_of
+from tests.helpers import imports_of, make_dataset
 
 
 # --- one read per index per scan ---------------------------------------------
@@ -147,3 +157,145 @@ def _restore_registry() -> object:
     yield
     contributors._CONTRIBUTORS.clear()
     contributors._CONTRIBUTORS.update(saved)
+
+
+# --- the shared record builders -----------------------------------------------
+
+
+def _write_index(base: Path, kind: str, rows: list[dict[str, str]]) -> None:
+    folder = base / "things" / kind
+    folder.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(folder / "index.csv", index=False)
+
+
+def _keyed_rows(base: Path) -> list[dict[str, str]]:
+    (base / "out").mkdir()
+    (base / "out" / "a.bin").write_text("x")
+    return [
+        {
+            "run_id": "r1",
+            "group": "g",
+            "sequence": "s1",
+            "camera": "c1",
+            "abs_path": "out/a.bin",
+            "started_at": "t0",
+            "finished_at": "t1",
+        },
+        {
+            "run_id": "r1",
+            "group": "g",
+            "sequence": "s2",
+            "camera": "c1",
+            "abs_path": "out/missing.bin",
+            "started_at": "t0",
+            "finished_at": "",
+        },
+    ]
+
+
+def _build_keyed(
+    base: Path,
+    drifted: Callable[[str, pd.DataFrame], tuple[Entry, ...]],
+    selector: Scope | None = None,
+) -> list[ArtifactRecord[CameraEntry]]:
+    scope = InventoryScope(kinds=frozenset(), selector=selector or Scope())
+    return keyed_run_records(
+        make_dataset(base, roots=["things"]),
+        scope,
+        IndexReader(),
+        root_key="things",
+        kinds=None,
+        read_index=lambda ds, kind: pd.read_csv(
+            ds.get_root("things") / kind / "index.csv",
+            dtype="string",
+            keep_default_na=False,
+        ),
+        key_of=lambda row: (row["group"], row["sequence"], row["camera"]),
+        make_ref=lambda kind, run_id, _rows: FrameRunRef(method=kind, run_id=run_id),
+        drifted=drifted,
+    )
+
+
+def test_keyed_run_records_reads_coverage_from_rows_and_files(tmp_path: Path) -> None:
+    _write_index(tmp_path, "m", _keyed_rows(tmp_path))
+
+    (record,) = _build_keyed(tmp_path, lambda _run_id, _rows: ())
+
+    assert record.run_id == "r1"
+    assert record.name == "m"
+    assert record.coverage.present == {("g", "s1", "c1")}
+    assert record.orphan_rows == {("g", "s2", "c1")}
+    assert record.drift == ()
+    assert record.status == "inconsistent"
+    assert record.started_at == "t0"
+    assert record.finished_at == "t1"
+
+
+def test_keyed_run_records_sets_drift_and_status_from_the_callable(
+    tmp_path: Path,
+) -> None:
+    rows = _keyed_rows(tmp_path)
+    rows[1]["abs_path"] = "out/a.bin"
+    _write_index(tmp_path, "m", rows)
+    seen: list[tuple[str, int]] = []
+
+    def _drifted(run_id: str, run_rows: pd.DataFrame) -> tuple[Entry, ...]:
+        seen.append((run_id, len(run_rows)))
+        return (("g", "s2"),)
+
+    (record,) = _build_keyed(tmp_path, _drifted)
+
+    assert seen == [("r1", 2)]
+    assert record.drift == (("g", "s2"),)
+    assert record.status == "complete-but-drifted"
+
+
+def test_keyed_run_records_narrows_to_the_scope_before_drift(tmp_path: Path) -> None:
+    _write_index(tmp_path, "m", _keyed_rows(tmp_path))
+    seen: list[int] = []
+
+    def _drifted(_run_id: str, run_rows: pd.DataFrame) -> tuple[Entry, ...]:
+        seen.append(len(run_rows))
+        return ()
+
+    (record,) = _build_keyed(tmp_path, _drifted, Scope(entries=[("g", "s1")]))
+
+    assert seen == [1]
+    assert record.rows == {("g", "s1", "c1")}
+
+
+def test_keyed_run_records_reads_an_absent_root_as_nothing(tmp_path: Path) -> None:
+    assert _build_keyed(tmp_path, lambda _run_id, _rows: ()) == []
+
+
+def test_run_keyed_record_is_one_unit_of_its_own_run(tmp_path: Path) -> None:
+    row = {"started_at": "t0", "finished_at": "t1", "status": "finished"}
+    ref = PreparedDatasetRef(op_kind="k", run_id="r9")
+
+    done = run_keyed_record(
+        ref=ref,
+        name="k",
+        run_id="r9",
+        row=row,
+        recorded_finished=True,
+        complete=True,
+        index_path=tmp_path / "index.csv",
+        run_root=tmp_path / "r9",
+    )
+    lost = run_keyed_record(
+        ref=ref,
+        name="k",
+        run_id="r9",
+        row=row,
+        recorded_finished=True,
+        complete=False,
+        index_path=tmp_path / "index.csv",
+        run_root=tmp_path / "r9",
+    )
+
+    assert done.coverage.present == {"r9"}
+    assert done.status == "complete"
+    assert done.finished_at == "t1"
+    assert lost.coverage.present == frozenset()
+    assert lost.rows == frozenset({"r9"})
+    assert lost.status == "inconsistent"

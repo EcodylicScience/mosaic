@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import model_validator
 
+from mosaic.core.keypoint_refs import resolve_keypoint_refs
 from mosaic.core.params import Declared, DeclaredModel
-from mosaic.core.pose_columns import resolve_keypoint_refs
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
@@ -185,7 +185,7 @@ class PoseConfig(DeclaredModel):
 
         Raises:
             ValueError: On a name that
-                :func:`~mosaic.core.pose_columns.resolve_keypoint_refs` refuses
+                :func:`~mosaic.core.keypoint_refs.resolve_keypoint_refs` refuses
                 against ``keypoint_names``, on a negative index, and on a
                 reference outside the selected keypoints.
         """

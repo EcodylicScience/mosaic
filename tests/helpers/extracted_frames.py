@@ -39,7 +39,14 @@ def write_frames_run(directory: Path, sizes: Mapping[int, tuple[int, int]]) -> N
 
 
 def record_frames_row(
-    ds: Dataset, stored: str, *, run_id: str, group: str, sequence: str, camera: str
+    ds: Dataset,
+    stored: str,
+    *,
+    run_id: str,
+    group: str,
+    sequence: str,
+    camera: str,
+    media_composition: str = "",
 ) -> None:
     """Append the ``uniform`` frames-index row of one entry camera.
 
@@ -50,6 +57,7 @@ def record_frames_row(
         group: The entry's group.
         sequence: The entry's sequence.
         camera: The camera.
+        media_composition: The composition of the media the frames were cut from.
     """
     index = frames_index(frames_index_path(ds, "uniform"))
     index.ensure()
@@ -64,6 +72,7 @@ def record_frames_row(
                 abs_path=Path(stored),
                 video_abs_path="",
                 params_hash="h",
+                media_composition=media_composition,
             )
         ]
     )

@@ -17,12 +17,11 @@ import pandas as pd
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, index_records
+from mosaic.core.pipeline.inventory._runs import run_keyed_record
 from mosaic.core.pipeline.inventory.model import (
     ArtifactRecord,
-    Coverage,
     InventoryScope,
     TrainedModelRef,
-    classify,
 )
 from mosaic.core.pipeline.models import (
     holds_trained_models,
@@ -200,30 +199,16 @@ def trained_model_records(
             seen.setdefault(record.get("run_id", ""), record)
         for run_id in sorted(seen):
             row = seen[run_id]
-            covered = training_is_complete(ds, kind, run_id)
-            coverage = Coverage(
-                target=frozenset({run_id}),
-                present=frozenset({run_id} if covered else ()),
-            )
             records.append(
-                ArtifactRecord[str](
+                run_keyed_record(
                     ref=TrainedModelRef(op_kind=kind, run_id=run_id),
                     name=kind,
                     run_id=run_id,
-                    coverage=coverage,
-                    status=classify(
-                        satisfied=covered,
-                        any_covered=covered,
-                        orphan_rows=not covered and row.get("status", "") == "finished",
-                        orphan_files=False,
-                        drifted=False,
-                        finished=bool(row.get("finished_at", "")),
-                    ),
-                    run_root=model_run_root(ds, kind, run_id),
+                    row=row,
+                    recorded_finished=row.get("status", "") == "finished",
+                    complete=training_is_complete(ds, kind, run_id),
                     index_path=index_path,
-                    rows=frozenset({run_id}),
-                    started_at=row.get("started_at", ""),
-                    finished_at=row.get("finished_at", ""),
+                    run_root=model_run_root(ds, kind, run_id),
                     upstreams=tuple(
                         value for value in (row.get("base_run_id", ""),) if value
                     ),

@@ -62,12 +62,14 @@ __all__ = [
     "DatasetInventory",
     "EntryRecord",
     "FeatureRunRef",
+    "FramePredictionsRef",
     "FrameRunRef",
     "InventoryScope",
     "LabelSeriesRef",
     "LabelsVariantRef",
     "MediaDerivativeRef",
     "MediaVariantRef",
+    "PredictionScoreRef",
     "PreparedDatasetRef",
     "TrackerRunRef",
     "TracksVariantRef",
@@ -193,6 +195,27 @@ class FrameRunRef:
 
 
 @dataclass(frozen=True, slots=True)
+class FramePredictionsRef:
+    """One predict-frames run: ``frame_predictions/predict-frames/<run_id>/``.
+
+    A run predicts the frames of one extraction run, ``frames_run_id``, and writes
+    one file per entry camera.
+    """
+
+    kind: ClassVar[ArtifactKind] = "frame-predictions"
+    run_id: str
+    frames_run_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionScoreRef:
+    """One score-predictions run: ``frame_predictions/score-predictions/<run_id>/``."""
+
+    kind: ClassVar[ArtifactKind] = "prediction-score"
+    run_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TrainedModelRef:
     """One trained model: ``models/<op_kind>/<run_id>/``."""
 
@@ -245,6 +268,8 @@ type ArtifactRef = (
     | LabelSeriesRef
     | TrackerRunRef
     | FrameRunRef
+    | FramePredictionsRef
+    | PredictionScoreRef
     | TrainedModelRef
     | PreparedDatasetRef
     | MediaDerivativeRef
@@ -448,10 +473,14 @@ class DatasetInventory:
     ) -> Coverage[Entry]: ...
 
     @overload
-    def coverage(self, ref: FrameRunRef | MediaVariantRef) -> Coverage[CameraEntry]: ...
+    def coverage(
+        self, ref: FrameRunRef | FramePredictionsRef | MediaVariantRef
+    ) -> Coverage[CameraEntry]: ...
 
     @overload
-    def coverage(self, ref: TrainedModelRef | MediaDerivativeRef) -> Coverage[str]: ...
+    def coverage(
+        self, ref: TrainedModelRef | PredictionScoreRef | MediaDerivativeRef
+    ) -> Coverage[str]: ...
 
     def coverage(
         self, ref: ArtifactRef

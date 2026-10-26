@@ -82,6 +82,25 @@ def test_a_root_with_both_shapes_yields_both(tmp_path: Path) -> None:
     assert ds.get_root("features") / "speed-angvel__from__tracks" / "index.csv" in paths
 
 
+def test_each_frame_predictions_kind_directory_is_enumerated(tmp_path: Path) -> None:
+    """The predict-frames and score-predictions indexes, one per kind directory."""
+    ds = make_dataset(tmp_path / "ds", name="reconcile")
+    root = ds.get_root("frame_predictions")
+    for kind in ("score-predictions", "predict-frames"):
+        (root / kind).mkdir(parents=True)
+
+    paths = [
+        index.path
+        for index in iter_dataset_indexes(ds)
+        if index.root_key == "frame_predictions"
+    ]
+
+    assert paths == [
+        root / "predict-frames" / "index.csv",
+        root / "score-predictions" / "index.csv",
+    ]
+
+
 def test_an_unset_root_is_skipped_rather_than_raising(tmp_path: Path) -> None:
     """A manifest may declare fewer roots than the defaults, and passes must run."""
     base = tmp_path / "sparse"

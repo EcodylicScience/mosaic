@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 from mosaic.tracking.registration import REGISTERING_MODULES
-from tests.helpers import REPO_ROOT
+from tests.helpers import REPO_ROOT, run_fresh
 
 PACKAGE = REPO_ROOT / "src" / "mosaic" / "tracking"
 
@@ -60,3 +60,15 @@ def test_the_listed_modules_are_the_ones_that_register_at_import() -> None:
     }
 
     assert registering == set(REGISTERING_MODULES)
+
+
+def test_register_ops_registers_the_frame_predictions_index() -> None:
+    """A fresh interpreter, because an earlier test may have imported the index."""
+    code = (
+        "from mosaic.core.pipeline.dataset_indexes import reconcilable_index\n"
+        "from mosaic.tracking import register_ops\n"
+        "register_ops()\n"
+        "print(reconcilable_index('frame_predictions') is not None)"
+    )
+
+    assert run_fresh(code) == "True"

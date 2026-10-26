@@ -26,6 +26,8 @@ What lives where:
 - ``labels`` writes converted label files of events, and their index rows.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
   ``run_info.json`` records and its frames-index row.
+- ``frame_predictions`` writes an entry camera's predictions file of a
+  predict-frames run and its index row.
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
@@ -133,6 +135,10 @@ from tests.helpers.features import (
     make_templates,
     write_templates,
 )
+from tests.helpers.frame_predictions import (
+    entry_predictions,
+    record_entry_predictions,
+)
 from tests.helpers.kpms import kpms_params
 from tests.helpers.latents import assert_latents_at_centers, window_centers
 from tests.helpers.fresh_interpreter import modules_loaded_by, run_fresh
@@ -218,7 +224,10 @@ from tests.helpers.recipes import (
     speed_recipe,
     speed_recipe_stepping,
 )
-from tests.helpers.models import register_trained_model
+from tests.helpers.models import (
+    register_trained_model,
+    rewrite_as_older_prepared_index,
+)
 from tests.helpers.ops import minimal_op_params
 from tests.helpers.paths import (
     GOLDEN_DIR,
@@ -467,6 +476,7 @@ __all__ = [
     "dotted_values",
     "entry_clips",
     "entry_error_lines",
+    "entry_predictions",
     "exited_pid",
     "extract_entry_camera",
     "finish_media_variant",
@@ -521,6 +531,7 @@ __all__ = [
     "pose_set",
     "published_table",
     "read_frame_code",
+    "record_entry_predictions",
     "record_frames_row",
     "read_golden",
     "read_string_golden",
@@ -533,6 +544,7 @@ __all__ = [
     "result_outputs",
     "result_run_root",
     "revision_file",
+    "rewrite_as_older_prepared_index",
     "run_fresh",
     "run_id_digest",
     "record_open_attempt",

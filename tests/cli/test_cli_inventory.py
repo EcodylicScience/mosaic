@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -56,6 +57,14 @@ def test_the_ops_kinds_are_reported_rather_than_unavailable(
     every_kind = [argument for kind in ARTIFACT_KINDS for argument in ("--kind", kind)]
 
     assert _wire(scenario_dataset, *every_kind).unavailable_kinds == ()
+
+
+def test_the_kind_help_lists_every_artifact_kind() -> None:
+    result = invoke_ok(["inventory", "--help"])
+    after_kind = result.output.split("--kind", 1)[1]
+    kind_help = re.split(r"--[a-z]", after_kind, maxsplit=1)[0]
+
+    assert set(ARTIFACT_KINDS) <= set(re.findall(r"[a-z-]+", kind_help))
 
 
 def test_a_dataset_with_nothing_computed_says_so(

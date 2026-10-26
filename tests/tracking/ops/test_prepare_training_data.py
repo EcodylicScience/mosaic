@@ -65,6 +65,7 @@ from tests.helpers import (
     pose_object,
     pose_set,
     revision_file,
+    rewrite_as_older_prepared_index,
     tree_snapshot,
 )
 
@@ -1973,11 +1974,7 @@ def test_an_index_older_than_the_hold_out_columns_adopts_them_blank(
 ) -> None:
     _mice, _rats, library = world
     earlier = _prepare(library)
-    path = model_index_path(library, KIND)
-    written = pd.read_csv(path, dtype=str, keep_default_na=False)
-    written.drop(columns=["held_out_sets", "n_held_out", "keypoint_schema"]).to_csv(
-        path, index=False
-    )
+    rewrite_as_older_prepared_index(library)
 
     later = _prepare(library, target="polo")
 

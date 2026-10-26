@@ -8,9 +8,9 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 
 ## Imports and registration
 
-- `__init__.py` of `tracking`, `common`, `frame_extraction` and `ops` imports no
-  submodule (`tests/meta/test_tracking_lazy_exports.py`). Importing a tracking module
-  registers only what that module registers.
+- `__init__.py` of `tracking`, `common`, `frame_extraction`, `frame_predictions` and
+  `ops` imports no submodule (`tests/meta/test_tracking_lazy_exports.py`). Importing a
+  tracking module registers only what that module registers.
 - `register_ops` (`registration.py`) imports every module of `REGISTERING_MODULES` and
   registers the inventory contributors. A module that registers something at module
   scope is listed there (`tests/tracking/test_registration.py`). Call `register_ops`
@@ -18,8 +18,9 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
 - `register_inventory_contributors` (`inventory.py`) is the one place a tracking
   inventory kind is registered. Each record builder lives beside the index that it
   reads, in `common/index.py`, `frame_extraction/frame_runs.py`,
-  `ops/prepared_datasets.py` and `ops/trained_models.py`. These modules leave the
-  tracker subpackages, the trainers and frame extraction unimported. The tracker kinds
+  `frame_predictions/index.py`, `ops/prepared_datasets.py` and `ops/trained_models.py`.
+  These modules leave the tracker subpackages, the trainers and the extraction code
+  unimported. Of frame extraction they import only `frame_runs.py`. The tracker kinds
   are the `tracker` roots of `TRACKING_ROOTS`, read through `TrackerRunRowBase`.
 
 ## Wiring a tracker

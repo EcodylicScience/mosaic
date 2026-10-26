@@ -20,13 +20,12 @@ import pandas as pd
 from mosaic.core.annotations.split import VideoFrame
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase, index_records
+from mosaic.core.pipeline.inventory._runs import keyed_run_records
 from mosaic.core.pipeline.inventory.model import (
     ArtifactRecord,
     CameraEntry,
-    Coverage,
     FrameRunRef,
     InventoryScope,
-    classify,
 )
 
 if TYPE_CHECKING:
@@ -184,60 +183,23 @@ def frame_run_records(
     camera would read as covering the entry and the other would never be seen as
     missing.
     """
-    records: list[ArtifactRecord[CameraEntry]] = []
-    wanted = scope.selector.entry_pairs
-    for method in root_subdirectories(ds, "frames"):
-        index_path = frames_index_path(ds, method)
-        reader.note(index_path)
-        frame = reader.frame(index_path, lambda m=method: list_frame_runs(ds, m))
-        if frame.empty or "run_id" not in frame.columns:
-            continue
-        rows_by_run: dict[str, set[CameraEntry]] = {}
-        present_by_run: dict[str, set[CameraEntry]] = {}
-        started: dict[str, str] = {}
-        finished: dict[str, str] = {}
-        for record in index_records(frame):
-            run_id = record.get("run_id", "")
-            key: CameraEntry = (
-                record.get("group", ""),
-                record.get("sequence", ""),
-                record.get("camera", ""),
-            )
-            if wanted is not None and (key[0], key[1]) not in wanted:
-                continue
-            rows_by_run.setdefault(run_id, set()).add(key)
-            started.setdefault(run_id, record.get("started_at", ""))
-            if record.get("finished_at", ""):
-                finished.setdefault(run_id, record.get("finished_at", ""))
-            stored = record.get("abs_path", "")
-            if stored and ds.resolve_path(stored).exists():
-                present_by_run.setdefault(run_id, set()).add(key)
-        for run_id in sorted(rows_by_run):
-            rows = frozenset(rows_by_run[run_id])
-            present = frozenset(present_by_run.get(run_id, set()))
-            coverage = Coverage(target=rows, present=present)
-            records.append(
-                ArtifactRecord[CameraEntry](
-                    ref=FrameRunRef(method=method, run_id=run_id),
-                    name=method,
-                    run_id=run_id,
-                    coverage=coverage,
-                    status=classify(
-                        satisfied=coverage.is_satisfied,
-                        any_covered=bool(coverage.covered),
-                        orphan_rows=bool(rows - present),
-                        orphan_files=False,
-                        drifted=False,
-                        finished=bool(finished.get(run_id, "")),
-                    ),
-                    index_path=index_path,
-                    rows=rows,
-                    orphan_rows=rows - present,
-                    started_at=started.get(run_id, ""),
-                    finished_at=finished.get(run_id, ""),
-                )
-            )
-    return records
+    return keyed_run_records(
+        ds,
+        scope,
+        reader,
+        root_key="frames",
+        kinds=None,
+        read_index=list_frame_runs,
+        key_of=lambda record: (
+            record.get("group", ""),
+            record.get("sequence", ""),
+            record.get("camera", ""),
+        ),
+        make_ref=lambda method, run_id, _rows: FrameRunRef(
+            method=method, run_id=run_id
+        ),
+        drifted=lambda _run_id, _rows: (),
+    )
 
 
 @dataclass(frozen=True, slots=True)

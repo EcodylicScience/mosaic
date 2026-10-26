@@ -1,12 +1,12 @@
 """A dataset's inventory with the tracking kinds reported.
 
 ``core`` reports the kinds it produces itself, and imports nothing from
-``tracking``. Tracker runs, frame runs, prepared datasets and trained models are
-reported through the contributor registry, and
-:func:`register_inventory_contributors` registers all four. Each record builder
-lives beside the index that it reads. Its module leaves the tracker subpackages
-and the trainers unimported, and loads only the media modules that
-``mosaic.core.pipeline.inventory`` loads itself.
+``tracking``. Tracker runs, frame runs, frame predictions, prediction scores,
+prepared datasets and trained models are reported through the contributor
+registry, and :func:`register_inventory_contributors` registers all six. Each
+record builder lives beside the index that it reads. Its module leaves the
+tracker subpackages and the trainers unimported, and loads only the media modules
+that ``mosaic.core.pipeline.inventory`` loads itself.
 """
 
 from __future__ import annotations
@@ -17,6 +17,10 @@ from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.inventory.contributors import register_inventory_contributor
 from mosaic.tracking.common.index import tracker_run_records
 from mosaic.tracking.frame_extraction.frame_runs import frame_run_records
+from mosaic.tracking.frame_predictions.index import (
+    frame_prediction_records,
+    prediction_score_records,
+)
 from mosaic.tracking.ops.prepared_datasets import prepared_dataset_records
 from mosaic.tracking.ops.trained_models import trained_model_records
 
@@ -41,6 +45,8 @@ def register_inventory_contributors() -> None:
     """
     register_inventory_contributor("tracker-run", tracker_run_records)
     register_inventory_contributor("frame-run", frame_run_records)
+    register_inventory_contributor("frame-predictions", frame_prediction_records)
+    register_inventory_contributor("prediction-score", prediction_score_records)
     register_inventory_contributor("prepared-dataset", prepared_dataset_records)
     register_inventory_contributor("trained-model", trained_model_records)
 

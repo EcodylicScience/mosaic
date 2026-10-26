@@ -1,9 +1,15 @@
-"""A trained model registered the way a training op registers one, without training."""
+"""Rows of the ``models/`` indexes, written without running the ops.
+
+A trained model is registered the way a training op registers one, and a
+prepared-data index is rewritten the way an older mosaic wrote it.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
+
+import pandas as pd
 
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_model_index
@@ -11,7 +17,10 @@ from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_mod
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
-__all__ = ["register_trained_model"]
+__all__ = ["register_trained_model", "rewrite_as_older_prepared_index"]
+
+_NEWEST_PREPARED_COLUMNS: Final = ("held_out_sets", "n_held_out", "keypoint_schema")
+"""The columns that the newest rows of a prepared-data index added."""
 
 
 def register_trained_model(
@@ -59,3 +68,13 @@ def register_trained_model(
         ]
     )
     index.mark_finished(run_id)
+
+
+def rewrite_as_older_prepared_index(ds: Dataset) -> None:
+    """Drop the newest columns from the ``prepare-training-data`` index of *ds*.
+
+    Its rows then read as rows written before those columns.
+    """
+    path = model_index_path(ds, "prepare-training-data")
+    written = pd.read_csv(path, dtype=str, keep_default_na=False)
+    written.drop(columns=list(_NEWEST_PREPARED_COLUMNS)).to_csv(path, index=False)

@@ -12,15 +12,19 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.entry import CameraEntry
 from mosaic.core.pipeline.inventory.model import (
+    ArtifactRecord,
     ArtifactStatus,
     Coverage,
     DatasetInventory,
     Entry,
     FeatureRunRef,
+    FramePredictionsRef,
     InventoryScope,
     MediaDerivativeRef,
     MediaVariantRef,
+    PredictionScoreRef,
     classify,
 )
 
@@ -153,8 +157,59 @@ def test_every_ref_kind_is_a_declared_artifact_kind() -> None:
         FeatureRunRef("f", "r"),
         MediaDerivativeRef("analysis"),
         MediaVariantRef("preprocess.0.1-aaaaaaaaaa"),
+        FramePredictionsRef("predict-frames.0.1-aaaaaaaaaa", "uniform-0123456789"),
+        PredictionScoreRef("score-predictions.0.1-aaaaaaaaaa"),
     ]
     assert {ref.kind for ref in refs} <= declared
+
+
+def test_a_frame_predictions_run_is_covered_by_entry_cameras(tmp_path: Path) -> None:
+    """A predictions run writes one file per entry camera, as a frame run does."""
+    ref = FramePredictionsRef(
+        run_id="predict-frames.0.1-aaaaaaaaaa", frames_run_id="uniform-0123456789"
+    )
+    keys: frozenset[CameraEntry] = frozenset({("", "seq_a", "c1"), ("", "seq_a", "c2")})
+    record = ArtifactRecord[CameraEntry](
+        ref=ref,
+        name="predict-frames",
+        run_id=ref.run_id,
+        coverage=Coverage(target=keys, present=keys),
+        status="complete",
+    )
+    inventory = DatasetInventory(
+        dataset_root=tmp_path,
+        scope=InventoryScope(kinds=frozenset({"frame-predictions"})),
+        records=(record,),
+    )
+
+    coverage: Coverage[CameraEntry] = inventory.coverage(ref)
+
+    assert ref.kind == "frame-predictions"
+    assert coverage.present == keys
+
+
+def test_a_prediction_score_is_covered_by_its_own_run_id(tmp_path: Path) -> None:
+    """A score run is one artifact, keyed as a trained model is."""
+    ref = PredictionScoreRef(run_id="score-predictions.0.1-aaaaaaaaaa")
+    record = ArtifactRecord[str](
+        ref=ref,
+        name="score-predictions",
+        run_id=ref.run_id,
+        coverage=Coverage(
+            target=frozenset({ref.run_id}), present=frozenset({ref.run_id})
+        ),
+        status="complete",
+    )
+    inventory = DatasetInventory(
+        dataset_root=tmp_path,
+        scope=InventoryScope(kinds=frozenset({"prediction-score"})),
+        records=(record,),
+    )
+
+    coverage: Coverage[str] = inventory.coverage(ref)
+
+    assert ref.kind == "prediction-score"
+    assert coverage.present == {ref.run_id}
 
 
 def test_a_media_variant_answers_empty_camera_coverage_when_absent(
@@ -184,3 +239,13 @@ def test_the_kind_vocabulary_is_spelled_once_in_two_places() -> None:
 
     assert set(ARTIFACT_KINDS) == set(get_args(ArtifactKind))
     assert len(ARTIFACT_KINDS) == len(set(ARTIFACT_KINDS))
+
+
+@pytest.mark.parametrize("kind", ["frame-predictions", "prediction-score"])
+def test_the_prediction_kinds_are_spelled_in_both_places(kind: str) -> None:
+    from typing import get_args
+
+    from mosaic.core.pipeline.inventory.model import ARTIFACT_KINDS, ArtifactKind
+
+    assert kind in ARTIFACT_KINDS
+    assert kind in get_args(ArtifactKind)

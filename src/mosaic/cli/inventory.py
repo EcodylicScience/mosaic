@@ -24,6 +24,7 @@ from mosaic.cli._io import (
     fail_classified,
 )
 from mosaic.cli._render import render_json_block, render_table
+from mosaic.core.pipeline.artifact_kinds import ARTIFACT_KINDS, is_artifact_kind
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory import (
@@ -66,10 +67,8 @@ def list_inventory(
         typer.Option(
             "--kind",
             help=(
-                "Restrict to an artifact kind (repeatable): feature, "
-                "tracks-variant, labels-variant, label-series, tracker-run, "
-                "frame-run, trained-model, prepared-dataset, media-derivative, "
-                "media-variant."
+                "Restrict to an artifact kind (repeatable): "
+                f"{', '.join(ARTIFACT_KINDS)}."
             ),
         ),
     ] = None,
@@ -185,8 +184,6 @@ def show_artifact(
     as_json: JsonOption = False,
 ) -> None:
     """Report one artifact in depth: its recorded params, orphans and drift."""
-    from mosaic.core.pipeline.inventory import is_artifact_kind
-
     if manifest is None and isinstance(ctx.obj, Path):
         manifest = ctx.obj
     if manifest is None:
@@ -252,8 +249,6 @@ def _kinds(names: list[str] | None) -> list[ArtifactKind] | None:
     A misspelled kind would report an empty list, the output of a dataset that
     contains none of that kind.
     """
-    from mosaic.core.pipeline.inventory import ARTIFACT_KINDS, is_artifact_kind
-
     if not names:
         return None
     unknown = sorted(name for name in names if not is_artifact_kind(name))

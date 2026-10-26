@@ -31,7 +31,6 @@ from mosaic.core.pose_columns import (
     pose_column_pairs,
     pose_column_triplets,
     reindex_contiguous,
-    resolve_keypoint_refs,
 )
 
 
@@ -190,30 +189,6 @@ def test_a_configured_set_does_not_widen_to_what_the_table_carries() -> None:
     assert configured_pose_pairs(
         columns, x_prefix="poseX", y_prefix="poseY", count=2
     ) == [("poseX0", "poseY0"), ("poseX1", "poseY1")]
-
-
-# --- keypoint references -----------------------------------------------------
-
-
-def test_references_resolve_by_name_and_by_index_in_the_order_given() -> None:
-    names = ["nose", "left_wrist", "right_wrist"]
-    assert resolve_keypoint_refs(["right_wrist", 0], names, 3, who="t") == [2, 0]
-
-
-def test_an_unknown_name_names_the_known_ones() -> None:
-    with pytest.raises(ValueError, match="left_wrist"):
-        _ = resolve_keypoint_refs(["elbow"], ["nose", "left_wrist"], 2, who="t")
-
-
-def test_a_name_without_a_name_list_is_refused() -> None:
-    with pytest.raises(ValueError, match="not given keypoint names"):
-        _ = resolve_keypoint_refs(["nose"], None, 3, who="t")
-
-
-@pytest.mark.parametrize("index", [-1, 3])
-def test_an_index_outside_the_table_is_refused(index: int) -> None:
-    with pytest.raises(ValueError, match="outside"):
-        _ = resolve_keypoint_refs([index], None, 3, who="t")
 
 
 # --- keypoint arrays ---------------------------------------------------------

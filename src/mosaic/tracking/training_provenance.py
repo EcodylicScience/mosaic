@@ -4,7 +4,8 @@ Each link of that chain is written where it is known, by a different writer:
 
 ```
 models/<train kind>/<run_id>            index row: data_path, data_fingerprint
-  -> models/prepare-training-data/<id>  index row: consumed_sets, held_out_sets, pose_id, pose_name
+  -> models/prepare-training-data/<id>  index row: consumed_sets, held_out_sets,
+                                        pose_id, pose_name, keypoint_schema
   -> labels_raw/keypoints/index.csv     the claimed revision, its path
   -> <revision>/manifest.json           origin: what the authoring store recorded
 ```
@@ -26,6 +27,8 @@ import pandas as pd
 import yaml
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
+from mosaic.core.annotations.model import KeypointSchema
+from mosaic.core.annotations.pose_annotations import canonical_pairs
 from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.index_csv import index_records
@@ -39,6 +42,11 @@ from mosaic.core.pipeline.models import (
     prepared_artifact_cell,
 )
 from mosaic.core.pipeline.op_identity import parse_op_run_id
+from mosaic.tracking.keypoint_sets import (
+    ResolvedSet,
+    read_keypoint_schema_cell,
+    read_resolved_set,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -117,6 +125,9 @@ class TrainingProvenance:
             from the ``kpt_shape`` its prepared ``data.yaml`` declares, or
             ``None`` for a model that predicts no keypoints and when that file
             cannot be read.
+        keypoint_schema: The keypoint names, skeleton edges and mirror pairs
+            that the model predicts, or ``None`` when neither the preparation
+            row nor its revisions record them.
         sets: The annotation revisions the preparation consumed.
         held_out_sets: The revisions the preparation kept out of training, as
             they were when it ran. A later correction of a hold-out set does
@@ -137,12 +148,19 @@ class TrainingProvenance:
     pose_id: int | None = None
     pose_name: str = ""
     keypoint_count: int | None = None
+    keypoint_schema: KeypointSchema | None = None
     sets: tuple[ConsumedRevision, ...] = ()
     held_out_sets: tuple[ConsumedRevision, ...] = ()
     stopped_at: str = ""
 
+    @property
+    def keypoint_names(self) -> tuple[str, ...]:
+        """The names of :attr:`keypoint_schema`, or ``()`` when it is unknown."""
+        return self.keypoint_schema.names if self.keypoint_schema is not None else ()
+
     def as_json(self) -> dict[str, JsonValue]:
         """A plain mapping, for ``--json`` and for a control plane to store."""
+        schema = self.keypoint_schema
         return {
             "kind": self.kind,
             "run_id": self.run_id,
@@ -155,6 +173,11 @@ class TrainingProvenance:
             "pose_id": self.pose_id,
             "pose_name": self.pose_name,
             "keypoint_count": self.keypoint_count,
+            "keypoint_names": list(self.keypoint_names),
+            "skeleton": canonical_pairs(schema.skeleton if schema is not None else ()),
+            "symmetries": canonical_pairs(
+                schema.symmetries if schema is not None else ()
+            ),
             "stopped_at": self.stopped_at,
             "sets": [_revision_json(item) for item in self.sets],
             "held_out_sets": [_revision_json(item) for item in self.held_out_sets],
@@ -248,6 +271,48 @@ def _pose_id(cell: str) -> int | None:
         return int(cell)
     except ValueError:
         return None
+
+
+def _keypoint_schema(
+    prepared: Mapping[str, str], sets: tuple[ConsumedRevision, ...]
+) -> KeypointSchema | None:
+    """Return the keypoints that a model trained on a preparation predicts, or ``None``.
+
+    The row's ``keypoint_schema`` cell records them. For a row written before
+    that column, the pose of the row's ``pose_id`` is read from the first
+    reachable consumed revision to declare it. Narrowing gave that pose one
+    layout in every consumed set. ``None`` for a cell that does not parse, and
+    for an older row without a pose id or without a readable revision declaring
+    that pose. An older ``polo`` row gives ``None`` too, because it does not
+    record which keypoint the points model learned.
+    """
+    cell = prepared.get("keypoint_schema", "")
+    if cell:
+        try:
+            return read_keypoint_schema_cell(cell)
+        except ValueError:
+            return None
+    pose_id = _pose_id(prepared.get("pose_id", ""))
+    if pose_id is None or prepared.get("target", "") == "polo":
+        return None
+    for item in sets:
+        if item.path is None or not item.reachable:
+            continue
+        resolved = ResolvedSet(
+            origin_uuid=item.origin_uuid,
+            set_key=item.set_key,
+            revision=item.revision,
+            digest=item.digest,
+            payload=item.path,
+        )
+        try:
+            poses = read_resolved_set(resolved).poses
+        except (OSError, ValueError):
+            continue
+        for definition in poses:
+            if definition.id == pose_id:
+                return definition.schema
+    return None
 
 
 def _consumed(holder: Dataset, cell: str) -> tuple[ConsumedRevision, ...]:
@@ -360,6 +425,7 @@ def training_provenance(ds: Dataset, kind: str, run_id: str) -> TrainingProvenan
         pose_id=_pose_id(prepared.get("pose_id", "")),
         pose_name=prepared.get("pose_name", ""),
         keypoint_count=_keypoint_count(holder, prepared),
+        keypoint_schema=_keypoint_schema(prepared, sets),
         sets=sets,
         held_out_sets=_consumed(holder, prepared.get("held_out_sets", "")),
         stopped_at=reason,

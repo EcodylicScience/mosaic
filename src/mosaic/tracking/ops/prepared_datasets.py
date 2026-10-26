@@ -65,11 +65,8 @@ def prepared_dataset_records(
     """
     from mosaic.core.pipeline.dataset_indexes import root_subdirectories
     from mosaic.core.pipeline.index_csv import index_records
-    from mosaic.core.pipeline.inventory.model import (
-        Coverage,
-        PreparedDatasetRef,
-        classify,
-    )
+    from mosaic.core.pipeline.inventory._runs import run_keyed_record
+    from mosaic.core.pipeline.inventory.model import PreparedDatasetRef
 
     _ = scope
     records: list[ArtifactRecord[str]] = []
@@ -88,30 +85,16 @@ def prepared_dataset_records(
             seen.setdefault(record.get("run_id", ""), record)
         for run_id in sorted(seen):
             row = seen[run_id]
-            covered = prepared_dataset_is_complete(ds, row)
             records.append(
-                ArtifactRecord[str](
+                run_keyed_record(
                     ref=PreparedDatasetRef(op_kind=kind, run_id=run_id),
                     name=kind,
                     run_id=run_id,
-                    coverage=Coverage(
-                        target=frozenset({run_id}),
-                        present=frozenset({run_id} if covered else ()),
-                    ),
-                    status=classify(
-                        satisfied=covered,
-                        any_covered=covered,
-                        orphan_rows=not covered and row.get("status", "") == "finished",
-                        orphan_files=False,
-                        drifted=False,
-                        finished=bool(row.get("finished_at", "")),
-                    ),
-                    run_root=model_run_root(ds, kind, run_id),
+                    row=row,
+                    recorded_finished=row.get("status", "") == "finished",
+                    complete=prepared_dataset_is_complete(ds, row),
                     index_path=index_path,
-                    rows=frozenset({run_id}),
-                    started_at=row.get("started_at", ""),
-                    finished_at=row.get("finished_at", ""),
-                    upstreams=(),
+                    run_root=model_run_root(ds, kind, run_id),
                 )
             )
     return records

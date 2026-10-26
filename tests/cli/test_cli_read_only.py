@@ -47,6 +47,10 @@ from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.tracking import PrerequisitePlan, plan_prerequisites
+from mosaic.tracking.frame_predictions.read import (
+    list_prediction_runs,
+    read_entry_predictions,
+)
 from tests.helpers import (
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
@@ -59,8 +63,10 @@ from tests.helpers import (
     add_media_sequence,
     add_tracks_variant,
     assert_tree_unchanged,
+    entry_predictions,
     invoke_ok,
     make_dataset,
+    record_entry_predictions,
     register_trained_model,
     tree_snapshot,
     write_calms21_npy,
@@ -74,6 +80,7 @@ LOSSY_EXECUTION_ID = "01H00000000000000000000000"
 SPEED_STORAGE = "speed-angvel__from__tracks"
 LOSSY_TARGET = SPEED_STORAGE
 LOSSY_RUN_ID = "0.2-abcdef0123"
+PREDICTION_RUN_ID = "predict-frames.0.1-0123456789"
 
 
 @dataclass(frozen=True)
@@ -113,7 +120,7 @@ def _recipe_file(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def populated(tmp_path: Path) -> ReadDataset:
-    """Tracks, a finished feature run, its pipeline request, and a trained model."""
+    """Tracks, a finished feature run, its request, a trained model, and predictions."""
     dataset = make_dataset(tmp_path / "populated")
     add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
     done = run_pipeline(dataset, speed_recipe())
@@ -122,6 +129,10 @@ def populated(tmp_path: Path) -> ReadDataset:
     weights = run_root / "best.pt"
     weights.write_bytes(b"weights")
     register_trained_model(dataset, MODEL_KIND, MODEL_RUN_ID, weights)
+    predictions = entry_predictions(
+        frames_run_id="uniform-0123456789", group="", sequence="seq_a"
+    )
+    _ = record_entry_predictions(dataset, predictions, run_id=PREDICTION_RUN_ID)
     _lose_an_entity(dataset.base_dir)
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
@@ -430,6 +441,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "entry_errors_wire": _lossy_entry_errors,
     "inventory": _inventory,
     "inventory_wire": _inventory_wire,
+    "list_prediction_runs": lambda f: list_prediction_runs(f.reopened()),
     "list_requests": lambda f: list_requests(f.root, limit=1),
     "list_runs": lambda f: list_runs(run_log_dir(f.root), limit=1),
     "load_tracks": lambda f: f.reopened().load_tracks("", "seq_a", auto_convert=False),
@@ -441,6 +453,9 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     ),
     "preview_artifact": lambda f: preview_artifact(
         f.reopened(), FeatureRunRef(SPEED_STORAGE, f.feature_run_id), ("", "seq_a")
+    ),
+    "read_entry_predictions": lambda f: read_entry_predictions(
+        f.reopened(), PREDICTION_RUN_ID, "", "seq_a"
     ),
     "read_runs": lambda f: read_runs(run_log_dir(f.root)),
     "read_tracks_index": lambda f: read_tracks_index(f.reopened()),
@@ -467,10 +482,12 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "discover_datasets",
         "inventory",
         "inventory_wire",
+        "list_prediction_runs",
         "list_requests",
         "list_runs",
         "open_dataset",
         "plan_prerequisites",
+        "read_entry_predictions",
         "read_runs",
         "read_tracks_index",
     ],

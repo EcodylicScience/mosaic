@@ -42,11 +42,13 @@ from .model import (
     Coverage,
     DatasetInventory,
     FeatureRunRef,
+    FramePredictionsRef,
     FrameRunRef,
     LabelSeriesRef,
     LabelsVariantRef,
     MediaDerivativeRef,
     MediaVariantRef,
+    PredictionScoreRef,
     PreparedDatasetRef,
     TrackerRunRef,
     TracksVariantRef,
@@ -105,11 +107,12 @@ _ENTRY_KEYED: Final = (
     LabelsVariantRef,
     TrackerRunRef,
     FrameRunRef,
+    FramePredictionsRef,
     MediaVariantRef,
 )
 """The refs whose coverage keys begin with an entry, which a scope narrows."""
 
-_SCANNED_IN_SCOPE: Final = (FrameRunRef, MediaVariantRef)
+_SCANNED_IN_SCOPE: Final = (FrameRunRef, FramePredictionsRef, MediaVariantRef)
 """The refs whose scan reads only the index rows that a scope's entries name.
 
 Their rows, orphans and drift are measured over those rows, so a projection
@@ -355,7 +358,7 @@ def ref_address(ref: ArtifactRef) -> str:
     match ref:
         case FeatureRunRef():
             parts = (ref.name, ref.run_id)
-        case TracksVariantRef() | MediaVariantRef():
+        case TracksVariantRef() | MediaVariantRef() | PredictionScoreRef():
             parts = (ref.run_id,)
         case LabelsVariantRef():
             parts = (ref.label_kind, ref.run_id)
@@ -365,6 +368,8 @@ def ref_address(ref: ArtifactRef) -> str:
             parts = (ref.root_key, ref.run_id)
         case FrameRunRef():
             parts = (ref.method, ref.run_id)
+        case FramePredictionsRef():
+            parts = (ref.run_id, ref.frames_run_id)
         case TrainedModelRef() | PreparedDatasetRef():
             parts = (ref.op_kind, ref.run_id)
         case MediaDerivativeRef():
@@ -456,9 +461,9 @@ def inventory_wire(
             selector names, as :func:`~.scan.inventory` narrows it under the
             same scope. A feature run is narrowed as ``build_manifest``
             narrows, by groups, sequences and entries. Another entry-keyed
-            kind is narrowed by its entries alone, and a frame run's or media
-            variant's rows, orphans and drift with it. A kind not keyed by
-            entry is reported whole.
+            kind is narrowed by its entries alone, and the rows, orphans and
+            drift of a frame run, a predictions run or a media variant with
+            it. A kind not keyed by entry is reported whole.
         tracks_run_id: Keep the feature runs whose tracks variants contain it,
             each measured over that variant's entries. ``""`` names the
             unlabeled tables and keeps the runs whose tracks variants are known

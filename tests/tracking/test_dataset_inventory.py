@@ -10,7 +10,14 @@ from mosaic.core.pipeline.inventory import TrainedModelRef
 from mosaic.tracking import dataset_inventory
 from tests.helpers import REPO_ROOT, make_dataset, register_trained_model
 
-TRACKING_KINDS = ("frame-run", "prepared-dataset", "trained-model", "tracker-run")
+TRACKING_KINDS = (
+    "frame-predictions",
+    "frame-run",
+    "prediction-score",
+    "prepared-dataset",
+    "trained-model",
+    "tracker-run",
+)
 
 
 def test_every_tracking_kind_is_reported(tmp_path: Path) -> None:

@@ -47,7 +47,8 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Declared, Params
-from mosaic.core.pose_columns import pose_column_pairs, resolve_keypoint_refs
+from mosaic.core.keypoint_refs import resolve_keypoint_refs
+from mosaic.core.pose_columns import pose_column_pairs
 
 from .helpers import ensure_columns, finite_keypoints, one_row_per_frame_and_id
 from .registry import register_feature

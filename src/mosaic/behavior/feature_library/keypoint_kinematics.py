@@ -45,11 +45,8 @@ from mosaic.core.pipeline.types import (
     InputStream,
     TrackInputs,
 )
-from mosaic.core.pose_columns import (
-    pose_column_pairs,
-    pose_column_triplets,
-    resolve_keypoint_refs,
-)
+from mosaic.core.keypoint_refs import resolve_keypoint_refs
+from mosaic.core.pose_columns import pose_column_pairs, pose_column_triplets
 
 from .helpers import ensure_columns, meta_columns
 from .registry import register_feature

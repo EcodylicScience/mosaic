@@ -471,6 +471,7 @@ def render_track_formats() -> str:
         lines.append("")
 
     lines += render_label_series()
+    lines += render_pose_predictions()
 
     lines += [
         "## Label converters",
@@ -524,6 +525,26 @@ def render_label_series() -> list[str]:
         "",
     ]
     lines += params_table(pose_annotations_json_schema(), noun="Field")
+    return lines
+
+
+def render_pose_predictions() -> list[str]:
+    """The format a pose model's predictions on extracted frames are saved in."""
+    from mosaic.core.annotations.pose_predictions import pose_predictions_json_schema
+
+    lines = [
+        "## Frame predictions",
+        "",
+        "### `mosaic-pose-predictions`",
+        "",
+        "One pose model's predictions on the frames of one entry camera of an",
+        "extraction run: every frame the model was given, with no objects where it",
+        "found none, and each object's raw instance and keypoint scores on the",
+        "tool's own scale. Coordinates are the extracted image's pixels from the",
+        "top-left corner. JSON, compact, keys sorted.",
+        "",
+    ]
+    lines += params_table(pose_predictions_json_schema(), noun="Field")
     return lines
 
 

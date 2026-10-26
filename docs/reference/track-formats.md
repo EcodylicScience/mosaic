@@ -222,6 +222,71 @@ and each object's alias, origin and box provenance under `attributes`.
     | `symmetries` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Left-right mirror pairs as 0-based positions, lower first. What a trainer that flips images swaps. |
     | `aliases` | list of `AliasRecord` | _constructed_ |  | The aliases this pose declares, by id. |
 
+## Frame predictions
+
+### `mosaic-pose-predictions`
+
+One pose model's predictions on the frames of one entry camera of an
+extraction run: every frame the model was given, with no objects where it
+found none, and each object's raw instance and keypoint scores on the
+tool's own scale. Coordinates are the extracted image's pixels from the
+top-left corner. JSON, compact, keys sorted.
+
+| Field | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `format` | `"mosaic-pose-predictions"` | _required_ |  | Always mosaic-pose-predictions. |
+| `version` | `integer` | _required_ |  | The format version the file was written in. This is version 1. |
+| `pose` | `PredictedPoseRecord` | _required_ |  | The pose every object's keypoints are aligned to. |
+| `source` | `PredictionSourceRecord` | _required_ |  | The extraction run and entry camera of the frames. |
+| `frames` | list of `PredictedFrameRecord` | _required_ |  | Every frame the model was given, ascending by image. |
+
+??? note "`PredictedBoxRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `x` | `number` | _required_ |  | The left edge. |
+    | `y` | `number` | _required_ |  | The top edge. |
+    | `width` | `number` | _required_ |  | The width. |
+    | `height` | `number` | _required_ |  | The height. |
+
+??? note "`PredictedFrameRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `image` | `string` | _required_ |  | The image's dataset-relative POSIX path. |
+    | `frame_index` | `integer` | _required_ |  | The frame's index on the entry's media axis. |
+    | `width` | `integer` | _required_ |  | Image width in pixels. |
+    | `height` | `integer` | _required_ |  | Image height in pixels. |
+    | `objects` | list of `PredictedObjectRecord` | _required_ |  | The objects in the order the tool returned them. An object's position is its instance index. Empty when the tool found nothing. |
+
+??? note "`PredictedObjectRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `keypoints` | list of (tuple of (`number`, `number`, `number` \| `None`) \| `None`) | _required_ |  | One entry per keypoint of the pose, in its order: [x, y, score] in image pixels, or null when the tool did not place the keypoint. The score is the tool's raw confidence, null when it reports none. |
+    | `score` | `number` \| `None` | `null` |  | The tool's instance score, or null when it reports none. |
+    | `track_id` | `string` \| `None` | `null` |  | The track name a SLEAP identity model assigned, or null. |
+    | `bbox` | `PredictedBoxRecord` \| `None` | `null` |  | The box the tool reported, or null. |
+
+??? note "`PredictedPoseRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `id` | `integer` \| `None` | _required_ |  | The authoring store's id of the pose the model was trained on, or null when provenance does not record it. |
+    | `name` | `string` | _required_ |  | That pose's name, "" when unknown. |
+    | `keypoints` | list of `string` | _required_ |  | The model's keypoint names, in the order every object stores its points. kp0 to kp{n-1} when neither provenance nor the tool names them. |
+    | `skeleton` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Undirected edges as pairs of 0-based keypoint positions, each lower first, ascending. |
+    | `symmetries` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Left-right mirror pairs as 0-based positions, lower first. |
+
+??? note "`PredictionSourceRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `frames_run_id` | `string` | _required_ |  | The extraction run the frames come from. |
+    | `group` | `string` | _required_ |  | The entry's group. |
+    | `sequence` | `string` | _required_ |  | The entry's sequence. |
+    | `camera` | `string` | _required_ |  | The entry's camera, "" for one camera. |
+
 ## Label converters
 
 Applied by `mosaic convert-labels --kind <label_kind>`.

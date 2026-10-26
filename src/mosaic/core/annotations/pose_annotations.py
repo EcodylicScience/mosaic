@@ -64,6 +64,7 @@ __all__ = [
     "PoseDefinition",
     "PoseFrame",
     "PoseObject",
+    "canonical_pairs",
     "pose_annotations_document",
     "pose_annotations_json_schema",
     "pose_annotations_payload",
@@ -300,7 +301,8 @@ def pose_annotations_payload(annotations: PoseAnnotationSet) -> bytes:
     return json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _pairs(pairs: Sequence[tuple[int, int]]) -> list[JsonValue]:
+def canonical_pairs(pairs: Sequence[tuple[int, int]]) -> list[JsonValue]:
+    """Return *pairs* ascending, each as a two-item list, the form a file holds."""
     return [[a, b] for a, b in sorted(pairs)]
 
 
@@ -309,8 +311,8 @@ def _pose_document(pose: PoseDefinition) -> dict[str, JsonValue]:
         "id": pose.id,
         "name": pose.name,
         "keypoints": list(pose.schema.names),
-        "skeleton": _pairs(pose.schema.skeleton),
-        "symmetries": _pairs(pose.schema.symmetries),
+        "skeleton": canonical_pairs(pose.schema.skeleton),
+        "symmetries": canonical_pairs(pose.schema.symmetries),
         "aliases": [
             {"id": alias.id, "name": alias.name}
             for alias in sorted(pose.aliases, key=lambda alias: alias.id)

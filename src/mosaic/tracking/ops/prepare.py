@@ -66,6 +66,7 @@ from mosaic.tracking.frame_extraction.frame_runs import video_frames_of
 from mosaic.tracking.keypoint_sets import (
     KeypointSetRef,
     ResolvedSet,
+    keypoint_schema_cell,
     read_resolved_set,
     resolve_keypoint_sets,
 )
@@ -1016,13 +1017,7 @@ def _schema_cell(params: PrepareTrainingDataParams, schema: KeypointSchema) -> s
     """
     if params.target == "polo":
         schema = KeypointSchema(names=(schema.names[params.point_index],))
-    return json.dumps(
-        {
-            "keypoints": list(schema.names),
-            "skeleton": [list(edge) for edge in schema.skeleton],
-            "symmetries": [list(pair) for pair in schema.symmetries],
-        }
-    )
+    return keypoint_schema_cell(schema)
 
 
 def _register(
