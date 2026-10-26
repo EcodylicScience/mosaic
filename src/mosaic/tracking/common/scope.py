@@ -250,9 +250,13 @@ class TrackerWorkItem:
             The variant's mapping for a variant item, and otherwise the entry's
             clips, whose join a tool read when there are several.
         """
+        # A sequence's first frame on its recording's axis comes from a division
+        # record. No entry has one, so every table stays at frame 0.
         if self.variant is not None:
-            return EntryAxis.of_variant(self.variant.mapping())
-        return EntryAxis.of_entry_media(self.source_facts, windowed=windowed)
+            return EntryAxis.of_variant(self.variant.mapping(), first_frame=0)
+        return EntryAxis.of_entry_media(
+            self.source_facts, windowed=windowed, first_frame=0
+        )
 
 
 @dataclass(frozen=True, slots=True)

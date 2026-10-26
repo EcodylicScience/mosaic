@@ -84,6 +84,12 @@ class EntryHints:
     numbers. ``None`` means not measured, and a converter then keeps the tool's
     own timing.
 
+    ``first_frame`` is the sequence's first frame on its recording's frame axis,
+    0 for an undivided recording, and like ``fps`` a fact about the entry. A
+    converter numbers its table from the sequence's own first frame, and the
+    caller moves it onto the recording's axis
+    (:func:`~mosaic.core.pipeline.placement.place_converted`).
+
     Validated on construction, so a converter structurally cannot emit a name
     that is not usable as one path component. This is the earliest of the three
     write boundaries: catching it here names the converter in the traceback,
@@ -93,6 +99,7 @@ class EntryHints:
     group: str = ""
     sequence: str = ""
     fps: float | None = None
+    first_frame: int = 0
 
     def __post_init__(self) -> None:
         _ = validate_entry_name(self.group, "group")
@@ -101,6 +108,12 @@ class EntryHints:
             msg = (
                 f"fps={self.fps} is not a measured frame rate. Pass None when "
                 "the media's rate is unknown."
+            )
+            raise ValueError(msg)
+        if self.first_frame < 0:
+            msg = (
+                f"first_frame={self.first_frame} is before the recording's first "
+                "frame, 0."
             )
             raise ValueError(msg)
 

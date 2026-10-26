@@ -574,6 +574,26 @@ run id or path changes.
   two labelled tracks variants keeps the name order and `null` facts, since a summary
   chooses no variant.
 
+**A converted tracks table with a repeated `(frame, id)` row fails its entry.**
+`convert_all_tracks` and `convert_one_track` published such a table without a word, as
+when one sequence's per-clip files, each numbered from frame 0, were merged. Each frame
+number then named two moments. The conversion now refuses the table, names the entry,
+the first repeated frame and its id, and reports the entry as failed, at each of the
+three convert sites: a file of one sequence, a sequence of a multi-sequence file, and
+the merge of a sequence's files. Nothing is written for it. Tracker publishes are
+unchanged, and the inference bridge already refused a repeated pair. No run id changes.
+
+**The recording frame axis is placed end to end at frame 0.** A divided recording's
+tracks number `frame` and `time` across the recording. `EntryAxis` and `EntryHints`
+gain `first_frame`, a sequence's first frame on that axis, which
+`shift_to_recording_axis` (`core/pipeline/placement.py`) adds to every frame column and
+to `time` after every other mapping. Every producer passes 0, so no output, key, run id
+or path changes. One behavior changes: label conversion refuses dense labels, one label
+per position, for a sequence of a declared continuous group, since no rule places them
+on the recording's axis. The refusal comes before the first label file is written, so
+a refused conversion writes no label file and no index row. Event labels
+(`individual_pair_v1`) convert as before.
+
 **A refused manifest setter leaves the dataset as it was.** `set_notes`,
 `set_continuous_groups`, `define_tag`, `set_tag_value` and `add_library` held the new
 manifest before checking it. After a refusal the next `save`, such as the one

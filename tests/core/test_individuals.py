@@ -118,3 +118,13 @@ def test_another_column_can_key_the_rows() -> None:
     refuse_repeated_rows(rows, "feature")
     with pytest.raises(ValueError, match=r"^feature: time 0.0 of id 7 appears"):
         refuse_repeated_rows(rows, "feature", order_col="time")
+
+
+def test_a_refusal_gives_the_remedy_it_is_handed() -> None:
+    rows = pd.DataFrame({"frame": [0, 0], "id": [1, 1]})
+
+    with pytest.raises(
+        ValueError,
+        match=r"^table: frame 0 of id 1 appears in more than one row\. Renumber it\.$",
+    ):
+        refuse_repeated_rows(rows, "table", remedy="Renumber it.")

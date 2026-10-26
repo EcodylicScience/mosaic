@@ -55,7 +55,7 @@ def iter_individuals(
 
 
 def refuse_repeated_rows(
-    df: pd.DataFrame, who: str, order_col: str = _FRAME_COLUMN
+    df: pd.DataFrame, who: str, order_col: str = _FRAME_COLUMN, *, remedy: str = ""
 ) -> None:
     """Refuse *df* when an individual has two rows of one *order_col* value.
 
@@ -65,6 +65,7 @@ def refuse_repeated_rows(
         df: The rows to check.
         who: The feature or the table that the refusal names.
         order_col: The column that orders each individual's rows.
+        remedy: A sentence the refusal ends with, saying what to change.
 
     Raises:
         ValueError: Naming *who*, the first repeated *order_col* value and its id.
@@ -80,4 +81,6 @@ def refuse_repeated_rows(
     if _ID_COLUMN in keys:
         where += f" of id {df[_ID_COLUMN].iloc[first]}"
     msg = f"{who}: {where} appears in more than one row"
+    if remedy:
+        msg = f"{msg}. {remedy}"
     raise ValueError(msg)

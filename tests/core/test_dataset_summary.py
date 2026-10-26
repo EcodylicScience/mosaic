@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import yaml
 
+from mosaic.core import dataset_summary as dataset_summary_module
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import (
     SUMMARY_KINDS,
@@ -23,6 +25,7 @@ from mosaic.core.pipeline.graph import run_pipeline
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.media_index import frame_from_rows, write_media_index_rows
 from mosaic.core.pipeline.models import model_run_root
+from mosaic.core.pipeline import tracks_index as tracks_index_module
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
@@ -234,6 +237,40 @@ def test_a_member_with_two_variants_leaves_its_recording_unmeasured(
     assert by_name["day"].sequences == (
         RecordingSequence(sequence="s1", first_frame=0, frame_count=5),
     )
+
+
+def _index_reads_describing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recordings: int
+) -> int:
+    """Return how many times describing *recordings* divided recordings reads the index."""
+    ds = make_dataset(tmp_path / f"ds{recordings}")
+    names = [f"night{n}" for n in range(recordings)]
+    for name in names:
+        add_tracks_table(ds, "convert.a", track_table(name, "s1"))
+    ds.set_continuous_groups(names)
+    reopened = open_dataset(ds.manifest_path, ensure_roots=False)
+    found = inventory(reopened, kinds=SUMMARY_KINDS)
+    reads = 0
+    real = tracks_index_module.read_tracks_index
+
+    def counting(dataset: Dataset) -> pd.DataFrame:
+        nonlocal reads
+        reads += 1
+        return real(dataset)
+
+    with monkeypatch.context() as patch:
+        for module in (tracks_index_module, dataset_summary_module):
+            patch.setattr(module, "read_tracks_index", counting)
+        _ = dataset_summary(reopened, found=found)
+    return reads
+
+
+def test_the_tracks_index_is_read_once_however_many_recordings_are_divided(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one = _index_reads_describing(tmp_path, monkeypatch, 1)
+
+    assert _index_reads_describing(tmp_path, monkeypatch, 3) == one
 
 
 def test_a_declared_group_without_entries_is_no_recording(tmp_path: Path) -> None:

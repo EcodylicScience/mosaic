@@ -30,7 +30,12 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.media.preprocess import Placement, TrimStep
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.ops import run_op
-from mosaic.core.pipeline.placement import EntryAxis, SourceMapping
+from mosaic.core.pipeline.placement import (
+    EntryAxis,
+    SourceMapping,
+    UnclassifiedColumnError,
+    shift_to_recording_axis,
+)
 from mosaic.core.pipeline.tracks_index import read_media_frames, read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.tracking.litpose.params import LitposeParams
@@ -144,6 +149,103 @@ class TestPlacingATable:
 
         assert placed.frame is table
         assert placed.dropped == ()
+
+
+# --- the recording frame axis ------------------------------------------------
+
+
+def _recording_rows() -> pd.DataFrame:
+    """Two rows with every frame column, a time, a position and an identity."""
+    return pd.DataFrame(
+        {
+            "frame": [0, 7],
+            "frames": [0, 7],
+            "tracklet_start": pd.array([0, None], dtype="Int64"),
+            "time": [0.0, 7 / 20.0],
+            "X": [1.5, 2.5],
+            "id": [3, 3],
+        }
+    )
+
+
+class TestTheRecordingAxis:
+    """A sequence's table is moved onto its recording's axis by its first frame."""
+
+    def test_each_frame_column_and_the_time_are_shifted(self) -> None:
+        shifted = shift_to_recording_axis(_recording_rows(), 40, 20.0)
+
+        assert shifted["frame"].tolist() == [40, 47]
+        assert shifted["frames"].tolist() == [40, 47]
+        assert shifted["tracklet_start"].tolist() == [40, pd.NA]
+        assert shifted["time"].tolist() == pytest.approx([2.0, 2.35])
+        assert shifted["X"].tolist() == [1.5, 2.5]
+        assert shifted["id"].tolist() == [3, 3]
+
+    def test_an_offset_inside_a_store_chunk_shifts_like_any_other(self) -> None:
+        """The shift accepts an offset that is not a multiple of the chunk size."""
+        shifted = shift_to_recording_axis(_recording_rows(), 44540, 20.0)
+
+        assert shifted["frame"].tolist() == [44540, 44547]
+        assert shifted["time"].tolist() == pytest.approx([2227.0, 2227.35])
+
+    def test_a_shift_of_zero_returns_the_table_itself(self) -> None:
+        """No column is read, so an unclassified one passes, as under an identity map."""
+        table = _recording_rows().assign(mystery=[1.0, 2.0])
+
+        assert shift_to_recording_axis(table, 0, None) is table
+
+    def test_an_unclassified_numeric_column_is_refused_under_a_shift(self) -> None:
+        table = _recording_rows().assign(mystery=[1.0, 2.0])
+
+        with pytest.raises(UnclassifiedColumnError, match="mystery"):
+            _ = shift_to_recording_axis(table, 40, 20.0)
+
+    def test_a_time_without_a_rate_is_refused_under_a_shift(self) -> None:
+        with pytest.raises(ValueError, match="frame rate"):
+            _ = shift_to_recording_axis(_recording_rows(), 40, None)
+
+    def test_a_negative_first_frame_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="first frame"):
+            _ = shift_to_recording_axis(_recording_rows(), -1, 20.0)
+
+    def test_the_entry_axis_shifts_last_after_retiming_a_join(self) -> None:
+        clips = [
+            clip_facts(fps=30.0, frame_count=_CLIP),
+            clip_facts(fps=30.0, frame_count=_CLIP),
+        ]
+        local = EntryAxis.of_entry_media(clips, windowed=False, first_frame=0)
+        shifted = EntryAxis.of_entry_media(clips, windowed=False, first_frame=600)
+        table = pd.DataFrame({"frame": [0, _CLIP], "time": [0.0, 0.0]})
+
+        placed = shifted.place(table)
+
+        assert placed.frame["frame"].tolist() == [600, 600 + _CLIP]
+        assert placed.frame["time"].tolist() == pytest.approx(
+            [t + 20.0 for t in local.place(table).frame["time"].tolist()]
+        )
+        assert shifted.media_frames == local.media_frames == 2 * _CLIP
+
+    def test_the_entry_axis_maps_a_variant_to_source_space_before_shifting(
+        self,
+    ) -> None:
+        mapping = _variant(30.0, trim=True)
+        table = pd.DataFrame({"frame": [0, 1], "time": [0.0, 1 / 30.0]})
+
+        placed = EntryAxis.of_variant(mapping, first_frame=300).place(table)
+        source = EntryAxis.of_variant(mapping, first_frame=0).place(table)
+
+        assert placed.frame["frame"].tolist() == [
+            300 + frame for frame in source.frame["frame"].tolist()
+        ]
+
+    def test_an_axis_at_zero_places_a_table_as_before(self) -> None:
+        table = pd.DataFrame({"frame": [0, 10], "time": [0.0, 1 / 3]})
+
+        placed = EntryAxis.of_entry_media(
+            [clip_facts()], windowed=False, first_frame=0
+        ).place(table)
+
+        assert placed.frame is table
 
 
 # --- tracker runs over a real two-clip entry ---------------------------------
@@ -282,9 +384,11 @@ def windows(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     seen: list[bool] = []
     build = EntryAxis.of_entry_media
 
-    def of_entry_media(clips: Sequence[MediaFacts], *, windowed: bool) -> EntryAxis:
+    def of_entry_media(
+        clips: Sequence[MediaFacts], *, windowed: bool, first_frame: int = 0
+    ) -> EntryAxis:
         seen.append(windowed)
-        return build(clips, windowed=windowed)
+        return build(clips, windowed=windowed, first_frame=first_frame)
 
     monkeypatch.setattr(EntryAxis, "of_entry_media", of_entry_media)
     return seen

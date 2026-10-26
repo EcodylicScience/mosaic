@@ -109,11 +109,12 @@ in the root guide.
   (`tests/core/test_recording.py`).
 - A write refuses a new entry whose key equals another entry's, such as `("", "a__b")`
   beside `("a", "b")`, and an empty-group sequence named like a continuous group,
-  through `Dataset.refuse_entry_key_collision` (`core/entry.py`, `core/recording.py`). Rows
-  already in an index keep resolving (`tests/core/test_entry_tokens.py`). A replacing
-  media or tracks_raw write checks against the entries that survive it and those another
-  index still names (`entries_kept_beside`), and a scan checks the entries left after
-  assigned identity is restored (`tests/core/media/test_media_index_entry_names.py`).
+  through `Dataset.refuse_entry_key_collision` (`core/dataset.py`), which combines the
+  key rule of `core/entry.py` with the name rule of `core/recording.py`. Rows already in
+  an index keep resolving (`tests/core/test_entry_tokens.py`). A replacing media or
+  tracks_raw write checks against the entries that survive it and those another index
+  still names (`entries_kept_beside`), and a scan checks the entries left after assigned
+  identity is restored (`tests/core/media/test_media_index_entry_names.py`).
 - Only the sequences of a continuous group have neighbors for `overlap_frames`
   (`build_manifest` in `core/pipeline/manifest.py`), and only their frame extents are
   read, under the tracks variant that the inputs read. A sequence of the empty group or

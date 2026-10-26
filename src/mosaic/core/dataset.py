@@ -39,6 +39,7 @@ from .helpers import (
     is_nameless_entry,
     make_entry_key,
     parse_entry_key,
+    place_label_payload,
     text_cell,
     to_safe_name,
     validate_entry_name,
@@ -83,6 +84,7 @@ from .track_converter import (
 from .label_converter import (
     LabelConverter,
     LabelConvertParams,
+    LabelEntry,
     get_label_converter,
     validate_label_format,
 )
@@ -96,7 +98,8 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
-from .entry import Entry, EntryKeyCollisionError, entry_key_collision
+from .entry import Entry, EntryKeyCollisionError, entry_key_collision, entry_token
+from .individuals import refuse_repeated_rows
 from .recording import (
     OrderFacts,
     Recording,
@@ -141,6 +144,7 @@ from .pipeline._utils import (
     coerce_np as _coerce_np,
     now_iso as _now_iso,
 )
+from .pipeline.placement import place_converted
 from .pipeline.scan_claim import ScanClaim
 from .pipeline.index_stamp import IndexStamp
 from .pipeline.media_index import (
@@ -893,6 +897,35 @@ class LinkedLibrary:
 def _series_of(source: ScanSource) -> str | None:
     """The label series *source* claims, or ``None`` for every other source."""
     return source.series if isinstance(source, LabelsScanSource) else None
+
+
+_REPEATED_ROW_REMEDY: Final = (
+    "Files of one sequence that are each numbered from frame 0, such as one file "
+    "per clip, repeat their frames when merged. Number the frames across the "
+    "recording in the converter."
+)
+
+
+def _placed_conversion(
+    df: pd.DataFrame, hints: EntryHints, entry: Entry, source: str
+) -> pd.DataFrame:
+    """Return a converted table on its recording's axis, refusing a repeated row.
+
+    Run at every convert site before the schema check. No entry has a division
+    record, so the table is checked against no division frame count.
+
+    Raises:
+        ValueError: If the table cannot be placed, or an individual has two rows
+            of one frame. The message names *entry* and *source*.
+    """
+    placed = place_converted(df, hints, media_frame_count=None)
+    if "frame" in placed.columns:
+        refuse_repeated_rows(
+            placed,
+            f"the converted table of entry {entry_token(*entry)!r} ({source})",
+            remedy=_REPEATED_ROW_REMEDY,
+        )
+    return placed
 
 
 def _check_manifest(manifest: DatasetManifest) -> None:
@@ -6756,6 +6789,13 @@ class Dataset:
                 if "group" in df_std.columns and out_group_canon != canon_group_infile:
                     df_std["group"] = out_group_canon
 
+                df_std = _placed_conversion(
+                    df_std,
+                    EntryHints(group=canon_group_infile, sequence=canon_seq),
+                    (out_group_canon, canon_seq),
+                    f"{src_path}::{canon_seq}",
+                )
+
                 # Ensure schema, then write
                 _, _schema_report = ensure_track_schema(
                     df_std,
@@ -6806,10 +6846,10 @@ class Dataset:
         # here and with direct assignment in the branch above, so a
         # user-supplied ``params["group"]`` won in one path and lost in the
         # other -- one of the reasons entry identity does not belong in params.)
-        df_std = converter.convert(
-            src_path,
-            conv_params,
-            EntryHints(group=group_value, sequence=seq_value),
+        hints = EntryHints(group=group_value, sequence=seq_value)
+        df_std = converter.convert(src_path, conv_params, hints)
+        df_std = _placed_conversion(
+            df_std, hints, (group_value, seq_value), str(src_path)
         )
 
         # Validate/coerce against the declared standard format schema (if any)
@@ -7269,7 +7309,7 @@ class Dataset:
 
             hints = EntryHints(group=group or "", sequence=sequence or "")
 
-            dfs = []
+            dfs: list[pd.DataFrame] = []
             _merge_failed = False
             for _, row in group_df.iterrows():
                 src_path = self.resolve_path(row["abs_path"])
@@ -7296,7 +7336,24 @@ class Dataset:
                 advance(int(len(group_df)))
                 continue
 
-            merged_df = merge_on_column_union(dfs)
+            try:
+                merged_df = _placed_conversion(
+                    merge_on_column_union(dfs),
+                    hints,
+                    (text_cell(out_group), text_cell(sequence)),
+                    f"{group}/{sequence} (merged)",
+                )
+            except ValueError as e:
+                print(
+                    f"[WARN] convert failed for ({group}, {sequence}): {e}",
+                    file=sys.stderr,
+                )
+                first_path = str(self.resolve_path(first_row["abs_path"]))
+                failures.append(first_path)
+                if on_failure is not None:
+                    on_failure(first_path, e)
+                advance(int(len(group_df)))
+                continue
             _, _schema_report = ensure_track_schema(
                 merged_df,
                 converter.output_schema,
@@ -7450,7 +7507,9 @@ class Dataset:
         variant_root.mkdir(parents=True, exist_ok=True)
         producer = label_converter_op(src_format)
 
-        written = 0
+        # Every entry is converted and placed before the first file is written,
+        # so a refused entry leaves no part of the variant on disk.
+        pending: list[tuple[LabelEntry, Mapping[str, object], Path, Path, str]] = []
         skipped = 0
         total = int(len(df_raw))
         for done, (_, raw_row) in enumerate(df_raw.iterrows(), start=1):
@@ -7465,26 +7524,37 @@ class Dataset:
                 if out_path.exists() and not overwrite:
                     skipped += 1
                     continue
-                atomic_savez(out_path, **dict(entry.payload))
-                write_labels_row(
-                    self,
-                    run_id=variant,
-                    group=entry.group,
-                    sequence=entry.sequence,
-                    out_path=out_path,
-                    producer=producer,
-                    label_kind=kind,
-                    label_format=converter.label_format,
-                    n_frames=entry.n_frames,
-                    label_ids=",".join(str(i) for i in entry.label_ids),
-                    label_names=",".join(str(n) for n in entry.label_names),
-                    source=src_path,
-                    source_md5=source_md5,
-                    consumed_source_roots=("labels_raw",),
+                # No entry has a division record, so every sequence's labels
+                # stay at frame 0 of its recording.
+                payload = place_label_payload(
+                    entry.payload,
+                    first_frame=0,
+                    divided=self.recording_kind(entry.group) == "divided",
+                    entry=entry_token(entry.group, entry.sequence),
                 )
-                written += 1
+                pending.append((entry, payload, out_path, src_path, source_md5))
             if progress is not None:
                 progress(done, total)
+
+        for entry, payload, out_path, src_path, source_md5 in pending:
+            atomic_savez(out_path, **dict(payload))
+            write_labels_row(
+                self,
+                run_id=variant,
+                group=entry.group,
+                sequence=entry.sequence,
+                out_path=out_path,
+                producer=producer,
+                label_kind=kind,
+                label_format=converter.label_format,
+                n_frames=entry.n_frames,
+                label_ids=",".join(str(i) for i in entry.label_ids),
+                label_names=",".join(str(n) for n in entry.label_names),
+                source=src_path,
+                source_md5=source_md5,
+                consumed_source_roots=("labels_raw",),
+            )
+        written = len(pending)
 
         registration: dict[str, JsonValue] = {
             "run_id": variant,

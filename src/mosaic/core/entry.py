@@ -32,7 +32,6 @@ __all__ = [
     "make_entry_key",
     "parse_entry_key",
     "parse_entry_tokens",
-    "refuse_entry_key_collision",
     "to_safe_name",
 ]
 
@@ -108,7 +107,7 @@ def make_entry_key(group: str, sequence: str) -> str:
 
     Two entries can share a key: ``("", "a__b")`` and ``("a", "b")`` both key
     as ``a__b``. A write refuses the second through
-    :func:`refuse_entry_key_collision`.
+    ``Dataset.refuse_entry_key_collision``.
     """
     safe_group = to_safe_name(group) if group else ""
     safe_seq = to_safe_name(sequence)
@@ -167,16 +166,3 @@ def entry_key_collision(
                 "apart on disk. Rename one of them."
             )
     return None
-
-
-def refuse_entry_key_collision(
-    written: Iterable[Entry], existing: Iterable[Entry]
-) -> None:
-    """Refuse the collision that :func:`entry_key_collision` reports.
-
-    Raises:
-        EntryKeyCollisionError: Naming both entries and their shared key.
-    """
-    reason = entry_key_collision(written, existing)
-    if reason is not None:
-        raise EntryKeyCollisionError(reason)

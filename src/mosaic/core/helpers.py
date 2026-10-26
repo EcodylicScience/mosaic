@@ -1,5 +1,6 @@
 import math
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, Optional, Tuple, cast
 
@@ -365,6 +366,58 @@ def detect_label_format(npz_data: "dict[str, object] | np.lib.npyio.NpzFile") ->
             return "dense"
 
     return "unknown"
+
+
+def place_label_payload(
+    payload: Mapping[str, object],
+    *,
+    first_frame: int,
+    divided: bool,
+    entry: str,
+) -> Mapping[str, object]:
+    """Return one sequence's converted labels on its recording's frame axis.
+
+    An ``individual_pair_v1`` payload names its events by frame, and its
+    ``frames`` array gains *first_frame*. A dense payload is indexed by position
+    from the sequence's first frame, and no rule places it on a divided
+    recording's axis, so it is refused for a sequence of one. Any other format is
+    returned as it is at *first_frame* 0 and refused at another.
+
+    Args:
+        payload: The ``.npz`` contents a label converter returned.
+        first_frame: The sequence's first frame on its recording's axis.
+        divided: Whether the sequence belongs to a divided recording.
+        entry: The entry's token, which a refusal names.
+
+    Returns:
+        The placed payload, or *payload* itself when nothing moves.
+
+    Raises:
+        ValueError: If a dense payload belongs to a divided recording, or a
+            payload of a format other than ``individual_pair_v1`` would move.
+    """
+    label_format = detect_label_format(dict(payload))
+    if label_format == "dense" and divided:
+        msg = (
+            f"labels of {entry!r} are dense, one label per position from the "
+            "sequence's first frame, and the sequence belongs to a divided "
+            "recording, whose frames count across the recording. Convert them "
+            "as individual_pair_v1 events, which name their frames."
+        )
+        raise ValueError(msg)
+    if first_frame == 0:
+        return payload
+    if label_format != "individual_pair_v1":
+        msg = (
+            f"labels of {entry!r} are {label_format!r}, and only "
+            "individual_pair_v1 labels can be moved onto a recording's frame "
+            f"axis, here by {first_frame} frames."
+        )
+        raise ValueError(msg)
+    placed = dict(payload)
+    frames = np.asarray(payload["frames"], dtype=np.int64)
+    placed["frames"] = frames + first_frame
+    return placed
 
 
 def expand_labels_to_dense(

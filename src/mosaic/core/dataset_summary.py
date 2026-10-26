@@ -35,14 +35,17 @@ from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 from mosaic.core.pipeline.tracks_index import (
     FrameExtents,
-    read_frame_extents,
+    frame_extents_of,
     read_tracks_index,
+    select_variant_rows,
 )
 from mosaic.core.recording import Recording, facts_from_frame_extents
 from mosaic.core.schema import LEGACY_SCHEMA
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from mosaic.core.dataset import Dataset
 
 __all__ = [
@@ -229,10 +232,11 @@ def dataset_summary(
     """
     held = found if found is not None else inventory(ds, kinds=SUMMARY_KINDS)
     manifest = ds.manifest
-    tracks = existing_tracks_records(ds, read_tracks_index(ds))
+    tracks_index = read_tracks_index(ds)
+    tracks = existing_tracks_records(ds, tracks_index)
     media = _media_rows(ds)
     entries = ds.recording_entries()
-    extents = _member_extents(ds, entries)
+    extents = _member_extents(ds, tracks_index, entries)
     every_recording = ds.recordings(
         entries, order_facts=facts_from_frame_extents(extents)
     )
@@ -290,23 +294,25 @@ def dataset_summary(
     )
 
 
-def _member_extents(ds: Dataset, entries: Iterable[Entry]) -> FrameExtents:
+def _member_extents(
+    ds: Dataset, tracks_index: pd.DataFrame, entries: Iterable[Entry]
+) -> FrameExtents:
     """Return the tracks frame extents of the divided recordings' members.
 
-    Each member's extent is read as ``build_manifest`` reads it without a pinned
-    variant. A recording with a member of two labelled variants contributes no
-    extent, because a summary chooses no variant and an overlapped run over it
-    refuses.
+    Each member's extent is read from *tracks_index* as ``build_manifest`` reads
+    it without a pinned variant. A recording with a member of two labelled
+    variants contributes no extent, because a summary chooses no variant and an
+    overlapped run over it refuses.
     """
-    groups = sorted(
-        {group for group, _ in entries if ds.recording_kind(group) == "divided"}
-    )
+    divided = {group for group, _ in entries if ds.recording_kind(group) == "divided"}
+    rows = tracks_index[tracks_index["group"].astype(str).isin(divided)]
     extents: FrameExtents = {}
-    for group in groups:
+    for _, members in rows.groupby(rows["group"].astype(str), sort=True):
         try:
-            extents.update(read_frame_extents(ds, None, groups={group}))
+            resolved = select_variant_rows(members)
         except ValueError:
             continue
+        extents.update(frame_extents_of(resolved))
     return extents
 
 

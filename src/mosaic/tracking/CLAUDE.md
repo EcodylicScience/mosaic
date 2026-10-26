@@ -125,7 +125,11 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
   (`common/scope.py`) and the inference ops. A dropped camera gets a stderr line and no
   run-log record.
 - `frame` counts from the start of the entry, or of its group when the group is
-  declared continuous. Trackers deliver that axis. No write path checks it.
+  declared continuous. Trackers deliver that axis, and `EntryAxis.place` moves a table
+  onto its recording's axis by the sequence's `first_frame`. Every builder passes 0,
+  since no entry has a division record to give another. The tracker bridge does not
+  check repeated `(frame, id)` pairs. The convert sites refuse them
+  (`_placed_conversion` in `core/dataset.py`), and so does the inference bridge.
 - No tool joins clips. A `one-file` tool is handed the `export-joined` file
   (`core/pipeline/joined_export.py`) through `resolve_tool_inputs`, after
   `refuse_unjoinable` (`common/scope.py`) has refused clips that cannot be one video. A

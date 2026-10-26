@@ -21,12 +21,19 @@ entry's clips (:func:`retime_joined_frame`), whose clips may have been recorded 
 different rates. :class:`EntryAxis` chooses between the two for a tool's table,
 and gives the length of the entry's frame axis that the table is meant to span.
 The shared bridge applies it to every producer's table.
+
+A divided recording numbers ``frame`` and ``time`` across the whole recording.
+:func:`shift_to_recording_axis` moves a table from its sequence's axis onto the
+recording's by the sequence's first frame, after every other mapping.
+:class:`EntryAxis` applies it to a tool's table and :func:`place_converted` to a
+converter's. A sequence's first frame comes from a division record, and without
+one it is 0.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -35,8 +42,9 @@ import numpy.typing as npt
 import pandas as pd
 from mosaic_media import MediaFacts
 
-from mosaic.core.media.preprocess.geometry import FrameMap, Placement
+from mosaic.core.media.preprocess.geometry import Placement
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
+from mosaic.core.track_converter import EntryHints
 from mosaic.core.track_library.helpers import column_array, column_names
 from mosaic.core.track_library.trex import (
     PER_SECOND_FIELDS,
@@ -54,8 +62,10 @@ __all__ = [
     "SourceMapping",
     "UnclassifiedColumnError",
     "classify_column",
+    "place_converted",
     "retime",
     "retime_joined_frame",
+    "shift_to_recording_axis",
     "to_source_space",
 ]
 
@@ -385,33 +395,39 @@ class EntryAxis:
             ``None`` when the tool read the entry media.
         windowed: Whether the run read fewer than every frame of its file, under
             a frame window. A variant cannot be read under one.
+        first_frame: The sequence's first frame on its recording's frame axis,
+            which :meth:`place` adds last. :attr:`media_frames` stays local to
+            the sequence.
     """
 
     clips: tuple[MediaFacts, ...] = ()
     mapping: SourceMapping | None = None
     windowed: bool = False
+    first_frame: int = 0
 
     def __post_init__(self) -> None:
         """Refuse an axis that is both the entry media and a variant.
 
         Raises:
-            ValueError: If both *clips* and *mapping* are given.
+            ValueError: If both *clips* and *mapping* are given, or if
+                *first_frame* is negative.
         """
         if self.clips and self.mapping is not None:
             message = "an entry axis reads the entry media or a variant, not both"
             raise ValueError(message)
+        _refuse_negative_first_frame(self.first_frame)
 
     @classmethod
     def of_entry_media(
-        cls, clips: Sequence[MediaFacts], *, windowed: bool
+        cls, clips: Sequence[MediaFacts], *, windowed: bool, first_frame: int = 0
     ) -> EntryAxis:
         """Return the axis of a tool that read the entry media: a clip, or a join."""
-        return cls(clips=tuple(clips), windowed=windowed)
+        return cls(clips=tuple(clips), windowed=windowed, first_frame=first_frame)
 
     @classmethod
-    def of_variant(cls, mapping: SourceMapping) -> EntryAxis:
+    def of_variant(cls, mapping: SourceMapping, *, first_frame: int = 0) -> EntryAxis:
         """Return the axis of a tool that read a media variant's file."""
-        return cls(mapping=mapping)
+        return cls(mapping=mapping, first_frame=first_frame)
 
     @property
     def reads_every_frame(self) -> bool:
@@ -449,23 +465,46 @@ class EntryAxis:
             return None
         return sum(counts)
 
+    @property
+    def media_rate(self) -> float | None:
+        """The frame rate of the media's first clip, ``None`` when not measured."""
+        if self.mapping is not None:
+            rate = self.mapping.timeline.segments[0].fps
+        elif self.clips:
+            rate = float(self.clips[0].fps)
+        else:
+            return None
+        return rate if math.isfinite(rate) and rate > 0 else None
+
     def place(self, df: pd.DataFrame) -> MappedTable:
         """Return *df* on the entry's axes, and the columns dropped from it.
 
         A variant's table is mapped to source space (:func:`to_source_space`). A
         table from the entry's several clips is timed by the clips
-        (:func:`retime_joined_frame`). A table from one clip is returned as it is.
+        (:func:`retime_joined_frame`). A table from one clip is kept as it is.
+        Last, the table is moved onto its recording's axis by
+        :attr:`first_frame` (:func:`shift_to_recording_axis`), at the rate of
+        the media's first clip.
 
         Raises:
-            UnclassifiedColumnError: As :func:`to_source_space` raises it.
-            ValueError: As :func:`to_source_space` raises it, or when a clip
-                reports no frame rate.
+            UnclassifiedColumnError: As :func:`to_source_space` or
+                :func:`shift_to_recording_axis` raises it.
+            ValueError: As :func:`to_source_space` or
+                :func:`shift_to_recording_axis` raises it, or when a clip reports
+                no frame rate.
         """
         if self.mapping is not None:
-            return to_source_space(df, self.mapping)
-        if len(self.clips) < 2:
-            return MappedTable(df, ())
-        return retime_joined_frame(df, concatenated_timeline(self.clips))
+            placed = to_source_space(df, self.mapping)
+        elif len(self.clips) < 2:
+            placed = MappedTable(df, ())
+        else:
+            placed = retime_joined_frame(df, concatenated_timeline(self.clips))
+        if not self.first_frame:
+            return placed
+        shifted = shift_to_recording_axis(
+            placed.frame, self.first_frame, self.media_rate
+        )
+        return MappedTable(shifted, placed.dropped)
 
 
 def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
@@ -506,21 +545,17 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
         return MappedTable(df, ())
 
     names = column_names(df)
-    kinds = {name: classify_column(name) for name in names}
-    unclassified = [
-        name for name in names if kinds[name] is None and _is_numeric(df, name)
-    ]
-    if unclassified:
-        verb = "are numeric columns" if len(unclassified) > 1 else "is a numeric column"
-        message = (
-            f"Cannot map this table to source space. {unclassified} {verb} that "
-            "the classification rules do not recognize as a position, a frame, a "
-            "time or a value that a mapping leaves unchanged. Under a crop, trim or "
-            "relabeled rate, such a column may contain a variant pixel or frame. "
-            "Published unmapped, it puts a variant value in source space. Classify "
-            f"it in {__name__}."
-        )
-        raise UnclassifiedColumnError(message)
+    kinds: dict[str, ColumnKind | None] = {
+        name: classify_column(name) for name in names
+    }
+    _refuse_unclassified(
+        df,
+        kinds,
+        "Cannot map this table to source space.",
+        "Under a crop, trim or relabeled rate, such a column may contain a variant "
+        "pixel or frame. Published unmapped, it puts a variant value in source "
+        "space.",
+    )
 
     placement = mapping.placement
     out = df.copy()
@@ -535,7 +570,7 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
             source_frames = placement.frames.source_frames(_frame_numbers(df, name))
             out[name] = source_frames
         elif kind == "frame":
-            out[name] = _mapped_frame_column(df, name, placement.frames)
+            out[name] = _mapped_frame_column(df, name, placement.frames.source_frames)
 
     doomed: set[str] = set()
     # A relabeled rate retimes as well, because the tracker timed each frame by
@@ -562,6 +597,141 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
     dropped = tuple(name for name in names if name in doomed)
     remaining = [name for name in dropped if name in column_names(out)]
     return MappedTable(out.drop(columns=remaining) if remaining else out, dropped)
+
+
+def shift_to_recording_axis(
+    df: pd.DataFrame, first_frame: int, fps: float | None
+) -> pd.DataFrame:
+    """Return *df*, on its sequence's axes, on its recording's axes.
+
+    Each frame column (``frame``, ``frames``, ``tracklet_start``, as
+    :func:`classify_column` names them) gains *first_frame*, and ``time`` gains
+    ``first_frame / fps``. NA in a nullable frame column stays NA. Every other
+    column is unchanged. The offset may fall anywhere, inside a store chunk
+    included.
+
+    Args:
+        df: The table on its sequence's frame axis, after any mapping to source
+            space or retiming.
+        first_frame: The sequence's first frame on the recording's axis.
+        fps: The recording's frame rate, ``None`` when not measured.
+
+    Returns:
+        The shifted table, or *df* itself when *first_frame* is 0.
+
+    Raises:
+        UnclassifiedColumnError: If *first_frame* is not 0 and a numeric column
+            is not classified, since it may contain a sequence frame. Every such
+            column is named.
+        ValueError: If *first_frame* is negative, if a frame column contains a
+            value that is not a whole number, or if the table has a ``time``
+            column and *fps* is ``None``.
+    """
+    _refuse_negative_first_frame(first_frame)
+    if first_frame == 0:
+        return df
+    names = column_names(df)
+    kinds: dict[str, ColumnKind | None] = {
+        name: classify_column(name) for name in names
+    }
+    _refuse_unclassified(
+        df,
+        kinds,
+        "Cannot move this table onto its recording's frame axis.",
+        "Such a column may contain a frame of the sequence, and left unshifted it "
+        "names another moment of the recording.",
+    )
+    out = df.copy()
+    for name in names:
+        if kinds[name] == "frame":
+            out[name] = _mapped_frame_column(
+                df, name, lambda frames: frames + first_frame
+            )
+    if "time" in names:
+        if fps is None:
+            message = (
+                f"Cannot move this table's time onto its recording's axis: the "
+                f"sequence starts at frame {first_frame}, and the frame rate that "
+                f"converts that frame to seconds is not measured."
+            )
+            raise ValueError(message)
+        out["time"] = column_array(df, "time").astype(np.float64) + first_frame / fps
+    return out
+
+
+def place_converted(
+    df: pd.DataFrame, hints: EntryHints, media_frame_count: int | None
+) -> pd.DataFrame:
+    """Return a converter's table for *hints*' entry on its recording's axes.
+
+    The table is on its sequence's frame axis, numbered from 0, and is moved by
+    ``hints.first_frame`` (:func:`shift_to_recording_axis`) at ``hints.fps``.
+
+    Args:
+        df: The converter's table.
+        hints: The entry the table was converted for.
+        media_frame_count: The frames of the entry's division, ``None`` when the
+            entry has no division record. A table whose frames reach it is
+            numbered on the recording's axis already, and shifting it would add
+            the first frame twice.
+
+    Returns:
+        The placed table, or *df* itself when ``hints.first_frame`` is 0.
+
+    Raises:
+        ValueError: If a frame reaches *media_frame_count*, or as
+            :func:`shift_to_recording_axis` raises it.
+        UnclassifiedColumnError: As :func:`shift_to_recording_axis` raises it.
+    """
+    if media_frame_count is not None and "frame" in column_names(df) and len(df):
+        last = int(np.nanmax(column_array(df, "frame").astype(np.float64)))
+        if last >= media_frame_count:
+            message = (
+                f"the converted table of ({hints.group!r}, {hints.sequence!r}) "
+                f"reaches frame {last}, and its division has {media_frame_count} "
+                "frames. The table is numbered on the recording's frame axis "
+                "already, and moving it by the division's first frame would count "
+                "that frame twice. Convert the division's own frames, numbered "
+                "from 0."
+            )
+            raise ValueError(message)
+    return shift_to_recording_axis(df, hints.first_frame, hints.fps)
+
+
+def _refuse_negative_first_frame(first_frame: int) -> None:
+    """Refuse a first frame before the recording's first frame, 0.
+
+    Raises:
+        ValueError: If *first_frame* is negative.
+    """
+    if first_frame < 0:
+        message = (
+            f"a sequence's first frame on its recording's axis is {first_frame}, "
+            "before the recording's first frame, 0"
+        )
+        raise ValueError(message)
+
+
+def _refuse_unclassified(
+    df: pd.DataFrame, kinds: Mapping[str, ColumnKind | None], lead: str, why: str
+) -> None:
+    """Refuse *df* when a numeric column is not classified, naming every one.
+
+    Raises:
+        UnclassifiedColumnError: *lead*, the columns, and *why*.
+    """
+    unclassified = [
+        name for name, kind in kinds.items() if kind is None and _is_numeric(df, name)
+    ]
+    if not unclassified:
+        return
+    verb = "are numeric columns" if len(unclassified) > 1 else "is a numeric column"
+    message = (
+        f"{lead} {unclassified} {verb} that the classification rules do not "
+        "recognize as a position, a frame, a time or a value that a mapping "
+        f"leaves unchanged. {why} Classify it in {__name__}."
+    )
+    raise UnclassifiedColumnError(message)
 
 
 def _frame_numbers(frame: pd.DataFrame, name: str) -> npt.NDArray[np.int64]:
@@ -591,9 +761,11 @@ def _frame_numbers(frame: pd.DataFrame, name: str) -> npt.NDArray[np.int64]:
 
 
 def _mapped_frame_column(
-    frame: pd.DataFrame, name: str, frames: FrameMap
+    frame: pd.DataFrame,
+    name: str,
+    to_frames: Callable[[npt.NDArray[np.int64]], npt.NDArray[np.int64]],
 ) -> npt.NDArray[np.int64] | pd.arrays.IntegerArray:
-    """Return the frame column *name*, other than ``frame``, mapped to source frames.
+    """Return the frame column *name*, each frame mapped through *to_frames*.
 
     A nullable integer column maps its present values and keeps NA, which in such
     a column states that no frame applies. ``tracklet_start`` is one. Any other
@@ -610,8 +782,8 @@ def _mapped_frame_column(
     ):
         present = frame[name].notna().to_numpy(dtype=bool)
         values = frame[name].to_numpy(dtype=np.int64, na_value=0)
-        return pd.arrays.IntegerArray(frames.source_frames(values), ~present)
-    return frames.source_frames(_frame_numbers(frame, name))
+        return pd.arrays.IntegerArray(to_frames(values), ~present)
+    return to_frames(_frame_numbers(frame, name))
 
 
 def _positions(frame: pd.DataFrame, name: str) -> npt.NDArray[np.float64]:

@@ -18,6 +18,7 @@ Three of the four converters had no test at all before this file.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -39,6 +40,7 @@ from mosaic.core.track_library.sleap import (
     SleapConvertParams,
 )
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.placement import place_converted
 from mosaic.core.track_library.trex import TrexNpzConverter
 
 from tests.helpers import (
@@ -924,3 +926,161 @@ def test_a_failed_file_reaches_on_failure_inside_its_exception(
 
     assert outcome.failed == 1
     assert [(name, live) for name, _, live in heard] == [("bad.npy", True)]
+
+
+# --- the recording frame axis and repeated rows at the convert sites --------
+
+
+def test_entry_hints_place_a_sequence_at_frame_zero_by_default() -> None:
+    assert EntryHints().first_frame == 0
+
+
+def test_entry_hints_refuse_a_negative_first_frame() -> None:
+    with pytest.raises(ValueError, match="first_frame"):
+        _ = EntryHints(first_frame=-1)
+
+
+def test_placing_a_table_at_frame_zero_returns_it_unchanged() -> None:
+    table = pd.DataFrame({"frame": [0, 1], "time": [0.0, 0.05], "id": [0, 0]})
+
+    assert place_converted(table, EntryHints(), media_frame_count=None) is table
+
+
+def test_placing_a_table_shifts_its_frames_and_times() -> None:
+    table = pd.DataFrame({"frame": [0, 1], "time": [0.0, 0.05], "id": [0, 0]})
+
+    placed = place_converted(
+        table, EntryHints(fps=20.0, first_frame=100), media_frame_count=None
+    )
+
+    assert placed["frame"].tolist() == [100, 101]
+    assert placed["time"].tolist() == pytest.approx([5.0, 5.05])
+
+
+def test_a_table_already_on_the_recording_axis_is_refused() -> None:
+    """A division's raw frames end below its frame count, so 100 was shifted before."""
+    table = pd.DataFrame({"frame": [100, 101], "id": [0, 0]})
+
+    with pytest.raises(ValueError, match="already"):
+        _ = place_converted(table, EntryHints(first_frame=100), media_frame_count=50)
+    assert place_converted(
+        table.assign(frame=[0, 49]), EntryHints(first_frame=0), media_frame_count=50
+    )["frame"].tolist() == [0, 49]
+
+
+def _trex_clips(tmp_path: Path, *, second_start: int) -> Dataset:
+    """One trial's TRex export of fish 0 in two clip directories, as one entry."""
+    from mosaic.core.dataset import new_dataset_manifest
+
+    manifest = new_dataset_manifest(name="clips", base_dir=tmp_path / "ds")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    raw = dataset.get_root("tracks_raw")
+    for clip, start in (("clipA", 0), ("clipB", second_start)):
+        write_trex_npz(
+            raw / clip / "trial_fish0.npz",
+            n=6,
+            columns={"frame": np.arange(start, start + 6, dtype=np.int64)},
+        )
+    _ = dataset.index_tracks_raw(
+        [raw / "clipA", raw / "clipB"], patterns="*.npz", src_format="trex_npz"
+    )
+    return dataset
+
+
+def _failures(dataset: Dataset, source_format: str | None = None) -> list[str]:
+    """Convert, and return the message of each failed file."""
+    heard: list[str] = []
+    _ = dataset.convert_all_tracks(
+        source_format=source_format,
+        on_failure=lambda _path, error: heard.append(str(error)),
+    )
+    return heard
+
+
+def test_merged_clips_each_numbered_from_zero_are_refused(tmp_path: Path) -> None:
+    """Two clips numbered from frame 0 repeat every (frame, id) pair they share."""
+    dataset = _trex_clips(tmp_path, second_start=0)
+
+    heard = _failures(dataset)
+
+    assert len(heard) == 1
+    assert "'trial'" in heard[0]
+    assert "frame 0 of id 0 appears in more than one row" in heard[0]
+    assert dataset.list_entries() == []
+
+
+def test_merged_clips_numbered_across_the_recording_convert(tmp_path: Path) -> None:
+    dataset = _trex_clips(tmp_path, second_start=6)
+
+    assert _failures(dataset) == []
+    assert len(dataset.load_tracks(group="", sequence="trial")) == 12
+
+
+class _RowsFromCsv(TrackConverter[TrackConvertParams]):
+    """Return the rows of a CSV of ``sequence,frame,id`` for the hinted sequence."""
+
+    src_format = "rows_from_csv_test"
+    version = "0.1"
+    output_schema = "mosaic_v1"
+
+    def convert(
+        self, path: Path, params: TrackConvertParams, hints: EntryHints
+    ) -> pd.DataFrame:
+        _ = params
+        rows = pd.read_csv(path, dtype={"sequence": str})
+        if hints.sequence:
+            rows = rows[rows["sequence"] == hints.sequence]
+        return rows.assign(
+            group=hints.group,
+            time=rows["frame"] / 30.0,
+            X=1.0,
+            Y=2.0,
+        ).reset_index(drop=True)
+
+
+class _SequencesFromCsv(_RowsFromCsv):
+    """The same rows, from a file that holds several sequences."""
+
+    src_format = "sequences_from_csv_test"
+    enumerable = True
+
+    def enumerate_sequences(self, path: Path) -> list[tuple[str, str]]:
+        names = pd.read_csv(path, dtype={"sequence": str})["sequence"]
+        return [("", str(name)) for name in sorted(set(names))]
+
+
+@pytest.fixture
+def csv_converters() -> Iterator[None]:
+    """Register the two CSV converters for one test."""
+    for cls in (_RowsFromCsv, _SequencesFromCsv):
+        _ = register_track_converter(cls)
+    try:
+        yield
+    finally:
+        for cls in (_RowsFromCsv, _SequencesFromCsv):
+            _ = TRACK_CONVERTERS.pop(cls.src_format, None)
+
+
+@pytest.mark.usefixtures("csv_converters")
+@pytest.mark.parametrize(
+    "src_format",
+    [_RowsFromCsv.src_format, _SequencesFromCsv.src_format],
+    ids=["per-file", "per-sequence"],
+)
+def test_a_converted_table_with_a_repeated_row_fails_its_entry(
+    tmp_path: Path, src_format: str
+) -> None:
+    from mosaic.core.dataset import new_dataset_manifest
+
+    manifest = new_dataset_manifest(name="rows", base_dir=tmp_path / "ds")
+    dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
+    raw = dataset.get_root("tracks_raw")
+    _ = (raw / "s.csv").write_text("sequence,frame,id\ns,0,0\ns,1,0\ns,1,0\n")
+    _ = dataset.index_tracks_raw([raw], patterns="*.csv", src_format=src_format)
+
+    heard = _failures(dataset, src_format)
+
+    assert len(heard) == 1
+    assert "'s'" in heard[0]
+    assert "frame 1 of id 0 appears in more than one row" in heard[0]
+    assert dataset.list_entries() == []

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from typing import ClassVar, override
 
 import numpy as np
 import pandas as pd
@@ -10,6 +12,13 @@ import pytest
 
 from mosaic.behavior import label_library
 from mosaic.core import dataset as dataset_module
+from mosaic.core.helpers import place_label_payload
+from mosaic.core.label_converter import (
+    LABEL_CONVERTERS,
+    LabelConverter,
+    LabelConvertParams,
+    LabelEntry,
+)
 from mosaic.core.pipeline.composition import SourceMember, labels_raw_composition
 from mosaic.core.pipeline.labels_index import (
     LABELS_INDEX_COLUMNS,
@@ -20,6 +29,7 @@ from mosaic.core.pipeline.labels_index import (
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
 from tests.helpers import (
+    add_track_sequences,
     calms21_dataset,
     functions_named,
     make_dataset,
@@ -394,3 +404,105 @@ def test_convert_all_labels_registers_through_mutate_manifest(
     behavior = labels["behavior"]
     assert isinstance(behavior, dict)
     assert behavior["run_id"] == outcome.variant
+
+
+# --- labels on the recording frame axis -------------------------------------
+
+
+def _pair_payload() -> dict[str, object]:
+    return {
+        "label_format": "individual_pair_v1",
+        "frames": np.array([0, 5]),
+        "labels": np.array([1, 2]),
+        "individual_ids": np.array([[0, 1], [0, 1]]),
+    }
+
+
+def test_event_labels_move_by_the_sequence_s_first_frame() -> None:
+    placed = place_label_payload(
+        _pair_payload(), first_frame=100, divided=True, entry="rec:s2"
+    )
+
+    assert np.asarray(placed["frames"]).tolist() == [100, 105]
+    assert np.asarray(placed["labels"]).tolist() == [1, 2]
+
+
+def test_labels_at_frame_zero_are_kept_as_converted() -> None:
+    payload = _pair_payload()
+
+    assert (
+        place_label_payload(payload, first_frame=0, divided=True, entry="s") is payload
+    )
+
+
+def test_dense_labels_are_refused_for_a_divided_recording() -> None:
+    dense = {"labels": np.array([0, 1, 1, 0])}
+
+    with pytest.raises(ValueError, match="'rec:s2'.*dense"):
+        _ = place_label_payload(dense, first_frame=0, divided=True, entry="rec:s2")
+    assert place_label_payload(dense, first_frame=0, divided=False, entry="s") is dense
+
+
+def test_labels_of_a_continuous_group_convert_at_frame_zero(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    src = tmp_path / "uploads"
+    src.mkdir()
+    annotations = {"g": {"s1": {"annotations": [0, 1, 2, 3, 0]}}}
+    np.save(src / "f1.npy", np.array(annotations, dtype=object), allow_pickle=True)
+    ds.index_labels_raw([src], patterns=["*.npy"], src_format="calms21_npy")
+    add_track_sequences(ds, ("g", "s1"))
+    ds.set_continuous_groups(["g"])
+
+    ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+
+    (path,) = read_labels_index(ds, "behavior")["abs_path"].tolist()
+    with np.load(ds.resolve_path(str(path)), allow_pickle=True) as npz:
+        frames = np.asarray(npz["frames"], dtype=np.int64)
+    assert frames.tolist() == [0, 1, 2, 3, 4]
+
+
+class _DenseLabels(LabelConverter):
+    """Two dense sequences from one file: one of the empty group, then one of ``g``."""
+
+    src_format: ClassVar[str] = "dense_test_npy"
+    label_kind: ClassVar[str] = "behavior"
+    label_format: ClassVar[str] = "dense"
+
+    @override
+    def convert(
+        self,
+        src_path: Path,
+        params: LabelConvertParams,
+        raw_row: Mapping[str, object],
+    ) -> list[LabelEntry]:
+        labels = np.array([0, 1, 1, 0])
+        return [
+            LabelEntry(group="", sequence="a", payload={"labels": labels}, n_frames=4),
+            LabelEntry(
+                group="g", sequence="s1", payload={"labels": labels}, n_frames=4
+            ),
+        ]
+
+
+def test_a_refused_dense_entry_leaves_no_label_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is checked for every entry before the first file is written."""
+    monkeypatch.setitem(
+        LABEL_CONVERTERS, (_DenseLabels.src_format, "behavior"), _DenseLabels
+    )
+    ds = make_dataset(tmp_path / "ds")
+    src = tmp_path / "uploads"
+    src.mkdir()
+    np.save(src / "f1.npy", np.zeros(1))
+    ds.index_labels_raw([src], patterns=["*.npy"], src_format=_DenseLabels.src_format)
+    add_track_sequences(ds, ("g", "s1"))
+    ds.set_continuous_groups(["g"])
+
+    with pytest.raises(ValueError, match="'g:s1'.*dense"):
+        _ = ds.convert_all_labels(
+            kind="behavior", source_format=_DenseLabels.src_format
+        )
+
+    assert read_labels_index(ds, "behavior").empty
+    assert not list((ds.get_root("labels") / "behavior").rglob("*.npz"))

@@ -252,13 +252,15 @@ def recorded_media_frames(
     (entry,) = kept
     media = recorded_media(sidecar)
     if not media:
-        axis = EntryAxis.of_entry_media(entry.resolved.facts, windowed=False)
+        axis = EntryAxis.of_entry_media(
+            entry.resolved.facts, windowed=False, first_frame=0
+        )
     else:
         try:
             source = reads.lookup(media).resolve(ds, entry)
         except (MediaVariantMissingError, MediaVariantDriftedError, ValueError):
             return "not-established"
-        axis = EntryAxis.of_variant(source.mapping())
+        axis = EntryAxis.of_variant(source.mapping(), first_frame=0)
     if not axis.reads_every_frame:
         return BLANK
     count = axis.media_frames

@@ -20,9 +20,9 @@ from mosaic.cli._io import parse_entries
 from mosaic.core.entry import (
     Entry,
     EntryKeyCollisionError,
+    entry_key_collision,
     entry_token,
     parse_entry_tokens,
-    refuse_entry_key_collision,
 )
 from mosaic.core.helpers import is_nameless_entry, make_entry_key
 from mosaic.core.pipeline import entry_keys
@@ -114,18 +114,20 @@ def test_two_entries_can_spell_one_key() -> None:
 
 
 def test_a_new_entry_that_spells_another_entrys_key_is_refused() -> None:
-    with pytest.raises(EntryKeyCollisionError, match="'R__0900'"):
-        refuse_entry_key_collision([("", "R__0900")], [("R", "0900")])
-    with pytest.raises(EntryKeyCollisionError, match="'R__0900'"):
-        refuse_entry_key_collision([("R", "0900"), ("", "R__0900")], [])
+    assert "'R__0900'" in (
+        entry_key_collision([("", "R__0900")], [("R", "0900")]) or ""
+    )
+    assert "'R__0900'" in (
+        entry_key_collision([("R", "0900"), ("", "R__0900")], []) or ""
+    )
 
 
 def test_entries_already_held_are_not_new() -> None:
     """A collision recorded before the check is rewritten without a refusal."""
     held = [("", "R__0900"), ("R", "0900")]
 
-    refuse_entry_key_collision(held, held)
-    refuse_entry_key_collision([("R", "1000")], held)
+    assert entry_key_collision(held, held) is None
+    assert entry_key_collision([("R", "1000")], held) is None
 
 
 def test_a_tracks_write_refuses_the_key_of_an_entry_with_media(tmp_path: Path) -> None:

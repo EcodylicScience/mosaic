@@ -146,6 +146,37 @@ def test_a_mapped_table_is_published_in_source_space(tmp_path: Path) -> None:
     assert counts.n_rows == _ROWS
 
 
+def test_a_mapped_table_is_published_on_its_recording_s_axis(tmp_path: Path) -> None:
+    """The bridge maps to source space first, then shifts by the first frame."""
+    ds = make_dataset(tmp_path)
+    axis = EntryAxis.of_variant(_crop_and_trim(), first_frame=3000)
+
+    counts = _publish(ds, _variant_table(), axis=axis)
+
+    table = _published(ds)
+    source_frames = _TRIM_START + np.arange(_ROWS)
+    assert table["frame"].tolist() == (3000 + source_frames).tolist()
+    assert table["time"].tolist() == pytest.approx(
+        ((3000 + source_frames) / 30.0).tolist()
+    )
+    assert table["X"].tolist() == [10.0 + _CROP_X + i for i in range(_ROWS)]
+    assert counts.dropped == ("timestamp", "BORDER_DISTANCE")
+
+
+def test_an_axis_at_frame_zero_publishes_what_it_published_before(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+
+    _ = _publish(
+        ds, _variant_table(), axis=EntryAxis.of_variant(_crop_and_trim(), first_frame=0)
+    )
+    at_zero = _published(ds)
+    _ = _publish(ds, _variant_table(), axis=_variant_axis())
+
+    pd.testing.assert_frame_equal(_published(ds), at_zero)
+
+
 def test_without_a_mapping_the_table_is_published_unchanged(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path)
     table = _variant_table()

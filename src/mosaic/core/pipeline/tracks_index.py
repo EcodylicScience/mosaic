@@ -1326,9 +1326,21 @@ def read_frame_extents(
         df = df[df["group"].astype(str).isin(set(groups))]
     if run_id is None and variants is not None:
         df = df[df["run_id"].astype(str).isin({*variants, ""})]
-    df = select_variant_rows(df, run_id)
+    return frame_extents_of(select_variant_rows(df, run_id))
+
+
+def frame_extents_of(rows: pd.DataFrame) -> FrameExtents:
+    """Return the recorded frame extent of each entry of *rows*.
+
+    Args:
+        rows: Tracks index rows, one per entry, such as
+            :func:`select_variant_rows` returns.
+
+    Returns:
+        Each entry's extent. An entry whose extent was never recorded is absent.
+    """
     extents: FrameExtents = {}
-    for _, series in df.iterrows():
+    for _, series in rows.iterrows():
         extent = read_frame_extent(series)
         if extent is not None:
             extents[(str(series["group"]), str(series["sequence"]))] = extent
