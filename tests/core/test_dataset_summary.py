@@ -15,9 +15,9 @@ from mosaic.core.dataset_summary import (
     DatasetCounts,
     DatasetSummary,
     FrameRateCount,
-    RecordingSequence,
-    RecordingSummary,
+    DividedRecordingSummary,
     TrackSchemaCount,
+    UndividedRecordingSummary,
     dataset_summary,
 )
 from mosaic.core.manifest import MANAGED_BY_KEY, DatasetTag
@@ -185,7 +185,7 @@ def test_the_manifest_fields_are_echoed(tmp_path: Path) -> None:
     assert summary.frame_rates == (FrameRateCount(fps=30.0, videos=1),)
 
 
-def test_a_continuous_group_is_one_divided_recording_listed_with_its_sequences(
+def test_every_recording_is_listed_and_a_divided_one_with_its_first_and_last_sequence(
     tmp_path: Path,
 ) -> None:
     ds = make_dataset(tmp_path / "ds")
@@ -193,6 +193,7 @@ def test_a_continuous_group_is_one_divided_recording_listed_with_its_sequences(
         ds,
         [
             MediaClip(group="night", sequence="s10", filename="s10.mp4"),
+            MediaClip(group="night", sequence="s3", filename="s3.mp4"),
             MediaClip(group="night", sequence="s2", filename="s2.mp4"),
             MediaClip(group="arena", sequence="s1", filename="arena_s1.mp4"),
         ],
@@ -204,19 +205,20 @@ def test_a_continuous_group_is_one_divided_recording_listed_with_its_sequences(
 
     assert (summary.counts.recordings, summary.counts.divided_recordings) == (3, 1)
     assert summary.counts.sequences == 1
-    assert summary.divided_recordings == (
-        RecordingSummary(
+    assert summary.recordings == (
+        UndividedRecordingSummary(name="s1", kind="undivided"),
+        UndividedRecordingSummary(name="arena:s1", kind="undivided"),
+        DividedRecordingSummary(
             name="night",
-            n_sequences=2,
-            sequences=(
-                RecordingSequence(sequence="s2"),
-                RecordingSequence(sequence="s10"),
-            ),
+            kind="divided",
+            n_sequences=3,
+            first_sequence="night:s2",
+            last_sequence="night:s10",
         ),
     )
 
 
-def test_a_divided_recording_is_ordered_and_measured_by_its_tracks_extents(
+def test_a_divided_recording_is_ordered_by_its_tracks_extents(
     tmp_path: Path,
 ) -> None:
     """The summary orders members as an overlapped run reads them.
@@ -230,13 +232,12 @@ def test_a_divided_recording_is_ordered_and_measured_by_its_tracks_extents(
 
     summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
 
-    assert summary.divided_recordings[0].sequences == (
-        RecordingSequence(sequence="s2", first_frame=0, frame_count=40),
-        RecordingSequence(sequence="s1", first_frame=40, frame_count=40),
-    )
+    (night,) = summary.recordings
+    assert isinstance(night, DividedRecordingSummary)
+    assert (night.first_sequence, night.last_sequence) == ("night:s2", "night:s1")
 
 
-def test_a_member_with_two_variants_leaves_its_recording_unmeasured(
+def test_a_member_with_two_variants_leaves_its_recording_in_name_order(
     tmp_path: Path,
 ) -> None:
     """No variant is chosen for a summary, and the read does not refuse."""
@@ -244,19 +245,21 @@ def test_a_member_with_two_variants_leaves_its_recording_unmeasured(
     for run_id in ("convert.a", "convert.b"):
         add_tracks_table(ds, run_id, track_table("night", "s2", start_frame=40))
         add_tracks_table(ds, run_id, track_table("night", "s10"))
-    add_tracks_table(ds, "convert.a", track_table("day", "s1", n_rows=5))
+    add_tracks_table(ds, "convert.a", track_table("day", "s3", start_frame=40))
+    add_tracks_table(ds, "convert.a", track_table("day", "s4"))
     ds.set_continuous_groups(["night", "day"])
 
     summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
 
-    by_name = {recording.name: recording for recording in summary.divided_recordings}
-    assert by_name["night"].sequences == (
-        RecordingSequence(sequence="s2"),
-        RecordingSequence(sequence="s10"),
-    )
-    assert by_name["day"].sequences == (
-        RecordingSequence(sequence="s1", first_frame=0, frame_count=5),
-    )
+    by_name = {
+        recording.name: (recording.first_sequence, recording.last_sequence)
+        for recording in summary.recordings
+        if isinstance(recording, DividedRecordingSummary)
+    }
+    assert by_name == {
+        "night": ("night:s2", "night:s10"),
+        "day": ("day:s4", "day:s3"),
+    }
 
 
 def _index_reads_describing(
@@ -303,7 +306,9 @@ def test_a_declared_group_without_entries_is_no_recording(tmp_path: Path) -> Non
 
     assert summary.continuous_groups == ("night",)
     assert (summary.counts.recordings, summary.counts.divided_recordings) == (1, 0)
-    assert summary.divided_recordings == ()
+    assert [(recording.name, recording.kind) for recording in summary.recordings] == [
+        ("day:s1", "undivided")
+    ]
 
 
 def test_a_managing_service_is_read_from_the_preserved_key(tmp_path: Path) -> None:

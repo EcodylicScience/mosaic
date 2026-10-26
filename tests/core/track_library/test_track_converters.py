@@ -958,7 +958,7 @@ def test_placing_a_table_shifts_its_frames_and_times() -> None:
 
 
 def test_a_table_already_on_the_recording_axis_is_refused() -> None:
-    """A division's raw frames end below its frame count, so 100 was shifted before."""
+    """A division's raw frames end below its frame count, and frame 100 was shifted."""
     table = pd.DataFrame({"frame": [100, 101], "id": [0, 0]})
 
     with pytest.raises(ValueError, match="already"):

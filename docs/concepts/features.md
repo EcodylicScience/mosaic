@@ -95,9 +95,9 @@ are not. Neither half is sufficient alone: no measurement can establish that two
 sequences divide one recording rather than being two recordings numbered consecutively,
 and no declaration can be trusted about an axis that exists to be read.
 
-A 6-hour session is either one sequence covering six hours, or a continuous group whose
-sequences are its half-hour divisions — never a group of independent half-hours, which
-would make one frame number name a different moment in each.
+A 6-hour recording is either one sequence covering six hours, or a continuous group
+whose sequences are its half-hour divisions. It is not a group of independent
+half-hours, in which one frame number would name a different moment in each.
 
 See the [features reference](../reference/features.md) for every registered feature and
 its parameters.

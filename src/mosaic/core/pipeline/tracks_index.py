@@ -1363,13 +1363,13 @@ def read_frame_extents(
         run_id: The tracks variant to read, or ``None`` for the variant each
             entry resolves to (:func:`select_variant_rows`).
         groups: Read only the entries of these groups, or ``None`` for every
-            entry. An entry outside them is not resolved, so two labelled
-            variants of it do not refuse the read.
+            entry. An entry outside them is not resolved. Two labeled variants
+            of it do not refuse the read.
         variants: Under ``run_id=None``, resolve each entry among these variants
-            and its unlabelled rows, or ``None`` for every variant.
+            and its unlabeled rows, or ``None`` for every variant.
 
     Raises:
-        ValueError: If an entry read under ``run_id=None`` has two labelled
+        ValueError: If an entry read under ``run_id=None`` has two labeled
             variants among those considered.
     """
     df = read_tracks_index(ds)
@@ -1388,7 +1388,7 @@ def frame_extents_of(rows: pd.DataFrame) -> FrameExtents:
             :func:`select_variant_rows` returns.
 
     Returns:
-        Each entry's extent. An entry whose extent was never recorded is absent.
+        Each entry's extent. An entry without a recorded extent is absent.
     """
     extents: FrameExtents = {}
     for _, series in rows.iterrows():
@@ -1405,8 +1405,7 @@ def backfill_frame_extents(ds: Dataset, *, dry_run: bool = False) -> pd.DataFram
     rows read blank, and ``overlap_frames`` refuses a continuous group with a
     blank extent, since nothing knows whether its sequences share one frame
     axis. A dataset whose continuous groups use overlap has to be measured once.
-    Rows written by the current writer already carry it, so a dataset built
-    after this change never needs the pass.
+    Rows that the current writer appends record the extent already.
 
     The only thing in the toolkit that re-measures an index column: ``reindex``
     prunes rows and never opens a file, and ``reconcile`` re-addresses runs from

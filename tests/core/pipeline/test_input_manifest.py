@@ -453,8 +453,8 @@ def test_verify_overlap_refuses_a_neighbor_outside_a_continuous_group(
 ) -> None:
     """A neighbor on an entry outside a continuous group is an inconsistent manifest.
 
-    ``build_manifest`` gives such an entry no neighbor, so the check and the
-    builder cannot disagree about which entries read context.
+    ``build_manifest`` gives such an entry no neighbor, and the check agrees
+    with the builder about which entries read context.
     """
     manifest = _build_three_seq_manifest(tmp_path, continuous=False)
 

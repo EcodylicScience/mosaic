@@ -104,7 +104,11 @@ def _render(summary: DatasetSummary) -> None:
 def _recordings(summary: DatasetSummary) -> str:
     """Return the recordings count, what it counts over, and the divided ones named."""
     divided = f"{summary.counts.divided_recordings} divided"
-    names = ", ".join(recording.name for recording in summary.divided_recordings)
+    names = ", ".join(
+        recording.name
+        for recording in summary.recordings
+        if recording.kind == "divided"
+    )
     if names:
         divided = f"{divided}: {names}"
     return f"{summary.counts.recordings} in the media or tracks index ({divided})"

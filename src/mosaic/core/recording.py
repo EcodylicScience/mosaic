@@ -164,8 +164,8 @@ def recording_name_collision(
         if taken is not None:
             return (
                 f"entry {(group, sequence)!r} would be the recording "
-                f"{recording_name(key)!r}, which is the name of the continuous "
-                f"group {taken!r}, and the two recordings would share one name. "
+                f"{recording_name(key)!r}. The continuous group {taken!r} has "
+                "that name, and the two recordings would share it. "
                 "Rename the sequence, or declare the group under another name."
             )
     return None

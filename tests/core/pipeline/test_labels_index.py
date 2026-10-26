@@ -585,7 +585,7 @@ def test_a_refused_dense_entry_leaves_no_label_written(
 def test_dense_labels_of_a_first_sequence_without_media_convert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``s1`` sorts first in ``g``, so it starts at frame 0 without media."""
+    """``s1`` sorts first in ``g`` and starts at frame 0 without media."""
     ds = _dense_dataset(tmp_path, monkeypatch, _DenseFirstMember, media=False)
 
     outcome = ds.convert_all_labels(

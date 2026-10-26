@@ -81,7 +81,7 @@ def recording(undeclared: Dataset) -> Dataset:
 def unplaceable(recording: Dataset) -> Dataset:
     """``rec`` gains ``s0``, with tracks and no media, beside the entry ``solo``.
 
-    ``s0``'s frame count is unknown, so neither ``s1`` nor ``s2`` can be placed.
+    ``s0``'s frame count is unknown. Neither ``s1`` nor ``s2`` can be placed.
     ``solo`` is in the empty group and starts at frame 0.
     """
     add_tracks_table(recording, "convert.a", track_table("rec", "s0"))
@@ -227,7 +227,7 @@ class TestAnUnplaceableSequence:
 class TestNoPlaceableSequence:
     """A run whose every entry is unplaceable fails, and says the tool saw none.
 
-    No tool output exists to adopt, so the refusal does not point at one.
+    The refusal does not point at tool output, because the tool wrote none.
     """
 
     _NEVER_HANDED = "no attempted entry could be handed to the tool: rec__s1, rec__s2"
@@ -439,7 +439,10 @@ class TestAGroupNoLongerDeclared:
 
 
 class TestAConversion:
-    """A converted table keeps its source's frame numbers, so its blank cell is unknown."""
+    """A converted table keeps its source's frame numbers.
+
+    Its blank first-frame cell is therefore unknown.
+    """
 
     def test_a_later_member_numbered_across_the_recording_is_not_drifted(
         self, recording: Dataset

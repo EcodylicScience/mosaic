@@ -144,8 +144,8 @@ that does not read, is left out and reported on the server's standard error.
 
 | Tool | Result |
 | --- | --- |
-| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, counts and divided recordings |
-| `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to |
+| `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, counts and recordings |
+| `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to, filtered by group to list one divided recording's sequences |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
 | `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |

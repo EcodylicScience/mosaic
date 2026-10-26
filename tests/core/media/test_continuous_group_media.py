@@ -145,7 +145,7 @@ def test_a_sequence_after_a_member_without_media_is_not_placed(
 
 
 def test_a_sequence_that_is_not_placed_is_still_joined(recording: Dataset) -> None:
-    """A join reads the sequence's clips and never a tracks frame."""
+    """A join reads the sequence's clips without a tracks frame."""
     add_tracks_table(recording, "convert.a", track_table("rec", "s0"))
 
     _ = run_op(recording, "export-joined", {}, scope=Scope(entries=[("rec", "s2")]))

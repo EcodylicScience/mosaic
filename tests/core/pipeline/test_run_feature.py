@@ -492,7 +492,7 @@ def _setup_mixed(ds: MockDataset, *, contiguous: bool = True) -> None:
 
     ``g`` and the namespace group ``ns`` record frame extents. ``ns`` restarts
     its numbering at 0 in each sequence. The empty-group entries are added after
-    the extents are measured, so they record none.
+    the extents are measured and record none.
     """
     for index, name in enumerate(("s1", "s2", "s3")):
         start = index * 10 if contiguous else 0
@@ -1049,7 +1049,7 @@ def test_real_param_change_busts_cache(tmp_path: Path) -> None:
 
 
 class _FrameEcho:
-    """Writes its input's track columns back, so its output feeds another run."""
+    """Writes its input's track columns back as an output that another run reads."""
 
     name = "frame-echo"
     version = "0.1"
@@ -1100,7 +1100,7 @@ def _two_variants(tmp_path: Path, *, declared: bool) -> Dataset:
     """``rec/a``, ``rec/b`` and ``solo``, each in the variants ``convert.v1`` and ``.v2``.
 
     ``convert.v1`` numbers ``rec`` across the recording. ``convert.v2`` restarts
-    ``rec/b`` at frame 0, so its extents would refuse an overlapped read.
+    ``rec/b`` at frame 0, and an overlapped read of its extents is refused.
     """
     ds = make_dataset(tmp_path / "ds")
     for run_id, b_start in (("convert.v1", 10), ("convert.v2", 0)):
@@ -1136,8 +1136,8 @@ def test_a_feature_input_reads_frame_extents_under_its_upstream_variant(
 ) -> None:
     """A feature-only run needs no pinned tracks variant beside two variants.
 
-    The upstream read ``convert.v1``, so the extents of the continuous group come
-    from that variant. ``convert.v2``'s extents would refuse the overlapped run.
+    The upstream read ``convert.v1``, and the extents of the continuous group
+    come from that variant. ``convert.v2``'s extents would refuse the overlapped run.
     """
     ds = _two_variants(tmp_path, declared=declared)
     upstream = run_feature(

@@ -64,7 +64,7 @@ def unnamed_cameras_error(sync_uuid: str, paths: Sequence[str]) -> StoreGrouping
     """
     message = (
         f"imgstore recording {sync_uuid!r} has stores with no camera_serial "
-        f"{list(paths)}, so its cameras cannot be told apart. Record each "
+        f"{list(paths)}. Its cameras cannot be told apart. Record each "
         "camera's camera_serial in its store's metadata.yaml."
     )
     return StoreGroupingError(message)
@@ -78,9 +78,9 @@ def refuse_merged_store_recordings(
     """Refuse the stores a scan derived into one entry that it cannot group.
 
     Only imgstore rows whose entry is still derived (``scan-imgstore-sync``) are
-    compared, so an entry a caller assigned is kept. A store's recording is its
-    ``sync_uuid``, else the store itself, so two stores of one camera that
-    derive one entry are refused too. A synchronized recording of two or more
+    compared. An entry that a caller assigned is kept. A store's recording is
+    its ``sync_uuid``, else the store itself. Two stores of one camera that
+    derive one entry are therefore refused too. A synchronized recording of two or more
     stores is refused when one of them names no camera: its ``camera_serial``
     and ``camera`` are both empty (an index older than ``camera_serial`` names
     the camera in ``camera``). *beside* holds the index rows the write keeps,
@@ -150,10 +150,10 @@ class MediaIndexScope:
     prior ``video_order`` and sorts before the arranged ones. ``facts_by_name``
     maps a file's basename to an already-measured ``MediaFacts``; a file present
     in it is turned into its row from those facts instead of being re-probed.
-    ``camera`` is an explicit override for a plain video the caller tags with a
-    camera axis; a probed imgstore supplies its own ``camera_serial`` and
-    ``sync_uuid`` from store metadata, and its serial names its camera, so this
-    override applies only when the probe carries none. Unsynchronized stores
+    ``camera`` is an explicit override for a plain video that the caller tags
+    with a camera axis. A probed imgstore supplies ``camera_serial`` and
+    ``sync_uuid`` from store metadata, and its serial names its camera. The
+    override applies only when the probe records no serial. Unsynchronized stores
     under one scope must share one ``camera_serial``, and stores of one camera
     join the sequence as clips.
     """

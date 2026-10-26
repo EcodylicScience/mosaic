@@ -54,7 +54,7 @@ def entries_kept_beside(
     """Return the entries that remain beside *written* once a replacing write lands.
 
     A replacing write keeps the *preserved* rows of *committed* and drops the
-    rest. An entry of a dropped row leaves the index, so a written entry may
+    rest. An entry of a dropped row leaves the index. A written entry may then
     take its key, unless *held_elsewhere*, the entries of the dataset's other
     indexes, still names it. A committed entry that *written* rewrites stays
     existing, which keeps a collision recorded before the check accepted on a
@@ -106,8 +106,8 @@ def append_refusing_key_collision[RowT: SchemaRowBase](
 
     The check runs once before the lock, because taking the lock creates an
     absent index and a refused first write would leave it empty. It runs again
-    inside the hold of the lock that appends, so a row another writer appends
-    first is part of the check.
+    inside the lock that appends. A row that another writer appends first is
+    then part of the check.
 
     Raises:
         EntryKeyCollisionError: If a new entry shares its key with an entry of

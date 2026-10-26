@@ -306,7 +306,7 @@ def never_handed_refusal(kind: str, run_id: str, lost: Iterable[str]) -> str:
     """Return the refusal for a run of *kind* whose tool was handed no entry it lost.
 
     Each lost entry's media variant could not be read, or its sequence could not
-    be placed on its recording's frame axis, so the tool did not run for it and
+    be placed on its recording's frame axis. The tool did not run for it and
     wrote no output to keep.
 
     Args:

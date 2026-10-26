@@ -522,8 +522,8 @@ run id changes. No known dataset declares `continuous_groups`.
   run recomputes it. A table numbered past frame 0 also reads as stale once its group
   is no longer declared continuous.
 - A feature of a tracker or inference table numbered past frame 0 records that first
-  frame with the table's composition, so a table published again at a moved first
-  frame recomputes its features instead of serving them from the cache.
+  frame with the table's composition. A table published again at a moved first frame
+  then recomputes its features instead of serving them from the cache.
 - `ResolvedMedia.first_frame` raises when a sequence before it lacks media, has a clip
   of unknown frame count or has clips at a frame rate outside the store tolerance. It
   also raises when a tracks variant numbers the group's sequences in another order
@@ -539,7 +539,7 @@ run id changes. No known dataset declares `continuous_groups`.
 
 **`overlap_frames` reads neighbors only inside a continuous group.** A run with
 `overlap_frames > 0` refused every entry outside a group declared in
-`continuous_groups`, so one overlapped step could not run over a dataset with undivided
+`continuous_groups`. One overlapped step could not run over a dataset with undivided
 sequences. Such an entry now has no neighbors and reads only its own frames, and the
 run prints one note to stderr with their count. No run id changes.
 
@@ -556,11 +556,11 @@ run prints one note to stderr with their count. No run id changes.
 
 **A feature run reads frame extents only for continuous groups, under the variant its
 inputs read.** A run whose only input is another feature's output raised
-"tracks/index.csv holds 2 variants" on a dataset where an entry has two labelled tracks
+"tracks/index.csv holds 2 variants" on a dataset where an entry has two labeled tracks
 variants, even at `overlap_frames=0`, because every manifest read every entry's extent
 without a pinned variant. The extents of a continuous group's members alone are read
 now, each under the variant that a `tracks` input resolved or that the upstream run
-recorded in its `params.json`. The run refuses only when such a member has two labelled
+recorded in its `params.json`. The run refuses only when such a member has two labeled
 variants and neither `tracks_run_id` nor the upstream names one. No run id changes.
 
 **One rule names an entry's recording, and a write refuses a key two entries share.**
@@ -589,31 +589,32 @@ or path changes.
 run id or path changes.
 
 - `DatasetSummary.counts` gains `recordings` and `divided_recordings`, counted over the
-  entries of the media index and the tracks index. `DatasetSummary.divided_recordings`
-  lists each divided recording with its sequences. Each sequence's `start_utc` is
-  `null`.
-  `counts.sequences` and `continuous_groups` are unchanged, and `describe_dataset`
-  returns the same fields.
+  entries of the media index and the tracks index. `DatasetSummary.recordings` lists
+  each recording with its `name` and `kind` (`divided` or `undivided`). A divided one
+  also gives `n_sequences`, `first_sequence` and `last_sequence`, the entry tokens of
+  its first and last sequences. The summary has no per-sequence rows, and
+  `list_sequences` with `group` set to a divided recording's name lists its sequences
+  a page at a time. `counts.sequences` and `continuous_groups` are unchanged, and
+  `describe_dataset` returns the same fields.
 - `mosaic describe` prints `sequences: N with a tracks table`, and
   `recordings: N in the media or tracks index (M divided: a, b)` in place of the
   `continuous_groups` line.
 - `mosaic sequences` looks each label up under the entry's own group, where it used the
   `--group` value, or the empty group without one. `--json` gains `entries`, one
-  `{group, sequence, recording, display_name}` per entry. `sequences` is unchanged, and
-  `labelled` has one row per entry, so a sequence name two groups share appears twice.
-  The plain output names each entry by its `group:sequence` token.
+  `{group, sequence, recording, display_name}` per entry. `sequences` is unchanged.
+  `labelled` has one row per entry, and lists a sequence name that two groups share
+  twice. The plain output names each entry by its `group:sequence` token.
 - `list_sequences` gives each row its `recording`.
-- `mosaic sequences` lists every entry of the media and tracks indexes, so a dataset
+- `mosaic sequences` lists every entry of the media and tracks indexes. A dataset
   holding only media lists its entries instead of exiting 1. `--json` entries gain
   `has_tracks`. The command still exits 1 when neither index names an entry.
 - `list_sequences` lists an entry that has media and no tracks table, with `null`
   `tracks_variant`, `producer`, `std_format` and counts, unless `tracks_variant` is
   given. Those three `SequenceRow` fields are now nullable.
-- A divided recording's sequences are ordered as an overlapped run reads them: by the
-  first frame of each tracks table, then by name. Each sequence's `first_frame` and
-  `frame_count` come from its tracks table's frame extent. A recording with a member of
-  two labelled tracks variants keeps the name order and `null` facts, since a summary
-  chooses no variant.
+- A divided recording's `first_sequence` and `last_sequence` follow the order an
+  overlapped run reads its sequences in: by the first frame of each tracks table, then
+  by name. A recording with a member of two labeled tracks variants keeps the name
+  order, since a summary chooses no variant.
 
 **A converted tracks table with a repeated `(frame, id)` row fails its entry.**
 `convert_all_tracks` and `convert_one_track` published such a table without a word, as
@@ -667,11 +668,11 @@ or path changes.
   stores an earlier scan indexed under its entry.
 - A scan refuses stores of different recordings that derive one `(group, sequence)`,
   such as two cameras' stores both named by their start time. They joined one entry as
-  two cameras. The scan compares the stores an earlier scan indexed under that entry, so
-  scanning each camera's directory on its own is refused too. Each unsynchronized store
-  counts as its own recording, so two stores of one camera that derive one entry, as a
-  copy of a store does, are refused as well. An entry restored from an assignment is not
-  compared.
+  two cameras. The scan also compares the stores that an earlier scan indexed under
+  that entry. Scanning each camera's directory on its own is refused too. Each
+  unsynchronized store counts as its own recording. Two stores of one camera that derive
+  one entry, as a copy of a store does, are refused as well. An entry restored from an
+  assignment is not compared.
 - `write_media_index` refuses a scope holding unsynchronized stores of two or more
   distinct `camera_serial` values. The stores of one camera still join as clips.
 - The media index gains a text column `camera_serial`, filled for an imgstore from its

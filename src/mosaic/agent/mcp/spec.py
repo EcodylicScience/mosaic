@@ -1410,8 +1410,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "Describe one dataset: its manifest fields, notes and tags, the counts "
             "of sequences, recordings, videos, tracks variants, feature runs and "
-            "trained models, its divided recordings with their sequences, the "
-            "track schemas of its tables and the frame rates of its videos."
+            "trained models, each recording with its kind and a divided one with "
+            "its number of sequences and its first and last sequence, the track "
+            "schemas of its tables and the frame rates of its videos. "
+            "list_sequences with group set to a divided recording's name lists its "
+            "sequences with their tracks tables and frame extents, a page at a time."
         ),
         input_model=DescribeDatasetInput,
         output=ModelRef("mosaic.core.dataset_summary", "DatasetSummary"),

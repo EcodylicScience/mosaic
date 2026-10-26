@@ -200,7 +200,7 @@ class TestTheRecordingAxis:
         assert shifted["time"].tolist() == pytest.approx([2227.0, 2227.35])
 
     def test_a_shift_of_zero_returns_the_table_itself(self) -> None:
-        """No column is read, so an unclassified one passes, as under an identity map."""
+        """A zero shift reads no column, and an unclassified one passes."""
         table = _recording_rows().assign(mystery=[1.0, 2.0])
 
         assert shift_to_recording_axis(table, 0, None) is table

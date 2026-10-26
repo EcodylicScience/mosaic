@@ -690,13 +690,13 @@ class ProbedEntry:
     :meth:`Dataset.index_media` (scan-and-derive) and
     :meth:`Dataset.write_media_index` (assignment-driven). ``camera_serial``
     and ``sync_uuid`` are store *facts* read from imgstore metadata (empty for a
-    plain video); deriving the sequence identity and the camera axis from them
-    is the caller's job, so this stays identity-free.
+    plain video). The caller derives the sequence identity and the camera axis
+    from them, and the probe assigns no identity.
 
-    ``origin`` says where ``probe`` came from, and it is load-bearing rather than
-    diagnostic: item 5.2's drift check cannot tell a file whose bytes moved from a
-    caller injecting a measurement of a different file without it. Last, with a
-    default, so the imgstore site's keyword arguments are unaffected.
+    ``origin`` says where ``probe`` came from. The media drift check reads it to
+    tell a file whose bytes moved from a caller injecting a measurement of a
+    different file. The field is last and has a default, which leaves the
+    keyword arguments of the imgstore site unaffected.
     """
 
     path: Path
@@ -746,7 +746,7 @@ class ResolvedMedia:
     cannot be placed there. The media contains the frames of this sequence
     alone. A reader subtracts :attr:`first_frame` from a tracks frame
     (:meth:`sequence_frame`). A consumer that reads the media without a tracks
-    frame never asks for it, and resolves a sequence that cannot be placed.
+    frame does not ask for it, and resolves a sequence that cannot be placed.
     """
 
     paths: list[Path]
@@ -1037,9 +1037,9 @@ class MediaIndexResult:
     """The written index path, plus what the write noticed about its own inputs.
 
     ``disagreements`` are stale overrides: a caller injected a measurement of a
-    different file than the row described. ``drift`` is item 5.2's check -- a
-    file whose bytes moved under a stable path, found because the write re-probed
-    it and still held what the row recorded. The two are kept apart because they
+    different file than the row described. ``drift`` is a file whose bytes
+    moved under a stable path, found because the write re-probed it and still
+    held what the row recorded. The two are kept apart because they
     call for different responses: one is an ordinary re-upload, the other is a
     source changing outside the system.
 
@@ -1156,8 +1156,8 @@ def _placed_conversion(
 ) -> pd.DataFrame:
     """Return a converted table on its recording's axis, refusing a repeated row.
 
-    Run at every convert site before the schema check. No entry has a division
-    record, so the table is checked against no division frame count.
+    Run at every convert site before the schema check. The table is placed
+    without a division frame count, because no entry records a division.
 
     Raises:
         ValueError: If the table cannot be placed, or an individual has two rows
@@ -1636,7 +1636,7 @@ class Dataset:
             if not name:
                 msg = (
                     "continuous_groups names the empty group. A continuous group "
-                    "is the recording that its sequences divide, so it is named."
+                    "names the recording that its sequences divide."
                 )
                 raise ValueError(msg)
             if name in seen:
@@ -1800,7 +1800,8 @@ class Dataset:
     def _adopt_manifest(self, update: Mapping[str, object]) -> None:
         """Replace the fields named in *update* once the manifest they make is valid.
 
-        A refused manifest is never held, so a later :meth:`save` cannot write it.
+        A refused manifest is not held. A later :meth:`save` therefore cannot
+        write it.
 
         Raises:
             ValueError: If the manifest with *update* applied fails validation.
@@ -4264,8 +4265,8 @@ class Dataset:
                 # row did -- an ordinary re-upload, which is what
                 # MediaIndexDisagreement has always reported. Against a PROBED
                 # one it is the bytes having moved under a stable path, which is
-                # drift (item 5.2). A CACHED measurement *is* the stored one, so
-                # comparing it could only ever produce a false positive.
+                # drift. A CACHED measurement *is* the stored one, so comparing
+                # it could only ever produce a false positive.
                 prior = prior_row_by_path.get(entry.path.resolve())
                 if prior is not None and entry.origin != "cached":
                     change = classify_identity(prior, entry.probe)
@@ -5177,12 +5178,12 @@ class Dataset:
         """Every clip set a join could hold today, mapped to its entry's label.
 
         Each single-camera entry's clips are routed as ``export-joined`` routes
-        them through :meth:`resolve_media`, so the digests match the names the
-        op writes. One :meth:`resolve_media_scope` read routes them all, and
+        them through :meth:`resolve_media`. The digests then match the names that
+        the op writes. One :meth:`resolve_media_scope` read routes them all, and
         places a divided recording's sequences once. A multi-camera entry is
         skipped, since the op cannot join one. An entry that fails to resolve
         is returned in the second list with its error. Its joins then read as
-        unsourced and are kept, so a failure here can only prevent a deletion.
+        unsourced and are kept. A failure here can only prevent a deletion.
         """
         from .pipeline.joined_export import joined_source_uid
 
@@ -6406,8 +6407,8 @@ class Dataset:
         """Return the first frame of each entry that no member of its recording precedes.
 
         Such an entry is at frame 0 of its divided recording
-        (:meth:`_MemberPlacement.opening`), so its own media need be neither
-        indexed nor routable, unless a tracks variant orders it apart, which is
+        (:meth:`_MemberPlacement.opening`). Its media need be neither indexed
+        nor routable, unless a tracks variant orders it apart, which is
         returned as the reason. An entry that a member precedes is left out.
         """
         if not entries:

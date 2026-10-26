@@ -11,7 +11,6 @@
     "videos": 4
   },
   "created_at": "<varies>",
-  "divided_recordings": [],
   "frame_rates": [
     {
       "fps": 29.97,
@@ -30,6 +29,36 @@
   "name": "populated",
   "next_steps": [],
   "notes": "",
+  "recordings": [
+    {
+      "kind": "undivided",
+      "name": "seq_0"
+    },
+    {
+      "kind": "undivided",
+      "name": "seq_1"
+    },
+    {
+      "kind": "undivided",
+      "name": "seq_2"
+    },
+    {
+      "kind": "undivided",
+      "name": "seq_3"
+    },
+    {
+      "kind": "undivided",
+      "name": "seq_a"
+    },
+    {
+      "kind": "undivided",
+      "name": "seq_b"
+    },
+    {
+      "kind": "undivided",
+      "name": "seq_c"
+    }
+  ],
   "splits": {},
   "tags": [],
   "track_schemas": [

@@ -147,7 +147,7 @@ def test_a_rescan_keeps_an_assigned_entry_whose_filename_spells_its_key(
 def test_a_media_write_may_rename_an_entry_onto_the_key_it_replaces(
     tmp_path: Path,
 ) -> None:
-    """The old entry leaves the index with its rows, so no two entries share a key."""
+    """The old entry leaves the index with its rows and frees its key."""
     dataset = make_dataset(tmp_path / "ds")
     directory = dataset.get_root("media_raw") / "R"
     write_mpeg4_mp4(directory / "a.mp4")
@@ -188,7 +188,7 @@ def test_a_tracks_raw_write_may_rename_an_entry_onto_the_key_it_replaces(
 def test_a_media_write_refuses_a_rename_while_the_tracks_index_names_the_entry(
     tmp_path: Path,
 ) -> None:
-    """The old entry stays in the tracks index, so the new one would share its key."""
+    """The tracks index still names the old entry, whose key the new one shares."""
     dataset = make_dataset(tmp_path / "ds")
     directory = dataset.get_root("media_raw") / "R"
     write_mpeg4_mp4(directory / "a.mp4")
@@ -291,10 +291,10 @@ def test_an_empty_group_request_does_not_match_a_continuous_group(
 def test_a_continuous_group_places_its_media_beside_two_tracks_variants(
     tmp_path: Path,
 ) -> None:
-    """Two labelled tracks variants leave each sequence's place readable.
+    """Two labeled tracks variants leave each sequence's place readable.
 
     Reading the frame extents without a run id refuses an entry with two
-    labelled variants. A sequence's first frame counts the media frames of the
+    labeled variants. A sequence's first frame counts the media frames of the
     sequences before it in a natural sort on their names, without reading a
     tracks run. Each sequence resolves to the rows of its entry.
     """

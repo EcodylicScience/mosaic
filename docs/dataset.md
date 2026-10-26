@@ -274,7 +274,7 @@ refuses to write an entry whose key another entry already has.
 
 A recording split into several clips is one entry, whose frames are numbered across
 its clips. Divide a recording only when you need its parts as separate sequences, such
-as the half-hour divisions of a 6-hour session, and still want windowed features to
+as the half-hour divisions of a 6-hour recording, and still want windowed features to
 read across the boundaries between them
 ([why both are needed](concepts/features.md#reading-across-a-sequence-boundary)). The
 recording is then a **continuous group**: the group is the recording's name, and each
@@ -284,7 +284,7 @@ steps:
 
 1. **Number frames across the whole recording** when you convert. Each sequence starts
    at the sum of the frame counts of the files before it. The second half-hour of a
-   30 fps session starts at frame 54000. No built-in converter applies such an offset,
+   30 fps recording starts at frame 54000. No built-in converter applies such an offset,
    and [your own converter](guides/tracking/write-a-converter.md) has to.
    Sequences that each restart at frame 0 cannot form a continuous group.
 2. **Declare the group** once its sequences are indexed. Its name must not be empty,
@@ -292,7 +292,7 @@ steps:
    replaces any earlier one, and is saved as `continuous_groups:` in `dataset.yaml`:
 
     ```python
-    ds.set_continuous_groups(["session1"])
+    ds.set_continuous_groups(["rec1"])
     ```
 
 3. **Measure the frame extents** if the tracks were converted before mosaic recorded
@@ -385,15 +385,15 @@ dataset_summary(ds, found=dataset_inventory(ds))  # what `mosaic describe --json
 mosaic describe -m ~/dataset/dataset.yaml
 ```
 
-The summary gives the manifest's name, `uuid`, notes, tags, libraries and `splits`, and
-counts the sequences, recordings, videos, tracks variants, feature runs and
-trained models the dataset holds. `sequences` counts the entries with a tracks
-table, and `recordings` counts over the entries of the media and tracks indexes. It
-names each divided recording with its sequences, ordered by the first frame of their
-tracks tables and then by name, and lists the track schemas of its tables and the
-frame rates of its videos. `mosaic sequences` lists each entry of the media and tracks
-indexes with its label and, under `--json`, the recording it belongs to and whether it
-has a tracks table.
+The summary gives the manifest's name, `uuid`, notes, tags, libraries and `splits`, and counts
+the sequences, recordings, videos, tracks variants, feature runs and trained models the
+dataset holds. `sequences` counts the entries with a tracks table, and `recordings`
+counts over the entries of the media and tracks indexes. It lists each recording with
+its kind, and a divided one with its number of sequences and its first and last sequence
+in recording order: by the first frame of their tracks tables, then by name. It also
+lists the track schemas of the tables and the frame rates of the videos.
+`mosaic sequences` lists each entry of the media and tracks indexes with its label and,
+under `--json`, the recording it belongs to and whether it has a tracks table.
 To find the datasets in a directory and up to three levels below it, call
 `discover_datasets(root)` from `mosaic.core.dataset_discovery`.
 

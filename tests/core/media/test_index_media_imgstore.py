@@ -425,8 +425,8 @@ def test_index_media_refuses_unsynced_stores_that_derive_one_entry(
 ) -> None:
     """Two stores named by their start time alone stay two entries.
 
-    A scan's entry is derived from the name, so it refuses the stores of one
-    camera too: a copy of one store derives the same entry as the original.
+    A scan derives the entry from the name and refuses the stores of one camera
+    too. A copy of one store derives the same entry as the original.
     """
     ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
     search = tmp_path / "raw"

@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Iterable, Mapping
-from datetime import datetime
-from typing import TYPE_CHECKING, Final
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import Field
+
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
@@ -29,7 +29,7 @@ from mosaic.core.pipeline.inventory import (
     inventory,
     reportable_universe,
 )
-from mosaic.core.entry import Entry
+from mosaic.core.entry import Entry, entry_token
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.label_series_index import series_index_path
 from mosaic.core.pipeline.labels_index import read_labels_index
@@ -53,10 +53,11 @@ __all__ = [
     "SUMMARY_KINDS",
     "DatasetCounts",
     "DatasetSummary",
+    "DividedRecordingSummary",
     "FrameRateCount",
-    "RecordingSequence",
     "RecordingSummary",
     "TrackSchemaCount",
+    "UndividedRecordingSummary",
     "dataset_next_steps",
     "raw_label_rows",
     "dataset_summary",
@@ -92,8 +93,8 @@ class DatasetCounts(StrictModel):
     """
 
     sequences: int
-    recordings: int
-    divided_recordings: int
+    recordings: int = 0
+    divided_recordings: int = 0
     videos: int
     tracks_variants: int | None
     feature_runs: int | None
@@ -127,39 +128,44 @@ class FrameRateCount(StrictModel):
     videos: int
 
 
-class RecordingSequence(StrictModel):
-    """One sequence of a divided recording.
-
-    Attributes:
-        sequence: The sequence's name.
-        first_frame: Its first frame on the recording's frame axis: the first
-            frame of its tracks table, ``None`` when unrecorded.
-        frame_count: The frames from its tracks table's first frame to its last,
-            ``None`` when unrecorded.
-        start_utc: When it starts, ``None`` when unrecorded.
-    """
-
-    sequence: str
-    first_frame: int | None = None
-    frame_count: int | None = None
-    start_utc: datetime | None = None
-
-
-class RecordingSummary(StrictModel):
-    """One divided recording and its sequences.
+class DividedRecordingSummary(StrictModel):
+    """One divided recording, with the first and last of its sequences.
 
     Attributes:
         name: The recording's name, its continuous group.
-        n_sequences: The sequences it is divided into.
-        sequences: Its sequences in recording order: by their tracks tables'
-            first frames, then by a natural sort of their names. A member with
-            two labelled tracks variants leaves its recording in name order and
-            unmeasured.
+        kind: ``divided``.
+        n_sequences: The sequences it holds.
+        first_sequence: The entry token of its first sequence in recording
+            order: by their tracks tables' first frames, then by a natural sort
+            of their names. A member with two labeled tracks variants leaves
+            its recording in name order.
+        last_sequence: The entry token of its last sequence in that order.
     """
 
     name: str
+    kind: Literal["divided"]
     n_sequences: int
-    sequences: tuple[RecordingSequence, ...]
+    first_sequence: str
+    last_sequence: str
+
+
+class UndividedRecordingSummary(StrictModel):
+    """One undivided recording, whose one sequence is named by the recording.
+
+    Attributes:
+        name: The recording's name, its entry token: ``group:sequence``, or the
+            bare sequence in the empty group.
+        kind: ``undivided``.
+    """
+
+    name: str
+    kind: Literal["undivided"]
+
+
+RecordingSummary = Annotated[
+    DividedRecordingSummary | UndividedRecordingSummary, Field(discriminator="kind")
+]
+"""One recording of a summary, told apart by its ``kind``."""
 
 
 class DatasetSummary(StrictModel):
@@ -179,9 +185,10 @@ class DatasetSummary(StrictModel):
         continuous_groups: The groups whose sequences divide one recording.
         splits: The role of each named group in a held-out protocol, ``train``,
             ``test`` or ``sealed``. Empty when the manifest declares none.
-        divided_recordings: The divided recordings that hold an entry, ordered
-            by name. An undivided recording is one entry, which ``counts`` counts
-            and ``mosaic sequences`` lists.
+        recordings: The recordings of the entries that the media index or the
+            tracks index names, by group and then by sequence. A divided one
+            names its first and last sequences, and an undivided one is its
+            one sequence.
         managed_by: The manifest's top-level ``managed_by`` value, verbatim.
         api_managed: Whether ``managed_by`` names a managing service.
         counts: Sequences, videos and artifacts.
@@ -206,7 +213,7 @@ class DatasetSummary(StrictModel):
     tags: tuple[DatasetTag, ...]
     libraries: tuple[LibraryLink, ...]
     continuous_groups: tuple[str, ...]
-    divided_recordings: tuple[RecordingSummary, ...]
+    recordings: tuple[RecordingSummary, ...] = ()
     managed_by: JsonValue
     api_managed: bool
     splits: dict[str, SplitRole] = Field(default_factory=dict)
@@ -242,9 +249,6 @@ def dataset_summary(
     every_recording = ds.recordings(
         entries, order_facts=facts_from_frame_extents(extents)
     )
-    divided = [
-        recording for recording in every_recording if recording.kind == "divided"
-    ]
     return DatasetSummary(
         manifest=str(ds.manifest_path.absolute()),
         name=manifest.name,
@@ -258,8 +262,8 @@ def dataset_summary(
         tags=manifest.ordered_tags(),
         libraries=manifest.libraries,
         continuous_groups=ds.continuous_groups,
-        divided_recordings=tuple(
-            _recording_summary(recording, extents) for recording in divided
+        recordings=tuple(
+            _recording_summary(recording) for recording in every_recording
         ),
         splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
@@ -267,7 +271,9 @@ def dataset_summary(
         counts=DatasetCounts(
             sequences=len(reportable_universe(ds)),
             recordings=len(every_recording),
-            divided_recordings=len(divided),
+            divided_recordings=sum(
+                recording.kind == "divided" for recording in every_recording
+            ),
             videos=len(media),
             tracks_variants=_count(held, "tracks-variant"),
             feature_runs=_count(held, "feature"),
@@ -297,7 +303,7 @@ def _member_extents(
     """Return the tracks frame extents of the divided recordings' members.
 
     Each member's extent is read from *tracks_index* as ``build_manifest`` reads
-    it without a pinned variant. A recording with a member of two labelled
+    it without a pinned variant. A recording with a member of two labeled
     variants contributes no extent, because a summary chooses no variant and an
     overlapped run over it refuses.
     """
@@ -313,26 +319,16 @@ def _member_extents(
     return extents
 
 
-def _recording_summary(
-    recording: Recording, extents: Mapping[Entry, tuple[int, int]]
-) -> RecordingSummary:
-    """Return *recording*'s name and its sequences in member order, with their extents."""
-    sequences: list[RecordingSequence] = []
-    for member in recording.members:
-        extent = extents.get(member)
-        sequences.append(
-            RecordingSequence(sequence=member[1])
-            if extent is None
-            else RecordingSequence(
-                sequence=member[1],
-                first_frame=extent[0],
-                frame_count=extent[1] - extent[0] + 1,
-            )
-        )
-    return RecordingSummary(
+def _recording_summary(recording: Recording) -> RecordingSummary:
+    """Return *recording*'s name and kind, with its first and last members when divided."""
+    if recording.kind == "undivided":
+        return UndividedRecordingSummary(name=recording.name, kind="undivided")
+    return DividedRecordingSummary(
         name=recording.name,
+        kind="divided",
         n_sequences=len(recording.members),
-        sequences=tuple(sequences),
+        first_sequence=entry_token(*recording.members[0]),
+        last_sequence=entry_token(*recording.members[-1]),
     )
 
 

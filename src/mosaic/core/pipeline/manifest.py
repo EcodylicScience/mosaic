@@ -371,8 +371,8 @@ def _continuous_frame_extents(
 ) -> FrameExtents:
     """Return the recorded frame extents of the continuous-group members of *universe*.
 
-    Only a continuous group's members have neighbors, so no other entry's extent
-    is read, and two variants of such an entry refuse nothing. A pinned
+    Only a continuous group's members have neighbors, and only their extents
+    are read. Two variants of another entry do not refuse the read. A pinned
     *tracks_run_id* names the variant. Otherwise each member resolves among the
     variants that the inputs read: *tracks_variants* from a ``tracks`` input,
     and the variants each feature run of *upstream_runs* read, from its
@@ -380,7 +380,7 @@ def _continuous_frame_extents(
     play.
 
     Raises:
-        ValueError: If a member has two labelled variants and neither the pin
+        ValueError: If a member has two labeled variants and neither the pin
             nor the inputs choose between them.
     """
     groups = {group for group, _ in universe if ds.recording_kind(group) == "divided"}
@@ -404,7 +404,7 @@ def _upstream_tracks_variants(
     """Return the tracks variants a run of *storage* read, ``None`` if unknown.
 
     An unpinned *run_id* is the run :func:`_resolve_feature` reads. An empty set
-    names the unlabelled tables, which a run records no variant for.
+    names the unlabeled tables, which a run records no variant for.
     """
     from .inventory.params import run_tracks_variants
 
@@ -523,11 +523,11 @@ def _describe(entry: str, extent: tuple[int, int] | None) -> str:
 def verify_overlap_supported(manifest: Manifest, overlap_frames: int) -> None:
     """Refuse *manifest* if its continuous groups cannot be read across a boundary.
 
-    Checked once over the whole manifest before any entry is computed, so a run
-    that cannot do what was asked fails before it writes half its outputs.
+    Checked once over the whole manifest before any entry is computed. A run
+    that cannot do what was asked then fails before it writes half its outputs.
 
     An entry outside a continuous group has no neighbors (:func:`build_manifest`)
-    and reads only its own frames, so it is not checked. Every entry of a
+    and reads only its own frames. It is not checked. Every entry of a
     continuous group must pass two checks:
 
     - **It and each neighbor it reads record a frame extent.** Without one there

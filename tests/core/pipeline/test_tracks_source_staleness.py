@@ -323,7 +323,7 @@ class TestTheFirstFrameATableWasNumberedFrom:
 
     A tracker's table of a later sequence in a continuous group is numbered from
     the sequence's first frame. When a member before it changes length, the
-    table is published again at the new first frame from the same media, so the
+    table is published again at the new first frame from the same media. Its
     source composition alone is unchanged.
     """
 

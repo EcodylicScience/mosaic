@@ -154,8 +154,8 @@ def test_the_tracks_check_reads_the_index_under_its_lock(
 
     The main thread holds the tracks index lock and appends ``("R", "0900")``
     while a second thread is writing ``("", "R__0900")``. The check before the
-    lock reads an empty index here, so only the check inside the lock can
-    refuse the second row.
+    lock reads an empty index here. Only the check inside the lock can refuse
+    the second row.
     """
     monkeypatch.setattr(entry_keys, "index_entries", _no_entries)
     dataset = make_dataset(tmp_path / "ds")

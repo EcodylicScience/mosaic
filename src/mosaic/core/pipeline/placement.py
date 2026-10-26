@@ -115,7 +115,7 @@ _TIME_UNITS_PER_SECOND: Final[Mapping[str, float]] = MappingProxyType(
 """Base fields with a frame's time, by their units per second.
 
 ``time`` is in seconds and TRex's ``timestamp`` in microseconds. Each is on the
-same axis as ``frame``, so a shift of the frame axis shifts both.
+same axis as ``frame``. A shift of the frame axis shifts both.
 """
 
 RATE_DEPENDENT_BASES: Final[frozenset[str]] = (

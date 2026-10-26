@@ -499,7 +499,7 @@ Four passes over ``tracks/index.csv``, none touching a table:
 
 * the **frame extent** (``frame_min`` / ``frame_max``), read from each
   parquet into the cells that are blank. ``overlap_frames`` refuses a
-  continuous group with a blank extent, so a dataset converted before the
+  continuous group with a blank extent. A dataset converted before the
   columns existed has to be measured once before its continuous groups can
   use overlap.
 * the **media length** (``media_frames``): how many frames the tool should

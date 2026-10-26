@@ -133,7 +133,7 @@ def run_tracker(
     skipped: list[str] = []
     # Entries that this run opened, and those it could not hand to the tool (an
     # unreadable variant or an unplaceable sequence). Not every item: one held by
-    # another execution was never this run's to lose, and counting it would let a
+    # another execution is not this run's to lose, and counting it would let a
     # contended run declare itself a total failure.
     attempted: set[str] = {failure.key for failure in work_items.failures}
 
@@ -240,7 +240,7 @@ def run_tracker(
         # finished directories rather than recomputing them.
         #
         # When every lost entry is one whose media variant could not be read,
-        # or one the tool was never handed, the tool did not run and did not
+        # or one that the tool was not handed, the tool did not run and did not
         # write output to adopt. The message then says that instead.
         if attempted and lost == attempted:
             unreadable = unreadable_variant_refusal(

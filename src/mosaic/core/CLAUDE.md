@@ -51,7 +51,7 @@ in the root guide.
   top-level keys in `preserved`, while sources and tags refuse unknown keys
   (`tests/core/test_dataset_manifest.py`).
 - A `Dataset` setter checks the manifest it would make before holding it
-  (`Dataset._adopt_manifest`), so a refused value never reaches `save`
+  (`Dataset._adopt_manifest`). A refused value does not reach `save`
   (`TestARefusedSetterLeavesTheManifest`).
 - `write_manifest` is atomic. A writer that may race another goes through
   `Dataset.mutate_manifest`, which re-reads and writes under `index_lock`.

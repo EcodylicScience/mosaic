@@ -385,8 +385,9 @@ def test_the_recipe_example_is_a_recipe_document() -> None:
         ("list_sequences", ("SequenceRow", "recording")),
         ("describe_dataset", ("DatasetCounts", "recordings")),
         ("describe_dataset", ("DatasetCounts", "divided_recordings")),
-        ("describe_dataset", ("RecordingSummary", "sequences")),
-        ("describe_dataset", ("RecordingSequence", "start_utc")),
+        ("describe_dataset", ("DividedRecordingSummary", "first_sequence")),
+        ("describe_dataset", ("DividedRecordingSummary", "last_sequence")),
+        ("describe_dataset", ("UndividedRecordingSummary", "kind")),
     ],
 )
 def test_the_listing_and_the_summary_name_the_recordings(

@@ -22,6 +22,7 @@ from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
     LISTING_MISSING_SAMPLE,
     MAX_PAGE_SIZE,
+    MAX_RESULT_CHARS,
     MAX_STEP_TYPE_DETAIL_CHARS,
     PLAN_MISSING_SAMPLE,
     PREVIEW_MAX_COLUMNS,
@@ -53,6 +54,7 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.inventory import InventoryWire
+from mosaic.core.pipeline.media_index import frame_from_rows, write_media_index_rows
 from mosaic.core.pipeline.markers import process_running
 from mosaic.core.pipeline.parallelism import ParallelLimits, host_cpus
 from mosaic.core.pipeline.preview import ArtifactPreview
@@ -261,8 +263,86 @@ def test_the_sequences_and_the_summary_name_each_entry_s_recording(
         ("s2", "night"),
     ]
     assert (summary.counts.recordings, summary.counts.divided_recordings) == (3, 1)
-    assert [recording.name for recording in summary.divided_recordings] == ["night"]
+    assert [(recording.name, recording.kind) for recording in summary.recordings] == [
+        ("seq_a", "undivided"),
+        ("seq_b", "undivided"),
+        ("night", "divided"),
+    ]
     assert "3 recording(s) (1 divided)" in summarize(summary)
+
+
+def test_a_group_s_sequences_are_listed_with_its_media_only_entries(
+    dataset: Dataset,
+) -> None:
+    """A divided recording's sequences are read from the listing, by its group."""
+    write_media_index(
+        dataset,
+        [
+            MediaClip(
+                group="night", sequence=sequence, filename=f"night_{sequence}.mp4"
+            )
+            for sequence in ("s1", "s2", "s3")
+        ],
+    )
+    for sequence in ("s1", "s2"):
+        add_tracks_table(dataset, VARIANT, track_table("night", sequence))
+    dataset.set_continuous_groups(["night"])
+    served = LocalBackend([dataset.manifest_path], warm=False)
+
+    first = _call(
+        served,
+        "list_sequences",
+        SequencePage,
+        dataset=_uuid(dataset),
+        group="night",
+        limit=2,
+    )
+    rest = _call(
+        served,
+        "list_sequences",
+        SequencePage,
+        dataset=_uuid(dataset),
+        group="night",
+        cursor=first.next_cursor,
+    )
+
+    rows = [*first.items, *rest.items]
+    assert [(row.group, row.sequence, row.recording) for row in rows] == [
+        ("night", "s1", "night"),
+        ("night", "s2", "night"),
+        ("night", "s3", "night"),
+    ]
+    assert [row.frame_min is not None for row in rows] == [True, True, False]
+    assert (first.total, rest.next_cursor) == (3, None)
+
+
+SUMMARY_RECORDINGS = 600
+"""The recordings of the dataset that ``describe_dataset`` must describe whole."""
+
+
+def test_a_summary_of_hundreds_of_recordings_is_returned_whole(
+    tmp_path: Path,
+) -> None:
+    """The media index names each sequence, and no media file is written."""
+    ds = make_dataset(tmp_path / "many")
+    divided = [(f"night{n}", f"s{m:02d}") for n in range(2) for m in range(50)]
+    undivided = [("", f"session_{n:04d}") for n in range(SUMMARY_RECORDINGS - 2)]
+    write_media_index_rows(
+        ds.get_root("media_raw") / "index.csv",
+        frame_from_rows(
+            [
+                {"group": group, "sequence": sequence, "fps": 30.0}
+                for group, sequence in [*divided, *undivided]
+            ]
+        ),
+    )
+    ds.set_continuous_groups(["night0", "night1"])
+    served = LocalBackend([ds.manifest_path], warm=False)
+
+    summary = _call(served, "describe_dataset", DatasetSummary, dataset=_uuid(ds))
+
+    assert summary.counts.recordings == len(summary.recordings) == SUMMARY_RECORDINGS
+    assert len(summary.model_dump_json()) <= MAX_RESULT_CHARS
 
 
 def test_the_inventory_leaves_out_complete_artifacts_unless_asked(
