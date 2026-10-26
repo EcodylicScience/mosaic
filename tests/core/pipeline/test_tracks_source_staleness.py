@@ -31,7 +31,7 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
-    recorded_tracks_composition,
+    recorded_tracks_reads,
 )
 from mosaic.core.pipeline.run import cached_entry_disposition, run_feature
 from mosaic.core.helpers import text_cell
@@ -132,7 +132,7 @@ def test_a_row_predating_the_column_is_not_forced_to_recompute(
     ds = scenario_dataset
     assert cached_entry_disposition("", "") == "undetectable"
     # And nothing is recorded for a run that never wrote the column.
-    assert recorded_tracks_composition(ds, "no-such-feature", "0.1-x") == {}  # pyright: ignore[reportArgumentType]
+    assert recorded_tracks_reads(ds, "no-such-feature", "0.1-x") == {}  # pyright: ignore[reportArgumentType]
 
 
 def test_a_computed_row_records_the_tracks_cell() -> None:

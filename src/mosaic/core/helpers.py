@@ -372,37 +372,44 @@ def place_label_payload(
     payload: Mapping[str, object],
     *,
     first_frame: int,
-    divided: bool,
+    sequence_start: int | str,
     entry: str,
 ) -> Mapping[str, object]:
     """Return one sequence's converted labels on its recording's frame axis.
 
     An ``individual_pair_v1`` payload names its events by frame, and its
     ``frames`` array gains *first_frame*. A dense payload is indexed by position
-    from the sequence's first frame, and no rule places it on a divided
-    recording's axis, so it is refused for a sequence of one. Any other format is
-    returned as it is at *first_frame* 0 and refused at another.
+    from the sequence's first frame, which is frame *sequence_start* of the
+    recording. It is refused for a sequence that starts past frame 0, and for a
+    sequence of unknown start. Any other format is returned as it is at
+    *first_frame* 0 and refused at another.
 
     Args:
         payload: The ``.npz`` contents a label converter returned.
-        first_frame: The sequence's first frame on its recording's axis.
-        divided: Whether the sequence belongs to a divided recording.
+        first_frame: The frames that the payload's events move by.
+        sequence_start: The sequence's first frame on its recording's frame
+            axis, or why it has none.
         entry: The entry's token, which a refusal names.
 
     Returns:
         The placed payload, or *payload* itself when nothing moves.
 
     Raises:
-        ValueError: If a dense payload belongs to a divided recording, or a
-            payload of a format other than ``individual_pair_v1`` would move.
+        ValueError: If a dense payload belongs to a sequence that does not start
+            at frame 0 of its recording, or a payload of a format other than
+            ``individual_pair_v1`` would move.
     """
     label_format = detect_label_format(dict(payload))
-    if label_format == "dense" and divided:
+    if label_format == "dense" and sequence_start != 0:
+        start = (
+            f"starts at frame {sequence_start} of its recording"
+            if isinstance(sequence_start, int)
+            else f"lacks a known first frame on its recording ({sequence_start})"
+        )
         msg = (
             f"labels of {entry!r} are dense, one label per position from the "
-            "sequence's first frame, and the sequence belongs to a divided "
-            "recording, whose frames count across the recording. Convert them "
-            "as individual_pair_v1 events, which name their frames."
+            f"sequence's first frame, and the sequence {start}. Convert them as "
+            "individual_pair_v1 events, which name their frames."
         )
         raise ValueError(msg)
     if first_frame == 0:

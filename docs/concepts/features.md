@@ -84,7 +84,10 @@ supplies them within a **continuous group**, a group whose sequences are declare
 time divisions of one recording rather than independent trials. Only those sequences
 have neighbors. Every other sequence, in the empty group or in a group used as a
 namespace, reads only its own frames, and the run prints one note counting them. One
-overlapped step can therefore run over a dataset that mixes both.
+overlapped step can therefore run over a dataset that mixes both. Each sequence's result
+records the neighbors it read. Declaring a group, adding a sequence to it or converting
+a neighbor again recomputes the sequences whose neighbors changed, and the next run
+serves the rest from the cache.
 
 The declaration is checked, not trusted. mosaic verifies that the recorded frame
 extents are disjoint and increasing, and names both sequences and both ranges when they

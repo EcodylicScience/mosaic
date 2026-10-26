@@ -36,6 +36,7 @@ from tests.helpers import (
     add_tracks_table,
     make_dataset,
     result_run_root,
+    set_tracks_cell,
     track_table,
 )
 
@@ -581,6 +582,7 @@ class _OverlapAwareFeature(_StatelessFeature):
 
     name = "overlap-aware"
     accepts_overlap = True
+    emits: EmitsLevel = "individual"
     seen: ClassVar[list[list[int]]] = []
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -631,6 +633,189 @@ def test_overlap_changes_the_identifier_so_it_cannot_reuse_the_cache(
 
     assert without.run_id != with_context.run_id
     assert not with_context.cache_hit
+
+
+# --- overlap: a cached entry whose neighbors change ---
+
+
+def _neighbor_cells(ds: Dataset | MockDataset, result: Result) -> dict[str, str]:
+    """Each written entry's ``consumed_neighbors`` cell for *result*, by sequence."""
+    index = feature_index(feature_index_path(ds, result.feature)).read()
+    rows = index[index["run_id"] == result.run_id]
+    return {
+        str(row["sequence"]): str(row["consumed_neighbors"])
+        for _, row in rows.iterrows()
+    }
+
+
+def test_declaring_a_group_recomputes_the_entries_of_an_overlapped_run(
+    tmp_path: Path,
+) -> None:
+    """The declaration gives each sequence neighbors, and each is recomputed.
+
+    The run id is the same before and after the declaration, and the entries that
+    read their new neighbors are recomputed under it.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    for index, name in enumerate(("s1", "s2", "s3")):
+        add_track_sequences(ds, ("rec", name), n_rows=10, start_frame=index * 10)
+    _ = backfill_frame_extents(ds)
+    _OverlapAwareFeature.seen = []
+    before = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    _OverlapAwareFeature.seen = []
+
+    ds.set_continuous_groups(["rec"])
+    after = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert after.run_id == before.run_id
+    assert not after.cache_hit
+    assert sorted(_OverlapAwareFeature.seen) == [
+        list(range(0, 13)),
+        list(range(7, 23)),
+        list(range(17, 30)),
+    ]
+    assert "rec__s1" in _neighbor_cells(ds, after)["s2"]
+    assert "rec__s3" in _neighbor_cells(ds, after)["s2"]
+
+
+def test_adding_a_sequence_recomputes_only_the_sequence_before_it(
+    tmp_path: Path,
+) -> None:
+    """A growing recording's previous last sequence reads its new successor."""
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    _OverlapAwareFeature.seen = []
+
+    add_track_sequences(ds, ("g", "s4"), n_rows=10, start_frame=30)
+    _ = backfill_frame_extents(ds)
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert sorted(_OverlapAwareFeature.seen) == [
+        list(range(17, 33)),
+        list(range(27, 40)),
+    ]
+
+
+def test_an_unchanged_neighborhood_serves_every_entry(tmp_path: Path) -> None:
+    """Neighbors that are as they were recompute nothing."""
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+    first = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    _OverlapAwareFeature.seen = []
+
+    second = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert second.run_id == first.run_id
+    assert second.cache_hit
+    assert _OverlapAwareFeature.seen == []
+
+
+def test_a_run_without_overlap_records_no_neighbors(tmp_path: Path) -> None:
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+
+    result = run_feature(ds, _OverlapAwareFeature(), overlap_frames=0)
+
+    assert _neighbor_cells(ds, result) == {"s1": "", "s2": "", "s3": ""}
+
+
+def test_a_reconverted_neighbor_recomputes_the_sequences_that_read_it(
+    tmp_path: Path,
+) -> None:
+    """``s1`` is converted again from changed sources, under the same variant.
+
+    ``s1`` recomputes for its table, and ``s2`` for the neighbor it reads.
+    ``s3`` reads only ``s2`` and is served.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    for index, name in enumerate(("s1", "s2", "s3")):
+        add_tracks_table(
+            ds,
+            "convert.v1",
+            track_table("rec", name, n_rows=10, start_frame=index * 10),
+        )
+    ds.set_continuous_groups(["rec"])
+    set_tracks_cell(ds, "consumed_composition", "sources-1")
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    _OverlapAwareFeature.seen = []
+
+    set_tracks_cell(ds, "consumed_composition", "sources-2", entry=("rec", "s1"))
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert sorted(_OverlapAwareFeature.seen) == [
+        list(range(0, 13)),
+        list(range(7, 23)),
+    ]
+
+
+def test_a_neighbor_republished_at_a_moved_first_frame_recomputes_its_readers(
+    tmp_path: Path,
+) -> None:
+    """``s3`` is published again at another first frame, as a tracker republishes it.
+
+    ``s3`` recomputes for its moved table, and ``s2`` for the neighbor it reads.
+    ``s1`` reads only ``s2`` and is served.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    for index, name in enumerate(("s1", "s2", "s3")):
+        add_tracks_table(
+            ds,
+            "convert.v1",
+            track_table("rec", name, n_rows=10, start_frame=index * 10),
+        )
+    ds.set_continuous_groups(["rec"])
+    set_tracks_cell(ds, "consumed_composition", "sources-1")
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    _OverlapAwareFeature.seen = []
+
+    set_tracks_cell(ds, "first_frame", "20", entry=("rec", "s3"))
+    _ = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert sorted(_OverlapAwareFeature.seen) == [
+        list(range(7, 23)),
+        list(range(17, 30)),
+    ]
+
+
+def test_an_overlapped_entry_recorded_without_its_neighbors_recomputes_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A row written before the cell existed reads blank beside a known value."""
+    ds = MockDataset(tmp_path, continuous_groups=("g",))
+    _setup_continuous(ds)
+    result = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    path = feature_index_path(ds, result.feature)
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows.drop(columns=["consumed_neighbors"]).to_csv(path, index=False)
+    _OverlapAwareFeature.seen = []
+    _ = capsys.readouterr()
+
+    recomputed = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    note = capsys.readouterr().err
+    served = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+
+    assert not recomputed.cache_hit
+    assert len(_OverlapAwareFeature.seen) == 3
+    assert "nothing records which neighbors it read" in note
+    assert served.cache_hit
+
+
+def test_reindexing_features_keeps_the_neighbors_an_entry_read(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    for index, name in enumerate(("s1", "s2")):
+        add_track_sequences(ds, ("rec", name), n_rows=10, start_frame=index * 10)
+    _ = backfill_frame_extents(ds)
+    ds.set_continuous_groups(["rec"])
+    result = run_feature(ds, _OverlapAwareFeature(), overlap_frames=3)
+    cells = _neighbor_cells(ds, result)
+    index = feature_index(feature_index_path(ds, result.feature)).read()
+    first = index[index["sequence"] == "s1"].iloc[0]
+    ds.resolve_path(first["abs_path"]).unlink()
+
+    _ = ds.reindex_features(result.feature, dry_run=False)
+
+    assert _neighbor_cells(ds, result) == {"s2": cells["s2"]}
 
 
 def test_result_type(tmp_path: Path) -> None:

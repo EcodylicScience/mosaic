@@ -546,9 +546,12 @@ run prints one note to stderr with their count. No run id changes.
   record a frame extent, and the extents must be disjoint and increasing.
 - An entry outside a continuous group writes the rows an `overlap_frames=0` run writes,
   under the overlapped run's own run id.
-- Declaring a group, or adding a sequence to one, leaves the cached entries of an
-  earlier overlapped run in place, because the run id does not depend on the
-  declaration. Re-run with `overwrite=True` to read the new neighbors.
+- Each entry of an overlapped run records the neighbors it read, by entry key and
+  tracks composition, in a new trailing `consumed_neighbors` column of the feature
+  index. Declaring a group, adding a sequence to one or converting a neighbor again
+  recomputes the entries whose neighbors changed, under the same run id, where the
+  cache served them before. An entry recorded before the column recomputes once. The
+  cell is empty at `overlap_frames=0`. No run id changes.
 
 **A feature run reads frame extents only for continuous groups, under the variant its
 inputs read.** A run whose only input is another feature's output raised "tracks/index.csv
@@ -628,10 +631,13 @@ tracks number `frame` and `time` across the recording. `EntryAxis` and `EntryHin
 other mapping. Converters and label conversion pass 0, and their outputs, keys, run ids
 and paths are unchanged. Trackers and inference pass the sequence's first frame, which
 is 0 outside a continuous group (see the entry above). Label conversion now refuses
-dense labels, one label per position, for a sequence of a declared continuous group,
-since no rule places them on the recording's axis. The refusal comes before the first
-label file is written, so a refused conversion writes no label file and no index row.
-Event labels (`individual_pair_v1`) convert as before.
+dense labels, one label per position, for a sequence of a declared continuous group
+that starts past frame 0 of its recording (`ResolvedMedia.first_frame`), since their
+positions count from the sequence's first frame. It also refuses them for a sequence
+whose first frame is unknown, such as one without indexed media. The group's first
+sequence starts at frame 0, and its dense labels convert. The refusal comes before the
+first label file is written. A refused conversion leaves the labels root and index as
+they were. Event labels (`individual_pair_v1`) convert as before.
 
 **A refused manifest setter leaves the dataset as it was.** `set_notes`,
 `set_continuous_groups`, `define_tag`, `set_tag_value` and `add_library` held the new

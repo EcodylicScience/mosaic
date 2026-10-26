@@ -8,7 +8,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 from dataclasses import dataclass, field
@@ -37,6 +37,7 @@ from mosaic_media import (
 )
 
 from .helpers import (
+    detect_label_format,
     is_nameless_entry,
     make_entry_key,
     parse_entry_key,
@@ -6289,6 +6290,65 @@ class Dataset:
             errors.update(failed)
         return [media for entry, media in resolved_entries if entry not in failed]
 
+    def sequence_first_frames(
+        self,
+        entries: Collection[Entry],
+        *,
+        errors: dict[Entry, str] | None = None,
+    ) -> dict[Entry, frozenset[int]]:
+        """Return each entry's first frame on its recording's frame axis, one per camera.
+
+        Each camera's first frame is :attr:`ResolvedMedia.first_frame` as
+        :meth:`resolve_media_scope` places it. An entry without indexed media is
+        left out, as is a camera whose media cannot be routed or placed.
+
+        Args:
+            entries: The ``(group, sequence)`` pairs to place.
+            errors: When given, each entry with a camera that cannot be routed
+                or placed is recorded here with the reason.
+        """
+        if not entries:
+            return {}
+        failed: dict[Entry, MediaProbeError] = {}
+        try:
+            scope = self.resolve_media_scope(sorted(entries), errors=failed)
+        except FileNotFoundError:
+            return {}
+        found: dict[Entry, set[int]] = {}
+        reasons = {entry: str(exc) for entry, exc in failed.items()}
+        for item in scope:
+            entry = (item.group, item.sequence)
+            try:
+                first_frame = item.resolved.first_frame
+            except MediaProbeError as exc:
+                reasons.setdefault(entry, str(exc))
+                continue
+            found.setdefault(entry, set()).add(first_frame)
+        if errors is not None:
+            errors.update(reasons)
+        return {entry: frozenset(frames) for entry, frames in found.items()}
+
+    def _sequence_starts(self, entries: Iterable[Entry]) -> dict[Entry, int | str]:
+        """Return the first frame of each divided-recording entry, or why it has none.
+
+        The first frame is the latest of :meth:`sequence_first_frames` over the
+        entry's cameras. An undivided entry starts at frame 0 and is left out.
+        """
+        divided = {
+            entry for entry in entries if self.recording_kind(entry[0]) == "divided"
+        }
+        errors: dict[Entry, str] = {}
+        found = self.sequence_first_frames(divided, errors=errors)
+        starts: dict[Entry, int | str] = {}
+        for entry in divided:
+            if entry in errors:
+                starts[entry] = errors[entry]
+            elif entry in found:
+                starts[entry] = max(found[entry])
+            else:
+                starts[entry] = "its media is not indexed"
+        return starts
+
     def media_entries(self) -> frozenset[Entry]:
         """Every ``(group, sequence)`` the originals index holds media for.
 
@@ -7762,7 +7822,7 @@ class Dataset:
 
         # Every entry is converted and placed before the first file is written,
         # so a refused entry leaves no part of the variant on disk.
-        pending: list[tuple[LabelEntry, Mapping[str, object], Path, Path, str]] = []
+        converted: list[tuple[LabelEntry, Path, Path, str]] = []
         skipped = 0
         total = int(len(df_raw))
         for done, (_, raw_row) in enumerate(df_raw.iterrows(), start=1):
@@ -7777,17 +7837,29 @@ class Dataset:
                 if out_path.exists() and not overwrite:
                     skipped += 1
                     continue
-                # No entry has a division record, so every sequence's labels
-                # stay at frame 0 of its recording.
-                payload = place_label_payload(
-                    entry.payload,
-                    first_frame=0,
-                    divided=self.recording_kind(entry.group) == "divided",
-                    entry=entry_token(entry.group, entry.sequence),
-                )
-                pending.append((entry, payload, out_path, src_path, source_md5))
+                converted.append((entry, out_path, src_path, source_md5))
             if progress is not None:
                 progress(done, total)
+
+        # Only a dense payload depends on where its sequence starts.
+        starts = self._sequence_starts(
+            [
+                (entry.group, entry.sequence)
+                for entry, *_ in converted
+                if detect_label_format(dict(entry.payload)) == "dense"
+            ]
+        )
+        pending: list[tuple[LabelEntry, Mapping[str, object], Path, Path, str]] = []
+        for entry, out_path, src_path, source_md5 in converted:
+            # Events stay where the converter numbered them until an entry
+            # records a division.
+            payload = place_label_payload(
+                entry.payload,
+                first_frame=0,
+                sequence_start=starts.get((entry.group, entry.sequence), 0),
+                entry=entry_token(entry.group, entry.sequence),
+            )
+            pending.append((entry, payload, out_path, src_path, source_md5))
 
         for entry, payload, out_path, src_path, source_md5 in pending:
             atomic_savez(out_path, **dict(payload))

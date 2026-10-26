@@ -169,6 +169,10 @@ class FeatureIndexRow(RunIndexRowBase):
     # "predates the column" and is served with a warning, so only rows written from
     # now on are checkable.
     consumed_tracks_composition: str = ""
+    # The neighbors an overlapped run read for this entry, each by entry key with
+    # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at
+    # ``overlap_frames=0``, and out of the run id, like the two cells above.
+    consumed_neighbors: str = ""
 
 
 def adopt_feature_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -219,10 +223,23 @@ def latest_feature_run_root(ds: Dataset, feature_name: str) -> tuple[str, Path]:
     return run_id, feature_run_root(ds, feature_name, run_id)
 
 
-def recorded_tracks_composition(
+@dataclass(frozen=True, slots=True)
+class RecordedTracksReads:
+    """What one entry's feature row records reading from the tracks tables.
+
+    Attributes:
+        composition: The entry's ``consumed_tracks_composition``.
+        neighbors: Its ``consumed_neighbors``, empty without overlap.
+    """
+
+    composition: str = ""
+    neighbors: str = ""
+
+
+def recorded_tracks_reads(
     ds: Dataset, feature_name: str, run_id: str
-) -> dict[tuple[str, str], str]:
-    """Per entry, the tracks composition each row recorded reading.
+) -> dict[tuple[str, str], RecordedTracksReads]:
+    """Per entry, the tracks composition and the neighbors each row recorded reading.
 
     Its own reader rather than a third element on :func:`recorded_consumption`,
     which drops every row whose ``consumed_roots`` is empty -- and that is the forty
@@ -236,8 +253,9 @@ def recorded_tracks_composition(
     except FileNotFoundError:
         return {}
     return {
-        (str(row["group"]), str(row["sequence"])): str(
-            row.get("consumed_tracks_composition", "")
+        (str(row["group"]), str(row["sequence"])): RecordedTracksReads(
+            composition=str(row.get("consumed_tracks_composition", "")),
+            neighbors=str(row.get("consumed_neighbors", "")),
         )
         for _, row in rows.iterrows()
     }

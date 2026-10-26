@@ -41,7 +41,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
-from mosaic_media import MediaProbeError
 
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
@@ -1873,36 +1872,13 @@ def media_drift(ds: Dataset, rows: pd.DataFrame) -> tuple[tuple[str, str], ...]:
             continue
         if first_frame or ds.recording_kind(entry[0]) == "divided":
             numbered[entry] = first_frame
-    current = _current_first_frames(ds, numbered)
+    current = ds.sequence_first_frames(numbered)
     drifted.update(
         entry
         for entry, first_frame in numbered.items()
         if current.get(entry) and first_frame not in current[entry]
     )
     return tuple(sorted(drifted))
-
-
-def _current_first_frames(
-    ds: Dataset, entries: Collection[tuple[str, str]]
-) -> dict[tuple[str, str], frozenset[int]]:
-    """Return the first frame that each of *entries* starts at, one per camera.
-
-    An entry whose media cannot be resolved or placed is left out.
-    """
-    if not entries:
-        return {}
-    try:
-        scope = ds.resolve_media_scope(sorted(entries), errors={})
-    except FileNotFoundError:
-        return {}
-    found: dict[tuple[str, str], set[int]] = {}
-    for item in scope:
-        try:
-            first_frame = item.resolved.first_frame
-        except MediaProbeError:
-            continue
-        found.setdefault((item.group, item.sequence), set()).add(first_frame)
-    return {entry: frozenset(frames) for entry, frames in found.items()}
 
 
 def tracks_compositions(

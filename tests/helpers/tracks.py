@@ -568,8 +568,25 @@ def published_table(dataset: Dataset, producer: str) -> pd.DataFrame:
     return pd.read_parquet(dataset.resolve_path(str(row["abs_path"])))
 
 
-def set_tracks_cell(dataset: Dataset, column: str, value: str) -> None:
-    """Write *value* into *column* of every tracks row, as an earlier pass might."""
+def set_tracks_cell(
+    dataset: Dataset,
+    column: str,
+    value: str,
+    *,
+    entry: tuple[str, str] | None = None,
+) -> None:
+    """Write *value* into *column* of every tracks row, as an earlier pass might.
+
+    *entry* restricts the write to the rows of one ``(group, sequence)``.
+    """
     path = tracks_index_path(dataset)
     rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    rows.assign(**{column: value}).to_csv(path, index=False)
+    if column not in rows.columns:
+        rows[column] = ""
+    selected = (
+        pd.Series(True, index=rows.index)
+        if entry is None
+        else (rows["group"] == entry[0]) & (rows["sequence"] == entry[1])
+    )
+    rows.loc[selected, column] = value
+    rows.to_csv(path, index=False)

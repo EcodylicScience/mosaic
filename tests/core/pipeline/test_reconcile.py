@@ -562,3 +562,25 @@ def test_a_relocated_run_keeps_the_entries_every_invocation_asked_for(
     assert moved["_scope"]["entries"] == [["", "seq_b"]]
     assert moved["_scope"]["asked"] == [["", "seq_a"], ["", "seq_b"]]
     assert moved["_scope"]["asked_all"] is False
+
+
+def test_a_relocated_run_keeps_the_neighbors_each_entry_read(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    """The re-address rewrites the run id of each row and keeps its other cells."""
+    del registered_feature
+    ds = scenario_dataset
+    true_run_id = _run(ds)
+    path = feature_index_path(ds, _storage(ds))
+    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
+    rows["consumed_neighbors"] = "neighbors-of-" + rows["sequence"]
+    rows.to_csv(path, index=False)
+
+    _ = _fabricate_shifted_run(ds, true_run_id, scheme="5")
+    _ = ds.reconcile(apply=True)
+
+    moved = feature_index(path).read(run_id=true_run_id)
+    assert dict(zip(moved["sequence"], moved["consumed_neighbors"], strict=True)) == {
+        "seq_a": "neighbors-of-seq_a",
+        "seq_b": "neighbors-of-seq_b",
+    }

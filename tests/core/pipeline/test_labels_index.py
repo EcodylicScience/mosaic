@@ -12,6 +12,7 @@ import pytest
 
 from mosaic.behavior import label_library
 from mosaic.core import dataset as dataset_module
+from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import place_label_payload
 from mosaic.core.label_converter import (
     LABEL_CONVERTERS,
@@ -35,6 +36,7 @@ from tests.helpers import (
     make_dataset,
     names_read,
     source_tree,
+    write_painted_recording,
 )
 
 
@@ -420,7 +422,7 @@ def _pair_payload() -> dict[str, object]:
 
 def test_event_labels_move_by_the_sequence_s_first_frame() -> None:
     placed = place_label_payload(
-        _pair_payload(), first_frame=100, divided=True, entry="rec:s2"
+        _pair_payload(), first_frame=100, sequence_start=100, entry="rec:s2"
     )
 
     assert np.asarray(placed["frames"]).tolist() == [100, 105]
@@ -430,17 +432,38 @@ def test_event_labels_move_by_the_sequence_s_first_frame() -> None:
 def test_labels_at_frame_zero_are_kept_as_converted() -> None:
     payload = _pair_payload()
 
+    placed = place_label_payload(
+        payload, first_frame=0, sequence_start=100, entry="rec:s2"
+    )
+
+    assert placed is payload
+
+
+def test_dense_labels_are_kept_for_a_sequence_at_frame_zero() -> None:
+    dense = {"labels": np.array([0, 1, 1, 0])}
+
     assert (
-        place_label_payload(payload, first_frame=0, divided=True, entry="s") is payload
+        place_label_payload(dense, first_frame=0, sequence_start=0, entry="rec:s1")
+        is dense
     )
 
 
-def test_dense_labels_are_refused_for_a_divided_recording() -> None:
+def test_dense_labels_are_refused_for_a_sequence_past_frame_zero() -> None:
     dense = {"labels": np.array([0, 1, 1, 0])}
 
-    with pytest.raises(ValueError, match="'rec:s2'.*dense"):
-        _ = place_label_payload(dense, first_frame=0, divided=True, entry="rec:s2")
-    assert place_label_payload(dense, first_frame=0, divided=False, entry="s") is dense
+    with pytest.raises(ValueError, match="'rec:s2'.*dense.*starts at frame 5"):
+        _ = place_label_payload(dense, first_frame=0, sequence_start=5, entry="rec:s2")
+
+
+def test_dense_labels_are_refused_for_a_sequence_of_unknown_start() -> None:
+    dense = {"labels": np.array([0, 1, 1, 0])}
+
+    with pytest.raises(
+        ValueError, match="'rec:s2'.*lacks a known first frame.*no media"
+    ):
+        _ = place_label_payload(
+            dense, first_frame=0, sequence_start="no media", entry="rec:s2"
+        )
 
 
 def test_labels_of_a_continuous_group_convert_at_frame_zero(tmp_path: Path) -> None:
@@ -462,11 +485,12 @@ def test_labels_of_a_continuous_group_convert_at_frame_zero(tmp_path: Path) -> N
 
 
 class _DenseLabels(LabelConverter):
-    """Two dense sequences from one file: one of the empty group, then one of ``g``."""
+    """Dense labels from one file for ``a`` of the empty group and each of ``members``."""
 
     src_format: ClassVar[str] = "dense_test_npy"
     label_kind: ClassVar[str] = "behavior"
     label_format: ClassVar[str] = "dense"
+    members: ClassVar[tuple[str, ...]] = ("s1", "s2")
 
     @override
     def convert(
@@ -478,31 +502,95 @@ class _DenseLabels(LabelConverter):
         labels = np.array([0, 1, 1, 0])
         return [
             LabelEntry(group="", sequence="a", payload={"labels": labels}, n_frames=4),
-            LabelEntry(
-                group="g", sequence="s1", payload={"labels": labels}, n_frames=4
+            *(
+                LabelEntry(
+                    group="g", sequence=member, payload={"labels": labels}, n_frames=4
+                )
+                for member in self.members
             ),
         ]
 
 
-def test_a_refused_dense_entry_leaves_no_label_written(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The refusal is checked for every entry before the first file is written."""
-    monkeypatch.setitem(
-        LABEL_CONVERTERS, (_DenseLabels.src_format, "behavior"), _DenseLabels
-    )
+class _DenseFirstMember(_DenseLabels):
+    """The dense labels of ``a`` and of ``g``'s first sequence alone."""
+
+    src_format: ClassVar[str] = "dense_first_test_npy"
+    members: ClassVar[tuple[str, ...]] = ("s1",)
+
+
+def _dense_dataset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    converter: type[_DenseLabels],
+    *,
+    media: bool,
+) -> Dataset:
+    """A dataset declaring ``g``, with *converter*'s upload indexed.
+
+    With *media*, ``g`` records ``s1`` in 5 frames and ``s2`` in 4, so ``s2``
+    starts at frame 5. Without it, ``g`` has tracks and no media.
+    """
+    monkeypatch.setitem(LABEL_CONVERTERS, (converter.src_format, "behavior"), converter)
     ds = make_dataset(tmp_path / "ds")
     src = tmp_path / "uploads"
     src.mkdir()
     np.save(src / "f1.npy", np.zeros(1))
-    ds.index_labels_raw([src], patterns=["*.npy"], src_format=_DenseLabels.src_format)
-    add_track_sequences(ds, ("g", "s1"))
+    ds.index_labels_raw([src], patterns=["*.npy"], src_format=converter.src_format)
+    if media:
+        _ = write_painted_recording(ds, "g", [("s1", [(5, 30.0)]), ("s2", [(4, 30.0)])])
+    else:
+        add_track_sequences(ds, ("g", "s1"), ("g", "s2"))
     ds.set_continuous_groups(["g"])
+    return ds
 
-    with pytest.raises(ValueError, match="'g:s1'.*dense"):
+
+def _assert_no_label_written(ds: Dataset) -> None:
+    assert read_labels_index(ds, "behavior").empty
+    assert not list((ds.get_root("labels") / "behavior").rglob("*.npz"))
+
+
+@pytest.mark.media
+def test_dense_labels_of_a_continuous_group_s_first_sequence_convert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requires_ffmpeg: None
+) -> None:
+    """The first sequence starts at frame 0, where each position is its frame."""
+    ds = _dense_dataset(tmp_path, monkeypatch, _DenseFirstMember, media=True)
+
+    outcome = ds.convert_all_labels(
+        kind="behavior", source_format=_DenseFirstMember.src_format
+    )
+
+    assert outcome.written == 2
+    entries = read_labels_index(ds, "behavior")[["group", "sequence"]]
+    assert sorted(map(tuple, entries.to_numpy().tolist())) == [("", "a"), ("g", "s1")]
+
+
+@pytest.mark.media
+def test_a_refused_dense_entry_leaves_no_label_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requires_ffmpeg: None
+) -> None:
+    """``g:s2`` starts at frame 5, and the refusal comes before the first file."""
+    ds = _dense_dataset(tmp_path, monkeypatch, _DenseLabels, media=True)
+
+    with pytest.raises(ValueError, match="'g:s2'.*dense.*starts at frame 5"):
         _ = ds.convert_all_labels(
             kind="behavior", source_format=_DenseLabels.src_format
         )
 
-    assert read_labels_index(ds, "behavior").empty
-    assert not list((ds.get_root("labels") / "behavior").rglob("*.npz"))
+    _assert_no_label_written(ds)
+
+
+def test_dense_labels_of_a_sequence_without_media_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without media, the first frame of each sequence of ``g`` is unknown."""
+    ds = _dense_dataset(tmp_path, monkeypatch, _DenseFirstMember, media=False)
+
+    with pytest.raises(
+        ValueError, match="'g:s1'.*lacks a known first frame.*media is not indexed"
+    ):
+        _ = ds.convert_all_labels(
+            kind="behavior", source_format=_DenseFirstMember.src_format
+        )
+
+    _assert_no_label_written(ds)

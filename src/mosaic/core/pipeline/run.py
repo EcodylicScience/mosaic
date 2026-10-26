@@ -6,7 +6,7 @@ import json
 import multiprocessing as mp
 import sys
 import time
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -51,12 +51,13 @@ from .identity_scheme import (
 )
 from .index import (
     FeatureIndexRow,
+    RecordedTracksReads,
     feature_index,
     feature_index_path,
     feature_run_root,
     missing_outputs_error,
     recorded_consumption,
-    recorded_tracks_composition,
+    recorded_tracks_reads,
 )
 from .index_lock import index_lock
 from .inventory.params import RunParams, read_run_params
@@ -598,6 +599,35 @@ def entry_composition(
     return encode_entry_composition(recorded, roots)
 
 
+def neighbor_compositions(
+    manifest: Manifest, tracks_compositions_by_entry: Mapping[tuple[str, str], str]
+) -> dict[tuple[str, str], str]:
+    """Per entry of *manifest*, the neighbors an overlapped run reads for it.
+
+    Each entry's cell names the entry key of the sequence before it and after it,
+    each with its tracks composition from *tracks_compositions_by_entry*, or
+    ``null`` for a side with no neighbor. The cell is JSON with sorted keys, and
+    one neighborhood has one spelling. The cell is always filled, and a row
+    written without it recomputes once.
+    """
+    by_key = {
+        make_entry_key(group, sequence): composition
+        for (group, sequence), composition in tracks_compositions_by_entry.items()
+    }
+
+    def side(key: str | None) -> dict[str, str] | None:
+        return None if key is None else {"entry": key, "tracks": by_key.get(key, "")}
+
+    return {
+        (entry.group, entry.sequence): json.dumps(
+            {"next": side(entry.next_entry_key), "prev": side(entry.prev_entry_key)},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for entry in manifest.values()
+    }
+
+
 CacheDisposition = Literal["serve", "recompute", "undetectable"]
 """What may be done with a cached entry, given what it recorded consuming.
 
@@ -648,6 +678,13 @@ def _disposition_reason(recorded: str, current: str) -> str:
     if recorded:
         return "the composition it was built from is no longer recorded"
     return "nothing records what it was built from"
+
+
+def _neighbors_reason(recorded: str) -> str:
+    """Why a cached entry was refused for the neighbors it read."""
+    if recorded:
+        return "the neighbors it reads changed"
+    return "nothing records which neighbors it read"
 
 
 def _scan_kind(root: str) -> str:
@@ -1628,8 +1665,17 @@ def _run_feature_impl(
     # The same question for tracks, which no feature declares as a root: the tracks
     # row records what its table was converted from, so the comparison is two index
     # reads rather than a new digest.
-    prior_tracks = recorded_tracks_composition(ds, storage_feature_name, run_id)
+    prior_tracks = recorded_tracks_reads(ds, storage_feature_name, run_id)
     tracks_now_by_entry = tracks_compositions(ds, resolved.tracks_variants)
+    # An overlapped entry also read its neighbors, and their keys and tracks
+    # compositions are compared the same way. The run id leaves them out.
+    # Declaring a group, adding a sequence to it or converting a neighbor again
+    # recomputes the entries whose neighbors changed.
+    neighbors_now_by_entry = (
+        neighbor_compositions(manifest, tracks_now_by_entry)
+        if overlap_frames > 0
+        else {}
+    )
 
     skip_keys: set[str] = set()
     # Entries whose provenance neither side can establish. Collected rather than
@@ -1687,20 +1733,27 @@ def _run_feature_impl(
             recorded = prior_compositions.get(entry)
             was_made_from = recorded if recorded is not None else ""
             now_made_of = entry_composition(feature, resolved, entry)
-            tracks_was = prior_tracks.get(entry, "")
+            recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
+            tracks_was = recorded_reads.composition
             tracks_now = tracks_now_by_entry.get(entry, "")
+            neighbors_was = recorded_reads.neighbors
+            neighbors_now = neighbors_now_by_entry.get(entry, "")
             disposition = cached_entry_disposition(was_made_from, now_made_of)
             tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
-            if "recompute" in (disposition, tracks_disposition):
-                if disposition != "recompute":
-                    was_made_from, now_made_of = tracks_was, tracks_now
+            refusal: str | None = None
+            if disposition == "recompute":
+                refusal = _disposition_reason(was_made_from, now_made_of)
+            elif tracks_disposition == "recompute":
+                refusal = _disposition_reason(tracks_was, tracks_now)
+            elif cached_entry_disposition(neighbors_was, neighbors_now) == "recompute":
+                refusal = _neighbors_reason(neighbors_was)
+            if refusal is not None:
                 # Serving this would be the wrong answer this milestone exists to
                 # prevent, and recording it would restamp the only cell that says
                 # so. Costly, loud, and never destructive.
                 print(
                     f"[feature:{feature.name}] cannot serve cached output for "
-                    f"({group},{sequence}): {_disposition_reason(was_made_from, now_made_of)}"
-                    f"; recomputing.",
+                    f"({group},{sequence}): {refusal}; recomputing.",
                     file=sys.stderr,
                 )
                 continue
@@ -1722,6 +1775,7 @@ def _run_feature_impl(
                     # says so, rather than claiming the present.
                     consumed_composition=was_made_from,
                     consumed_tracks_composition=tracks_was,
+                    consumed_neighbors=neighbors_was,
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -1870,6 +1924,9 @@ def _run_feature_impl(
                     consumed_tracks_composition=tracks_now_by_entry.get(
                         (meta.group, meta.sequence), ""
                     ),
+                    consumed_neighbors=neighbors_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
+                    ),
                     n_rows=n_rows,
                     params_hash=params_hash,
                     identity_scheme=FEATURE_IDENTITY_SCHEME,
@@ -1975,6 +2032,9 @@ def _run_feature_impl(
                         feature, resolved, (group, sequence)
                     ),
                     consumed_tracks_composition=tracks_now_by_entry.get(
+                        (group, sequence), ""
+                    ),
+                    consumed_neighbors=neighbors_now_by_entry.get(
                         (group, sequence), ""
                     ),
                     n_rows=n_rows,

@@ -70,6 +70,10 @@ in the root guide.
   `dataset.py`), and readers map a tracks frame through `ResolvedMedia.sequence_frame`.
   A sequence that cannot be placed still resolves for a join or a transcode, and its
   `first_frame` raises (`tests/core/media/test_continuous_group_media.py`).
+  `Dataset.sequence_first_frames` reads it for many entries, one per camera, and is
+  the one reader for media drift and label conversion. Label conversion refuses dense
+  labels for a sequence that starts past frame 0 or cannot be placed
+  (`tests/core/pipeline/test_labels_index.py`).
   `overlap_frames` checks the declaration against recorded frame extents
   (`core/pipeline/manifest.py`).
 - `splits` maps a named group to `train`, `test` or `sealed`. It is a top-level key
