@@ -1,4 +1,4 @@
-"""``mosaic sequences``: list the entries in a dataset (from tracks/index.csv)."""
+"""``mosaic sequences``: list the entries that a dataset's media and tracks indexes name."""
 
 from __future__ import annotations
 
@@ -27,18 +27,19 @@ def sequences_command(
         bool, typer.Option("--json", help="Emit as a JSON object.")
     ] = False,
 ) -> None:
-    """List the entries (group:sequence) in tracks/index.csv."""
+    """List the entries (group:sequence) of the media and tracks indexes."""
     ds = load_dataset(manifest, read_only=True)
-    # Keyed on the *unfiltered* index having no rows, which treats an absent
-    # index and a header-only one alike -- they are one dataset state. A
-    # --group that narrows to nothing is a different thing entirely and still
-    # exits 0 with no output.
-    if not ds.list_sequences():
+    universe = ds.recording_entries()
+    # Keyed on the unfiltered universe being empty, which treats absent indexes
+    # and header-only ones alike. A --group that narrows to nothing is a
+    # different state and still exits 0 with no output.
+    if not universe:
         fail(
-            "tracks/index.csv is empty or absent; convert tracks first "
-            "(mosaic convert-tracks)."
+            "neither the media index nor tracks/index.csv names an entry; index "
+            "media (mosaic scan) or convert tracks first (mosaic convert-tracks)."
         )
-    entries = ds.list_entries(group=group)
+    tracked = set(ds.list_entries())
+    entries = sorted(entry for entry in universe if group is None or entry[0] == group)
     # The only place mosaic lists sequence strings to a human, so the only place
     # a recorded label should displace the token. One read for the whole listing
     # rather than one per row; sequences with no label keep their token, which is
@@ -69,6 +70,7 @@ def sequences_command(
                         "sequence": sequence,
                         "recording": recording,
                         "display_name": label or sequence,
+                        "has_tracks": (entry_group, sequence) in tracked,
                     }
                     for entry_group, sequence, recording, label in listed
                 ],

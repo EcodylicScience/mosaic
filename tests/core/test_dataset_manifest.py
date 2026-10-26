@@ -15,6 +15,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from mosaic.core.dataset import open_dataset
 from mosaic.core.manifest import (
     MANAGED_BY_KEY,
     MANIFEST_VERSION,
@@ -42,6 +43,7 @@ from mosaic.core.manifest import (
     write_manifest,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
+from tests.helpers import make_dataset
 
 # A version-1 manifest exactly as `new_dataset_manifest` used to write one,
 # including the five fields version 2 no longer models.
@@ -563,6 +565,38 @@ class TestNotes:
         assert (
             len(DatasetManifest(notes="x" * NOTES_MAX_CHARS).notes) == NOTES_MAX_CHARS
         )
+
+
+class TestARefusedSetterLeavesTheManifest:
+    """A setter checks the manifest it would make before adopting it.
+
+    A refused value that stayed in memory would reach the file at the next save,
+    and the dataset would then refuse to open.
+    """
+
+    def test_refused_notes_are_not_saved(self, tmp_path: Path) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        ds.set_notes("kept")
+        with pytest.raises(ValueError, match="over the"):
+            ds.set_notes("x" * (NOTES_MAX_CHARS + 1))
+
+        ds.save()
+
+        assert ds.notes == "kept"
+        assert open_dataset(ds.manifest_path).notes == "kept"
+
+    def test_a_refused_tag_is_not_saved(self, tmp_path: Path) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        for number in range(TAGS_MAX_COUNT):
+            ds.define_tag(DatasetTag(name=f"t{number}", type="label"), save=False)
+        ds.save()
+        with pytest.raises(ValueError, match="over the"):
+            ds.define_tag(DatasetTag(name="one-more", type="label"))
+
+        ds.save()
+
+        assert len(ds.tags) == TAGS_MAX_COUNT
+        assert len(open_dataset(ds.manifest_path).tags) == TAGS_MAX_COUNT
 
 
 class TestManagedBy:

@@ -48,8 +48,8 @@ mosaic inventory -m dataset.yaml --status-not complete --limit 20
 mosaic inventory show feature/speed-angvel__from__tracks/0.2-6ce34fc21e -m dataset.yaml
 ```
 
-Two narrower listings: `mosaic sequences` lists what has been converted, and
-`mosaic features list` / `mosaic tracking list` enumerate the registries.
+Two narrower listings: `mosaic sequences` lists the entries of the media and tracks
+indexes, and `mosaic features list` / `mosaic tracking list` enumerate the registries.
 
 ```python
 from mosaic.core.pipeline.inventory import inventory_wire

@@ -1287,7 +1287,13 @@ FrameExtents = dict[tuple[str, str], tuple[int, int]]
 """Each entry's recorded ``(frame_min, frame_max)``. Absent means unmeasured."""
 
 
-def read_frame_extents(ds: Dataset, run_id: str | None = None) -> FrameExtents:
+def read_frame_extents(
+    ds: Dataset,
+    run_id: str | None = None,
+    *,
+    groups: Collection[str] | None = None,
+    variants: Collection[str] | None = None,
+) -> FrameExtents:
     """Every entry's recorded frame extent, from the tracks index.
 
     Read from the **index**, never from the tables. Adjacency is computed during
@@ -1300,8 +1306,27 @@ def read_frame_extents(ds: Dataset, run_id: str | None = None) -> FrameExtents:
     that happens. Sourced from the tracks index whatever a feature's inputs are,
     because when a recording was divided in time is a property of the dataset,
     not of whichever input a caller happened to list first.
+
+    Args:
+        ds: The dataset whose tracks index to read.
+        run_id: The tracks variant to read, or ``None`` for the variant each
+            entry resolves to (:func:`select_variant_rows`).
+        groups: Read only the entries of these groups, or ``None`` for every
+            entry. An entry outside them is not resolved, so two labelled
+            variants of it do not refuse the read.
+        variants: Under ``run_id=None``, resolve each entry among these variants
+            and its unlabelled rows, or ``None`` for every variant.
+
+    Raises:
+        ValueError: If an entry read under ``run_id=None`` has two labelled
+            variants among those considered.
     """
-    df = select_variant_rows(read_tracks_index(ds), run_id)
+    df = read_tracks_index(ds)
+    if groups is not None:
+        df = df[df["group"].astype(str).isin(set(groups))]
+    if run_id is None and variants is not None:
+        df = df[df["run_id"].astype(str).isin({*variants, ""})]
+    df = select_variant_rows(df, run_id)
     extents: FrameExtents = {}
     for _, series in df.iterrows():
         extent = read_frame_extent(series)

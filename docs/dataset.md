@@ -378,10 +378,13 @@ mosaic describe -m ~/dataset/dataset.yaml
 
 The summary gives the manifest's name, `uuid`, notes, tags, libraries and `splits`, and
 counts the sequences, recordings, videos, tracks variants, feature runs and
-trained models the dataset holds. It names each divided recording with its
-sequences, ordered by a natural sort of their names, and lists the track schemas
-of its tables and the frame rates of its videos. `mosaic sequences` lists each
-converted entry with its label and, under `--json`, the recording it belongs to.
+trained models the dataset holds. `sequences` counts the entries with a tracks
+table, and `recordings` counts over the entries of the media and tracks indexes. It
+names each divided recording with its sequences, ordered by the first frame of their
+tracks tables and then by name, and lists the track schemas of its tables and the
+frame rates of its videos. `mosaic sequences` lists each entry of the media and tracks
+indexes with its label and, under `--json`, the recording it belongs to and whether it
+has a tracks table.
 To find the datasets in a directory and up to three levels below it, call
 `discover_datasets(root)` from `mosaic.core.dataset_discovery`.
 

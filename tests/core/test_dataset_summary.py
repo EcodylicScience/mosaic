@@ -29,11 +29,13 @@ from tests.helpers import (
     MediaClip,
     speed_recipe,
     UPDATE_GOLDEN_ENV,
+    add_tracks_table,
     add_tracks_variant,
     make_dataset,
     read_golden,
     regenerate_command,
     register_trained_model,
+    track_table,
     updating_golden,
     write_golden,
     write_media_index,
@@ -188,6 +190,49 @@ def test_a_continuous_group_is_one_divided_recording_listed_with_its_sequences(
                 RecordingSequence(sequence="s10"),
             ),
         ),
+    )
+
+
+def test_a_divided_recording_is_ordered_and_measured_by_its_tracks_extents(
+    tmp_path: Path,
+) -> None:
+    """The summary orders members as an overlapped run reads them.
+
+    ``s1`` sorts first by name and starts later on the recording's frame axis.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_table(ds, "convert.a", track_table("night", "s1", start_frame=40))
+    add_tracks_table(ds, "convert.a", track_table("night", "s2", n_rows=40))
+    ds.set_continuous_groups(["night"])
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert summary.divided_recordings[0].sequences == (
+        RecordingSequence(sequence="s2", first_frame=0, frame_count=40),
+        RecordingSequence(sequence="s1", first_frame=40, frame_count=40),
+    )
+
+
+def test_a_member_with_two_variants_leaves_its_recording_unmeasured(
+    tmp_path: Path,
+) -> None:
+    """No variant is chosen for a summary, and the read does not refuse."""
+    ds = make_dataset(tmp_path / "ds")
+    for run_id in ("convert.a", "convert.b"):
+        add_tracks_table(ds, run_id, track_table("night", "s2", start_frame=40))
+        add_tracks_table(ds, run_id, track_table("night", "s10"))
+    add_tracks_table(ds, "convert.a", track_table("day", "s1", n_rows=5))
+    ds.set_continuous_groups(["night", "day"])
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    by_name = {recording.name: recording for recording in summary.divided_recordings}
+    assert by_name["night"].sequences == (
+        RecordingSequence(sequence="s2"),
+        RecordingSequence(sequence="s10"),
+    )
+    assert by_name["day"].sequences == (
+        RecordingSequence(sequence="s1", first_frame=0, frame_count=5),
     )
 
 

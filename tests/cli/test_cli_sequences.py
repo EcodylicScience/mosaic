@@ -1,4 +1,4 @@
-"""``mosaic sequences``: the entries of the tracks index, each with its label and recording."""
+"""``mosaic sequences``: the entries of the media and tracks indexes, each with its label and recording."""
 
 from __future__ import annotations
 
@@ -51,18 +51,21 @@ def test_each_entry_is_listed_with_its_group_label_and_recording(
             "sequence": "s1",
             "recording": "arena:s1",
             "display_name": "arena one",
+            "has_tracks": True,
         },
         {
             "group": "night",
             "sequence": "s1",
             "recording": "night",
             "display_name": "first hour",
+            "has_tracks": True,
         },
         {
             "group": "night",
             "sequence": "s2",
             "recording": "night",
             "display_name": "s2",
+            "has_tracks": True,
         },
     ]
     assert payload["labelled"] == [
@@ -92,3 +95,46 @@ def test_the_plain_output_names_each_entry_by_its_token(dataset: Dataset) -> Non
         "night:s1  (first hour)",
         "night:s2",
     ]
+
+
+def test_a_media_only_entry_is_listed_with_its_recording(tmp_path: Path) -> None:
+    """A dataset holding media and no tracks lists its entries."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="20210219_112253"),
+            MediaClip(group="night", sequence="s1", filename="night_s1.mp4"),
+        ],
+    )
+    add_tracks_table(ds, VARIANT, track_table("night", "s2"))
+    ds.set_continuous_groups(["night"])
+
+    payload = invoke_json(["sequences", "-m", str(ds.manifest_path), "--json"])
+    plain = invoke_ok(["sequences", "-m", str(ds.manifest_path)])
+
+    assert payload["entries"] == [
+        {
+            "group": "",
+            "sequence": "20210219_112253",
+            "recording": "20210219_112253",
+            "display_name": "20210219_112253",
+            "has_tracks": False,
+        },
+        {
+            "group": "night",
+            "sequence": "s1",
+            "recording": "night",
+            "display_name": "s1",
+            "has_tracks": False,
+        },
+        {
+            "group": "night",
+            "sequence": "s2",
+            "recording": "night",
+            "display_name": "s2",
+            "has_tracks": True,
+        },
+    ]
+    assert payload["sequences"] == ["20210219_112253", "s1", "s2"]
+    assert plain.stdout.splitlines() == ["20210219_112253", "night:s1", "night:s2"]

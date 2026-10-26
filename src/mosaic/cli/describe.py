@@ -61,7 +61,7 @@ def _render(summary: DatasetSummary) -> None:
                 f"{group}={role}" for group, role in summary.splits.items()
             )
             or "none",
-            "sequences": counts.sequences,
+            "sequences": f"{counts.sequences} with a tracks table",
             "recordings": _recordings(summary),
             "videos": counts.videos,
             "tracks_variants": _shown(counts.tracks_variants),
@@ -102,12 +102,12 @@ def _render(summary: DatasetSummary) -> None:
 
 
 def _recordings(summary: DatasetSummary) -> str:
-    """Return the recordings count with the divided ones counted and named."""
+    """Return the recordings count, what it counts over, and the divided ones named."""
     divided = f"{summary.counts.divided_recordings} divided"
     names = ", ".join(recording.name for recording in summary.divided_recordings)
     if names:
         divided = f"{divided}: {names}"
-    return f"{summary.counts.recordings} ({divided})"
+    return f"{summary.counts.recordings} in the media or tracks index ({divided})"
 
 
 def _shown(count: int | None) -> int | str:

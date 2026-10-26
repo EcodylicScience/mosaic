@@ -465,6 +465,24 @@ class LocalBackend:
                     frame_max=None if extent is None else extent[1],
                 )
             )
+        if args.tracks_variant is None:
+            tracked = {(row.group, row.sequence) for row in rows}
+            rows.extend(
+                SequenceRow(
+                    group=group,
+                    sequence=sequence,
+                    recording=recording_name(dataset.recording_of(group, sequence)),
+                    tracks_variant=None,
+                    producer=None,
+                    std_format=None,
+                    n_rows=None,
+                    n_keypoints=None,
+                    frame_min=None,
+                    frame_max=None,
+                )
+                for group, sequence in sorted(dataset.recording_entries() - tracked)
+                if args.group is None or group == args.group
+            )
         page, next_cursor = _page(
             rows, lambda row: (row.group, row.sequence), args.limit, args.cursor
         )

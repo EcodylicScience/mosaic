@@ -530,7 +530,8 @@ class ListSequencesInput(ToolInput):
         default=None,
         description=(
             "List this tracks variant's tables. Null lists the variant each entry "
-            "resolves to. '' names the unlabeled tables."
+            "resolves to, and the entries with media and no tracks table. '' "
+            "names the unlabeled tables."
         ),
     )
     limit: PageSize = DEFAULT_PAGE_SIZE
@@ -1062,7 +1063,10 @@ class DatasetList(StrictModel):
 
 
 class SequenceRow(StrictModel):
-    """One entry's tracks table, as the tracks index records it.
+    """One entry and its tracks table, as the tracks index records it.
+
+    An entry that the media index names and no tracks table covers has ``None``
+    in every tracks field.
 
     Attributes:
         group: The entry's group, ``""`` when it has none.
@@ -1071,9 +1075,10 @@ class SequenceRow(StrictModel):
             or else the entry's token: its sequence, or ``group:sequence`` when
             the group is non-empty.
         tracks_variant: The tracks variant of the table, ``""`` for an
-            unlabeled table.
+            unlabeled table, ``None`` without a table.
         producer: What wrote the table: a conversion, a tracker or inference.
-        std_format: The track schema of the table.
+            ``None`` without a table.
+        std_format: The track schema of the table, ``None`` without a table.
         n_rows: The table's rows, ``None`` when unrecorded.
         n_keypoints: The keypoints of the table, ``None`` when unrecorded.
         frame_min: The table's first frame, ``None`` when unrecorded.
@@ -1083,9 +1088,9 @@ class SequenceRow(StrictModel):
     group: str
     sequence: str
     recording: str
-    tracks_variant: str
-    producer: str
-    std_format: str
+    tracks_variant: str | None
+    producer: str | None
+    std_format: str | None
     n_rows: int | None
     n_keypoints: int | None
     frame_min: int | None
@@ -1418,7 +1423,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         description=(
             "List a dataset's entries, (group, sequence), each with its recording "
             "and the tracks table it resolves to: its variant, producer, schema, "
-            "rows, keypoints and frame extent." + _PAGING
+            "rows, keypoints and frame extent. An entry with media and no tracks "
+            "table has null tracks fields, unless tracks_variant is given." + _PAGING
         ),
         input_model=ListSequencesInput,
         output=SequencePage,

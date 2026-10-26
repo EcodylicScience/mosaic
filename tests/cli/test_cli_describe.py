@@ -45,7 +45,7 @@ def test_the_plain_output_lists_the_fields_counts_and_schemas(
     result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
 
     assert "name: described" in result.stdout
-    assert "sequences: 2" in result.stdout
+    assert "sequences: 2 with a tracks table" in result.stdout
     assert "tracks_variants: 1" in result.stdout
     assert "managed_by: none" in result.stdout
     assert "name\ttables\nmosaic_v1\t2" in result.stdout
@@ -68,7 +68,7 @@ def test_the_plain_output_lists_the_roles_of_the_groups(dataset: Dataset) -> Non
 def test_the_plain_output_counts_the_recordings(dataset: Dataset) -> None:
     result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
 
-    assert "recordings: 2 (0 divided)" in result.stdout
+    assert "recordings: 2 in the media or tracks index (0 divided)" in result.stdout
     assert "continuous_groups" not in result.stdout
 
 
@@ -85,4 +85,20 @@ def test_the_plain_output_names_the_divided_recordings(dataset: Dataset) -> None
 
     result = invoke_ok(["describe", "--manifest", str(dataset.base_dir)])
 
-    assert "recordings: 4 (2 divided: day, night)" in result.stdout
+    assert (
+        "recordings: 4 in the media or tracks index (2 divided: day, night)"
+        in result.stdout
+    )
+
+
+def test_a_media_only_dataset_counts_its_recordings_beside_no_sequence(
+    tmp_path: Path,
+) -> None:
+    """Each count names what it counts, so ``0`` beside ``1`` reads as both true."""
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="20210219_112253")])
+
+    result = invoke_ok(["describe", "--manifest", str(ds.base_dir)])
+
+    assert "sequences: 0 with a tracks table" in result.stdout
+    assert "recordings: 1 in the media or tracks index (0 divided)" in result.stdout

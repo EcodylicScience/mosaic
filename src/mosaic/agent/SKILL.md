@@ -189,7 +189,7 @@ A dataset is a directory with `dataset.yaml` and named roots
   `overlap_frames` reads neighbors only inside a continuous group. Other entries read
   only their own frames, and the run notes how many on stderr. `mosaic describe` counts
   the recordings and names the divided ones, and `mosaic sequences --json` gives each
-  entry's recording.
+  entry's recording, a media-only entry included.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables

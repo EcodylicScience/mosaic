@@ -1,7 +1,8 @@
 """The entries an index names, read for the key-collision check at a write.
 
 A write refuses a new entry whose key names a different entry already in its
-own index or in the media index (:func:`mosaic.core.entry.refuse_entry_key_collision`).
+own index or in the media index, or that takes a continuous group's name
+(``Dataset.refuse_entry_key_collision``).
 The two columns are read as text with the standard ``csv`` module, which keeps
 a zero-padded name as written and costs one pass over the file.
 
@@ -17,11 +18,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mosaic.core.entry import (
-    Entry,
-    entry_key_collision,
-    refuse_entry_key_collision,
-)
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline.index_csv import IndexCSV, SchemaRowBase, index_records
 from mosaic.core.pipeline.index_lock import index_lock
 
@@ -103,7 +100,7 @@ def key_collision_at_write(
     media index, read without a lock. ``None`` when no new entry collides.
     """
     existing = index_entries(index_path) | media_index_entries(ds)
-    return entry_key_collision(written, existing)
+    return ds.entry_key_collision(written, existing)
 
 
 def append_refusing_key_collision[RowT: SchemaRowBase](
@@ -118,13 +115,13 @@ def append_refusing_key_collision[RowT: SchemaRowBase](
 
     Raises:
         EntryKeyCollisionError: If a new entry shares its key with an entry of
-            *index* or of the media index.
+            *index* or of the media index, or takes a continuous group's name.
     """
     entries = list(written)
-    refuse_entry_key_collision(
+    ds.refuse_entry_key_collision(
         entries, index_entries(index.path) | media_index_entries(ds)
     )
     with index_lock(index.path):
         existing = entries_of_rows(index_records(index.read_holding_lock()))
-        refuse_entry_key_collision(entries, existing | media_index_entries(ds))
+        ds.refuse_entry_key_collision(entries, existing | media_index_entries(ds))
         index.append_holding_lock(rows)

@@ -29,6 +29,7 @@ __all__ = [
     "order_members",
     "recording_kind",
     "recording_name",
+    "recording_name_collision",
     "recording_of",
     "recording_storage_name",
     "recordings",
@@ -121,11 +122,50 @@ def recording_storage_name(key: RecordingKey) -> str:
     by its entry key, so ``("", "a")`` and ``("ns", "a")`` stay apart. A
     continuous group named like an empty-group sequence would share the name.
     ``Dataset.set_continuous_groups`` refuses such a group when it is declared,
-    and no writer refuses an empty-group sequence written after it.
+    and an index write refuses such a sequence written after it
+    (:func:`recording_name_collision`).
     """
     if not key.sequence:
         return to_safe_name(key.group)
     return make_entry_key(key.group, key.sequence)
+
+
+def recording_name_collision(
+    continuous_groups: Collection[str],
+    written: Iterable[Entry],
+    existing: Iterable[Entry],
+) -> str | None:
+    """Return why a new entry of *written* would take a divided recording's name.
+
+    An undivided recording is stored under its entry key, and a divided one under
+    its safe group name (:func:`recording_storage_name`). The empty-group
+    sequence ``R`` therefore shares the storage name of the continuous group
+    ``R``. ``Dataset.set_continuous_groups`` refuses the group when the sequence
+    is indexed first. This refuses the sequence when the group is declared
+    first. An entry of *existing* is not new and keeps resolving.
+
+    Returns:
+        A message naming the entry and the group, or ``None`` when no new entry
+        takes a divided recording's name.
+    """
+    divided = {
+        recording_storage_name(RecordingKey(group, "")): group
+        for group in continuous_groups
+        if group
+    }
+    for group, sequence in sorted(set(written) - set(existing)):
+        key = recording_of(continuous_groups, group, sequence)
+        if not key.sequence:
+            continue
+        taken = divided.get(recording_storage_name(key))
+        if taken is not None:
+            return (
+                f"entry {(group, sequence)!r} would be the recording "
+                f"{recording_name(key)!r}, which is the name of the continuous "
+                f"group {taken!r}, and the two recordings would share one name. "
+                "Rename the sequence, or declare the group under another name."
+            )
+    return None
 
 
 _DIGITS = re.compile(r"(\d+)")

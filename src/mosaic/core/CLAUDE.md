@@ -50,6 +50,9 @@ in the root guide.
   `MANIFEST_VERSION` docstring says when to bump it. `DatasetManifest` keeps unknown
   top-level keys in `preserved`, while sources and tags refuse unknown keys
   (`tests/core/test_dataset_manifest.py`).
+- A `Dataset` setter checks the manifest it would make before holding it
+  (`Dataset._adopt_manifest`), so a refused value never reaches `save`
+  (`TestARefusedSetterLeavesTheManifest`).
 - `write_manifest` is atomic. A writer that may race another goes through
   `Dataset.mutate_manifest`, which re-reads and writes under `index_lock`.
   `declare_scan_source`, `undeclare_scan_source` and `update_tags` are the locked
@@ -105,13 +108,15 @@ in the root guide.
   declared list in `dataset_summary` read the declaration
   (`tests/core/test_recording.py`).
 - A write refuses a new entry whose key equals another entry's, such as `("", "a__b")`
-  beside `("a", "b")`, through `refuse_entry_key_collision` (`core/entry.py`). Rows
+  beside `("a", "b")`, and an empty-group sequence named like a continuous group,
+  through `Dataset.refuse_entry_key_collision` (`core/entry.py`, `core/recording.py`). Rows
   already in an index keep resolving (`tests/core/test_entry_tokens.py`). A replacing
   media or tracks_raw write checks against the entries that survive it and those another
   index still names (`entries_kept_beside`), and a scan checks the entries left after
   assigned identity is restored (`tests/core/media/test_media_index_entry_names.py`).
 - Only the sequences of a continuous group have neighbors for `overlap_frames`
-  (`build_manifest` in `core/pipeline/manifest.py`). A sequence of the empty group or
+  (`build_manifest` in `core/pipeline/manifest.py`), and only their frame extents are
+  read, under the tracks variant that the inputs read. A sequence of the empty group or
   of an undeclared group reads only its own frames, and the run notes their count on
   stderr instead of refusing (`tests/core/pipeline/test_run_feature.py`).
 

@@ -96,7 +96,7 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
-from .entry import Entry, refuse_entry_key_collision
+from .entry import Entry, EntryKeyCollisionError, entry_key_collision
 from .recording import (
     OrderFacts,
     Recording,
@@ -104,6 +104,7 @@ from .recording import (
     RecordingKind,
     order_members,
     recording_kind,
+    recording_name_collision,
     recording_of,
     recordings,
 )
@@ -1079,8 +1080,7 @@ class Dataset:
                 belongs in a file the dataset references, not in the manifest
                 every reader parses.
         """
-        self.manifest = self.manifest.model_copy(update={"notes": text})
-        _check_manifest(self.manifest)
+        self._adopt_manifest({"notes": text})
         if save:
             self.save()
 
@@ -1127,6 +1127,38 @@ class Dataset:
         """
         return recording_of(self.manifest.continuous_groups, group, sequence)
 
+    def entry_key_collision(
+        self, written: Iterable[Entry], existing: Iterable[Entry]
+    ) -> str | None:
+        """Return why a new entry of *written* cannot be indexed beside *existing*.
+
+        A new entry may not share its key with another entry
+        (:func:`~mosaic.core.entry.entry_key_collision`), and an undivided one may
+        not take the name of a continuous group
+        (:func:`~mosaic.core.recording.recording_name_collision`). An entry of
+        *existing* is not new.
+
+        Returns:
+            The reason, or ``None`` when every new entry may be written.
+        """
+        held = set(existing)
+        batch = list(written)
+        return entry_key_collision(batch, held) or recording_name_collision(
+            self.manifest.continuous_groups, batch, held
+        )
+
+    def refuse_entry_key_collision(
+        self, written: Iterable[Entry], existing: Iterable[Entry]
+    ) -> None:
+        """Refuse the collision that :meth:`entry_key_collision` reports.
+
+        Raises:
+            EntryKeyCollisionError: Naming the new entry and what it collides with.
+        """
+        reason = self.entry_key_collision(written, existing)
+        if reason is not None:
+            raise EntryKeyCollisionError(reason)
+
     def recordings(
         self,
         entries: Iterable[Entry] | None = None,
@@ -1143,7 +1175,7 @@ class Dataset:
                 frame extents of a pinned run order a hand-declared group:
                 ``facts_from_frame_extents(read_frame_extents(ds, run_id))``.
         """
-        universe = self._recording_universe() if entries is None else entries
+        universe = self.recording_entries() if entries is None else entries
         return recordings(self.manifest.continuous_groups, universe, order_facts)
 
     def recording_members(
@@ -1165,12 +1197,16 @@ class Dataset:
         if key.sequence:
             return ()
         group_entries = (
-            entry for entry in self._recording_universe() if entry[0] == key.group
+            entry for entry in self.recording_entries() if entry[0] == key.group
         )
         return order_members(group_entries, order_facts or {})
 
-    def _recording_universe(self) -> set[Entry]:
-        """Return every entry that the media index or the tracks index names."""
+    def recording_entries(self) -> set[Entry]:
+        """Return every entry that the media index or the tracks index names.
+
+        These are the entries that :meth:`recordings` groups, a media-only entry
+        among them. Media entries are named as media resolution names them.
+        """
         universe = root_index_entries(self, "tracks")
         # Named as media resolution names them, once the index contains a row.
         if media_index_entries(self):
@@ -1310,14 +1346,24 @@ class Dataset:
                 indexes.
         """
         named = tuple(str(group) for group in groups)
+        seen: set[str] = set()
+        for name in named:
+            if not name:
+                msg = (
+                    "continuous_groups names the empty group. A continuous group "
+                    "is the recording that its sequences divide, so it is named."
+                )
+                raise ValueError(msg)
+            if name in seen:
+                msg = f"continuous_groups lists {name!r} more than once."
+                raise ValueError(msg)
+            seen.add(name)
         indexed = self._indexed_entries()
         groups_held = {group for group, _ in indexed}
         empty_group_keys = {
             to_safe_name(sequence) for group, sequence in indexed if not group
         }
         for name in named:
-            if not name:
-                continue
             for separator in ("__", ":"):
                 if separator in name:
                     msg = (
@@ -1350,8 +1396,7 @@ class Dataset:
         Raises:
             ValueError: If a name is empty or repeated.
         """
-        self.manifest = self.manifest.model_copy(update={"continuous_groups": groups})
-        _check_manifest(self.manifest)
+        self._adopt_manifest({"continuous_groups": groups})
         if save:
             self.save()
 
@@ -1418,8 +1463,7 @@ class Dataset:
             for existing in self.manifest.tags
             if existing.name.casefold() != tag.name.casefold()
         ]
-        self.manifest = self.manifest.model_copy(update={"tags": (*others, tag)})
-        _check_manifest(self.manifest)
+        self._adopt_manifest({"tags": (*others, tag)})
         if save:
             self.save()
 
@@ -1467,6 +1511,18 @@ class Dataset:
         if save:
             self.save()
         return True
+
+    def _adopt_manifest(self, update: Mapping[str, object]) -> None:
+        """Replace the fields named in *update* once the manifest they make is valid.
+
+        A refused manifest is never held, so a later :meth:`save` cannot write it.
+
+        Raises:
+            ValueError: If the manifest with *update* applied fails validation.
+        """
+        candidate = self.manifest.model_copy(update=dict(update))
+        _check_manifest(candidate)
+        self.manifest = candidate
 
     def mutate_manifest(self, change: Callable[[DatasetManifest], None]) -> None:
         """Re-read the manifest, apply *change*, and write it back under a lock.
@@ -1531,10 +1587,7 @@ class Dataset:
                 "added_at": link.added_at or now_stamp(),
             }
         )
-        self.manifest = self.manifest.model_copy(
-            update={"libraries": (*self.manifest.libraries, stored)}
-        )
-        _check_manifest(self.manifest)
+        self._adopt_manifest({"libraries": (*self.manifest.libraries, stored)})
         if save:
             self.save()
         return stored
@@ -3631,7 +3684,7 @@ class Dataset:
             # Checked on the entries the rows are written under: a filename's
             # guess that an assigned identity replaced above writes nothing.
             written = entries_of_rows(dedup)
-            refuse_entry_key_collision(
+            self.refuse_entry_key_collision(
                 written, self._entries_beside_media_write(written, committed, preserved)
             )
             merged: list[dict[str, object]] = [*preserved, *dedup]
@@ -4016,7 +4069,7 @@ class Dataset:
                 row for row in committed if not self._row_under_dirs(row, scope_dirs)
             ]
             written = entries_of_rows(fresh)
-            refuse_entry_key_collision(
+            self.refuse_entry_key_collision(
                 written, self._entries_beside_media_write(written, committed, preserved)
             )
 
@@ -6334,7 +6387,7 @@ class Dataset:
                 ]
             )
             written = entries_of_rows(rows)
-            refuse_entry_key_collision(
+            self.refuse_entry_key_collision(
                 written,
                 self._entries_beside_tracks_raw_write(written, committed, preserved),
             )
@@ -6574,7 +6627,7 @@ class Dataset:
                 row for row in existing if not self._row_under_dirs(row, scope_dirs)
             ]
             written = entries_of_rows(fresh)
-            refuse_entry_key_collision(
+            self.refuse_entry_key_collision(
                 written,
                 self._entries_beside_tracks_raw_write(written, existing, preserved),
             )

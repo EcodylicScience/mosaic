@@ -16,11 +16,12 @@ from mosaic.core.recording import (
     facts_from_frame_extents,
     order_members,
     recording_name,
+    recording_name_collision,
     recording_of,
     recording_storage_name,
     recordings,
 )
-from mosaic.core.dataset import Dataset
+from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.manifest import read_manifest
 from tests.helpers import (
     MediaClip,
@@ -206,6 +207,12 @@ def test_a_digit_that_is_not_decimal_sorts_as_text(
     assert tuple(sequence for _, sequence in ordered) == expected
 
 
+def test_a_new_sequence_may_not_take_a_continuous_group_s_name() -> None:
+    assert recording_name_collision(("R",), [("", "R")], []) is not None
+    assert recording_name_collision(("R",), [("ns", "R"), ("R", "s1")], []) is None
+    assert recording_name_collision(("R",), [("", "R")], [("", "R")]) is None
+
+
 def test_frame_extents_give_the_tracks_order() -> None:
     facts = facts_from_frame_extents(
         {("g", "late"): (100, 199), ("g", "early"): (0, 99)}
@@ -304,6 +311,42 @@ class TestSetContinuousGroups:
 
         assert read_manifest(dataset.manifest_path).continuous_groups == ()
 
+    @pytest.mark.parametrize(
+        ("names", "match"),
+        [
+            pytest.param(["rec", ""], "the empty group", id="empty"),
+            pytest.param(["rec", "rec"], "'rec' more than once", id="repeated"),
+        ],
+    )
+    def test_an_empty_or_repeated_name_is_refused_in_plain_words(
+        self, dataset: Dataset, names: list[str], match: str
+    ) -> None:
+        with pytest.raises(ValueError, match=match) as refused:
+            dataset.set_continuous_groups(names)
+
+        assert "pydantic" not in str(refused.value)
+        assert "no entry" not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "names",
+        [
+            pytest.param([""], id="empty"),
+            pytest.param(["rec", "rec"], id="repeated"),
+            pytest.param(["a__b"], id="joined"),
+        ],
+    )
+    def test_a_refusal_leaves_the_dataset_openable_after_a_save(
+        self, dataset: Dataset, names: list[str]
+    ) -> None:
+        dataset.set_continuous_groups(["rec"])
+        with pytest.raises(ValueError):
+            dataset.set_continuous_groups(names)
+
+        dataset.save()
+
+        assert dataset.continuous_groups == ("rec",)
+        assert open_dataset(dataset.manifest_path).continuous_groups == ("rec",)
+
     def test_tracks_entries_count_as_entries(self, tmp_path: Path) -> None:
         ds = make_dataset(tmp_path / "ds")
         add_track_sequences(ds, ("night", "s1"))
@@ -322,6 +365,7 @@ _DECLARATION_READERS: dict[str, frozenset[str] | None] = {
     "core/dataset.py": frozenset(
         {
             "continuous_groups",
+            "entry_key_collision",
             "is_continuous_group",
             "recording_kind",
             "recording_of",

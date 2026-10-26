@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
@@ -27,12 +28,17 @@ from mosaic.core.pipeline.inventory import (
     inventory,
     reportable_universe,
 )
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.label_series_index import series_index_path
 from mosaic.core.pipeline.labels_index import read_labels_index
-from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
-from mosaic.core.recording import Recording
+from mosaic.core.pipeline.tracks_index import (
+    FrameExtents,
+    read_frame_extents,
+    read_tracks_index,
+)
+from mosaic.core.recording import Recording, facts_from_frame_extents
 from mosaic.core.schema import LEGACY_SCHEMA
 from mosaic.core.strict_model import StrictModel
 
@@ -121,9 +127,10 @@ class RecordingSequence(StrictModel):
 
     Attributes:
         sequence: The sequence's name.
-        first_frame: Its first frame on the recording's frame axis, ``None``
-            when unrecorded.
-        frame_count: Its frames, ``None`` when unrecorded.
+        first_frame: Its first frame on the recording's frame axis: the first
+            frame of its tracks table, ``None`` when unrecorded.
+        frame_count: The frames from its tracks table's first frame to its last,
+            ``None`` when unrecorded.
         start_utc: When it starts, ``None`` when unrecorded.
     """
 
@@ -139,7 +146,10 @@ class RecordingSummary(StrictModel):
     Attributes:
         name: The recording's name, its continuous group.
         n_sequences: The sequences it is divided into.
-        sequences: Its sequences, ordered by a natural sort of their names.
+        sequences: Its sequences in recording order: by their tracks tables'
+            first frames, then by a natural sort of their names. A member with
+            two labelled tracks variants leaves its recording in name order and
+            unmeasured.
     """
 
     name: str
@@ -221,7 +231,11 @@ def dataset_summary(
     manifest = ds.manifest
     tracks = existing_tracks_records(ds, read_tracks_index(ds))
     media = _media_rows(ds)
-    every_recording = ds.recordings()
+    entries = ds.recording_entries()
+    extents = _member_extents(ds, entries)
+    every_recording = ds.recordings(
+        entries, order_facts=facts_from_frame_extents(extents)
+    )
     divided = [
         recording for recording in every_recording if recording.kind == "divided"
     ]
@@ -239,7 +253,7 @@ def dataset_summary(
         libraries=manifest.libraries,
         continuous_groups=ds.continuous_groups,
         divided_recordings=tuple(
-            _recording_summary(recording) for recording in divided
+            _recording_summary(recording, extents) for recording in divided
         ),
         splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
@@ -276,14 +290,46 @@ def dataset_summary(
     )
 
 
-def _recording_summary(recording: Recording) -> RecordingSummary:
-    """Return *recording*'s name and its sequences in its member order."""
+def _member_extents(ds: Dataset, entries: Iterable[Entry]) -> FrameExtents:
+    """Return the tracks frame extents of the divided recordings' members.
+
+    Each member's extent is read as ``build_manifest`` reads it without a pinned
+    variant. A recording with a member of two labelled variants contributes no
+    extent, because a summary chooses no variant and an overlapped run over it
+    refuses.
+    """
+    groups = sorted(
+        {group for group, _ in entries if ds.recording_kind(group) == "divided"}
+    )
+    extents: FrameExtents = {}
+    for group in groups:
+        try:
+            extents.update(read_frame_extents(ds, None, groups={group}))
+        except ValueError:
+            continue
+    return extents
+
+
+def _recording_summary(
+    recording: Recording, extents: Mapping[Entry, tuple[int, int]]
+) -> RecordingSummary:
+    """Return *recording*'s name and its sequences in member order, with their extents."""
+    sequences: list[RecordingSequence] = []
+    for member in recording.members:
+        extent = extents.get(member)
+        sequences.append(
+            RecordingSequence(sequence=member[1])
+            if extent is None
+            else RecordingSequence(
+                sequence=member[1],
+                first_frame=extent[0],
+                frame_count=extent[1] - extent[0] + 1,
+            )
+        )
     return RecordingSummary(
         name=recording.name,
         n_sequences=len(recording.members),
-        sequences=tuple(
-            RecordingSequence(sequence=sequence) for _, sequence in recording.members
-        ),
+        sequences=tuple(sequences),
     )
 
 

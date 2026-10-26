@@ -208,6 +208,34 @@ def test_the_sequences_are_listed_with_their_tracks_tables(
     assert (first.total, rest.next_cursor) == (2, None)
 
 
+def test_a_media_only_entry_is_listed_with_null_tracks_fields(
+    dataset: Dataset,
+) -> None:
+    """An entry the media index names and no tracks table covers is listed too."""
+    write_media_index(dataset, [MediaClip(sequence="pilot")])
+    served = LocalBackend([dataset.manifest_path], warm=False)
+
+    page = _call(served, "list_sequences", SequencePage, dataset=_uuid(dataset))
+    pinned = _call(
+        served,
+        "list_sequences",
+        SequencePage,
+        dataset=_uuid(dataset),
+        tracks_variant=VARIANT,
+    )
+
+    pilot = next(row for row in page.items if row.sequence == "pilot")
+    assert (pilot.group, pilot.recording) == ("", "pilot")
+    assert (pilot.tracks_variant, pilot.producer, pilot.std_format) == (
+        None,
+        None,
+        None,
+    )
+    assert (pilot.n_rows, pilot.frame_min, pilot.frame_max) == (None, None, None)
+    assert page.total == 3
+    assert [row.sequence for row in pinned.items] == ["seq_a", "seq_b"]
+
+
 def test_the_sequences_and_the_summary_name_each_entry_s_recording(
     dataset: Dataset,
 ) -> None:

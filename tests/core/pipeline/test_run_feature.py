@@ -12,14 +12,17 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline.index import feature_index, feature_index_path
+from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
+from mosaic.core.pipeline.types.feature import EmitsLevel
 from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,
     InputStream,
     Result,
     TrackInput,
+    TrackInputs,
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
@@ -30,8 +33,10 @@ from mosaic.core.dataset import Dataset
 from tests.helpers import (
     MockDataset,
     add_track_sequences,
+    add_tracks_table,
     make_dataset,
     result_run_root,
+    track_table,
 )
 
 # --- Mock features ---
@@ -853,3 +858,126 @@ def test_real_param_change_busts_cache(tmp_path: Path) -> None:
     r1 = run_feature(ds, _ThroughputFeature(params={"real": 0}))
     r2 = run_feature(ds, _ThroughputFeature(params={"real": 1}))
     assert r2.run_id != r1.run_id
+
+
+# --- frame extents of a feature input over two tracks variants ---------------
+
+
+class _FrameEcho:
+    """Writes its input's track columns back, so its output feeds another run."""
+
+    name = "frame-echo"
+    version = "0.1"
+    parallelizable = True
+    scope_dependent = False
+    accepts_overlap = True
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+
+    class Inputs(TrackInputs):
+        pass
+
+    class Params(Params):
+        pass
+
+    def __init__(self, inputs: _FrameEcho.Inputs | None = None) -> None:
+        self._inputs = inputs or self.Inputs(("tracks",))
+        self._params = self.Params()
+
+    @property
+    def inputs(self) -> _FrameEcho.Inputs:
+        return self._inputs
+
+    @property
+    def params(self) -> _FrameEcho.Params:
+        return self._params
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
+    ) -> bool:
+        _ = run_root, artifact_paths, dependency_lookups
+        return True
+
+    def fit(self, inputs: InputStream) -> None:
+        _ = inputs
+
+    def save_state(self, run_root: Path) -> None:
+        _ = run_root
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df[["frame", "time", "id", "group", "sequence", "X", "Y"]].copy()
+
+
+def _two_variants(tmp_path: Path, *, declared: bool) -> Dataset:
+    """``rec/a``, ``rec/b`` and ``solo``, each in the variants ``convert.v1`` and ``.v2``.
+
+    ``convert.v1`` numbers ``rec`` across the recording. ``convert.v2`` restarts
+    ``rec/b`` at frame 0, so its extents would refuse an overlapped read.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    for run_id, b_start in (("convert.v1", 10), ("convert.v2", 0)):
+        add_tracks_table(ds, run_id, track_table("rec", "a", n_rows=10))
+        add_tracks_table(
+            ds, run_id, track_table("rec", "b", n_rows=10, start_frame=b_start)
+        )
+        add_tracks_table(ds, run_id, track_table("", "solo", n_rows=10))
+    if declared:
+        ds.set_continuous_groups(["rec"])
+    return ds
+
+
+def _frames_written(ds: Dataset, result: Result) -> dict[tuple[str, str], list[int]]:
+    """Each entry's distinct output frames for *result*, from the feature index."""
+    index = feature_index(feature_index_path(ds, result.feature)).read()
+    rows = index[index["run_id"] == result.run_id]
+    return {
+        (str(row["group"]), str(row["sequence"])): sorted(
+            int(frame)
+            for frame in pd.read_parquet(ds.resolve_path(row["abs_path"]))[
+                "frame"
+            ].unique()
+        )
+        for _, row in rows.iterrows()
+    }
+
+
+@pytest.mark.parametrize("declared", [True, False], ids=["declared", "undeclared"])
+@pytest.mark.parametrize("overlap", [0, 3])
+def test_a_feature_input_reads_frame_extents_under_its_upstream_variant(
+    tmp_path: Path, declared: bool, overlap: int
+) -> None:
+    """A feature-only run needs no pinned tracks variant beside two variants.
+
+    The upstream read ``convert.v1``, so the extents of the continuous group come
+    from that variant. ``convert.v2``'s extents would refuse the overlapped run.
+    """
+    ds = _two_variants(tmp_path, declared=declared)
+    upstream = run_feature(
+        ds, _FrameEcho(), overlap_frames=overlap, tracks_run_id="convert.v1"
+    )
+
+    result = run_feature(
+        ds, _FrameEcho(_FrameEcho.Inputs((upstream,))), overlap_frames=overlap
+    )
+
+    frames = _frames_written(ds, result)
+    assert sorted(frames) == [("", "solo"), ("rec", "a"), ("rec", "b")]
+    assert frames[("rec", "b")] == list(range(10, 20))
+
+
+def test_an_upstream_of_unknown_variant_refuses_a_member_with_two_variants(
+    tmp_path: Path,
+) -> None:
+    """Without a known variant there is no defensible choice between the two."""
+    ds = _two_variants(tmp_path, declared=True)
+    upstream = run_feature(ds, _FrameEcho(), tracks_run_id="convert.v1")
+    (result_run_root(ds, upstream) / "params.json").unlink()
+    inputs = _FrameEcho.Inputs((upstream,))
+
+    with pytest.raises(ValueError, match="2 variants"):
+        _ = build_manifest(ds, inputs)
+
+    _ = build_manifest(ds, inputs, tracks_run_id="convert.v1")

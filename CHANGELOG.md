@@ -509,6 +509,15 @@ run prints one note to stderr with their count. No run id changes.
   earlier overlapped run in place, because the run id does not depend on the
   declaration. Re-run with `overwrite=True` to read the new neighbors.
 
+**A feature run reads frame extents only for continuous groups, under the variant its
+inputs read.** A run whose only input is another feature's output raised "tracks/index.csv
+holds 2 variants" on a dataset where an entry has two labelled tracks variants, even at
+`overlap_frames=0`, because every manifest read every entry's extent without a pinned
+variant. The extents of a continuous group's members alone are read now, each under the
+variant that a `tracks` input resolved or that the upstream run recorded in its
+`params.json`. The run refuses only when such a member has two labelled variants and
+neither `tracks_run_id` nor the upstream names one. No run id changes.
+
 **One rule names an entry's recording, and a write refuses a key two entries share.**
 An entry's recording is its continuous group, else the entry itself
 (`mosaic.core.recording`, `Dataset.recording_of`, `Dataset.recordings`). No key, run id
@@ -524,6 +533,10 @@ or path changes.
 - `Dataset.set_continuous_groups` refuses a name containing `__` or `:`, the name of an
   empty-group sequence, and a group with no entry in the media, tracks_raw, tracks or
   labels indexes. A manifest that already declares such a name still loads.
+- The same index writes refuse a new empty-group sequence named like a declared
+  continuous group, such as `("", "R20210219")` once `R20210219` is declared. The two
+  recordings would share one name. A sequence indexed before the declaration keeps
+  resolving.
 - A media request in the empty group no longer matches the rows of a continuous group
   by their sequence name.
 - A continuous group's media is ordered by a natural sort on its sequence names and
@@ -535,8 +548,8 @@ run id or path changes.
 
 - `DatasetSummary.counts` gains `recordings` and `divided_recordings`, counted over the
   entries of the media index and the tracks index. `DatasetSummary.divided_recordings`
-  lists each divided recording with its sequences, ordered by a natural sort of their
-  names. Each sequence's `first_frame`, `frame_count` and `start_utc` are `null`.
+  lists each divided recording with its sequences. Each sequence's `start_utc` is
+  `null`.
   `counts.sequences` and `continuous_groups` are unchanged, and `describe_dataset`
   returns the same fields.
 - `mosaic describe` prints `recordings: N (M divided: ...)` in place of the
@@ -547,6 +560,28 @@ run id or path changes.
   `labelled` has one row per entry, so a sequence name two groups share appears twice.
   The plain output names each entry by its `group:sequence` token.
 - `list_sequences` gives each row its `recording`.
+- `mosaic sequences` lists every entry of the media and tracks indexes, so a dataset
+  holding only media lists its entries instead of exiting 1. `--json` entries gain
+  `has_tracks`. The command still exits 1 when neither index names an entry.
+- `list_sequences` lists an entry that has media and no tracks table, with `null`
+  `tracks_variant`, `producer`, `std_format` and counts, unless `tracks_variant` is
+  given. Those three `SequenceRow` fields are now nullable.
+- `mosaic describe` prints `sequences: N with a tracks table` and
+  `recordings: N in the media or tracks index (M divided)`, saying what each counts.
+- A divided recording's sequences are ordered as an overlapped run reads them: by the
+  first frame of each tracks table, then by name. Each sequence's `first_frame` and
+  `frame_count` come from its tracks table's frame extent. A recording with a member of
+  two labelled tracks variants keeps the name order and `null` facts, since a summary
+  chooses no variant.
+
+**A refused manifest setter leaves the dataset as it was.** `set_notes`,
+`set_continuous_groups`, `define_tag`, `set_tag_value` and `add_library` held the new
+manifest before checking it. After a refusal the next `save`, such as the one
+`add_scan_source` makes, wrote the refused value, and the dataset then failed to open.
+Each now checks the manifest it would make first. `set_continuous_groups` refuses an
+empty or repeated name with a `ValueError` that names it, where the empty name raised a
+pydantic error and a repeated name was reported as the group of no entry. No key, run id
+or path changes.
 
 **A media index write refuses imgstores it cannot group, and records each store's
 `camera_serial`.** No key, run id, path or media composition changes.

@@ -28,6 +28,7 @@ from .index import (
 from .loading import load_entry_data
 from .track_universe import current_run_id, is_track_shaped
 from .tracks_index import (
+    FrameExtents,
     read_frame_extents,
     read_tracks_index,
     select_variant_rows,
@@ -217,6 +218,7 @@ def build_manifest(
 
     variants: tuple[str, ...] = ()
     tracks_schemas: dict[tuple[str, str], str] = {}
+    upstream_runs: list[tuple[str, str | None]] = []
     for i, item in enumerate(inputs.root):
         if item == "tracks":
             input_result = _resolve_tracks(ds, tracks_run_id, selector, on_missing_run)
@@ -232,6 +234,7 @@ def build_manifest(
             )
             if getattr(type(inputs), "_track_input", False):
                 _ensure_track_shaped(item.feature, input_result.path_map_all)
+            upstream_runs.append((item.feature, item.run_id))
         per_input_entries.append(input_result.entries)
         per_input_paths.append(input_result.path_map)
         per_input_paths_all.append(input_result.path_map_all)
@@ -279,7 +282,9 @@ def build_manifest(
     # their names. The resolvers above skip a sequence whose parquet is missing.
     # A name order alone would then make `seg3` and `seg5` adjacent across the
     # hole.
-    frame_extents = read_frame_extents(ds, tracks_run_id)
+    frame_extents = _continuous_frame_extents(
+        ds, first_full_order, tracks_run_id, variants, upstream_runs
+    )
     divided: dict[RecordingKey, tuple[tuple[str, str], ...]] = {
         recording.key: recording.members
         for recording in ds.recordings(
@@ -355,6 +360,59 @@ def _refuse_stacked_overlap(per_input_entries: list[set[tuple[str, str]]]) -> No
         "input its own entries."
     )
     raise StackedEntryOverlap(msg)
+
+
+def _continuous_frame_extents(
+    ds: Dataset,
+    universe: Iterable[tuple[str, str]],
+    tracks_run_id: str | None,
+    tracks_variants: Iterable[str],
+    upstream_runs: Iterable[tuple[str, str | None]],
+) -> FrameExtents:
+    """Return the recorded frame extents of the continuous-group members of *universe*.
+
+    Only a continuous group's members have neighbors, so no other entry's extent
+    is read, and two variants of such an entry refuse nothing. A pinned
+    *tracks_run_id* names the variant. Otherwise each member resolves among the
+    variants that the inputs read: *tracks_variants* from a ``tracks`` input,
+    and the variants each feature run of *upstream_runs* read, from its
+    ``params.json``. A run whose variants are unknown leaves every variant in
+    play.
+
+    Raises:
+        ValueError: If a member has two labelled variants and neither the pin
+            nor the inputs choose between them.
+    """
+    groups = {group for group, _ in universe if ds.recording_kind(group) == "divided"}
+    if not groups:
+        return {}
+    if tracks_run_id is not None:
+        return read_frame_extents(ds, tracks_run_id, groups=groups)
+    read: set[str] | None = set(tracks_variants)
+    for storage, run_id in upstream_runs:
+        upstream = _upstream_tracks_variants(ds, storage, run_id)
+        if upstream is None:
+            read = None
+            break
+        read |= upstream
+    return read_frame_extents(ds, None, groups=groups, variants=read)
+
+
+def _upstream_tracks_variants(
+    ds: Dataset, storage: str, run_id: str | None
+) -> frozenset[str] | None:
+    """Return the tracks variants a run of *storage* read, ``None`` if unknown.
+
+    An unpinned *run_id* is the run :func:`_resolve_feature` reads. An empty set
+    names the unlabelled tables, which a run records no variant for.
+    """
+    from .inventory.params import run_tracks_variants
+
+    if run_id is None:
+        if not feature_index_path(ds, storage).exists():
+            return frozenset()
+        run_id = _leaf_run_of(ds, storage)
+    return run_tracks_variants(ds, storage, run_id)
 
 
 def _neighbors(

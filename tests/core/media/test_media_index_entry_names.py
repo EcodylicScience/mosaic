@@ -310,3 +310,47 @@ def test_a_continuous_group_orders_its_media_beside_two_tracks_variants(
     matched = dataset.match_media_rows("rec", "s10")
 
     assert list(matched["sequence"]) == ["s2", "s10"]
+
+
+@pytest.fixture
+def declared_recording(tmp_path: Path) -> Dataset:
+    """A dataset whose continuous group ``R20210219`` has one sequence."""
+    dataset = make_dataset(tmp_path / "ds")
+    add_tracks_table(dataset, "convert.a", track_table("R20210219", "partA"))
+    dataset.set_continuous_groups(["R20210219"])
+    return dataset
+
+
+def test_a_media_write_refuses_a_sequence_named_like_a_continuous_group(
+    declared_recording: Dataset,
+) -> None:
+    """The reverse of the declaration's refusal: two recordings would share a name."""
+    with pytest.raises(EntryKeyCollisionError, match="continuous group 'R20210219'"):
+        add_media_sequence(declared_recording, "R20210219", videos=("a.mp4",))
+
+    assert declared_recording.read_media_index() == []
+
+
+def test_a_tracks_write_refuses_a_sequence_named_like_a_continuous_group(
+    declared_recording: Dataset,
+) -> None:
+    with pytest.raises(EntryKeyCollisionError, match="continuous group 'R20210219'"):
+        add_tracks_table(declared_recording, "convert.a", track_table("", "R20210219"))
+
+    assert declared_recording.list_entries() == [("R20210219", "partA")]
+
+
+def test_a_sequence_indexed_before_the_group_was_declared_keeps_resolving(
+    tmp_path: Path,
+) -> None:
+    """Only a new entry is refused, as for a key that two entries share."""
+    dataset = make_dataset(tmp_path / "ds")
+    add_tracks_table(dataset, "convert.a", track_table("R20210219", "partA"))
+    add_tracks_table(dataset, "convert.a", track_table("", "R20210219"))
+    dataset.manifest = dataset.manifest.model_copy(
+        update={"continuous_groups": ("R20210219",)}
+    )
+
+    add_tracks_table(dataset, "convert.b", track_table("", "R20210219"))
+
+    assert ("", "R20210219") in dataset.list_entries()
