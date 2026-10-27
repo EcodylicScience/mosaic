@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from mosaic.core.manifest import MANIFEST_VERSION, default_roots
+from mosaic.core.manifest import UNDIVIDED_MANIFEST_VERSION, default_roots
 
 runner = CliRunner()
 
@@ -31,7 +31,7 @@ class TestInit:
 
         dataset = Dataset(manifest_path=target / "dataset.yaml").load()
         assert dataset.name == "cage-a"
-        assert dataset.manifest.manifest_version == MANIFEST_VERSION
+        assert dataset.manifest.manifest_version == UNDIVIDED_MANIFEST_VERSION
 
     def test_a_fresh_manifest_is_at_the_current_version(self, tmp_path: Path) -> None:
         _ = runner.invoke(app, ["init", str(tmp_path / "ds")])

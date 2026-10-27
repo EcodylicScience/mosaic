@@ -396,10 +396,16 @@ def windows(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     build = EntryAxis.of_entry_media
 
     def of_entry_media(
-        clips: Sequence[MediaFacts], *, windowed: bool, first_frame: int = 0
+        clips: Sequence[MediaFacts],
+        *,
+        windowed: bool,
+        first_frame: int = 0,
+        time_offset: float | None = None,
     ) -> EntryAxis:
         seen.append(windowed)
-        return build(clips, windowed=windowed, first_frame=first_frame)
+        return build(
+            clips, windowed=windowed, first_frame=first_frame, time_offset=time_offset
+        )
 
     monkeypatch.setattr(EntryAxis, "of_entry_media", of_entry_media)
     return seen

@@ -293,7 +293,7 @@ def test_make_portable_relativizes_an_absolute_variant_path(tmp_path: Path) -> N
 
 
 def _scanned_names(ds: Dataset) -> list[str]:
-    index = pd.read_csv(ds.scan_media(), keep_default_na=False)
+    index = pd.read_csv(ds.scan_media().path, keep_default_na=False)
     return sorted(Path(str(p)).name for p in index["abs_path"])
 
 

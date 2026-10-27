@@ -28,6 +28,7 @@ from typing import TypeVar
 import pandas as pd
 from mosaic_media import MediaFacts
 
+from mosaic.core.manifest import MediaDivision
 from mosaic.core.media.facts_columns import (
     MEDIA_INDEX_COLUMNS,
     AssignmentSource,
@@ -157,6 +158,11 @@ class MediaIndexScope:
     override applies only when the probe records no serial. Unsynchronized stores
     under one scope must share one ``camera_serial``, and stores of one camera
     join the sequence as clips.
+
+    ``division`` divides the one imgstore that ``directory`` is into sequences
+    of whole chunks. ``sequence`` is then ``""``, and ``group`` is the
+    recording's name, or ``""`` to derive it from the store. A recording by
+    camera is the stores of several scopes that share one ``group``.
     """
 
     directory: Path
@@ -165,6 +171,7 @@ class MediaIndexScope:
     order_by_name: Mapping[str, int] = field(default_factory=_empty_order)
     facts_by_name: Mapping[str, MediaFacts] = field(default_factory=_empty_facts)
     camera: str = ""
+    division: MediaDivision | None = None
 
 
 def mtime_iso(timestamp: float) -> str:

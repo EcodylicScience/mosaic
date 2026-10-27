@@ -67,11 +67,17 @@ file per clip therefore have to be numbered across the recording already.
 
 Each sequence of a continuous group has media of its own, which contains its frames
 only. Its first frame on the recording's axis is the sum of the media frame counts of
-the sequences before it. A tracker reads the sequence's media and numbers its table from
-there. When a sequence before it changes length, the table reads as out of date, and the
-next run renumbers it. Playback and the crops find tracks frame `f` at media frame
-`f - first_frame`, and refuse a frame outside the sequence. Extract-frames indices and
-annotation frame indices count from 0 in each sequence's media.
+the sequences before it, and for a division of an imgstore the first frame of its
+chunks. A tracker reads the sequence's media and numbers its table from there, and a
+converter's table of a division, numbered from 0, is moved there too. `time` moves with
+it. A division's `time` continues the division before it at that division's frame rate,
+and after a gap between chunks or a store boundary starts at the time since the
+recording's first frame on the store's clock. Every other sequence's offset is its first
+frame over the frame rate. When a sequence before it changes length, the table reads as
+out of date, and the next run renumbers it. Playback and the crops find tracks frame `f`
+at media frame `f - first_frame`, and refuse a frame outside the sequence.
+Extract-frames indices and annotation frame indices count from 0 in each sequence's
+media.
 
 For a Motif or Loopbio imgstore, `frame` is the store's `frame_index`, its contiguous
 running count. It is not the `frame_number` the camera stamped on each frame, which

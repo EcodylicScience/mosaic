@@ -128,8 +128,9 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
   run-log record.
 - `frame` counts from the start of the entry, or of its group when the group is
   declared continuous. A tool reads the sequence's media, and `EntryAxis.place` moves
-  its table onto the recording's axis by `ResolvedMedia.first_frame`, which
-  `build_work_items` and the inference ops pass on. It is 0 outside a continuous
+  its table onto the recording's axis by `ResolvedMedia.first_frame`, and its time
+  columns by `ResolvedMedia.time_offset`, which `build_work_items` and the inference
+  ops pass on. It is 0 outside a continuous
   group. The tracks row records it as `first_frame`. A sequence that cannot be placed
   fails alone as a lost entry, and the run reports `partial`. `media_drift` reports a
   row whose sequence now starts elsewhere, and `reusable_tracks_table`

@@ -66,6 +66,7 @@ __all__ = [
     "DIVISION_IDENTITY_SCHEME",
     "GAP_INTERVALS",
     "ChunkRecord",
+    "CommittedDivision",
     "DivisionPlan",
     "DivisionRefusalReason",
     "DivisionRefused",
@@ -88,8 +89,11 @@ __all__ = [
     "division_rule",
     "division_token",
     "division_uid",
+    "held_back_of",
     "parse_division_cells",
     "plan_division",
+    "recording_name_problem",
+    "refused_of",
     "store_base_name",
     "store_clock",
 ]
@@ -142,8 +146,30 @@ DivisionRefusalReason = Literal[
     "unknown_timezone",
     "ambiguous_local_time",
     "nonexistent_local_time",
+    "synchronized_store",
+    "not_one_store",
+    "assigned_store",
+    "recording_name_taken",
+    "mixed_recording",
+    "redivision_with_outputs",
+    "tracking_unregistered",
 ]
-"""Why a rule, a recording or a store clock is refused as a whole."""
+"""Why a rule, a recording or a store clock is refused as a whole.
+
+The planner raises the reasons up to ``nonexistent_local_time``. A media index
+write raises the rest:
+
+- ``synchronized_store``: a store of a synchronized camera set.
+- ``not_one_store``: a division scope whose directory is not one store.
+- ``assigned_store``: a scan of a store whose identity a caller assigned.
+- ``recording_name_taken``: a name that another recording, or a sequence of
+  the empty group, has.
+- ``mixed_recording``: a recording that holds rows other than its divisions.
+- ``redivision_with_outputs``: a re-division of a recording whose entries have
+  outputs.
+- ``tracking_unregistered``: outputs that a tracking root holds and that this
+  process cannot list.
+"""
 
 SpanRefusalReason = Literal[
     "missing_chunk_index", "short_interior_chunk", "gap_inside_chunk"
@@ -875,6 +901,31 @@ class DivisionPlan:
     refused: tuple[RefusedSpan, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CommittedDivision:
+    """One division that a media index row records, with its rule and recording.
+
+    Attributes:
+        row: The division.
+        rule: The rule its row records.
+        recording: Its row's group, the recording's name.
+    """
+
+    row: RowDivision
+    rule: DivisionRule
+    recording: str
+
+
+def held_back_of(plans: Iterable[DivisionPlan]) -> tuple[HeldBack, ...]:
+    """Return the sequences that *plans* hold back, in plan order."""
+    return tuple(held for plan in plans for held in plan.held_back)
+
+
+def refused_of(plans: Iterable[DivisionPlan]) -> tuple[RefusedSpan, ...]:
+    """Return the divisions and stores that *plans* refuse, in plan order."""
+    return tuple(refused for plan in plans for refused in plan.refused)
+
+
 # Planning
 
 
@@ -990,21 +1041,29 @@ def _recording_name(
         candidate = f"{first.camera_serial}_{base}"
     else:
         candidate = first.dirname
-    problem: str | None = None
-    if not candidate.strip():
-        problem = "is empty"
-    else:
-        try:
-            _ = validate_entry_name(candidate, "recording")
-        except ValueError as exc:
-            problem = str(exc)
-        for separator in ("__", ":"):
-            if problem is None and separator in candidate:
-                problem = f"contains {separator!r}, which joins a group to a sequence"
+    problem = recording_name_problem(candidate)
     if problem is not None:
         message = f"the recording name {candidate!r} {problem}"
         raise DivisionRefused("invalid_name", message)
     return candidate
+
+
+def recording_name_problem(name: str) -> str | None:
+    """Return why *name* cannot name a divided recording, ``None`` when it can.
+
+    A recording's name is one path component without ``__`` or ``:``, which
+    join a group to a sequence in an entry key or token.
+    """
+    if not name.strip():
+        return "is empty"
+    try:
+        _ = validate_entry_name(name, "recording")
+    except ValueError as exc:
+        return str(exc)
+    for separator in ("__", ":"):
+        if separator in name:
+            return f"contains {separator!r}, which joins a group to a sequence"
+    return None
 
 
 @dataclass(frozen=True, slots=True)

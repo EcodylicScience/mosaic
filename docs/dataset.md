@@ -89,6 +89,12 @@ instead of editing the version.
 A top-level key that mosaic does not use survives a load and a save. A key you add to
 `dataset.yaml` by hand is kept.
 
+A dataset is saved at version 3, and at version 4 once it divides an imgstore into
+sequences ([Divide a recording](#divide-a-recording)): a media source declares a
+`division`, or its media index contains division rows. A mosaic older than version 4
+refuses to open such a dataset, because it would read each division row as the
+whole store. Every other dataset stays at version 3 and opens in an older mosaic.
+
 ## Dataset folder layout
 
 ```
@@ -274,13 +280,84 @@ refuses to write an entry whose key another entry already has.
 
 A recording split into several clips is one entry, whose frames are numbered across
 its clips. Divide a recording only when you need its parts as separate sequences, such
-as the half-hour divisions of a 6-hour recording, and still want windowed features to
-read across the boundaries between them
+as the hours of a day-long recording, and still want windowed features to read across
+the boundaries between them
 ([why both are needed](concepts/features.md#reading-across-a-sequence-boundary)). The
 recording is then a **continuous group**: the group is the recording's name, and each
 part is one of its sequences. Every other group is a namespace, in which each entry is
-a recording of its own. mosaic divides no recording by itself. Divide one in three
-steps:
+one recording.
+
+### Divide an imgstore when you scan it
+
+A media source with a `division` divides each imgstore it finds into sequences of
+whole chunks:
+
+```python
+from mosaic.core.manifest import MediaDivision, MediaScanSource
+
+ds.add_scan_source(MediaScanSource(
+    id="motif",
+    path="/Volumes/motif/23036146",
+    division=MediaDivision(frames=60000),
+))
+ds.scan_media()
+```
+
+```bash
+mosaic sources add -m dataset.yaml --kind media --path /Volumes/motif/23036146 \
+    --divide-frames 60000
+mosaic scan -m dataset.yaml
+```
+
+- **The rule.** `frames` is a whole multiple of the store's `chunksize`. A store of
+  10000-frame chunks divides every 60000 frames, and a scan refuses 65000. An hour is
+  not a rule: at 20 fps it is 72000 frames, which is not a multiple of 10000. Chunk
+  ids alone decide which frames a sequence contains.
+- **The recording and its sequences.** By store (the default), each store is a
+  recording named `<camera_serial>_<directory name>`, or the directory name when the
+  store does not record a serial. With `--recording-by camera` (`identity="camera"`)
+  every store of one camera serial is one recording, named by the serial, its stores in
+  start order on one frame axis. `--recording-name` (`name=`) names the recording
+  instead. A sequence is named by the UTC time of its first frame, `YYYYMMDDTHHMMSSZ`,
+  from the store's `created_utc` or its frame times. A name, once written, is kept.
+- **Partial sequences.** Only closed chunks count. A store whose last chunk is short
+  has ended, and its last sequence is written. A store whose last chunk is full may
+  still be recording, and its last, partial sequence waits until it closes. The scan
+  lists it on stderr, and under `held_back` with `--json`.
+  `mosaic scan --include-partial` (`scan_media(include_partial=True)`) writes it. A
+  rescan measures each store again, keeps every sequence written before, and adds the
+  sequences that have closed since. A chunk's index is written when the chunk closes.
+- **Gaps.** A step between frames wider than ten frame intervals ends a sequence early,
+  and the next starts after it. A store boundary ends a sequence too. The sequence
+  before a gap or a boundary is not the neighbor of the one after it.
+- **Refusals.** A scan refuses, before it writes anything: a rule that is not whole
+  chunks, a store of a synchronized camera set, a store whose identity
+  `write_media_index` assigned (scan with `--reassign` to divide it), a name another
+  recording or an empty-group sequence has, and a group declared by hand with other
+  sequences. A division whose chunk lacks an index is refused alone, and a store with
+  a short interior chunk or a gap inside a chunk is refused whole. Each is listed under
+  `refused` with its reason.
+- **Dividing again.** A changed rule or name, a sequence that no longer reproduces, and
+  the first division of a store indexed whole each divide the recording again, which is
+  refused while the entries it replaces have outputs (tracks, labels, features, media
+  variants and tracking runs). A store indexed whole replaces only its own entry, also
+  when the other stores of its camera are divided. The refusal lists the outputs.
+  Without outputs, `mosaic scan` and `write_media_index` divide the recording again and
+  say so on stderr.
+
+Each sequence reads only its chunks, and its `first_frame` on the recording's frame axis
+is the first frame of its chunks. A tracker, an `infer-*` op and a converter number a
+sequence's table from its first frame on the recording's axis. Its `time` continues the
+sequence before it at that sequence's frame rate, and after a gap or a store boundary
+starts at the time the store's clock gives, which counts the gap. A sequence whose
+neighbor before it is refused also starts at the clock's time. A table written then
+keeps that time once the neighbor is written, which differs from the continued time
+by the clock's drift, from microseconds to milliseconds, and the table does not read
+as out of date. A converter reads the sequence's frames, numbered from 0, and a table
+numbered on the recording's axis already is refused. The scan declares the recording continuous. `set_continuous_groups` refuses
+to leave it out.
+
+### Declare a recording divided by hand
 
 1. **Number frames across the whole recording** when you convert. Each sequence starts
    at the sum of the frame counts of the files before it. The second half-hour of a
@@ -306,10 +383,6 @@ steps:
     mosaic measure-tracks -m dataset.yaml --apply
     ```
 
-A feature run with `overlap_frames` then reads across the boundaries. Sequences
-outside a continuous group have no neighbors and read only their own frames, and the
-run prints one note to stderr counting them.
-
 Index each sequence's media under the group, one entry per sequence. A sequence reads
 its own media, and starts at the summed frame counts of the sequences before it in a
 natural sort on their names. Name the sequences so that they sort in recording order. A
@@ -318,6 +391,13 @@ without media cannot be drawn, cropped or tracked, and neither can a sequence af
 Every sequence of the group must also be recorded at one frame rate. When a sequence's
 media changes length, the tracker tables of the sequences after it read as out of date,
 and the next tracker run renumbers them.
+
+### Overlap
+
+A feature run with `overlap_frames` reads across the boundaries of a continuous group.
+A division of a store reads only across a boundary whose frames continue. A gap, a
+store boundary or a refused division ends the overlap. Sequences outside a continuous
+group read only their frames, and the run prints one note to stderr counting them.
 
 ## Hold groups out of training
 

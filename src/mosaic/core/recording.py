@@ -26,6 +26,7 @@ __all__ = [
     "Recording",
     "RecordingKey",
     "RecordingKind",
+    "adjacent",
     "facts_from_frame_extents",
     "order_members",
     "recording_kind",
@@ -62,17 +63,43 @@ class RecordingKey:
 class OrderFacts:
     """What places one member in its recording, each ``None`` when unknown.
 
+    A division record gives every field but ``frame_min``.
+
     Attributes:
         first_frame: The member's first frame on the recording's frame axis,
             from a division record.
         start_utc: When the member starts, timezone-aware.
         frame_min: The first frame of the member's tracks table, read under a
             pinned tracks run id.
+        frame_count: The member's frames, from a division record.
+        follows_gap: Whether a gap or a store boundary precedes the member, so
+            that the member before it is not its neighbor.
+        time_offset: The member's first frame on the recording's time axis, in
+            seconds, ``None`` to take ``first_frame`` over the frame rate.
     """
 
     first_frame: int | None = None
     start_utc: datetime | None = None
     frame_min: int | None = None
+    frame_count: int | None = None
+    follows_gap: bool = False
+    time_offset: float | None = None
+
+
+def adjacent(before: OrderFacts | None, after: OrderFacts | None) -> bool:
+    """Return whether *after* continues *before* on the recording's frame axis.
+
+    Two divisions are adjacent when the second starts at the frame after the
+    first ends and no gap or store boundary precedes it. A member without a
+    division record is adjacent to the members beside it in recording order.
+    """
+    if before is None or after is None:
+        return True
+    if before.first_frame is None or after.first_frame is None:
+        return True
+    if after.follows_gap or before.frame_count is None:
+        return not after.follows_gap
+    return before.first_frame + before.frame_count == after.first_frame
 
 
 @dataclass(frozen=True, slots=True)

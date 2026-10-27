@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePath
+from typing import TYPE_CHECKING
 
 from .strict_model import terse
 from .manifest import (
@@ -21,6 +22,9 @@ from .manifest import (
     SourceKind,
     TracksScanSource,
 )
+
+if TYPE_CHECKING:
+    from .media.store_division import RecordingIdentity
 
 __all__ = ["SourceFields", "SourceFieldsInvalid", "scan_source_from_fields"]
 
@@ -44,6 +48,12 @@ class SourceFields:
         files: Paths relative to *path*. Non-empty makes a file source.
         series: Labels only: the versioned label series whose revisions it
             claims.
+        divide_frames: Media only: the frames of a full division of each
+            imgstore recording (``MediaDivision.frames``).
+        recording_identity: Media only, with *divide_frames*: ``store`` or
+            ``camera`` (``MediaDivision.identity``).
+        recording_name: Media only, with *divide_frames*: the recording's name
+            (``MediaDivision.name``).
     """
 
     kind: SourceKind
@@ -62,6 +72,9 @@ class SourceFields:
     group_pattern: str | None = None
     md5: bool = True
     series: str | None = None
+    divide_frames: int | None = None
+    recording_identity: RecordingIdentity | None = None
+    recording_name: str | None = None
 
 
 def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
@@ -98,6 +111,16 @@ def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
                 "multi_sequences_per_file": fields.multi_sequences_per_file or None,
             },
         )
+        if fields.divide_frames is None:
+            _refuse_given(
+                fields,
+                "media",
+                {
+                    "recording_identity": fields.recording_identity,
+                    "recording_name": fields.recording_name,
+                },
+                unless="divide_frames",
+            )
     else:
         _refuse_given(
             fields,
@@ -106,6 +129,9 @@ def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
                 "extensions": fields.extensions,
                 "layout": fields.layout,
                 "match_mode": fields.match_mode,
+                "divide_frames": fields.divide_frames,
+                "recording_identity": fields.recording_identity,
+                "recording_name": fields.recording_name,
             },
         )
     identifier = fields.id or PurePath(fields.path).name or "source"
@@ -123,6 +149,7 @@ def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
                         extensions=fields.extensions,
                         layout=fields.layout,
                         match_mode=fields.match_mode,
+                        division=_division(fields),
                     ),
                 }
             )
@@ -173,9 +200,29 @@ def _present(**values: object) -> dict[str, object]:
     return {name: value for name, value in values.items() if value is not None}
 
 
-def _refuse_given(fields: SourceFields, kind: str, foreign: dict[str, object]) -> None:
-    """Refuse a field of another kind of source."""
+def _division(fields: SourceFields) -> dict[str, object] | None:
+    """The ``division`` of a media source that *fields* divide, ``None`` otherwise."""
+    if fields.divide_frames is None:
+        return None
+    return {
+        "frames": fields.divide_frames,
+        **_present(identity=fields.recording_identity, name=fields.recording_name),
+    }
+
+
+def _refuse_given(
+    fields: SourceFields,
+    kind: str,
+    foreign: dict[str, object],
+    *,
+    unless: str | None = None,
+) -> None:
+    """Refuse a field of another kind of source, or one given without *unless*."""
     given = [name for name, value in foreign.items() if value is not None]
-    if given:
+    if not given:
+        return
+    if unless is not None:
+        msg = f"{', '.join(given)} applies only beside {unless}"
+    else:
         msg = f"{', '.join(given)} does not apply to a {kind} source"
-        raise SourceFieldsInvalid(msg)
+    raise SourceFieldsInvalid(msg)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gc
 import sys
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, overload
@@ -15,7 +15,12 @@ import pandas as pd
 import pyarrow as pa
 
 from ...core.helpers import make_entry_key, text_cell
-from ...core.recording import RecordingKey, facts_from_frame_extents
+from ...core.recording import (
+    OrderFacts,
+    RecordingKey,
+    adjacent,
+    facts_from_frame_extents,
+)
 from ...core.schema import LEGACY_SCHEMA, schema_family
 from ...core.scope import Scope
 from .sequence_index import read_entry_compositions
@@ -282,14 +287,21 @@ def build_manifest(
     # their names. The resolvers above skip a sequence whose parquet is missing.
     # A name order alone would then make `seg3` and `seg5` adjacent across the
     # hole.
+    #
+    # A division of a store is placed by its media row, and its neighbor is the
+    # division whose frames it continues (`adjacent`). A gap, a store boundary,
+    # or a division that is refused or missing leaves the division before it
+    # without a next neighbor.
     frame_extents = _continuous_frame_extents(
         ds, first_full_order, tracks_run_id, variants, upstream_runs
     )
+    order_facts = {
+        **facts_from_frame_extents(frame_extents),
+        **ds.division_facts(first_full_order),
+    }
     divided: dict[RecordingKey, tuple[tuple[str, str], ...]] = {
         recording.key: recording.members
-        for recording in ds.recordings(
-            first_full_order, order_facts=facts_from_frame_extents(frame_extents)
-        )
+        for recording in ds.recordings(first_full_order, order_facts=order_facts)
         if recording.kind == "divided"
     }
 
@@ -306,7 +318,7 @@ def build_manifest(
         prev_entry: tuple[str, str] | None = None
         next_entry: tuple[str, str] | None = None
         if members is not None:
-            prev_entry, next_entry = _neighbors((group, sequence), members)
+            prev_entry, next_entry = _neighbors((group, sequence), members, order_facts)
 
         prev_key, prev_specs = _neighbor_specs(prev_entry, per_input_paths_all)
         next_key, next_specs = _neighbor_specs(next_entry, per_input_paths_all)
@@ -416,11 +428,14 @@ def _upstream_tracks_variants(
 
 
 def _neighbors(
-    entry: tuple[str, str], ordered: tuple[tuple[str, str], ...]
+    entry: tuple[str, str],
+    ordered: tuple[tuple[str, str], ...],
+    order_facts: Mapping[tuple[str, str], OrderFacts],
 ) -> tuple[tuple[str, str] | None, tuple[str, str] | None]:
     """The entries before and after *entry* in its recording's order.
 
-    An entry absent from *ordered* has neither.
+    An entry absent from *ordered* has neither. A neighbor that *entry* does not
+    continue, or that does not continue *entry* (:func:`adjacent`), is none.
     """
     try:
         idx = ordered.index(entry)
@@ -428,6 +443,11 @@ def _neighbors(
         return None, None
     prev_entry = ordered[idx - 1] if idx > 0 else None
     next_entry = ordered[idx + 1] if idx < len(ordered) - 1 else None
+    facts = order_facts.get(entry)
+    if prev_entry is not None and not adjacent(order_facts.get(prev_entry), facts):
+        prev_entry = None
+    if next_entry is not None and not adjacent(facts, order_facts.get(next_entry)):
+        next_entry = None
     return prev_entry, next_entry
 
 

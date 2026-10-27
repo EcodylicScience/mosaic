@@ -129,7 +129,7 @@ def test_division_cells_round_trip_through_the_index(divided: Dataset) -> None:
     assert [division.follows_gap for division in found if division] == [False] * 3
     assert {row["group"] for row in rows} == {"rec"}
     assert {row["camera"] for row in rows} == {""}
-    assert {row["assignment_source"] for row in rows} == {"scan-imgstore-division"}
+    assert {row["assignment_source"] for row in rows} == {"assigned"}
 
 
 def test_each_division_row_records_its_window(divided: Dataset) -> None:
@@ -196,15 +196,35 @@ def test_a_scan_keeps_each_division_its_assigned_identity_and_calibration(
     assert [media_row_key(row).window for row in rows] == list(WINDOWS)
 
 
-def test_a_rescan_of_a_divided_store_keeps_its_calibration(divided: Dataset) -> None:
+def test_a_whole_store_rescan_keeps_the_assigned_divisions_and_their_calibration(
+    divided: Dataset,
+) -> None:
+    """A source that does not divide proposes the store's row, and the divisions stay."""
     assert divided.set_media_calibration(0.25, group="rec") == 3
-    divided.set_continuous_groups([])
 
     _ = divided.index_media([divided_store(divided).parent])
 
-    (row,) = divided.read_media_index()
-    assert row_division(row) is None
-    assert row["cm_per_pixel"] == "0.25"
+    rows = divided.read_media_index()
+    assert [media_row_key(row).window for row in rows] == list(WINDOWS)
+    assert [row["cm_per_pixel"] for row in rows] == ["0.25"] * 3
+    assert divided.continuous_groups == ("rec",)
+
+
+def test_a_store_divided_after_its_calibration_keeps_it_on_each_division(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    dataset = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker(STORE_CHUNKS, fps=RATE, created_utc=DIVISION_CREATED_UTC),
+    )
+    assert dataset.set_media_calibration(0.25, sequence="rec") == 1
+
+    _ = write_division_rows(dataset, divided_store(dataset), DIVISION)
+
+    rows = dataset.read_media_index()
+    assert [row_division(row) is not None for row in rows] == [True] * 3
+    assert [row["cm_per_pixel"] for row in rows] == ["0.25"] * 3
 
 
 def test_reprobe_probes_a_divided_store_once_and_finds_it_unchanged(

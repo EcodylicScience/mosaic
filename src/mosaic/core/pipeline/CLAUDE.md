@@ -112,9 +112,11 @@ pipeline graph are in `graph/CLAUDE.md`.
 - At `overlap_frames > 0` the row's `consumed_neighbors` (`neighbor_compositions`,
   `run.py`) names the entry keys of the sequences before and after the entry with
   their tracks compositions, and is compared the same way. The cell is then always
-  filled. Declaring a group, adding a sequence to it or converting a neighbor again
-  recomputes the entries whose neighbors changed, and a row written without the cell
-  recomputes once. It is empty at `overlap_frames=0`
+  filled. Two divisions of a store are neighbors only where the second's frames
+  continue the first's (`recording.adjacent` in `_neighbors`). A gap or a refused
+  division leaves none. Declaring a group, adding a sequence to it or converting a
+  neighbor again recomputes the entries whose neighbors changed, and a row written
+  without the cell recomputes once. It is empty at `overlap_frames=0`
   (`tests/core/pipeline/test_run_feature.py`).
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division

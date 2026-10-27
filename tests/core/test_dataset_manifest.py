@@ -21,10 +21,12 @@ from mosaic.core.manifest import (
     MANIFEST_VERSION,
     NOTES_MAX_CHARS,
     TAGS_MAX_COUNT,
+    UNDIVIDED_MANIFEST_VERSION,
     DatasetManifest,
     DatasetTag,
     LabelsScanSource,
     ManifestVersionError,
+    MediaDivision,
     MediaScanSource,
     ScanSources,
     TracksScanSource,
@@ -88,7 +90,7 @@ class TestMigration:
         self, tmp_path: Path
     ) -> None:
         manifest = read_manifest(write_v1(tmp_path))
-        assert manifest.manifest_version == MANIFEST_VERSION
+        assert manifest.manifest_version == UNDIVIDED_MANIFEST_VERSION
         assert manifest.migrated_from == 1
         assert manifest.name == "legacy-dataset"
         assert manifest.meta["fps_default"] == 30.0
@@ -688,7 +690,7 @@ class TestContinuousGroups:
         A version bump would make every existing manifest a migration, for a key
         none of them carry.
         """
-        assert DatasetManifest().manifest_version == MANIFEST_VERSION
+        assert DatasetManifest().manifest_version == UNDIVIDED_MANIFEST_VERSION
         assert DatasetManifest().continuous_groups == ()
 
     def test_the_empty_group_cannot_be_continuous(self) -> None:
@@ -752,12 +754,95 @@ class TestSplits:
 
     def test_adding_it_did_not_move_the_manifest_version(self, tmp_path: Path) -> None:
         """A top-level key, so an older file reads unchanged and older code keeps it."""
-        assert DatasetManifest().manifest_version == MANIFEST_VERSION
+        assert DatasetManifest().manifest_version == UNDIVIDED_MANIFEST_VERSION
         path = tmp_path / "dataset.yaml"
         _ = path.write_text(
-            f"manifest_version: {MANIFEST_VERSION}\nname: d\nsplits:\n  g: test\n",
+            f"manifest_version: {UNDIVIDED_MANIFEST_VERSION}\nname: d\nsplits:\n  g: test\n",
             encoding="utf-8",
         )
         manifest = read_manifest(path)
         assert manifest.migrated_from is None
         assert manifest.splits == {"g": "test"}
+
+
+class TestDivision:
+    """A media source that divides each imgstore recording, and version 4."""
+
+    def test_a_version_3_manifest_loads_and_writes_version_3(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 3\nname: d\n", encoding="utf-8")
+        manifest = read_manifest(path)
+        assert (manifest.manifest_version, manifest.migrated_from) == (3, None)
+        write_manifest(path, manifest)
+        assert yaml.safe_load(path.read_text())["manifest_version"] == 3
+        assert "(v3)" in path.read_text()
+
+    def test_a_source_that_divides_writes_version_4_and_round_trips(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        source = MediaScanSource(
+            id="stores",
+            path="/data/stores",
+            division=MediaDivision(frames=60000, identity="camera", name="cam7"),
+        )
+        manifest = DatasetManifest(sources=ScanSources(media=(source,)))
+        write_manifest(path, manifest)
+        written = yaml.safe_load(path.read_text())
+        assert written["manifest_version"] == MANIFEST_VERSION == 4
+        assert written["sources"]["media"][0]["division"] == {
+            "frames": 60000,
+            "identity": "camera",
+            "name": "cam7",
+        }
+        back = read_manifest(path)
+        assert back.sources.media == (source,)
+        assert back.manifest_version == 4
+
+    def test_a_source_without_division_writes_no_division_key(self) -> None:
+        source = MediaScanSource(id="v", path="/data/v")
+        assert "division" not in source.model_dump()
+        manifest = DatasetManifest(sources=ScanSources(media=(source,)))
+        payload = manifest_payload(manifest)
+        assert payload["manifest_version"] == 3
+        assert "division" not in yaml.safe_dump(payload)
+
+    def test_a_raised_version_survives_a_round_trip(self, tmp_path: Path) -> None:
+        """A dataset whose media index holds division rows stays at 4."""
+        path = tmp_path / "dataset.yaml"
+        manifest = DatasetManifest(manifest_version=MANIFEST_VERSION)
+        write_manifest(path, manifest)
+        assert read_manifest(path).manifest_version == 4
+
+    def test_version_4_under_version_3_code_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mosaic.core.manifest as manifest_module
+
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 4\nname: d\n", encoding="utf-8")
+        monkeypatch.setattr(manifest_module, "MANIFEST_VERSION", 3)
+        with pytest.raises(ManifestVersionError, match="declares version 4"):
+            _ = read_manifest(path)
+
+    @pytest.mark.parametrize(
+        ("division", "fragment"),
+        [
+            ({"frames": 0}, "greater than 0"),
+            ({"frames": 600, "identity": "tank"}, "identity"),
+            ({"frames": 600, "name": "a__b"}, "contains '__'"),
+            ({"frames": 600, "name": "a:b"}, "contains ':'"),
+            ({"frames": 600, "name": "a/b"}, "a/b"),
+            ({"frames": 600, "name": " "}, "is empty"),
+            ({"frames": 600, "seconds": 3600}, "seconds"),
+        ],
+    )
+    def test_a_division_that_names_no_rule_is_refused(
+        self, division: dict[str, object], fragment: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=fragment):
+            _ = MediaScanSource.model_validate(
+                {"id": "s", "path": "/s", "division": division}
+            )

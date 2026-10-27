@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.media.division_wire import DivisionSpanWire
+from mosaic.core.media.store_division import RecordingIdentity
 from mosaic.core.pipeline.artifact_kinds import ArtifactKind, ArtifactStatus
 from mosaic.core.pipeline.cancel import RequestCancel
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
@@ -988,6 +990,19 @@ class ManageDatasetInput(ToolInput):
     multi_sequences_per_file: bool = False
     group_from: Literal["filename", "parent"] | None = None
     group_pattern: str | None = None
+    divide_frames: int | None = Field(
+        default=None,
+        description=(
+            "add_source, media: divide each imgstore recording into sequences of "
+            "this many frames, a multiple of its chunksize."
+        ),
+    )
+    recording_by: RecordingIdentity | None = None
+    recording_name: str | None = None
+    include_partial: bool = Field(
+        default=False,
+        description="scan: write a divided recording's sequence still recording.",
+    )
     tags: dict[str, TagValue] | None = Field(
         default=None,
         description=(
@@ -1015,6 +1030,12 @@ class DatasetChange(StrictModel):
         manifest: The manifest file.
         message: What changed, in a sentence.
         scanned: Under ``scan``, the raw index rows of each kind scanned.
+        divisions: Under ``scan``, the sequences that dividing media sources
+            wrote.
+        held_back: Under ``scan``, the divided recordings' sequences still
+            recording, each with its reason.
+        refused: Under ``scan``, the divisions and stores not written, each
+            with its reason.
         orphaned_rows: Under ``remove_source``, the index rows the source
             claimed, which stay.
         next_steps: What the dataset needs before a pipeline runs on it.
@@ -1026,6 +1047,9 @@ class DatasetChange(StrictModel):
     manifest: str
     message: str
     scanned: dict[str, int] = Field(default_factory=dict)
+    divisions: int = 0
+    held_back: tuple[DivisionSpanWire, ...] = ()
+    refused: tuple[DivisionSpanWire, ...] = ()
     orphaned_rows: int | None = None
     next_steps: tuple[str, ...] = ()
 

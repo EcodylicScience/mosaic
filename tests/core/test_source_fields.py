@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.dataset import open_dataset
-from mosaic.core.manifest import LabelsScanSource, MediaScanSource, TracksScanSource
+from mosaic.core.manifest import (
+    LabelsScanSource,
+    MediaDivision,
+    MediaScanSource,
+    TracksScanSource,
+)
 from mosaic.core.source_fields import (
     SourceFields,
     SourceFieldsInvalid,
@@ -42,6 +47,26 @@ def test_each_kind_is_built_with_its_own_fields() -> None:
     assert (listed.id, listed.mode) == ("ann", "files")
 
 
+def test_a_media_source_takes_a_division() -> None:
+    divided = scan_source_from_fields(
+        SourceFields(
+            kind="media",
+            path="/data/stores",
+            divide_frames=60000,
+            recording_identity="camera",
+            recording_name="cam7",
+        )
+    )
+    whole = scan_source_from_fields(SourceFields(kind="media", path="/data/stores"))
+
+    assert isinstance(divided, MediaScanSource)
+    assert divided.division == MediaDivision(
+        frames=60000, identity="camera", name="cam7"
+    )
+    assert isinstance(whole, MediaScanSource)
+    assert whole.division is None
+
+
 @pytest.mark.parametrize(
     ("fields", "fragment"),
     [
@@ -68,6 +93,28 @@ def test_each_kind_is_built_with_its_own_fields() -> None:
         (
             SourceFields(kind="tracks", path="/t", src_format=" "),
             "src_format must not be empty",
+        ),
+        (
+            SourceFields(kind="tracks", path="/t", divide_frames=60000),
+            "divide_frames does not apply to a tracks source",
+        ),
+        (
+            SourceFields(kind="labels", path="/l", recording_name="r"),
+            "recording_name does not apply to a labels source",
+        ),
+        (
+            SourceFields(kind="media", path="/v", recording_identity="camera"),
+            "recording_identity applies only beside divide_frames",
+        ),
+        (
+            SourceFields(kind="media", path="/v", divide_frames=0),
+            "greater than 0",
+        ),
+        (
+            SourceFields(
+                kind="media", path="/v", divide_frames=600, recording_name="a__b"
+            ),
+            "contains '__'",
         ),
     ],
 )

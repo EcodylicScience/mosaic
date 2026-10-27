@@ -291,6 +291,11 @@ $ mosaic init [OPTIONS] [directory]
 
 Rescan every declared source and rewrite the indexes it feeds.
 
+A media source that divides its imgstore recordings writes one sequence per
+division. A sequence still recording is held back, and a division that
+cannot be written is refused. Both are listed on stderr, or under
+``held_back`` and ``refused`` with ``--json``.
+
 **Usage**:
 
 ```console
@@ -304,7 +309,8 @@ $ mosaic scan [OPTIONS]
 * `--only <str>`: Restrict to these source ids (repeatable). The declaration is unchanged.
 * `--reassign`: Let the scan re-derive identity for rows a caller assigned. Off by default: a scan's identity is a guess and an assignment is not.
 * `--prune-unsourced`: Also drop rows no scanned source claims. Off by default: those are usually an assignment or a reference to a file elsewhere.
-* `--json`: Emit the written index paths as JSON.
+* `--include-partial`: Write each divided recording's trailing sequence that is still recording. Off by default: it is held back until it closes.
+* `--json`: Emit the written index paths and the divisions made as JSON.
 * `--help`: Show this message and exit.
 
 ## `mosaic reindex`
@@ -1545,6 +1551,9 @@ $ mosaic sources add [OPTIONS]
 * `--group-pattern <str>`: Regex extracting the group from a path.
 * `--md5 / --no-md5`: Checksum each file. On by default: the composition hash is over these.  [default: md5]
 * `--series <str>`: Labels only: claim revisions of this versioned label series (e.g. 'keypoints') instead of uploaded label files. Usually with --file, naming exactly the revisions wanted.
+* `--divide-frames <int>`: Media only: divide each imgstore recording into sequences of this many frames, a whole multiple of the store's chunksize.
+* `--recording-by <store|camera>`: Media only, with --divide-frames: 'store' (default) makes each store a recording; 'camera' joins every store of a camera serial.
+* `--recording-name <str>`: Media only, with --divide-frames: the recording's name, in place of <camera_serial>_<directory name>.
 * `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 

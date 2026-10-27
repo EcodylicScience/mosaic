@@ -154,6 +154,14 @@ class TrackerWorkItem:
     recording.
     """
 
+    time_offset: float | None = None
+    """The sequence's first frame on its recording's time axis, in seconds.
+
+    A division's rows record it (``ResolvedMedia.time_offset``), and
+    :meth:`entry_axis` adds it to each time column. ``None`` adds
+    ``first_frame`` at the media's rate.
+    """
+
     variant: VariantSource | None = None
     """The media variant that this item reads, or ``None`` for the entry media.
 
@@ -288,10 +296,15 @@ class TrackerWorkItem:
         """
         if self.variant is not None:
             return EntryAxis.of_variant(
-                self.variant.mapping(), first_frame=self.first_frame
+                self.variant.mapping(),
+                first_frame=self.first_frame,
+                time_offset=self.time_offset,
             )
         return EntryAxis.of_entry_media(
-            self.source_facts, windowed=windowed, first_frame=self.first_frame
+            self.source_facts,
+            windowed=windowed,
+            first_frame=self.first_frame,
+            time_offset=self.time_offset,
         )
 
 
@@ -462,6 +475,7 @@ def build_work_items(
                 source_facts=tuple(facts),
                 camera=entry.camera,
                 first_frame=first_frame,
+                time_offset=resolved.time_offset,
                 windows=tuple(resolved.windows),
             )
         )
@@ -512,6 +526,7 @@ def _variant_item(
         camera=entry.camera,
         variant=variant,
         first_frame=first_frame,
+        time_offset=entry.resolved.time_offset,
     )
 
 

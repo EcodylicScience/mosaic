@@ -17,6 +17,7 @@ import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail
+from mosaic.core.media.store_division import RecordingIdentity
 from mosaic.core.strict_model import terse
 from mosaic.user_paths import user_path
 
@@ -47,7 +48,8 @@ SourceKindArg = Literal["media", "tracks", "labels"]
 
 _FIELD_FLAGS = re.compile(
     r"(?<![\w-])(?<!a )(multi_sequences_per_file|exclude_patterns|group_pattern|group_from"
-    r"|match_mode|src_format|extensions|patterns|layout|series)(?![\w-])"
+    r"|match_mode|src_format|extensions|patterns|layout|series|divide_frames"
+    r"|recording_name)(?![\w-])"
 )
 """A source field named in a refusal, to spell as the flag that sets it.
 
@@ -57,8 +59,9 @@ _FIELD_FLAGS = re.compile(
 
 def _flagged(message: str) -> str:
     """*message* with each field it names spelled as the flag that sets it."""
+    named = message.replace("recording_identity", "--recording-by")
     return _FIELD_FLAGS.sub(
-        lambda match: "--" + match.group(1).replace("_", "-"), message
+        lambda match: "--" + match.group(1).replace("_", "-"), named
     )
 
 
@@ -220,6 +223,36 @@ def add_source(
             ),
         ),
     ] = None,
+    divide_frames: Annotated[
+        int | None,
+        typer.Option(
+            "--divide-frames",
+            help=(
+                "Media only: divide each imgstore recording into sequences of "
+                "this many frames, a whole multiple of the store's chunksize."
+            ),
+        ),
+    ] = None,
+    recording_by: Annotated[
+        RecordingIdentity | None,
+        typer.Option(
+            "--recording-by",
+            help=(
+                "Media only, with --divide-frames: 'store' (default) makes each "
+                "store a recording; 'camera' joins every store of a camera serial."
+            ),
+        ),
+    ] = None,
+    recording_name: Annotated[
+        str | None,
+        typer.Option(
+            "--recording-name",
+            help=(
+                "Media only, with --divide-frames: the recording's name, in place "
+                "of <camera_serial>_<directory name>."
+            ),
+        ),
+    ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Declare a source. A source may point outside the dataset, unlike a root."""
@@ -260,6 +293,9 @@ def add_source(
         group_pattern=group_pattern,
         md5=md5,
         series=series,
+        divide_frames=divide_frames,
+        recording_identity=recording_by,
+        recording_name=recording_name,
     )
     try:
         source = scan_source_from_fields(fields)

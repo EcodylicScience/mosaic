@@ -49,6 +49,7 @@ from .media.drift import MeasurementOrigin, MediaDrift, classify_identity
 from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     AnalysisDerivativeMissingError,
+    AssignmentSource,
     ProbeMetadata,
     derivative_path_for_target,
     media_row_entry,
@@ -62,7 +63,20 @@ from .media.facts_columns import (
     series_facts_or_none,
 )
 from .media.probe_row import probe_video_metadata, row_from_facts
-from .media.store_division import MediaRowKey, StoreWindow, store_base_name
+from .media.store_division import (
+    DIVISION_ASSIGNMENT_SOURCE,
+    CommittedDivision,
+    DivisionPlan,
+    DivisionRefused,
+    DivisionRule,
+    HeldBack,
+    MediaRowKey,
+    RefusedSpan,
+    StoreWindow,
+    held_back_of,
+    refused_of,
+    store_base_name,
+)
 from .media.store_rate import store_rate_mismatch
 from .media.uniformity import UniformityVerdict, camera_uniformity
 from .schema import (
@@ -115,6 +129,7 @@ from .recording import (
     Recording,
     RecordingKey,
     RecordingKind,
+    adjacent,
     order_members,
     recording_kind,
     recording_name_collision,
@@ -129,6 +144,8 @@ from .manifest import (
     DatasetTag,
     LabelsScanSource,
     LibraryLink,
+    MANIFEST_VERSION,
+    MediaDivision,
     MediaLayout,
     MediaScanSource,
     RawScanSource,
@@ -157,6 +174,7 @@ from .pipeline._utils import (
 )
 from .pipeline.placement import place_converted
 from .pipeline.scan_claim import ScanClaim
+from .pipeline.artifact_kinds import ArtifactKind
 from .pipeline.index_stamp import IndexStamp
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
@@ -271,6 +289,7 @@ from mosaic.core.pipeline._utils import atomic_savez
 from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
+    from .pipeline.inventory import ArtifactRef
     from .pipeline.job import CancelToken
     from .pipeline.progress import ProgressCallback
     from .pipeline.reconcile import ReconcileReport
@@ -764,6 +783,14 @@ class ResolvedMedia:
     facts: list[MediaFacts]
     windows: list[StoreWindow | None]
     placement: int | UnplacedSequence | None = None
+    time_offset: float | None = None
+    """The sequence's first frame on its recording's time axis, in seconds.
+
+    A division continues the division before it at that division's rate, and
+    takes it from the store clock after a gap or a store boundary
+    (:meth:`Dataset.division_facts`). ``None`` for every other sequence, whose
+    first frame over its rate is the offset.
+    """
 
     def __post_init__(self) -> None:
         """Refuse windows that are not parallel to the paths."""
@@ -875,37 +902,102 @@ def _row_window(row: pd.Series) -> StoreWindow | None:
         raise MediaProbeError(str(exc)) from exc
 
 
-def _recording_divided(group: str, group_rows: pd.DataFrame) -> bool | UnplacedSequence:
-    """Return whether the recording *group* is the divisions of its stores.
+def _recording_divided(
+    group: str, group_rows: pd.DataFrame
+) -> dict[str, OrderFacts] | UnplacedSequence:
+    """Return what the division rows of the recording *group* record, by sequence.
 
-    *group_rows* are every originals row of the recording. A recording whose
-    rows are all division rows is divided, and one with no division row is not.
+    *group_rows* are every originals row of the recording, each read once. A
+    recording whose rows are all division rows is divided, and one with no
+    division row is not.
+
+    A division's ``time_offset`` continues the division before it when its
+    frames do (:func:`~mosaic.core.recording.adjacent`): that division's offset
+    plus its frames at its row's rate, so time steps across the boundary as it
+    does inside a division. Without a gap since the recording's first division,
+    and at one rate, it is ``first_frame / fps``. After a gap, a store boundary
+    or a division missing from the index, the offset is taken from the store
+    clock: the division's start less the start of the recording's first
+    division, plus that division's first frame at its rate.
 
     Returns:
-        Whether every row is a division row, or why no sequence of the
-        recording can be placed: it mixes division rows with other rows.
+        The facts of each division, nothing for an undivided recording, or why
+        no sequence of the recording can be placed: it mixes division rows with
+        other rows.
 
     Raises:
         MediaProbeError: If a row's division cells do not read.
     """
     try:
-        divided = [
-            row_division(row_mapping(row)) is not None
+        read = [
+            (row_division(row_mapping(row)), _row_rate(row))
             for _, row in group_rows.iterrows()
         ]
     except ValueError as exc:
         raise MediaProbeError(str(exc)) from exc
-    if not any(divided):
-        return False
-    if all(divided):
-        return True
-    reason = (
-        f"the recording {group!r} holds {divided.count(True)} division rows "
-        f"of a store and {divided.count(False)} other rows. A recording is "
-        "the divisions of its stores or the sequences of its files, and "
-        "not both."
-    )
-    return UnplacedSequence(reason)
+    divisions = [(division, rate) for division, rate in read if division is not None]
+    if not divisions:
+        return {}
+    if len(divisions) < len(read):
+        reason = (
+            f"the recording {group!r} holds {len(divisions)} division rows "
+            f"of a store and {len(read) - len(divisions)} other rows. A recording "
+            "is the divisions of its stores or the sequences of its files, and "
+            "not both."
+        )
+        return UnplacedSequence(reason)
+    ordered = sorted(divisions, key=lambda found: found[0].first_frame)
+    origin, origin_rate = ordered[0]
+    lead: float | None = 0.0
+    if origin.first_frame:
+        lead = origin.first_frame / origin_rate if origin_rate > 0 else None
+    facts: dict[str, OrderFacts] = {}
+    previous: tuple[OrderFacts, float] | None = None
+    for division, rate in ordered:
+        placed = OrderFacts(
+            first_frame=division.first_frame,
+            start_utc=division.start_utc,
+            frame_count=division.frame_count,
+            follows_gap=division.follows_gap,
+        )
+        offset = _continued_offset(previous, placed)
+        if offset is None and lead is not None:
+            offset = (division.start_utc - origin.start_utc).total_seconds() + lead
+        placed = dataclasses.replace(placed, time_offset=offset)
+        facts[division.sequence] = placed
+        previous = (placed, rate)
+    return facts
+
+
+def _continued_offset(
+    previous: tuple[OrderFacts, float] | None, division: OrderFacts
+) -> float | None:
+    """Return *division*'s time offset continuing *previous* at its rate.
+
+    *previous* is the division before it on the frame axis, with its row's
+    rate. ``None`` when *division* does not continue its frames, or the
+    previous offset or rate is unknown.
+    """
+    if previous is None:
+        return None
+    before, rate = previous
+    if (
+        before.time_offset is None
+        or before.frame_count is None
+        or rate <= 0
+        or not adjacent(before, division)
+    ):
+        return None
+    return before.time_offset + before.frame_count / rate
+
+
+def _row_rate(row: pd.Series) -> float:
+    """The ``fps`` cell of a media index row, ``0.0`` when it does not read."""
+    try:
+        rate = float(row.get("fps", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return rate if np.isfinite(rate) else 0.0
 
 
 def _undeclared_division(group: str, matched: pd.DataFrame) -> UnplacedSequence | None:
@@ -937,7 +1029,9 @@ def _undeclared_division(group: str, matched: pd.DataFrame) -> UnplacedSequence 
 
 
 def _division_placement(
-    group: str, divided: bool | UnplacedSequence, matched: pd.DataFrame
+    group: str,
+    divided: Mapping[str, OrderFacts] | UnplacedSequence,
+    matched: pd.DataFrame,
 ) -> int | UnplacedSequence | None:
     """Return a sequence's first frame from its division row, ``None`` when undivided.
 
@@ -955,10 +1049,10 @@ def _division_placement(
     Raises:
         MediaProbeError: If a row's division cells do not read.
     """
-    if divided is False:
-        return None
     if isinstance(divided, UnplacedSequence):
         return divided
+    if not divided:
+        return None
     try:
         own = [row_division(row_mapping(row)) for _, row in matched.iterrows()]
     except ValueError as exc:
@@ -1194,6 +1288,88 @@ class MediaIndexResult:
     index_path: Path
     disagreements: list[MediaIndexDisagreement]
     drift: list[MediaDrift] = field(default_factory=list)
+    divisions: tuple[DivisionPlan, ...] = ()
+    """The plan of each recording that a division scope divided."""
+
+    @property
+    def held_back(self) -> tuple[HeldBack, ...]:
+        """The trailing sequences that :attr:`divisions` hold back, each with its reason."""
+        return held_back_of(self.divisions)
+
+    @property
+    def refused(self) -> tuple[RefusedSpan, ...]:
+        """The divisions and stores that :attr:`divisions` refuse, each with its reason."""
+        return refused_of(self.divisions)
+
+
+@dataclass(frozen=True)
+class MediaScanResult:
+    """The media index a scan wrote, and the recordings it divided.
+
+    Attributes:
+        path: The index written.
+        divisions: The plan of each recording that a dividing source divided.
+    """
+
+    path: Path
+    divisions: tuple[DivisionPlan, ...] = ()
+
+    @property
+    def held_back(self) -> tuple[HeldBack, ...]:
+        """The trailing sequences that :attr:`divisions` hold back, each with its reason."""
+        return held_back_of(self.divisions)
+
+    @property
+    def refused(self) -> tuple[RefusedSpan, ...]:
+        """The divisions and stores that :attr:`divisions` refuse, each with its reason."""
+        return refused_of(self.divisions)
+
+
+@dataclass(frozen=True)
+class _CommittedDivisionRow:
+    """One division row of the media index, read for a write that divides.
+
+    Attributes:
+        path: The store's resolved path.
+        camera_serial: The row's ``camera_serial``.
+        division: The division, its rule and its recording.
+    """
+
+    path: Path
+    camera_serial: str
+    division: CommittedDivision
+
+
+@dataclass(frozen=True)
+class _ScannedMedia:
+    """The rows that one source's scan derived, and the recordings it divided."""
+
+    rows: list[dict[str, object]]
+    divided: _DividedRows
+
+
+@dataclass(frozen=True)
+class _DividedRows:
+    """The rows of the recordings a write divides.
+
+    Attributes:
+        rows: The division rows to write.
+        plans: The plan of each recording.
+        paths: The resolved paths of the stores divided, whose committed rows
+            the division rows replace.
+        redivided: Each recording divided again, with why, which the write
+            reports once its rows replace the earlier divisions.
+    """
+
+    rows: list[dict[str, object]] = dataclasses.field(default_factory=list)
+    plans: tuple[DivisionPlan, ...] = ()
+    paths: frozenset[Path] = frozenset()
+    redivided: tuple[tuple[str, str], ...] = ()
+
+    @property
+    def recordings(self) -> list[str]:
+        """The names of the recordings that have a division to write."""
+        return [plan.recording for plan in self.plans if plan.divisions]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1297,18 +1473,34 @@ _REPEATED_ROW_REMEDY: Final = (
 
 
 def _placed_conversion(
-    df: pd.DataFrame, hints: EntryHints, entry: Entry, source: str
+    df: pd.DataFrame,
+    hints: EntryHints,
+    entry: Entry,
+    source: str,
+    division: OrderFacts | None,
 ) -> pd.DataFrame:
     """Return a converted table on its recording's axis, refusing a repeated row.
 
-    Run at every convert site before the schema check. The table is placed
-    without a division frame count, because no entry records a division.
+    Run at every convert site before the schema check. A division's table is
+    numbered from the division's first frame and placed at it, and a table that
+    reaches past the division's frames is refused, since it is numbered on the
+    recording's axis already.
+
+    Args:
+        df: The converter's table.
+        hints: The entry the table was converted for, placed at its division.
+        entry: The entry the table is written under.
+        source: The source, which a refusal names.
+        division: The entry's division facts (:meth:`Dataset.division_facts`),
+            ``None`` for an entry that is not a division.
 
     Raises:
         ValueError: If the table cannot be placed, or an individual has two rows
             of one frame. The message names *entry* and *source*.
     """
-    placed = place_converted(df, hints, media_frame_count=None)
+    placed = place_converted(
+        df, hints, media_frame_count=None if division is None else division.frame_count
+    )
     if "frame" in placed.columns:
         refuse_repeated_rows(
             placed,
@@ -1316,6 +1508,104 @@ def _placed_conversion(
             remedy=_REPEATED_ROW_REMEDY,
         )
     return placed
+
+
+_TRACKING_OUTPUT_KINDS: Final[tuple[ArtifactKind, ...]] = (
+    "tracker-run",
+    "frame-run",
+    "frame-predictions",
+    "frame-selection",
+)
+"""The output kinds that ``mosaic.tracking.register_ops`` registers, keyed by entry.
+
+The prediction scores, prepared datasets and trained models that it also
+registers are keyed by run, and a label series by revision, so their records
+name no entry to list. Each is built from the frames of a frame run, or from the
+predictions over them, which are listed for their entries while they exist.
+"""
+
+_OUTPUT_KINDS: Final[tuple[ArtifactKind, ...]] = (
+    "tracks-variant",
+    "labels-variant",
+    "feature",
+    "media-variant",
+    *_TRACKING_OUTPUT_KINDS,
+)
+"""The artifact kinds that :meth:`Dataset.entry_outputs` lists."""
+
+_TRACKING_OUTPUT_ROOTS: Final = ("frames", "frame_predictions", "selections", "models")
+"""The roots besides ``TRACKING_ROOTS`` whose files only tracking code lists."""
+
+
+def _output_label(ref: ArtifactRef) -> str:
+    """Name an artifact by its kind and identifiers, as a refusal lists it."""
+    return " ".join([ref.kind, *(str(value) for value in dataclasses.astuple(ref))])
+
+
+def _refuse_assigned_store(rows: Iterable[Mapping[str, object]]) -> None:
+    """Refuse a scan's division of a store whose identity a caller assigned.
+
+    Raises:
+        DivisionRefused: ``assigned_store``, naming the store and its entry.
+    """
+    for row in rows:
+        if read_link_cell(row, "assignment_source") != "assigned":
+            continue
+        entry = entry_token(
+            read_link_cell(row, "group"), read_link_cell(row, "sequence")
+        )
+        message = (
+            f"the store {read_link_cell(row, 'abs_path')!r} is indexed as {entry!r} "
+            "by Dataset.write_media_index, which owns its identity. Divide it "
+            "there with a division MediaIndexScope, or scan with reassign=True."
+        )
+        raise DivisionRefused("assigned_store", message)
+
+
+def _placed_hints(hints: EntryHints, division: OrderFacts | None) -> EntryHints:
+    """Return *hints* placed at *division*'s first frame and time offset."""
+    if division is None or division.first_frame is None:
+        return hints
+    return dataclasses.replace(
+        hints, first_frame=division.first_frame, time_offset=division.time_offset
+    )
+
+
+def _continuous_groups_with(
+    manifest: DatasetManifest, names: Sequence[str]
+) -> tuple[str, ...]:
+    """Return *manifest*'s continuous groups with *names* added.
+
+    Raises:
+        ValueError: If the manifest refuses the groups.
+    """
+    groups = tuple(dict.fromkeys([*manifest.continuous_groups, *names]))
+    _check_manifest(manifest.model_copy(update={"continuous_groups": groups}))
+    return groups
+
+
+def _prepare_divided_manifest(manifest: DatasetManifest, names: Sequence[str]) -> None:
+    """Raise *manifest* to version 4 once it accepts *names* as continuous groups.
+
+    In place. An index of division rows is written only under a version-4
+    manifest, which older code refuses to open, because it would read each
+    division row as its whole store.
+
+    Raises:
+        ValueError: If the manifest refuses the groups.
+    """
+    _ = _continuous_groups_with(manifest, names)
+    manifest.manifest_version = MANIFEST_VERSION
+
+
+def _declare_divided_groups(manifest: DatasetManifest, names: Sequence[str]) -> None:
+    """Add *names* to *manifest*'s continuous groups, at version 4. In place.
+
+    Raises:
+        ValueError: If the manifest refuses the groups.
+    """
+    manifest.continuous_groups = _continuous_groups_with(manifest, names)
+    manifest.manifest_version = MANIFEST_VERSION
 
 
 def _check_manifest(manifest: DatasetManifest) -> None:
@@ -1665,11 +1955,11 @@ class Dataset:
         preserved: Iterable[Mapping[str, object]],
     ) -> set[Entry]:
         """Return the entries whose keys a replacing media write must not reuse."""
-        held_elsewhere = (
-            root_index_entries(self, "tracks_raw") | self._tracks_and_labels_entries()
-        )
         return entries_kept_beside(
-            written, committed, preserved, held_elsewhere=held_elsewhere
+            written,
+            committed,
+            preserved,
+            held_elsewhere=self._indexed_entries_beside_media(),
         )
 
     def _entries_beside_tracks_raw_write(
@@ -1769,11 +2059,15 @@ class Dataset:
         of an indexed entry. A manifest declaring a name refused here still
         loads.
 
+        A recording whose store the media index divides stays declared: its
+        division rows place its sequences.
+
         Raises:
             ValueError: If a name is empty or repeated, contains ``__`` or
                 ``:``, is the name of a sequence in the empty group, or is the
                 group of no entry in the media, tracks_raw, tracks or labels
-                indexes.
+                indexes, or if the list leaves out a recording whose store the
+                media index divides.
         """
         named = tuple(str(group) for group in groups)
         seen: set[str] = set()
@@ -1816,7 +2110,23 @@ class Dataset:
                     "sequences first."
                 )
                 raise ValueError(msg)
+        dropped = sorted(self._divided_groups() - set(named))
+        if dropped:
+            msg = (
+                f"continuous_groups leaves out {dropped}, whose stores the media "
+                "index divides. Their division rows place their sequences on "
+                "one frame axis."
+            )
+            raise ValueError(msg)
         self._declare_continuous_groups(named, save=save)
+
+    def _divided_groups(self) -> set[str]:
+        """The groups of the originals index's division rows."""
+        return {
+            read_link_cell(row, "group")
+            for row in self.read_media_index()
+            if media_row_key(row).window is not None
+        }
 
     def _declare_continuous_groups(
         self, groups: tuple[str, ...], *, save: bool = True
@@ -2397,7 +2707,8 @@ class Dataset:
         reassign: bool = False,
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
-    ) -> Path:
+        include_partial: bool = False,
+    ) -> MediaScanResult:
         """Rescan every declared media source and rewrite ``media_raw/index.csv``.
 
         Each source is scanned with its own recipe -- its extensions, its layout,
@@ -2412,6 +2723,13 @@ class Dataset:
         derivatives are written to ``media/index.csv`` by the transcode op and
         are never touched here.
 
+        A source with a ``division`` divides each imgstore recording it finds
+        into sequences of whole chunks, as a division ``MediaIndexScope`` does
+        (:meth:`write_media_index`), and declares each recording continuous. A
+        rescan measures each store again, keeps its divisions, and adds the
+        divisions that closed since. A store whose identity a caller assigned is
+        refused unless *reassign* is set.
+
         Args:
             only: Restrict to these source ids. The declaration is not changed.
             reassign: Let the scan re-derive identity for rows a caller assigned.
@@ -2419,13 +2737,17 @@ class Dataset:
                 default: those rows are usually an assignment or an external
                 reference, not garbage.
             index_filename: Output filename within the media root.
+            include_partial: Write each divided recording's trailing sequence
+                that is still recording, which is otherwise held back.
 
         Returns:
-            The index path written.
+            The index path written, and the plan of each recording divided.
 
         Raises:
             KeyError: If *only* names a source that is not declared.
             ValueError: If no media source is declared at all.
+            DivisionRefused: If a dividing source's store cannot be divided.
+                Nothing is written.
         """
         selected = self.scan_sources("media", only=only)
         if not selected:
@@ -2438,21 +2760,40 @@ class Dataset:
 
         claim = ScanClaim()
         rows: list[dict[str, object]] = []
+        plans: list[DivisionPlan] = []
+        redivided: list[tuple[str, str]] = []
+        committed = _read_media_index(
+            self.get_root(self.resolve_media_root()) / index_filename
+        )
         for source in selected:
             if not isinstance(source, MediaScanSource):
                 continue
             claim = claim | self.source_claim(source)
-            rows.extend(self._scan_media_dirs(self._search_paths(source), source))
+            scanned = self._scan_media_dirs(
+                self._search_paths(source),
+                source,
+                committed=committed,
+                include_partial=include_partial,
+                reassign=reassign,
+            )
+            rows.extend(scanned.rows)
+            plans.extend(scanned.divided.plans)
+            redivided.extend(scanned.divided.redivided)
+            claim = claim | ScanClaim.over_files(scanned.divided.paths)
+        divided = _DividedRows(plans=tuple(plans), redivided=tuple(redivided))
         # One dedupe across every source, not one per source: two sources may
         # legitimately reach the same file through different paths, and the first
         # recipe that named it wins, deterministically in declaration order.
-        return self._write_scanned_media(
+        path = self._write_scanned_media(
             self._dedupe_scope_rows(rows),
             claim=claim,
             index_filename=index_filename,
             reassign=reassign,
             prune_unsourced=prune_unsourced,
+            divided=divided,
         )
+        self._declare_divided_recordings(divided)
+        return MediaScanResult(path=path, divisions=divided.plans)
 
     def scan_tracks(
         self,
@@ -3947,7 +4288,7 @@ class Dataset:
         # a generator argument produced an empty claim, and the write silently
         # became an append instead of the replace it reports.
         search = [user_path(d) for d in search_dirs]
-        rows = self._scan_media_dirs(search, recipe)
+        rows = self._scan_media_dirs(search, recipe).rows
         if claim is None:
             claim = ScanClaim.over_directories(search)
         return self._write_scanned_media(
@@ -3959,8 +4300,14 @@ class Dataset:
         )
 
     def _scan_media_dirs(
-        self, search_dirs: list[str | Path], source: MediaScanSource
-    ) -> list[dict[str, object]]:
+        self,
+        search_dirs: Sequence[str | Path],
+        source: MediaScanSource,
+        *,
+        committed: Sequence[Mapping[str, object]] = (),
+        include_partial: bool = False,
+        reassign: bool = False,
+    ) -> _ScannedMedia:
         """Probe *search_dirs* into media index rows, using *source*'s recipe.
 
         The identity half of a media scan: walk, probe, and decide each row's
@@ -3968,6 +4315,9 @@ class Dataset:
         declared sources can accumulate rows under several different recipes and
         commit them together -- writing the index once per source would make each
         source's write replace the one before it.
+
+        A source with a ``division`` divides the stores it finds
+        (:meth:`_divided_rows`) against the *committed* rows of the index.
         """
         exts = {
             e.lower() if e.startswith(".") else f".{e.lower()}"
@@ -4036,9 +4386,27 @@ class Dataset:
                     assignment_source="scan-keymap" if meta else "scan-stem",
                 )
             )
-        rows.extend(
-            self._imgstore_rows(imgstore_entries, seq_key_map, sequence_match_mode)
-        )
+        divided = _DividedRows()
+        if source.division is None:
+            rows.extend(
+                self._imgstore_rows(imgstore_entries, seq_key_map, sequence_match_mode)
+            )
+        elif imgstore_entries:
+            divided = self._divided_rows(
+                [
+                    (stores, source.division)
+                    for stores in self._recordings_to_divide(
+                        imgstore_entries,
+                        source.division,
+                        self._committed_divisions(committed),
+                    )
+                ],
+                include_partial=include_partial,
+                committed=committed,
+                assignment_source=DIVISION_ASSIGNMENT_SOURCE,
+                reassign=reassign,
+            )
+            rows.extend(divided.rows)
 
         # De-duplicate by row key: the stored path, and a division's chunks.
         seen: set[MediaRowKey] = set()
@@ -4050,7 +4418,7 @@ class Dataset:
             seen.add(k)
             dedup.append(r)
 
-        return dedup
+        return _ScannedMedia(rows=dedup, divided=divided)
 
     def _write_scanned_media(
         self,
@@ -4060,12 +4428,14 @@ class Dataset:
         index_filename: str = "index.csv",
         reassign: bool = False,
         prune_unsourced: bool = False,
+        divided: _DividedRows | None = None,
     ) -> Path:
         """Commit scanned media rows, replacing only what *claim* covers.
 
         The write half of a media scan, shared by the ad-hoc search-dir pass and
         the declared-source pass so the preserve rule cannot be right in one and
-        wrong in the other.
+        wrong in the other. The manifest is raised for *divided*'s recordings
+        once the write's refusals pass (:meth:`_prepare_divided_manifest`).
         """
         media_root = self.get_root(self.resolve_media_root())
         out_csv = media_root / index_filename
@@ -4110,6 +4480,7 @@ class Dataset:
             ]
             if not reassign:
                 self._keep_assigned_identity(dedup, committed)
+                dedup = self._keep_assigned_divisions(dedup, committed)
             # Unconditional, and deliberately outside the ``reassign`` guard: a
             # calibration is not identity. ``reassign`` says the scan may
             # re-derive which sequence a file belongs to, which no more licenses
@@ -4126,6 +4497,8 @@ class Dataset:
             self.refuse_entry_key_collision(
                 written, self._entries_beside_media_write(written, committed, preserved)
             )
+            if divided is not None:
+                self._prepare_divided_manifest(divided)
             merged: list[dict[str, object]] = [*preserved, *dedup]
             # Densified over the sequences this scan touched, not over the whole
             # file: ``densify_video_order`` renumbers every row it is handed, so
@@ -4292,6 +4665,480 @@ class Dataset:
                 )
         return rows
 
+    def _store_row(
+        self, entry: ProbedEntry, assignment_source: AssignmentSource
+    ) -> dict[str, object]:
+        """The undivided media index row of a probed store, before its identity."""
+        return build_media_index_row(
+            path=entry.path,
+            stat=entry.stat,
+            to_store_path=self.relative_to_root,
+            group="",
+            sequence="",
+            group_safe="",
+            sequence_safe="",
+            camera=entry.camera_serial,
+            sync_uuid=entry.sync_uuid,
+            camera_serial=entry.camera_serial,
+            probe=entry.probe,
+            media_type="imgstore",
+            assignment_source=assignment_source,
+        )
+
+    def _committed_divisions(
+        self, committed: Sequence[Mapping[str, object]]
+    ) -> list[_CommittedDivisionRow]:
+        """The division rows of *committed*, each with its store's resolved path.
+
+        Raises:
+            ValueError: If a row's division cells do not read.
+        """
+        found: list[_CommittedDivisionRow] = []
+        for row in committed:
+            division = row_division(row)
+            key = self._stored_row_key(row)
+            if division is None or key is None:
+                continue
+            found.append(
+                _CommittedDivisionRow(
+                    path=Path(key.abs_path),
+                    camera_serial=read_link_cell(row, "camera_serial"),
+                    division=CommittedDivision(
+                        row=division,
+                        rule=DivisionRule.from_cell(
+                            read_link_cell(row, "division_rule")
+                        ),
+                        recording=read_link_cell(row, "group"),
+                    ),
+                )
+            )
+        return found
+
+    def _row_on_paths(self, row: Mapping[str, object], paths: Collection[Path]) -> bool:
+        """Whether *row* indexes one of the resolved store *paths*."""
+        key = self._stored_row_key(row)
+        return key is not None and Path(key.abs_path) in paths
+
+    def _recordings_to_divide(
+        self,
+        stores: Sequence[ProbedEntry],
+        division: MediaDivision,
+        committed: Sequence[_CommittedDivisionRow],
+    ) -> list[list[ProbedEntry]]:
+        """Group probed stores into the recordings that *division* makes of them.
+
+        By store, each store is a recording. By camera, a recording is every
+        store of one camera serial, with the stores of the serial that the
+        index divides by camera already and that still exist. A store without
+        a serial is a recording alone, which the planner refuses by camera.
+        """
+        if division.identity == "store":
+            return [[store] for store in stores]
+        by_serial: dict[str, list[ProbedEntry]] = {}
+        alone: list[list[ProbedEntry]] = []
+        for store in stores:
+            if store.camera_serial:
+                by_serial.setdefault(store.camera_serial, []).append(store)
+            else:
+                alone.append([store])
+        for serial, members in by_serial.items():
+            known = {member.path.resolve() for member in members}
+            earlier = sorted(
+                {
+                    committed_row.path
+                    for committed_row in committed
+                    if committed_row.camera_serial == serial
+                    and committed_row.division.rule.identity == "camera"
+                    and committed_row.path not in known
+                    and committed_row.path.is_dir()
+                }
+            )
+            for path in earlier:
+                members.extend(
+                    found
+                    for found in self._probe_dir_rows([path], set(), recursive=False)
+                    if found.media_type == "imgstore"
+                )
+        return [by_serial[serial] for serial in sorted(by_serial)] + alone
+
+    def _divided_rows(
+        self,
+        recordings: Sequence[tuple[Sequence[ProbedEntry], MediaDivision]],
+        *,
+        include_partial: bool,
+        committed: Sequence[Mapping[str, object]],
+        assignment_source: AssignmentSource,
+        reassign: bool = False,
+    ) -> _DividedRows:
+        """Divide each recording of *recordings* into its media index rows.
+
+        Every refusal is raised before a row is returned, so a write divides
+        all of its recordings or none.
+
+        Args:
+            recordings: Each recording's probed stores and its declared division.
+            include_partial: Whether to write each recording's trailing sequence
+                that is still recording.
+            committed: The media index rows before the write.
+            assignment_source: ``"assigned"`` for a division scope, which the
+                rows keep. A scan writes ``scan-imgstore-division`` rows.
+            reassign: Whether a scan may divide a store whose identity a caller
+                assigned.
+
+        Raises:
+            DivisionRefused: As
+                :func:`~mosaic.core.media.division_index.plan_recording` raises
+                it, or for a store a caller assigned, a name that another
+                recording has, a recording that holds other rows, or a
+                re-division of a recording whose entries have outputs.
+            MediaProbeError: If a store does not open.
+        """
+        from .media.division_index import (
+            PlannedRecording,
+            StoreToDivide,
+            plan_recording,
+            recording_rows,
+        )
+
+        divisions = self._committed_divisions(committed)
+        planned: list[tuple[PlannedRecording, list[StoreToDivide]]] = []
+        redivided: list[tuple[str, str]] = []
+        for stores, division in recordings:
+            to_divide = [
+                StoreToDivide(
+                    path=store.path.resolve(),
+                    store_row=self._store_row(store, assignment_source),
+                    sync_uuid=store.sync_uuid,
+                )
+                for store in stores
+            ]
+            paths = {store.path for store in to_divide}
+            own = [row for row in committed if self._row_on_paths(row, paths)]
+            if assignment_source != "assigned" and not reassign:
+                _refuse_assigned_store(own)
+            frozen = [
+                dataclasses.replace(
+                    found.division,
+                    row=dataclasses.replace(
+                        found.division.row, abs_path=self.relative_to_root(found.path)
+                    ),
+                )
+                for found in divisions
+                if found.path in paths
+            ]
+            result = plan_recording(
+                to_divide,
+                frames=division.frames,
+                identity=division.identity,
+                name=division.name,
+                include_partial=include_partial,
+                committed=frozen,
+            )
+            recording = result.plan.recording
+            if result.redivision is not None:
+                self._refuse_redivision_with_outputs(
+                    recording, result.redivision, entries_of_rows(own)
+                )
+                redivided.append((recording, result.redivision))
+            whole = [row for row in own if row_division(row) is None]
+            if whole:
+                whole_paths = sorted({read_link_cell(row, "abs_path") for row in whole})
+                why = f"the stores {whole_paths} are indexed whole"
+                self._refuse_redivision_with_outputs(
+                    recording, why, entries_of_rows(whole)
+                )
+                redivided.append((recording, why))
+            planned.append((result, to_divide))
+
+        divided = frozenset(
+            store.path for _, divided_stores in planned for store in divided_stores
+        )
+        plans = tuple(result.plan for result, _ in planned)
+        self._refuse_taken_recording_names(plans, committed, divided)
+        rows: list[dict[str, object]] = []
+        for result, divided_stores in planned:
+            rows.extend(recording_rows(result, divided_stores))
+        for row in rows:
+            row["assignment_source"] = (
+                "assigned"
+                if assignment_source == "assigned"
+                else DIVISION_ASSIGNMENT_SOURCE
+            )
+        return _DividedRows(
+            rows=rows, plans=plans, paths=divided, redivided=tuple(redivided)
+        )
+
+    def _refuse_redivision_with_outputs(
+        self, recording: str, why: str, entries: Iterable[Entry]
+    ) -> None:
+        """Refuse to divide *recording* again while *entries* have outputs.
+
+        Raises:
+            DivisionRefused: Naming each entry's outputs.
+        """
+        outputs = self.entry_outputs(entries)
+        held = {entry: found for entry, found in outputs.items() if found}
+        if not held:
+            return
+        listed = "; ".join(
+            f"{entry_token(*entry)}: {', '.join(found)}"
+            for entry, found in sorted(held.items())
+        )
+        message = (
+            f"the recording {recording!r} would be divided again, because {why}, "
+            f"and the entries it replaces have outputs ({listed}). Remove them "
+            "first, or keep the recording's division."
+        )
+        raise DivisionRefused("redivision_with_outputs", message)
+
+    def _refuse_taken_recording_names(
+        self,
+        plans: Sequence[DivisionPlan],
+        committed: Sequence[Mapping[str, object]],
+        divided: Collection[Path],
+    ) -> None:
+        """Refuse a recording name that another recording or entry has.
+
+        A name is taken by another recording of the write, by the rows of a
+        store other than the divided ones, and by an empty-group sequence of
+        that name. A continuous group whose sequences are not divisions of the
+        divided stores is a recording declared by hand.
+
+        Raises:
+            DivisionRefused: ``recording_name_taken`` or ``mixed_recording``.
+        """
+        seen: set[str] = set()
+        for plan in plans:
+            if plan.recording in seen:
+                message = (
+                    f"two recordings of this write are named {plan.recording!r}. "
+                    "Give one of them another name."
+                )
+                raise DivisionRefused("recording_name_taken", message)
+            seen.add(plan.recording)
+        elsewhere = [row for row in committed if not self._row_on_paths(row, divided)]
+        own = entries_of_rows(
+            row for row in committed if self._row_on_paths(row, divided)
+        ) | {
+            (plan.recording, division.row.sequence)
+            for plan in plans
+            for division in plan.divisions
+        }
+        indexed = self._indexed_entries_beside_media()
+        named = entries_of_rows(elsewhere) | indexed
+        for plan in plans:
+            name = plan.recording
+            stores = sorted(
+                read_link_cell(row, "abs_path")
+                for row in elsewhere
+                if read_link_cell(row, "group") == name
+                and row_division(row) is not None
+            )
+            members = sorted(
+                {
+                    sequence
+                    for group, sequence in entries_of_rows(
+                        row for row in elsewhere if row_division(row) is None
+                    )
+                    | indexed
+                    if group == name and (group, sequence) not in own
+                }
+            )
+            if members and not stores and self.recording_kind(name) == "divided":
+                message = (
+                    f"the continuous group {name!r} holds the sequences {members}, "
+                    "which are not divisions of its store. A recording is the "
+                    "divisions of its stores or sequences declared by hand, and "
+                    "not both."
+                )
+                raise DivisionRefused("mixed_recording", message)
+            taken = (
+                f"the recording of the stores {sorted(set(stores))}"
+                if stores
+                else f"the group of {members}"
+                if members
+                else "an empty-group sequence"
+                if ("", name) in named
+                else None
+            )
+            if taken is not None:
+                message = (
+                    f"the recording name {name!r} is {taken} already. Give the "
+                    "division a name of its own."
+                )
+                raise DivisionRefused("recording_name_taken", message)
+
+    def _indexed_entries_beside_media(self) -> set[Entry]:
+        """Every entry of the tracks_raw, tracks and labels indexes."""
+        return (
+            root_index_entries(self, "tracks_raw") | self._tracks_and_labels_entries()
+        )
+
+    def _prepare_divided_manifest(self, divided: _DividedRows) -> None:
+        """Raise the manifest to 4 before *divided*'s rows are written.
+
+        Called under the media index lock once the write's refusals pass, so a
+        refused write leaves the manifest as it was. The groups that
+        :meth:`_declare_divided_recordings` adds after the write are checked
+        here, so the declaration does not refuse once the rows are written.
+
+        Raises:
+            ValueError: If the manifest refuses the recordings as continuous
+                groups. Nothing is written.
+        """
+        names = divided.recordings
+        if names:
+            self.mutate_manifest(
+                lambda manifest: _prepare_divided_manifest(manifest, names)
+            )
+
+    def _declare_divided_recordings(self, divided: _DividedRows) -> None:
+        """Declare each recording of *divided* continuous once its rows are written.
+
+        Each recording divided again is reported on stderr, with why.
+        """
+        names = divided.recordings
+        if names:
+            self.mutate_manifest(
+                lambda manifest: _declare_divided_groups(manifest, names)
+            )
+        for recording, why in divided.redivided:
+            print(
+                f"[divide] the recording {recording!r} is divided again, because "
+                f"{why}. Its entries have no outputs, and its earlier divisions "
+                "are replaced.",
+                file=sys.stderr,
+            )
+
+    def entry_outputs(self, entries: Iterable[Entry]) -> dict[Entry, list[str]]:
+        """Return the outputs each of *entries* has, by artifact.
+
+        An output is a tracks variant, a converted labels variant, a feature run
+        or a media variant that covers or indexes the entry, and, when the
+        tracking kinds are registered (``mosaic.tracking.register_ops``), a
+        tracker run, a frame run, a frame-predictions run or a frame
+        selection. Each output is named by its kind and identifiers. An entry
+        without outputs maps to an empty list.
+
+        Raises:
+            DivisionRefused: ``tracking_unregistered``, when the tracking kinds
+                are not registered and a root they own holds files.
+        """
+        from .pipeline.inventory import inventory
+
+        wanted = sorted(set(entries))
+        found: dict[Entry, list[str]] = {entry: [] for entry in wanted}
+        if not wanted:
+            return found
+        held = inventory(self, kinds=_OUTPUT_KINDS)
+        unlisted = held.unavailable_kinds & frozenset(_TRACKING_OUTPUT_KINDS)
+        if unlisted:
+            occupied = self._tracking_roots_with_files()
+            if occupied:
+                message = (
+                    f"the roots {occupied} hold tracking outputs that this process "
+                    "cannot list. Call mosaic.tracking.register_ops() first."
+                )
+                raise DivisionRefused("tracking_unregistered", message)
+        for record in held.records:
+            covered = {
+                (key[0], key[1])
+                for key in record.rows | record.coverage.present
+                if not isinstance(key, str)
+            }
+            label = _output_label(record.ref)
+            for entry in wanted:
+                if entry in covered:
+                    found[entry].append(label)
+        return found
+
+    def _tracking_roots_with_files(self) -> list[str]:
+        """The tracking-owned roots that hold a file, by root key."""
+        keys = [*TRACKING_ROOTS, *_TRACKING_OUTPUT_ROOTS]
+        occupied: list[str] = []
+        for key in keys:
+            if not self.has_root(key):
+                continue
+            root = self.get_root(key)
+            if root.is_dir() and any(path.is_file() for path in root.rglob("*")):
+                occupied.append(key)
+        return occupied
+
+    def _divide_scopes(
+        self,
+        scopes: Sequence[MediaIndexScope],
+        *,
+        exts: set[str],
+        recursive: bool,
+        include_partial: bool,
+        committed: Sequence[Mapping[str, object]],
+    ) -> _DividedRows:
+        """Divide the store that each division scope names (:meth:`_divided_rows`).
+
+        Scopes that share a ``group`` and a division are one recording by
+        camera, and a scope with an empty ``group`` derives its recording's
+        name.
+
+        Raises:
+            ValueError: If a division scope names a sequence, or two names, or
+                two scopes of one group declare different divisions.
+            DivisionRefused: ``not_one_store`` for a directory that is not one
+                store, and as :meth:`_divided_rows` raises it.
+        """
+        declared: dict[tuple[str, MediaDivision], list[ProbedEntry]] = {}
+        for scope in scopes:
+            division = scope.division
+            if division is None:
+                continue
+            if scope.sequence:
+                msg = (
+                    f"the division scope of {scope.directory} names the sequence "
+                    f"{scope.sequence!r}. A division names its own sequences; "
+                    "give sequence=''."
+                )
+                raise ValueError(msg)
+            if scope.group and division.name and scope.group != division.name:
+                msg = (
+                    f"the division scope of {scope.directory} names the recording "
+                    f"{scope.group!r} and its division names {division.name!r}"
+                )
+                raise ValueError(msg)
+            name = scope.group or division.name
+            found = self._probe_dir_rows([scope.directory], exts, recursive)
+            store = scope.directory.resolve()
+            if [entry.path.resolve() for entry in found] != [store] or (
+                found[0].media_type != "imgstore"
+            ):
+                message = (
+                    f"a division scope names one imgstore directory, and "
+                    f"{scope.directory} holds {len(found)} media entries"
+                    + ("" if found else ", or is not a store")
+                )
+                raise DivisionRefused("not_one_store", message)
+            ruled = division.model_copy(update={"name": name})
+            for (other, other_division), _ in declared.items():
+                if name and other == name and other_division != ruled:
+                    msg = (
+                        f"the division scopes of the recording {name!r} declare "
+                        "different divisions"
+                    )
+                    raise ValueError(msg)
+            declared.setdefault((name or "", ruled), []).extend(found)
+        committed_divisions = self._committed_divisions(committed)
+        recordings = [
+            (stores, division)
+            for (_, division), entries in declared.items()
+            for stores in self._recordings_to_divide(
+                entries, division, committed_divisions
+            )
+        ]
+        return self._divided_rows(
+            recordings,
+            include_partial=include_partial,
+            committed=committed,
+            assignment_source="assigned",
+        )
+
     def write_media_index(
         self,
         scopes: Iterable[MediaIndexScope],
@@ -4299,6 +5146,7 @@ class Dataset:
         extensions: Tuple[str, ...] = (".mp4", ".avi"),
         index_filename: str = "index.csv",
         recursive: bool = True,
+        include_partial: bool = False,
     ) -> MediaIndexResult:
         """Project explicit sequence assignments into a valid media index.
 
@@ -4327,15 +5175,34 @@ class Dataset:
         they share a ``camera_serial``. A scope holding unsynchronized stores of
         two or more distinct serials is refused before anything is written.
 
+        A scope with a ``division`` divides its one store into sequences of
+        whole chunks (:class:`MediaIndexScope`). Its rows replace every row of
+        the store, the undivided one included, in the one index write, and the
+        recording is then declared continuous. *include_partial* writes each
+        recording's trailing sequence that is still recording, which is
+        otherwise held back. The result's ``divisions``, ``held_back`` and
+        ``refused`` report each recording's plan. A recording divided before
+        keeps its divisions. A division with another rule or name divides the
+        recording again, which is refused while its entries have outputs
+        (:meth:`entry_outputs`), and the division of a store indexed whole is
+        refused while that store's entries have outputs. A re-division without
+        outputs is reported on stderr. Call ``mosaic.tracking.register_ops()``
+        first, so that the tracking outputs are listed. The manifest is raised
+        to version 4 before the index is written, and the recordings are
+        declared continuous after it.
+
         Raises:
             StoreGroupingError: If a scope holds unsynchronized imgstores of
                 distinct non-empty ``camera_serial`` values.
+            DivisionRefused: If a division scope's store cannot be divided, each
+                refusal with its ``reason``. Nothing is written.
         """
         media_root = self.get_root(self.resolve_media_root())
         index_path = media_root / index_filename
         exts = {e.lower() if e.startswith(".") else f".{e.lower()}" for e in extensions}
         scope_list = list(scopes)
         scope_dirs = [scope.directory.resolve() for scope in scope_list]
+        division_scopes = [scope for scope in scope_list if scope.division is not None]
 
         # --- Probe phase: expensive, read-only, and deliberately unlocked. ---
         #
@@ -4393,9 +5260,22 @@ class Dataset:
 
         # Probe each scope directory and assign its explicit identity; collect
         # this session's arranged positions keyed (group, sequence, basename).
+        divided = (
+            self._divide_scopes(
+                division_scopes,
+                exts=exts,
+                recursive=recursive,
+                include_partial=include_partial,
+                committed=existing,
+            )
+            if division_scopes
+            else _DividedRows()
+        )
         fresh: list[dict[str, object]] = []
         session_positions: dict[tuple[str, str, str], int] = {}
         for scope in scope_list:
+            if scope.division is not None:
+                continue
             group_safe = to_safe_name(scope.group) if scope.group else ""
             sequence_safe = to_safe_name(scope.sequence)
             entries = self._probe_dir_rows(
@@ -4486,6 +5366,7 @@ class Dataset:
         # overlap. Note this is not the same thing as two byte-identical files in
         # one sequence, which legitimately share one video_uuid and are two rows.
         fresh = self._dedupe_scope_rows(fresh)
+        fresh.extend(divided.rows)
 
         # --- Commit phase: cheap, and locked. ---
         #
@@ -4501,17 +5382,27 @@ class Dataset:
         # zero-byte file the lock leaves on a first write. A pandas reader moved
         # inside this block would raise ``EmptyDataError`` there.
         index_path.parent.mkdir(parents=True, exist_ok=True)
-        touched = {(scope.group, scope.sequence) for scope in scope_list}
+        touched = {
+            (scope.group, scope.sequence)
+            for scope in scope_list
+            if scope.division is None
+        } | entries_of_rows(divided.rows)
         with index_lock(index_path):
             committed = _read_media_index(index_path)
             prior_order = build_prior_order(committed)
             preserved = [
-                row for row in committed if not self._row_under_dirs(row, scope_dirs)
+                row
+                for row in committed
+                if not self._row_under_dirs(row, scope_dirs)
+                and not self._row_on_paths(row, divided.paths)
             ]
             written = entries_of_rows(fresh)
             self.refuse_entry_key_collision(
                 written, self._entries_beside_media_write(written, committed, preserved)
             )
+            self._prepare_divided_manifest(divided)
+            # A store's scale is a fact about its pixels, which a division keeps.
+            self._keep_calibration(divided.rows, committed)
 
             # Carry transcode derivative links onto the fresh rows (a re-finalize
             # of a transcoded sequence must not drop its routing links), merge
@@ -4551,6 +5442,7 @@ class Dataset:
                 prior_order=prior_order,
             )
             write_media_index_rows(index_path, frame_from_rows(merged))
+        self._declare_divided_recordings(divided)
         self._write_media_compositions(merged)
         for moved in drift:
             print(
@@ -4560,7 +5452,10 @@ class Dataset:
                 file=sys.stderr,
             )
         return MediaIndexResult(
-            index_path=index_path, disagreements=disagreements, drift=drift
+            index_path=index_path,
+            disagreements=disagreements,
+            drift=drift,
+            divisions=divided.plans,
         )
 
     def _write_media_compositions(self, rows: list[dict[str, object]]) -> None:
@@ -5427,6 +6322,41 @@ class Dataset:
                 if column in prior:
                     row[column] = prior[column]
             kept += 1
+        return kept
+
+    def _keep_assigned_divisions(
+        self,
+        fresh: Sequence[dict[str, object]],
+        committed: Sequence[Mapping[str, object]],
+    ) -> list[dict[str, object]]:
+        """Keep the division rows a caller assigned to a store a scan indexes whole.
+
+        A division scope's rows are an assigned identity, as the cells
+        :meth:`_keep_assigned_identity` restores are. A scan whose source does
+        not divide finds the store and proposes its undivided row, and the
+        store's committed division rows are kept in its place.
+        """
+        assigned: dict[Path, list[dict[str, object]]] = {}
+        for row in committed:
+            key = self._stored_row_key(row)
+            if (
+                key is None
+                or key.window is None
+                or read_link_cell(row, "assignment_source") != "assigned"
+            ):
+                continue
+            assigned.setdefault(Path(key.abs_path), []).append(dict(row))
+        if not assigned:
+            return list(fresh)
+        kept: list[dict[str, object]] = []
+        for row in fresh:
+            key = self._stored_row_key(row)
+            divisions = (
+                None
+                if key is None or key.window is not None
+                else assigned.pop(Path(key.abs_path), None)
+            )
+            kept.extend([row] if divisions is None else divisions)
         return kept
 
     def set_media_calibration(
@@ -6343,11 +7273,15 @@ class Dataset:
             if unplaced is None:
                 return resolved
             return dataclasses.replace(resolved, placement=unplaced)
-        placement = _division_placement(
-            entry_group,
-            _recording_divided(entry_group, df[df["group"] == entry_group]),
-            matched,
-        )
+        divided = _recording_divided(entry_group, df[df["group"] == entry_group])
+        placement = _division_placement(entry_group, divided, matched)
+        if isinstance(placement, int) and not isinstance(divided, UnplacedSequence):
+            facts = divided.get(entry_sequence)
+            return dataclasses.replace(
+                resolved,
+                placement=placement,
+                time_offset=None if facts is None else facts.time_offset,
+            )
         if placement is None:
             members = self._member_placement(
                 df,
@@ -6534,7 +7468,9 @@ class Dataset:
         divided: dict[tuple[str, str], _MemberPlacement] = {}
         # One verdict per recording, so that placing its n sequences reads its
         # rows once rather than n times.
-        verdicts: dict[str, bool | UnplacedSequence | MediaProbeError] = {}
+        verdicts: dict[
+            str, dict[str, OrderFacts] | UnplacedSequence | MediaProbeError
+        ] = {}
         for block in scoped:
             if block.entry in failed:
                 continue
@@ -6558,6 +7494,12 @@ class Dataset:
                     if isinstance(verdict, MediaProbeError):
                         raise verdict
                     placement = _division_placement(block.group, verdict, block.rows)
+                    time_offset: float | None = None
+                    if isinstance(placement, int) and not isinstance(
+                        verdict, UnplacedSequence
+                    ):
+                        found = verdict.get(block.sequence)
+                        time_offset = None if found is None else found.time_offset
                     if placement is None:
                         place = (block.group, block.camera)
                         if place not in divided:
@@ -6565,7 +7507,9 @@ class Dataset:
                                 df, *place, (route_derivatives, derivative_df)
                             )
                         placement = divided[place].place(block.sequence, resolved.facts)
-                    resolved = dataclasses.replace(resolved, placement=placement)
+                    resolved = dataclasses.replace(
+                        resolved, placement=placement, time_offset=time_offset
+                    )
                 else:
                     unplaced = _undeclared_division(block.group, block.rows)
                     if unplaced is not None:
@@ -6586,6 +7530,36 @@ class Dataset:
         if errors is not None:
             errors.update(failed)
         return [media for entry, media in resolved_entries if entry not in failed]
+
+    def division_facts(self, entries: Iterable[Entry]) -> dict[Entry, OrderFacts]:
+        """Return what the division row of each of *entries* records.
+
+        An entry of a declared continuous group whose rows are all division
+        rows of its stores has facts: its first frame, start, frames, whether it
+        follows a gap, and its first frame on the recording's time axis. Every
+        other entry is left out.
+
+        Raises:
+            MediaProbeError: If a division row's cells do not read.
+        """
+        wanted = {
+            entry for entry in entries if self.recording_kind(entry[0]) == "divided"
+        }
+        if not wanted:
+            return {}
+        try:
+            df = self._load_media_index()
+        except FileNotFoundError:
+            return {}
+        found: dict[Entry, OrderFacts] = {}
+        for group in sorted({group for group, _ in wanted}):
+            facts = _recording_divided(group, df[df["group"] == group])
+            if isinstance(facts, UnplacedSequence):
+                continue
+            for sequence, fact in facts.items():
+                if (group, sequence) in wanted:
+                    found[group, sequence] = fact
+        return found
 
     def sequence_first_frames(
         self,
@@ -7424,11 +8398,13 @@ class Dataset:
 
                 # Which entry to produce -- passed beside the params, never
                 # merged into them, so the sequence name cannot reach a digest.
-                df_std = converter.convert(
-                    src_path,
-                    conv_params,
-                    EntryHints(group=canon_group_infile, sequence=canon_seq),
+                division = self.division_facts([(out_group_canon, canon_seq)]).get(
+                    (out_group_canon, canon_seq)
                 )
+                hints = _placed_hints(
+                    EntryHints(group=canon_group_infile, sequence=canon_seq), division
+                )
+                df_std = converter.convert(src_path, conv_params, hints)
 
                 # Overwrite group column in DataFrame to match policy
                 if "group" in df_std.columns and out_group_canon != canon_group_infile:
@@ -7436,9 +8412,10 @@ class Dataset:
 
                 df_std = _placed_conversion(
                     df_std,
-                    EntryHints(group=canon_group_infile, sequence=canon_seq),
+                    hints,
                     (out_group_canon, canon_seq),
                     f"{src_path}::{canon_seq}",
+                    division,
                 )
 
                 # Ensure schema, then write
@@ -7491,10 +8468,15 @@ class Dataset:
         # here and with direct assignment in the branch above, so a
         # user-supplied ``params["group"]`` won in one path and lost in the
         # other -- one of the reasons entry identity does not belong in params.)
-        hints = EntryHints(group=group_value, sequence=seq_value)
+        division = self.division_facts([(group_value, seq_value)]).get(
+            (group_value, seq_value)
+        )
+        hints = _placed_hints(
+            EntryHints(group=group_value, sequence=seq_value), division
+        )
         df_std = converter.convert(src_path, conv_params, hints)
         df_std = _placed_conversion(
-            df_std, hints, (group_value, seq_value), str(src_path)
+            df_std, hints, (group_value, seq_value), str(src_path), division
         )
 
         # Validate/coerce against the declared standard format schema (if any)
@@ -7894,6 +8876,10 @@ class Dataset:
         newest = df.groupby(groupby_cols)[_CORRECTION_COL].transform("max")
         df = df[(df[_CORRECTION_COL] == 0) | (df[_CORRECTION_COL] == newest)]
         groupby_cols = [*groupby_cols, _CORRECTION_COL]
+        # Read once for every entry a merge may write, under either group cell.
+        divisions = self.division_facts(
+            {(text_cell(g), text_cell(q)) for g, q in zip(df["group"], df["sequence"])}
+        )
 
         for keys, group_df in df.groupby(groupby_cols):
             group, sequence, src_format, correction = keys
@@ -7952,7 +8938,11 @@ class Dataset:
                 advance(int(len(group_df)))
                 continue
 
-            hints = EntryHints(group=group or "", sequence=sequence or "")
+            division = divisions.get((text_cell(out_group), text_cell(sequence)))
+            hints = _placed_hints(
+                EntryHints(group=text_cell(group), sequence=text_cell(sequence)),
+                division,
+            )
 
             dfs: list[pd.DataFrame] = []
             _merge_failed = False
@@ -7987,6 +8977,7 @@ class Dataset:
                     hints,
                     (text_cell(out_group), text_cell(sequence)),
                     f"{group}/{sequence} (merged)",
+                    division,
                 )
             except ValueError as e:
                 print(
@@ -8181,13 +9172,19 @@ class Dataset:
                 if detect_label_format(dict(entry.payload)) == "dense"
             ]
         )
+        divisions = self.division_facts(
+            {(entry.group, entry.sequence) for entry, *_ in converted}
+        )
         pending: list[tuple[LabelEntry, Mapping[str, object], Path, Path, str]] = []
         for entry, out_path, src_path, source_md5 in converted:
-            # Events stay where the converter numbered them until an entry
-            # records a division.
+            # A division's events are numbered from its first frame and move to
+            # it. Every other entry's stay where the converter numbered them.
+            division = divisions.get((entry.group, entry.sequence))
             payload = place_label_payload(
                 entry.payload,
-                first_frame=0,
+                first_frame=0
+                if division is None or division.first_frame is None
+                else division.first_frame,
                 sequence_start=starts.get((entry.group, entry.sequence), 0),
                 entry=entry_token(entry.group, entry.sequence),
             )

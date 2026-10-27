@@ -8,6 +8,67 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: dividing an imgstore at scan and import, and manifest version 4
+
+**Manifest version 4, written only by a dataset that divides a store.** A media
+source gains `division` (`MediaDivision`: `frames`, `identity` `store` or `camera`,
+an optional `name`), and `MANIFEST_VERSION` is 4. A manifest is written at 4 when a
+media source declares a division or a write has put division rows in the media
+index. Every other manifest is written at `UNDIVIDED_MANIFEST_VERSION`, 3, as
+before. A mosaic older than this raises `ManifestVersionError` on a version-4
+manifest. Reading a version-3 manifest changes nothing in memory.
+
+- `mosaic sources add --divide-frames N [--recording-by store|camera]
+  [--recording-name X]` and the MCP `manage_dataset` fields `divide_frames`,
+  `recording_by` and `recording_name` declare it (`SourceFields`).
+- `scan_media(include_partial=False)` returns a `MediaScanResult` (`path`,
+  `divisions`, `held_back`, `refused`) instead of a `Path`. A dividing source writes
+  one row per division (`assignment_source` `scan-imgstore-division`) in place of
+  the store's row, and declares each recording in `continuous_groups`.
+  `mosaic scan --include-partial` releases the sequence still recording, and
+  `mosaic scan --json` adds `divisions`, `held_back` and `refused`. The MCP's `scan`
+  takes `include_partial` and returns `divisions`, `held_back` and `refused`.
+- `MediaIndexScope.division` divides the one store its directory is, under a
+  derived name when `group` is `""`. `write_media_index(include_partial=False)`
+  replaces every row of the store in one index write, and `MediaIndexResult` gains
+  `divisions`, `held_back` and `refused`. The rows stay `assigned`, and a scan of a
+  source that does not divide keeps them.
+- `DivisionRefused.reason` gains the refusals of a write: `synchronized_store`,
+  `not_one_store`, `assigned_store`, `recording_name_taken`, `mixed_recording`,
+  `redivision_with_outputs` and `tracking_unregistered`. Dividing a recording again
+  (another rule or name, a division that moved, a store indexed whole) is refused
+  while its entries have outputs, which `Dataset.entry_outputs` lists. The tracking
+  outputs are listed after `mosaic.tracking.register_ops()`, which `mosaic scan` and
+  the MCP call. Call it before a write that divides.
+- `Dataset.set_continuous_groups` refuses to leave out a recording whose store the
+  media index divides.
+- A converted table of a division is numbered from 0 and placed at the division's
+  `first_frame`. A table that continues past the division's frames is refused. Label
+  events of a division move to its `first_frame`.
+- A division's `time` is moved by its time offset (`ResolvedMedia.time_offset`,
+  `EntryAxis.time_offset`, `EntryHints.time_offset`,
+  `shift_to_recording_axis(time_offset=...)`). The offset continues the division
+  before it at that division's rate, which is `first_frame / fps` at one rate, and
+  after a gap, a store boundary or a missing division is the store clock's offset.
+  A table written while the division before its own was missing keeps the clock's
+  time once that division is written, and does not read as out of date.
+- A division scope or a dividing scan of a store indexed whole is refused while that
+  store's entries have outputs, whether or not the other stores of its camera are
+  divided. A recording divided again without outputs is reported on stderr.
+- A write of division rows raises the manifest to 4 once its refusals pass and
+  before it writes the media index, and declares the recordings continuous after
+  it. A refused write leaves the manifest as it was.
+- `Dataset.division_facts` gives each division's first frame, start, frames, gap
+  and time offset (`OrderFacts` gains `frame_count`, `follows_gap` and
+  `time_offset`). Two divisions are neighbors only where the second's frames
+  continue the first's (`recording.adjacent`). A gap, a store boundary or a refused
+  division ends the overlap, and the feature cache recomputes the entries whose
+  neighbors changed.
+- `tools/check_divided_store.py` divides a real store through both paths into a
+  scratch directory and checks the rows, the boundary frames, an export and the
+  store's listing.
+- Undivided datasets keep their manifests, indexes, compositions and run ids.
+
 ## Unreleased: one media index row per division of a store, and reads of a division's chunks
 
 **Seven trailing media index columns.** `media_raw/index.csv` gains `chunk_first`,

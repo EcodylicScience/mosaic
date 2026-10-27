@@ -88,7 +88,10 @@ class EntryHints:
     0 for an undivided recording, and like ``fps`` a fact about the entry. A
     converter numbers its table from the sequence's own first frame, and the
     caller moves it onto the recording's axis
-    (:func:`~mosaic.core.pipeline.placement.place_converted`).
+    (:func:`~mosaic.core.pipeline.placement.place_converted`). ``time_offset``
+    is the sequence's first frame on the recording's time axis, in seconds,
+    which a division's rows record (``Dataset.division_facts``); ``None`` takes
+    ``first_frame`` at ``fps``.
 
     Validated on construction, so a converter structurally cannot emit a name
     that is not usable as one path component. This is the earliest of the three
@@ -100,6 +103,7 @@ class EntryHints:
     sequence: str = ""
     fps: float | None = None
     first_frame: int = 0
+    time_offset: float | None = None
 
     def __post_init__(self) -> None:
         _ = validate_entry_name(self.group, "group")

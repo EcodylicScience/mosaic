@@ -135,6 +135,17 @@ A scan refuses stores it cannot group, and writes nothing:
 `write_media_index` refuses a scope holding unsynchronized stores of different cameras.
 The stores of one camera under one scope join its entry as clips.
 
+### An imgstore divided into sequences
+
+A long recording, such as a day of one Motif camera, can be divided into sequences of
+whole chunks, each read as an entry. Declare the media source with
+`--divide-frames` ([Divide a recording](../../dataset.md#divide-a-recording)), or give a
+`MediaIndexScope` a `division`. Each sequence's row in the media index has the store's
+`abs_path` and the trailing cells of its chunks, and the sequence reads only those
+chunks. Its frame 0 is the first frame of its first chunk. A tool that opens the files
+itself is handed those chunks, or the `export-store` video of the sequence. A
+synchronized set of stores is not divided.
+
 ## Extract frames to annotate
 
 ```bash

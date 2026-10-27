@@ -708,7 +708,11 @@ def _inference_entry(
         paths, stored = (variant.path,), (variant.facts,)
         clip_windows: tuple[StoreWindow | None, ...] = (None,)
         consumed_media = variant.consumed_media
-        axis = EntryAxis.of_variant(variant.mapping(), first_frame=first_frame)
+        axis = EntryAxis.of_variant(
+            variant.mapping(),
+            first_frame=first_frame,
+            time_offset=resolved.time_offset,
+        )
     else:
         # Before a join is looked up, so that clips no join can hold are named
         # for what is wrong with them rather than reported as unjoined.
@@ -726,7 +730,10 @@ def _inference_entry(
         clip_windows = tuple(resolved.windows)
         consumed_media = paths
         axis = EntryAxis.of_entry_media(
-            resolved.facts, windowed=windowed, first_frame=first_frame
+            resolved.facts,
+            windowed=windowed,
+            first_frame=first_frame,
+            time_offset=resolved.time_offset,
         )
     source_uid = entry_source_uid(stored)
     targets: tuple[Path, ...]

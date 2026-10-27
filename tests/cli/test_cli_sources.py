@@ -98,6 +98,82 @@ class TestSources:
         assert result.exit_code != 0
         assert "cannot both be given" in result.output
 
+    def test_a_dividing_source_is_declared_with_its_rule(self, tmp_path: Path) -> None:
+        manifest = make_dataset(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "sources",
+                "add",
+                "-m",
+                str(manifest),
+                "--kind",
+                "media",
+                "--path",
+                "/mnt/stores",
+                "--divide-frames",
+                "60000",
+                "--recording-by",
+                "camera",
+                "--recording-name",
+                "cam7",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        (source,) = Dataset(manifest_path=manifest).load().manifest.sources.media
+        assert source.division is not None
+        assert (source.division.frames, source.division.identity) == (60000, "camera")
+        assert source.division.name == "cam7"
+        assert "manifest_version: 4" in manifest.read_text()
+
+    def test_a_recording_flag_without_a_division_names_the_flags(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "sources",
+                "add",
+                "-m",
+                str(manifest),
+                "--kind",
+                "media",
+                "--path",
+                "/mnt/stores",
+                "--recording-by",
+                "camera",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--recording-by applies only beside --divide-frames" in result.output
+
+    def test_a_recording_identity_outside_store_and_camera_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        result = runner.invoke(
+            app,
+            [
+                "sources",
+                "add",
+                "-m",
+                str(manifest),
+                "--kind",
+                "media",
+                "--path",
+                "/mnt/stores",
+                "--divide-frames",
+                "600",
+                "--recording-by",
+                "tank",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "'store', 'camera'" in result.output
+        assert Dataset(manifest_path=manifest).load().manifest.sources.media == ()
+
     def test_an_unknown_kind_says_what_it_wanted(self, tmp_path: Path) -> None:
         manifest = make_dataset(tmp_path)
         result = runner.invoke(

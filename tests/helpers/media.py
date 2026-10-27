@@ -11,7 +11,7 @@ import dataclasses
 import shlex
 import subprocess
 import hashlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, TypedDict
@@ -672,6 +672,8 @@ def video_store_maker(
     size: tuple[int, int] = (64, 48),
     paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
     created_utc: str | None = None,
+    store_metadata: Mapping[str, object] | None = None,
+    missing_index: Collection[int] = (),
 ) -> MakeStore:
     """Return a ``make_imgstore``-shaped factory that writes H.264 video stores.
 
@@ -684,7 +686,11 @@ def video_store_maker(
     chunks and ``NNNNNN.npz`` indexes. The chunks are encoded by ffmpeg
     (:func:`write_h264_mp4`), because the imgstore package encodes through OpenCV,
     whose Linux wheel cannot write H.264. *created_utc* is written as the store's
-    ``__store.created_utc``, which the clock that names its divisions reads.
+    ``__store.created_utc``, which the clock that names its divisions reads, and
+    *store_metadata* is laid over the rest of ``__store``. A chunk of
+    *missing_index* is written without its ``.npz`` index, as a chunk still
+    recording or a damaged one is. A chunk shorter than the first ends the store
+    when it is last.
 
     The factory takes ``name``, ``parent`` and ``extra_metadata`` as
     ``make_imgstore`` does, and ignores the rest of that fixture's arguments.
@@ -730,6 +736,7 @@ def video_store_maker(
         }
         if created_utc is not None:
             descriptor["created_utc"] = created_utc
+        descriptor.update(store_metadata or {})
         metadata: dict[str, object] = {"__store": descriptor, **(extra_metadata or {})}
         _ = (store / "metadata.yaml").write_text(yaml.safe_dump(metadata))
         first = 0
@@ -746,11 +753,12 @@ def video_store_maker(
                 paint=paint_chunk,
             )
             numbers = np.arange(first, first + count, dtype=np.int64)
-            np.savez(
-                store / f"{chunk:06d}.npz",
-                frame_number=numbers,
-                frame_time=times[first : first + count],
-            )
+            if chunk not in missing_index:
+                np.savez(
+                    store / f"{chunk:06d}.npz",
+                    frame_number=numbers,
+                    frame_time=times[first : first + count],
+                )
             first += count
         return store, [paint_frame(frame) for frame in range(first)]
 
@@ -817,16 +825,15 @@ def write_division_rows(
     name: str | None = None,
     include_partial: bool = False,
     declare: bool = True,
-) -> list[dict[str, object]]:
-    """Replace an indexed store's row with the rows of its divisions of *frames*.
+) -> list[dict[str, str]]:
+    """Divide an indexed store into divisions of *frames*, through a division scope.
 
-    The store's undivided row in the originals index is divided by
-    :func:`~mosaic.core.media.store_division.plan_division`, its rule frozen at
-    the store's median frame interval, and each division's row carries the
-    measured cells of its window. The other rows of the index are kept, and the
-    media compositions are projected again. With *declare*, the recording is
-    added to the dataset's continuous groups. The store needs a clock
-    (``video_store_maker(created_utc=...)``).
+    The store's rows in the originals index are replaced by the rows of its
+    divisions (:meth:`~mosaic.core.dataset.Dataset.write_media_index` with a
+    division :class:`~mosaic.core.pipeline.media_index.MediaIndexScope`), and
+    the recording is declared continuous. Without *declare*, the declaration is
+    taken out of the manifest again, as a manifest edited by hand leaves it. The
+    store needs a clock (``video_store_maker(created_utc=...)``).
 
     Args:
         dataset: The dataset whose originals index lists *store*.
@@ -834,62 +841,35 @@ def write_division_rows(
         frames: The frames of a full division, a multiple of the chunksize.
         name: The recording's name, in place of the one the store derives.
         include_partial: Whether to write a trailing sequence still recording.
-        declare: Whether to declare the recording continuous.
+        declare: Whether the recording stays declared continuous.
 
     Returns:
         The division rows, in recording order.
     """
-    from mosaic.core.media.imgstore_io import (
-        probe_store,
-        store_plan_input,
-        window_probe,
-    )
-    from mosaic.core.media.store_division import (
-        StoreWindow,
-        build_division_rows,
-        division_rule,
-        plan_division,
-    )
-    from mosaic.core.pipeline.media_index import (
-        frame_from_rows,
-        write_media_index_rows,
-    )
+    from mosaic.core.manifest import DatasetManifest, MediaDivision
+    from mosaic.core.pipeline.media_index import MediaIndexScope
 
-    index_path = dataset.get_root(dataset.resolve_media_root()) / "index.csv"
-    rows: list[dict[str, object]] = [dict(row) for row in dataset.read_media_index()]
-    resolved = store.resolve()
-    (position,) = [
-        at
-        for at, row in enumerate(rows)
-        if dataset.resolve_path(str(row["abs_path"])).resolve() == resolved
-    ]
-    store_row = rows[position]
-    probe = probe_store(store)
-    times = np.concatenate(
-        [probe.chunk_times[key] for key in sorted(probe.chunk_times)]
-    )
-    rule = division_rule(
-        frames,
-        chunksize=probe.chunksize,
-        nominal_interval=float(np.median(np.diff(times))),
-    )
-    plan = plan_division(
-        [store_plan_input(probe, str(store_row["abs_path"]))],
-        rule,
-        name=name,
+    result = dataset.write_media_index(
+        [
+            MediaIndexScope(
+                directory=store,
+                group=name or "",
+                sequence="",
+                division=MediaDivision(frames=frames),
+            )
+        ],
         include_partial=include_partial,
     )
-    cells: dict[StoreWindow, Mapping[str, object]] = {
-        division.row.window: window_probe(probe, division.row.window).row_cells()
-        for division in plan.divisions
-    }
-    divisions = build_division_rows(store_row, plan, cells)
-    rows[position : position + 1] = divisions
-    write_media_index_rows(index_path, frame_from_rows(rows))
-    _ = dataset.rebuild_sequence_index("media_raw")
-    if declare:
-        dataset.set_continuous_groups([*dataset.continuous_groups, plan.recording])
-    return divisions
+    (plan,) = result.divisions
+    if not declare:
+
+        def undeclare(manifest: DatasetManifest) -> None:
+            manifest.continuous_groups = tuple(
+                group for group in manifest.continuous_groups if group != plan.recording
+            )
+
+        dataset.mutate_manifest(undeclare)
+    return [row for row in dataset.read_media_index() if row["group"] == plan.recording]
 
 
 def export_entry_store(dataset: Dataset, group: str, sequence: str) -> Path:

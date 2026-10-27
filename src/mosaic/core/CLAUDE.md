@@ -47,9 +47,11 @@ in the root guide.
 
 - `manifest.py` defines the format as pydantic models. A read migrates an older version
   in memory and writes nothing, and a newer version raises `ManifestVersionError`. The
-  `MANIFEST_VERSION` docstring says when to bump it. `DatasetManifest` keeps unknown
-  top-level keys in `preserved`, while sources and tags refuse unknown keys
-  (`tests/core/test_dataset_manifest.py`).
+  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 4 only
+  when a media source declares a `division` or a write raised it for division rows
+  (`written_manifest_version`), and every other at `UNDIVIDED_MANIFEST_VERSION`.
+  `DatasetManifest` keeps unknown top-level keys in `preserved`, while sources and tags
+  refuse unknown keys (`tests/core/test_dataset_manifest.py`).
 - A `Dataset` setter checks the manifest it would make before holding it
   (`Dataset._adopt_manifest`). A refused value does not reach `save`
   (`TestARefusedSetterLeavesTheManifest`).
@@ -97,7 +99,18 @@ in the root guide.
   `prune_unsourced=True`. `overlapping_sources` refuses, at declaration, two sources of
   one kind that could claim one file (`tests/core/test_scan_sources.py`).
 - A media scan re-measures every row but keeps the identity cells a caller assigned
-  through `MediaIndexScope` (`Dataset._keep_assigned_identity`) unless `reassign=True`.
+  through `MediaIndexScope` (`Dataset._keep_assigned_identity`) unless `reassign=True`,
+  and keeps a store's assigned division rows (`_keep_assigned_divisions`).
+- A dividing media source and a division `MediaIndexScope` both divide through
+  `Dataset._divided_rows`, which plans each recording with
+  `media/division_index.py` and raises every refusal before a row is written
+  (`tests/core/media/test_divided_store_scan.py`). Its rows replace every row of the
+  store, and the recording is then declared continuous. The manifest is raised to 4
+  before the index write and the groups are declared after it. A re-division is
+  refused while `Dataset.entry_outputs` lists an output of the recording's entries,
+  which needs `mosaic.tracking.register_ops()` for the tracking kinds. The undivided
+  row of a store is checked on that store's entries alone, also when other stores of
+  its camera are divided.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for
@@ -198,6 +211,12 @@ in the root guide.
   takes `ResolvedMedia.row_keys`. Sites that mean the file keep `abs_path`:
   `_row_claimed`, `reprobe-media` (one `probe_store` per store), prune, path
   rewriting and the summary's video counts (`tests/core/media/test_division_rows.py`).
+- A division's `ResolvedMedia.time_offset` and `Dataset.division_facts` come from
+  `_recording_divided`, which reads a recording's rows once. A converted table and a
+  tool's table of a division are moved by its first frame and that offset. The offset
+  continues an adjacent division before it at that row's rate and is taken from the
+  store clock after a gap, a store boundary or a missing division
+  (`tests/core/media/test_divided_store_end_to_end.py`).
 - A reader of a division opens its path on `ResolvedMedia.windows`, and local
   frame `k` is store frame `chunk_first * chunksize + k`. A reader of an entry's
   clips takes `windows` as a required keyword. A window whose chunk is absent or

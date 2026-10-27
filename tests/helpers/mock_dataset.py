@@ -31,9 +31,15 @@ from mosaic.core.recording import (
 class MockDataset:
     """A dataset-shaped object over *root*, with no manifest behind it."""
 
-    def __init__(self, root: Path, continuous_groups: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        root: Path,
+        continuous_groups: tuple[str, ...] = (),
+        division_facts: Mapping[Entry, OrderFacts] | None = None,
+    ) -> None:
         self._root = root
         self._continuous_groups = continuous_groups
+        self._division_facts = dict(division_facts or {})
         for directory in ("tracks", "features"):
             (root / directory).mkdir(parents=True, exist_ok=True)
 
@@ -46,6 +52,14 @@ class MockDataset:
 
     def recording_of(self, group: str, sequence: str) -> RecordingKey:
         return recording_of(self._continuous_groups, group, sequence)
+
+    def division_facts(self, entries: Iterable[Entry]) -> dict[Entry, OrderFacts]:
+        """Return the division facts given at construction for *entries*."""
+        return {
+            entry: self._division_facts[entry]
+            for entry in entries
+            if entry in self._division_facts
+        }
 
     def recordings(
         self,

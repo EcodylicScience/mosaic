@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel
 
+from mosaic.core.media.division_wire import DivisionReportWire
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.parallelism import ParallelLimits, ParallelRefused
@@ -85,6 +86,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.dataset_summary import DatasetSummary
     from mosaic.core.manifest import DatasetManifest
+    from mosaic.core.media.store_division import DivisionRefused
     from mosaic.core.pipeline.cancel import RequestCancel
     from mosaic.core.pipeline.graph import (
         CatalogEntry,
@@ -917,7 +919,7 @@ class LocalBackend:
                 raise ToolFailure(missing_field(args.action, "dataset"))
             held = self._dataset(args.dataset)
             dataset = self._changeable(held, "manage_dataset")
-            scanned: dict[str, int] = {}
+            scanned = _Scanned()
             orphaned: int | None = None
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
@@ -933,7 +935,9 @@ class LocalBackend:
                     )
                 case "scan":
                     scanned = _scan(dataset, args)
-                    message = f"scanned {', '.join(scanned) or 'no declared source'}"
+                    message = (
+                        f"scanned {', '.join(scanned.rows) or 'no declared source'}"
+                    )
                 case "set_tags":
                     message = _set_tags(dataset, args)
         except PathRefused as refused:
@@ -944,7 +948,10 @@ class LocalBackend:
         change = self._change(args, held, message)
         return change.model_copy(
             update={
-                "scanned": scanned,
+                "scanned": scanned.rows,
+                "divisions": len(scanned.divisions.divisions),
+                "held_back": scanned.divisions.held_back,
+                "refused": scanned.divisions.refused,
                 "orphaned_rows": orphaned,
                 "next_steps": dataset_next_steps(held.dataset),
             }
@@ -1577,14 +1584,32 @@ def _step_scopes(
     return found
 
 
-def _scan(dataset: Dataset, args: ManageDatasetInput) -> dict[str, int]:
+@dataclass(frozen=True)
+class _Scanned:
+    """What a ``scan`` call indexed.
+
+    Attributes:
+        rows: The raw index rows of each kind scanned.
+        divisions: What the dividing media sources divided, held back and
+            refused.
+    """
+
+    rows: dict[str, int] = field(default_factory=dict)
+    divisions: DivisionReportWire = field(default_factory=DivisionReportWire)
+
+
+def _scan(dataset: Dataset, args: ManageDatasetInput) -> _Scanned:
     """Scan what *args* name; the raw index rows of each kind scanned.
 
     The kind given, or with ``source_id`` alone the kinds that declare it, or
-    every kind that declares a source.
+    every kind that declares a source. A media scan that divides a store again
+    lists its tracking outputs, so the tracking kinds are registered first.
     """
     from mosaic.core.dataset_summary import raw_label_rows
+    from mosaic.core.media.division_wire import division_report_wire
+    from mosaic.core.media.store_division import DivisionRefused
     from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
+    from mosaic.tracking import register_ops
 
     declared = {
         kind: {source.id for source in dataset.manifest.sources.of_kind(kind)}
@@ -1607,10 +1632,15 @@ def _scan(dataset: Dataset, args: ManageDatasetInput) -> dict[str, int]:
         )
     only = () if args.source_id is None else (args.source_id,)
     scanned: dict[str, int] = {}
+    divisions = DivisionReportWire()
+    register_ops()
     for kind in kinds:
         try:
             if kind == "media":
-                _ = dataset.scan_media(only=only)
+                media = dataset.scan_media(
+                    only=only, include_partial=args.include_partial
+                )
+                divisions = division_report_wire(media.divisions)
                 scanned[kind] = len(dataset.read_media_index())
             elif kind == "tracks":
                 index = dataset.scan_tracks(only=only)
@@ -1618,9 +1648,21 @@ def _scan(dataset: Dataset, args: ManageDatasetInput) -> dict[str, int]:
             else:
                 _ = dataset.scan_labels(only=only)
                 scanned[kind] = raw_label_rows(dataset)
+        except DivisionRefused as refused:
+            raise ToolFailure(_division_refused(refused)) from refused
         except (KeyError, ValueError, NotImplementedError) as invalid:
             raise ToolFailure(_invalid_source(str(invalid))) from invalid
-    return scanned
+    return _Scanned(rows=scanned, divisions=divisions)
+
+
+def _division_refused(refused: DivisionRefused) -> ErrorEnvelope:
+    """The envelope of a media scan that refuses to divide a store."""
+    return ErrorEnvelope(
+        kind="invalid",
+        reason=refused.reason,
+        message=str(refused),
+        detail={"refusal": refused.reason},
+    )
 
 
 def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:

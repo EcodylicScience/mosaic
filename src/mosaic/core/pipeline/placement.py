@@ -410,12 +410,16 @@ class EntryAxis:
         first_frame: The sequence's first frame on its recording's frame axis,
             which :meth:`place` adds last. :attr:`media_frames` stays local to
             the sequence.
+        time_offset: The sequence's first frame on its recording's time axis,
+            in seconds, which :meth:`place` adds to each time column. ``None``
+            adds *first_frame* at the media's rate.
     """
 
     clips: tuple[MediaFacts, ...] = ()
     mapping: SourceMapping | None = None
     windowed: bool = False
     first_frame: int = 0
+    time_offset: float | None = None
 
     def __post_init__(self) -> None:
         """Refuse an axis that is both the entry media and a variant.
@@ -431,15 +435,31 @@ class EntryAxis:
 
     @classmethod
     def of_entry_media(
-        cls, clips: Sequence[MediaFacts], *, windowed: bool, first_frame: int = 0
+        cls,
+        clips: Sequence[MediaFacts],
+        *,
+        windowed: bool,
+        first_frame: int = 0,
+        time_offset: float | None = None,
     ) -> EntryAxis:
         """Return the axis of a tool that read the entry media: a clip, or a join."""
-        return cls(clips=tuple(clips), windowed=windowed, first_frame=first_frame)
+        return cls(
+            clips=tuple(clips),
+            windowed=windowed,
+            first_frame=first_frame,
+            time_offset=time_offset,
+        )
 
     @classmethod
-    def of_variant(cls, mapping: SourceMapping, *, first_frame: int = 0) -> EntryAxis:
+    def of_variant(
+        cls,
+        mapping: SourceMapping,
+        *,
+        first_frame: int = 0,
+        time_offset: float | None = None,
+    ) -> EntryAxis:
         """Return the axis of a tool that read a media variant's file."""
-        return cls(mapping=mapping, first_frame=first_frame)
+        return cls(mapping=mapping, first_frame=first_frame, time_offset=time_offset)
 
     @property
     def reads_every_frame(self) -> bool:
@@ -495,8 +515,8 @@ class EntryAxis:
         table from the entry's several clips is timed by the clips
         (:func:`retime_joined_frame`). A table from one clip is kept as it is.
         Last, the table is moved onto its recording's axis by
-        :attr:`first_frame` (:func:`shift_to_recording_axis`), at the rate of
-        the media's first clip.
+        :attr:`first_frame` and :attr:`time_offset`
+        (:func:`shift_to_recording_axis`), at the rate of the media's first clip.
 
         Raises:
             UnclassifiedColumnError: As :func:`to_source_space` or
@@ -511,10 +531,13 @@ class EntryAxis:
             placed = MappedTable(df, ())
         else:
             placed = retime_joined_frame(df, concatenated_timeline(self.clips))
-        if not self.first_frame:
+        if not self.first_frame and not self.time_offset:
             return placed
         shifted = shift_to_recording_axis(
-            placed.frame, self.first_frame, self.media_rate
+            placed.frame,
+            self.first_frame,
+            self.media_rate,
+            time_offset=self.time_offset,
         )
         return MappedTable(shifted, placed.dropped)
 
@@ -612,25 +635,34 @@ def to_source_space(df: pd.DataFrame, mapping: SourceMapping) -> MappedTable:
 
 
 def shift_to_recording_axis(
-    df: pd.DataFrame, first_frame: int, fps: float | None
+    df: pd.DataFrame,
+    first_frame: int,
+    fps: float | None,
+    *,
+    time_offset: float | None = None,
 ) -> pd.DataFrame:
     """Return *df*, on its sequence's axes, on its recording's axes.
 
     Each frame column (``frame``, ``frames``, ``tracklet_start``, as
     :func:`classify_column` names them) gains *first_frame*, and each time column
-    gains ``first_frame / fps`` seconds: ``time`` in seconds and TRex's
-    ``timestamp`` in microseconds. NA in a nullable frame column stays NA. Every
-    other column is unchanged. The offset may fall anywhere, inside a store chunk
-    included.
+    gains *time_offset* seconds, by default ``first_frame / fps``: ``time`` in
+    seconds and TRex's ``timestamp`` in microseconds. NA in a nullable frame
+    column stays NA. Every other column is unchanged. The offset may fall
+    anywhere, inside a store chunk included.
 
     Args:
         df: The table on its sequence's frame axis, after any mapping to source
             space or retiming.
         first_frame: The sequence's first frame on the recording's axis.
         fps: The recording's frame rate, ``None`` when not measured.
+        time_offset: The sequence's first frame on the recording's time axis,
+            in seconds, which a division's rows record
+            (``Dataset.division_facts``).
+            ``None`` takes ``first_frame / fps``.
 
     Returns:
-        The shifted table, or *df* itself when *first_frame* is 0.
+        The shifted table, or *df* itself when *first_frame* and *time_offset*
+        are 0.
 
     Raises:
         UnclassifiedColumnError: If *first_frame* is not 0 and a numeric column
@@ -638,10 +670,10 @@ def shift_to_recording_axis(
             column is named.
         ValueError: If *first_frame* is negative, if a frame column contains a
             value that is not a whole number, or if the table has a time column
-            and *fps* is ``None``.
+            and neither *time_offset* nor *fps* is given.
     """
     _refuse_negative_first_frame(first_frame)
-    if first_frame == 0:
+    if first_frame == 0 and not time_offset:
         return df
     names = column_names(df)
     kinds: dict[str, ColumnKind | None] = {
@@ -659,7 +691,9 @@ def shift_to_recording_axis(
         for name in names
         if base_field(name) in _TIME_UNITS_PER_SECOND
     }
-    if time_columns and fps is None:
+    if time_offset is None and fps is not None:
+        time_offset = first_frame / fps
+    if time_columns and time_offset is None:
         message = (
             f"Cannot move this table's time onto its recording's axis: the "
             f"sequence starts at frame {first_frame}, and the frame rate that "
@@ -672,12 +706,11 @@ def shift_to_recording_axis(
             out[name] = _mapped_frame_column(
                 df, name, lambda frames: frames + first_frame
             )
-    if fps is not None:
-        offset_seconds = first_frame / fps
+    if time_offset is not None:
         for name, units_per_second in time_columns.items():
             out[name] = (
                 column_array(df, name).astype(np.float64)
-                + offset_seconds * units_per_second
+                + time_offset * units_per_second
             )
     return out
 
@@ -688,7 +721,8 @@ def place_converted(
     """Return a converter's table for *hints*' entry on its recording's axes.
 
     The table is on its sequence's frame axis, numbered from 0, and is moved by
-    ``hints.first_frame`` (:func:`shift_to_recording_axis`) at ``hints.fps``.
+    ``hints.first_frame`` and ``hints.time_offset``
+    (:func:`shift_to_recording_axis`) at ``hints.fps``.
 
     Args:
         df: The converter's table.
@@ -718,7 +752,9 @@ def place_converted(
                 "from 0."
             )
             raise ValueError(message)
-    return shift_to_recording_axis(df, hints.first_frame, hints.fps)
+    return shift_to_recording_axis(
+        df, hints.first_frame, hints.fps, time_offset=hints.time_offset
+    )
 
 
 def _refuse_negative_first_frame(first_frame: int) -> None:

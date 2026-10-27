@@ -75,13 +75,38 @@ def scan_command(
             ),
         ),
     ] = False,
+    include_partial: Annotated[
+        bool,
+        typer.Option(
+            "--include-partial",
+            help=(
+                "Write each divided recording's trailing sequence that is still "
+                "recording. Off by default: it is held back until it closes."
+            ),
+        ),
+    ] = False,
     as_json: Annotated[
-        bool, typer.Option("--json", help="Emit the written index paths as JSON.")
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit the written index paths and the divisions made as JSON.",
+        ),
     ] = False,
 ) -> None:
-    """Rescan every declared source and rewrite the indexes it feeds."""
+    """Rescan every declared source and rewrite the indexes it feeds.
+
+    A media source that divides its imgstore recordings writes one sequence per
+    division. A sequence still recording is held back, and a division that
+    cannot be written is refused. Both are listed on stderr, or under
+    ``held_back`` and ``refused`` with ``--json``.
+    """
+    from mosaic.core.media.division_wire import DivisionReportWire, division_report_wire
+    from mosaic.tracking import register_ops
+
     dataset = load_dataset(manifest)
     kinds = _check_kinds(kind)
+    # A media scan that divides a store again lists the store's tracking outputs.
+    register_ops()
     restrict = list(only or [])
 
     if restrict and len(kinds) > 1:
@@ -96,17 +121,21 @@ def scan_command(
             fail(f"no declared source matches --only {restrict}")
 
     written: dict[str, str] = {}
+    report = DivisionReportWire()
     for one in kinds:
         if not dataset.scan_sources(one):
             continue
         try:
             with stdout_to_stderr():
                 if one == "media":
-                    path = dataset.scan_media(
+                    scanned = dataset.scan_media(
                         only=restrict,
                         reassign=reassign,
                         prune_unsourced=prune_unsourced,
+                        include_partial=include_partial,
                     )
+                    path = scanned.path
+                    report = division_report_wire(scanned.divisions)
                 elif one == "tracks":
                     path = dataset.scan_tracks(
                         only=restrict, prune_unsourced=prune_unsourced
@@ -128,7 +157,14 @@ def scan_command(
         )
 
     if as_json:
-        emit_json({"indexes": written})
-    else:
-        for one, path in written.items():
-            typer.echo(f"{one:<7} {path}")
+        emit_json({"indexes": written, **report.model_dump(mode="json")})
+        return
+    for one, path in written.items():
+        typer.echo(f"{one:<7} {path}")
+    if report.divisions:
+        typer.echo(f"divided {len(report.divisions)} sequences")
+    for label, spans in (("held back", report.held_back), ("refused", report.refused)):
+        for span in spans:
+            typer.echo(
+                f"{label}: {span.group} ({span.reason}): {span.message}", err=True
+            )

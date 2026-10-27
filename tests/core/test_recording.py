@@ -364,6 +364,8 @@ _DECLARATION_READERS: dict[str, frozenset[str] | None] = {
     "core/recording.py": None,
     "core/dataset.py": frozenset(
         {
+            "_continuous_groups_with",
+            "_declare_divided_groups",
             "continuous_groups",
             "entry_key_collision",
             "is_continuous_group",

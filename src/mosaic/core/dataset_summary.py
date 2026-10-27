@@ -246,7 +246,11 @@ def dataset_summary(
     entries = ds.recording_entries()
     extents = _member_extents(ds, tracks_index, entries)
     every_recording = ds.recordings(
-        entries, order_facts=facts_from_frame_extents(extents)
+        entries,
+        order_facts={
+            **facts_from_frame_extents(extents),
+            **ds.division_facts(entries),
+        },
     )
     return DatasetSummary(
         manifest=str(ds.manifest_path.absolute()),

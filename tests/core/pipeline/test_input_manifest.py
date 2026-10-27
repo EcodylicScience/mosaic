@@ -20,6 +20,7 @@ from mosaic.core.pipeline.manifest import (
     verify_overlap_supported,
 )
 from mosaic.core.pipeline.types import Inputs, ParquetLoadSpec, Result, TrackInputs
+from mosaic.core.recording import OrderFacts
 from mosaic.core.scope import Scope
 
 
@@ -274,6 +275,59 @@ def test_build_manifest_adjacency(tmp_path: Path) -> None:
     assert entry_s3.prev_file_specs is not None
     assert entry_s3.next_entry_key is None
     assert entry_s3.next_file_specs is None
+
+
+def _division(first_frame: int, *, follows_gap: bool = False) -> OrderFacts:
+    """The order facts of a 10-frame division at *first_frame*."""
+    return OrderFacts(first_frame=first_frame, frame_count=10, follows_gap=follows_gap)
+
+
+@pytest.mark.parametrize(
+    ("facts", "pairs"),
+    [
+        (
+            {"s1": _division(0), "s2": _division(10), "s3": _division(20)},
+            [("s1", "s2"), ("s2", "s3")],
+        ),
+        (
+            {
+                "s1": _division(0),
+                "s2": _division(10),
+                "s3": _division(20, follows_gap=True),
+            },
+            [("s1", "s2")],
+        ),
+        (
+            {"s1": _division(0), "s2": _division(10), "s3": _division(30)},
+            [("s1", "s2")],
+        ),
+    ],
+    ids=["contiguous", "after-a-gap", "a-division-missing"],
+)
+def test_divisions_are_neighbors_only_where_their_frames_continue(
+    tmp_path: Path, facts: dict[str, OrderFacts], pairs: list[tuple[str, str]]
+) -> None:
+    """A gap, a store boundary or a missing division ends the overlap between two."""
+    ds = MockDataset(
+        tmp_path,
+        continuous_groups=("rec",),
+        division_facts={("rec", name): fact for name, fact in facts.items()},
+    )
+    add_track_sequences(ds, ("rec", "s1"), ("rec", "s2"), ("rec", "s3"))
+
+    manifest, _ = build_manifest(ds, Inputs(("tracks",)))
+
+    found = [
+        (entry.sequence, manifest[entry.next_entry_key].sequence)
+        for entry in manifest.values()
+        if entry.next_entry_key is not None
+    ]
+    assert sorted(found) == pairs
+    for before, after in pairs:
+        assert manifest[f"rec__{after}"].prev_entry_key == f"rec__{before}"
+    unpaired = {"s1", "s2", "s3"} - {after for _, after in pairs}
+    for name in unpaired:
+        assert manifest[f"rec__{name}"].prev_entry_key is None
 
 
 def test_build_manifest_adjacency_cross_group(tmp_path: Path) -> None:

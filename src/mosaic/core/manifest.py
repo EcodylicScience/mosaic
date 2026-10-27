@@ -39,6 +39,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PositiveInt,
     SerializerFunctionWrapHandler,
     TypeAdapter,
     ValidationError,
@@ -48,6 +49,7 @@ from pydantic import (
 )
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.media.store_division import RecordingIdentity, recording_name_problem
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
@@ -71,6 +73,7 @@ __all__ = [
     "TAGS_MAX_COUNT",
     "TAG_DESCRIPTION_MAX_LENGTH",
     "TAG_NAME_MAX_LENGTH",
+    "UNDIVIDED_MANIFEST_VERSION",
     "AnyScanSource",
     "DatasetManifest",
     "DatasetTag",
@@ -78,6 +81,7 @@ __all__ = [
     "GroupFrom",
     "LabelsScanSource",
     "ManifestVersionError",
+    "MediaDivision",
     "MediaLayout",
     "MediaScanSource",
     "RawScanSource",
@@ -105,11 +109,12 @@ __all__ = [
     "resolve_manifest_path",
     "validate_root_inside",
     "write_manifest",
+    "written_manifest_version",
 ]
 
 
-MANIFEST_VERSION: Final = 3
-"""The manifest format this code writes.
+MANIFEST_VERSION: Final = 4
+"""The newest manifest format this code reads and writes.
 
 Bumped only for a change that older code would misread. Reading tolerates any
 version at or below this one and migrates it in memory; a *higher* one raises
@@ -121,7 +126,15 @@ for a typo. The bump makes it the version error it is. ``libraries`` and
 ``splits`` needed no bump: each is a top-level key, and unknown top-level keys
 are preserved. Code older than ``splits`` carries the key through a save without
 enforcing it.
+
+4 added ``division`` to a media source, and division rows to the media index.
+Older code would read a division row as its whole store. Only a dataset that
+divides a store writes 4 (:func:`written_manifest_version`). Every other
+dataset writes :data:`UNDIVIDED_MANIFEST_VERSION`, which older code still opens.
 """
+
+UNDIVIDED_MANIFEST_VERSION: Final = 3
+"""The version that a manifest of a dataset without a divided store writes."""
 
 SplitRole = Literal["train", "test", "sealed"]
 """The role of a group in a held-out protocol.
@@ -493,6 +506,36 @@ class ScanSource(StrictModel):
         return self
 
 
+class MediaDivision(StrictModel):
+    """How a media source divides each imgstore recording it finds into sequences.
+
+    Attributes:
+        frames: The frames of a full division, a whole multiple of the store's
+            ``chunksize``. A scan refuses any other value.
+        identity: Whether a recording is one store, or every store of one
+            camera serial.
+        name: The recording's name, in place of the one its identity derives:
+            ``<camera_serial>_<directory name>`` by store, the serial by camera.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    frames: PositiveInt
+    identity: RecordingIdentity = "store"
+    name: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_names_a_recording(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        problem = recording_name_problem(value)
+        if problem is not None:
+            msg = f"division name {value!r} {problem}"
+            raise ValueError(msg)
+        return value
+
+
 class MediaScanSource(ScanSource):
     """A source feeding ``media_raw``.
 
@@ -500,12 +543,22 @@ class MediaScanSource(ScanSource):
         extensions: Which suffixes count as media. Directory mode only.
         layout: How identity is derived for a file no track table names.
         match_mode: How a stem is matched against known sequence names.
+        division: How each imgstore recording found is divided into sequences,
+            ``None`` to index each store whole.
     """
 
     kind: Literal["media"] = "media"
     extensions: tuple[str, ...] = (".mp4", ".avi")
     layout: MediaLayout = "stem"
     match_mode: SequenceMatchMode = "exact"
+    division: MediaDivision | None = None
+
+    def _inapplicable_fields(self) -> frozenset[str]:
+        """The knobs of :class:`ScanSource`, and ``division`` while it is unset."""
+        unset: frozenset[str] = (
+            frozenset({"division"}) if self.division is None else frozenset()
+        )
+        return super()._inapplicable_fields() | unset
 
     @field_validator("extensions")
     @classmethod
@@ -955,7 +1008,9 @@ class DatasetManifest(BaseModel):
     """Everything ``dataset.yaml`` holds.
 
     Attributes:
-        manifest_version: The format version. See :data:`MANIFEST_VERSION`.
+        manifest_version: The format version the manifest is at, at least
+            :data:`UNDIVIDED_MANIFEST_VERSION`. See
+            :func:`written_manifest_version`.
         name: What the dataset is called.
         version: The dataset's own version string, for whoever curates it.
         uuid: Minted once at creation and never rewritten.
@@ -975,8 +1030,8 @@ class DatasetManifest(BaseModel):
             :class:`LibraryLink`.
         meta: Structured per-subsystem metadata, written by converters.
         preserved: Top-level keys this version does not model, kept verbatim.
-        migrated_from: The version read from disk, when it was not the current
-            one. ``None`` for a manifest already at :data:`MANIFEST_VERSION`.
+        migrated_from: The version read from disk, when it was older than
+            :data:`UNDIVIDED_MANIFEST_VERSION`. ``None`` otherwise.
     """
 
     # Tolerant where every submodel is strict. A source is a replayable recipe
@@ -986,7 +1041,7 @@ class DatasetManifest(BaseModel):
     # field, kept rather than refused.
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore")
 
-    manifest_version: int = MANIFEST_VERSION
+    manifest_version: int = UNDIVIDED_MANIFEST_VERSION
     name: str = "unnamed"
     version: str = "0.1"
     uuid: str | None = None
@@ -1252,8 +1307,8 @@ def migrate_to_current(
         source: The file it came from, for the version error's message.
 
     Returns:
-        A manifest at :data:`MANIFEST_VERSION`, with ``migrated_from`` set when
-        the file on disk was older.
+        A manifest at its version, or at :data:`UNDIVIDED_MANIFEST_VERSION` when
+        it is older, with ``migrated_from`` set when the file on disk was older.
 
     Raises:
         ManifestVersionError: If *data* declares a version newer than this code.
@@ -1271,8 +1326,9 @@ def migrate_to_current(
 
     manifest = DatasetManifest.model_validate({**data, "manifest_version": declared})
     manifest.roots = backfill_roots(manifest.roots)
-    manifest.manifest_version = MANIFEST_VERSION
-    manifest.migrated_from = declared if declared != MANIFEST_VERSION else None
+    manifest.manifest_version = max(declared, UNDIVIDED_MANIFEST_VERSION)
+    current = manifest.manifest_version
+    manifest.migrated_from = declared if declared != current else None
     return manifest
 
 
@@ -1287,7 +1343,7 @@ def read_manifest(path: Path) -> DatasetManifest:
         path: The manifest file, or the dataset directory holding it.
 
     Returns:
-        The manifest, at :data:`MANIFEST_VERSION`.
+        The manifest, migrated as :func:`migrate_to_current` migrates it.
 
     Raises:
         FileNotFoundError: If no manifest is there.
@@ -1298,8 +1354,8 @@ def read_manifest(path: Path) -> DatasetManifest:
     return migrate_to_current(parse_manifest(resolved), source=str(resolved))
 
 
-def manifest_header() -> str:
-    """The comment block written above every manifest.
+def manifest_header(version: int = UNDIVIDED_MANIFEST_VERSION) -> str:
+    """The comment block written above a manifest of format *version*.
 
     Regenerated on each write rather than preserved, because a YAML dump cannot
     carry comments through. That is also why the block says so: durable prose
@@ -1307,7 +1363,7 @@ def manifest_header() -> str:
     """
     return f"""\
 # ============================================================================
-# mosaic dataset manifest (v{MANIFEST_VERSION})
+# mosaic dataset manifest (v{version})
 #
 # roots    Named directories, ALWAYS inside this dataset. Absent keys are
 #          backfilled on load; a declared one is never repointed.
@@ -1317,7 +1373,9 @@ def manifest_header() -> str:
 #          source directory is never created. Give `files:` to claim an
 #          explicit selection rather than everything a glob matches. A labels
 #          source with `series:` claims revisions of a versioned label series
-#          (an editor's saved states) instead of uploaded label files.
+#          (an editor's saved states) instead of uploaded label files. A
+#          media source with `division:` divides each imgstore recording it
+#          finds into sequences of whole chunks, `frames` long.
 # notes    Free text that travels with the dataset.
 # tags     Typed dataset attributes: the same type / type_constraints / value
 #          shape as the sequence and individual tags in mosaic-api. These
@@ -1381,6 +1439,8 @@ def _source_payload(source: AnyScanSource) -> dict[str, JsonValue]:
     if isinstance(source, MediaScanSource):
         payload["layout"] = source.layout
         payload["match_mode"] = source.match_mode
+        if source.division is not None:
+            payload["division"] = _division_payload(source.division)
     else:
         payload["src_format"] = source.src_format
         if source.multi_sequences_per_file:
@@ -1392,6 +1452,16 @@ def _source_payload(source: AnyScanSource) -> dict[str, JsonValue]:
         payload["md5"] = source.md5
     if source.added_at:
         payload["added_at"] = source.added_at
+    return payload
+
+
+def _division_payload(division: MediaDivision) -> dict[str, JsonValue]:
+    payload: dict[str, JsonValue] = {
+        "frames": division.frames,
+        "identity": division.identity,
+    }
+    if division.name is not None:
+        payload["name"] = division.name
     return payload
 
 
@@ -1420,6 +1490,21 @@ def _library_payload(link: LibraryLink) -> dict[str, JsonValue]:
     return payload
 
 
+def written_manifest_version(manifest: DatasetManifest) -> int:
+    """Return the version that *manifest* is written at.
+
+    It is :data:`MANIFEST_VERSION` when a media source declares a division, and
+    otherwise the manifest's own version: :data:`UNDIVIDED_MANIFEST_VERSION`, or
+    the newer version it was read at or raised to. A write of division rows
+    raises it (``Dataset.write_media_index``).
+    """
+    divides = any(
+        isinstance(source, MediaScanSource) and source.division is not None
+        for source in manifest.sources.of_kind("media")
+    )
+    return MANIFEST_VERSION if divides else manifest.manifest_version
+
+
 def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
     """The manifest as the mapping that gets serialized.
 
@@ -1429,7 +1514,7 @@ def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:
     the modeled shape stays the first thing a reader sees.
     """
     payload: dict[str, JsonValue] = {
-        "manifest_version": manifest.manifest_version,
+        "manifest_version": written_manifest_version(manifest),
         "name": manifest.name,
         "version": manifest.version,
     }
@@ -1508,7 +1593,7 @@ def manifest_text(manifest: DatasetManifest, *, as_json: bool = False) -> str:
         default_flow_style=False,
         allow_unicode=True,
     )
-    return manifest_header() + body
+    return manifest_header(written_manifest_version(manifest)) + body
 
 
 def write_manifest(path: Path, manifest: DatasetManifest) -> None:
