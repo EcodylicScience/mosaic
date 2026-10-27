@@ -166,6 +166,7 @@ from tests.helpers.golden import (
     write_golden,
 )
 from tests.helpers.media import (
+    EVEN_STORE_TIMING,
     MOTIF_SYNC_UUID,
     MakeStore,
     MediaClip,
@@ -417,6 +418,7 @@ __all__ = [
     "CI_MCP_MODULES",
     "CI_REQUIRED_MODULES",
     "CropLike",
+    "EVEN_STORE_TIMING",
     "EnvironmentMarker",
     "Event",
     "EventRecorder",

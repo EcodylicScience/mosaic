@@ -22,6 +22,7 @@ from mosaic.cli.features import features_app
 from mosaic.cli.init import init_command
 from mosaic.cli.inventory import inventory_app
 from mosaic.cli.libraries import libraries_app
+from mosaic.cli.media import media_app
 from mosaic.cli.models import models_app
 from mosaic.cli.scan import scan_command
 from mosaic.cli.sources import sources_app
@@ -45,7 +46,6 @@ from mosaic.cli.sequences import sequences_command
 from mosaic.cli.status import status_command
 from mosaic.cli.tracking import tracking_app
 from mosaic.cli.track import track_command
-from mosaic_media.cli import media_app
 
 app = typer.Typer(
     name="mosaic",

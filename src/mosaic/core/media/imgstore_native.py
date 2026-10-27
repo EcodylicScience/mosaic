@@ -30,6 +30,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 import yaml
 from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
@@ -125,12 +126,12 @@ def _ensure_sequence(value: object, source: Path) -> None:
         raise MediaProbeError(message)
 
 
-def _load_chunk_frame_times(index_base: Path) -> list[float] | None:
+def _load_chunk_frame_times(index_base: Path) -> npt.NDArray[np.float64] | None:
     """Read the ``frame_time`` array from a chunk index (``.npz`` or ``.yaml``).
 
     *index_base* is the index path without its extension (``.../000000/index``
     for a directory store, ``.../000000`` for a video store). The length of the
-    returned list is the number of frames in the chunk.
+    returned array is the number of frames in the chunk.
 
     Returns ``None`` if neither index file exists: an interrupted or crashed
     recording can leave its final chunk without a written index, and imgstore
@@ -145,7 +146,7 @@ def _load_chunk_frame_times(index_base: Path) -> list[float] | None:
             if _FRAME_TIME_KEY not in data.files:
                 message = f"chunk index missing {_FRAME_TIME_KEY}: {npz_path}"
                 raise MediaProbeError(message)
-            return [float(v) for v in data[_FRAME_TIME_KEY].tolist()]
+            return np.asarray(data[_FRAME_TIME_KEY], dtype=np.float64).reshape(-1)
     yaml_path = Path(f"{index_base}{_INDEX_EXTENSIONS[1]}")
     if yaml_path.is_file():
         with yaml_path.open("r") as f:
@@ -155,8 +156,16 @@ def _load_chunk_frame_times(index_base: Path) -> list[float] | None:
         if times is None:
             message = f"chunk index missing {_FRAME_TIME_KEY}: {yaml_path}"
             raise MediaProbeError(message)
-        return [float(v) for v in times]
+        return np.asarray(times, dtype=np.float64).reshape(-1)
     return None
+
+
+def _chunksize(descriptor: dict[str, object]) -> int:
+    """Return the frames per chunk that a store's descriptor declares, or ``0``."""
+    value = descriptor.get("chunksize")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0
 
 
 def _chunk_extension(descriptor: dict[str, object]) -> str:
@@ -236,11 +245,13 @@ class NativeStore:
             self._image_shape = img_shape
 
         self._video_ext = _chunk_extension(descriptor) if self._is_video else ""
+        self._chunksize = _chunksize(descriptor)
 
         # Build the global frame_index -> (chunk_id, within-chunk offset) map and
         # collect per-frame timestamps, iterating chunks in ascending order.
         self._frame_map: list[tuple[int, int]] = []
-        frame_times: list[float] = []
+        self._chunk_count = 0
+        chunk_times: list[npt.NDArray[np.float64]] = []
         for chunk_id in self._discover_chunks(store_class):
             index_base = self._chunk_index_base(chunk_id)
             times = _load_chunk_frame_times(index_base)
@@ -248,13 +259,19 @@ class NativeStore:
                 message = f"missing index for imgstore chunk {chunk_id}, skipping: {index_base}"
                 warnings.warn(message, stacklevel=2)
                 continue
+            self._chunk_count += 1
             for offset in range(len(times)):
                 self._frame_map.append((chunk_id, offset))
-            frame_times.extend(times)
+            chunk_times.append(times)
 
+        frame_times = (
+            np.concatenate(chunk_times) if chunk_times else np.empty(0, np.float64)
+        )
+        frame_times.setflags(write=False)
+        self._frame_times = frame_times
         self.frame_count = len(self._frame_map)
-        if frame_times:
-            self.duration = max(frame_times) - min(frame_times)
+        if frame_times.size:
+            self.duration = float(frame_times.max() - frame_times.min())
         else:
             self.duration = 0.0
 
@@ -272,9 +289,32 @@ class NativeStore:
         return self._format
 
     @property
+    def frame_times(self) -> npt.NDArray[np.float64]:
+        """The ``frame_time`` of every frame, in seconds, by ``frame_index``.
+
+        The values are the chunk indexes' own, in the order :attr:`frame_count`
+        counts frames. The array is read-only.
+        """
+        return self._frame_times
+
+    @property
     def is_video(self) -> bool:
         """Whether the chunks are video files rather than images or raw arrays."""
         return self._is_video
+
+    @property
+    def chunksize(self) -> int:
+        """The frames per chunk that ``metadata.yaml`` declares, or ``0`` without one."""
+        return self._chunksize
+
+    @property
+    def chunk_count(self) -> int:
+        """The number of chunks with an index, an indexed chunk of no frames included.
+
+        A chunk of no frames is absent from :meth:`chunk_spans`, so this can exceed
+        the length of :meth:`chunk_paths`.
+        """
+        return self._chunk_count
 
     @property
     def encoding(self) -> str | None:

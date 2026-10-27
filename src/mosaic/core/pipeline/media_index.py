@@ -18,6 +18,7 @@ resolver callable :meth:`IndexCSV.prune_missing` takes.
 from __future__ import annotations
 
 import csv
+import os
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -171,6 +172,32 @@ def mtime_iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
 
 
+@dataclass(frozen=True)
+class StoreStat:
+    """The size and modification time that a media index row records for an imgstore.
+
+    Attributes:
+        size: The bytes of the store's files that
+            :func:`~mosaic.core.media.imgstore_io.store_stat` covers.
+        mtime: The newest modification time among those files, in seconds since
+            the epoch.
+    """
+
+    size: int
+    mtime: float
+
+
+type RowStat = os.stat_result | StoreStat
+"""What a media index row's ``size_bytes`` and ``mtime_iso`` are read from."""
+
+
+def stat_cells(stat: RowStat) -> tuple[int, str]:
+    """Return the ``size_bytes`` and ``mtime_iso`` cells of *stat*."""
+    if isinstance(stat, StoreStat):
+        return stat.size, mtime_iso(stat.mtime)
+    return stat.st_size, mtime_iso(stat.st_mtime)
+
+
 def read_media_index(index_path: Path) -> list[dict[str, str]]:
     """Read a media index CSV as string-cell records (empty list if absent).
 
@@ -226,7 +253,7 @@ def write_media_index_rows(index_path: Path, df: pd.DataFrame) -> None:
 def build_media_index_row(
     *,
     path: Path,
-    stat: object,
+    stat: RowStat,
     to_store_path: Callable[[Path], str],
     group: str,
     sequence: str,
@@ -247,7 +274,8 @@ def build_media_index_row(
 ) -> dict[str, object]:
     """Assemble one media-index row.
 
-    *stat* is the file's ``os.stat_result`` (size and mtime come from it).
+    *stat* is the file's ``os.stat_result``, or a store's :class:`StoreStat`
+    (size and mtime come from it).
     *probe* is the width/height/fps/codec plus the injectable MediaFacts cells
     (a :class:`ProbeMetadata`). ``abs_path`` is produced by *to_store_path*, so
     the in-tree-relative / out-of-tree-absolute rule is enforced in one place.
@@ -271,8 +299,7 @@ def build_media_index_row(
     at; it defaults to ``""`` so a caller that has not been taught the column
     writes an honest unknown rather than a wrong claim.
     """
-    size_bytes = getattr(stat, "st_size")
-    mtime = getattr(stat, "st_mtime")
+    size_bytes, modified = stat_cells(stat)
     row: dict[str, object] = {
         "name": name if name is not None else path.name,
         "group": group,
@@ -284,7 +311,7 @@ def build_media_index_row(
         "camera_serial": camera_serial,
         "abs_path": to_store_path(path),
         "size_bytes": size_bytes,
-        "mtime_iso": mtime_iso(mtime),
+        "mtime_iso": modified,
         "media_type": media_type,
         "video_order": video_order,
         "assignment_source": assignment_source,

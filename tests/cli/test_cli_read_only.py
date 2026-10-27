@@ -8,9 +8,10 @@ a read that rewrites an index changes one. The assertion names each.
 A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 ``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet. A
 read that names entries from the media index also joins ``MEDIA_READS``.
-``reprobe-media`` needs indexed videos and has a test of its own. ``features
-list``, ``features describe``, ``pipeline catalog``, ``catalog_index``,
-``describe_step_type`` and ``step_type_detail`` take no dataset and are not listed.
+``reprobe-media`` needs indexed videos and ``media probe`` a store, and each has a
+test of its own. ``features list``, ``features describe``, ``pipeline catalog``,
+``catalog_index``, ``describe_step_type`` and ``step_type_detail`` take no dataset
+and are not listed.
 """
 
 from __future__ import annotations
@@ -77,6 +78,7 @@ from tests.helpers import (
     record_score_run,
     register_trained_model,
     tree_snapshot,
+    video_store_maker,
     write_calms21_npy,
 )
 
@@ -358,6 +360,18 @@ def test_a_media_dry_run_writes_nothing(with_media: ReadDataset) -> None:
     json.loads(result.stdout)
 
     assert_tree_unchanged(with_media.root, before)
+
+
+@pytest.mark.media
+def test_probing_a_store_writes_nothing(tmp_path: Path) -> None:
+    """``media probe`` opens every chunk index of a store and writes beside none."""
+    store, _ = video_store_maker([3, 2])(name="rec", parent=tmp_path)
+    before = tree_snapshot(store)
+
+    result = invoke_ok(["media", "probe", str(store)])
+    json.loads(result.stdout)
+
+    assert_tree_unchanged(store, before)
 
 
 @pytest.mark.media

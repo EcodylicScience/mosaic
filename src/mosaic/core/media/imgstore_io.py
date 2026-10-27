@@ -6,7 +6,10 @@ files (``000000.mp4`` + ``000000.npz`` index, …). This module lets mosaic trea
 store like any other video source so the rest of the pipeline is unchanged:
 
 * :func:`is_imgstore` — detect a store directory *without* importing imgstore.
-* :func:`imgstore_metadata` / :func:`imgstore_probe` — read width/height/fps/frames.
+* :func:`imgstore_metadata`, :func:`imgstore_facts` and :func:`imgstore_probe` read
+  width/height/fps/frames; :func:`measure_store` measures the codec and timing
+  that the facts state, and :func:`store_stat` the size and time of the store's
+  files.
 * :class:`ImgStoreCapture` — adapt a store to the subset of the
   ``cv2.VideoCapture`` API that
   :class:`mosaic.core.media.video_io._ImgStoreMultiReader` relies on, so every
@@ -37,9 +40,14 @@ from typing import Final, Iterator
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 import yaml
-from mosaic_media import Verdict
+from mosaic_media import MediaFacts, Verdict
+
 from mosaic.core.narrowing import is_str_mapping
+from mosaic.core.pipeline.media_index import StoreStat
+from mosaic.core.pipeline.stream_copy import header_codec
+from mosaic.media_probe_config import media_thresholds
 from mosaic.user_paths import user_path
 
 from .facts_columns import ProbeMetadata, facts_to_row, store_facts
@@ -49,7 +57,7 @@ from .video_io import FrameReader, SupportsCapture, SupportsSeekRead, VideoMetad
 # An imgstore never needs transcode negotiation (no client-dependent codec, no
 # container/rotation/timing ambiguity), so its verdict carries no reasons and
 # both transcode flags are unset.
-_EMPTY_VERDICT = Verdict(
+STORE_VERDICT: Final = Verdict(
     playable=True,
     stream_transcode=None,
     analysis_transcode=None,
@@ -61,16 +69,6 @@ _EMPTY_VERDICT = Verdict(
 # imgstore on-disk constants, inlined so detection needs no imgstore import.
 _STORE_MD_FILENAME = "metadata.yaml"
 _STORE_MD_KEY = "__store"
-
-
-@dataclass(frozen=True)
-class _StoreMeta:
-    width: int
-    height: int
-    fps: float
-    frame_count: int
-    codec: str
-    duration: float
 
 
 def fps_from_duration(frame_count: int, duration: float) -> float:
@@ -210,25 +208,147 @@ def imgstore_store_identity(path: Path | str) -> StoreIdentity:
     )
 
 
-def _read_store_meta(path: Path | str) -> _StoreMeta:
-    store = NativeStore(path)
-    try:
+@dataclass(frozen=True)
+class StoreMeasurement:
+    """A store's facts, measured from its descriptor, chunk indexes and first chunk.
+
+    Attributes:
+        width: The width of a decoded frame.
+        height: The height of a decoded frame.
+        fps: The rate of the chunk indexes' frame times
+            (:func:`fps_from_duration`).
+        frame_count: The frames of the indexed chunks.
+        codec: The codec in the header of the first chunk of a video store, or
+            the ``format`` of an image store (``npy``, ``png``).
+        duration: The span of the frame times, in seconds.
+        constant_frame_rate: Whether every frame time lies within
+            ``drift_frame_periods`` of its slot ``i / fps`` from the first.
+        max_timestamp_gap_frame_periods: The widest step between neighboring
+            frame times, in frame periods.
+        max_instantaneous_fps: The rate of the narrowest step, for a store whose
+            rate is not constant, and ``None`` for one whose rate is.
+    """
+
+    width: int
+    height: int
+    fps: float
+    frame_count: int
+    codec: str
+    duration: float
+    constant_frame_rate: bool
+    max_timestamp_gap_frame_periods: float
+    max_instantaneous_fps: float | None
+
+
+@dataclass(frozen=True)
+class _StoreTiming:
+    constant_frame_rate: bool
+    max_timestamp_gap_frame_periods: float
+    max_instantaneous_fps: float | None
+
+
+# Fewer than two frame times, or a span of zero, leave no step to measure. The
+# values are mosaic-media's for a file whose packets carry no timestamps.
+_UNMEASURED_TIMING: Final = _StoreTiming(
+    constant_frame_rate=False,
+    max_timestamp_gap_frame_periods=0.0,
+    max_instantaneous_fps=None,
+)
+
+
+def _store_rate(store: NativeStore) -> float:
+    """The frame rate of *store*'s frame times."""
+    return fps_from_duration(int(store.frame_count), float(store.duration))
+
+
+def _measure_timing(times: npt.NDArray[np.float64], fps: float) -> _StoreTiming:
+    """Measure frame times *times*, in ``frame_index`` order, against a rate *fps*.
+
+    The measures are the ones ``probe_media`` takes of a file's timestamps, in
+    the order the store numbers its frames.
+    """
+    if times.size < 2 or fps <= 0:
+        return _UNMEASURED_TIMING
+    slots = np.arange(times.size, dtype=np.float64) / fps
+    drift = float(np.max(np.abs((times - times[0]) - slots))) * fps
+    constant = drift < media_thresholds().drift_frame_periods
+    steps = np.diff(times)
+    max_instantaneous_fps: float | None = None
+    positive = steps[steps > 0]
+    if not constant and positive.size:
+        max_instantaneous_fps = 1.0 / float(positive.min())
+    return _StoreTiming(
+        constant_frame_rate=constant,
+        max_timestamp_gap_frame_periods=float(steps.max()) * fps,
+        max_instantaneous_fps=max_instantaneous_fps,
+    )
+
+
+def _store_codec(store: NativeStore) -> str:
+    """The codec in the first chunk's header of a video store, or an image format."""
+    if not store.is_video:
+        return store.format
+    chunks = store.chunk_paths()
+    return header_codec(chunks[0]) if chunks else ""
+
+
+def measure_store(path: Path | str) -> StoreMeasurement:
+    """Measure the store at *path* from its descriptor, chunk indexes and first chunk.
+
+    A video store reads the header of its first chunk, and no chunk is scanned.
+
+    Raises:
+        MediaProbeError: If the store does not open.
+    """
+    with NativeStore(path) as store:
         shape = store.image_shape
-        height = int(shape[0])
-        width = int(shape[1])
         frame_count = int(store.frame_count)
-        duration = float(store.duration)
-        fps = fps_from_duration(frame_count, duration)
-        codec = store.format
-    finally:
-        store.close()
-    return _StoreMeta(
-        width=width,
-        height=height,
-        fps=fps,
-        frame_count=frame_count,
-        codec=codec,
-        duration=duration,
+        fps = _store_rate(store)
+        timing = _measure_timing(store.frame_times, fps)
+        return StoreMeasurement(
+            width=int(shape[1]),
+            height=int(shape[0]),
+            fps=fps,
+            frame_count=frame_count,
+            codec=_store_codec(store),
+            duration=float(store.duration),
+            constant_frame_rate=timing.constant_frame_rate,
+            max_timestamp_gap_frame_periods=timing.max_timestamp_gap_frame_periods,
+            max_instantaneous_fps=timing.max_instantaneous_fps,
+        )
+
+
+def store_stat(path: Path | str) -> StoreStat:
+    """Return the size and newest modification time of the files of a store.
+
+    The files are ``metadata.yaml`` and every chunk file at the top of the store,
+    each named for its chunk number (``000000.mp4``, ``000000.npz``,
+    ``000000.extra_data.json``), and the index of each chunk directory of an
+    image store (``000000/index.npz``). An image store's frame files are not
+    read. A resource fork (``._000000.mp4``) is not named for a chunk number and is
+    skipped.
+
+    Raises:
+        OSError: If the store's directory cannot be listed.
+    """
+    basedir = Path(path)
+    covered: list[Path] = []
+    for entry in sorted(basedir.iterdir()):
+        name = entry.name
+        if name == _STORE_MD_FILENAME:
+            covered.append(entry)
+        elif name.isdigit() and entry.is_dir():
+            covered.extend(
+                index
+                for index in (entry / "index.npz", entry / "index.yaml")
+                if index.is_file()
+            )
+        elif name.split(".", 1)[0].isdigit() and entry.is_file():
+            covered.append(entry)
+    stats = [file.stat() for file in covered]
+    return StoreStat(
+        size=sum(stat.st_size for stat in stats),
+        mtime=max((stat.st_mtime for stat in stats), default=0.0),
     )
 
 
@@ -240,32 +360,32 @@ def imgstore_metadata(path: Path | str) -> VideoMetadata:
     stores with no usable timestamps.
     """
     p = user_path(path).resolve()
-    m = _read_store_meta(p)
-    return VideoMetadata(
-        path=p,
-        width=m.width,
-        height=m.height,
-        fps=m.fps,
-        frame_count=m.frame_count,
-    )
+    with NativeStore(p) as store:
+        shape = store.image_shape
+        return VideoMetadata(
+            path=p,
+            width=int(shape[1]),
+            height=int(shape[0]),
+            fps=_store_rate(store),
+            frame_count=int(store.frame_count),
+        )
 
 
-def imgstore_probe(path: Path | str) -> ProbeMetadata:
-    """Probe a store, returning a dict shaped like ``probe_video_metadata``.
+def imgstore_facts(path: Path | str) -> MediaFacts:
+    """Read a store's :class:`MediaFacts`, measured by :func:`measure_store`.
 
-    Keys: ``width``, ``height``, ``fps``, ``codec``, plus the injectable
-    MediaFacts JSON and flat verdict columns (see
-    :mod:`mosaic.core.media.facts_columns`; ``frame_count`` is one of them,
-    so it is not set separately here). Used by ``Dataset.index_media`` to
-    populate ``media/index.csv``.
+    The ``video_uuid`` is the store's ``__store.uuid`` under
+    :data:`STORE_IDENTITY_SCHEME`, or ``""`` for both when the metadata records
+    none. Raises :class:`~mosaic_media.MediaProbeError` on a store that does not
+    open.
     """
-    m = _read_store_meta(path)
+    m = measure_store(path)
     # A second, cheap YAML read rather than plumbing the descriptor out of
     # NativeStore: that class parses ``__store`` for format/encoding/class/shape
     # and keeps none of it, and widening it to carry an identity would put a
     # decode-path type in the identity path for one string.
     store_uuid = imgstore_store_identity(path).store_uuid
-    facts = store_facts(
+    return store_facts(
         width=m.width,
         height=m.height,
         fps=m.fps,
@@ -274,13 +394,28 @@ def imgstore_probe(path: Path | str) -> ProbeMetadata:
         duration=m.duration,
         video_uuid=store_uuid,
         identity_scheme=STORE_IDENTITY_SCHEME if store_uuid else "",
+        constant_frame_rate=m.constant_frame_rate,
+        max_timestamp_gap_frame_periods=m.max_timestamp_gap_frame_periods,
+        max_instantaneous_fps=m.max_instantaneous_fps,
     )
+
+
+def imgstore_probe(path: Path | str) -> ProbeMetadata:
+    """Probe a store, returning a dict shaped like ``probe_video_metadata``.
+
+    Keys: ``width``, ``height``, ``fps``, ``codec``, plus the injectable
+    MediaFacts JSON and flat verdict columns of :func:`imgstore_facts` and
+    :data:`STORE_VERDICT` (see :mod:`mosaic.core.media.facts_columns`;
+    ``frame_count`` is one of them, so it is not set separately here). Used by
+    ``Dataset.index_media`` to populate ``media/index.csv``.
+    """
+    facts = imgstore_facts(path)
     return {
-        "width": m.width,
-        "height": m.height,
-        "fps": m.fps,
-        "codec": m.codec,
-        **facts_to_row(facts, _EMPTY_VERDICT),
+        "width": facts.width,
+        "height": facts.height,
+        "fps": facts.fps,
+        "codec": facts.codec_name,
+        **facts_to_row(facts, STORE_VERDICT),
     }
 
 
@@ -315,8 +450,7 @@ class ImgStoreCapture:
         self._frame_count = int(self._store.frame_count)
         self._height = int(shape[0])
         self._width = int(shape[1])
-        duration = float(self._store.duration)
-        self._fps = fps_from_duration(self._frame_count, duration)
+        self._fps = _store_rate(self._store)
         self._pos = 0  # frame_index the next plain read() will return
         self._pending_seek: int | None = None
 

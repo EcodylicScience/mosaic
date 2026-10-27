@@ -29,6 +29,7 @@ from mosaic.tracking.common.scope import (
     run_entries,
 )
 from tests.helpers import (
+    EVEN_STORE_TIMING,
     MediaClip,
     clip_facts,
     count_index_reads,
@@ -321,6 +322,7 @@ class TestTheItemInvariant:
             duration=1.0,
             video_uuid="",
             identity_scheme="",
+            **EVEN_STORE_TIMING,
         )
         with pytest.raises(ValueError, match="parallel"):
             _ = TrackerWorkItem(

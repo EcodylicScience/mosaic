@@ -9,10 +9,11 @@ through these predicates.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 
 from typing_extensions import TypeIs
 
-__all__ = ["is_object_list", "is_object_tuple", "is_str_mapping"]
+__all__ = ["is_object_list", "is_object_set", "is_object_tuple", "is_str_mapping"]
 
 
 def is_str_mapping(value: object) -> TypeIs[Mapping[str, object]]:
@@ -33,3 +34,8 @@ def is_object_list(value: object) -> TypeIs[list[object]]:
 def is_object_tuple(value: object) -> TypeIs[tuple[object, ...]]:
     """Whether *value* is a tuple, read as a tuple of anything."""
     return isinstance(value, tuple)
+
+
+def is_object_set(value: object) -> TypeIs[AbstractSet[object]]:
+    """Whether *value* is a set or a frozenset, read as a set of anything."""
+    return isinstance(value, (set, frozenset))

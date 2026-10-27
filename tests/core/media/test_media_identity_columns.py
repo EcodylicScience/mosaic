@@ -10,9 +10,10 @@ from mosaic.core.media.facts_columns import (
     facts_to_row,
     store_facts,
 )
-from mosaic.core.media.imgstore_io import STORE_IDENTITY_SCHEME
+from mosaic.core.media.imgstore_io import STORE_IDENTITY_SCHEME, STORE_VERDICT
 from mosaic.core.pipeline.media_index import build_media_index_row
 from mosaic.media_probe_config import media_thresholds
+from tests.helpers import EVEN_STORE_TIMING
 
 
 @pytest.fixture
@@ -21,7 +22,15 @@ def sample_facts() -> MediaFacts:
     # the empty identity with explicit non-empty values so the test can assert
     # facts_to_row actually carries them through.
     base = store_facts(
-        320, 240, 25.0, 250, "h264", 10.0, video_uuid="", identity_scheme=""
+        320,
+        240,
+        25.0,
+        250,
+        "h264",
+        10.0,
+        video_uuid="",
+        identity_scheme="",
+        **EVEN_STORE_TIMING,
     )
     return dataclasses.replace(
         base, video_uuid="video-uuid-abc123", content_digest="content-digest-def456"
@@ -92,6 +101,7 @@ def test_store_facts_carries_a_mint_and_never_a_content_digest() -> None:
         10.0,
         video_uuid="store-uuid-abc123",
         identity_scheme=STORE_IDENTITY_SCHEME,
+        **EVEN_STORE_TIMING,
     )
     # Since open item O5 a store carries an identity, but a *declared* one: its
     # __store.uuid, minted at creation, which the namespaced scheme marks as a
@@ -109,7 +119,44 @@ def test_store_facts_carries_a_mint_and_never_a_content_digest() -> None:
 def test_store_facts_states_an_empty_identity_when_there_is_no_uuid() -> None:
     """A store whose metadata carries no uuid is honest about it, not guessed."""
     facts = store_facts(
-        320, 240, 25.0, 10, "h264", 10.0, video_uuid="", identity_scheme=""
+        320,
+        240,
+        25.0,
+        10,
+        "h264",
+        10.0,
+        video_uuid="",
+        identity_scheme="",
+        **EVEN_STORE_TIMING,
     )
     assert facts.video_uuid == ""
     assert facts.identity_scheme == ""
+
+
+def test_a_store_s_timing_leaves_its_identity_cells() -> None:
+    """Measured timing enters the facts cell and neither identity cell."""
+    even = store_facts(
+        320,
+        240,
+        25.0,
+        10,
+        "h264",
+        10.0,
+        video_uuid="store-uuid-abc123",
+        identity_scheme=STORE_IDENTITY_SCHEME,
+        **EVEN_STORE_TIMING,
+    )
+    variable = dataclasses.replace(
+        even,
+        constant_frame_rate=False,
+        max_timestamp_gap_frame_periods=6.0,
+        max_instantaneous_fps=26.0,
+    )
+
+    rows = [facts_to_row(facts, STORE_VERDICT) for facts in (even, variable)]
+
+    assert [(row["video_uuid"], row["content_digest"]) for row in rows] == [
+        ("store-uuid-abc123", ""),
+        ("store-uuid-abc123", ""),
+    ]
+    assert rows[0]["media_facts"] != rows[1]["media_facts"]

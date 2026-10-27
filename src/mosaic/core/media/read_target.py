@@ -17,6 +17,11 @@ stream axis, because a raw read is a frame read: the analysis axis is what
 says whether frame reads are reliable, while the stream axis is about browser
 delivery, which a raw read is not doing.
 
+Facts of an imgstore (``container`` ``"imgstore"``) pass every target. They
+describe a directory of chunks rather than one decodable file, and
+:class:`~mosaic.core.media.imgstore_native.NativeStore` gates each video chunk
+at ``"raw"`` when it opens it.
+
 A ``"raw"`` target is a declaration of intent, not an exemption from the gate:
 it still derives a verdict and still reports when the file is not clean, only
 as a warning rather than a raise. A deliberate look at an unprocessed original
@@ -43,6 +48,8 @@ from mosaic_media.transcode import Target
 
 from mosaic.media_probe_config import media_thresholds
 from mosaic.user_paths import user_path
+
+from .facts_columns import STORE_CONTAINER
 
 type ReadTarget = Target | Literal["raw"]
 
@@ -82,11 +89,12 @@ def verified_read_facts(
     """The MediaFacts a reader should be given for *paths*, gated for *target*.
 
     Returns *facts* verbatim wherever supplied; probes only a path whose facts
-    are absent. Every returned element has passed the gate for *target*: a
-    transcode target (``"analysis"`` or ``"playback"``) raises
-    :class:`~mosaic_media.MediaProbeError` naming the transcode remedy when the
-    corresponding axis of the derived verdict requires one; ``"raw"`` warns
-    instead of raising.
+    are absent. Every returned element has passed the gate for *target*. Store
+    facts pass at the store level, because each video chunk is gated at
+    ``"raw"`` as it is read. A transcode target (``"analysis"`` or
+    ``"playback"``) raises :class:`~mosaic_media.MediaProbeError` naming the
+    transcode remedy when the corresponding axis of the derived verdict requires
+    one; ``"raw"`` warns instead of raising.
 
     A :class:`~mosaic_media.MediaProbeError` raised by the probe itself (no
     video stream, or ffprobe failure) propagates unchanged for every target,
@@ -121,6 +129,11 @@ def verified_read_facts(
     for index, path in enumerate(resolved_paths):
         supplied = facts_list[index] if facts_list is not None else None
         measured = supplied if supplied is not None else probe_media(path)
+        if measured.container == STORE_CONTAINER:
+            # A store's facts describe a directory of chunks, and NativeStore
+            # gates each video chunk at "raw" as it opens it.
+            verified.append(measured)
+            continue
         verdict = derive(measured, CHROME_149, media_thresholds())
 
         if target == "raw":

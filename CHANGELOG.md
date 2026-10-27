@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: an imgstore export is stamped at the store's frame rate
+## Unreleased: an imgstore export at the store's frame rate, a probe of a store, and measured store facts
 
 **`export-store` 0.2 to 0.3.** A store whose chunks are H.264 was copied at the
 rate its chunk files declare. Motif declares 25 fps on every chunk. A store
@@ -37,6 +37,41 @@ chunks is unchanged.
   a time base, and `stream_copy.copy_time_base` replaces `TICKS_PER_FRAME`.
 - Feature and tracker run ids, the ids of every other op, compositions and media
   uuids do not move.
+
+**`mosaic media probe` on a store.** Given an imgstore directory or its
+`metadata.yaml`, `probe` prints the store's facts and the verdict that the media index
+records for it, and adds `store`: the store's identity fields (its uuid and the Motif
+fields), the declared `chunksize`, the number of indexed chunks and the codec in the
+header of the first chunk. Any other path prints what mosaic-media's `probe` prints.
+`mosaic media` is now mosaic's own app, which mounts mosaic-media's `compare` and
+`transcode`. `imgstore_facts` returns the `MediaFacts` that `imgstore_probe` writes
+to a store's row, and the store verdict is the public `STORE_VERDICT`. No identifier
+moves.
+
+**Store facts measured from the store.** A store's facts stated its `format` as its
+codec, a constant frame rate, and a timestamp gap of one period, and its row recorded
+the size and time of the store's directory. The facts now state the codec in the
+header of the first chunk of a video store (`h264` for a Motif store), and the
+`format` of an image store (`npy`, `png`). `constant_frame_rate`,
+`max_timestamp_gap_frame_periods` and `max_instantaneous_fps` are measured from the
+chunk indexes' frame times as `probe_media` measures a file's timestamps.
+`size_bytes` sums `metadata.yaml`, the chunk videos, the chunk indexes and the
+`NNNNNN.extra_data.json` files, skipping `._*` resource forks, and `mtime_iso` is the
+newest of their times. `measure_store` and `store_stat` (`core/media/imgstore_io.py`)
+take the measurements, `NativeStore.frame_times` returns the frame times, and
+`store_facts` takes the three timing values as required arguments.
+
+- The read gate (`verified_read_facts`) passes store facts for every target. Each
+  video chunk is still gated at `"raw"` when `NativeStore` opens it. An in-process
+  op that reads a store, such as `infer-localizer`, no longer refuses it for an
+  analysis transcode.
+- A store row's `codec`, `media_facts`, `size_bytes` and `mtime_iso` change at the
+  next scan or `write_media_index`. `reprobe-media` leaves them on a store row whose
+  identity is unchanged, and rewrites them when it patches the row for another reason,
+  such as a new or changed store uuid or a stale facts cell.
+- `video_uuid`, `fps`, `frame_count`, `duration`, `identity_scheme`, the stored store
+  verdict, compositions and run ids do not move. A store is still probed on every
+  write, without the probe cache.
 
 ## Unreleased: neighbor maps over every neighbor, and body lengths as a unit
 

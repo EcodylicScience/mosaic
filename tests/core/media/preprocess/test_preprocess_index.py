@@ -46,14 +46,22 @@ from mosaic.core.pipeline.preprocess_layout import (
     media_variant_run_root,
 )
 
-from tests.helpers import add_media_variant, make_dataset
+from tests.helpers import EVEN_STORE_TIMING, add_media_variant, make_dataset
 
 _RUN = "preprocess.0.1-aaaaaaaaaa"
 
 
 def _facts(frame_count: int = 300, video_uuid: str = "uuid-variant") -> MediaFacts:
     return store_facts(
-        320, 240, 30.0, frame_count, "av1", frame_count / 30.0, video_uuid, ""
+        320,
+        240,
+        30.0,
+        frame_count,
+        "av1",
+        frame_count / 30.0,
+        video_uuid,
+        "",
+        **EVEN_STORE_TIMING,
     )
 
 

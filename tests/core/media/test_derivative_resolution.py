@@ -13,6 +13,7 @@ from mosaic.core.media.facts_columns import (
     derivative_path_for_target,
     store_facts,
 )
+from tests.helpers import EVEN_STORE_TIMING
 
 
 def test_derivative_cell_reads_the_target_column_or_empty() -> None:
@@ -55,6 +56,7 @@ def _facts_cell(frame_count: int) -> str:
         duration=frame_count / 30.0,
         video_uuid="",
         identity_scheme="",
+        **EVEN_STORE_TIMING,
     )
     return json.dumps(dataclasses.asdict(facts))
 

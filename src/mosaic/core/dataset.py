@@ -154,6 +154,7 @@ from .pipeline.index_stamp import IndexStamp
 from .pipeline.media_index import (
     MEDIA_NUMERIC_COLUMNS,
     MediaIndexScope,
+    RowStat,
     StoreGroupingError,
     build_media_index_row,
     build_prior_order,
@@ -700,7 +701,7 @@ class ProbedEntry:
     """
 
     path: Path
-    stat: os.stat_result
+    stat: RowStat
     probe: ProbeMetadata
     media_type: str
     camera_serial: str = ""
@@ -3525,6 +3526,7 @@ class Dataset:
             imgstore_probe,
             imgstore_store_identity,
             is_imgstore,
+            store_stat,
         )
 
         search = [user_path(d) for d in search_dirs]
@@ -3659,7 +3661,7 @@ class Dataset:
         # index_media groups the cameras of one recording into one sequence.
         for store_dir in sorted(imgstore_dirs):
             try:
-                st = store_dir.stat()
+                store_st = store_stat(store_dir)
                 probe = imgstore_probe(store_dir)
             except OSError as e:
                 print(f"[WARN] skip imgstore {store_dir}: {e}", file=sys.stderr)
@@ -3674,7 +3676,7 @@ class Dataset:
             results.append(
                 ProbedEntry(
                     store_dir,
-                    st,
+                    store_st,
                     probe,
                     "imgstore",
                     camera_serial=identity.camera_serial,

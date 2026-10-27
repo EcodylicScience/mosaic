@@ -44,8 +44,8 @@ from mosaic_media import MediaProbeError
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.pipeline.media_index import (
     frame_from_rows,
-    mtime_iso,
     read_media_index,
+    stat_cells,
     write_media_index_rows,
 )
 from mosaic.core.stored_paths import resolve_stored_path
@@ -427,7 +427,7 @@ def _probe_media_index(
     run can name the whole repair across both of them.
     """
     # ``imgstore_io`` imports cv2 and av, and ``Dataset`` imports this module.
-    from .imgstore_io import imgstore_probe, is_imgstore
+    from .imgstore_io import imgstore_probe, is_imgstore, store_stat
 
     probed: list[ProbedRow] = []
     missing: list[str] = []
@@ -462,7 +462,9 @@ def _probe_media_index(
                 f"{label} row {row_number}: {path} cannot be probed: {error}"
             )
             continue
-        stat_result = path.stat()
+        size_bytes, modified_at = stat_cells(
+            store_stat(path) if is_store else path.stat()
+        )
         change = classify_identity(row, probe)
         probed.append(
             ProbedRow(
@@ -470,8 +472,8 @@ def _probe_media_index(
                 stored_path=stored,
                 resolved_path=path.resolve(),
                 probe=probe,
-                size_bytes=stat_result.st_size,
-                modified_at=mtime_iso(stat_result.st_mtime),
+                size_bytes=size_bytes,
+                modified_at=modified_at,
                 change=change,
                 needs_patch=_needs_patch(row, change),
                 facts_rebuilt=_rebuilds_facts(row, change),

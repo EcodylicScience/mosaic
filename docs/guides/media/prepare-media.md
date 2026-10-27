@@ -18,8 +18,10 @@ mosaic media probe recording.mp4
 mosaic media compare original.mp4 copy.mp4
 ```
 
-`probe` prints the measured facts as JSON. `compare` reports whether two files are the
-same recording, and returns the verdict as its exit code.
+`probe` prints the measured facts as JSON. Given an imgstore directory, it also prints
+the store's camera serial, chunk size, chunk count and the codec of its first chunk.
+`compare` reports whether two files are the same recording, and returns the verdict as
+its exit code.
 
 !!! note "Raw `.h264` files"
 
@@ -72,6 +74,13 @@ one after another, so nothing is copied. A store whose chunks hold images, raw a
 or Bayer or YUV data is still read through its export. The store's video has the
 store's frame rate, measured from its frame times. The export ignores the rate that the
 chunk files declare, and Motif declares 25 fps on every chunk.
+
+A store's row in the media index records the codec of its chunks and whether its frame
+times keep a constant rate, both measured from the store, and the total size and newest
+time of its metadata, chunk videos and chunk indexes, not of an image store's frame
+files. A scan or `write_media_index` measures them again. `mosaic reprobe-media` leaves
+them on a store row whose identity is unchanged, and rewrites them when it patches the
+row for another reason, such as a new or changed store uuid or a stale facts cell.
 
 [`mosaic prerequisites`](../../reference/cli.md#mosaic-prerequisites) takes the
 `--kind`, `--params` and scope flags of a `mosaic run` command and prints the runs to

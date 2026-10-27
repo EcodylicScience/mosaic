@@ -41,7 +41,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `runs`: List run attempts newest first, or the...
 * `features`: Discover features and their parameter...
 * `tracking`: Discover tracking ops and their parameter...
-* `media`: Probe a video, compare two videos for...
+* `media`: Probe a video or an imgstore, compare two...
 * `inventory`: Report every computed artifact, its...
 * `models`: Ask about trained models: this dataset's,...
 * `pipeline`: Validate, plan and run a pipeline recipe.
@@ -812,7 +812,7 @@ $ mosaic tracking describe [OPTIONS] {kind}
 
 ## `mosaic media`
 
-Probe a video, compare two videos for duplication, and run the minimum ffmpeg transcode a verdict calls for.
+Probe a video or an imgstore, compare two videos for duplication, and run the minimum ffmpeg transcode a verdict calls for.
 
 **Usage**:
 
@@ -826,23 +826,28 @@ $ mosaic media [OPTIONS] COMMAND [ARGS]...
 
 **Commands**:
 
-* `probe`: Probe FILE and print its MediaFacts and...
+* `probe`: Probe PATH and print its MediaFacts and...
 * `compare`: Report whether LEFT and RIGHT are the same...
 * `transcode`: Transcode FILE for the analysis or...
 
 ### `mosaic media probe`
 
-Probe FILE and print its MediaFacts and both verdicts as JSON on stdout.
+Probe PATH and print its MediaFacts and both verdicts as JSON on stdout.
+
+For an imgstore, the verdict is the one the media index records for a store,
+and ``store`` adds the Motif identity fields of ``metadata.yaml``, the
+declared ``chunksize``, the number of indexed chunks, and the codec named in
+the header of the first chunk (``""`` for a store of image files).
 
 **Usage**:
 
 ```console
-$ mosaic media probe [OPTIONS] {file}
+$ mosaic media probe [OPTIONS] {path}
 ```
 
 **Arguments**:
 
-* `file`: [required]
+* `path`: A video file, or an imgstore directory.  [required]
 
 **Options**:
 

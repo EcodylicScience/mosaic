@@ -17,13 +17,23 @@ from mosaic.core.pipeline.media_index import (
     read_media_index,
     refuse_merged_store_recordings,
 )
-from tests.helpers import MOTIF_SYNC_UUID, MakeStore, make_dataset, write_mpeg4_mp4
+from mosaic.core.pipeline.composition import MediaMember
+from tests.helpers import (
+    MOTIF_SYNC_UUID,
+    MakeStore,
+    make_dataset,
+    video_store_maker,
+    write_mpeg4_mp4,
+)
 
 pytest.importorskip("imgstore")
 
 from mosaic_media import VIDEO_EXTENSIONS, MediaProbeError  # noqa: E402
 
-from mosaic.core.media.imgstore_io import imgstore_store_identity  # noqa: E402
+from mosaic.core.media.imgstore_io import (  # noqa: E402
+    imgstore_store_identity,
+    store_stat,
+)
 
 # No ``media_raw``: ``index_media`` resolves through ``resolve_media_root``, so a
 # dataset declaring only ``media`` writes the originals index to
@@ -197,6 +207,31 @@ def test_index_media_gives_each_store_its_own_mint(tmp_path, make_imgstore):
         json.loads(cell)["identity_scheme"] for cell in store_rows["media_facts"]
     }
     assert schemes == {"imgstore/1"}
+
+
+# Reads the header of the store's first chunk, which shells out to ffprobe.
+@pytest.mark.media
+def test_measured_store_facts_leave_the_uid_and_the_composition(
+    tmp_path: Path,
+) -> None:
+    """A store whose frame times measure a variable rate keeps its mint."""
+    ds = make_dataset(tmp_path, roots=_ROOTS, save=False)
+    search = tmp_path / "raw"
+    late = [i / 20.0 + (0.25 if i >= 6 else 0.0) for i in range(12)]
+    make = video_store_maker([5, 5, 2], fps=20.0, frame_times=late)
+    store_dir, _ = make(name="rec", parent=search)
+
+    (row,) = read_media_index(ds.index_media([search]))
+
+    uid = imgstore_store_identity(store_dir).store_uuid
+    assert row["video_uuid"] == uid
+    assert media_members_from_rows([row]) == {
+        ("", "rec"): [MediaMember(camera="", video_order=0, uid=uid)]
+    }
+    facts = json.loads(row["media_facts"])
+    assert (facts["codec_name"], facts["constant_frame_rate"]) == ("h264", False)
+    assert (row["codec"], row["analysis_transcode"]) == ("h264", "")
+    assert row["size_bytes"] == str(store_stat(store_dir).size)
 
 
 def test_index_media_unsynced_stores_stay_separate_sequences(tmp_path, make_imgstore):

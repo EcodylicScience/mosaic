@@ -14,7 +14,7 @@ import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, TypedDict
 
 import cv2
 import numpy as np
@@ -440,6 +440,7 @@ def clean_facts_cells(
         duration=frame_count / fps if fps else 0.0,
         video_uuid=video_uuid,
         identity_scheme="video/1" if video_uuid else "",
+        **EVEN_STORE_TIMING,
     )
     facts = dataclasses.replace(
         facts,
@@ -639,6 +640,22 @@ def stub_join(dataset: Dataset, uids: Sequence[str]) -> Path:
     return path
 
 
+class StoreTiming(TypedDict):
+    """The keyword arguments of :func:`store_facts` that state a store's timing."""
+
+    constant_frame_rate: bool
+    max_timestamp_gap_frame_periods: float
+    max_instantaneous_fps: float | None
+
+
+EVEN_STORE_TIMING: Final[StoreTiming] = {
+    "constant_frame_rate": True,
+    "max_timestamp_gap_frame_periods": 1.0,
+    "max_instantaneous_fps": None,
+}
+"""The timing of evenly spaced frames, for facts that :func:`store_facts` builds."""
+
+
 MakeStore = Callable[..., tuple[Path, list[np.ndarray]]]
 """The ``make_imgstore`` fixture's factory: writes a store, returns it and its frames."""
 
@@ -651,6 +668,7 @@ def video_store_maker(
     *,
     fps: float = 30.0,
     container_fps: float | None = None,
+    frame_times: Sequence[float] | None = None,
     size: tuple[int, int] = (64, 48),
     paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
 ) -> MakeStore:
@@ -658,18 +676,27 @@ def video_store_maker(
 
     Each store has one chunk per count in *chunk_frames*, and store frame ``i`` is
     ``paint(i)``, by default the frame code of ``i`` at *size*. The chunk indexes
-    record frame ``i`` at ``i / fps`` seconds, and the chunk files declare
-    *container_fps*, by default *fps*. Motif declares 25 fps on the chunks of a
-    store recorded at another rate. The layout is the one the imgstore package
-    writes for ``avc1/mp4``: ``metadata.yaml``,
-    ``NNNNNN.mp4`` chunks and ``NNNNNN.npz`` indexes. The chunks are encoded by
-    ffmpeg (:func:`write_h264_mp4`), because the imgstore package encodes through
-    OpenCV, whose Linux wheel cannot write H.264.
+    record frame ``i`` at ``frame_times[i]`` seconds, by default ``i / fps``, and
+    the chunk files declare *container_fps*, by default *fps*. Motif declares 25 fps
+    on the chunks of a store recorded at another rate. The layout is the one the
+    imgstore package writes for ``avc1/mp4``: ``metadata.yaml``, ``NNNNNN.mp4``
+    chunks and ``NNNNNN.npz`` indexes. The chunks are encoded by ffmpeg
+    (:func:`write_h264_mp4`), because the imgstore package encodes through OpenCV,
+    whose Linux wheel cannot write H.264.
 
     The factory takes ``name``, ``parent`` and ``extra_metadata`` as
     ``make_imgstore`` does, and ignores the rest of that fixture's arguments.
     """
     width, height = size
+    total = sum(chunk_frames)
+    times = (
+        np.arange(total, dtype=np.float64) / fps
+        if frame_times is None
+        else np.asarray(frame_times, dtype=np.float64)
+    )
+    if len(times) != total:
+        message = f"{len(times)} frame times for a store of {total} frames"
+        raise ValueError(message)
 
     def paint_code(frame: int) -> npt.NDArray[np.uint8]:
         return paint_frame_code(frame, size)
@@ -718,7 +745,7 @@ def video_store_maker(
             np.savez(
                 store / f"{chunk:06d}.npz",
                 frame_number=numbers,
-                frame_time=numbers / fps,
+                frame_time=times[first : first + count],
             )
             first += count
         return store, [paint_frame(frame) for frame in range(first)]

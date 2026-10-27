@@ -65,7 +65,12 @@ from mosaic.tracking.pose_training.localizer_inference import (
     localizer_detections_to_dataframe,
 )
 
-from tests.helpers import clip_facts, write_dlc_csv, write_sleap_analysis_h5
+from tests.helpers import (
+    EVEN_STORE_TIMING,
+    clip_facts,
+    write_dlc_csv,
+    write_sleap_analysis_h5,
+)
 
 _WIDTH, _HEIGHT = 640, 480
 _CLIP = 300
@@ -360,7 +365,17 @@ def _jittered(clip: Callable[[float], MediaFacts]) -> list[MediaFacts]:
 
 def _store(fps: float) -> MediaFacts:
     duration = _JITTER_FRAMES / fps
-    return store_facts(_WIDTH, _HEIGHT, fps, _JITTER_FRAMES, "h264", duration, "", "")
+    return store_facts(
+        _WIDTH,
+        _HEIGHT,
+        fps,
+        _JITTER_FRAMES,
+        "h264",
+        duration,
+        "",
+        "",
+        **EVEN_STORE_TIMING,
+    )
 
 
 def _plain(fps: float) -> MediaFacts:

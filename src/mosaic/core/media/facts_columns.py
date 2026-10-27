@@ -338,12 +338,22 @@ def store_facts(
     duration: float,
     video_uuid: str,
     identity_scheme: str,
+    *,
+    constant_frame_rate: bool,
+    max_timestamp_gap_frame_periods: float,
+    max_instantaneous_fps: float | None,
 ) -> MediaFacts:
     """Build a full :class:`MediaFacts` for an imgstore, whose reader needs no
-    transcode negotiation: coded dimensions with no rotation, constant frame
-    rate, single progressive video stream, no audio. Fields with no imgstore
-    equivalent (declared_*, moov/gop layout, color/pixel-format metadata) are
-    set to neutral values matching their declared type.
+    transcode negotiation: coded dimensions with no rotation, single progressive
+    video stream, no audio. Fields with no imgstore equivalent (declared_*,
+    moov/gop layout, color/pixel-format metadata) are set to neutral values
+    matching their declared type.
+
+    *codec* is the codec of the store's video chunks, or the format of an image
+    store. *constant_frame_rate*, *max_timestamp_gap_frame_periods* and
+    *max_instantaneous_fps* are measured from the store's frame times
+    (:func:`~mosaic.core.media.imgstore_io.measure_store`). A store's frame times
+    are wall-clock capture times, so a store can measure a variable rate.
 
     An imgstore is a directory of chunks with no elementary stream to hash, so
     it has no ``content_digest`` and -- since no ffprobe runs over it -- no
@@ -388,8 +398,8 @@ def store_facts(
         fps=fps,
         frame_count=frame_count,
         start_time=0.0,
-        constant_frame_rate=True,
-        max_instantaneous_fps=None,
+        constant_frame_rate=constant_frame_rate,
+        max_instantaneous_fps=max_instantaneous_fps,
         declared_duration=duration,
         declared_fps=fps,
         declared_frame_count=frame_count,
@@ -399,12 +409,7 @@ def store_facts(
         discard_flagged_packets=0,
         leading_non_keyframe_frames=0,
         coded_reordering_depth=0,
-        # One period, paired with the constant_frame_rate above: both take the
-        # store's frame spacing as even. That is what the format intends rather
-        # than what it guarantees -- a store's timestamps are wall-clock capture
-        # times and can jitter -- so these two are the values to revisit when
-        # store timing is measured rather than assumed.
-        max_timestamp_gap_frame_periods=1.0,
+        max_timestamp_gap_frame_periods=max_timestamp_gap_frame_periods,
         timing_source="presentation",
         video_uuid=video_uuid,
         content_digest="",

@@ -178,3 +178,9 @@ in the root guide.
 - imgstore reads do not import the `imgstore` package, which only test fixtures use to
   write stores (`tests/core/media/test_imgstore_io.py`). A track table's `frame` is
   imgstore's contiguous `frame_index`.
+- A store's facts are measured by `measure_store` (`media/imgstore_io.py`): the codec
+  in the first chunk's header, or an image store's `format`, and the timing of the
+  chunk indexes' frame times. Its row's size and mtime come from `store_stat`, never
+  from the directory inode. `verified_read_facts` passes store facts for every target,
+  and `NativeStore` gates each video chunk at `"raw"` as it opens it
+  (`tests/core/media/test_store_read_gate.py`).

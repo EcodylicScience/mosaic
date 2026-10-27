@@ -62,6 +62,7 @@ from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_inputs
 from tests.helpers import (
+    EVEN_STORE_TIMING,
     add_media_sequence,
     add_transcode_derivative,
     clip_facts,
@@ -354,6 +355,7 @@ def _clips_in(profiles: list[tuple[str, str]]) -> list[MediaFacts]:
                 duration=10.0,
                 video_uuid="",
                 identity_scheme="",
+                **EVEN_STORE_TIMING,
             ),
             pixel_format=pixel_format,
         )

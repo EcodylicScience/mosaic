@@ -18,7 +18,7 @@ from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.media.facts_columns import facts_to_row, store_facts
 from mosaic.core.pipeline.ops import run_op
 
-from tests.helpers import install_fake_trex, scope_over
+from tests.helpers import EVEN_STORE_TIMING, install_fake_trex, scope_over
 
 
 def _derivative_facts_cells() -> dict:
@@ -32,6 +32,7 @@ def _derivative_facts_cells() -> dict:
         duration=100 / 30.0,
         video_uuid="",
         identity_scheme="",
+        **EVEN_STORE_TIMING,
     )
     return dict(facts_to_row(facts, derive(facts, CHROME_149, DEFAULT_THRESHOLDS)))
 

@@ -556,10 +556,11 @@ def render_cli() -> str:
     subprocess -- but taking it in process keeps the title and the program name
     under this script's control rather than a shell invocation's.
 
-    The `mosaic media` group is contributed by the separate `mosaic-media`
-    distribution, so its help text is not maintained in this repository and a
-    release of that package can move this page. That is a true statement about
-    the CLI a user gets, and `--check` naming it is the intended behaviour.
+    The `mosaic media` group mounts the commands of the separate `mosaic-media`
+    distribution beside mosaic's own `probe`. The help text of the others is not
+    maintained in this repository, and a release of that package can move this
+    page. That is a true statement about the CLI a user gets, and `--check`
+    naming it is the intended behavior.
     """
     import typer
     from typer.cli import get_docs_for_click

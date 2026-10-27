@@ -37,6 +37,8 @@ from mosaic.core.pipeline.preprocess_layout import (
     media_variant_recipe_path,
 )
 
+from tests.helpers.media import EVEN_STORE_TIMING
+
 _SIZE = (64, 48)
 _FRAMES = 12
 _FPS = 30.0
@@ -105,6 +107,7 @@ def add_media_variant(
                 _FRAMES / _FPS,
                 f"uuid-{run_id}-{group}-{sequence}-{camera}",
                 "",
+                **EVEN_STORE_TIMING,
             )
             if facts is None
             else facts

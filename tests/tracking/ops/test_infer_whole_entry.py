@@ -15,7 +15,7 @@ what it is handed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -42,6 +42,7 @@ from mosaic.tracking.pose_training.localizer_inference import (
     LocalizerFrame,
 )
 from tests.helpers import (
+    MakeStore,
     MediaClip,
     install_fake_point_inference,
     install_fake_pose_inference,
@@ -51,6 +52,7 @@ from tests.helpers import (
     pose_per_frame,
     published_table,
     read_frame_code,
+    store_dataset,
     write_media_index,
     write_painted_entry,
 )
@@ -403,6 +405,30 @@ class TestTheLocalizer:
         recorded = _recorded_source_uid(ds, "infer-localizer", run_id)
         assert recorded == _tracker_source_uid(ds)
         assert recorded != probe_media(joined).video_uuid
+
+    def test_it_reads_a_store_in_process(
+        self,
+        tmp_path: Path,
+        model: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        make_media_dataset: Callable[[Path], Dataset],
+        make_imgstore: MakeStore,
+    ) -> None:
+        """A store passes the read gate, whose chunks are gated as they are read."""
+        ds = store_dataset(tmp_path, make_media_dataset, make_imgstore, nframes=12)
+        (store,) = ds.resolve_media("", "rec").paths
+        handed = _install_fake_localizer(monkeypatch)
+
+        _ = run_op(
+            ds,
+            "infer-localizer",
+            {"model": str(model)},
+            scope=Scope(entries=[("", "rec")]),
+        )
+
+        assert handed == [(store,)]
+        frames = published_table(ds, "infer-localizer")["frame"]
+        assert (int(frames.min()), int(frames.max())) == (0, 11)
 
 
 class TestReadingAnEntrysClips:

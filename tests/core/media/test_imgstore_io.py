@@ -14,12 +14,17 @@ import yaml
 
 import mosaic.core.media.imgstore_native as imgstore_native
 import mosaic.core.media.read_target as read_target
+from mosaic.core.media.facts_columns import facts_to_row
 from mosaic.core.media.imgstore_io import (
+    STORE_VERDICT,
     ImgStoreCapture,
     ImgStoreFrameReader,
+    imgstore_facts,
     imgstore_metadata,
     imgstore_probe,
     is_imgstore,
+    measure_store,
+    store_stat,
 )
 from mosaic.core.media.imgstore_native import NativeStore
 from mosaic.core.media.read_target import ReadTarget
@@ -31,7 +36,7 @@ from mosaic.core.media.video_io import (
 from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
 
-from tests.helpers import write_mpeg4_mp4
+from tests.helpers import MakeStore, video_store_maker, write_mpeg4_mp4
 
 # Only the fixtures that write real stores need the imgstore package; the
 # imports above are import-free at module scope, so this skip gate can follow
@@ -90,6 +95,143 @@ def test_imgstore_probe(make_imgstore):
     assert probe["height"] == 48
     assert probe["frame_count"] == 8
     assert probe["codec"] == "npy"
+
+
+def test_imgstore_probe_is_the_row_of_imgstore_facts(make_imgstore: MakeStore) -> None:
+    store_dir, _ = make_imgstore(nframes=8)
+
+    facts = imgstore_facts(store_dir)
+
+    assert imgstore_probe(store_dir) == {
+        "width": facts.width,
+        "height": facts.height,
+        "fps": facts.fps,
+        "codec": facts.codec_name,
+        **facts_to_row(facts, STORE_VERDICT),
+    }
+
+
+# -- Measured store facts --
+
+# Twelve frames at 20 fps whose last six arrive 0.25 s late: 0.80 s from the
+# first frame to the last, so the store's rate is 11 / 0.80 = 13.75 fps.
+_LATE_FRAME_TIMES = [i / 20.0 + (0.25 if i >= 6 else 0.0) for i in range(12)]
+
+
+# Reads the header of the store's first chunk, which shells out to ffprobe.
+@pytest.mark.media
+def test_a_video_store_states_the_codec_of_its_chunks(tmp_path: Path) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2])(parent=tmp_path)
+
+    assert imgstore_facts(store_dir).codec_name == "h264"
+    assert imgstore_probe(store_dir)["codec"] == "h264"
+
+
+def test_an_image_store_states_its_format_as_its_codec(
+    make_imgstore: MakeStore,
+) -> None:
+    store_dir, _ = make_imgstore(nframes=8)
+
+    assert imgstore_facts(store_dir).codec_name == "npy"
+
+
+@pytest.mark.media
+def test_evenly_spaced_frame_times_measure_a_constant_rate(tmp_path: Path) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2], fps=20.0)(parent=tmp_path)
+
+    measured = measure_store(store_dir)
+
+    assert measured.fps == pytest.approx(20.0)
+    assert measured.constant_frame_rate is True
+    assert measured.max_timestamp_gap_frame_periods == pytest.approx(1.0)
+    assert measured.max_instantaneous_fps is None
+
+
+@pytest.mark.media
+def test_a_gap_in_the_frame_times_measures_a_variable_rate(tmp_path: Path) -> None:
+    make = video_store_maker([5, 5, 2], fps=20.0, frame_times=_LATE_FRAME_TIMES)
+    store_dir, _ = make(parent=tmp_path)
+
+    facts = imgstore_facts(store_dir)
+
+    assert facts.fps == pytest.approx(13.75)
+    assert facts.constant_frame_rate is False
+    # The widest step is 0.30 s, between frames 5 and 6.
+    assert facts.max_timestamp_gap_frame_periods == pytest.approx(0.30 * 13.75)
+    # The narrowest step is the 0.05 s of the recording rate.
+    assert facts.max_instantaneous_fps == pytest.approx(20.0)
+
+
+def _store_files(store_dir: Path) -> list[Path]:
+    """Every file of a video store that its stat covers."""
+    return sorted(
+        path
+        for path in store_dir.iterdir()
+        if path.name == "metadata.yaml" or path.name.split(".")[0].isdigit()
+    )
+
+
+@pytest.mark.media
+def test_a_store_stat_sums_its_files_and_takes_the_newest_time(
+    tmp_path: Path,
+) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2])(parent=tmp_path)
+    _ = (store_dir / "000000.extra_data.json").write_text("[]")
+    files = _store_files(store_dir)
+
+    stat = store_stat(store_dir)
+
+    assert len(files) == 8
+    assert stat.size == sum(path.stat().st_size for path in files)
+    assert stat.mtime == max(path.stat().st_mtime for path in files)
+
+
+@pytest.mark.media
+def test_a_store_stat_skips_resource_forks(tmp_path: Path) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2])(parent=tmp_path)
+    before = store_stat(store_dir)
+
+    _ = (store_dir / "._000000.mp4").write_bytes(b"\0" * 4096)
+
+    assert store_stat(store_dir) == before
+
+
+@pytest.mark.media
+def test_a_store_stat_changes_when_a_chunk_is_appended(tmp_path: Path) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2])(parent=tmp_path)
+    before = store_stat(store_dir)
+
+    for suffix in (".mp4", ".npz"):
+        _ = (store_dir / f"000003{suffix}").write_bytes(
+            (store_dir / f"000002{suffix}").read_bytes()
+        )
+
+    after = store_stat(store_dir)
+    assert after.size > before.size
+    assert after != before
+
+
+def test_a_store_stat_reads_no_frame_file_of_a_directory_store(
+    make_imgstore: MakeStore,
+) -> None:
+    """A directory store is stated by its metadata and its chunk indexes."""
+    store_dir, _ = make_imgstore(nframes=12, chunksize=5)
+    covered = [store_dir / "metadata.yaml"] + [
+        store_dir / f"{chunk:06d}" / "index.npz" for chunk in range(3)
+    ]
+    before = store_stat(store_dir)
+
+    _ = (store_dir / "000000" / "000099.npy").write_bytes(b"\0" * 4096)
+
+    assert store_stat(store_dir) == before
+    assert before.size == sum(path.stat().st_size for path in covered)
+
+
+def test_native_store_reports_its_chunk_layout(make_imgstore: MakeStore) -> None:
+    store_dir, _ = make_imgstore(nframes=12, chunksize=5)
+
+    with NativeStore(store_dir) as store:
+        assert (store.chunksize, store.chunk_count) == (5, 3)
 
 
 def test_get_video_metadata_dispatches_to_imgstore(make_imgstore):
