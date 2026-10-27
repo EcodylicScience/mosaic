@@ -132,6 +132,7 @@ from .recording import (
     adjacent,
     order_members,
     recording_kind,
+    recording_name,
     recording_name_collision,
     recording_of,
     recordings,
@@ -225,6 +226,7 @@ from .pipeline.label_series_index import (
 from .pipeline.sequence_index import (
     SequenceLabelRow,
     SourceRoot,
+    amend_sequence_labels,
     read_sequence_labels,
     sequence_index_path,
     sequence_label_path,
@@ -890,6 +892,13 @@ class _ScopedMediaRows:
         return (self.group, self.sequence)
 
 
+def _one_value(values: Collection[str] | None) -> str:
+    """Return the one value of *values*, ``""`` for none or several."""
+    if values is None or len(values) != 1:
+        return ""
+    return next(iter(values))
+
+
 def _row_window(row: pd.Series) -> StoreWindow | None:
     """Return the chunks of a store that a media index row reads, ``None`` when whole.
 
@@ -1359,12 +1368,16 @@ class _DividedRows:
             the division rows replace.
         redivided: Each recording divided again, with why, which the write
             reports once its rows replace the earlier divisions.
+        display_names: The wall-clock label of each division, by entry.
     """
 
     rows: list[dict[str, object]] = dataclasses.field(default_factory=list)
     plans: tuple[DivisionPlan, ...] = ()
     paths: frozenset[Path] = frozenset()
     redivided: tuple[tuple[str, str], ...] = ()
+    display_names: Mapping[Entry, str] = dataclasses.field(
+        default_factory=dict[Entry, str]
+    )
 
     @property
     def recordings(self) -> list[str]:
@@ -2762,6 +2775,7 @@ class Dataset:
         rows: list[dict[str, object]] = []
         plans: list[DivisionPlan] = []
         redivided: list[tuple[str, str]] = []
+        display_names: dict[Entry, str] = {}
         committed = _read_media_index(
             self.get_root(self.resolve_media_root()) / index_filename
         )
@@ -2779,8 +2793,13 @@ class Dataset:
             rows.extend(scanned.rows)
             plans.extend(scanned.divided.plans)
             redivided.extend(scanned.divided.redivided)
+            display_names.update(scanned.divided.display_names)
             claim = claim | ScanClaim.over_files(scanned.divided.paths)
-        divided = _DividedRows(plans=tuple(plans), redivided=tuple(redivided))
+        divided = _DividedRows(
+            plans=tuple(plans),
+            redivided=tuple(redivided),
+            display_names=display_names,
+        )
         # One dedupe across every source, not one per source: two sources may
         # legitimately reach the same file through different paths, and the first
         # recipe that named it wins, deterministically in declaration order.
@@ -4865,7 +4884,15 @@ class Dataset:
                 else DIVISION_ASSIGNMENT_SOURCE
             )
         return _DividedRows(
-            rows=rows, plans=plans, paths=divided, redivided=tuple(redivided)
+            rows=rows,
+            plans=plans,
+            paths=divided,
+            redivided=tuple(redivided),
+            display_names={
+                (result.plan.recording, sequence): name
+                for result, _ in planned
+                for sequence, name in result.display_names().items()
+            },
         )
 
     def _refuse_redivision_with_outputs(
@@ -4995,13 +5022,16 @@ class Dataset:
     def _declare_divided_recordings(self, divided: _DividedRows) -> None:
         """Declare each recording of *divided* continuous once its rows are written.
 
-        Each recording divided again is reported on stderr, with why.
+        Each division without a sequence label is labeled by its wall-clock
+        start. A later write labels the divisions written before it. Each
+        recording divided again is reported on stderr, with why.
         """
         names = divided.recordings
         if names:
             self.mutate_manifest(
                 lambda manifest: _declare_divided_groups(manifest, names)
             )
+        self._label_divisions(divided.display_names)
         for recording, why in divided.redivided:
             print(
                 f"[divide] the recording {recording!r} is divided again, because "
@@ -5009,6 +5039,20 @@ class Dataset:
                 "are replaced.",
                 file=sys.stderr,
             )
+
+    def _label_divisions(self, display_names: Mapping[Entry, str]) -> None:
+        """Record each label of *display_names* for an entry without a label.
+
+        An entry's other label cells, such as its promotion lineage, are kept.
+        """
+
+        def label(row: SequenceLabelRow) -> SequenceLabelRow | None:
+            if row.display_name:
+                return None
+            name = display_names[row.group, row.sequence]
+            return dataclasses.replace(row, display_name=name)
+
+        amend_sequence_labels(self, sorted(display_names), label)
 
     def entry_outputs(self, entries: Iterable[Entry]) -> dict[Entry, list[str]]:
         """Return the outputs each of *entries* has, by artifact.
@@ -5536,18 +5580,19 @@ class Dataset:
         That is item 4.1's entire point: relabelling is metadata, so it must not
         move a directory, rewrite an ``abs_path``, or change the token that every
         filename and every index join key is built from. Passing ``""`` clears
-        the label and returns the sequence to being called by its token.
+        the label and returns the sequence to being called by its token. The
+        sequence's ``derived_from`` lineage is kept.
         """
-        path = sequence_label_path(self)
-        sequence_labels(path).append(
-            [
-                SequenceLabelRow(
-                    group=validate_entry_name(group, "group"),
-                    sequence=validate_entry_name(sequence, "sequence"),
-                    display_group=display_group,
-                    display_name=name,
-                )
-            ]
+        entry = (
+            validate_entry_name(group, "group"),
+            validate_entry_name(sequence, "sequence"),
+        )
+        amend_sequence_labels(
+            self,
+            [entry],
+            lambda row: dataclasses.replace(
+                row, display_group=display_group, display_name=name
+            ),
         )
 
     def rebuild_sequence_index(self, root: SourceRoot) -> Path | None:
@@ -6363,6 +6408,8 @@ class Dataset:
         self,
         cm_per_pixel: float | None,
         *,
+        recording: str | None = None,
+        camera: str | None = None,
         group: str | None = None,
         sequence: str | None = None,
         index_filename: str = "index.csv",
@@ -6383,6 +6430,11 @@ class Dataset:
         Args:
             cm_per_pixel: Centimetres per pixel, or ``None`` to clear the value
                 back to uncalibrated. Must be positive when given.
+            recording: Restrict to the member rows of this recording, named as
+                the dataset summary names it: a continuous group, or an
+                undivided entry's token (``group:sequence``, or the sequence in
+                the empty group). ``None`` means every recording.
+            camera: Restrict to this camera. ``None`` means every camera.
             group: Restrict to this group. ``None`` means every group.
             sequence: Restrict to this sequence. ``None`` means every sequence.
             index_filename: Output filename within the media root.
@@ -6391,13 +6443,20 @@ class Dataset:
             How many rows were updated.
 
         Raises:
-            ValueError: If *cm_per_pixel* is not positive.
+            ValueError: If *cm_per_pixel* is not positive, or *recording* is
+                given with *group* or *sequence*.
         """
         if cm_per_pixel is not None and not cm_per_pixel > 0.0:
             raise ValueError(
                 f"cm_per_pixel={cm_per_pixel} is not a usable scale. Pass None to "
                 "clear it back to uncalibrated."
             )
+        if recording is not None and (group is not None or sequence is not None):
+            message = (
+                f"recording={recording!r} names the rows to calibrate, and so do "
+                "group= and sequence=. Pass the recording alone."
+            )
+            raise ValueError(message)
         cell = "" if cm_per_pixel is None else repr(float(cm_per_pixel))
 
         out_csv = self.get_root(self.resolve_media_root()) / index_filename
@@ -6405,42 +6464,73 @@ class Dataset:
         with index_lock(out_csv):
             rows = [dict(row) for row in _read_media_index(out_csv)]
             for row in rows:
-                if group is not None and read_link_cell(row, "group") != group:
+                row_group = read_link_cell(row, "group")
+                row_sequence = read_link_cell(row, "sequence")
+                if group is not None and row_group != group:
                     continue
-                if sequence is not None and read_link_cell(row, "sequence") != sequence:
+                if sequence is not None and row_sequence != sequence:
+                    continue
+                if camera is not None and read_link_cell(row, "camera") != camera:
+                    continue
+                if recording is not None and recording != recording_name(
+                    self.recording_of(row_group, row_sequence)
+                ):
                     continue
                 row["cm_per_pixel"] = cell
                 updated += 1
             write_media_index_rows(out_csv, frame_from_rows(rows))
         return updated
 
-    def media_calibration(self, group: str, sequence: str) -> float | None:
+    def media_calibration(
+        self, group: str, sequence: str, camera: str | None = None
+    ) -> float | None:
         """The ``cm_per_pixel`` recorded for *(group, sequence)*, or ``None``.
 
         ``None`` means uncalibrated -- no row says -- which a caller needing a
         physical unit must treat as a refusal rather than as ``1.0``.
 
+        Args:
+            group: The sequence's group.
+            sequence: The sequence.
+            camera: The camera whose rows to read. ``None`` reads every camera,
+                which must then record one scale.
+
         Raises:
-            ValueError: If the sequence's rows disagree. One sequence is one
-                recording; two scales for it is a contradiction, and averaging
-                or taking the first would silently pick one.
+            ValueError: If one camera's rows record two scales, or *camera* is
+                ``None`` and the sequence's cameras record different scales. One
+                camera of one sequence has one scale.
         """
-        values = {
-            text
-            for row in self.read_media_index()
-            if read_link_cell(row, "group") == group
-            and read_link_cell(row, "sequence") == sequence
-            and (text := read_link_cell(row, "cm_per_pixel"))
-        }
-        if not values:
-            return None
-        if len(values) > 1:
-            raise ValueError(
-                f"Sequence ({group!r}, {sequence!r}) records {len(values)} different "
-                f"cm_per_pixel values ({sorted(values)}). One sequence is one "
-                "recording, so it has one scale."
+        by_camera: dict[str, set[str]] = {}
+        for row in self.read_media_index():
+            row_camera = read_link_cell(row, "camera")
+            if (
+                read_link_cell(row, "group") != group
+                or read_link_cell(row, "sequence") != sequence
+                or (camera is not None and row_camera != camera)
+            ):
+                continue
+            values = by_camera.setdefault(row_camera, set())
+            if text := read_link_cell(row, "cm_per_pixel"):
+                values.add(text)
+        for found, values in sorted(by_camera.items()):
+            if len(values) > 1:
+                shown = f"camera {found!r} of sequence" if found else "Sequence"
+                message = (
+                    f"{shown} ({group!r}, {sequence!r}) records {len(values)} "
+                    f"different cm_per_pixel values ({sorted(values)}). One "
+                    "camera of one sequence has one scale."
+                )
+                raise ValueError(message)
+        scales = {next(iter(values), "") for values in by_camera.values()}
+        if len(scales) > 1:
+            message = (
+                f"the cameras {sorted(by_camera)} of sequence ({group!r}, "
+                f"{sequence!r}) record different cm_per_pixel values. Pass "
+                "camera= to read one of them."
             )
-        return float(next(iter(values)))
+            raise ValueError(message)
+        scale = next(iter(scales), "")
+        return float(scale) if scale else None
 
     def _keep_calibration(
         self,
@@ -6462,13 +6552,17 @@ class Dataset:
         takes the calibration of its file when every committed row of the file
         records one value, so a store divided after it was calibrated keeps its
         scale on each division, and a division row's scale reaches its store's
-        undivided row.
+        undivided row. Failing that, a fresh row of a continuous group takes the
+        calibration of its camera when every committed row of that recording and
+        camera records one value. A recording that grows by a store or a
+        sequence then keeps each camera's scale.
 
         Returns:
             How many rows kept a calibration.
         """
         by_key: dict[MediaRowKey, str] = {}
         by_file: dict[str, set[str]] = {}
+        by_camera: dict[tuple[str, str], set[str]] = {}
         for row in committed:
             key = self._stored_row_key(row)
             if key is None:
@@ -6477,6 +6571,9 @@ class Dataset:
             if value:
                 by_key[key] = value
             by_file.setdefault(key.abs_path, set()).add(value)
+            recording_camera = self._continuous_camera(row)
+            if recording_camera is not None:
+                by_camera.setdefault(recording_camera, set()).add(value)
         if not by_key:
             return 0
         kept = 0
@@ -6484,15 +6581,22 @@ class Dataset:
             key = self._stored_row_key(row)
             if key is None:
                 continue
-            prior = by_key.get(key)
-            if prior is None:
-                values = by_file.get(key.abs_path, set())
-                prior = next(iter(values)) if len(values) == 1 else None
+            prior = by_key.get(key) or _one_value(by_file.get(key.abs_path))
+            recording_camera = self._continuous_camera(row)
+            if not prior and recording_camera is not None:
+                prior = _one_value(by_camera.get(recording_camera))
             if not prior:
                 continue
             row["cm_per_pixel"] = prior
             kept += 1
         return kept
+
+    def _continuous_camera(self, row: Mapping[str, object]) -> tuple[str, str] | None:
+        """Return *row*'s divided recording and camera, ``None`` outside one."""
+        group = read_link_cell(row, "group")
+        if self.recording_kind(group) != "divided":
+            return None
+        return (group, read_link_cell(row, "camera"))
 
     def _stored_row_key(self, row: Mapping[str, object]) -> MediaRowKey | None:
         """Return *row*'s key with its stored path fully resolved, ``None`` without one."""

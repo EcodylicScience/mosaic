@@ -1,9 +1,9 @@
 """``mosaic describe``: what a dataset is and how much it holds.
 
 The verb prints the manifest's fields, the counts of sequences, recordings,
-videos and artifacts, the names of the divided recordings, the track schemas
-and the frame rates. ``--json`` prints the
-:class:`~mosaic.core.dataset_summary.DatasetSummary` that
+videos and artifacts, the names of the divided recordings, the rule and span of
+each recording divided from its stores, the track schemas and the frame rates.
+``--json`` prints the :class:`~mosaic.core.dataset_summary.DatasetSummary` that
 :func:`~mosaic.core.dataset_summary.dataset_summary` returns. The verb writes
 nothing to the dataset.
 """
@@ -69,6 +69,8 @@ def _render(summary: DatasetSummary) -> None:
             "models": _shown(counts.models),
         }
     )
+    for line in _division_lines(summary):
+        typer.echo(line)
     if summary.track_schemas:
         typer.echo()
         render_table(
@@ -112,6 +114,23 @@ def _recordings(summary: DatasetSummary) -> str:
     if names:
         divided = f"{divided}: {names}"
     return f"{summary.counts.recordings} in the media or tracks index ({divided})"
+
+
+def _division_lines(summary: DatasetSummary) -> list[str]:
+    """Return one line per recording divided from its stores, with its rule and span."""
+    lines: list[str] = []
+    for recording in summary.recordings:
+        if recording.kind != "divided" or recording.division is None:
+            continue
+        division = recording.division
+        lines.append(
+            f"division {recording.name}: {recording.n_sequences} sequences of "
+            f"{division.frames} frames (chunks of {division.chunksize}) by "
+            f"{division.identity}, camera {division.camera_serial or 'none'}, from "
+            f"{division.first_start_utc} to {division.last_start_utc}, "
+            f"{division.n_breaks} breaks"
+        )
+    return lines
 
 
 def _shown(count: int | None) -> int | str:

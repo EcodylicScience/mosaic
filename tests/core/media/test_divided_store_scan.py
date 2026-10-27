@@ -803,3 +803,20 @@ def test_the_mcp_scan_reports_its_divisions(tmp_path: Path) -> None:
     (span,) = held.held_back
     assert (span.reason, span.chunk_first, span.chunk_last) == ("store_recording", 4, 4)
     assert released.held_back == released.refused == ()
+
+
+def test_a_scan_names_each_division_by_its_start(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(
+        tmp_path / "stores", ENDED, store_metadata={"timezone_local": "Europe/Berlin"}
+    )
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+
+    _ = dataset.scan_media()
+
+    assert dataset.display_names() == {
+        (RECORDING, TOKENS[0]): "2021-02-19 20:22:53 CET",
+        (RECORDING, TOKENS[1]): "2021-02-19 20:22:55 CET",
+        (RECORDING, TOKENS[2]): "2021-02-19 20:22:58 CET",
+    }

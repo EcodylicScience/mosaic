@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pandas as pd
@@ -16,19 +17,25 @@ from mosaic.core.dataset_summary import (
     DatasetSummary,
     FrameRateCount,
     DividedRecordingSummary,
+    RecordingDivisionSummary,
     TrackSchemaCount,
     UndividedRecordingSummary,
     dataset_summary,
 )
-from mosaic.core.manifest import MANAGED_BY_KEY, DatasetTag
+from mosaic.core.manifest import MANAGED_BY_KEY, DatasetTag, MediaDivision
 from mosaic.core.pipeline.graph import run_pipeline
 from mosaic.core.pipeline.inventory import inventory
-from mosaic.core.pipeline.media_index import frame_from_rows, write_media_index_rows
+from mosaic.core.pipeline.media_index import (
+    MediaIndexScope,
+    frame_from_rows,
+    write_media_index_rows,
+)
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline import tracks_index as tracks_index_module
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
+    DIVISION_CREATED_UTC,
     MediaClip,
     speed_recipe,
     UPDATE_GOLDEN_ENV,
@@ -40,6 +47,7 @@ from tests.helpers import (
     register_trained_model,
     track_table,
     updating_golden,
+    video_store_maker,
     write_golden,
     write_media_index,
 )
@@ -260,6 +268,68 @@ def test_a_member_with_two_variants_leaves_its_recording_in_name_order(
         "night": ("night:s2", "night:s10"),
         "day": ("day:s4", "day:s3"),
     }
+
+
+@pytest.mark.media
+def test_a_divided_store_s_recording_states_its_rule_and_its_starts(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """By camera, two stores of chunks of 5 frames at 4 fps, divided every 10.
+
+    The second store starts an hour after the first, after a store boundary.
+    """
+    stores = tmp_path / "stores"
+    for name, created_utc in (
+        ("a", DIVISION_CREATED_UTC),
+        ("b", "2021-02-19T20:22:53"),
+    ):
+        make = video_store_maker((5, 5, 5, 5, 2), fps=4.0, created_utc=created_utc)
+        _ = make(name=name, parent=stores, extra_metadata={"camera_serial": "123"})
+    ds = make_media_dataset(tmp_path / "ds")
+    division = MediaDivision(frames=10, identity="camera")
+    for name in ("a", "b"):
+        _ = ds.write_media_index(
+            [
+                MediaIndexScope(
+                    directory=stores / name, group="", sequence="", division=division
+                )
+            ]
+        )
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    assert summary.recordings == (
+        DividedRecordingSummary(
+            name="123",
+            kind="divided",
+            n_sequences=6,
+            first_sequence="123:20210219T192253Z",
+            last_sequence="123:20210219T202258Z",
+            division=RecordingDivisionSummary(
+                frames=10,
+                chunksize=5,
+                identity="camera",
+                camera_serial="123",
+                first_start_utc="2021-02-19T19:22:53.000000+00:00",
+                last_start_utc="2021-02-19T20:22:58.000000+00:00",
+                n_breaks=1,
+            ),
+        ),
+    )
+
+
+def test_a_recording_divided_by_hand_states_no_rule(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(
+        ds, [MediaClip(group="night", sequence="s1", filename="night_s1.mp4")]
+    )
+    ds.set_continuous_groups(["night"])
+
+    summary = dataset_summary(open_dataset(ds.manifest_path, ensure_roots=False))
+
+    (night,) = summary.recordings
+    assert isinstance(night, DividedRecordingSummary)
+    assert night.division is None
 
 
 def _index_reads_describing(

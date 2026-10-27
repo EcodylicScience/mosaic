@@ -57,6 +57,7 @@ from typing_extensions import TypeIs
 
 from mosaic.core.entry import to_safe_name, validate_entry_name
 from mosaic.core.narrowing import is_str_mapping
+from mosaic.core.recording import utc_text
 
 from .store_rate import store_rate_mismatch
 
@@ -86,6 +87,7 @@ __all__ = [
     "build_division_rows",
     "chunk_window",
     "division_cells",
+    "division_display_name",
     "division_rule",
     "division_token",
     "division_uid",
@@ -429,6 +431,13 @@ def division_uid(
     return hashlib.sha256(text.encode()).hexdigest()[:_UID_LENGTH]
 
 
+def _refuse_naive(start_utc: datetime) -> None:
+    """Refuse a division start without a timezone."""
+    if start_utc.tzinfo is None or start_utc.utcoffset() is None:
+        message = f"a division start needs a timezone: {start_utc!r}"
+        raise ValueError(message)
+
+
 def division_token(start_utc: datetime) -> str:
     """Return the sequence name of a division starting at *start_utc*.
 
@@ -437,10 +446,29 @@ def division_token(start_utc: datetime) -> str:
     Raises:
         ValueError: If *start_utc* is naive.
     """
-    if start_utc.tzinfo is None or start_utc.utcoffset() is None:
-        message = f"a division start needs a timezone: {start_utc!r}"
-        raise ValueError(message)
+    _refuse_naive(start_utc)
     return start_utc.astimezone(UTC).strftime(_TOKEN_FORMAT)
+
+
+def division_display_name(start_utc: datetime, timezone_local: str | None) -> str:
+    """Return the wall-clock label of a division starting at *start_utc*.
+
+    The label is the start in the store's time zone, ``2021-02-19 11:22:53 PST``,
+    or in UTC, ``2021-02-19 19:22:53Z``, when that zone is absent or unknown.
+    The seconds are floored.
+
+    Raises:
+        ValueError: If *start_utc* is naive.
+    """
+    _refuse_naive(start_utc)
+    if timezone_local is not None:
+        try:
+            local = start_utc.astimezone(_zone(timezone_local))
+        except DivisionRefused:
+            pass
+        else:
+            return f"{local:%Y-%m-%d %H:%M:%S} {local.tzname()}"
+    return f"{start_utc.astimezone(UTC):%Y-%m-%d %H:%M:%S}Z"
 
 
 # The store clock
@@ -740,7 +768,7 @@ def division_cells(row: RowDivision, rule: DivisionRule) -> dict[str, str]:
         "chunk_first": str(row.chunk_first),
         "chunk_last": str(row.chunk_last),
         "first_frame": str(row.first_frame),
-        "start_utc": row.start_utc.astimezone(UTC).isoformat(timespec="microseconds"),
+        "start_utc": utc_text(row.start_utc),
         "start_source": row.start_source,
         "follows_gap": "true" if row.follows_gap else "false",
         "division_rule": rule.to_cell(),

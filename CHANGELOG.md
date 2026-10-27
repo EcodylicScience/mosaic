@@ -8,6 +8,42 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a recording's calibration, wall-clock labels and division summary
+
+**No identifier moves.** Run ids, entry keys, compositions and paths are unchanged.
+
+- `Dataset.set_media_calibration` takes `recording=` (a recording's name as the
+  summary lists it) and `camera=`, and writes the value on every matching media row.
+  `recording=` with `group=` or `sequence=` is refused.
+- `Dataset.media_calibration(group, sequence, camera=None)` refuses two scales in one
+  camera, as before, and now refuses cameras that record different scales unless
+  `camera=` names one. A camera without a scale beside a camera with one counts as
+  different. `scale-to-cm` reads the scale of the camera that a tracker reads, the
+  first by name, so an entry calibrated only on a later camera now refuses with no
+  recorded scale.
+- A media scan or a division write keeps a calibration for a new row of a divided
+  recording from the rows of its recording and camera when they agree. A store or a
+  sequence added to the recording then keeps the scale.
+- A division write labels each division without a label by its start on the store's
+  `timezone_local` clock (`2021-02-19 11:22:53 PST`), or in UTC
+  (`2021-02-19 19:22:53Z`) without one. A label already recorded is kept, and a
+  later write labels divisions written before (`division_display_name`). A label
+  cleared with `set_display_name(..., "")` is written again by the next write, and a
+  division's `display_group` and `derived_from` are kept.
+- `Dataset.set_display_name` keeps a sequence's `derived_from` lineage, which it
+  used to clear. Every writer of `sequences.csv` goes through
+  `amend_sequence_labels`, which keeps the cells a writer does not set. It reads
+  the row and appends the amended row under one lock, so two writers of one entry
+  keep both cells. `read_sequence_labels` reads a `sequences.csv` without a header
+  as no labels.
+- `DividedRecordingSummary` gains a nullable `division`
+  (`RecordingDivisionSummary`: `frames`, `chunksize`, `identity`, `camera_serial`,
+  `first_start_utc`, `last_start_utc`, `n_breaks`). `mosaic describe` prints one
+  `division` line per recording divided from its stores.
+- The MCP `SequenceRow` and the entries of `mosaic sequences --json` gain
+  `first_frame`, `frame_count`, `start_utc` and `follows_gap`, `null` unless the
+  entry is a division of a store.
+
 ## Unreleased: dividing an imgstore at scan and import, and manifest version 4
 
 **Manifest version 4, written only by a dataset that divides a store.** A media

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,14 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.dataset_summary import SUMMARY_KINDS, DatasetSummary, dataset_summary
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
+    DIVISION_CREATED_UTC,
     MediaClip,
     add_tracks_variant,
     invoke_ok,
     make_dataset,
+    store_dataset,
+    video_store_maker,
+    write_division_rows,
     write_media_index,
 )
 
@@ -102,3 +107,24 @@ def test_a_media_only_dataset_counts_its_recordings_beside_no_sequence(
 
     assert "sequences: 0 with a tracks table" in result.stdout
     assert "recordings: 1 in the media or tracks index (0 divided)" in result.stdout
+
+
+@pytest.mark.media
+def test_the_plain_output_states_each_divided_recording_s_rule(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """A store of chunks of 5 frames at 4 fps, divided every 10 frames."""
+    ds = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker((5, 5, 5, 5, 2), fps=4.0, created_utc=DIVISION_CREATED_UTC),
+    )
+    _ = write_division_rows(ds, ds.get_root("media_raw") / "recordings" / "rec", 10)
+
+    result = invoke_ok(["describe", "--manifest", str(ds.base_dir)])
+
+    assert (
+        "division rec: 3 sequences of 10 frames (chunks of 5) by store, camera "
+        "none, from 2021-02-19T19:22:53.000000+00:00 to "
+        "2021-02-19T19:22:58.000000+00:00, 0 breaks"
+    ) in result.stdout.splitlines()

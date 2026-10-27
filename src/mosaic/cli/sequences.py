@@ -10,7 +10,7 @@ import typer
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail
 from mosaic.core.entry import entry_token
-from mosaic.core.recording import recording_name
+from mosaic.core.recording import division_placement, recording_name
 
 
 def sequences_command(
@@ -45,6 +45,7 @@ def sequences_command(
     # rather than one per row; sequences with no label keep their token, which is
     # every sequence in a dataset that has never named one.
     labels = ds.display_names()
+    placed = ds.division_facts(entries)
     listed = [
         (
             entry_group,
@@ -71,6 +72,7 @@ def sequences_command(
                         "recording": recording,
                         "display_name": label or sequence,
                         "has_tracks": (entry_group, sequence) in tracked,
+                        **division_placement(placed.get((entry_group, sequence))),
                     }
                     for entry_group, sequence, recording, label in listed
                 ],

@@ -34,8 +34,10 @@ from .store_division import (
     DivisionRefused,
     DivisionRule,
     RecordingIdentity,
+    StoreClock,
     StoreWindow,
     build_division_rows,
+    division_display_name,
     division_rule,
     plan_division,
 )
@@ -80,11 +82,27 @@ class PlannedRecording:
         probes: Each store's one read, by stored path.
         redivision: Why the plan re-divides the recording, ``None`` when it
             repeats or extends the committed divisions.
+        clocks: Each store's clock, by stored path.
     """
 
     plan: DivisionPlan
     probes: Mapping[str, StoreProbe]
     redivision: str | None
+    clocks: Mapping[str, StoreClock]
+
+    def display_names(self) -> dict[str, str]:
+        """Return the wall-clock label of each division, by sequence.
+
+        Each label is the division's start in its store's ``timezone_local``
+        (:func:`~mosaic.core.media.store_division.division_display_name`).
+        """
+        return {
+            division.row.sequence: division_display_name(
+                division.row.start_utc,
+                self.clocks[division.row.abs_path].timezone_local,
+            )
+            for division in self.plan.divisions
+        }
 
 
 def nominal_interval(probes: Sequence[StoreProbe]) -> float:
@@ -175,6 +193,7 @@ def plan_recording(
     inputs = [
         store_plan_input(probes[store.abs_path], store.abs_path) for store in stores
     ]
+    clocks = {plan_input.abs_path: plan_input.clock for plan_input in inputs}
     rule, kept = _rule(list(probes.values()), frames, identity, committed)
     redivision: str | None = None
     if committed and not kept:
@@ -195,10 +214,10 @@ def plan_recording(
         else:
             names = {division.recording for division in committed}
             if names == {plan.recording}:
-                return PlannedRecording(plan, probes, None)
+                return PlannedRecording(plan, probes, None, clocks)
             redivision = f"its name changed from {sorted(names)} to {plan.recording!r}"
     plan = plan_division(inputs, rule, name=name, include_partial=include_partial)
-    return PlannedRecording(plan, probes, redivision)
+    return PlannedRecording(plan, probes, redivision, clocks)
 
 
 def recording_rows(

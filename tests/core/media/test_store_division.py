@@ -28,6 +28,7 @@ from mosaic.core.media.store_division import (
     StoreClock,
     StorePlanInput,
     StoreWindow,
+    division_display_name,
     division_rule,
     division_token,
     division_uid,
@@ -725,3 +726,28 @@ def test_a_frozen_division_of_a_store_now_refused_is_refused() -> None:
         )
 
     assert refusal(error) == "frozen_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("start", "timezone_local", "label"),
+    [
+        (START, "America/Los_Angeles", "2021-02-19 11:22:53 PST"),
+        (
+            datetime(2021, 7, 1, 19, 0, 0, 900000, tzinfo=UTC),
+            "America/Los_Angeles",
+            "2021-07-01 12:00:00 PDT",
+        ),
+        (START, None, "2021-02-19 19:22:53Z"),
+        (START, "Mars/Olympus_Mons", "2021-02-19 19:22:53Z"),
+    ],
+    ids=["winter", "summer", "no-zone", "unknown-zone"],
+)
+def test_a_division_s_label_is_its_start_on_the_local_wall_clock(
+    start: datetime, timezone_local: str | None, label: str
+) -> None:
+    assert division_display_name(start, timezone_local) == label
+
+
+def test_a_naive_start_has_no_label() -> None:
+    with pytest.raises(ValueError, match="needs a timezone"):
+        _ = division_display_name(datetime(2021, 2, 19, 19, 22, 53), None)

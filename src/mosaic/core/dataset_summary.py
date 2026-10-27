@@ -12,7 +12,7 @@ creates no root.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import Field
@@ -20,6 +20,8 @@ from pydantic import Field
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
+from mosaic.core.media.facts_columns import read_link_cell
+from mosaic.core.media.store_division import DivisionRule, RecordingIdentity
 from mosaic.core.media.store_rate import positive_rate, store_rate_mismatch
 from mosaic.core.pipeline.inventory import (
     ArtifactKind,
@@ -39,7 +41,13 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     select_variant_rows,
 )
-from mosaic.core.recording import Recording, facts_from_frame_extents
+from mosaic.core.recording import (
+    OrderFacts,
+    Recording,
+    count_breaks,
+    facts_from_frame_extents,
+    utc_text,
+)
 from mosaic.core.schema import LEGACY_SCHEMA
 from mosaic.core.strict_model import StrictModel
 
@@ -54,6 +62,7 @@ __all__ = [
     "DatasetSummary",
     "DividedRecordingSummary",
     "FrameRateCount",
+    "RecordingDivisionSummary",
     "RecordingSummary",
     "TrackSchemaCount",
     "UndividedRecordingSummary",
@@ -127,6 +136,31 @@ class FrameRateCount(StrictModel):
     videos: int
 
 
+class RecordingDivisionSummary(StrictModel):
+    """The rule that divides a recording's stores, and the span of its divisions.
+
+    Attributes:
+        frames: The frames of a full division.
+        chunksize: The frames per chunk of the recording's stores.
+        identity: ``store`` when the recording is one store, ``camera`` when it
+            is every store of one camera serial.
+        camera_serial: The serial of the recording's camera, ``""`` when its
+            stores record none.
+        first_start_utc: When its first division starts, ISO 8601 UTC.
+        last_start_utc: When its last division starts, ISO 8601 UTC.
+        n_breaks: The boundaries between neighboring divisions whose frames do
+            not continue: a gap, a store boundary or a missing division.
+    """
+
+    frames: int
+    chunksize: int
+    identity: RecordingIdentity
+    camera_serial: str
+    first_start_utc: str
+    last_start_utc: str
+    n_breaks: int
+
+
 class DividedRecordingSummary(StrictModel):
     """One divided recording, with the first and last of its sequences.
 
@@ -135,10 +169,14 @@ class DividedRecordingSummary(StrictModel):
         kind: ``divided``.
         n_sequences: The sequences it holds.
         first_sequence: The entry token of its first sequence in recording
-            order: by their tracks tables' first frames, then by a natural sort
-            of their names. A member with two labeled tracks variants leaves
-            its recording in name order.
+            order: by the first frames of their divisions or their tracks
+            tables, then by a natural sort of their names. A member with two
+            labeled tracks variants leaves a recording declared by hand in name
+            order.
         last_sequence: The entry token of its last sequence in that order.
+        division: The rule and the span of a recording whose sequences are the
+            divisions of its stores, ``None`` for one declared by hand.
+            Per-sequence facts are in the listing of its sequences.
     """
 
     name: str
@@ -146,6 +184,7 @@ class DividedRecordingSummary(StrictModel):
     n_sequences: int
     first_sequence: str
     last_sequence: str
+    division: RecordingDivisionSummary | None = None
 
 
 class UndividedRecordingSummary(StrictModel):
@@ -242,16 +281,16 @@ def dataset_summary(
     manifest = ds.manifest
     tracks_index = read_tracks_index(ds)
     tracks = existing_tracks_records(ds, tracks_index)
-    media = _media_files(_media_rows(ds))
+    media_rows = _media_rows(ds)
+    media = _media_files(media_rows)
     entries = ds.recording_entries()
     extents = _member_extents(ds, tracks_index, entries)
+    divisions = ds.division_facts(entries)
     every_recording = ds.recordings(
         entries,
-        order_facts={
-            **facts_from_frame_extents(extents),
-            **ds.division_facts(entries),
-        },
+        order_facts={**facts_from_frame_extents(extents), **divisions},
     )
+    rules = _division_rules(media_rows)
     return DatasetSummary(
         manifest=str(ds.manifest_path.absolute()),
         name=manifest.name,
@@ -266,7 +305,8 @@ def dataset_summary(
         libraries=manifest.libraries,
         continuous_groups=ds.continuous_groups,
         recordings=tuple(
-            _recording_summary(recording) for recording in every_recording
+            _recording_summary(recording, divisions, rules)
+            for recording in every_recording
         ),
         splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
@@ -322,8 +362,43 @@ def _member_extents(
     return extents
 
 
-def _recording_summary(recording: Recording) -> RecordingSummary:
-    """Return *recording*'s name and kind, with its first and last members when divided."""
+def _division_rules(
+    rows: Iterable[dict[str, str]],
+) -> dict[str, tuple[DivisionRule, str] | None]:
+    """Return the rule and the camera serial of each group's division rows.
+
+    A group maps to ``None`` when its division rows disagree on either or its
+    rule cell does not read.
+    """
+    found: dict[str, set[tuple[str, str]]] = {}
+    for row in rows:
+        cell = read_link_cell(row, "division_rule")
+        if cell:
+            found.setdefault(read_link_cell(row, "group"), set()).add(
+                (cell, read_link_cell(row, "camera_serial"))
+            )
+    rules: dict[str, tuple[DivisionRule, str] | None] = {}
+    for group, cells in found.items():
+        rules[group] = None
+        if len(cells) == 1:
+            ((cell, serial),) = cells
+            try:
+                rules[group] = (DivisionRule.from_cell(cell), serial)
+            except ValueError:
+                pass
+    return rules
+
+
+def _recording_summary(
+    recording: Recording,
+    divisions: Mapping[Entry, OrderFacts],
+    rules: Mapping[str, tuple[DivisionRule, str] | None],
+) -> RecordingSummary:
+    """Return *recording*'s name and kind, with its first and last members when divided.
+
+    A divided recording whose members are each a division of *divisions* under
+    one rule of *rules* states that rule and the span of its divisions.
+    """
     if recording.kind == "undivided":
         return UndividedRecordingSummary(name=recording.name, kind="undivided")
     return DividedRecordingSummary(
@@ -332,6 +407,38 @@ def _recording_summary(recording: Recording) -> RecordingSummary:
         n_sequences=len(recording.members),
         first_sequence=entry_token(*recording.members[0]),
         last_sequence=entry_token(*recording.members[-1]),
+        division=_division_summary(recording, divisions, rules.get(recording.name)),
+    )
+
+
+def _division_summary(
+    recording: Recording,
+    divisions: Mapping[Entry, OrderFacts],
+    rule: tuple[DivisionRule, str] | None,
+) -> RecordingDivisionSummary | None:
+    """Return the rule and span of *recording*'s divisions.
+
+    ``None`` unless every member is a division of *divisions* under one *rule*.
+    """
+    starts = [
+        divisions[member].start_utc
+        for member in recording.members
+        if member in divisions
+    ]
+    if rule is None or len(starts) < len(recording.members):
+        return None
+    first, last = starts[0], starts[-1]
+    if first is None or last is None:
+        return None
+    division_rule, serial = rule
+    return RecordingDivisionSummary(
+        frames=division_rule.frames,
+        chunksize=division_rule.chunksize,
+        identity=division_rule.identity,
+        camera_serial=serial,
+        first_start_utc=utc_text(first),
+        last_start_utc=utc_text(last),
+        n_breaks=count_breaks(recording.members, divisions),
     )
 
 

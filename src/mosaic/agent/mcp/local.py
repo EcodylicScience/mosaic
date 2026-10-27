@@ -430,7 +430,7 @@ class LocalBackend:
             read_tracks_index,
             select_variant_rows,
         )
-        from mosaic.core.recording import recording_name
+        from mosaic.core.recording import division_placement, recording_name
 
         # Opened again so that each recording follows the declaration on disk now.
         dataset = open_dataset(self._dataset(args.dataset).manifest, ensure_roots=False)
@@ -448,6 +448,8 @@ class LocalBackend:
                     detail={"field": "tracks_variant"},
                 )
             ) from error
+        entries = dataset.recording_entries()
+        placed = dataset.division_facts(entries)
         rows: list[SequenceRow] = []
         for record in index_records(selected):
             extent = read_frame_extent(record)
@@ -465,6 +467,7 @@ class LocalBackend:
                     n_keypoints=count_cell(record.get("n_keypoints")),
                     frame_min=None if extent is None else extent[0],
                     frame_max=None if extent is None else extent[1],
+                    **division_placement(placed.get((group, sequence))),
                 )
             )
         if args.tracks_variant is None:
@@ -481,8 +484,9 @@ class LocalBackend:
                     n_keypoints=None,
                     frame_min=None,
                     frame_max=None,
+                    **division_placement(placed.get((group, sequence))),
                 )
-                for group, sequence in sorted(dataset.recording_entries() - tracked)
+                for group, sequence in sorted(entries - tracked)
                 if args.group is None or group == args.group
             )
         page, next_cursor = _page(

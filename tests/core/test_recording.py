@@ -13,6 +13,8 @@ from mosaic.core.recording import (
     OrderFacts,
     Recording,
     RecordingKey,
+    count_breaks,
+    division_placement,
     facts_from_frame_extents,
     order_members,
     recording_name,
@@ -412,3 +414,36 @@ def test_only_the_recording_rule_reads_the_continuous_declaration() -> None:
         )
 
     assert not stray, stray
+
+
+def test_a_break_is_a_neighbor_whose_frames_do_not_continue() -> None:
+    """``s3`` follows a gap, and ``s5`` is missing between ``s4`` and ``s6``."""
+    facts = {
+        ("r", f"s{n}"): OrderFacts(
+            first_frame=first_frame, frame_count=10, follows_gap=n == 3
+        )
+        for n, first_frame in ((1, 0), (2, 10), (3, 20), (4, 30), (6, 50))
+    }
+    members = sorted(facts)
+
+    assert count_breaks(members, facts) == 2
+    assert count_breaks(members[:2], facts) == 0
+    assert count_breaks([], facts) == 0
+
+
+def test_a_division_s_placement_reads_its_facts_and_every_other_none() -> None:
+    start = datetime(2021, 2, 19, 19, 22, 53, 500000, tzinfo=UTC)
+    facts = OrderFacts(first_frame=10, start_utc=start, frame_count=10)
+
+    assert division_placement(facts) == {
+        "first_frame": 10,
+        "frame_count": 10,
+        "start_utc": "2021-02-19T19:22:53.500000+00:00",
+        "follows_gap": False,
+    }
+    assert division_placement(None) == {
+        "first_frame": None,
+        "frame_count": None,
+        "start_utc": None,
+        "follows_gap": None,
+    }

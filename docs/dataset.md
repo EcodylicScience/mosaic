@@ -470,10 +470,23 @@ the sequences, recordings, videos, tracks variants, feature runs and trained mod
 dataset holds. `sequences` counts the entries with a tracks table, and `recordings`
 counts over the entries of the media and tracks indexes. It lists each recording with
 its kind, and a divided one with its number of sequences and its first and last sequence
-in recording order: by the first frame of their tracks tables, then by name. It also
-lists the track schemas of the tables and the frame rates of the videos.
+in recording order: by their first frames on the recording's axis, then by name. A
+recording divided from its stores also gives its `division`: the frames of a sequence,
+the chunksize, whether it is one store or one camera, the camera serial, the UTC starts
+of its first and last sequences, and `n_breaks`, the boundaries where a gap, a store
+boundary or a missing sequence stops the frames from continuing. `mosaic describe`
+prints that as one `division` line per recording. The summary also lists the track
+schemas of the tables and the frame rates of the videos.
 `mosaic sequences` lists each entry of the media and tracks indexes with its label and,
-under `--json`, the recording it belongs to and whether it has a tracks table.
+under `--json`, the recording it belongs to, whether it has a tracks table, and for a
+sequence divided from a store its `first_frame` on the recording's axis, its
+`frame_count`, its `start_utc` and whether it `follows_gap`. These four are `null` for
+every other entry. The MCP `list_sequences` returns the same four fields. A division is
+labeled by its start on the store's local clock, such as `2021-02-19 11:22:53 PST`, or
+in UTC (`2021-02-19 19:22:53Z`) when the store lacks a `timezone_local`. A write labels
+only a sequence without a label. A label you set is kept, and a later scan labels the
+sequences written before it. A label you clear with an empty `set_display_name` is
+written again by the next scan or division write.
 To find the datasets in a directory and up to three levels below it, call
 `discover_datasets(root)` from `mosaic.core.dataset_discovery`.
 

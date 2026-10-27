@@ -5,15 +5,16 @@
 ``MediaIndexResult.divisions``) onto JSON-ready models. A held-back and a
 refused division each carry their ``reason``, a stable literal.
 
-Imports pydantic, :mod:`mosaic.core.strict_model` and the standard-library leaf
-:mod:`~mosaic.core.media.store_division` only, so the agent tool contract can
-declare a field over these models.
+Imports pydantic, :mod:`mosaic.core.strict_model` and the standard-library
+leaves :mod:`~mosaic.core.recording` and :mod:`~mosaic.core.media.store_division`
+only. The agent tool contract can then declare a field over these models.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
+from mosaic.core.recording import utc_text
 from mosaic.core.strict_model import StrictModel
 
 from .store_division import (
@@ -122,7 +123,7 @@ def division_report_wire(plans: Iterable[DivisionPlan]) -> DivisionReportWire:
                 first_frame=division.row.first_frame,
                 frame_count=division.row.frame_count,
                 follows_gap=division.row.follows_gap,
-                start_utc=division.row.start_utc.isoformat(timespec="microseconds"),
+                start_utc=utc_text(division.row.start_utc),
                 start_source=division.row.start_source,
             )
             for plan in listed

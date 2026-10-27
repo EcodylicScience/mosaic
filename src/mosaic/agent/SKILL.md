@@ -193,9 +193,12 @@ A dataset is a directory with `dataset.yaml` and named roots
   sequence's tracks frame `f` is media frame `f - first_frame` of that media, and
   extract-frames indices count from 0 in it. `overlap_frames` reads neighbors only
   inside a continuous group. Other entries read only their frames, and the run
-  notes how many on stderr. `mosaic describe` counts the recordings and names the
-  divided ones, and `mosaic sequences --json` gives each entry's recording, a
-  media-only entry included.
+  notes how many on stderr. `mosaic describe` counts the recordings, names the
+  divided ones and prints each store division's rule, span and breaks
+  (`describe_dataset`: `division`). `mosaic sequences --json` and `list_sequences`
+  give each entry's recording, a media-only entry included, and a division's
+  `first_frame`, `frame_count`, `start_utc` and `follows_gap`. A division's label is
+  its local wall-clock start.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables
@@ -204,10 +207,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 
 - Every spatial column is in **video pixels**, and `X`/`Y` are the **body center**, for
   every tracker. For centimeters, record the scale with `ds.set_media_calibration(...)`
-  and run the `scale-to-cm` feature. For body lengths, run `body-length` and then
-  `scale-to-bl` referencing it. Do not rescale a tracks table yourself. The overlay
-  and the crop features refuse a table recorded in centimeters (`trex_v1`,
-  `mosaic_cm_v1`). `mosaic upgrade-tracks` converts a `trex_v1` table to pixels.
+  (`recording=` and `camera=` narrow it) and run the `scale-to-cm` feature. For body
+  lengths, run `body-length` and then `scale-to-bl` referencing it. Do not rescale a
+  tracks table yourself. The overlay and the crop features refuse a table recorded in
+  centimeters (`trex_v1`, `mosaic_cm_v1`). `mosaic upgrade-tracks` converts a
+  `trex_v1` table to pixels.
 - Velocity, speed and heading angle come from features. The `mosaic_v1` schema refuses
   them in a tracks table. Run `speed-angvel`, or `heading` with its method chosen.
 - Keypoints are optional. Features defined on keypoints refuse a table without them.

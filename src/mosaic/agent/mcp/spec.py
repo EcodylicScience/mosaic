@@ -1107,6 +1107,12 @@ class SequenceRow(StrictModel):
         n_keypoints: The keypoints of the table, ``None`` when unrecorded.
         frame_min: The table's first frame, ``None`` when unrecorded.
         frame_max: The table's last frame, ``None`` when unrecorded.
+        first_frame: A division's first frame on its recording's frame axis.
+            ``None`` unless the entry is a division of a store, as are the
+            three fields after it.
+        frame_count: A division's frames.
+        start_utc: When a division's first frame was recorded, ISO 8601 UTC.
+        follows_gap: Whether a gap or a store boundary precedes a division.
     """
 
     group: str
@@ -1119,6 +1125,10 @@ class SequenceRow(StrictModel):
     n_keypoints: int | None
     frame_min: int | None
     frame_max: int | None
+    first_frame: int | None
+    frame_count: int | None
+    start_utc: str | None
+    follows_gap: bool | None
 
 
 class SequencePage(StrictModel):

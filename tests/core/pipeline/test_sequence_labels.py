@@ -7,19 +7,33 @@ touches nothing the first names.
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.sequence_index import (
     SEQUENCE_LABEL_COLUMNS,
+    SequenceLabelRow,
+    amend_sequence_labels,
     read_sequence_labels,
     sequence_label_path,
+    sequence_labels,
 )
 
-from tests.helpers import add_track_sequences, make_dataset
+from tests.helpers import (
+    DIVISION_CREATED_UTC,
+    add_track_sequences,
+    index_locked_out,
+    make_dataset,
+    store_dataset,
+    video_store_maker,
+    write_division_rows,
+)
 
 # Only ``tracks`` is declared: a label is a property of the sequence, and these
 # tests read it beside the one index that names sequences.
@@ -70,6 +84,50 @@ def test_clearing_a_label_returns_the_sequence_to_its_token(tmp_path: Path) -> N
     ds.set_display_name("", "seqA", "named")
     ds.set_display_name("", "seqA", "")
     assert ds.display_name("", "seqA") == "seqA"
+
+
+def test_relabelling_keeps_the_sequence_s_lineage(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
+    sequence_labels(sequence_label_path(ds)).append(
+        [SequenceLabelRow(sequence="seqA", derived_from="trex.1.0-abcdef0123")]
+    )
+
+    ds.set_display_name("", "seqA", "named")
+
+    row = read_sequence_labels(ds).iloc[0]
+    assert (row["display_name"], row["derived_from"]) == (
+        "named",
+        "trex.1.0-abcdef0123",
+    )
+
+
+def test_an_amendment_reads_its_row_under_the_label_lock(tmp_path: Path) -> None:
+    """A second writer cannot land between the row an amendment reads and its append.
+
+    Read outside the lock, two writers of one entry both amend the same prior
+    row, and the later append drops the earlier writer's cell.
+    """
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
+    path = sequence_label_path(ds)
+    locked_out: list[bool] = []
+
+    def amend(row: SequenceLabelRow) -> SequenceLabelRow:
+        locked_out.append(index_locked_out(path, timeout=0.2))
+        return dataclasses.replace(row, display_name="named")
+
+    amend_sequence_labels(ds, [("", "seqA")], amend)
+
+    assert locked_out == [True]
+    assert ds.display_name("", "seqA") == "named"
+
+
+def test_a_label_file_without_a_header_reads_as_no_labels(tmp_path: Path) -> None:
+    """The lock creates the file empty before a first writer's append lands."""
+    ds = make_dataset(tmp_path, roots=TRACKS_ONLY)
+    sequence_label_path(ds).touch()
+
+    assert read_sequence_labels(ds).empty
+    assert ds.display_names() == {}
 
 
 def test_two_groups_may_label_the_same_sequence_name_differently(
@@ -139,3 +197,123 @@ def test_parse_hierarchy_still_reads_the_token(tmp_path: Path) -> None:
     frame = ds.get_sequence_metadata(level_names=["individual", "speed"])
     assert list(frame["individual"]) == ["fish3"]
     assert list(frame["speed"]) == ["fast"]
+
+
+# --- the wall-clock name of a division --------------------------------------------
+
+DIVISION_TOKENS = ("20210219T192253Z", "20210219T192255Z", "20210219T192258Z")
+"""The sequences of a store of chunks of 5 frames at 4 fps, divided every 10."""
+
+
+def divided_store_dataset(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    store_metadata: Mapping[str, object] | None = None,
+) -> Dataset:
+    """A dataset whose store ``rec`` is indexed whole, ready to divide."""
+    return store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker(
+            (5, 5, 5, 5, 2),
+            fps=4.0,
+            created_utc=DIVISION_CREATED_UTC,
+            store_metadata=store_metadata,
+        ),
+    )
+
+
+def divide(dataset: Dataset) -> None:
+    """Divide the store ``rec`` of *dataset* every 10 frames."""
+    _ = write_division_rows(
+        dataset, dataset.get_root("media_raw") / "recordings" / "rec", 10
+    )
+
+
+@pytest.mark.media
+def test_a_division_is_named_by_its_start_on_the_store_s_local_clock(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    dataset = divided_store_dataset(
+        tmp_path, make_media_dataset, {"timezone_local": "America/Los_Angeles"}
+    )
+
+    divide(dataset)
+
+    assert dataset.display_names() == {
+        ("rec", DIVISION_TOKENS[0]): "2021-02-19 11:22:53 PST",
+        ("rec", DIVISION_TOKENS[1]): "2021-02-19 11:22:55 PST",
+        ("rec", DIVISION_TOKENS[2]): "2021-02-19 11:22:58 PST",
+    }
+
+
+@pytest.mark.media
+def test_a_store_without_a_time_zone_names_its_divisions_in_utc(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    dataset = divided_store_dataset(tmp_path, make_media_dataset)
+
+    divide(dataset)
+
+    assert dataset.display_name("rec", DIVISION_TOKENS[0]) == "2021-02-19 19:22:53Z"
+
+
+@pytest.mark.media
+def test_a_division_keeps_its_label_and_a_later_write_names_the_unlabeled(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    dataset = divided_store_dataset(tmp_path, make_media_dataset)
+    divide(dataset)
+    dataset.set_display_name("rec", DIVISION_TOKENS[1], "the middle")
+    dataset.set_display_name("rec", DIVISION_TOKENS[2], "")
+
+    divide(dataset)
+
+    assert dataset.display_names() == {
+        ("rec", DIVISION_TOKENS[0]): "2021-02-19 19:22:53Z",
+        ("rec", DIVISION_TOKENS[1]): "the middle",
+        ("rec", DIVISION_TOKENS[2]): "2021-02-19 19:22:58Z",
+    }
+
+
+@pytest.mark.media
+def test_a_division_written_before_its_label_is_named_by_a_later_write(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    dataset = divided_store_dataset(tmp_path, make_media_dataset)
+    divide(dataset)
+    sequence_label_path(dataset).unlink()
+
+    divide(dataset)
+
+    assert len(dataset.display_names()) == 3
+
+
+@pytest.mark.media
+def test_a_division_write_labels_a_row_without_a_name_and_keeps_its_other_cells(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    dataset = divided_store_dataset(tmp_path, make_media_dataset)
+    divide(dataset)
+    path = sequence_label_path(dataset)
+    path.unlink()
+    sequence_labels(path).append(
+        [
+            SequenceLabelRow(
+                group="rec",
+                sequence=DIVISION_TOKENS[1],
+                display_group="g2",
+                derived_from="run123",
+            )
+        ]
+    )
+
+    divide(dataset)
+
+    frame = read_sequence_labels(dataset)
+    row = frame[frame["sequence"] == DIVISION_TOKENS[1]].iloc[0]
+    assert (row["display_name"], row["display_group"], row["derived_from"]) == (
+        "2021-02-19 19:22:55Z",
+        "g2",
+        "run123",
+    )

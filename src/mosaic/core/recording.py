@@ -15,18 +15,22 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from itertools import pairwise
+from typing import Literal, TypedDict
 
 from .entry import Entry, entry_token, make_entry_key, to_safe_name
 
 __all__ = [
+    "DivisionPlacement",
     "FrameOutsideSequenceError",
     "OrderFacts",
     "Recording",
     "RecordingKey",
     "RecordingKind",
     "adjacent",
+    "count_breaks",
+    "division_placement",
     "facts_from_frame_extents",
     "order_members",
     "recording_kind",
@@ -37,6 +41,7 @@ __all__ = [
     "recordings",
     "sequence_frame",
     "sequence_window",
+    "utc_text",
 ]
 
 RecordingKind = Literal["divided", "undivided"]
@@ -100,6 +105,57 @@ def adjacent(before: OrderFacts | None, after: OrderFacts | None) -> bool:
     if after.follows_gap or before.frame_count is None:
         return not after.follows_gap
     return before.first_frame + before.frame_count == after.first_frame
+
+
+def count_breaks(
+    members: Iterable[Entry], order_facts: Mapping[Entry, OrderFacts]
+) -> int:
+    """Return how many neighboring *members* are not :func:`adjacent`.
+
+    *members* are in recording order. A gap, a store boundary or a division
+    missing between two members is one break.
+    """
+    ordered = [order_facts.get(entry) for entry in members]
+    return sum(not adjacent(before, after) for before, after in pairwise(ordered))
+
+
+def utc_text(moment: datetime) -> str:
+    """Return *moment* in UTC as ISO 8601 with microseconds.
+
+    The media index records a division's ``start_utc`` in this form, and the
+    summary and the listings print it.
+    """
+    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+class DivisionPlacement(TypedDict):
+    """Where a sequence lies in its recording, each ``None`` unless it is a division.
+
+    Attributes:
+        first_frame: The sequence's first frame on the recording frame axis.
+        frame_count: The sequence's frames.
+        start_utc: When its first frame was recorded (:func:`utc_text`).
+        follows_gap: Whether a gap or a store boundary precedes it.
+    """
+
+    first_frame: int | None
+    frame_count: int | None
+    start_utc: str | None
+    follows_gap: bool | None
+
+
+def division_placement(facts: OrderFacts | None) -> DivisionPlacement:
+    """Return the placement that a division's *facts* record, all ``None`` without."""
+    if facts is None:
+        return DivisionPlacement(
+            first_frame=None, frame_count=None, start_utc=None, follows_gap=None
+        )
+    return DivisionPlacement(
+        first_frame=facts.first_frame,
+        frame_count=facts.frame_count,
+        start_utc=None if facts.start_utc is None else utc_text(facts.start_utc),
+        follows_gap=facts.follows_gap,
+    )
 
 
 @dataclass(frozen=True, slots=True)

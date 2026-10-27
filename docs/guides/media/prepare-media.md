@@ -244,7 +244,16 @@ media index, then run the `scale-to-cm` feature:
 ```python
 ds.set_media_calibration(0.043)                              # every recording
 ds.set_media_calibration(0.051, group="day2", sequence="trial07")   # one of them
+ds.set_media_calibration(0.047, recording="23036146_20210219_112253")  # one recording
+ds.set_media_calibration(0.049, recording="night", camera="left")      # one of its cameras
 ```
+
+`recording=` names a recording as `mosaic describe` lists it, and the value is written
+on the media row of each of its sequences. A sequence that a later scan adds to a
+divided recording, such as the next hour of a store, takes the scale of its camera's
+earlier sequences. `ds.media_calibration(group, sequence)` reads a sequence's scale and
+refuses when its cameras record different scales. Pass `camera=` to read one of them.
+`scale-to-cm` reads the camera that a tracker reads, the first by name.
 
 ```python
 from mosaic.behavior.feature_library import ScaleToCm

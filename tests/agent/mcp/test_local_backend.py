@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +36,8 @@ from mosaic.agent.mcp.spec import (
     call_tool,
 )
 from mosaic.core.dataset import Dataset
-from mosaic.core.dataset_summary import DatasetSummary
+from mosaic.core.dataset_summary import DatasetSummary, DividedRecordingSummary
+from mosaic.core.media.store_division import DivisionRule
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     POLL_AFTER_MIN_SECONDS as GRAPH_POLL_AFTER_MIN_SECONDS,
@@ -62,6 +64,7 @@ from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
+    DIVISION_CREATED_UTC,
     CONVERT_TRACKS_STEP,
     SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
@@ -74,8 +77,11 @@ from tests.helpers import (
     exited_pid,
     make_dataset,
     speed_recipe,
+    store_dataset,
     track_table,
+    video_store_maker,
     wait_for,
+    write_division_rows,
     write_media_index,
 )
 
@@ -234,6 +240,12 @@ def test_a_media_only_entry_is_listed_with_null_tracks_fields(
         None,
     )
     assert (pilot.n_rows, pilot.frame_min, pilot.frame_max) == (None, None, None)
+    assert (
+        pilot.first_frame,
+        pilot.frame_count,
+        pilot.start_utc,
+        pilot.follows_gap,
+    ) == (None, None, None, None)
     assert page.total == 3
     assert [row.sequence for row in pinned.items] == ["seq_a", "seq_b"]
 
@@ -316,6 +328,40 @@ def test_a_group_s_sequences_are_listed_with_its_media_only_entries(
     assert (first.total, rest.next_cursor) == (3, None)
 
 
+DIVIDED_UUID = "5f0c8a52-3d4e-4b7a-9c61-2e8d1f0a7b39"
+"""The uuid of the dataset whose store is divided."""
+
+
+@pytest.mark.media
+@pytest.mark.usefixtures("requires_ffmpeg")
+def test_a_division_is_listed_with_its_frames_and_start(tmp_path: Path) -> None:
+    """A store of chunks of 5 frames at 4 fps, divided every 10 frames."""
+
+    def media_dataset(base: Path) -> Dataset:
+        return make_dataset(
+            base, roots=("media_raw", "media", "tracks"), uuid=DIVIDED_UUID
+        )
+
+    ds = store_dataset(
+        tmp_path,
+        media_dataset,
+        video_store_maker((5, 5, 5, 5, 2), fps=4.0, created_utc=DIVISION_CREATED_UTC),
+    )
+    _ = write_division_rows(ds, ds.get_root("media_raw") / "recordings" / "rec", 10)
+    served = LocalBackend([ds.manifest_path], warm=False)
+
+    page = _call(served, "list_sequences", SequencePage, dataset=_uuid(ds))
+
+    assert [
+        (row.first_frame, row.frame_count, row.start_utc, row.follows_gap)
+        for row in page.items
+    ] == [
+        (0, 10, "2021-02-19T19:22:53.000000+00:00", False),
+        (10, 10, "2021-02-19T19:22:55.500000+00:00", False),
+        (20, 2, "2021-02-19T19:22:58.000000+00:00", False),
+    ]
+
+
 SUMMARY_RECORDINGS = 600
 """The recordings of the dataset that ``describe_dataset`` must describe whole."""
 
@@ -342,6 +388,79 @@ def test_a_summary_of_hundreds_of_recordings_is_returned_whole(
     summary = _call(served, "describe_dataset", DatasetSummary, dataset=_uuid(ds))
 
     assert summary.counts.recordings == len(summary.recordings) == SUMMARY_RECORDINGS
+    assert len(summary.model_dump_json()) <= MAX_RESULT_CHARS
+
+
+BUDGET_CAMERAS = 6
+BUDGET_STORES = 14
+BUDGET_DIVISIONS = 170
+"""A dataset of 6 cameras, 14 stores each, and 170 divisions per store."""
+BUDGET_CHUNKS = 6
+BUDGET_CHUNKSIZE = 12000
+"""Each division is an hour at 20 fps: 6 chunks of 12000 frames."""
+
+
+def _division_rows(camera: int, store: int) -> list[dict[str, object]]:
+    """The media index rows of the divisions of one store, an hour apart."""
+    serial = f"2303614{camera}"
+    dirname = f"202102{store + 1:02d}_112253"
+    start = datetime(2021, 2, store + 1, 19, 22, 53, tzinfo=UTC)
+    rule = DivisionRule(
+        frames=BUDGET_CHUNKS * BUDGET_CHUNKSIZE,
+        chunksize=BUDGET_CHUNKSIZE,
+        identity="store",
+        gap_seconds=0.5,
+    )
+    rows: list[dict[str, object]] = []
+    for division in range(BUDGET_DIVISIONS):
+        division_start = start + timedelta(hours=division)
+        rows.append(
+            {
+                "group": f"{serial}_{dirname}",
+                "sequence": division_start.strftime("%Y%m%dT%H%M%SZ"),
+                "abs_path": f"stores/{serial}/{dirname}",
+                "camera_serial": serial,
+                "fps": 20.0,
+                "frame_count": rule.frames,
+                "chunk_first": division * BUDGET_CHUNKS,
+                "chunk_last": (division + 1) * BUDGET_CHUNKS - 1,
+                "first_frame": division * rule.frames,
+                "start_utc": division_start.isoformat(timespec="microseconds"),
+                "start_source": "created_utc",
+                "follows_gap": "false",
+                "division_rule": rule.to_cell(),
+            }
+        )
+    return rows
+
+
+@pytest.mark.slow
+def test_the_summary_of_a_lab_s_divided_stores_is_returned_whole(
+    tmp_path: Path,
+) -> None:
+    """The media index names each division, and no media file is written."""
+    ds = make_dataset(tmp_path / "lab")
+    rows = [
+        row
+        for camera in range(BUDGET_CAMERAS)
+        for store in range(BUDGET_STORES)
+        for row in _division_rows(camera, store)
+    ]
+    write_media_index_rows(
+        ds.get_root("media_raw") / "index.csv", frame_from_rows(rows)
+    )
+    ds.set_continuous_groups(sorted({str(row["group"]) for row in rows}))
+    served = LocalBackend([ds.manifest_path], warm=False)
+
+    summary = _call(served, "describe_dataset", DatasetSummary, dataset=_uuid(ds))
+
+    assert summary.counts.recordings == BUDGET_CAMERAS * BUDGET_STORES
+    assert all(
+        isinstance(recording, DividedRecordingSummary)
+        and recording.division is not None
+        and recording.n_sequences == BUDGET_DIVISIONS
+        for recording in summary.recordings
+    )
     assert len(summary.model_dump_json()) <= MAX_RESULT_CHARS
 
 

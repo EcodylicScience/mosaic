@@ -388,6 +388,18 @@ def test_the_recipe_example_is_a_recipe_document() -> None:
         ("describe_dataset", ("DividedRecordingSummary", "first_sequence")),
         ("describe_dataset", ("DividedRecordingSummary", "last_sequence")),
         ("describe_dataset", ("UndividedRecordingSummary", "kind")),
+        ("describe_dataset", ("DividedRecordingSummary", "division")),
+        ("describe_dataset", ("RecordingDivisionSummary", "frames")),
+        ("describe_dataset", ("RecordingDivisionSummary", "chunksize")),
+        ("describe_dataset", ("RecordingDivisionSummary", "identity")),
+        ("describe_dataset", ("RecordingDivisionSummary", "camera_serial")),
+        ("describe_dataset", ("RecordingDivisionSummary", "first_start_utc")),
+        ("describe_dataset", ("RecordingDivisionSummary", "last_start_utc")),
+        ("describe_dataset", ("RecordingDivisionSummary", "n_breaks")),
+        ("list_sequences", ("SequenceRow", "first_frame")),
+        ("list_sequences", ("SequenceRow", "frame_count")),
+        ("list_sequences", ("SequenceRow", "start_utc")),
+        ("list_sequences", ("SequenceRow", "follows_gap")),
     ],
 )
 def test_the_listing_and_the_summary_name_the_recordings(

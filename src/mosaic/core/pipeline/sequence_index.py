@@ -43,7 +43,7 @@ is recorded rather than left to be rediscovered.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, get_args
@@ -58,6 +58,7 @@ from mosaic.core.pipeline.composition import (
     SequenceComposition,
 )
 from mosaic.core.pipeline.index_csv import IndexCSV, SchemaRowBase
+from mosaic.core.pipeline.index_lock import index_lock
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -363,8 +364,43 @@ def read_sequence_labels(ds: Dataset) -> pd.DataFrame:
     path = sequence_label_path(ds)
     if not path.exists():
         return empty_label_frame()
-    raw = pd.read_csv(path, keep_default_na=False, dtype=str)
-    return adopt_label_columns(raw)
+    return adopt_label_columns(sequence_labels(path).read())
+
+
+def amend_sequence_labels(
+    ds: Dataset,
+    entries: Iterable[tuple[str, str]],
+    amend: Callable[[SequenceLabelRow], SequenceLabelRow | None],
+) -> None:
+    """Record the amended label row of each ``(group, sequence)`` of *entries*.
+
+    The one writer of ``sequences.csv``. *amend* receives an entry's current
+    row, or an empty one, and returns the row to record, or ``None`` to leave
+    the entry as it is. A cell *amend* does not change keeps its value, so a
+    writer of one cell does not clear another's: the read, the amendment and
+    the append hold one lock.
+    """
+    keys = list(entries)
+    if not keys:
+        return
+    path = sequence_label_path(ds)
+    labels = sequence_labels(path)
+    with index_lock(path):
+        frame = adopt_label_columns(labels.read_holding_lock())
+        cells = frame[SEQUENCE_LABEL_COLUMNS].astype(str).to_numpy().tolist()
+        rows = (
+            SequenceLabelRow(**dict(zip(SEQUENCE_LABEL_COLUMNS, row, strict=True)))
+            for row in cells
+        )
+        current = {(row.group, row.sequence): row for row in rows}
+        amended: list[SequenceLabelRow] = []
+        for group, sequence in keys:
+            prior = current.get((group, sequence))
+            row = amend(prior or SequenceLabelRow(group=group, sequence=sequence))
+            if row is not None:
+                amended.append(row)
+        if amended:
+            labels.append_holding_lock(amended)
 
 
 def decode_consumed_roots(cell: str) -> tuple[str, ...]:

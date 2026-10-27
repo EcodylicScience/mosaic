@@ -27,6 +27,7 @@ destructive operations wearing one name.
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -43,9 +44,7 @@ from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.provenance import reached_by
 from mosaic.core.pipeline.sequence_index import (
     SequenceLabelRow,
-    read_sequence_labels,
-    sequence_label_path,
-    sequence_labels,
+    amend_sequence_labels,
 )
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
@@ -340,39 +339,12 @@ def _record_lineage(ds: Dataset, group: str, sequence: str, derived_from: str) -
     instead. Comma-joined and sorted, the spelling ``consumed_source_roots``
     already uses for a set in a cell.
     """
-    path = sequence_label_path(ds)
-    labels = sequence_labels(path)
-    prior = _prior_cell(ds, group, sequence, "derived_from")
-    runs = {run for run in prior.split(",") if run}
-    runs.add(derived_from)
-    labels.append(
-        [
-            SequenceLabelRow(
-                group=group,
-                sequence=sequence,
-                # Carried, not cleared: a promotion must not silently un-name a
-                # sequence somebody labelled.
-                display_group=_prior_cell(ds, group, sequence, "display_group"),
-                display_name=_prior_cell(ds, group, sequence, "display_name"),
-                derived_from=",".join(sorted(runs)),
-            )
-        ]
-    )
 
+    def add_lineage(row: SequenceLabelRow) -> SequenceLabelRow:
+        runs = {run for run in row.derived_from.split(",") if run}
+        runs.add(derived_from)
+        # The label cells are carried: a promotion must not silently un-name a
+        # sequence somebody labelled.
+        return dataclasses.replace(row, derived_from=",".join(sorted(runs)))
 
-def _prior_cell(ds: Dataset, group: str, sequence: str, column: str) -> str:
-    """One cell of this entry's existing label row, or ``""``.
-
-    Through ``read_sequence_labels``, which its own docstring calls *the single
-    reader*: it projects onto the current schema and answers an absent file with
-    the full-schema empty frame. That last part is what this needed -- a dataset
-    that has never named a sequence has no label file, and the first draft here
-    read it directly and died on the first promotion to such a dataset, *after*
-    having already copied the file and rewritten the index. Adding a second
-    reader to fix that would have been the wrong repair twice over.
-    """
-    frame = read_sequence_labels(ds)
-    matching = frame[(frame["group"] == group) & (frame["sequence"] == sequence)]
-    if matching.empty:
-        return ""
-    return str(matching.iloc[-1][column])
+    amend_sequence_labels(ds, [(group, sequence)], add_lineage)

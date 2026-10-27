@@ -30,7 +30,7 @@ and the pixel original stays on disk, unmodified, one input away.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Self, final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, final
 
 import pandas as pd
 from pydantic import model_validator
@@ -60,6 +60,9 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from .registry import register_feature
+
+if TYPE_CHECKING:
+    from mosaic.core.dataset import Dataset
 
 _CM_PER_PIXEL_DESCRIPTION = (
     "Override the dataset's recorded scale. A value that is not "
@@ -263,9 +266,9 @@ class ScaleToCm:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._ds = None
+        self._ds: Dataset | None = None
 
-    def bind_dataset(self, ds: object) -> None:
+    def bind_dataset(self, ds: Dataset) -> None:
         """Called by ``run_feature`` before any apply, and in each worker."""
         self._ds = ds
 
@@ -327,7 +330,8 @@ class ScaleToCm:
 
         An explicit parameter wins, because a caller who states a scale has said
         something the dataset does not know. Otherwise it comes from the media
-        row for this sequence, which is where a calibration belongs.
+        rows for this sequence, which is where a calibration belongs: those of
+        the camera that a tracker reads, the first by name.
         """
         p = self.params
         if p.cm_per_pixel is not None:
@@ -344,7 +348,9 @@ class ScaleToCm:
                 "not bound to a dataset. Run it through run_feature, or pass "
                 "cm_per_pixel= explicitly."
             )
-        scale = self._ds.media_calibration(group, sequence)
+        scale = self._ds.media_calibration(
+            group, sequence, camera=_consumed_camera(self._ds, (group, sequence))
+        )
         if scale is None:
             raise ValueError(
                 f"{self.name}: sequence ({group!r}, {sequence!r}) has no recorded "
@@ -372,3 +378,24 @@ class ScaleToCm:
                 "per-recording, so a frame spanning several has no single scale."
             )
         return next(iter(groups)), next(iter(sequences))
+
+
+def _consumed_camera(ds: Dataset, entry: tuple[str, str]) -> str | None:
+    """Return the camera of *entry* that a tracker reads, ``None`` without one.
+
+    An entry whose media does not resolve has none, and ``None`` reads every
+    camera's scale, which must then agree.
+    """
+    from mosaic.core.pipeline.consumed_camera import (
+        consumed_cameras,
+        first_cameras,
+        resolve_entry_media,
+    )
+
+    consumed = first_cameras(
+        consumed_cameras(
+            "scale-to-cm", resolve_entry_media(ds, [entry]), report_skipped=False
+        )
+    )
+    media = consumed.get(entry)
+    return None if media is None or isinstance(media, Exception) else media.camera

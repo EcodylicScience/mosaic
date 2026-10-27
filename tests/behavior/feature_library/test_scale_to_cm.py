@@ -23,7 +23,7 @@ import pytest
 from mosaic.behavior.feature_library.scale_to_cm import ScaleToCm, scalable_columns
 from mosaic.core.dataset import Dataset
 
-from tests.helpers import add_media_sequence, make_dataset
+from tests.helpers import MediaClip, add_media_sequence, make_dataset, write_media_index
 
 
 def _table(sequence: str = "seq_a", n: int = 4) -> pd.DataFrame:
@@ -153,16 +153,36 @@ def test_an_explicit_scale_overrides_the_recorded_one(tmp_path: Path) -> None:
     assert out["X_cm"].to_numpy() == pytest.approx(np.linspace(0.0, 10.0, 4))
 
 
+def test_the_scale_is_the_one_of_the_camera_a_tracker_reads(tmp_path: Path) -> None:
+    """Of two cameras with two scales, a tracker reads the first, ``left``."""
+    ds = make_dataset(tmp_path / "dataset", name="scale")
+    write_media_index(
+        ds,
+        [
+            MediaClip(sequence="seq_a", camera=camera, filename=f"{camera}.mp4")
+            for camera in ("right", "left")
+        ],
+    )
+    _ = ds.set_media_calibration(0.25, camera="left")
+    _ = ds.set_media_calibration(0.5, camera="right")
+
+    feature = ScaleToCm()
+    feature.bind_dataset(ds)
+    out = feature.apply(_table())
+
+    assert out["X_cm"].to_numpy() == pytest.approx(np.linspace(0.0, 2.5, 4))
+
+
 def test_running_unbound_without_a_scale_says_so() -> None:
     with pytest.raises(ValueError, match="not bound to a dataset"):
         _ = ScaleToCm().apply(_table())
 
 
-def test_a_frame_spanning_two_sequences_refuses() -> None:
+def test_a_frame_spanning_two_sequences_refuses(tmp_path: Path) -> None:
     """A calibration is per-recording, so a mixed frame has no single scale."""
     mixed = pd.concat([_table("seq_a"), _table("seq_b")], ignore_index=True)
     feature = ScaleToCm()
-    feature.bind_dataset(object())
+    feature.bind_dataset(make_dataset(tmp_path / "dataset", name="scale"))
     with pytest.raises(ValueError, match="one sequence per call"):
         _ = feature.apply(mixed)
 
