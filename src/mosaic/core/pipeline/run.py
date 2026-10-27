@@ -38,6 +38,7 @@ from ._utils import (
     hash_params,
     json_ready,
 )
+from .arena_guard import ArenaBlindFeature, entry_arena_count, refuse_arena_blind
 from .storage_names import derive_storage_name, feature_slug_of
 from .column_contract import (
     MissingInputColumns,
@@ -1694,6 +1695,13 @@ def _run_feature_impl(
     # was served in silence.
     roots_blind: set[tuple[str, str]] = set()
     tracks_blind: set[tuple[str, str]] = set()
+    # An arena-blind feature is refused on an entry spanning arenas, so the
+    # layouts are read once when the feature is one. Declaring a layout changes
+    # no tracks composition, and only an entry's input shows whether it spans
+    # the arenas of its layout, so an entry whose layout names several is never
+    # served from the cache.
+    relates: object = getattr(feature, "relates", "none")
+    blind_layouts = ds.arena_layouts() if relates == "arena-blind" else None
     if state_ready and not overwrite:
         for entry_key in manifest:
             group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
@@ -1747,6 +1755,13 @@ def _run_feature_impl(
                 refusal = _disposition_reason(tracks_was, tracks_now)
             elif cached_entry_disposition(neighbors_was, neighbors_now) == "recompute":
                 refusal = _neighbors_reason(neighbors_was)
+            if refusal is None and blind_layouts is not None:
+                arena_count = entry_arena_count(ds, group, sequence, blind_layouts)
+                if arena_count >= 2:
+                    refusal = (
+                        f"its recording has a layout of {arena_count} arenas, "
+                        "and only its input shows whether it spans them"
+                    )
             if refusal is not None:
                 # Serving this would be the wrong answer this milestone exists to
                 # prevent, and recording it would restamp the only cell that says
@@ -1980,6 +1995,13 @@ def _run_feature_impl(
         except MissingInputColumns as exc:
             _entry_failed(group, sequence, exc)
             return
+        if blind_layouts is not None:
+            count = entry_arena_count(ds, group, sequence, blind_layouts)
+            try:
+                refuse_arena_blind(feature.name, df, count)
+            except ArenaBlindFeature as exc:
+                _entry_failed(group, sequence, exc)
+                return
 
         # Cache hits are resolved up-front in the pre-pass; any entry reaching
         # here needs (re)computation.

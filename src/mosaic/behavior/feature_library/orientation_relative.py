@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.individuals import id_arenas, same_arena_mask
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     POSE_X,
     POSE_Y,
@@ -93,6 +95,7 @@ class OrientationRelativeFeature:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
@@ -221,6 +224,11 @@ class OrientationRelativeFeature:
 
         frames = rows[C.frame_col].to_numpy().astype(np.int64)
         focal, other = _ordered_pairs(frames)
+        ids = rows[C.id_col]
+        paired = same_arena_mask(
+            ids.iloc[focal].tolist(), ids.iloc[other].tolist(), id_arenas(df)
+        )
+        focal, other = focal[paired], other[paired]
         # A focal with no usable scale measures no one
         usable = np.isfinite(scale[focal]) & (scale[focal] > 0)
         focal, other = focal[usable], other[usable]
@@ -237,7 +245,6 @@ class OrientationRelativeFeature:
             )
             for lo in range(0, focal.size, step)
         ]
-        ids = rows[C.id_col]
         columns: dict[str, object] = {
             C.frame_col: frames[focal],
             "id1": ids.iloc[focal].reset_index(drop=True),

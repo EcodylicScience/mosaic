@@ -161,6 +161,26 @@ def test_mosaic_v1_accepts_a_table_with_no_keypoints() -> None:
     assert report["forbidden_present"] == []
 
 
+@pytest.mark.parametrize("schema_name", ["mosaic_v1", "trex_v2", "mosaic_cm_v1"])
+def test_the_standard_schemas_accept_a_text_arena(schema_name: str) -> None:
+    frame = _centroid_only_frame()
+    frame["arena"] = ["A1", None]
+
+    _, report = ensure_track_schema(frame, schema_name, strict=True)
+
+    assert report["missing_required"] == []
+    assert "arena" in TRACK_SCHEMAS[schema_name].optional_text
+
+
+def test_a_numeric_arena_is_refused_even_when_not_strict() -> None:
+    """An arena is a name. A number there would be read as an id."""
+    frame = _centroid_only_frame()
+    frame["arena"] = [1, 2]
+
+    with pytest.raises(TrackSchemaError, match="arena"):
+        _ = ensure_track_schema(frame, "mosaic_v1")
+
+
 def test_trex_v2_inherits_the_optional_keypoints() -> None:
     """It extends ``mosaic_v1``; a TREx table without posture is ordinary too."""
     _, report = ensure_track_schema(_centroid_only_frame(), "trex_v2", strict=True)

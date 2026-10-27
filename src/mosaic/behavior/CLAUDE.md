@@ -36,6 +36,20 @@ own environments.
   explicit `cm_per_pixel` but not the scale it reads from the media index, and its
   module docstring says what a recalibration then serves.
 
+## Relating individuals
+
+- **Every feature declares `relates`**, `none`, `arena-aware` or `arena-blind`
+  (`RelatesLevel` in `core/pipeline/types/feature.py`), a class attribute outside the
+  protocol. `test_feature_conformance.py` pins the aware and blind sets.
+- **Pairs come from `individual_pairs`** (`core/individuals.py`), with each id's arena
+  from `id_arenas(df)`. A vectorized pairing filters with `same_arena_mask`. No feature
+  module calls `combinations` or `permutations` (`test_no_feature_pairs_ids_without_the_arena_rule`).
+  A table without `arena` pairs as before (`test_arena_pairs.py`).
+- **`run_feature` fails an `arena-blind` feature's entry** that holds two arenas, or
+  whose recording's layout names several while the input names none
+  (`core/pipeline/arena_guard.py`, `tests/core/pipeline/test_arena_guard.py`). A
+  feature migrated to `individual_pairs` declares `arena-aware`.
+
 ## Category
 
 - **`category` is an optional class attribute outside the protocol.** The values in use

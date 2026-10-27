@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from av.codec.codec import UnknownCodecError
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
@@ -151,6 +152,7 @@ class InteractionCropPipeline:
     version = "0.3"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "pair"

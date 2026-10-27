@@ -6,6 +6,7 @@ from typing import ClassVar, final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     ORDER_COLUMN,
@@ -55,6 +56,7 @@ class NearestNeighbor:
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # ranks the animals of one frame
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

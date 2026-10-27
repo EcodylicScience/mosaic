@@ -119,7 +119,7 @@ class TestTheDeclarationsAreWhatWeIntend:
 
     def test_the_scope_dependent_ops(self) -> None:
         dependent = {kind for kind, op in OPS.items() if op.scope_dependent}
-        assert dependent == {"resample-tracks"}
+        assert dependent == {"resample-tracks", "assign-arenas"}
 
     def test_the_arity_constrained_ops(self) -> None:
         assert OPS["transcode"].scope_takes == "at-least-one"

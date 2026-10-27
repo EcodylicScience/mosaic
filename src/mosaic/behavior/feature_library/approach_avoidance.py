@@ -29,7 +29,6 @@ Output columns (per frame and ordered pair):
 
 from __future__ import annotations
 
-from itertools import combinations
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, final
 
@@ -37,6 +36,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -163,6 +164,7 @@ class ApproachAvoidance:
     version = "0.3"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
@@ -292,7 +294,7 @@ class ApproachAvoidance:
             ids = sorted(gseq[C.id_col].unique())
             if len(ids) < 2:
                 continue
-            for id_a, id_b in combinations(ids, 2):
+            for id_a, id_b in individual_pairs(ids, id_arenas(df)):
                 pair_df = self._compute_pair(gseq, id_a, id_b, order_col, df)
                 if pair_df is not None and not pair_df.empty:
                     out_frames.append(pair_df)

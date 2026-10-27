@@ -82,6 +82,19 @@ def _render(summary: DatasetSummary) -> None:
         render_table(
             [rate.model_dump() for rate in summary.frame_rates], ["fps", "videos"]
         )
+    if summary.arena_layouts:
+        typer.echo()
+        render_table(
+            [
+                {
+                    "recording": layout.recording,
+                    "camera": layout.camera,
+                    "arenas": len(layout.arenas),
+                }
+                for layout in summary.arena_layouts
+            ],
+            ["recording", "camera", "arenas"],
+        )
     if summary.tags:
         typer.echo()
         render_table(

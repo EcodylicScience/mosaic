@@ -8,6 +8,71 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: arena layouts, the `assign-arenas` op, and pairs within one arena
+
+**No identifier moves.** Run ids, entry keys, compositions and paths of existing
+artifacts are unchanged. The op golden gains `tracks/assign-arenas-variant`, and the
+`mosaic describe --json` golden gains an empty `arena_layouts`.
+
+- A dataset gains the `arenas` root, filled by `backfill_roots` with no manifest version
+  move. `Dataset.set_arena_layout(layout, group=, sequence=, camera=)` writes one
+  `ArenaLayout` (`core/arenas.py`) per recording and camera to
+  `arenas/<recording_storage_name>[.<camera>].json` and a row of `arenas/index.csv`
+  with its digest, under the index lock. A divided recording is keyed `(G, "")`, and
+  an undivided one by its entry. A write refuses `(G, "")` for a group that is not
+  continuous, a sequence of a divided recording, a recording without an entry in the
+  media or tracks index, and a file name another key uses.
+- `Dataset.arena_layout(group, sequence, camera="")` tries the entry's key, then its
+  recording's, under the camera and then under camera `""`, and skips a `(G, "")`
+  row of a group that is not continuous. `Dataset.arena_layouts()` refuses
+  (`ArenaIndexError`) an index that does not parse, two rows of one key, a file that is
+  missing or does not parse as a layout, and a file whose digest differs from its row.
+  Both read without the lock and write nothing. `Dataset.recording_named` finds a
+  recording by its summary name.
+- `mosaic arenas set -r <recording> (--layout FILE | --xs ... --ys ...
+  [--exclude-x x0,x1] [--exclude-y y0,y1]) [--camera]`, where a strip is excluded from
+  each grid arena it crosses and one whose lower edge is not first or that crosses no
+  arena is refused, and `mosaic arenas show [-r <recording>] [--camera] [--json]`. The
+  MCP `manage_dataset` gains the action `set_arenas` (`recording`, `camera`,
+  `arena_layout`), and `describe_dataset` and `DatasetSummary` gain `arena_layouts`.
+  An arenas index or layout file that cannot be read is an `inventory_errors` entry.
+- The standard track schemas (`mosaic_v1`, `trex_v2`, `mosaic_cm_v1`) declare an
+  optional text column `arena` (`TrackSchema.optional_text`), and a non-text value is
+  refused whatever `strict` says. `classify_column("arena")` is `invariant`.
+- The `assign-arenas` op (version `0.1`) reads a tracks variant and writes a new one.
+  Each row gains `arena` from its body center, a row in an excluded rect, in no arena
+  or without a position is dropped, and above capacity the rows of highest
+  `confidence` are kept. Without a `confidence` column an arena above capacity is
+  refused. `id` becomes the arena's ordinal at capacity 1, and otherwise numbers the
+  `(ordinal, source id)` pairs. The variant id is its params and its source variant.
+  Each row records `<source composition>;arenas=<digest>` and its source's
+  `first_frame`, so a changed layout recomputes the recording's tables and the features
+  that read them. A run reports each entry's dropped rows in a `rows_dropped` run-log
+  event, an ordinary event kind, and an entry whose cameras find different layouts
+  fails with that reason. The pure step is
+  `core/pipeline/arena_assignment.assign_arenas`.
+- Every registered feature declares `relates` (`RelatesLevel`: `none`, `arena-aware`,
+  `arena-blind`). The pair features form pairs through `core/individuals.py`
+  `individual_pairs(ids, id_arenas(df))` (or `same_arena_mask`), which pairs only
+  individuals of one arena when the table has `arena`: `pair-position`,
+  `pair-egocentric`, `pair-facing`, `pair-interaction-filter`,
+  `pair-posedistance-pca`, `approach-avoidance`, `orientation-rel` and
+  `neighbor-delta-response`. A table without `arena` gives the rows it gave, and no
+  feature version moves. `run_feature` fails the entry of an `arena-blind` feature
+  (`nearest-neighbor`, `social-motion-summary`, `attention-target`,
+  `collective-motion-metrics`, `ffgroups`, `ffgroups-metrics`, `local-order-metrics`,
+  `nn-delta-bins`, `nn-delta-response`) when its input holds two arenas, or when its
+  recording has a layout of several arenas and its input names none
+  (`ArenaBlindFeature`). Such a feature serves no cached output of an entry whose
+  recording has a layout of several arenas, so `run_feature` recomputes and refuses an
+  output computed before the layout was declared. A `Pipeline` or recipe step whose
+  run is complete is not run again and keeps that output until `mosaic run --overwrite`
+  or `Pipeline.run(force_from=...)` recomputes it.
+- `tracks_identity.resample_variant_payload` is renamed `chained_variant_payload`, and
+  `resample-tracks` and `assign-arenas` share their source resolution
+  (`tracking/ops/chained_tracks.py`). `write_tracks_row` takes `consumed_composition`
+  to record in place of the composition of its source roots.
+
 ## Unreleased: training splits by recording, and the group and recording of an annotated frame
 
 **Every `prepare-training-data` run id minted without `split_by` moves.** `split_by`

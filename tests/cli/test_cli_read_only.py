@@ -25,6 +25,7 @@ import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
+from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
@@ -149,6 +150,9 @@ def populated(tmp_path: Path) -> ReadDataset:
     _ = record_entry_selection(
         dataset, run_id=SELECTION_RUN_ID, group="", sequence="seq_a", frames=[4]
     )
+    _ = dataset.set_arena_layout(
+        ArenaLayout.grid(xs=(0, 50, 100), ys=(0, 100)), group="", sequence="seq_a"
+    )
     _lose_an_entity(dataset.base_dir)
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
@@ -203,6 +207,8 @@ def _other_recipe_file(fixture: ReadDataset) -> Path:
 type CliArguments = Callable[[ReadDataset], list[str]]
 
 CLI_READS: dict[str, CliArguments] = {
+    "arenas show": lambda _: ["arenas", "show"],
+    "arenas show --recording": lambda _: ["arenas", "show", "--recording", "seq_a"],
     "describe": lambda _: ["describe"],
     "inventory": lambda _: ["inventory"],
     "inventory --limit": lambda _: ["inventory", "--limit", "1", "--entry", ":seq_a"],
@@ -282,6 +288,7 @@ CLI_READS: dict[str, CliArguments] = {
 """Each read verb's arguments, without ``--manifest`` and ``--json``."""
 
 CLI_READS_OF_NOTHING = (
+    "arenas show",
     "describe",
     "inventory",
     "inventory --limit",
@@ -484,6 +491,8 @@ def _request_status(fixture: ReadDataset) -> object:
 type LibraryRead = Callable[[ReadDataset], object]
 
 LIBRARY_READS: dict[str, LibraryRead] = {
+    "arena_layout": lambda f: f.reopened().arena_layout("", "seq_a"),
+    "arena_layouts": lambda f: f.reopened().arena_layouts(),
     "dataset_inventory": _dataset_inventory,
     "dataset_summary": lambda f: dataset_summary(f.reopened()),
     "discover_datasets": lambda f: discover_datasets(f.root),

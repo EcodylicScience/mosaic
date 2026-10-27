@@ -35,6 +35,7 @@ from mosaic.core.pipeline import tracks_index as tracks_index_module
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking import dataset_inventory
 from tests.helpers import (
+    add_track_sequences,
     DIVISION_CREATED_UTC,
     MediaClip,
     speed_recipe,
@@ -468,3 +469,74 @@ def test_the_json_document_matches_golden(populated: Dataset) -> None:
         f"The summary document changed. If the change is intended, run "
         f"`{regenerate_command(__name__)}` and review the diff."
     )
+
+
+def test_the_summary_lists_each_arena_layout_by_recording(tmp_path: Path) -> None:
+    from mosaic.core.arenas import ArenaLayout
+
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("rec", "s1"), ("", "solo"))
+    ds.set_continuous_groups(["rec"])
+    grid = ArenaLayout.grid(xs=(0, 50, 100), ys=(0, 100))
+    _ = ds.set_arena_layout(grid, group="rec")
+    _ = ds.set_arena_layout(grid, group="", sequence="solo", camera="top")
+
+    summary = dataset_summary(ds)
+
+    assert [
+        (layout.recording, layout.camera, layout.arenas, layout.digest)
+        for layout in summary.arena_layouts
+    ] == [
+        ("solo", "top", ("A1", "B1"), grid.digest()),
+        ("rec", "", ("A1", "B1"), grid.digest()),
+    ]
+
+
+def test_an_unreadable_arenas_index_is_an_inventory_error(tmp_path: Path) -> None:
+    from mosaic.core.arenas import ArenaLayout
+
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("", "solo"))
+    path = ds.set_arena_layout(
+        ArenaLayout.grid(xs=(0, 50), ys=(0, 100)), group="", sequence="solo"
+    )
+    _ = path.write_text(ArenaLayout.grid(xs=(0, 60), ys=(0, 100)).model_dump_json())
+
+    summary = dataset_summary(ds)
+
+    assert summary.arena_layouts == ()
+    assert [error.split(":")[0] for error in summary.inventory_errors] == ["arenas"]
+
+
+def test_a_missing_layout_file_is_an_inventory_error(tmp_path: Path) -> None:
+    from mosaic.core.arenas import ArenaLayout
+
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("", "solo"))
+    path = ds.set_arena_layout(
+        ArenaLayout.grid(xs=(0, 50), ys=(0, 100)), group="", sequence="solo"
+    )
+    path.unlink()
+
+    summary = dataset_summary(ds)
+
+    assert summary.arena_layouts == ()
+    assert [error.split(":")[0] for error in summary.inventory_errors] == ["arenas"]
+
+
+def test_a_garbled_arenas_index_is_an_inventory_error(tmp_path: Path) -> None:
+    from mosaic.core.arenas import ArenaLayout
+    from mosaic.core.pipeline.arena_index import arena_index_path
+
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("", "solo"))
+    _ = ds.set_arena_layout(
+        ArenaLayout.grid(xs=(0, 50), ys=(0, 100)), group="", sequence="solo"
+    )
+    index = arena_index_path(ds)
+    _ = index.write_text(index.read_text() + '"solo,unterminated\n')
+
+    summary = dataset_summary(ds)
+
+    assert summary.arena_layouts == ()
+    assert [error.split(":")[0] for error in summary.inventory_errors] == ["arenas"]

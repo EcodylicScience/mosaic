@@ -6,7 +6,6 @@ Extracted from features.py as part of feature_library modularization.
 
 from __future__ import annotations
 
-from itertools import combinations
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, final
 
@@ -14,6 +13,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -139,6 +140,7 @@ class PairEgocentricFeatures:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
@@ -219,7 +221,7 @@ class PairEgocentricFeatures:
         for seq, gseq in df_small.groupby(C.seq_col):
             ids: list[int] = sorted(gseq[C.id_col].unique())
             if len(ids) >= 2:
-                for id_a, id_b in combinations(ids, 2):
+                for id_a, id_b in individual_pairs(ids, id_arenas(df)):
                     pairs.append((str(seq), int(id_a), int(id_b)))
 
         if not pairs:

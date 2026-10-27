@@ -68,6 +68,7 @@ import numpy.typing as npt
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -273,6 +274,7 @@ class ProbabilityEnsembleFeature:
     fit_set_pinned_by: ClassVar[str] = "inputs"
     # Every other mode fits nothing, and ``__init__`` clears this for them.
     fits = True  # learns its weights in fit mode
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a row
     temporal_reach = 0  # blends the members' probabilities of one row
     consumed_roots: tuple[str, ...] = ()

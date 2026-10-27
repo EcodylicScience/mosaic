@@ -122,11 +122,12 @@ class TestMigration:
         self, tmp_path: Path
     ) -> None:
         manifest = read_manifest(write_v1(tmp_path))
-        backfilled = ("labels_raw", "frame_predictions", "selections")
+        backfilled = ("labels_raw", "frame_predictions", "selections", "arenas")
         for key in (TRACKING_ROOT, *TRACKING_ROOTS, *backfilled):
             assert manifest.roots[key] == default_roots[key]
         assert manifest.roots["frame_predictions"] == "frame_predictions"
         assert manifest.roots["selections"] == "selections"
+        assert manifest.roots["arenas"] == "arenas"
 
     def test_a_declared_legacy_root_is_never_repointed(self) -> None:
         manifest = migrate_to_current({"roots": {"trex": "tracks_raw/trex"}})

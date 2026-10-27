@@ -61,6 +61,31 @@ A symmetric quantity, such as the distance between the two, is written the same 
 both rows rather than stored once. One shape with no special case is what lets any
 two pair results join.
 
+## Arenas
+
+A tracks table that `assign-arenas` wrote names each row's `arena`, the tank of its
+body center (see [Arenas](../dataset.md#arenas)). A feature that pairs individuals pairs
+only those of one arena, so two fish of two tanks never form a pair row. A table
+without `arena` pairs every two individuals, as before.
+
+Each feature declares how it relates individuals:
+
+- **`none`**: it measures each individual alone, such as `speed-angvel` or `heading`.
+- **`arena-aware`**: it pairs within one arena, or reads pairs that its input formed
+  so. The `pair-*` family, `approach-avoidance`, `orientation-rel`,
+  `neighbor-delta-response`, `interaction-crop-pipeline` and the pair branch of
+  `temporal-stack`.
+- **`arena-blind`**: it measures across individuals without arenas, such as
+  `nearest-neighbor`, the group metrics (`collective-motion-metrics`, `ffgroups`,
+  `ffgroups-metrics`, `local-order-metrics`), `social-motion-summary`,
+  `attention-target`, `nn-delta-response` and `nn-delta-bins`. A run fails such a
+  feature on an entry whose input holds two or more arenas, or whose recording has a
+  layout of several arenas while the input names none. `run_feature` serves no output
+  it cached before such a layout was declared. A `Pipeline` or recipe step whose run is
+  already complete is not run again and keeps that output. Recompute it after declaring
+  the layout, with `mosaic run --feature ... --overwrite` or
+  `Pipeline.run(force_from=...)`. Run such a feature on a recording of one arena.
+
 ## Which tracks a feature reads
 
 A dataset can hold several **tracks variants**: the same entries converted by different

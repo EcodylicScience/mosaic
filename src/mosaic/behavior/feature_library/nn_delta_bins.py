@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
@@ -225,6 +226,7 @@ class NearestNeighborDeltaBins:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"

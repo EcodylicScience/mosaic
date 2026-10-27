@@ -21,6 +21,7 @@ import joblib
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -570,6 +571,7 @@ class VameFeature:
     # a ``model`` embeds each entry from its own rows and hashes none.
     scope_dependent = True
     # Apply builds its sessions from the rows of the entry alone.
+    relates: RelatesLevel = "none"
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (RunnerInterpreter(VAME_ENV),)

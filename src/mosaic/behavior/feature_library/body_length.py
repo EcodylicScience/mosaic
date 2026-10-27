@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     POSE_X,
     POSE_Y,
@@ -99,6 +100,7 @@ class BodyLength:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # a median over one entry, which overlap would bias
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

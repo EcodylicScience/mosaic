@@ -114,6 +114,7 @@ whole store. Every other dataset stays at version 3 and opens in an older mosaic
 │   └── score-predictions/  those predictions scored against annotations
 ├── selections/
 │   └── select-frames/      frame lists chosen from tracks
+├── arenas/                 the arena layout of each recording and camera
 ├── _tracking/
 │   ├── trex/  trex-convert/  sleap/  litpose/  ultralytics/
 │   └── infer-pose/  infer-points/  infer-localizer/
@@ -129,6 +130,8 @@ Directory assignments:
 
 - **Raw files**, what you supplied — `media_raw/` recordings index, `tracks_raw/` raw
   tracks, `labels_raw/` raw annotations.
+- **Declarations**, what you stated about the recordings — `arenas/` the
+  [arena layouts](#arenas).
 - **Derived files**, computed by mosaic and recomputable — `media/` transcode
   derivatives, `media/frames/` extracted PNGs for annotation, `media/preprocess/`
   media variants, `tracks/` standardized parquet, `labels/` converted labels,
@@ -403,6 +406,68 @@ A feature run with `overlap_frames` reads across the boundaries of a continuous 
 A division of a store reads only across a boundary whose frames continue. A gap, a
 store boundary or a refused division ends the overlap. Sequences outside a continuous
 group read only their frames, and the run prints one note to stderr counting them.
+
+## Arenas
+
+An arena is one tank of a camera's view. When each tank holds one animal, name the
+tanks once per recording, and pair animals only within one tank. Declare a layout as
+rectangles in the source video's pixels. Rectangles are half-open (`x0 <= x < x1`), lie
+inside the frame and do not overlap. Arena names are entry-name tokens: no `/`, `__` or
+`:`.
+
+```python
+from mosaic.core.arenas import ArenaLayout, Rect
+
+ys = [0, 170, 346, 524, 702, 878, 1068]
+strip = {  # each left tank shows a reflection of its neighbor at x 95 to 105
+    f"A{row}": [Rect(x0=95, y0=y0, x1=105, y1=y1)]
+    for row, (y0, y1) in enumerate(zip(ys, ys[1:]), start=1)
+}
+layout = ArenaLayout.grid(xs=[0, 506, 1012], ys=ys, exclude=strip)
+ds.set_arena_layout(layout, group="23036146_20210219_112253")  # a divided recording
+ds.set_arena_layout(layout, group="", sequence="pilot", camera="top")
+```
+
+```bash
+mosaic arenas set -m dataset.yaml -r 23036146_20210219_112253 \
+    --xs 0,506,1012 --ys 0,170,346,524,702,878,1068 --exclude-x 95,105
+mosaic arenas show -m dataset.yaml
+```
+
+`--exclude-x x0,x1` excludes a vertical strip from every grid arena it crosses, and
+`--exclude-y y0,y1` a horizontal one. Both repeat, and a strip whose lower edge is not
+first or that crosses no arena is refused. Any other exclusion is declared in a layout
+file, `mosaic arenas set --layout layout.json`, which holds an `ArenaLayout` as
+JSON.
+
+The grid names columns by letter and rows by number (`A1` to `A6`, `B1` to `B6`), each
+arena with capacity 1. A divided recording takes one layout for all its sequences,
+named by its group with an empty sequence. An undivided recording is named by its
+entry. A layout for one camera takes precedence over a layout for every camera. Setting
+a layout again replaces it.
+
+The layouts are stored in `arenas/`, one JSON file per recording and camera, and
+`arenas/index.csv` records each file's digest. A file edited by hand is refused when it
+is read. Set it again instead.
+
+**Assign the arenas.** The `assign-arenas` op reads a tracks variant and writes a new
+one, as `resample-tracks` does. Each row gains `arena`, the tank that contains its body
+center (`X`, `Y`). A row in an excluded rectangle, in no tank or without a position is
+dropped, and above a tank's capacity in one frame the rows with the highest
+`confidence` are kept. The run log counts the dropped rows of each entry. At capacity 1
+each `id` becomes the tank's position in the layout, so one id names one tank in every
+sequence of the recording, and an overlapped feature reads the same animal across a
+division boundary. Frames are unchanged.
+
+```bash
+mosaic run -m dataset.yaml --kind assign-arenas --params '{}'
+```
+
+Run the features on the assigned variant. A feature that pairs animals pairs only
+within one arena, and a feature that measures across animals without arenas is refused
+on a recording with several (see [Features](concepts/features.md#arenas)). Changing a
+layout recomputes that recording's assigned tables at the next run, and the features
+that read them.
 
 ## Hold groups out of training
 

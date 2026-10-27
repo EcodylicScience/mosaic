@@ -13,6 +13,7 @@ from typing import ClassVar, final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
     POSE_X,
@@ -67,6 +68,7 @@ class BodyScaleFeature:
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # measures the keypoints of one row
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # measures one entry, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

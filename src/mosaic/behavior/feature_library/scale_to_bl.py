@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 from pydantic import model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     Column,
@@ -108,6 +109,7 @@ class ScaleToBodyLength:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # one entry's length, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

@@ -27,6 +27,7 @@ from typing import Annotated, ClassVar, final
 
 import pandas as pd
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     Provides,
@@ -98,6 +99,7 @@ class AttentionTarget:
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # picks a target within a frame
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

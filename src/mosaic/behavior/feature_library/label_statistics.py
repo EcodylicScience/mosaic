@@ -24,6 +24,7 @@ from numpy.typing import NDArray
 from pydantic import Field, model_validator
 
 # Its argument is a bare ``dict``, so its signature is partly Unknown.
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import detect_label_format  # pyright: ignore[reportUnknownVariableType]
 from mosaic.core.label_intervals import (
     SCENE_LEVEL,
@@ -506,6 +507,7 @@ class LabelStatistics:
     scope_dependent = False
     # A summary has no frame axis for the overlap trim to work on, and an entry's
     # labels are looked up by the one (group, sequence) its frame carries.
+    relates: RelatesLevel = "none"
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

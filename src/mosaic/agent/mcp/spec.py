@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from mosaic.core.arenas import ArenaLayout
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.division_wire import DivisionSpanWire
 from mosaic.core.media.store_division import RecordingIdentity
@@ -930,7 +931,7 @@ class PreviewOutputInput(ToolInput):
 
 
 type DatasetAction = Literal[
-    "create", "add_source", "remove_source", "scan", "set_tags"
+    "create", "add_source", "remove_source", "scan", "set_tags", "set_arenas"
 ]
 """What ``manage_dataset`` does to a dataset."""
 
@@ -949,7 +950,9 @@ class ManageDatasetInput(ToolInput):
             "create: a new dataset at path, named name. add_source: declare the "
             "kind's files at path. remove_source: undeclare kind's source_id "
             "(its rows stay). scan: index the declared sources of kind, or all; "
-            "source_id narrows it to one. set_tags: set tags, remove remove_tags."
+            "source_id narrows it to one. set_tags: set tags, remove remove_tags. "
+            "set_arenas: declare arena_layout as the arenas of recording, for "
+            "camera or every camera."
         )
     )
     dataset: str | None = Field(
@@ -1002,6 +1005,20 @@ class ManageDatasetInput(ToolInput):
     include_partial: bool = Field(
         default=False,
         description="scan: write a divided recording's sequence still recording.",
+    )
+    recording: str | None = Field(
+        default=None,
+        description="set_arenas: the recording, as describe_dataset names it.",
+    )
+    camera: str = Field(
+        default="", description="set_arenas: the camera; '' for every camera."
+    )
+    arena_layout: ArenaLayout | None = Field(
+        default=None,
+        description=(
+            "set_arenas: the arenas as half-open pixel rects of the source "
+            "frame. assign-arenas then names each tracks row's arena."
+        ),
     )
     tags: dict[str, TagValue] | None = Field(
         default=None,

@@ -3,7 +3,7 @@
 
 # Ops
 
-25 ops are registered. An op is the unit `mosaic run --kind <kind>`
+26 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -22,6 +22,16 @@ factory rather than being a literal, so there is no value to print.
 ## Tracking
 
 ### convert
+
+#### `assign-arenas`
+
+Version `0.1` &middot; `mosaic.tracking.ops.assign_arenas.AssignArenasOp`
+
+Name each tracks row's arena and keep each id in one arena.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source_tracks_run_id` | `string` \| `None` | `null` |  | Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves whichever variant the scope's entries hold, and refuses when they hold two. |
 
 #### `convert-labels`
 

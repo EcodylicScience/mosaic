@@ -198,7 +198,7 @@ and each object's alias, origin and box provenance under `attributes`.
     | `sequence` | `string` \| `None` | `null` |  | The sequence the frame came from. |
     | `group` | `string` \| `None` | `null` |  | The group of that sequence, from version 2. Absent for the empty group. |
     | `frame_index` | `integer` \| `None` | `null` |  | The frame's position in that sequence. |
-    | `recording` | `RecordingRecord` \| `None` | `null` |  | The divided recording that the sequence belonged to when the set was saved, from version 2. Absent when the sequence was not part of a divided recording then. An undivided recording is accepted and read as absent. |
+    | `recording` | `RecordingRecord` \| `None` | `null` |  | The divided recording that the sequence belonged to when the set was saved, from version 2. Absent when the sequence was not part of a divided recording then. An undivided recording is accepted, and a preparation reads it as absent. |
     | `objects` | list of `ObjectRecord` | _constructed_ |  | The objects, in the order the annotator's tool holds them. |
 
 ??? note "`ObjectRecord`"

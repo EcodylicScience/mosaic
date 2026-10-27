@@ -31,6 +31,7 @@ from mosaic.core.pipeline.inventory import (
     reportable_universe,
 )
 from mosaic.core.entry import Entry, entry_token
+from mosaic.core.pipeline.arena_index import ArenaIndexError
 from mosaic.core.pipeline.dataset_indexes import root_subdirectories
 from mosaic.core.pipeline.label_series_index import series_index_path
 from mosaic.core.pipeline.labels_index import read_labels_index
@@ -46,6 +47,7 @@ from mosaic.core.recording import (
     Recording,
     count_breaks,
     facts_from_frame_extents,
+    recording_name,
     utc_text,
 )
 from mosaic.core.schema import LEGACY_SCHEMA
@@ -58,6 +60,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SUMMARY_KINDS",
+    "ArenaLayoutSummary",
     "DatasetCounts",
     "DatasetSummary",
     "DividedRecordingSummary",
@@ -66,6 +69,7 @@ __all__ = [
     "RecordingSummary",
     "TrackSchemaCount",
     "UndividedRecordingSummary",
+    "arena_layout_summaries",
     "dataset_next_steps",
     "raw_label_rows",
     "dataset_summary",
@@ -206,6 +210,39 @@ RecordingSummary = Annotated[
 """One recording of a summary, told apart by its ``kind``."""
 
 
+class ArenaLayoutSummary(StrictModel):
+    """One declared arena layout.
+
+    Attributes:
+        recording: The name of the recording it is declared for.
+        camera: The camera it applies to, ``""`` for every camera.
+        arenas: Its arena names, in ordinal order.
+        digest: The digest of the layout, which the assigned tracks record.
+    """
+
+    recording: str
+    camera: str
+    arenas: tuple[str, ...]
+    digest: str
+
+
+def arena_layout_summaries(ds: Dataset) -> tuple[ArenaLayoutSummary, ...]:
+    """Return every declared arena layout, by recording and camera. Writes nothing.
+
+    Raises:
+        ArenaIndexError: If the arenas index cannot be read as declared.
+    """
+    return tuple(
+        ArenaLayoutSummary(
+            recording=recording_name(key.recording),
+            camera=key.camera,
+            arenas=declared.layout.names,
+            digest=declared.digest,
+        )
+        for key, declared in sorted(ds.arena_layouts().items())
+    )
+
+
 class DatasetSummary(StrictModel):
     """What a dataset is and how much it holds.
 
@@ -227,6 +264,7 @@ class DatasetSummary(StrictModel):
             tracks index names, by group and then by sequence. A divided one
             names its first and last sequences, and an undivided one is its
             one sequence.
+        arena_layouts: The declared arena layouts, by recording and camera.
         managed_by: The manifest's top-level ``managed_by`` value, verbatim.
         api_managed: Whether ``managed_by`` names a managing service.
         counts: Sequences, videos and artifacts.
@@ -252,6 +290,7 @@ class DatasetSummary(StrictModel):
     libraries: tuple[LibraryLink, ...]
     continuous_groups: tuple[str, ...]
     recordings: tuple[RecordingSummary, ...] = ()
+    arena_layouts: tuple[ArenaLayoutSummary, ...] = ()
     managed_by: JsonValue
     api_managed: bool
     splits: dict[str, SplitRole] = Field(default_factory=dict)
@@ -291,6 +330,12 @@ def dataset_summary(
         order_facts={**facts_from_frame_extents(extents), **divisions},
     )
     rules = _division_rules(media_rows)
+    try:
+        layouts = arena_layout_summaries(ds)
+        layout_errors: tuple[str, ...] = ()
+    except ArenaIndexError as exc:
+        layouts = ()
+        layout_errors = (f"arenas: {exc}",)
     return DatasetSummary(
         manifest=str(ds.manifest_path.absolute()),
         name=manifest.name,
@@ -308,6 +353,7 @@ def dataset_summary(
             _recording_summary(recording, divisions, rules)
             for recording in every_recording
         ),
+        arena_layouts=layouts,
         splits=dict(sorted(manifest.splits.items())),
         managed_by=manifest.managed_by,
         api_managed=manifest.is_managed,
@@ -335,7 +381,7 @@ def dataset_summary(
             for fps in (positive_rate(row.get("fps") or "") for row in media)
             if fps is not None
         ),
-        inventory_errors=held.errors,
+        inventory_errors=(*held.errors, *layout_errors),
         next_steps=dataset_next_steps(ds, converted_tracks=len(tracks)),
     )
 

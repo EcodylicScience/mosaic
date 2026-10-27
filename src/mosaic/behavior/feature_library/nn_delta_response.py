@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
@@ -191,6 +192,7 @@ class NearestNeighborDelta:
     version = "0.3"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

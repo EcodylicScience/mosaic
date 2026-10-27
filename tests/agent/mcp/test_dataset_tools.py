@@ -15,11 +15,13 @@ import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.spec import DatasetChange, DatasetList, call_tool
+from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import DatasetSummary
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import PlanWire
 from tests.helpers import (
+    add_track_sequences,
     CONVERT_TRACKS_STEP,
     SPEED_OF_CONVERTED_STEP,
     RecordingStarter,
@@ -339,6 +341,40 @@ def test_tags_are_defined_by_their_value_set_and_removed(backend: LocalBackend) 
         ("animals", "int", 3),
     }
     assert mistyped.reason == "invalid_tag"
+
+
+def test_set_arenas_declares_a_recording_s_layout(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    dataset = open_dataset(roots[0] / "study" / "dataset.yaml")
+    add_track_sequences(dataset, ("", "pilot"))
+    layout = ArenaLayout.grid(xs=(0, 50, 100), ys=(0, 100))
+
+    changed = _call(
+        backend,
+        DatasetChange,
+        action="set_arenas",
+        dataset=uuid,
+        recording="pilot",
+        arena_layout=layout.model_dump(mode="json"),
+    )
+    unknown = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        recording="nowhere",
+        arena_layout=layout.model_dump(mode="json"),
+    )
+    summary = _tool(backend, DatasetSummary, "describe_dataset", dataset=uuid)
+
+    assert changed.message == "set 2 arenas of 'pilot'"
+    assert unknown.reason == "invalid_arenas"
+    assert [
+        (item.recording, item.camera, item.arenas, item.digest)
+        for item in summary.arena_layouts
+    ] == [("pilot", "", ("A1", "B1"), layout.digest())]
 
 
 def test_no_action_moves_the_operators_splits(

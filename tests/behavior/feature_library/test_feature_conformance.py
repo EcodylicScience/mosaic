@@ -13,6 +13,7 @@ reports *which*, by name, which is what a person fixing it needs.
 from __future__ import annotations
 
 import ast
+import sys
 import inspect
 import textwrap
 
@@ -53,6 +54,84 @@ def test_every_feature_declares_accepts_overlap(cls: type) -> None:
         f"False otherwise."
     )
     assert isinstance(cls.accepts_overlap, bool)
+
+
+RELATES_LEVELS = frozenset({"none", "arena-aware", "arena-blind"})
+"""Spelled out, as ``EMITS_LEVELS`` is."""
+
+ARENA_AWARE = frozenset(
+    {
+        "approach-avoidance",
+        "interaction-crop-pipeline",
+        "neighbor-delta-response",
+        "orientation-rel",
+        "pair-egocentric",
+        "pair-facing",
+        "pair-interaction-filter",
+        "pair-posedistance-pca",
+        "pair-position",
+        "pair-wavelet",
+        "temporal-stack",
+    }
+)
+"""The features that pair individuals within one arena, or read pairs so formed."""
+
+ARENA_BLIND = frozenset(
+    {
+        "attention-target",
+        "collective-motion-metrics",
+        "ffgroups",
+        "ffgroups-metrics",
+        "local-order-metrics",
+        "nearest-neighbor",
+        "nn-delta-bins",
+        "nn-delta-response",
+        "social-motion-summary",
+    }
+)
+"""The features that measure across individuals without arenas, refused on several."""
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_every_feature_declares_how_it_relates_individuals(cls: type) -> None:
+    """Whether a feature pairs animals across tanks is not a default.
+
+    An undeclared feature reads as ``"none"`` in ``run_feature``, which a feature
+    measuring nearest neighbors would pass while pairing fish of two tanks.
+    """
+    assert "relates" in vars(cls), (
+        f"{cls.__name__} declares no 'relates'. Declare it: 'none' when it "
+        f"measures each individual alone, 'arena-aware' when it pairs through "
+        f"individual_pairs, 'arena-blind' when it relates individuals otherwise."
+    )
+    assert vars(cls)["relates"] in RELATES_LEVELS
+
+
+def test_the_features_that_relate_individuals_are_pinned() -> None:
+    declared = {cls.name: vars(cls)["relates"] for cls in FEATURE_CLASSES}
+
+    assert {name for name, level in declared.items() if level == "arena-aware"} == (
+        ARENA_AWARE
+    )
+    assert {name for name, level in declared.items() if level == "arena-blind"} == (
+        ARENA_BLIND
+    )
+
+
+def test_no_feature_pairs_ids_without_the_arena_rule() -> None:
+    """``combinations``/``permutations`` over ids pair animals of two tanks."""
+    stray: list[str] = []
+    for cls in FEATURE_CLASSES:
+        tree = ast.parse(inspect.getsource(sys.modules[cls.__module__]))
+        stray.extend(
+            f"{cls.__name__}: {node.func.id}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"combinations", "permutations"}
+        )
+
+    assert not stray, stray
 
 
 @pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)

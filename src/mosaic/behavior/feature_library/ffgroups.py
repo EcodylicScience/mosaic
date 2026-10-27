@@ -9,6 +9,7 @@ from numba import njit  # pyright: ignore[reportUnknownVariableType]
 from numpy.lib.stride_tricks import sliding_window_view
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     Provides,
@@ -230,6 +231,7 @@ class FFGroups:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

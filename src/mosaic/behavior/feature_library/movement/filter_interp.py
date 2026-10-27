@@ -9,6 +9,7 @@ from typing import Annotated, ClassVar, final
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -82,6 +83,7 @@ class MovementFilterInterpolate:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (MOVEMENT,)

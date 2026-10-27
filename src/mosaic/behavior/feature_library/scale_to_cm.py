@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, final
 import pandas as pd
 from pydantic import model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     AnyOf,
@@ -196,6 +197,7 @@ class ScaleToCm:
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # multiplies each row by a scale
+    relates: RelatesLevel = "none"
     accepts_overlap = (
         False  # resolves one entry's calibration, and refuses a multi-entry frame
     )

@@ -22,6 +22,7 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 from xgboost import XGBClassifier
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -282,6 +283,7 @@ class XgboostFeature(FitReporting):
     version = "0.4"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a frame, so gains nothing
     temporal_reach = 0  # one row in, one row out
     consumed_roots: tuple[str, ...] = ()

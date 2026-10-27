@@ -14,6 +14,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Payload,
@@ -262,6 +263,7 @@ class TemporalStackingFeature:
     version = "0.5"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"

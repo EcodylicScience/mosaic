@@ -15,7 +15,6 @@ All thresholds are parameterized and should be tuned per application.
 
 from __future__ import annotations
 
-from itertools import combinations
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, final
 
@@ -23,6 +22,8 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import binary_closing, binary_opening
 
+from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     POSE_X,
@@ -240,6 +241,7 @@ class PairInteractionFilter:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
@@ -375,7 +377,7 @@ class PairInteractionFilter:
             if len(ids) < 2:
                 continue
 
-            for id_a, id_b in combinations(ids, 2):
+            for id_a, id_b in individual_pairs(ids, id_arenas(df)):
                 segments = self._detect_pair_interactions(
                     gseq,
                     id_a,

@@ -171,6 +171,7 @@ INVARIANT_BASES: Final[frozenset[str]] = frozenset(
         "id",
         "group",
         "sequence",
+        "arena",
         "missing",
         "qr_id",
         "tracklet_id",

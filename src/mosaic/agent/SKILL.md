@@ -199,6 +199,19 @@ A dataset is a directory with `dataset.yaml` and named roots
   give each entry's recording, a media-only entry included, and a division's
   `first_frame`, `frame_count`, `start_utc` and `follows_gap`. A division's label is
   its local wall-clock start.
+- Tanks of one camera's view are **arenas**. Declare them once per recording
+  (`mosaic arenas set -r <recording> --xs ... --ys ...`, `ds.set_arena_layout`,
+  `manage_dataset` action `set_arenas`) as half-open pixel rects, then run the
+  `assign-arenas` op and every feature on the variant it writes. Its rows gain
+  `arena`, rows in an excluded rect or no arena are dropped and counted
+  (`rows_dropped`), and at capacity 1 each `id` is the tank's ordinal in every
+  sequence. Run it before any overlapped feature or any feature that relates
+  individuals on a multi-tank recording:
+  https://ecodylicscience.github.io/mosaic/dataset/#arenas. Pair features then
+  pair only within one arena. A run fails `nearest-neighbor`, the group metrics,
+  `social-motion-summary`, `attention-target`, `nn-delta-response` and
+  `nn-delta-bins` on an entry of several arenas
+  (https://ecodylicscience.github.io/mosaic/concepts/features/#arenas).
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables

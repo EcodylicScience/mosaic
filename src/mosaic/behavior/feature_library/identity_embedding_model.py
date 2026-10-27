@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.behavior.model_library.identity_embedding import DEFAULT_MODEL_NAME
 from mosaic.behavior.model_library.timm_backbone import TIMM
 from mosaic.core.pipeline.column_contract import Provides, Requirement
@@ -175,6 +176,7 @@ class GlobalIdentityEmbedding:
     # reuses a network fitted on a narrower scope. ``__init__`` clears this for
     # that run: it hashes the model and no scope, and passes its input through.
     scope_dependent = True
+    relates: RelatesLevel = "none"
     accepts_overlap = (
         False  # trains per entry; a neighbour's rows carry another entry's labels
     )

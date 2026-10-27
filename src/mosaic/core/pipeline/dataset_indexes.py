@@ -137,6 +137,8 @@ _ROOT_SHAPES: Final[tuple[tuple[str, IndexShape], ...]] = (
     # ``select-frames/``, in a root apart from ``frames``, whose every child the
     # inventory reads as an extraction method.
     ("selections", "per_subdir"),
+    # The arena layouts' index, one row per recording and camera.
+    ("arenas", "root"),
     *((key, "root") for key in TRACKING_ROOTS),
 )
 
@@ -285,6 +287,7 @@ def register_reconcilable_index(
 
 
 CORE_INDEX_MODULES: Final[tuple[str, ...]] = (
+    "mosaic.core.pipeline.arena_index",
     "mosaic.core.pipeline.index",
     "mosaic.core.pipeline.labels_index",
     "mosaic.core.pipeline.preprocess_index",

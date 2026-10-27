@@ -27,6 +27,7 @@ from pydantic import Field, model_validator
 from scipy.ndimage import correlate1d
 from scipy.signal import savgol_coeffs
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -423,6 +424,7 @@ class KeypointKinematics:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # one individual's frame axis is one entry's
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

@@ -15,7 +15,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from mosaic.core.arenas import ArenaKey
 from mosaic.core.entry import Entry
+from mosaic.core.pipeline.arena_index import DeclaredLayout
 from mosaic.core.pipeline.entry_keys import index_entries
 from mosaic.core.recording import (
     OrderFacts,
@@ -74,6 +76,10 @@ class MockDataset:
             else entries
         )
         return recordings(self._continuous_groups, universe, order_facts)
+
+    def arena_layouts(self) -> dict[ArenaKey, DeclaredLayout]:
+        """Return no arena layout: a stand-in declares none."""
+        return {}
 
     @property
     def base_dir(self) -> Path:

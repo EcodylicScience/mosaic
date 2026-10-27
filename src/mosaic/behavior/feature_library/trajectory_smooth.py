@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from scipy.signal import savgol_filter
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
@@ -106,6 +107,7 @@ class TrajectorySmooth:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

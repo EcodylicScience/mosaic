@@ -16,6 +16,7 @@ import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Column,
@@ -287,6 +288,7 @@ class GlobalTSNE:
     version: str = "0.4"
     parallelizable = False
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"

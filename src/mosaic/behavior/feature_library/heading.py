@@ -27,6 +27,7 @@ from typing import Annotated, ClassVar, Literal, final
 import numpy as np
 import pandas as pd
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.kinematics import angle_from_pca, angle_from_two_points
 from mosaic.core.pose_columns import pose_column_pairs
@@ -98,6 +99,7 @@ class HeadingFeature:
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # one heading per row from its keypoints
+    relates: RelatesLevel = "none"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

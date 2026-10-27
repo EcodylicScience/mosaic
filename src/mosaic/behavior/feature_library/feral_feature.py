@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
@@ -521,6 +522,7 @@ class FeralFeature:
     version = "0.2"
     parallelizable = False
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = (
         False  # takes its context from the crop video, not from this frame
     )

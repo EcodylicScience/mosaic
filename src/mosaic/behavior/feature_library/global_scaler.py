@@ -8,6 +8,7 @@ import pandas as pd
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Payload,
@@ -100,6 +101,7 @@ class GlobalScaler:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a frame, so gains nothing
     temporal_reach = 0  # standardizes each row by itself
     consumed_roots: tuple[str, ...] = ()

@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.behavior.model_library.timm_backbone import TORCH
 from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
@@ -198,6 +199,7 @@ class GlobalIdentityDinoV2Temporal:
     # reuses a network fitted on a narrower scope. ``__init__`` clears this for
     # that run: it hashes the model and no scope, and passes its input through.
     scope_dependent = True
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # cuts clips within an entry, never across a boundary
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)

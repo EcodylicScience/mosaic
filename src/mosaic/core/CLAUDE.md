@@ -132,6 +132,18 @@ in the root guide.
   kept rows of each entry it writes as well. `camera_serial` is a fact column outside
   every composition (`tests/core/media/test_index_media_imgstore.py`).
 
+## Arenas
+
+- `arenas.py` declares a layout and its lookup order, and imports pydantic,
+  `entry` and `recording` only. `pipeline/arena_index.py` stores one JSON file per
+  `(RecordingKey, camera)` and a row of `arenas/index.csv` with its digest.
+  `Dataset.set_arena_layout` writes under the index lock and refuses keys that name
+  no recording. `arena_layout` and `arena_layouts` write nothing
+  (`tests/core/test_arenas.py`).
+- `assign-arenas` (`tracking/ops/assign_arenas.py`) writes `arena` and per-arena ids.
+  A layout's digest is recorded in each row's composition and its run id, not in
+  its variant id (`tests/tracking/ops/test_assign_arenas.py`).
+
 ## The `group` column
 
 - `group` is required and may be empty. It is a namespace in the entry key, or the name

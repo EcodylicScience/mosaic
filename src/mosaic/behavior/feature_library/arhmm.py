@@ -26,6 +26,7 @@ import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -226,6 +227,7 @@ class ArHmmFeature:
     # The entries in scope are the training set, so a fit hashes them. A run given
     # a ``model`` applies it to each entry alone and hashes none.
     scope_dependent = True
+    relates: RelatesLevel = "none"
     accepts_overlap = (
         False  # decodes a whole sequence at once, so context is not a window
     )

@@ -642,6 +642,7 @@ def test_features_list_ranks_the_features_a_query_matches() -> None:
 # test neither of them meant to touch.
 _REGISTERED_OP_KINDS: frozenset[str] = frozenset(
     {
+        "assign-arenas",
         "extract-frames",
         "train-pose",
         "train-points",

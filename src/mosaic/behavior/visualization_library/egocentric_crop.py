@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.media.preprocess.appearance import apply_clahe, make_clahe, to_gray
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.column_contract import (
@@ -143,6 +144,7 @@ class EgocentricCrop:
     version = "0.3"
     parallelizable = False  # Video I/O is sequential
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"

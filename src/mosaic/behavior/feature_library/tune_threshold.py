@@ -77,6 +77,7 @@ import numpy.typing as npt
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -420,6 +421,7 @@ class TuneThresholdFeature:
     fit_set_pinned_by: ClassVar[str] = "inputs"
     fits = True  # learns its thresholds from the input's out-of-fold probabilities
     temporal_reach = 0  # assigns each row from its own probabilities
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a row
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"

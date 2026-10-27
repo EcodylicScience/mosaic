@@ -248,6 +248,8 @@ _DEFAULT_ROOTS: Final[dict[str, str]] = {
     "frames": "media/frames",
     "frame_predictions": "frame_predictions",
     "selections": "selections",
+    # declared: arena layouts, one file per recording and camera
+    "arenas": "arenas",
 }
 
 default_roots: Final[Mapping[str, str]] = MappingProxyType(_DEFAULT_ROOTS)
@@ -300,6 +302,7 @@ def backfill_roots(roots: dict[str, str]) -> dict[str, str]:
         "labels_raw",
         "frame_predictions",
         "selections",
+        "arenas",
     ):
         _ = roots.setdefault(key, _DEFAULT_ROOTS[key])
     return roots

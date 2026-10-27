@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.evaluation import Weighting, majority_mapping, select_scored_rows
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
@@ -129,6 +130,7 @@ class FitLabelMap:
     version = "0.2"
     parallelizable = False
     scope_dependent = True
+    relates: RelatesLevel = "none"
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"

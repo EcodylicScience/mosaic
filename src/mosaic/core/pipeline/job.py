@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeAlias
@@ -285,6 +285,15 @@ class JobContext:
         """
         if self.run_log is not None:
             self.run_log.columns_dropped(key, columns)
+
+    def rows_dropped(self, key: str, counts: Mapping[str, int]) -> None:
+        """Record that one entry's table was published without some of its rows.
+
+        It is a report like :meth:`columns_dropped`, with the rows of each
+        reason counted. Without a run-log it is a no-op.
+        """
+        if self.run_log is not None:
+            self.run_log.rows_dropped(key, counts)
 
     def entries_written(self, count: int) -> None:
         """Record how many entries this attempt leaves holding an output row.

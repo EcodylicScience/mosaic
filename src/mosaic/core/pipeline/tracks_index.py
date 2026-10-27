@@ -1718,6 +1718,7 @@ def write_tracks_row(
     frames_read: int | None = None,
     known_tail_loss: int | None = None,
     first_frame: int | None = None,
+    consumed_composition: str | None = None,
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
@@ -1753,6 +1754,10 @@ def write_tracks_row(
     declared or the file's header was not read. ``first_frame`` is the
     sequence's first frame that a producer reading media numbered the table
     from, and ``None`` records a blank for a conversion.
+    ``consumed_composition`` is recorded in place of the composition of the
+    source roots among ``consumed_source_roots``. An op that computes a table
+    from another variant passes what that table was built from, which no source
+    root records.
 
     ``records_media`` says whether this producer read video. A **bridge** did --
     a tracker or an inference run opens the entry's media -- so its row records
@@ -1789,8 +1794,12 @@ def write_tracks_row(
         consumed_source_roots=encode_source_roots(consumed_source_roots),
         n_rows=int(n_rows),
         n_keypoints=count_keypoints(out_path),
-        consumed_composition=consumed_composition_for(
-            ds, entry_group, entry_sequence, consumed_source_roots
+        consumed_composition=(
+            consumed_composition_for(
+                ds, entry_group, entry_sequence, consumed_source_roots
+            )
+            if consumed_composition is None
+            else consumed_composition
         ),
         consumed_media_composition=(
             media_composition_for(ds, entry_group, entry_sequence)

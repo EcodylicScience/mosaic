@@ -704,6 +704,17 @@ class JsonlRunLog:
         """
         self._emit("columns_dropped", key=key, columns=list(columns))
 
+    def rows_dropped(self, key: str, counts: Mapping[str, int]) -> None:
+        """Record that one entry's table was published without some of its rows.
+
+        ``assign-arenas`` drops a row outside every arena, inside an excluded
+        rect or above its arena's capacity, and counts the rows of each reason.
+        The table is still published, and the event reports the loss without
+        failing the entry. It is an ordinary event kind, for the reason that
+        :meth:`entry_failed` gives.
+        """
+        self._emit("rows_dropped", key=key, counts=dict(counts))
+
     def entries_written(self, count: int) -> None:
         """How many entries this attempt leaves holding a valid output row.
 

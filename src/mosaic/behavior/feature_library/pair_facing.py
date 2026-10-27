@@ -29,7 +29,6 @@ values.
 
 from __future__ import annotations
 
-from itertools import permutations
 from pathlib import Path
 from typing import Annotated, ClassVar, final
 
@@ -37,6 +36,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -133,6 +134,7 @@ class PairFacing:
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # compares two animals within a frame
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
@@ -242,7 +244,9 @@ class PairFacing:
                 )
                 per_id[animal_id] = sub
 
-            for focal_id, target_id in permutations(ids, 2):
+            for focal_id, target_id in individual_pairs(
+                ids, id_arenas(df), ordered=True
+            ):
                 pair_df = self._compute_directed_pair(
                     per_id[focal_id],
                     per_id[target_id],

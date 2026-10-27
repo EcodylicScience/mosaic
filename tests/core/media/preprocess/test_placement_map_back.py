@@ -520,6 +520,23 @@ def test_a_string_and_a_categorical_column_pass_through() -> None:
     assert column_array(mapped, "caste").tolist() == [1, 2] * 5
 
 
+def test_an_arena_is_invariant_under_a_mapping_and_the_recording_shift() -> None:
+    """The arena that an assigned variant names passes a crop and a shift unchanged."""
+    from mosaic.core.pipeline.placement import shift_to_recording_axis
+
+    mapping = _mapping(_ONE_CLIP, [CropStep(x=4, y=2, width=32, height=24)])
+    tracked = pd.DataFrame(
+        {"frame": np.arange(4, dtype=np.int64), "arena": ["A1", "A2", "A2", "B1"]}
+    )
+
+    mapped = to_source_space(tracked, mapping).frame
+    shifted = shift_to_recording_axis(mapped, 100, 30.0)
+
+    assert classify_column("arena") == "invariant"
+    assert column_array(shifted, "arena").tolist() == ["A1", "A2", "A2", "B1"]
+    assert column_array(shifted, "frame").tolist() == [100, 101, 102, 103]
+
+
 def test_an_identity_mapping_returns_the_table_itself() -> None:
     mapping = _mapping(_ONE_CLIP, [])
     tracked = pd.DataFrame({"frame": [0, 1], "wingbeat": [1.0, 2.0]})

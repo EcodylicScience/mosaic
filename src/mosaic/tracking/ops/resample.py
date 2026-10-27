@@ -25,28 +25,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
-import pandas as pd
 
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key, text_cell
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.core.pipeline.tracks_identity import (
-    resample_variant_payload,
+    chained_variant_payload,
     tracks_run_id,
     tracks_variant_root,
     write_tracks_variant,
 )
-from mosaic.core.pipeline.tracks_index import (
-    read_tracks_index,
-    row_in_scope,
-    select_variant_rows,
-    write_tracks_row,
-)
+from mosaic.core.pipeline.tracks_index import write_tracks_row
 from mosaic.core.params import (
     Declared,
     Params,
+)
+from mosaic.tracking.ops.chained_tracks import (
+    SOURCE_TRACKS_RUN_ID_DESCRIPTION,
+    chained_source_rows,
+    one_source_variant,
+    refuse_incomplete_variant,
 )
 
 if TYPE_CHECKING:
@@ -73,11 +72,6 @@ def resample_tracks_run_id(
 _TARGET_FPS_DESCRIPTION = (
     "The uniform frame rate every table is re-gridded onto, which is what "
     "makes one constant expressed in frames mean one duration dataset-wide."
-)
-
-_SOURCE_TRACKS_RUN_ID_DESCRIPTION = (
-    "Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves "
-    "whichever variant the scope's entries hold, and refuses when they hold two."
 )
 
 _PREFILTER_DESCRIPTION = (
@@ -110,72 +104,11 @@ class ResampleTracksParams(Params):
 
     target_fps: Annotated[float, Declared(_TARGET_FPS_DESCRIPTION, unit="fps")]
     source_tracks_run_id: Annotated[
-        str | None, Declared(_SOURCE_TRACKS_RUN_ID_DESCRIPTION)
+        str | None, Declared(SOURCE_TRACKS_RUN_ID_DESCRIPTION)
     ] = None
     prefilter: Annotated[
         float | None, Declared(_PREFILTER_DESCRIPTION, unit="units/s")
     ] = None
-
-
-def _source_rows(
-    ds: Dataset,
-    params: ResampleTracksParams,
-    entries: list[Entry] | None,
-    *,
-    producer: str,
-) -> pd.DataFrame:
-    """The source tables this run reads, one row per entry.
-
-    Rows this op produced are excluded before the variant is resolved, unless the
-    caller named one explicitly. Two reasons, and the second is the one with
-    teeth:
-
-    - A resampler does not read its own output. Once a run has written its
-      variant, an unpinned re-run would see two variants per entry and refuse --
-      so the op would be runnable exactly once per dataset, and a resumed run
-      after a partial failure could never resolve its own source.
-    - Excluding by *producer* rather than by the variant this run would mint also
-      covers a second resampling at a different target rate, which is a different
-      variant and equally not an input here.
-
-    Chaining one resample onto another is still expressible; it just has to be
-    said out loud, with ``source_tracks_run_id=``.
-    """
-    index = read_tracks_index(ds)
-    if index.empty:
-        return index
-    if params.source_tracks_run_id is None and "producer" in index.columns:
-        index = index[
-            [text_cell(value) != producer for value in index["producer"]]
-        ].reset_index(drop=True)
-    resolved = select_variant_rows(index, params.source_tracks_run_id)
-    if resolved.empty:
-        return resolved
-    keep = [
-        i
-        for i, (_, row) in enumerate(resolved.iterrows())
-        if row_in_scope(row, entries)
-    ]
-    return resolved.iloc[keep].reset_index(drop=True)
-
-
-def _one_source_variant(rows: pd.DataFrame) -> str:
-    """The single variant *rows* were produced by.
-
-    Refused rather than resolved per entry. A chained producer's identity carries
-    one ``upstream``, so a scope spanning two would mint one identifier for two
-    different recipes -- the mixed-variant dataset that is legal everywhere else
-    is exactly what cannot be re-gridded under one name.
-    """
-    variants = sorted({text_cell(value) for value in rows["run_id"]})
-    if len(variants) > 1:
-        raise ValueError(
-            f"resample-tracks reads one tracks variant and this scope resolves "
-            f"{len(variants)} ({variants}). Its identity carries the variant it "
-            "chains from, so re-gridding two under one name would claim they were "
-            "one recipe. Name one with source_tracks_run_id=, or narrow the scope."
-        )
-    return variants[0]
 
 
 @register_op
@@ -208,20 +141,22 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         identity covers the variant it chains from, and a graph step whose input
         is an earlier step's conversion has nothing to name yet.
         """
-        rows = _source_rows(ds, params, scope.op_entries, producer=self.kind)
+        rows = chained_source_rows(
+            ds, params.source_tracks_run_id, scope.op_entries, producer=self.kind
+        )
         if rows.empty:
             raise IdentityDeferred(
                 self.kind,
                 "the tracks variant it re-grids has no rows in this scope yet, "
                 "and this run's identity carries the variant it chains from",
             )
-        upstream = _one_source_variant(rows)
+        upstream = one_source_variant(rows, self.kind)
         return OpIdentity(
             run_id=resample_tracks_run_id(self.kind, self.version, params, upstream),
             tracks_variant=tracks_run_id(
                 self.kind,
                 self.version,
-                resample_variant_payload(params.identity_dump()),
+                chained_variant_payload(params.identity_dump()),
                 upstream=upstream,
             ),
         )
@@ -241,7 +176,9 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         )
         from mosaic.core.schema import ensure_track_schema
 
-        rows = _source_rows(ds, params, scope.op_entries, producer=self.kind)
+        rows = chained_source_rows(
+            ds, params.source_tracks_run_id, scope.op_entries, producer=self.kind
+        )
         identity = self.plan_identity(ds, params, scope)
         ctx.set_run_id(identity.run_id)
         ctx.set_total(int(len(rows)))
@@ -307,18 +244,5 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
                 failed.append(key)
             ctx.heartbeat(done)
 
-        if failed:
-            # A partial variant is not a safe resting state here, the way a
-            # partial feature run is. The point of this variant is to *replace*
-            # the source as what every entry resolves to, so an entry missing from
-            # it disappears the moment the source is retired -- silently, and from
-            # the middle of a dataset. Re-running resumes: what was written is
-            # skipped by the presence check above.
-            raise RuntimeError(
-                f"resample-tracks left {len(failed)} of {len(rows)} entries "
-                f"unwritten ({failed[:5]}{'...' if len(failed) > 5 else ''}). "
-                "Variant "
-                f"{variant} is incomplete; fix the named entries and re-run to "
-                "resume."
-            )
+        refuse_incomplete_variant(self.kind, variant, failed, len(rows))
         return identity.run_id

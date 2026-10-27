@@ -135,6 +135,7 @@ def _dataset_summary(summary: DatasetSummary) -> str:
         f"{counts.sequences} sequence(s)",
         f"{counts.recordings} recording(s) ({counts.divided_recordings} divided)",
         f"{counts.videos} video(s)",
+        f"{len(summary.arena_layouts)} arena layout(s)",
         *(
             f"{count} {noun}"
             for count, noun in (

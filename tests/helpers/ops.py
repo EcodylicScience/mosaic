@@ -10,6 +10,7 @@ from mosaic.tracking import register_ops
 register_ops()
 
 _MINIMAL: dict[str, dict[str, object]] = {
+    "assign-arenas": {},
     "convert-labels": {"source_format": "calms21_npy"},
     "convert-points": {
         "cvat_xml": "labels_raw/cvat/annotations.xml",

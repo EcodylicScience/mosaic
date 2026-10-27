@@ -29,6 +29,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
@@ -133,6 +135,7 @@ class NeighborDeltaResponse:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # the shuffle wraps around one entry's whole span
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
@@ -266,6 +269,7 @@ class NeighborDeltaResponse:
         i_x, i_y, i_ang, i_spd, i_frm = range(5)
         carried = [c for c in (C.time_col, C.group_col, C.seq_col) if c in rows]
 
+        partners = set(individual_pairs(ids, id_arenas(df), ordered=True))
         outputs: list[pd.DataFrame] = []
         for focal_id in ids:
             g = rows[rows[C.id_col] == focal_id]
@@ -277,7 +281,9 @@ class NeighborDeltaResponse:
             sel = g.loc[ok]
             fwd = fwd[ok]
             at = sel[C.frame_col].to_numpy(dtype=np.int64) - first
-            others = [k for k, fid in enumerate(ids) if fid != focal_id]
+            others = [k for k, fid in enumerate(ids) if (focal_id, fid) in partners]
+            if not others:
+                continue
 
             # (rows, neighbors) offsets in the focal's ego frame.
             wdx = grid_x[at][:, others] - vals[ok, i_x][:, None]

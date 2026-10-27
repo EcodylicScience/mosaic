@@ -46,6 +46,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.evaluation import (
     ClassScore,
     EvaluationReport,
@@ -176,6 +177,7 @@ class EvaluateLabels:
     scope_dependent = True
     fits = False  # it scores a model's output and learns nothing from it
     stacks_inputs = True  # several inputs are runs over disjoint entries
+    relates: RelatesLevel = "none"
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"

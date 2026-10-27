@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.column_contract import (
@@ -257,6 +258,7 @@ class ExtractLabeledTemplates:
     version = "0.7"
     parallelizable = False
     scope_dependent = True
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a frame, so gains nothing
     temporal_reach = 0  # draws rows of its inputs as they are
     consumed_roots: tuple[str, ...] = ()

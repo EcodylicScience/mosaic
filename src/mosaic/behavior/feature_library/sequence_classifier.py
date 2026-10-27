@@ -77,6 +77,7 @@ from pydantic import (
     model_validator,
 )
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import HASH_EXCLUDE, Declared
@@ -398,6 +399,7 @@ class SequenceClassifier(FitReporting):
     fit_set_pinned_by: ClassVar[str] = "templates"
     # A run given a ``model`` fits nothing, and ``__init__`` clears this for it.
     fits = True  # learns a network
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)

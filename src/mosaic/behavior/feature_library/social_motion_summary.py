@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from pydantic import model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -317,6 +318,7 @@ class SocialMotionSummary:
     # A summary carries no frame axis for the overlap trim to work on, and the
     # sequence/group metadata below is read from row 0 -- which under overlap
     # belongs to the neighbouring sequence.
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"

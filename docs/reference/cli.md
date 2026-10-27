@@ -50,6 +50,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `notes`: Read and write the dataset's free-text notes.
 * `tags`: Declare and set the dataset's typed tags.
 * `splits`: Give groups a role in a held-out protocol:...
+* `arenas`: Declare and show the arena layout of each...
 * `libraries`: Link the datasets a trained model may be...
 
 ## `mosaic run`
@@ -1861,6 +1862,66 @@ $ mosaic splits remove [OPTIONS] {groups}...
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--help`: Show this message and exit.
+
+## `mosaic arenas`
+
+Declare and show the arena layout of each recording.
+
+**Usage**:
+
+```console
+$ mosaic arenas [OPTIONS] COMMAND [ARGS]...
+```
+
+**Options**:
+
+* `--help`: Show this message and exit.
+
+**Commands**:
+
+* `set`: Declare a recording's arenas from a layout...
+* `show`: List the declared layouts, or show the one...
+
+### `mosaic arenas set`
+
+Declare a recording's arenas from a layout file or a grid of edges.
+
+**Usage**:
+
+```console
+$ mosaic arenas set [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-r, --recording <str>`: The recording, named as 'mosaic describe' lists it.  [required]
+* `--layout <path>`: A JSON file holding an ArenaLayout.
+* `--xs <str>`: Grid column edges in pixels, e.g. 0,506,1012.
+* `--ys <str>`: Grid row edges in pixels, e.g. 0,170,346.
+* `--capacity <int>`: Each grid arena's capacity; 0 for no limit.  [default: 1]
+* `--exclude-x <str>`: A vertical strip x0,x1 that every grid arena it crosses excludes, e.g. 95,105. Repeatable.
+* `--exclude-y <str>`: A horizontal strip y0,y1 that every grid arena it crosses excludes. Repeatable.
+* `--camera <str>`: The camera the layout applies to; '' for every one.
+* `--help`: Show this message and exit.
+
+### `mosaic arenas show`
+
+List the declared layouts, or show the one a recording and camera find.
+
+**Usage**:
+
+```console
+$ mosaic arenas show [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `-r, --recording <str>`: Show the layout this recording finds; unset lists every layout.
+* `--camera <str>`: The camera the layout applies to; '' for every one.
+* `--json`: Emit JSON.
 * `--help`: Show this message and exit.
 
 ## `mosaic libraries`

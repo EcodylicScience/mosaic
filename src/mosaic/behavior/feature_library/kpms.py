@@ -41,6 +41,7 @@ from typing import (
 import numpy as np
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline._utils import atomic_write
@@ -453,6 +454,7 @@ class KpmsFeature:
     # The entries in scope are the training set, so a fit hashes them. A run given
     # a ``model`` applies it to each entry alone and hashes none.
     scope_dependent = True
+    relates: RelatesLevel = "none"
     accepts_overlap = (
         False  # decodes a whole sequence at once, so context is not a window
     )

@@ -435,13 +435,13 @@ def _resample_variant() -> str:
     make one resampling recipe unrecognisable as itself across two sources, and a
     corpus built from a hand-written payload would not notice the difference.
     """
-    from mosaic.core.pipeline.tracks_identity import resample_variant_payload
+    from mosaic.core.pipeline.tracks_identity import chained_variant_payload
     from mosaic.tracking.ops.resample import ResampleTracksOp
 
     return tracks_run_id(
         ResampleTracksOp.kind,
         ResampleTracksOp.version,
-        resample_variant_payload(
+        chained_variant_payload(
             ResampleTracksOp.Params(target_fps=30.0).identity_dump()
         ),
         upstream="convert-trex_npz.0.2-aaaaaaaaaa",
@@ -454,16 +454,33 @@ def _resample_variant_other_upstream() -> str:
     Asserted as a distinct golden entry rather than as an inequality, so the pair
     also pins *which* of the two moves if the term is ever dropped.
     """
-    from mosaic.core.pipeline.tracks_identity import resample_variant_payload
+    from mosaic.core.pipeline.tracks_identity import chained_variant_payload
     from mosaic.tracking.ops.resample import ResampleTracksOp
 
     return tracks_run_id(
         ResampleTracksOp.kind,
         ResampleTracksOp.version,
-        resample_variant_payload(
+        chained_variant_payload(
             ResampleTracksOp.Params(target_fps=30.0).identity_dump()
         ),
         upstream="trex.0.4-bbbbbbbbbb",
+    )
+
+
+def _assign_arenas_variant() -> str:
+    """An arena-assigned variant: the op's params, plus the source it chains from.
+
+    The layouts are not in it. Each row records its layout's digest in its
+    composition, so a changed layout recomputes under the same variant.
+    """
+    from mosaic.core.pipeline.tracks_identity import chained_variant_payload
+    from mosaic.tracking.ops.assign_arenas import AssignArenasOp
+
+    return tracks_run_id(
+        AssignArenasOp.kind,
+        AssignArenasOp.version,
+        chained_variant_payload(AssignArenasOp.Params().identity_dump()),
+        upstream="convert-trex_npz.0.2-aaaaaaaaaa",
     )
 
 
@@ -1122,6 +1139,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/infer-variant": _infer_variant,
     "tracks/resample-variant": _resample_variant,
     "tracks/resample-variant-other-upstream": _resample_variant_other_upstream,
+    "tracks/assign-arenas-variant": _assign_arenas_variant,
     "labels/convert-variant": _labels_convert_variant,
     "trex/run-id-settings": _trex_run_id_settings,
     "trex/conversion-run-id": _trex_conversion_run_id,

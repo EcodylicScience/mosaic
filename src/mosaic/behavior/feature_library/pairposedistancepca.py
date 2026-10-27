@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
-from itertools import combinations
 from pathlib import Path
 from typing import Annotated, ClassVar, TypedDict, TypeGuard, final, override
 
@@ -12,6 +11,8 @@ import pandas as pd
 from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
+from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -155,6 +156,7 @@ class PairPoseDistancePCA:
     parallelizable = True
     scope_dependent = True
     fits = True  # learns its basis; ``__init__`` clears this for a run given a model
+    relates: RelatesLevel = "arena-aware"
     accepts_overlap = False  # computes within a frame, so gains nothing
     temporal_reach = 0
     consumed_roots: tuple[str, ...] = ()
@@ -406,7 +408,7 @@ class PairPoseDistancePCA:
             ids: list[int] = sorted(gseq[C.id_col].unique())
             if len(ids) < 2:
                 continue
-            for id_a, id_b in combinations(ids, 2):
+            for id_a, id_b in individual_pairs(ids, id_arenas(df)):
                 pairs.append((str(seq), int(id_a), int(id_b)))
 
         if not pairs:

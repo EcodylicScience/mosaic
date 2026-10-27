@@ -58,7 +58,7 @@ __all__ = [
     "recorded_model_id",
     "recorded_models",
     "recorded_op_params",
-    "resample_variant_payload",
+    "chained_variant_payload",
     "tracker_variant_payload",
     "tracks_run_id",
     "tracks_variant_media",
@@ -194,20 +194,19 @@ def infer_variant_payload(
     return payload
 
 
-def resample_variant_payload(
+def chained_variant_payload(
     params_identity: Mapping[str, object],
 ) -> dict[str, object]:
-    """What determines a table re-gridded from another tracks variant.
+    """What determines a table that an op computed from another tracks variant.
 
-    Its op params and nothing else -- because the *other* half of what determines
-    it, the variant it was computed from, is the ``upstream`` term
-    :func:`tracks_run_id` adds separately. Keeping the two apart is what lets one
-    resampling recipe be recognised as the same recipe applied to two different
-    sources, which a payload that folded the source in would hide.
+    Its op params and nothing else. The other half of what determines it, the
+    variant it was computed from, is the ``upstream`` term :func:`tracks_run_id`
+    adds separately, so one recipe is recognized as the same recipe applied to
+    two sources. ``resample-tracks`` and ``assign-arenas`` mint through it.
 
-    A fourth named wrapper for the reason the other three give: the golden corpus
-    pins the wrapper, so a later change to how a resampled variant is addressed
-    fails there rather than silently moving every such directory on disk.
+    A named wrapper for the reason the other three give: the golden corpus pins
+    the wrapper, so a later change to how a chained variant is addressed fails
+    there instead of moving every such directory on disk.
     """
     return {"params": dict(params_identity)}
 
@@ -419,7 +418,7 @@ def recorded_op_params(sidecar: VariantSidecar) -> Mapping[str, object]:
     """Return the op parameters recorded in a variant's payload, by name.
 
     A payload built by :func:`convert_variant_payload`,
-    :func:`infer_variant_payload` or :func:`resample_variant_payload` contains them
+    :func:`infer_variant_payload` or :func:`chained_variant_payload` contains them
     under ``params``. A tracker's payload is its settings
     (:func:`tracker_variant_payload`), and no tracker declares a parameter
     named ``params``.

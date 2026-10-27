@@ -124,6 +124,7 @@ from .entry import (
     validate_entry_name,
 )
 from .individuals import refuse_repeated_rows
+from .arenas import ArenaKey, ArenaLayout, layout_lookup_order
 from .recording import (
     OrderFacts,
     Recording,
@@ -234,6 +235,11 @@ from .pipeline.sequence_index import (
     write_sequence_compositions,
 )
 from .pipeline.dataset_indexes import iter_dataset_indexes, label_kinds
+from .pipeline.arena_index import (
+    DeclaredLayout,
+    read_arena_layouts,
+    write_arena_layout,
+)
 from .pipeline.entry_keys import (
     entries_kept_beside,
     entries_of_rows,
@@ -1965,6 +1971,131 @@ class Dataset:
         if media_index_entries(self):
             universe |= self.media_entries()
         return universe
+
+    def recording_named(self, name: str) -> RecordingKey:
+        """Return the key of the recording that :meth:`recordings` names *name*.
+
+        A divided recording is named by its continuous group, and an undivided
+        one by its entry token, ``group:sequence`` or the bare sequence.
+
+        Raises:
+            ValueError: If no recording of the media or tracks index has the name.
+        """
+        for found in self.recordings():
+            if found.name == name:
+                return found.key
+        message = (
+            f"no recording of the media or tracks index is named {name!r}. "
+            "'mosaic describe' lists them."
+        )
+        raise ValueError(message)
+
+    def set_arena_layout(
+        self,
+        layout: ArenaLayout,
+        *,
+        group: str,
+        sequence: str = "",
+        camera: str = "",
+    ) -> Path:
+        """Declare *layout* as the arenas of a recording, replacing its layout.
+
+        A divided recording is named by its continuous group with an empty
+        *sequence*, and an undivided one by its entry. The layout applies to
+        *camera*, or to every camera when it is ``""``. The write takes the
+        arenas index's lock.
+
+        Args:
+            layout: The arenas.
+            group: The recording's group.
+            sequence: The undivided recording's sequence, ``""`` for a divided
+                recording.
+            camera: The camera whose pixels the layout names, ``""`` for every
+                camera.
+
+        Returns:
+            The layout's file.
+
+        Raises:
+            ValueError: If the key names no recording of the media or tracks
+                index, is a divided recording's sequence (reserved for a
+                per-sequence override), or holds a name that cannot be one
+                path component.
+        """
+        for value, column in ((group, "group"), (sequence, "sequence")):
+            _ = validate_entry_name(value, column)
+        if camera != camera.strip():
+            message = f"camera may not be padded: {camera!r}"
+            raise ValueError(message)
+        _ = validate_entry_name(camera, "camera")
+        divided = self.recording_kind(group) == "divided"
+        if not sequence and not divided:
+            message = (
+                f"group {group!r} is not a continuous group, so it names no "
+                "divided recording. Name an undivided recording by its "
+                "sequence too."
+            )
+            raise ValueError(message)
+        if sequence and divided:
+            message = (
+                f"({group!r}, {sequence!r}) is a sequence of the divided "
+                f"recording {group!r}. A layout is declared once per recording: "
+                "set it with an empty sequence."
+            )
+            raise ValueError(message)
+        key = RecordingKey(group, sequence)
+        if not any(
+            self.recording_of(*entry) == key for entry in self.recording_entries()
+        ):
+            message = (
+                f"no entry of the media or tracks index belongs to the recording "
+                f"{recording_name(key)!r}. Index its media first."
+            )
+            raise ValueError(message)
+        return write_arena_layout(self, ArenaKey(group, sequence, camera), layout)
+
+    def arena_layouts(self) -> dict[ArenaKey, DeclaredLayout]:
+        """Return every declared arena layout by its key. Writes nothing.
+
+        Raises:
+            ArenaIndexError: If the arenas index declares a key twice, or a
+                layout's file disagrees with its recorded digest.
+        """
+        return read_arena_layouts(self)
+
+    def arena_layout(
+        self,
+        group: str,
+        sequence: str,
+        camera: str = "",
+        *,
+        declared: Mapping[ArenaKey, DeclaredLayout] | None = None,
+    ) -> DeclaredLayout | None:
+        """Return the arena layout of one entry and camera, ``None`` without one.
+
+        The entry's own key is tried, then its recording's, under *camera* and
+        then under camera ``""`` (:func:`~mosaic.core.arenas.layout_lookup_order`).
+        A row keyed by a group that is not continuous names no recording and is
+        skipped. Writes nothing.
+
+        Args:
+            group: The entry's group.
+            sequence: The entry's sequence.
+            camera: The camera whose pixels are looked up.
+            declared: The layouts to look in, :meth:`arena_layouts` when
+                ``None``.
+        """
+        layouts = self.arena_layouts() if declared is None else declared
+        entry = RecordingKey(group, sequence)
+        for key in layout_lookup_order(
+            entry, self.recording_of(group, sequence), camera
+        ):
+            if not key.sequence and self.recording_kind(key.group) != "divided":
+                continue
+            found = layouts.get(key)
+            if found is not None:
+                return found
+        return None
 
     def _indexed_entries(self) -> set[Entry]:
         """Return every entry of the media, tracks_raw, tracks and labels indexes."""

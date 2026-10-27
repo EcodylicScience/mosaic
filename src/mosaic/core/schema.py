@@ -12,6 +12,7 @@ _NO_COLUMNS: AbstractSet[str] = frozenset()
 """The empty column set, as a typed immutable default for the optional fields."""
 
 __all__ = [
+    "ARENA_COLUMN",
     "DERIVED_COLUMNS",
     "LEGACY_SCHEMA",
     "TRACK_SCHEMAS",
@@ -77,6 +78,8 @@ class TrackSchema:
         allows: Columns this schema lifts from the base's ``forbidden`` set. How
             a tracker that genuinely *measures* a quantity the base treats as
             derived says so.
+        optional_text: Columns a table may omit, and that hold text or nulls
+            when present. Merged from the base like ``forbidden``.
         description: Human-readable summary, surfaced in validation output.
 
     The set fields are typed ``AbstractSet[str]`` rather than ``frozenset[str]``
@@ -98,6 +101,7 @@ class TrackSchema:
     forbidden: AbstractSet[str] = _NO_COLUMNS
     extends: str | None = None
     allows: AbstractSet[str] = _NO_COLUMNS
+    optional_text: AbstractSet[str] = _NO_COLUMNS
     space: TrackSpace | None = None
     description: str = ""
 
@@ -143,6 +147,7 @@ def register_track_schema(schema: TrackSchema) -> None:
             required_prefixes=base.required_prefixes | schema.required_prefixes,
             recommended=base.recommended | schema.recommended,
             forbidden=(base.forbidden | schema.forbidden) - schema.allows,
+            optional_text=base.optional_text | schema.optional_text,
             space=base.space if base.space is not None else schema.space,
         )
     TRACK_SCHEMAS[schema.name] = schema
@@ -297,6 +302,15 @@ def ensure_track_schema(
         "forbidden_present": forbidden_present,
     }
     src_tag = f" {source}" if source else ""
+    for column in sorted(schema.optional_text & column_names):
+        strange = [cell for cell in df[column].dropna() if not isinstance(cell, str)]
+        if strange:
+            kind = type(strange[0]).__name__
+            message = (
+                f"Schema '{schema_name}'{src_tag} reads '{column}' as text, and "
+                f"the table holds a {kind} there. Write the names as text."
+            )
+            raise TrackSchemaError(message)
     if forbidden_present:
         raise ForbiddenTrackColumnError(
             f"Schema '{schema_name}'{src_tag} forbids {forbidden_present}. These are "
@@ -388,6 +402,17 @@ overlooks; it is what ``allows`` is for.
 """
 
 
+ARENA_COLUMN: Final = "arena"
+"""The optional text column naming the arena of a row's body center.
+
+The ``assign-arenas`` op writes it. A table without it has no arenas, and every
+feature reads it as before.
+"""
+
+STANDARD_OPTIONAL_TEXT: AbstractSet[str] = frozenset({ARENA_COLUMN})
+"""The optional text columns of the standard schemas, shared like the required ones."""
+
+
 STANDARD_COLUMNS: AbstractSet[str] = frozenset(
     {
         "frame",
@@ -413,6 +438,7 @@ register_track_schema(
     TrackSchema(
         name="mosaic_v1",
         required=STANDARD_COLUMNS,
+        optional_text=STANDARD_OPTIONAL_TEXT,
         forbidden=DERIVED_COLUMNS,
         space="image_px",
         description=(
@@ -452,6 +478,7 @@ register_track_schema(
     TrackSchema(
         name="mosaic_cm_v1",
         required=STANDARD_COLUMNS,
+        optional_text=STANDARD_OPTIONAL_TEXT,
         allows=DERIVED_COLUMNS,
         space="plane_cm",
         description=(

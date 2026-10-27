@@ -944,6 +944,8 @@ class LocalBackend:
                     )
                 case "set_tags":
                     message = _set_tags(dataset, args)
+                case "set_arenas":
+                    message = _set_arenas(dataset, args)
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
         finally:
@@ -1689,6 +1691,32 @@ def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:
         ) from invalid
     changed = [*sorted(args.tags or {}), *(f"-{name}" for name in args.remove_tags)]
     return f"tags changed: {', '.join(changed)}"
+
+
+def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
+    """Declare the arena layout *args* names, and say what changed."""
+    if args.recording is None or args.arena_layout is None:
+        raise ToolFailure(missing_field("set_arenas", "recording and arena_layout"))
+    try:
+        key = dataset.recording_named(args.recording)
+        _ = dataset.set_arena_layout(
+            args.arena_layout,
+            group=key.group,
+            sequence=key.sequence,
+            camera=args.camera,
+        )
+    except ValueError as invalid:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid",
+                reason="invalid_arenas",
+                message=str(invalid),
+                detail={"recording": args.recording, "camera": args.camera},
+            )
+        ) from invalid
+    where = f" of camera {args.camera!r}" if args.camera else ""
+    count = len(args.arena_layout.arenas)
+    return f"set {count} arenas of {args.recording!r}{where}"
 
 
 def _dataset_exists(target: Path) -> ErrorEnvelope:

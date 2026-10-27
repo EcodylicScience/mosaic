@@ -50,6 +50,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared
 from mosaic.core.pipeline.column_contract import (
@@ -339,6 +340,7 @@ class LightningActionFeature:
     fit_set_pinned_by: ClassVar[str] = "templates"
     # A run given a ``model`` fits nothing, and ``__init__`` clears this for it.
     fits = True  # learns a network
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # reads each series as its own sequence
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)

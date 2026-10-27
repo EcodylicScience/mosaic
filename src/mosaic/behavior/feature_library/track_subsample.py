@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -113,6 +114,7 @@ class TrackSubsample:
     version = "0.2"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"

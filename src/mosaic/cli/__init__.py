@@ -13,6 +13,7 @@ from __future__ import annotations
 import typer
 
 from mosaic.cli.agent import agent_app
+from mosaic.cli.arenas import arenas_app
 from mosaic.cli.cancel import cancel_command
 from mosaic.cli.release import release_command
 from mosaic.cli.convert_labels import convert_labels_command
@@ -83,6 +84,7 @@ _ = app.command(name="scan")(scan_command)
 app.add_typer(notes_app, name="notes")
 app.add_typer(tags_app, name="tags")
 app.add_typer(splits_app, name="splits")
+app.add_typer(arenas_app, name="arenas")
 app.add_typer(libraries_app, name="libraries")
 _ = app.command(name="reindex")(reindex_command)
 _ = app.command(name="reconcile")(reconcile_command)

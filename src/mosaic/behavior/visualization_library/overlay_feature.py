@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.column_contract import Column, Provides, Requirement
 from mosaic.core.pipeline.types import (
@@ -142,6 +143,7 @@ class Overlay:
     version = "0.1"
     parallelizable = False  # Video I/O is sequential.
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = False  # It opens the entry's own video.
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"

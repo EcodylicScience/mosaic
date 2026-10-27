@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import chunk_sequence
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
@@ -90,6 +91,7 @@ class FFGroupsMetrics:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     # Its rows are one per id and group size, each about one individual.

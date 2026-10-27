@@ -21,6 +21,7 @@ from typing import Annotated, ClassVar, Literal, final
 
 import pandas as pd
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     ParamColumn,
@@ -110,6 +111,7 @@ class FrameAggregate:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "none"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"

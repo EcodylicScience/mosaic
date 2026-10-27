@@ -6,10 +6,18 @@ Each refuses an individual with two rows of one frame.
 
 from __future__ import annotations
 
+from collections.abc import Hashable
+
 import pandas as pd
 import pytest
 
-from mosaic.core.individuals import iter_individuals, refuse_repeated_rows
+from mosaic.core.individuals import (
+    id_arenas,
+    individual_pairs,
+    iter_individuals,
+    refuse_repeated_rows,
+    same_arena_mask,
+)
 
 
 def _rows() -> pd.DataFrame:
@@ -128,3 +136,36 @@ def test_a_refusal_gives_the_remedy_it_is_handed() -> None:
         match=r"^table: frame 0 of id 1 appears in more than one row\. Renumber it\.$",
     ):
         refuse_repeated_rows(rows, "table", remedy="Renumber it.")
+
+
+def test_without_arenas_every_two_individuals_pair() -> None:
+    ids = [3, 1, 2]
+
+    assert individual_pairs(ids, None) == [(3, 1), (3, 2), (1, 2)]
+    assert len(individual_pairs(ids, None, ordered=True)) == 6
+
+
+def test_with_arenas_only_individuals_of_one_arena_pair() -> None:
+    arenas: dict[Hashable, str] = {1: "A1", 2: "A1", 3: "B1", 4: "B1"}
+
+    assert individual_pairs([1, 2, 3, 4, 5], arenas) == [(1, 2), (3, 4)]
+    assert individual_pairs([1, 2, 3], arenas, ordered=True) == [(1, 2), (2, 1)]
+    assert same_arena_mask([1, 1, 5], [2, 3, 5], arenas).tolist() == [
+        True,
+        False,
+        False,
+    ]
+
+
+def test_each_id_s_arena_is_read_from_the_table() -> None:
+    table = pd.DataFrame({"id": [0, 1, 0, 2], "arena": ["A1", "B1", "A1", None]})
+
+    assert id_arenas(table) == {0: "A1", 1: "B1"}
+    assert id_arenas(table.drop(columns="arena")) is None
+
+
+def test_an_id_in_two_arenas_is_refused() -> None:
+    table = pd.DataFrame({"id": [0, 0], "arena": ["A1", "B1"]})
+
+    with pytest.raises(ValueError, match="id 0 appears in two arenas"):
+        _ = id_arenas(table)

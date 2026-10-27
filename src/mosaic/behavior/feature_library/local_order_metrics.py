@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.individuals import refuse_repeated_rows
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
@@ -261,6 +262,7 @@ class LocalOrderMetrics:
     version = "0.1"
     parallelizable = True
     scope_dependent = False
+    relates: RelatesLevel = "arena-blind"
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
