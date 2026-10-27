@@ -16,8 +16,9 @@ so the score it earns across that line is not a score on unseen data.
 ``split_by="group"`` keeps a video whole, and the default key reads the
 ``{video}__frame_{n}`` naming that frame extraction produces.
 
-``VideoFrame`` and the key functions (``sequence_key``, ``frame_key``,
-``unit_key``) name the recorded frames and units that splits are drawn from.
+``VideoFrame`` and the key functions (``sequence_key``, ``recording_unit_key``,
+``frame_key``, ``unit_key``) name the recorded frames and units that splits are
+drawn from.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ __all__ = [
     "default_group_key",
     "frame_key",
     "print_split_summary",
+    "recording_unit_key",
     "sequence_key",
     "split_filenames",
     "unit_key",
@@ -46,8 +48,9 @@ __all__ = [
 Subset = Literal["train", "valid", "test"]
 """The partitions a name is assigned to."""
 
-SplitBy = Literal["sequence", "group", "frame"]
-"""What a split keeps together: a recording, a ``sequence_groups`` label or one frame."""
+SplitBy = Literal["recording", "sequence", "group", "frame"]
+"""What a split keeps together: a recording, a sequence, a ``sequence_groups`` label or
+one frame."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,15 @@ def sequence_key(frame: VideoFrame) -> str:
     return ":".join(to_safe_name(part) for part in parts)
 
 
+def recording_unit_key(frame: VideoFrame) -> str:
+    """Return ``"{origin}:{group}:"``, the unit of a member of a continuous group.
+
+    The empty last part keys the divided recording ``(group, "")``, which no
+    sequence key can equal, because a sequence name is never empty.
+    """
+    return ":".join((to_safe_name(frame.origin_uuid), to_safe_name(frame.group), ""))
+
+
 def _index_part(frame: VideoFrame) -> str:
     if frame.frame_index == -1:
         return "@" + to_safe_name(frame.image_stem)
@@ -98,7 +110,10 @@ def frame_key(frame: VideoFrame) -> str:
 
 
 def unit_key(
-    frame: VideoFrame, split_by: SplitBy, sequence_groups: Mapping[str, str]
+    frame: VideoFrame,
+    split_by: SplitBy,
+    sequence_groups: Mapping[str, str],
+    recording_units: Mapping[str, str],
 ) -> str:
     """Return the key of the unit a split keeps together.
 
@@ -107,11 +122,14 @@ def unit_key(
     Args:
         frame: The recorded frame.
         split_by: ``"frame"`` gives the frame key without the camera, so the
-            cameras' images of one instant are one unit. ``"sequence"`` gives the
-            sequence key. ``"group"`` gives the label that ``sequence_groups`` holds
-            for the sequence key, else for the bare sequence name, else the
-            sequence key.
+            cameras' images of one instant are one unit. ``"recording"`` gives
+            the unit that ``recording_units`` holds for the sequence key, else the
+            sequence key. ``"sequence"`` gives the sequence key. ``"group"`` gives
+            the label that ``sequence_groups`` holds for the sequence key, else for
+            the bare sequence name, else the sequence key.
         sequence_groups: Maps a sequence key or a bare sequence name to a label.
+        recording_units: Maps the sequence key of a member of a continuous group
+            to its :func:`recording_unit_key`.
 
     Returns:
         The unit key.
@@ -119,6 +137,8 @@ def unit_key(
     sequence = sequence_key(frame)
     if split_by == "frame":
         return f"{sequence}:{_index_part(frame)}"
+    if split_by == "recording":
+        return recording_units.get(sequence, sequence)
     if split_by == "group":
         label = sequence_groups.get(sequence)
         if label is None:

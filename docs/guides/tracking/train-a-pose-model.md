@@ -168,13 +168,19 @@ mosaic run -m libraries/lab/dataset.yaml --kind prepare-training-data \
 This merges the sets into one training dataset and **copies the images in**, so the
 library can be moved, and the datasets it drew from can be archived, without breaking
 the model. `target` is `yolo-pose`, `polo`, `sleap` or `litpose`. Frames from one
-recording are kept together in one split, which is what makes a validation score honest;
-`"split_by": "frame"` turns that off, and its scores are optimistic. The split is a hash
-of each recording and the `"seed"`, so a recording keeps its split when others are
-added, and a different `"seed"` changes the draw. `"split_by": "group"` keeps every
-sequence of a label together, named in `sequence_groups` by sequence name, or by
+recording are kept together in one split, so a validation score measures recordings the
+model has not seen. Every sequence of a
+[divided recording](../../dataset.md#divide-a-recording) is part of that recording, and
+the dataset that holds the frames declares which recordings are divided: this dataset,
+or a library it links. `"split_by": "sequence"` keeps only each sequence together, so
+the hours of one recording can fall on both sides of the split. `"split_by": "frame"`
+splits image by image, and its scores are optimistic. The split is a hash of each
+recording and the `"seed"`, so a recording keeps its split when others are added, and a
+different `"seed"` changes the draw. `"split_by": "group"` keeps every sequence of a
+label together, named in `sequence_groups` by sequence name, or by
 `<origin_uuid>:<group>:<sequence>` (each part percent-encoded) where names repeat. A key
-that matches no sequence is refused.
+that matches no sequence is refused, and so is `sequence_groups` under the default
+`"split_by": "recording"`.
 
 With target `sleap` and a test share above 0, the test frames leave SLEAP training
 altogether: neither `.slp` file holds them. Use `"split": [0.85, 0.15, 0]`
@@ -186,7 +192,8 @@ gives an honest evaluation.
 
 `"holdout": [{"set_key": "arena"}]` keeps the named annotation sets out of training and
 validation. Every frame that shares a split unit with a held-out frame (its recording,
-or its group under `"split_by": "group"`) leaves training and validation, so the model
+its sequence under `"split_by": "sequence"`, or its group under `"split_by": "group"`)
+leaves training and validation, so the model
 has not seen the recordings it is scored on. The model's provenance lists the held-out
 sets.
 

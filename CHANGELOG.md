@@ -8,6 +8,39 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: training splits by recording, and the group of an annotated frame
+
+**Every `prepare-training-data` run id minted without `split_by` moves.** `split_by`
+gains `"recording"` and defaults to it, and the dumped default enters the run id. The
+op version stays `0.3`. A preparation that set `split_by` to `"sequence"`, `"group"` or
+`"frame"` keeps its id. A training run named by a moved preparation's run id moves when
+it is trained from the new one. The golden entries `prepare-training-data/run-id`,
+`run-id-revisions-named` and `holdout` move, and `divided-recordings` is added.
+
+- `split_by="recording"` draws every sequence of a divided recording as one unit,
+  `"{origin}:{group}:"` (`split.recording_unit_key`), and each other sequence as its
+  sequence key. Without a continuous group it draws as `"sequence"` does. The dataset
+  whose uuid is a frame's origin declares the group: the preparing dataset or a library
+  it links. A frame of a non-empty group from any other dataset, or behind a link that
+  is not reachable, is refused under `"recording"`. A hold-out removes every frame of
+  its recordings.
+- The run id gains `recordings`, the sorted `[origin_uuid, group]` pairs of the divided
+  recordings that hold a sequence of the sets' frames, only when there are any.
+  Declaring a continuous group that holds an annotated sequence names a new
+  preparation, even when that is the recording's only annotated sequence.
+- `sequence_groups` with `split_by="recording"` is refused when the parameters are
+  validated.
+- The unit noun of `"sequence"` in refusals is now "sequence", and a refusal of a small
+  split or a hold-out names the unit of its `split_by`.
+- `split.unit_key` takes `recording_units`, the sequence keys of the members of divided
+  recordings mapped to their recording unit.
+- `PoseFrame`, `AnnotationFrame` and the `mosaic-pose-annotations` frame record gain
+  `group`, `""` by default. A state with a frame of a non-empty group is written at
+  format version 2, and every other state at version 1 with the bytes it had. A mosaic
+  older than this refuses a version-2 file as newer, and a version-1 file that records
+  a group is refused. A frame that no frames run extracted takes the group its
+  revision records, so its sequence key and unit name `(group, sequence)`.
+
 ## Unreleased: a recording's calibration, wall-clock labels and division summary
 
 **No identifier moves.** Run ids, entry keys, compositions and paths are unchanged.

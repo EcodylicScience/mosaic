@@ -28,6 +28,7 @@ from mosaic.core.annotations.model import (
 from mosaic.core.annotations.narrow import narrow_pose_sets, narrowed_pose
 from mosaic.core.annotations.pose_annotations import (
     FORMAT_VERSION,
+    UNGROUPED_FORMAT_VERSION,
     Alias,
     PoseAnnotationSet,
     PoseDefinition,
@@ -214,6 +215,49 @@ def test_what_is_written_reads_back(tmp_path: Path) -> None:
     assert not frames[4].usable and frames[4].objects[0].alias_id is None
     assert reread.bbox_policy == PADDING
     assert reread.resolve(frames[1]) == tmp_path / "frames/a/frame_000001.png"
+
+
+def test_a_state_without_groups_is_written_at_the_ungrouped_version() -> None:
+    """A mosaic that predates a frame's group reads the state unchanged."""
+    payload = pose_annotations_payload(_state())
+
+    assert json.loads(payload)["version"] == UNGROUPED_FORMAT_VERSION
+    assert b'"group"' not in payload
+
+
+def test_a_frame_group_is_written_at_the_newest_version_and_reads_back(
+    tmp_path: Path,
+) -> None:
+    frames = [
+        pose_frame("a/frame_000001.png", group="night", sequence="20210219T192253Z"),
+        pose_frame("b/frame_000001.png", sequence="m01"),
+    ]
+    path = tmp_path / "state.json"
+    _ = path.write_bytes(pose_annotations_payload(pose_set(frames)))
+
+    document = json.loads(path.read_bytes())
+    reread = read_pose_annotations(path)
+
+    assert document["version"] == FORMAT_VERSION > UNGROUPED_FORMAT_VERSION
+    assert [frame.get("group") for frame in document["frames"]] == ["night", None]
+    assert [(frame.group, frame.sequence) for frame in reread.frames] == [
+        ("night", "20210219T192253Z"),
+        ("", "m01"),
+    ]
+    assert pose_annotations_payload(reread) == path.read_bytes()
+
+
+def test_a_frame_group_in_a_version_1_file_is_refused(tmp_path: Path) -> None:
+    """Version 1 has no group, so a file of that version that records one is refused."""
+    frames = [pose_frame("a/frame_000001.png", group="night", sequence="h01")]
+    document = json.loads(pose_annotations_payload(pose_set(frames)))
+    document["version"] = UNGROUPED_FORMAT_VERSION
+    path = tmp_path / "state.json"
+    _ = path.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match="version 1 file records the group") as refused:
+        _ = read_pose_annotations(path)
+    assert "a/frame_000001.png" in str(refused.value)
 
 
 def test_an_unplaced_keypoint_reads_back_unplaced(tmp_path: Path) -> None:
@@ -492,6 +536,8 @@ def test_a_saved_frame_keeps_its_image_and_recorded_place_in_the_narrow_model() 
         video="m3",
         frame_index=7,
     ), "the objects are the caller's to give, so none are carried over"
+    grouped = replace(saved, group="night")
+    assert grouped.as_annotation_frame().group == "night"
 
 
 def test_narrowing_keeps_an_objects_origin_and_source_reference() -> None:

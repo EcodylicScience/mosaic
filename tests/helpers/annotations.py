@@ -71,6 +71,7 @@ def pose_frame(
     sequence: str = "mouse003",
     frame_index: int = 0,
     usable: bool = True,
+    group: str = "",
 ) -> PoseFrame:
     """A 64x48 frame holding *objects*, finished unless *usable* says otherwise."""
     return PoseFrame(
@@ -81,6 +82,7 @@ def pose_frame(
         objects=objects,
         sequence=sequence,
         frame_index=frame_index,
+        group=group,
     )
 
 

@@ -258,6 +258,7 @@ class AnnotationFrame:
         frame_index: Position within *video*, or ``-1`` when the source is a
             loose image with no sequence.
         split: See :data:`Split`.
+        group: The group of *video*, or ``""``.
     """
 
     image_path: Path
@@ -267,6 +268,7 @@ class AnnotationFrame:
     video: str = ""
     frame_index: int = -1
     split: Split = "unassigned"
+    group: str = ""
 
     @property
     def is_annotated(self) -> bool:

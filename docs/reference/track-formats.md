@@ -162,7 +162,7 @@ and each object's alias, origin and box provenance under `attributes`.
 | Field | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `format` | `"mosaic-pose-annotations"` | _required_ |  | Always mosaic-pose-annotations. |
-| `version` | `integer` | _required_ |  | The format version the file was written in. This is version 1. |
+| `version` | `integer` | _required_ |  | The format version the file was written in: 2 when a frame records its group, else 1. |
 | `bbox_policy` | `BboxPolicy` | _required_ |  | How the annotator's tool derived a box the annotator did not draw. |
 | `poses` | list of `PoseRecord` | _required_ |  | Every pose an object uses, ascending by id. |
 | `frames` | list of `FrameRecord` | _required_ |  | Every frame of the set, finished or not, ascending by image. |
@@ -195,8 +195,9 @@ and each object's alias, origin and box provenance under `attributes`.
     | `width` | `integer` | _required_ |  | Image width in pixels. |
     | `height` | `integer` | _required_ |  | Image height in pixels. |
     | `usable` | `boolean` | _required_ |  | The annotator's sign-off that the frame is complete. Only a usable frame is trained on or exported. |
-    | `sequence` | `string` \| `None` | `null` |  | The recording the frame came from. |
-    | `frame_index` | `integer` \| `None` | `null` |  | The frame's position in that recording. |
+    | `sequence` | `string` \| `None` | `null` |  | The sequence the frame came from. |
+    | `group` | `string` \| `None` | `null` |  | The group of that sequence, from version 2. Absent for the empty group. |
+    | `frame_index` | `integer` \| `None` | `null` |  | The frame's position in that sequence. |
     | `objects` | list of `ObjectRecord` | _constructed_ |  | The objects, in the order the annotator's tool holds them. |
 
 ??? note "`ObjectRecord`"

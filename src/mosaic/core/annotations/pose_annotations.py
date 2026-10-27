@@ -60,6 +60,7 @@ from mosaic.core.strict_model import StrictModel
 __all__ = [
     "FORMAT_NAME",
     "FORMAT_VERSION",
+    "UNGROUPED_FORMAT_VERSION",
     "Alias",
     "PoseAnnotationSet",
     "PoseDefinition",
@@ -76,8 +77,15 @@ __all__ = [
 FORMAT_NAME: Final = "mosaic-pose-annotations"
 """The ``format`` every file of this kind declares."""
 
-FORMAT_VERSION: Final = 1
-"""The version this module writes, and the newest it reads."""
+FORMAT_VERSION: Final = 2
+"""The newest version this module reads, written for a set that records a frame's group."""
+
+UNGROUPED_FORMAT_VERSION: Final = 1
+"""The version written for a set whose frames record no group.
+
+A mosaic that predates a frame's ``group`` reads such a file, and its bytes are the
+ones written before the field existed.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,8 +162,11 @@ class PoseFrame:
             usable frame is trained on or exported, and only on a usable frame
             does "no objects" mean "looked at, nothing there".
         objects: The instances, of any of the set's poses.
-        sequence: The recording the frame came from, or ``""`` when unknown.
-        frame_index: Its position in that recording, or ``-1`` when unknown.
+        sequence: The sequence the frame came from, or ``""`` when unknown.
+        frame_index: Its position in that sequence, or ``-1`` when unknown.
+        group: The group of that sequence, or ``""``. A sequence of a divided
+            recording is named by its group and its token, and the tokens of two
+            recordings can be equal.
     """
 
     image_path: Path
@@ -165,6 +176,7 @@ class PoseFrame:
     objects: tuple[PoseObject, ...] = ()
     sequence: str = ""
     frame_index: int = -1
+    group: str = ""
 
     def as_annotation_frame(
         self, objects: tuple[AnnotationObject, ...] = ()
@@ -182,6 +194,7 @@ class PoseFrame:
             objects=objects,
             video=self.sequence,
             frame_index=self.frame_index,
+            group=self.group,
         )
 
 
@@ -281,9 +294,10 @@ def pose_annotations_document(annotations: PoseAnnotationSet) -> dict[str, JsonV
         if earlier.image_path == later.image_path:
             msg = f"two frames name the image {later.image_path.as_posix()}"
             raise ValueError(msg)
+    grouped = any(frame.group for frame in frames)
     return {
         "format": FORMAT_NAME,
-        "version": FORMAT_VERSION,
+        "version": FORMAT_VERSION if grouped else UNGROUPED_FORMAT_VERSION,
         "bbox_policy": annotations.bbox_policy.model_dump(mode="json"),
         "poses": [
             _pose_document(pose)
@@ -319,7 +333,7 @@ def _pose_document(pose: PoseDefinition) -> dict[str, JsonValue]:
 
 
 def _frame_document(frame: PoseFrame) -> dict[str, JsonValue]:
-    return {
+    document: dict[str, JsonValue] = {
         "image": frame.image_path.as_posix(),
         "width": frame.width,
         "height": frame.height,
@@ -328,6 +342,9 @@ def _frame_document(frame: PoseFrame) -> dict[str, JsonValue]:
         "usable": frame.usable,
         "objects": [_object_document(obj) for obj in frame.objects],
     }
+    if frame.group:
+        document["group"] = frame.group
+    return document
 
 
 def _object_document(obj: PoseObject) -> dict[str, JsonValue]:
@@ -444,10 +461,16 @@ class FrameRecord(StrictModel):
         )
     )
     sequence: str | None = Field(
-        default=None, description="The recording the frame came from."
+        default=None, description="The sequence the frame came from."
+    )
+    group: str | None = Field(
+        default=None,
+        description=(
+            "The group of that sequence, from version 2. Absent for the empty group."
+        ),
     )
     frame_index: int | None = Field(
-        default=None, description="The frame's position in that recording."
+        default=None, description="The frame's position in that sequence."
     )
     objects: list[ObjectRecord] = Field(
         default_factory=list,
@@ -462,7 +485,10 @@ class PoseAnnotationsFile(StrictModel):
         description="Always mosaic-pose-annotations."
     )
     version: int = Field(
-        description="The format version the file was written in. This is version 1."
+        description=(
+            "The format version the file was written in: 2 when a frame records "
+            "its group, else 1."
+        )
     )
     bbox_policy: BboxPolicy = Field(
         description="How the annotator's tool derived a box the annotator did not draw."
@@ -493,7 +519,8 @@ def read_pose_annotations(
 
     Raises:
         ValueError: The file is not this format, is a newer version of it than
-            this mosaic reads, or holds a state the model refuses.
+            this mosaic reads, is a version 1 file that records a frame's group,
+            or holds a state the model refuses.
     """
     parsed = read_versioned_file(
         Path(path),
@@ -501,6 +528,14 @@ def read_pose_annotations(
         format_name=FORMAT_NAME,
         newest_version=FORMAT_VERSION,
     )
+    if parsed.version == UNGROUPED_FORMAT_VERSION:
+        grouped = [frame.image for frame in parsed.frames if frame.group is not None]
+        if grouped:
+            msg = (
+                f"{path}: this version 1 file records the group of {grouped[0]}, "
+                f"and a frame's group exists from version {FORMAT_VERSION}."
+            )
+            raise ValueError(msg)
     return PoseAnnotationSet(
         poses=tuple(
             PoseDefinition(
@@ -524,6 +559,7 @@ def read_pose_annotations(
                 objects=tuple(_read_object(obj) for obj in frame.objects),
                 sequence=frame.sequence or "",
                 frame_index=-1 if frame.frame_index is None else frame.frame_index,
+                group=frame.group or "",
             )
             for frame in parsed.frames
         ),
@@ -594,6 +630,7 @@ def widen(
                 ),
                 sequence=frame.video,
                 frame_index=frame.frame_index,
+                group=frame.group,
             )
             for frame in annotations.frames
         ),

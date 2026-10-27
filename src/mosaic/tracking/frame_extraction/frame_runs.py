@@ -349,10 +349,10 @@ def video_frames_of(
     read for a matched image, because an import of extracted PNGs records index
     -1.
 
-    An image that no row matches takes *revision_origin*, group and camera
-    ``""``, the sequence its annotation frame records, else its directory's name,
-    and the frame index its annotation frame records. Index -1 keeps the image's
-    stem. The dataset tree is left unchanged.
+    An image that no row matches takes *revision_origin*, camera ``""``, the
+    group its annotation frame records, the sequence it records, else the
+    image's directory's name, and the frame index it records. Index -1 keeps the
+    image's stem. The dataset tree is left unchanged.
 
     Args:
         ds: The dataset that reads the revision.
@@ -461,7 +461,7 @@ def _unextracted(frame: AnnotationFrame, revision_origin: str) -> VideoFrame:
     index = frame.frame_index if frame.frame_index >= 0 else -1
     return VideoFrame(
         origin_uuid=revision_origin,
-        group="",
+        group=frame.group,
         sequence=frame.video or frame.image_path.parent.name,
         camera="",
         frame_index=index,
