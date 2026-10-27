@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import cv2
@@ -24,9 +27,11 @@ from mosaic.core.media.imgstore_io import (
     imgstore_probe,
     is_imgstore,
     measure_store,
+    read_store_clock,
     store_stat,
 )
 from mosaic.core.media.imgstore_native import NativeStore
+from mosaic.core.media.store_division import ChunkRecord, DivisionRefused, StoreClock
 from mosaic.core.media.read_target import ReadTarget
 from mosaic.core.media.video_io import (
     MultiVideoReader,
@@ -732,3 +737,326 @@ def test_native_store_close_safe_after_init_failure(tmp_path):
     with pytest.raises(MediaProbeError):
         NativeStore.__init__(store, bad_dir)
     store.close()
+
+
+# The chunk table
+
+
+def test_the_chunk_table_lists_the_chunks_of_an_image_store(
+    make_imgstore: MakeStore,
+) -> None:
+    store_dir, _ = make_imgstore(nframes=12, chunksize=5, fps=20.0)
+
+    with NativeStore(store_dir) as store:
+        table = store.chunk_table()
+
+    assert [(c.chunk_id, c.path, c.frame_count) for c in table] == [
+        (0, store_dir / "000000", 5),
+        (1, store_dir / "000001", 5),
+        (2, store_dir / "000002", 2),
+    ]
+    assert [c.first_time for c in table] == pytest.approx([0.0, 0.25, 0.5])
+    assert [c.last_time for c in table] == pytest.approx([0.2, 0.45, 0.55])
+    assert [c.max_interval for c in table] == pytest.approx([0.05] * 3)
+
+
+@pytest.mark.media
+def test_the_chunk_table_lists_the_chunks_of_a_video_store(tmp_path: Path) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2], fps=20.0)(parent=tmp_path)
+
+    with NativeStore(store_dir) as store:
+        table = store.chunk_table()
+        spans = store.chunk_spans()
+
+    assert [(c.chunk_id, c.path, c.frame_count) for c in table] == [
+        (0, store_dir / "000000.mp4", 5),
+        (1, store_dir / "000001.mp4", 5),
+        (2, store_dir / "000002.mp4", 2),
+    ]
+    assert spans == [(c.path, c.frame_count) for c in table]
+
+
+@pytest.mark.media
+def test_a_chunk_whose_index_is_deleted_has_no_count_in_the_table(
+    tmp_path: Path,
+) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2], fps=20.0)(parent=tmp_path)
+    (store_dir / "000002.npz").unlink()
+
+    with pytest.warns(UserWarning, match="missing index"):
+        store = NativeStore(store_dir)
+    with store:
+        last = store.chunk_table()[-1]
+        assert store.chunk_paths() == [
+            store_dir / "000000.mp4",
+            store_dir / "000001.mp4",
+        ]
+
+    assert last == ChunkRecord(2, store_dir / "000002.mp4", None, None, None, None)
+
+
+@pytest.mark.media
+def test_the_chunk_table_ignores_resource_forks(tmp_path: Path) -> None:
+    store_dir, _ = video_store_maker([5, 5, 2])(parent=tmp_path)
+    with NativeStore(store_dir) as store:
+        before = store.chunk_table()
+
+    for name in ("._000000.mp4", "._000000.npz", "._000003.mp4", "._000003.npz"):
+        _ = (store_dir / name).write_bytes(b"\0" * 4096)
+
+    with NativeStore(store_dir) as store:
+        assert store.chunk_table() == before
+
+
+def test_reads_across_chunk_boundaries_return_the_stored_frames(
+    make_imgstore: MakeStore,
+) -> None:
+    store_dir, frames = make_imgstore(nframes=17, chunksize=5)
+
+    with NativeStore(store_dir) as store:
+        for index in [4, 5, 9, 10, 14, 15, 16, 0, 15, 4]:
+            assert np.array_equal(store.frame(index), frames[index])
+
+
+def test_a_missing_interior_index_drops_its_frames_from_the_reads(
+    make_imgstore: MakeStore,
+) -> None:
+    store_dir, frames = make_imgstore(nframes=12, chunksize=5)
+    (store_dir / "000001" / "index.npz").unlink()
+
+    with pytest.warns(UserWarning, match="missing index"):
+        store = NativeStore(store_dir)
+    with store:
+        assert store.frame_count == 7
+        assert store.chunk_count == 2
+        read = [store.frame(index) for index in range(7)]
+        assert [record.frame_count for record in store.chunk_table()] == [5, None, 2]
+
+    expected = frames[:5] + frames[10:]
+    assert all(np.array_equal(a, b) for a, b in zip(read, expected, strict=True))
+
+
+def test_an_indexed_chunk_of_no_frames_is_skipped_by_the_reads(
+    make_imgstore: MakeStore,
+) -> None:
+    store_dir, frames = make_imgstore(nframes=12, chunksize=5)
+    np.savez(
+        store_dir / "000001" / "index.npz",
+        frame_number=np.empty(0, np.int64),
+        frame_time=np.empty(0, np.float64),
+    )
+
+    with NativeStore(store_dir) as store:
+        assert store.frame_count == 7
+        assert np.array_equal(store.frame(5), frames[10])
+        assert store.chunk_table()[1].frame_count == 0
+        assert store.chunk_table()[1].max_interval == 0.0
+
+
+# The store clock
+
+_FIRST_FRAME_TIME = 1_613_762_573.057566
+"""2021-02-19T19:22:53.057566Z, the first frame of the Princeton store."""
+_CREATED = datetime(2021, 2, 19, 19, 22, 53, 32917, tzinfo=UTC)
+
+
+def _clock_store(
+    parent: Path,
+    name: str = "20210219_112253",
+    *,
+    descriptor: Mapping[str, object] | None = None,
+    first_time: float = _FIRST_FRAME_TIME,
+    extra: object | None = None,
+) -> Path:
+    """Write a one-chunk image store whose frame times start at *first_time*.
+
+    *descriptor* adds ``__store`` keys, and *extra* is written as
+    ``000000.extra_data.json``. No frame file is written, because a clock reads
+    only the metadata and the indexes.
+    """
+    store_dir = parent / name
+    (store_dir / "000000").mkdir(parents=True)
+    store_fields: dict[str, object] = {
+        "class": "DirectoryImgStore",
+        "format": "npy",
+        "imgshape": [4, 4],
+        "chunksize": 3,
+        "uuid": "4569de67968740e786e775da50cedf12",
+        **(descriptor or {}),
+    }
+    _ = (store_dir / "metadata.yaml").write_text(
+        yaml.safe_dump({"__store": store_fields, "camera_serial": "23036146"})
+    )
+    np.savez(
+        store_dir / "000000" / "index.npz",
+        frame_number=np.arange(3, dtype=np.int64),
+        frame_time=first_time + np.arange(3, dtype=np.float64) / 20.0,
+    )
+    if extra is not None:
+        _ = (store_dir / "000000.extra_data.json").write_text(json.dumps(extra))
+    return store_dir
+
+
+def _recording_start(seconds: float) -> list[dict[str, object]]:
+    """Motif's extra data: one record per sample, each naming the recording start."""
+    return [{"frame_time": seconds + 0.2, "recording_start": seconds, "frame_index": 4}]
+
+
+def test_created_utc_anchors_the_clock_at_the_first_frame(tmp_path: Path) -> None:
+    store_dir = _clock_store(
+        tmp_path,
+        descriptor={
+            "created_utc": "2021-02-19T19:22:53.032917",
+            "timezone_local": "America/Los_Angeles",
+        },
+    )
+
+    clock = read_store_clock(store_dir)
+
+    assert clock == StoreClock(
+        _CREATED, _FIRST_FRAME_TIME, "created_utc", "America/Los_Angeles"
+    )
+    assert clock.utc_at(_FIRST_FRAME_TIME + 3000.0) == _CREATED + timedelta(
+        seconds=3000
+    )
+
+
+def test_a_created_utc_that_yaml_reads_as_a_time_anchors_the_clock(
+    tmp_path: Path,
+) -> None:
+    store_dir = _clock_store(tmp_path)
+    metadata = store_dir / "metadata.yaml"
+    text = metadata.read_text().replace(
+        "__store:\n", "__store:\n  created_utc: 2021-02-19 19:22:53.032917\n"
+    )
+    _ = metadata.write_text(text)
+
+    clock = read_store_clock(store_dir)
+
+    assert (clock.anchor_utc, clock.source) == (_CREATED, "created_utc")
+
+
+def test_a_frame_time_near_the_recording_start_anchors_the_clock(
+    tmp_path: Path,
+) -> None:
+    store_dir = _clock_store(tmp_path, extra=_recording_start(_FIRST_FRAME_TIME - 0.03))
+
+    clock = read_store_clock(store_dir)
+
+    assert clock.source == "frame_time"
+    assert clock.anchor_utc == datetime.fromtimestamp(_FIRST_FRAME_TIME, UTC)
+
+
+def test_a_frame_time_near_the_directory_time_anchors_the_clock(
+    tmp_path: Path,
+) -> None:
+    store_dir = _clock_store(
+        tmp_path, descriptor={"timezone_local": "America/Los_Angeles"}
+    )
+
+    assert read_store_clock(store_dir).source == "frame_time"
+
+
+@pytest.mark.parametrize(
+    "first_time",
+    [12.5, _FIRST_FRAME_TIME + 3601.0],
+    ids=["before-2000", "an-hour-off"],
+)
+def test_the_recording_start_anchors_a_clock_whose_frame_time_disagrees(
+    tmp_path: Path, first_time: float
+) -> None:
+    store_dir = _clock_store(
+        tmp_path, first_time=first_time, extra=_recording_start(_FIRST_FRAME_TIME)
+    )
+
+    clock = read_store_clock(store_dir)
+
+    assert clock.source == "extra_data"
+    assert clock.anchor_utc == datetime.fromtimestamp(_FIRST_FRAME_TIME, UTC)
+    assert clock.anchor_time == first_time
+
+
+def test_the_directory_time_in_the_local_zone_anchors_the_clock(tmp_path: Path) -> None:
+    store_dir = _clock_store(
+        tmp_path, first_time=12.5, descriptor={"timezone_local": "America/Los_Angeles"}
+    )
+
+    clock = read_store_clock(store_dir)
+
+    assert clock.source == "dirname"
+    assert clock.anchor_utc == datetime(2021, 2, 19, 19, 22, 53, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("name", "utc"),
+    [
+        ("20211107_003000", datetime(2021, 11, 7, 7, 30, tzinfo=UTC)),
+        ("20211107_030000", datetime(2021, 11, 7, 11, 0, tzinfo=UTC)),
+        ("20210314_013000", datetime(2021, 3, 14, 9, 30, tzinfo=UTC)),
+        ("20210314_033000", datetime(2021, 3, 14, 10, 30, tzinfo=UTC)),
+        (
+            "23036146_20210314_033000.23036146",
+            datetime(2021, 3, 14, 10, 30, tzinfo=UTC),
+        ),
+    ],
+)
+def test_a_directory_time_converts_on_either_side_of_a_clock_change(
+    tmp_path: Path, name: str, utc: datetime
+) -> None:
+    store_dir = _clock_store(
+        tmp_path,
+        name,
+        first_time=12.5,
+        descriptor={"timezone_local": "America/Los_Angeles"},
+    )
+
+    assert read_store_clock(store_dir).anchor_utc == utc
+
+
+@pytest.mark.parametrize(
+    ("name", "zone", "reason"),
+    [
+        ("20211107_013000", "America/Los_Angeles", "ambiguous_local_time"),
+        ("20210314_023000", "America/Los_Angeles", "nonexistent_local_time"),
+        ("20210219_112253", None, "local_time_without_timezone"),
+        ("20210219_112253", "Mars/Olympus_Mons", "unknown_timezone"),
+        ("store", "America/Los_Angeles", "no_clock_source"),
+    ],
+)
+def test_a_store_without_a_usable_start_is_refused(
+    tmp_path: Path, name: str, zone: str | None, reason: str
+) -> None:
+    descriptor = {} if zone is None else {"timezone_local": zone}
+    store_dir = _clock_store(tmp_path, name, first_time=12.5, descriptor=descriptor)
+
+    with pytest.raises(DivisionRefused) as error:
+        _ = read_store_clock(store_dir)
+
+    assert error.value.reason == reason
+
+
+def test_a_store_whose_first_chunk_has_no_index_has_no_clock(tmp_path: Path) -> None:
+    store_dir = _clock_store(
+        tmp_path, descriptor={"created_utc": "2021-02-19T19:22:53.032917"}
+    )
+    (store_dir / "000000" / "index.npz").unlink()
+
+    with (
+        pytest.warns(UserWarning, match="missing index"),
+        pytest.raises(DivisionRefused) as error,
+    ):
+        _ = read_store_clock(store_dir)
+
+    assert error.value.reason == "no_clock_source"
+
+
+def test_the_clock_reads_no_modification_time(tmp_path: Path) -> None:
+    store_dir = _clock_store(
+        tmp_path, first_time=12.5, descriptor={"timezone_local": "America/Los_Angeles"}
+    )
+    before = read_store_clock(store_dir)
+
+    for path in (store_dir, store_dir / "metadata.yaml", store_dir / "000000"):
+        os.utime(path, (0, 0))
+
+    assert read_store_clock(store_dir) == before

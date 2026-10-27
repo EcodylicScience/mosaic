@@ -504,7 +504,7 @@ def test_calms21_labels_and_tracks_agree_on_the_entry_name(tmp_path: Path) -> No
         CalMS21BehaviorConverter,
         CalMS21BehaviorParams,
     )
-    from mosaic.core.helpers import validate_entry_name
+    from mosaic.core.entry import validate_entry_name
     from mosaic.core.track_library.calms21 import Calms21Converter
 
     seq_id = "task1/test/mouse075_task1_annotator1"
@@ -614,7 +614,7 @@ def test_calms21_no_longer_fabricates_trex_shaped_placeholders() -> None:
 
 def test_entry_hints_refuse_a_path_separator() -> None:
     """The earliest of the three write boundaries names the converter."""
-    from mosaic.core.helpers import validate_entry_name
+    from mosaic.core.entry import validate_entry_name
 
     with pytest.raises(ValueError, match="forward slash"):
         _ = EntryHints(sequence="task1/test/m075")
@@ -636,7 +636,7 @@ def test_entry_hints_refuse_a_rate_that_is_not_a_measurement(fps: float) -> None
 
 
 def test_the_error_says_what_to_do_instead() -> None:
-    from mosaic.core.helpers import validate_entry_name
+    from mosaic.core.entry import validate_entry_name
 
     with pytest.raises(ValueError, match="__"):
         _ = validate_entry_name("a/b", "sequence")

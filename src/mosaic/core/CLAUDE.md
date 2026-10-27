@@ -184,3 +184,6 @@ in the root guide.
   from the directory inode. `verified_read_facts` passes store facts for every target,
   and `NativeStore` gates each video chunk at `"raw"` as it opens it
   (`tests/core/media/test_store_read_gate.py`).
+- `media/store_division.py` imports only standard-library leaves. Chunk ids alone
+  decide a division's frames, and a store's clock only names it. A frozen division is
+  reused or refused, and is not recomputed (`tests/core/media/test_store_division.py`).

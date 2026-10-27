@@ -195,7 +195,7 @@ every registered step (`tests/core/media/preprocess/test_media_steps.py`).
   `dict[str, Any]` across a feature boundary. Use a Pydantic model or a dataclass.
 - **Determinism.** The same params and inputs give the same `run_id` and outputs. Seed
   every random state and keep results independent of filesystem order.
-- **An entry name is one path component.** `validate_entry_name` (`core/helpers.py`)
+- **An entry name is one path component.** `validate_entry_name` (`core/entry.py`)
   refuses `/`, `\` and NUL at write boundaries and on no read path
   (`tests/core/pipeline/test_tracks_index.py`).
 - **A media variant is consumed by name and published in source space.**

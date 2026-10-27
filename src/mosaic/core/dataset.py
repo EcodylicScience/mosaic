@@ -44,7 +44,6 @@ from .helpers import (
     place_label_payload,
     text_cell,
     to_safe_name,
-    validate_entry_name,
 )
 from .media.drift import MeasurementOrigin, MediaDrift, classify_identity
 from .media.facts_columns import (
@@ -62,6 +61,7 @@ from .media.facts_columns import (
     series_facts_or_none,
 )
 from .media.probe_row import probe_video_metadata, row_from_facts
+from .media.store_division import store_base_name
 from .media.store_rate import store_rate_mismatch
 from .media.uniformity import UniformityVerdict, camera_uniformity
 from .schema import (
@@ -101,7 +101,13 @@ from .media.reprobe import (
     ReprobeReport,
     reprobe_media as _reprobe_media,
 )
-from .entry import Entry, EntryKeyCollisionError, entry_key_collision, entry_token
+from .entry import (
+    Entry,
+    EntryKeyCollisionError,
+    entry_key_collision,
+    entry_token,
+    validate_entry_name,
+)
 from .individuals import refuse_repeated_rows
 from .recording import (
     OrderFacts,
@@ -4043,15 +4049,13 @@ class Dataset:
 
         For a synchronized recording (*strip_camera* true) the shared sequence
         name is the dir name minus its ``.<camera_serial>`` suffix
-        (``sound_2_20210930_172126.23739656`` -> ``sound_2_20210930_172126``) --
-        never ``Path.stem``, which would strip a dotted serial like a file
-        extension. An unsynchronized store keeps its **full** dir name so two
-        separate recordings that happen to share a base (``rec.A`` / ``rec.B``,
-        different or absent sync ids) never collapse into one bogus 2-camera
-        sequence.
+        (:func:`~mosaic.core.media.store_division.store_base_name`). An
+        unsynchronized store keeps its **full** dir name so two separate
+        recordings that happen to share a base (``rec.A`` / ``rec.B``, different
+        or absent sync ids) never collapse into one bogus 2-camera sequence.
         """
-        if strip_camera and entry.camera_serial:
-            return entry.path.name.removesuffix("." + entry.camera_serial)
+        if strip_camera:
+            return store_base_name(entry.path.name, entry.camera_serial)
         return entry.path.name
 
     def _imgstore_rows(

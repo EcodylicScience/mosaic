@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Final
 import pandas as pd
 from mosaic_media import MediaFacts
 
-from mosaic.core.helpers import validate_entry_name
+from mosaic.core.entry import validate_entry_name
 from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.media.facts_columns import row_to_facts
 from mosaic.core.media.preprocess.geometry import Placement

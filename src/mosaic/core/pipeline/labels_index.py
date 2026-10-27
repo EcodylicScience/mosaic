@@ -38,7 +38,8 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
+from mosaic.core.entry import validate_entry_name
+from mosaic.core.helpers import text_cell, to_safe_name
 from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import (

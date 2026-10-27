@@ -35,8 +35,8 @@ from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.helpers import entry_directory, make_entry_key, validate_entry_name
-from mosaic.core.entry import EntryKeyCollisionError
+from mosaic.core.entry import EntryKeyCollisionError, validate_entry_name
+from mosaic.core.helpers import entry_directory, make_entry_key
 from mosaic.core.pipeline.entry_keys import key_collision_at_write
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.op_identity import parse_op_run_id

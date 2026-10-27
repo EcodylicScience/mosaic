@@ -63,7 +63,7 @@ import pandas as pd
 
 from mosaic.core.pipeline.composition import SourceMember
 
-from mosaic.core.helpers import validate_entry_name
+from mosaic.core.entry import validate_entry_name
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.label_series import is_under_label_series
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, is_under_tracking_root

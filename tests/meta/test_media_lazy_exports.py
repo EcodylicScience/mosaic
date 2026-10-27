@@ -29,6 +29,7 @@ LEAF_IMPORTS = (
     "from mosaic.core.media.preprocess.geometry import Placement",
     "from mosaic.core.media.facts_columns import row_to_facts",
     "import mosaic.core.media.reprobe, mosaic.core.media.uniformity",
+    "import mosaic.core.media.store_division",
     "import mosaic.core.dataset",
 )
 """The imports that a dataset read makes, each in its own interpreter."""

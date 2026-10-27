@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from mosaic.core.helpers import validate_entry_name
+from mosaic.core.entry import validate_entry_name
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.file_digest import MODEL_DIGEST_HEX, file_digest

@@ -42,8 +42,8 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
-from mosaic.core.helpers import text_cell, to_safe_name, validate_entry_name
+from mosaic.core.entry import Entry, validate_entry_name
+from mosaic.core.helpers import text_cell, to_safe_name
 from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS

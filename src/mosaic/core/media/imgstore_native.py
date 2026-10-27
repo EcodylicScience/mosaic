@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from bisect import bisect_right
 from pathlib import Path
 
 import cv2
@@ -36,6 +37,7 @@ from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
 
 from .read_target import verified_read_facts
+from .store_division import ChunkRecord
 
 # imgstore on-disk constants, inlined so reading needs no imgstore package.
 _STORE_MD_FILENAME = "metadata.yaml"
@@ -160,6 +162,23 @@ def _load_chunk_frame_times(index_base: Path) -> npt.NDArray[np.float64] | None:
     return None
 
 
+def _chunk_record(
+    chunk_id: int, path: Path, times: npt.NDArray[np.float64]
+) -> ChunkRecord:
+    """The record of an indexed chunk whose frames are at *times*."""
+    if times.size == 0:
+        return ChunkRecord(chunk_id, path, 0, None, None, 0.0)
+    max_interval = float(np.diff(times).max()) if times.size > 1 else 0.0
+    return ChunkRecord(
+        chunk_id=chunk_id,
+        path=path,
+        frame_count=int(times.size),
+        first_time=float(times[0]),
+        last_time=float(times[-1]),
+        max_interval=max_interval,
+    )
+
+
 def _chunksize(descriptor: dict[str, object]) -> int:
     """Return the frames per chunk that a store's descriptor declares, or ``0``."""
     value = descriptor.get("chunksize")
@@ -247,29 +266,36 @@ class NativeStore:
         self._video_ext = _chunk_extension(descriptor) if self._is_video else ""
         self._chunksize = _chunksize(descriptor)
 
-        # Build the global frame_index -> (chunk_id, within-chunk offset) map and
-        # collect per-frame timestamps, iterating chunks in ascending order.
-        self._frame_map: list[tuple[int, int]] = []
-        self._chunk_count = 0
+        # Every chunk in ascending order, and for each indexed one its id and the
+        # frame_index of its first frame. A chunk without an index is in the
+        # table without a frame_index.
+        records: list[ChunkRecord] = []
+        self._chunk_ids: list[int] = []
+        self._chunk_starts: list[int] = []
         chunk_times: list[npt.NDArray[np.float64]] = []
+        frame_count = 0
         for chunk_id in self._discover_chunks(store_class):
             index_base = self._chunk_index_base(chunk_id)
             times = _load_chunk_frame_times(index_base)
+            path = self._chunk_path(chunk_id)
             if times is None:
                 message = f"missing index for imgstore chunk {chunk_id}, skipping: {index_base}"
                 warnings.warn(message, stacklevel=2)
+                records.append(ChunkRecord(chunk_id, path, None, None, None, None))
                 continue
-            self._chunk_count += 1
-            for offset in range(len(times)):
-                self._frame_map.append((chunk_id, offset))
+            records.append(_chunk_record(chunk_id, path, times))
+            self._chunk_ids.append(chunk_id)
+            self._chunk_starts.append(frame_count)
             chunk_times.append(times)
+            frame_count += len(times)
+        self._chunk_table = tuple(records)
 
         frame_times = (
             np.concatenate(chunk_times) if chunk_times else np.empty(0, np.float64)
         )
         frame_times.setflags(write=False)
         self._frame_times = frame_times
-        self.frame_count = len(self._frame_map)
+        self.frame_count = frame_count
         if frame_times.size:
             self.duration = float(frame_times.max() - frame_times.min())
         else:
@@ -314,7 +340,7 @@ class NativeStore:
         A chunk of no frames is absent from :meth:`chunk_spans`, so this can exceed
         the length of :meth:`chunk_paths`.
         """
-        return self._chunk_count
+        return len(self._chunk_ids)
 
     @property
     def encoding(self) -> str | None:
@@ -326,6 +352,14 @@ class NativeStore:
         copying the chunks out has to know.
         """
         return self._encoding
+
+    def chunk_table(self) -> tuple[ChunkRecord, ...]:
+        """Every chunk of the store in ascending order, a chunk without an index included.
+
+        A chunk without an index has ``None`` for its count and times, and a
+        reader skips it.
+        """
+        return self._chunk_table
 
     def chunk_paths(self) -> list[Path]:
         """The store's video chunk files, in frame order.
@@ -347,12 +381,10 @@ class NativeStore:
         """
         if not self._is_video:
             return []
-        counts: dict[int, int] = {}
-        for chunk_id, _ in self._frame_map:
-            counts[chunk_id] = counts.get(chunk_id, 0) + 1
         return [
-            (self._basedir / f"{chunk_id:06d}{self._video_ext}", counts[chunk_id])
-            for chunk_id in sorted(counts)
+            (chunk.path, chunk.frame_count)
+            for chunk in self._chunk_table
+            if chunk.frame_count
         ]
 
     # --- Chunk discovery ---
@@ -377,6 +409,11 @@ class NativeStore:
             raise MediaProbeError(message)
         return sorted(ids)
 
+    def _chunk_path(self, chunk_id: int) -> Path:
+        if self._is_video:
+            return self._basedir / f"{chunk_id:06d}{self._video_ext}"
+        return self._basedir / f"{chunk_id:06d}"
+
     def _chunk_index_base(self, chunk_id: int) -> Path:
         if self._is_video:
             return self._basedir / f"{chunk_id:06d}"
@@ -389,7 +426,9 @@ class NativeStore:
         if frame_index < 0 or frame_index >= self.frame_count:
             message = f"frame_index {frame_index} out of range (0, {self.frame_count})"
             raise MediaProbeError(message)
-        chunk_id, offset = self._frame_map[frame_index]
+        position = bisect_right(self._chunk_starts, frame_index) - 1
+        chunk_id = self._chunk_ids[position]
+        offset = frame_index - self._chunk_starts[position]
         if self._is_video:
             image = self._decode_video(chunk_id, offset)
         else:

@@ -8,6 +8,25 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the division of a store recording, planned from its chunks
+
+**`core/media/store_division.py`.** `plan_division` divides a recording's stores
+into sequences of whole chunks under a `DivisionRule` (frames a multiple of the
+`chunksize`, the gap threshold, and whether a recording is one store or one
+camera). It returns the divisions with their first frame on the recording axis,
+UTC token and `imgstore-division/1` uid, the trailing sequence held back while
+its store records, and the divisions and stores it refuses, each with a reason.
+A chunk without an index refuses its division unless it is the trailing chunk of
+a store still recording, and the rate check compares the recording's slowest and
+fastest stores, whatever order they are given in. `read_store_clock`
+(`core/media/imgstore_io.py`) reads the clock that names them, from
+`created_utc`, the frame times, the extra data's `recording_start` or the
+directory name. `NativeStore.chunk_table()` lists every chunk with its index
+facts, a chunk without an index included. No code calls the planner yet.
+Indexes, manifests, run ids, compositions and frame reads do not change.
+
+- `validate_entry_name` moves from `mosaic.core.helpers` to `mosaic.core.entry`.
+
 ## Unreleased: an imgstore export at the store's frame rate, a probe of a store, and measured store facts
 
 **`export-store` 0.2 to 0.3.** A store whose chunks are H.264 was copied at the

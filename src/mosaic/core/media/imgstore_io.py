@@ -10,6 +10,7 @@ store like any other video source so the rest of the pipeline is unchanged:
   width/height/fps/frames; :func:`measure_store` measures the codec and timing
   that the facts state, and :func:`store_stat` the size and time of the store's
   files.
+* :func:`read_store_clock` reads the clock that names a store's divisions.
 * :class:`ImgStoreCapture` — adapt a store to the subset of the
   ``cv2.VideoCapture`` API that
   :class:`mosaic.core.media.video_io._ImgStoreMultiReader` relies on, so every
@@ -34,6 +35,8 @@ is only needed to *write* stores.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Iterator
@@ -44,7 +47,7 @@ import numpy.typing as npt
 import yaml
 from mosaic_media import MediaFacts, Verdict
 
-from mosaic.core.narrowing import is_str_mapping
+from mosaic.core.narrowing import is_object_list, is_str_mapping
 from mosaic.core.pipeline.media_index import StoreStat
 from mosaic.core.pipeline.stream_copy import header_codec
 from mosaic.media_probe_config import media_thresholds
@@ -52,6 +55,7 @@ from mosaic.user_paths import user_path
 
 from .facts_columns import ProbeMetadata, facts_to_row, store_facts
 from .imgstore_native import NativeStore
+from .store_division import DivisionRefused, StoreClock, store_clock
 from .video_io import FrameReader, SupportsCapture, SupportsSeekRead, VideoMetadata
 
 # An imgstore never needs transcode negotiation (no client-dependent codec, no
@@ -164,6 +168,23 @@ class StoreIdentity:
 _EMPTY_STORE_IDENTITY = StoreIdentity()
 
 
+def _store_metadata(path: Path | str) -> Mapping[str, object] | None:
+    """Return the parsed ``metadata.yaml`` of a store or its metadata file.
+
+    ``None`` for a path that is not a readable store's metadata.
+    """
+    p = Path(path)
+    md = p / _STORE_MD_FILENAME if p.is_dir() else p
+    if md.name != _STORE_MD_FILENAME or not md.is_file():
+        return None
+    try:
+        with md.open("r") as f:
+            loaded = yaml.safe_load(f)
+    except Exception:
+        return None
+    return loaded if is_str_mapping(loaded) else None
+
+
 def imgstore_store_identity(path: Path | str) -> StoreIdentity:
     """Read a store's Motif identity fields import-free from ``metadata.yaml``.
 
@@ -176,18 +197,9 @@ def imgstore_store_identity(path: Path | str) -> StoreIdentity:
     non-Motif store returns all-empty except ``store_uuid``, which every
     imgstore has.
     """
-    p = Path(path)
-    md = p / _STORE_MD_FILENAME if p.is_dir() else p
-    if md.name != _STORE_MD_FILENAME or not md.is_file():
+    root = _store_metadata(path)
+    if root is None:
         return _EMPTY_STORE_IDENTITY
-    try:
-        with md.open("r") as f:
-            loaded = yaml.safe_load(f)
-    except Exception:
-        return _EMPTY_STORE_IDENTITY
-    if not is_str_mapping(loaded):
-        return _EMPTY_STORE_IDENTITY
-    root = loaded
 
     def _str(key: str) -> str:
         value = root.get(key)
@@ -316,6 +328,59 @@ def measure_store(path: Path | str) -> StoreMeasurement:
             max_timestamp_gap_frame_periods=timing.max_timestamp_gap_frame_periods,
             max_instantaneous_fps=timing.max_instantaneous_fps,
         )
+
+
+_EXTRA_DATA_FILENAME: Final = "000000.extra_data.json"
+
+
+def _extra_recording_start(path: Path) -> float | None:
+    """Return the ``recording_start`` of the first record in a chunk's extra data.
+
+    Motif writes a list of records, one per sample of a data source. ``None``
+    when the file is absent or unreadable, or its start is not a number.
+    """
+    try:
+        loaded: object = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    first = loaded[0] if is_object_list(loaded) and loaded else loaded
+    if not is_str_mapping(first):
+        return None
+    start = first.get("recording_start")
+    if isinstance(start, bool) or not isinstance(start, (int, float)):
+        return None
+    return float(start)
+
+
+def read_store_clock(path: Path | str) -> StoreClock:
+    """Return the clock of the store at *path* (:func:`store_clock`).
+
+    The clock is anchored at the first frame of chunk 0, and reads the store's
+    ``metadata.yaml``, its chunk indexes and ``000000.extra_data.json``.
+
+    Raises:
+        MediaProbeError: If the store does not open.
+        DivisionRefused: If chunk 0 lacks an indexed frame, or no source gives
+            the store a start.
+    """
+    p = Path(path)
+    basedir = p if p.is_dir() else p.parent
+    with NativeStore(basedir) as store:
+        table = store.chunk_table()
+    first = table[0] if table and table[0].chunk_id == 0 else None
+    if first is None or first.first_time is None:
+        message = (
+            f"chunk 0 of the store {basedir.name!r} lacks an indexed frame to "
+            "anchor its clock at"
+        )
+        raise DivisionRefused("no_clock_source", message)
+    metadata = _store_metadata(basedir) or {}
+    return store_clock(
+        metadata,
+        basedir.name,
+        first.first_time,
+        _extra_recording_start(basedir / _EXTRA_DATA_FILENAME),
+    )
 
 
 def store_stat(path: Path | str) -> StoreStat:

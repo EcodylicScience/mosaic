@@ -41,7 +41,7 @@ from typing import Annotated, ClassVar, Generic
 import pandas as pd
 from typing_extensions import TypeVar
 
-from mosaic.core.helpers import validate_entry_name
+from mosaic.core.entry import validate_entry_name
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
