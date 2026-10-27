@@ -368,6 +368,7 @@ _DECLARATION_READERS: dict[str, frozenset[str] | None] = {
         {
             "_continuous_groups_with",
             "_declare_divided_groups",
+            "_withdraw_continuous_groups",
             "continuous_groups",
             "entry_key_collision",
             "is_continuous_group",

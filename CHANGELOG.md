@@ -124,6 +124,12 @@ manifest. Reading a version-3 manifest changes nothing in memory.
 - A division scope or a dividing scan of a store indexed whole is refused while that
   store's entries have outputs, whether or not the other stores of its camera are
   divided. A recording divided again without outputs is reported on stderr.
+- Indexing a divided store whole divides its recording again: a scan without a
+  division (`index_media`, or a source whose division was removed), `reassign=True`
+  over the divisions a scope assigned, and a `MediaIndexScope` without a division.
+  It is refused with `redivision_with_outputs` while the entries of the replaced
+  division rows have outputs. When it is written, each recording that keeps no
+  division row leaves `continuous_groups`.
 - A write of division rows raises the manifest to 4 once its refusals pass and
   before it writes the media index, and declares the recordings continuous after
   it. A refused write leaves the manifest as it was.

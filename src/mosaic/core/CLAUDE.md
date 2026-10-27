@@ -110,9 +110,13 @@ in the root guide.
   refused while `Dataset.entry_outputs` lists an output of the recording's entries,
   which needs `mosaic.tracking.register_ops()` for the tracking kinds. The undivided
   row of a store is checked on that store's entries alone, also when other stores of
-  its camera are divided. After the write each division without a sequence label is
-  labeled by its start on the store's local clock (`division_display_name`,
-  `tests/core/pipeline/test_sequence_labels.py`).
+  its camera are divided. A write that indexes a divided store whole (a scan without
+  a division, `reassign=True`, a scope without a division) is a re-division of its
+  division rows' entries, and a recording with no division row left leaves
+  `continuous_groups` under the index lock before the index write
+  (`Dataset._undivided_recordings`, `_withdraw_undivided`). After the write each
+  division without a sequence label is labeled by its start on the store's local
+  clock (`division_display_name`, `tests/core/pipeline/test_sequence_labels.py`).
 - A scan or a division write keeps a row's `cm_per_pixel` by its row key, then by its
   file when every row of the file agrees, then by the divided recording and camera
   when every row of those agrees (`Dataset._keep_calibration`). `media_calibration`

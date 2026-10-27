@@ -344,6 +344,11 @@ mosaic scan -m dataset.yaml
   when the other stores of its camera are divided. The refusal lists the outputs.
   Without outputs, `mosaic scan` and `write_media_index` divide the recording again and
   say so on stderr.
+- **Undividing.** Indexing a divided store whole also divides its recording again: a
+  scan without a division, a source whose division was removed, `--reassign` over the
+  divisions a `write_media_index` scope assigned, and a scope without a division. It is
+  refused while the entries of the divisions it replaces have outputs. Once it is
+  written, a recording without a divided store left leaves `continuous_groups`.
 
 Each sequence reads only its chunks, and its `first_frame` on the recording's frame axis
 is the first frame of its chunks. A tracker, an `infer-*` op and a converter number a

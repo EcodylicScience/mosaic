@@ -18,6 +18,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+import mosaic.core.dataset as dataset_module
 import mosaic.core.pipeline.inventory.scan as inventory_scan
 import mosaic.core.pipeline.media_index as media_index_module
 from mosaic.agent.mcp.local import LocalBackend
@@ -683,6 +684,224 @@ def test_by_camera_a_later_store_indexed_whole_is_divided_after_the_first(
         ("20210219T202253Z", 22, True),
         ("20210219T202255Z", 32, False),
     ]
+
+
+# --- indexing a divided store whole -----------------------------------------------
+
+
+def undivided_source(dataset: Dataset, stores: Path) -> None:
+    """Declare *stores* again as the media source ``stores``, without a division."""
+    _ = dataset.remove_scan_source("media", "stores")
+    dataset.add_scan_source(MediaScanSource(id="stores", path=str(stores)))
+
+
+def whole_store_rows(dataset: Dataset) -> list[tuple[str, str, str]]:
+    """Each media row's group, sequence and division rule."""
+    return [
+        (row["group"], row["sequence"], row["division_rule"])
+        for row in dataset.read_media_index()
+    ]
+
+
+def test_a_source_whose_division_was_removed_is_refused_while_an_entry_has_outputs(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+    _ = dataset.scan_media()
+    add_tracks_table(dataset, "v1", track_table(RECORDING, TOKENS[1], n_rows=10))
+    undivided_source(dataset, store.parent)
+    before = index_bytes(dataset)
+
+    error = refused(dataset.scan_media)
+
+    assert error.reason == "redivision_with_outputs"
+    assert f"{RECORDING}:{TOKENS[1]}: tracks-variant v1" in str(error)
+    assert "indexes its stores" in str(error)
+    assert index_bytes(dataset) == before
+    assert read_manifest(dataset.manifest_path).continuous_groups == (RECORDING,)
+
+
+def test_a_source_whose_division_was_removed_withdraws_the_recording(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+    _ = dataset.scan_media()
+    undivided_source(dataset, store.parent)
+    _ = capsys.readouterr()
+
+    _ = dataset.scan_media()
+
+    assert whole_store_rows(dataset) == [("", "rec", "")]
+    assert read_manifest(dataset.manifest_path).continuous_groups == ()
+    assert dataset.continuous_groups == ()
+    stderr = capsys.readouterr().err
+    assert f"the recording {RECORDING!r} is divided again" in stderr
+    assert "indexes its stores" in stderr
+
+
+def test_a_scan_without_a_division_is_refused_while_an_entry_has_outputs(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+    _ = dataset.scan_media()
+    _ = add_media_variant(dataset, "preprocess.0.1-abc", TOKENS[0], group=RECORDING)
+    before = index_bytes(dataset)
+
+    error = refused(lambda: dataset.index_media([store.parent]))
+
+    assert error.reason == "redivision_with_outputs"
+    assert f"{RECORDING}:{TOKENS[0]}: media-variant preprocess.0.1-abc" in str(error)
+    assert index_bytes(dataset) == before
+    assert read_manifest(dataset.manifest_path).continuous_groups == (RECORDING,)
+
+
+def test_a_scan_without_a_division_withdraws_the_recording_without_outputs(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+    _ = dataset.scan_media()
+
+    _ = dataset.index_media([store.parent])
+
+    assert whole_store_rows(dataset) == [("", "rec", "")]
+    assert read_manifest(dataset.manifest_path).continuous_groups == ()
+
+
+def test_reassigning_a_scopes_divisions_is_refused_while_an_entry_has_outputs(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = make_media_dataset(tmp_path / "dataset")
+    dataset.add_scan_source(MediaScanSource(id="stores", path=str(store.parent)))
+    _ = dataset.write_media_index([division_scope(store)])
+    add_tracks_table(dataset, "v1", track_table(RECORDING, TOKENS[2], n_rows=10))
+    before = index_bytes(dataset)
+
+    error = refused(lambda: dataset.scan_media(reassign=True))
+
+    assert error.reason == "redivision_with_outputs"
+    assert f"{RECORDING}:{TOKENS[2]}: tracks-variant v1" in str(error)
+    assert index_bytes(dataset) == before
+    assert read_manifest(dataset.manifest_path).continuous_groups == (RECORDING,)
+
+
+def test_reassigning_a_scopes_divisions_withdraws_the_recording_without_outputs(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = make_media_dataset(tmp_path / "dataset")
+    dataset.add_scan_source(MediaScanSource(id="stores", path=str(store.parent)))
+    _ = dataset.write_media_index([division_scope(store)])
+
+    _ = dataset.scan_media(reassign=True)
+
+    assert whole_store_rows(dataset) == [("", "rec", "")]
+    assert read_manifest(dataset.manifest_path).continuous_groups == ()
+
+
+def test_a_whole_store_scope_over_divisions_is_refused_while_an_entry_has_outputs(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    held = make_media_dataset(tmp_path / "held")
+    free = make_media_dataset(tmp_path / "free")
+    for dataset in (held, free):
+        _ = dataset.write_media_index([division_scope(store)])
+    add_tracks_table(held, "v1", track_table(RECORDING, TOKENS[0], n_rows=10))
+    whole = MediaIndexScope(directory=store, group="lab", sequence="rec")
+
+    held_before = index_bytes(held)
+
+    error = refused(lambda: held.write_media_index([whole]))
+    _ = free.write_media_index([whole])
+
+    assert error.reason == "redivision_with_outputs"
+    assert index_bytes(held) == held_before
+    assert read_manifest(held.manifest_path).continuous_groups == (RECORDING,)
+    assert whole_store_rows(free) == [("lab", "rec", "")]
+    assert read_manifest(free.manifest_path).continuous_groups == ()
+
+
+def test_a_scan_refused_inside_the_lock_keeps_the_recording_declared(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+    _ = dataset.scan_media()
+    undivided_source(dataset, store.parent)
+    before = dataset.manifest_path.read_bytes()
+    monkeypatch.setattr(Dataset, "refuse_entry_key_collision", refuse_every_entry_key)
+
+    with pytest.raises(EntryKeyCollisionError):
+        _ = dataset.scan_media()
+
+    assert dataset.manifest_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("path", ["source", "scope"])
+def test_the_recording_is_withdrawn_just_before_the_index_write(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    """No refusal runs between the withdrawal and the index write it precedes."""
+    store = make_store(tmp_path / "stores", ENDED)
+    dataset = scanned_dataset(tmp_path, make_media_dataset, store.parent)
+    _ = dataset.scan_media()
+    undivided_source(dataset, store.parent)
+    before = index_bytes(dataset)
+    seen: list[tuple[tuple[str, ...], bytes]] = []
+    write_rows = dataset_module.write_media_index_rows
+
+    def observed(target: Path, frame: pd.DataFrame) -> None:
+        manifest = read_manifest(dataset.manifest_path)
+        seen.append((manifest.continuous_groups, index_bytes(dataset)))
+        write_rows(target, frame)
+
+    monkeypatch.setattr(dataset_module, "write_media_index_rows", observed)
+    whole = MediaIndexScope(directory=store, group="", sequence="rec")
+
+    if path == "source":
+        _ = dataset.scan_media()
+    else:
+        _ = dataset.write_media_index([whole])
+
+    assert seen == [((), before)]
+    assert whole_store_rows(dataset) == [("", "rec", "")]
+
+
+def test_by_camera_a_store_indexed_whole_keeps_the_recording_of_its_divided_stores(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    stores = tmp_path / "stores"
+    first = make_store(stores / "one", ENDED, name="a")
+    second = make_store(
+        stores / "two", (5, 5, 2), name="b", created_utc="2021-02-19T20:22:53"
+    )
+    dataset = make_media_dataset(tmp_path / "dataset")
+    _ = dataset.write_media_index(
+        [
+            division_scope(first, identity="camera"),
+            division_scope(second, identity="camera"),
+        ]
+    )
+    dataset.add_scan_source(MediaScanSource(id="one", path=str(first.parent)))
+
+    _ = dataset.scan_media(reassign=True)
+
+    rows = whole_store_rows(dataset)
+    assert ("", "a", "") in rows
+    assert {group for group, _, rule in rows if rule} == {SERIAL}
+    assert read_manifest(dataset.manifest_path).continuous_groups == (SERIAL,)
 
 
 def test_outputs_the_tracking_roots_hold_are_refused_unlisted(

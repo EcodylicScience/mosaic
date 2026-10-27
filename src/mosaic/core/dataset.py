@@ -1621,6 +1621,26 @@ def _declare_divided_groups(manifest: DatasetManifest, names: Sequence[str]) -> 
     manifest.manifest_version = MANIFEST_VERSION
 
 
+def _withdraw_continuous_groups(
+    manifest: DatasetManifest, names: Collection[str]
+) -> None:
+    """Remove *names* from *manifest*'s continuous groups. In place."""
+    manifest.continuous_groups = tuple(
+        group for group in manifest.continuous_groups if group not in names
+    )
+
+
+def _report_redivisions(redivided: Iterable[tuple[str, str]]) -> None:
+    """Report on stderr each recording divided again, with why."""
+    for recording, why in redivided:
+        print(
+            f"[divide] the recording {recording!r} is divided again, because "
+            f"{why}. Its entries have no outputs, and its earlier divisions "
+            "are replaced.",
+            file=sys.stderr,
+        )
+
+
 def _check_manifest(manifest: DatasetManifest) -> None:
     """Validate *manifest* whole, after a ``model_copy`` that ran no validators.
 
@@ -2741,7 +2761,11 @@ class Dataset:
         (:meth:`write_media_index`), and declares each recording continuous. A
         rescan measures each store again, keeps its divisions, and adds the
         divisions that closed since. A store whose identity a caller assigned is
-        refused unless *reassign* is set.
+        refused unless *reassign* is set. A source without a division that finds
+        a divided store indexes it whole, as does *reassign* over the divisions a
+        scope assigned. That divides its recording again, which is refused while
+        the entries of the replaced divisions have outputs, and the recording
+        then leaves ``continuous_groups``.
 
         Args:
             only: Restrict to these source ids. The declaration is not changed.
@@ -4516,9 +4540,11 @@ class Dataset:
             self.refuse_entry_key_collision(
                 written, self._entries_beside_media_write(written, committed, preserved)
             )
+            undivided = self._undivided_recordings(committed, dedup)
             if divided is not None:
                 self._prepare_divided_manifest(divided)
             merged: list[dict[str, object]] = [*preserved, *dedup]
+            self._withdraw_undivided(undivided, merged)
             # Densified over the sequences this scan touched, not over the whole
             # file: ``densify_video_order`` renumbers every row it is handed, so
             # passing all of them re-numbers untouched sequences and moves their
@@ -4531,6 +4557,7 @@ class Dataset:
             densify_video_order(in_scope, session_positions={}, prior_order=prior_order)
             df_out = frame_from_rows(merged)
             write_media_index_rows(out_csv, df_out)
+        _report_redivisions(undivided)
         # ``merged``, not ``dedup``: ``write_sequence_compositions`` *replaces*
         # the per-sequence index, so projecting only the scanned rows would
         # delete the composition row of every sequence this pass preserved.
@@ -5032,12 +5059,63 @@ class Dataset:
                 lambda manifest: _declare_divided_groups(manifest, names)
             )
         self._label_divisions(divided.display_names)
-        for recording, why in divided.redivided:
-            print(
-                f"[divide] the recording {recording!r} is divided again, because "
-                f"{why}. Its entries have no outputs, and its earlier divisions "
-                "are replaced.",
-                file=sys.stderr,
+        _report_redivisions(divided.redivided)
+
+    def _undivided_recordings(
+        self,
+        committed: Sequence[Mapping[str, object]],
+        written: Sequence[Mapping[str, object]],
+    ) -> list[tuple[str, str]]:
+        """Return each recording whose stores *written* indexes whole, with why.
+
+        Indexing a divided store whole divides its recording again. It is
+        refused while an entry of a division row that it replaces has outputs.
+
+        Raises:
+            DivisionRefused: ``redivision_with_outputs``, and as
+                :meth:`entry_outputs` raises it.
+        """
+        divisions = [row for row in committed if media_row_key(row).window is not None]
+        if not divisions:
+            return []
+        whole = {
+            key.abs_path
+            for key in map(self._stored_row_key, written)
+            if key is not None and key.window is None
+        }
+        replaced: dict[str, list[Mapping[str, object]]] = {}
+        for row in divisions:
+            key = self._stored_row_key(row)
+            if key is not None and key.abs_path in whole:
+                replaced.setdefault(read_link_cell(row, "group"), []).append(row)
+        undivided: list[tuple[str, str]] = []
+        for recording, rows in sorted(replaced.items()):
+            stores = sorted({read_link_cell(row, "abs_path") for row in rows})
+            why = f"the write indexes its stores {stores} whole"
+            self._refuse_redivision_with_outputs(recording, why, entries_of_rows(rows))
+            undivided.append((recording, why))
+        return undivided
+
+    def _withdraw_undivided(
+        self,
+        undivided: Sequence[tuple[str, str]],
+        merged: Iterable[Mapping[str, object]],
+    ) -> None:
+        """Withdraw each recording of *undivided* that *merged* divides no store of.
+
+        Called under the media index lock, before *merged* is written, so the
+        groups of :meth:`set_continuous_groups` and the division rows agree once
+        the index is written.
+        """
+        divided = {
+            read_link_cell(row, "group")
+            for row in merged
+            if media_row_key(row).window is not None
+        }
+        names = [recording for recording, _ in undivided if recording not in divided]
+        if names:
+            self.mutate_manifest(
+                lambda manifest: _withdraw_continuous_groups(manifest, names)
             )
 
     def _label_divisions(self, display_names: Mapping[Entry, str]) -> None:
@@ -5230,7 +5308,9 @@ class Dataset:
         recording again, which is refused while its entries have outputs
         (:meth:`entry_outputs`), and the division of a store indexed whole is
         refused while that store's entries have outputs. A re-division without
-        outputs is reported on stderr. Call ``mosaic.tracking.register_ops()``
+        outputs is reported on stderr. A scope without a division over a divided
+        store divides its recording again in the same way, and the recording
+        then leaves ``continuous_groups``. Call ``mosaic.tracking.register_ops()``
         first, so that the tracking outputs are listed. The manifest is raised
         to version 4 before the index is written, and the recordings are
         declared continuous after it.
@@ -5444,6 +5524,7 @@ class Dataset:
             self.refuse_entry_key_collision(
                 written, self._entries_beside_media_write(written, committed, preserved)
             )
+            undivided = self._undivided_recordings(committed, fresh)
             self._prepare_divided_manifest(divided)
             # A store's scale is a fact about its pixels, which a division keeps.
             self._keep_calibration(divided.rows, committed)
@@ -5475,6 +5556,7 @@ class Dataset:
             self._carry_forward_derivative_links(fresh, index_path)
             merged: list[dict[str, object]] = [dict(row) for row in preserved]
             merged.extend(fresh)
+            self._withdraw_undivided(undivided, merged)
             in_scope = [
                 row
                 for row in merged
@@ -5487,6 +5569,7 @@ class Dataset:
             )
             write_media_index_rows(index_path, frame_from_rows(merged))
         self._declare_divided_recordings(divided)
+        _report_redivisions(undivided)
         self._write_media_compositions(merged)
         for moved in drift:
             print(
