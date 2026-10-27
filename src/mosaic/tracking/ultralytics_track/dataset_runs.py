@@ -471,6 +471,7 @@ def run_ultralytics(
                 item.sequence,
                 item.video_paths,
                 item.source_facts,
+                windows=item.video_windows,
                 kind=ULTRALYTICS_KIND,
                 variant=item.variant,
             )

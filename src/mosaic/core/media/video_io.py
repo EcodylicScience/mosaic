@@ -6,6 +6,12 @@
 Every read names a :data:`~mosaic.core.media.read_target.ReadTarget`, and the
 facts it injects are gated against that target first.
 
+A read of an imgstore may name a window of its chunks
+(:class:`~mosaic.core.media.store_division.StoreWindow`), which a division of a
+store reads, and frame 0 is then the window's first frame. A window is refused on
+a plain video. The functions that read an entry's clips take ``windows``
+parallel to the clips, as a required keyword.
+
 A raw ``.h264`` elementary stream (Raspberry Pi) lacks a container. Its header
 metadata is unreliable, and a seek corrupts the decoder. ``probe_media`` measures
 its frame count and rate by scanning packets, and ``VideoReader`` decodes it
@@ -38,6 +44,7 @@ from mosaic_media.io import SeekIndex
 from mosaic_media.io import VideoReader
 
 from .read_target import ReadTarget, verified_read_facts
+from .store_division import StoreWindow
 from .store_rate import store_rate_mismatch
 
 # Downscale filter for candidate-feature frames. Read at call time so it stays
@@ -148,13 +155,15 @@ def facts_to_video_metadata(path: Path, facts: MediaFacts) -> VideoMetadata:
     )
 
 
-def get_video_metadata(video_path: Path | str) -> VideoMetadata:
+def get_video_metadata(
+    video_path: Path | str, window: StoreWindow | None = None
+) -> VideoMetadata:
     """Read basic metadata from a video file.
 
     imgstore directories dispatch to the imgstore metadata reader (no
-    cv2/ffprobe). Everything else is probed via ``mosaic_media.probe_media``
-    and returns display-oriented width/height (coded dimensions swapped on a
-    quarter-turn rotation).
+    cv2/ffprobe), which reads a *window*'s chunks alone. Everything else is
+    probed via ``mosaic_media.probe_media`` and returns display-oriented
+    width/height (coded dimensions swapped on a quarter-turn rotation).
     """
     from .imgstore_io import imgstore_metadata, is_imgstore
 
@@ -162,9 +171,10 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
         # Resolve happens inside imgstore_metadata; a store is a directory,
         # read through the imgstore index rather than mosaic_media's
         # ffprobe-based probe, so dispatch before that probe.
-        return imgstore_metadata(video_path)
+        return imgstore_metadata(video_path, window)
 
     path = user_path(video_path).resolve()
+    refuse_plain_window(path, window)
     try:
         facts = probe_media(path)
     except MediaProbeError as exc:
@@ -175,17 +185,20 @@ def get_video_metadata(video_path: Path | str) -> VideoMetadata:
 
 
 def video_metadata_or_probe(
-    video_path: Path | str, facts: MediaFacts | None
+    video_path: Path | str,
+    facts: MediaFacts | None,
+    window: StoreWindow | None = None,
 ) -> VideoMetadata:
     """Metadata for *video_path*, from *facts* when the caller already holds them.
 
     A caller holding a measurement must not pay for a second one: the packet scan
     that mints identity reads every payload byte, so re-probing costs between
     1.5x and 2x the scan it repeats. Passing ``None`` probes, which is the only
-    remaining reason to reach :func:`get_video_metadata` directly.
+    remaining reason to reach :func:`get_video_metadata` directly. The facts of
+    a *window* of a store are the window's.
     """
     if facts is None:
-        return get_video_metadata(video_path)
+        return get_video_metadata(video_path, window)
     return facts_to_video_metadata(user_path(video_path).resolve(), facts)
 
 
@@ -289,6 +302,8 @@ def extract_candidate_features(
     crop_rect: Optional[tuple[int, int, int, int]],
     max_candidates: Optional[int] = None,
     facts: MediaFacts | None = None,
+    *,
+    window: StoreWindow | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Decode candidate frames and return:
@@ -300,7 +315,7 @@ def extract_candidate_features(
     verbatim; a bare-path caller passes ``None`` and the file is probed and
     gated. The target is fixed because these are k-means candidate frames
     addressed by index: a caller must not be able to declare ``"raw"`` for
-    this read.
+    this read. A *window* reads those chunks of a store (:func:`open_frame_reader`).
     """
     from .imgstore_io import is_imgstore
 
@@ -331,6 +346,7 @@ def extract_candidate_features(
             end_frame=int(end_frame) + 1,
             frame_step=int(candidate_step),
             target="analysis",
+            window=window,
         )
         try:
             for frame_idx, frame in reader:
@@ -339,6 +355,7 @@ def extract_candidate_features(
         finally:
             reader.close()
     else:
+        refuse_plain_window(resolved, window)
         # Candidate features resize through cv2, not the reader's libswscale resize,
         # so single-, multi-, crop-, and imgstore paths share one filter and produce
         # comparable k-means features (RESIZE_INTERPOLATION, monkeypatchable).
@@ -370,8 +387,12 @@ def save_frames_as_png(
     output_dir: Path | str,
     crop_rect: Optional[tuple[int, int, int, int]],
     facts: MediaFacts | None = None,
+    *,
+    window: StoreWindow | None = None,
 ) -> list[dict[str, Any]]:
     """Decode selected frames and save each as PNG.
+
+    A *window* reads those chunks of a store (:func:`read_frames_at`).
 
     *facts*, when supplied (a dataset-scoped caller holding the media index
     row), is gated against the fixed ``"analysis"`` target rather than injected
@@ -401,7 +422,9 @@ def save_frames_as_png(
             }
         )
 
-    for frame_idx, frame in read_frames_at(video_path, frame_indices, facts):
+    for frame_idx, frame in read_frames_at(
+        video_path, frame_indices, facts, window=window
+    ):
         _write(frame_idx, frame)
 
     # Restore original order from frame_indices
@@ -415,6 +438,8 @@ def read_frames_at(
     video_path: Path | str,
     frame_indices: Iterable[int],
     facts: MediaFacts | None = None,
+    *,
+    window: StoreWindow | None = None,
 ) -> Generator[tuple[int, np.ndarray], None, None]:
     """Yield ``(frame, image)`` for each distinct index of *frame_indices*, ascending.
 
@@ -428,9 +453,12 @@ def read_frames_at(
         video_path: The video file or imgstore directory.
         frame_indices: The frames to read.
         facts: The stored media facts of *video_path*, or ``None``.
+        window: The chunks of a store to read, counted from the window's first
+            frame, or ``None``.
 
     Raises:
-        MediaProbeError: If a frame fails to decode.
+        MediaProbeError: If a frame fails to decode, or lies outside the window.
+        ValueError: If *window* is given for a plain video.
     """
     from .imgstore_io import ImgStoreCapture, is_imgstore
 
@@ -439,7 +467,7 @@ def read_frames_at(
     if not targets:
         return
     if is_imgstore(resolved):
-        capture: SupportsSeekRead = ImgStoreCapture(resolved)
+        capture: SupportsSeekRead = ImgStoreCapture(resolved, window)
         try:
             for frame_idx in targets:
                 capture.seek(frame_idx)
@@ -451,6 +479,7 @@ def read_frames_at(
         finally:
             capture.close()
         return
+    refuse_plain_window(resolved, window)
     with VideoReader(
         resolved, facts=verified_read_facts(resolved, facts, "analysis")[0]
     ) as reader:
@@ -460,9 +489,43 @@ def read_frames_at(
 # --- Multi-video support ---
 
 
+def refuse_plain_window(path: Path, window: StoreWindow | None) -> None:
+    """Raise when a window of chunks is named for *path*, which is not a store.
+
+    Raises:
+        ValueError: If *window* is not ``None``.
+    """
+    if window is not None:
+        message = (
+            f"{path} is not an imgstore, and a read of it names the chunks "
+            f"{window.chunk_first}-{window.chunk_last}"
+        )
+        raise ValueError(message)
+
+
+def _clip_windows(
+    paths: Sequence[Path], windows: Sequence[StoreWindow | None] | None
+) -> list[StoreWindow | None]:
+    """Return *windows* parallel to *paths*, ``None`` for each clip when absent.
+
+    Raises:
+        ValueError: If *windows* is not parallel to *paths*.
+    """
+    if windows is None:
+        return [None] * len(paths)
+    if len(windows) != len(paths):
+        message = f"{len(windows)} windows for {len(paths)} clips; they are parallel"
+        raise ValueError(message)
+    return list(windows)
+
+
 @dataclass(frozen=True)
 class VideoSegment:
-    """Metadata for one video file within a multi-video sequence."""
+    """Metadata for one video file within a multi-video sequence.
+
+    ``window`` is the chunks of a store that the segment reads, ``None`` for
+    the whole file.
+    """
 
     path: Path
     frame_count: int
@@ -470,6 +533,7 @@ class VideoSegment:
     width: int
     height: int
     start_frame: int  # global frame index where this segment starts
+    window: StoreWindow | None = None
 
 
 class _ImgStoreMultiReader:
@@ -487,9 +551,16 @@ class _ImgStoreMultiReader:
     ----------
     video_paths : list[Path] | Path | str
         One or more imgstore directory paths, in playback order.
+    windows : sequence of StoreWindow or None, or None
+        The chunks of each store that its segment reads, parallel to
+        *video_paths*. ``None`` reads every store whole.
     """
 
-    def __init__(self, video_paths: list[Path] | Path | str):
+    def __init__(
+        self,
+        video_paths: list[Path] | Path | str,
+        windows: Sequence[StoreWindow | None] | None = None,
+    ):
         # Set _closed early so __del__ is safe if __init__ fails partway
         self._closed: bool = False
         self._current_cap: Optional[SupportsSeekRead] = None
@@ -500,16 +571,18 @@ class _ImgStoreMultiReader:
 
         self._segments: list[VideoSegment] = []
         self._seg_starts: list[int] = []  # for bisect lookup
-        self._build_segments(paths)
+        self._build_segments(paths, _clip_windows(paths, windows))
 
         self._current_seg_idx: int = 0
         self._current_local_frame: int = 0
         self._global_frame: int = 0
 
-    def _build_segments(self, paths: list[Path]) -> None:
+    def _build_segments(
+        self, paths: list[Path], windows: Sequence[StoreWindow | None]
+    ) -> None:
         cumulative = 0
-        for p in paths:
-            meta = get_video_metadata(p)
+        for p, window in zip(paths, windows, strict=True):
+            meta = get_video_metadata(p, window)
             # Every segment is imgstore-backed: stores support random access
             # by frame_index and are always seekable.
             seg = VideoSegment(
@@ -519,6 +592,7 @@ class _ImgStoreMultiReader:
                 width=meta.width,
                 height=meta.height,
                 start_frame=cumulative,
+                window=window,
             )
             self._segments.append(seg)
             self._seg_starts.append(cumulative)
@@ -609,7 +683,7 @@ class _ImgStoreMultiReader:
         if self._current_cap is not None:
             self._current_cap.close()
         seg = self._segments[seg_idx]
-        self._current_cap = ImgStoreCapture(seg.path)
+        self._current_cap = ImgStoreCapture(seg.path, seg.window)
         self._current_seg_idx = seg_idx
         self._current_local_frame = 0
 
@@ -705,6 +779,7 @@ type MultiVideoReaderLike = _ImgStoreMultiReader | _PlainMultiReader
 def open_multi_video_reader(
     video_paths: list[Path] | Path | str,
     *,
+    windows: Sequence[StoreWindow | None] | None,
     facts: Sequence[MediaFacts] | None = None,
     indices: Sequence[SeekIndex] | None = None,
     target: ReadTarget,
@@ -714,7 +789,9 @@ def open_multi_video_reader(
     An all-imgstore sequence routes to :class:`_ImgStoreMultiReader`; an
     all-plain-video sequence routes to the ``mosaic_media`` reader, gating
     *facts* against *target* first. Mixing imgstore directories and plain video
-    files within one sequence is not supported.
+    files within one sequence is not supported. *windows* are the chunks of each
+    store that the reader reads, parallel to *video_paths*, and ``None`` reads
+    each file whole. A window on a plain video raises ``ValueError``.
 
     *target* is required on both branches even though the imgstore branch
     constructs no ``mosaic_media`` reader and calls no gate: the parameter is
@@ -726,11 +803,14 @@ def open_multi_video_reader(
     )  # local: breaks the video_io <-> imgstore_io cycle
 
     paths = entry_paths(video_paths)
+    clip_windows = _clip_windows(paths, windows)
     stores = [is_imgstore(p) for p in paths]
     if any(stores) and not all(stores):
         raise ValueError("mixed video-plus-imgstore sequences are not supported")
     if all(stores):
-        return _ImgStoreMultiReader(paths)
+        return _ImgStoreMultiReader(paths, clip_windows)
+    for path, window in zip(paths, clip_windows, strict=True):
+        refuse_plain_window(path, window)
     return _PlainMultiReader(
         paths, facts=verified_read_facts(paths, facts, target), indices=indices
     )
@@ -751,8 +831,12 @@ def open_frame_reader(
     facts: MediaFacts | None = None,
     *,
     target: ReadTarget,
+    window: StoreWindow | None = None,
 ) -> FrameReader:
     """Open a high-throughput sequential reader, dispatching on the path type.
+
+    A *window* reads those chunks of a store, frame 0 being its first frame,
+    and raises ``ValueError`` for a plain video.
 
     Returns an :class:`mosaic.core.media.imgstore_io.ImgStoreFrameReader` for imgstore
     directories, otherwise a :class:`mosaic_media.io.VideoReader`. Both satisfy
@@ -774,7 +858,9 @@ def open_frame_reader(
             frame_step=frame_step,
             resize=resize,
             hwaccel=hwaccel,
+            window=window,
         )
+    refuse_plain_window(Path(video_path), window)
     return VideoReader(
         video_path,
         start_frame=start_frame,
@@ -800,6 +886,7 @@ def entry_paths(video_paths: str | Path | Sequence[Path]) -> list[Path]:
 def read_entry_frames(
     video_paths: str | Path | Sequence[Path],
     *,
+    windows: Sequence[StoreWindow | None] | None,
     facts: Sequence[MediaFacts] | None = None,
     start_frame: int = 0,
     end_frame: int | None = None,
@@ -822,6 +909,8 @@ def read_entry_frames(
     Args:
         video_paths: The clips in order, or one file. One file may be given as
             a bare path (:func:`entry_paths`).
+        windows: The chunks of each store to read, parallel to *video_paths*,
+            or ``None`` to read every file whole.
         facts: The clips' facts, parallel to *video_paths*, or ``None`` to probe.
         start_frame: The first frame read.
         end_frame: The frame the window stops before, or ``None`` for the end.
@@ -829,6 +918,7 @@ def read_entry_frames(
         target: The read target the facts are gated against.
     """
     paths = entry_paths(video_paths)
+    clip_windows = _clip_windows(paths, windows)
     if len(paths) == 1:
         single = open_frame_reader(
             paths[0],
@@ -837,13 +927,16 @@ def read_entry_frames(
             frame_step=frame_step,
             facts=facts[0] if facts else None,
             target=target,
+            window=clip_windows[0],
         )
         try:
             yield from single
         finally:
             single.close()
         return
-    reader = open_multi_video_reader(paths, facts=facts, target=target)
+    reader = open_multi_video_reader(
+        paths, windows=clip_windows, facts=facts, target=target
+    )
     try:
         total = reader.total_frames
         stop = total if end_frame is None else min(end_frame, total)

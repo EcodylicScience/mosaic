@@ -22,6 +22,7 @@ import pandas as pd
 from mosaic_media import MediaFacts
 from scipy.ndimage import maximum_filter
 
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.video_io import entry_paths, read_entry_frames
 from mosaic.optional_dependency import require
 from mosaic.tracking.external.runner.ultralytics_protocol import (
@@ -204,6 +205,7 @@ def run_localizer_inference(
     point_radius: int = 4,
     class_colors: dict[int, tuple[int, int, int]] | None = None,
     facts: Sequence[MediaFacts] | None = None,
+    windows: Sequence[StoreWindow | None] | None = None,
 ) -> list[LocalizerFrame]:
     """Run localizer inference on a video, or on an entry's clips as one video.
 
@@ -242,6 +244,9 @@ def run_localizer_inference(
         The probed facts of *video_paths*, parallel to them, as an index row or
         a probe records them. They are gated for analysis before any frame is
         read, and each file is probed for them when they are not given.
+    windows : sequence of StoreWindow or None, optional
+        The chunks of each store that are read, parallel to *video_paths*.
+        ``None`` reads every file whole.
 
     Returns
     -------
@@ -261,6 +266,7 @@ def run_localizer_inference(
     paths = entry_paths(video_paths)
     frames = read_entry_frames(
         paths,
+        windows=windows,
         facts=facts,
         start_frame=start_frame,
         end_frame=end_frame,

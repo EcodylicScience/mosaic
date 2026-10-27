@@ -65,9 +65,12 @@ in the root guide.
   (`test_the_empty_group_cannot_be_continuous`). `Dataset.set_continuous_groups` also
   refuses `__` or `:` in a name, the name of an empty-group sequence, and a group with
   no indexed entry, and a manifest declaring such a name still loads. Each sequence of a
-  continuous group resolves to its own media rows. `ResolvedMedia.first_frame` sums the
-  media frames of the sequences before it in name order (`_MemberPlacement` in
-  `dataset.py`), and readers map a tracks frame through `ResolvedMedia.sequence_frame`.
+  continuous group resolves to its own media rows. A division's
+  `ResolvedMedia.first_frame` is its row's `first_frame` cell. Any other sequence's sums
+  the media frames of the sequences before it in name order (`_MemberPlacement` in
+  `dataset.py`). A group mixing division rows with other rows places none, and neither
+  does an undeclared group holding a division row. Readers map a tracks frame through
+  `ResolvedMedia.sequence_frame`.
   A sequence that cannot be placed still resolves for a join or a transcode, and its
   `first_frame` raises (`tests/core/media/test_continuous_group_media.py`).
   `Dataset.sequence_first_frames` reads it for many entries, one per camera, and is
@@ -187,3 +190,16 @@ in the root guide.
 - `media/store_division.py` imports only standard-library leaves. Chunk ids alone
   decide a division's frames, and a store's clock only names it. A frozen division is
   reused or refused, and is not recomputed (`tests/core/media/test_store_division.py`).
+- A divided store has one media row per division, sharing the store's `abs_path`.
+  The seven trailing division cells (`DIVISION_COLUMNS`) are blank on an undivided
+  row. A row is keyed by `media_row_key` (path and chunks): the scan dedupe,
+  `_dedupe_scope_rows`, `_keep_assigned_identity`, `_keep_calibration`, the write
+  path's prior rows and facts cache, and `MediaRows` key on it. A lookup of a row
+  takes `ResolvedMedia.row_keys`. Sites that mean the file keep `abs_path`:
+  `_row_claimed`, `reprobe-media` (one `probe_store` per store), prune, path
+  rewriting and the summary's video counts (`tests/core/media/test_division_rows.py`).
+- A reader of a division opens its path on `ResolvedMedia.windows`, and local
+  frame `k` is store frame `chunk_first * chunksize + k`. A reader of an entry's
+  clips takes `windows` as a required keyword. A window whose chunk is absent or
+  unindexed is refused, and other windows read on
+  (`tests/core/media/test_store_window_reads.py`).

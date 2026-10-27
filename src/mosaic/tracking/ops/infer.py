@@ -30,6 +30,7 @@ from mosaic_media import MediaFacts, MediaProbeError
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.individuals import refuse_repeated_rows
 from mosaic.core.media.read_target import verified_read_facts
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.timeline import concatenated_timeline
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pose_columns import (
@@ -177,6 +178,10 @@ class VideoInput:
     facts: tuple[MediaFacts, ...]
     on_output: Callable[[str], None]
     cancel_check: Callable[[], bool] | None
+    windows: tuple[StoreWindow | None, ...]
+    """The chunks of each store in *video_paths* that the model reads, ``None`` for
+    a file read whole. A store is handed to the localizer alone, and a runner is
+    handed its chunk files or its export."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -624,6 +629,8 @@ class _InferenceEntry:
             describes them.
         facts: The facts of *video_paths*, parallel to them and gated for
             analysis.
+        windows: The chunks of each store in *video_paths* that the model
+            reads, parallel to them, ``None`` for a file read whole.
         consumed_media: The media files that a table from this entry derives
             from.
         axis: How a table from this entry is placed on the entry's axes.
@@ -638,6 +645,7 @@ class _InferenceEntry:
     sequence: str
     video_paths: tuple[Path, ...]
     facts: tuple[MediaFacts, ...]
+    windows: tuple[StoreWindow | None, ...]
     consumed_media: tuple[Path, ...]
     axis: EntryAxis
     source_uid: str
@@ -698,6 +706,7 @@ def _inference_entry(
     variant = variants.resolve(ds, entry) if variants is not None else None
     if variant is not None:
         paths, stored = (variant.path,), (variant.facts,)
+        clip_windows: tuple[StoreWindow | None, ...] = (None,)
         consumed_media = variant.consumed_media
         axis = EntryAxis.of_variant(variant.mapping(), first_frame=first_frame)
     else:
@@ -710,9 +719,11 @@ def _inference_entry(
             sequence,
             resolved.paths,
             resolved.facts,
+            windows=resolved.windows,
             hands_over_path=not in_process,
         )
         paths, stored = tuple(resolved.paths), tuple(resolved.facts)
+        clip_windows = tuple(resolved.windows)
         consumed_media = paths
         axis = EntryAxis.of_entry_media(
             resolved.facts, windowed=windowed, first_frame=first_frame
@@ -720,9 +731,11 @@ def _inference_entry(
     source_uid = entry_source_uid(stored)
     targets: tuple[Path, ...]
     facts: tuple[MediaFacts, ...]
+    windows: tuple[StoreWindow | None, ...]
     if in_process:
         joined = join_to_read(ds, entry, asker=kind) if variant is None else None
         targets = (joined,) if joined is not None else paths
+        windows = (None,) if joined is not None else clip_windows
         # The gate, run here rather than inside the reader, as it is for the ops
         # whose runner reads the files. A join is not the file the index
         # measured, so it is probed.
@@ -736,15 +749,24 @@ def _inference_entry(
         # the gate. A required-but-unlinked entry already raised in
         # resolve_media_scope, before any defective original was opened.
         files = entry_runner_sources(
-            ds, group, sequence, paths, stored, kind=kind, variant=variant
+            ds,
+            group,
+            sequence,
+            paths,
+            stored,
+            windows=clip_windows,
+            kind=kind,
+            variant=variant,
         )
         targets = tuple(file.path for file in files)
         facts = tuple(file.facts for file in files)
+        windows = (None,) * len(targets)
     return _InferenceEntry(
         group=group,
         sequence=sequence,
         video_paths=targets,
         facts=facts,
+        windows=windows,
         consumed_media=consumed_media,
         axis=axis,
         source_uid=source_uid,
@@ -967,6 +989,7 @@ def _run_inference_op(
                         video_paths=item.video_paths,
                         work_dir=seq_dir,
                         facts=item.facts,
+                        windows=item.windows,
                         # Every line the model's runner writes refreshes the claim and
                         # reports position. Without it a video longer than
                         # ``PREDICT_IDLE_SECONDS`` expires its own claim mid-run and a
@@ -1404,6 +1427,7 @@ class InferLocalizerOp(Op[LocalizerInferParams]):
                     device=params.device,
                     save_images=params.save_images,
                     facts=item.facts,
+                    windows=item.windows,
                 )
                 # No published path: this one ran here, so the scaffold writes it.
                 # One element per frame read, detections or none.

@@ -446,7 +446,7 @@ def _camera_reads(
         for camera in media
     ]
     run_entry_of = {
-        camera.resolved.paths[0]: run_entry
+        camera.resolved.row_keys[0]: run_entry
         for (_, camera), run_entry in zip(
             cameras, run_entries(ds, cameras), strict=True
         )
@@ -458,7 +458,7 @@ def _camera_reads(
             draft.refusals.append(_unresolved(entry, read))
             continue
         for camera in read:
-            run_entry = run_entry_of[camera.resolved.paths[0]]
+            run_entry = run_entry_of[camera.resolved.row_keys[0]]
             several = camera_counts[run_entry] > 1
             reads.append(_CameraRead(entry, camera, run_entry, several))
     return reads
@@ -585,6 +585,7 @@ def _answer(
                 camera.sequence,
                 camera.resolved.paths,
                 camera.resolved.facts,
+                windows=camera.resolved.windows,
                 hands_over_path=False,
             )
             _ = join_to_read(ds, camera, asker=kind)
@@ -648,7 +649,8 @@ def _store_export_run(
     """Return the ``export-store`` run of the read's entry, or why its run fails.
 
     The run exports the store of every camera of the entry, each named by its
-    ``video_uuid``, and indexes the exports beside a ``media_raw`` root.
+    ``video_uuid``, and indexes the exports beside a ``media_raw`` root. Each
+    division of a store is its own entry, and has its own run.
     """
     entry, camera = read.entry, read.camera
     label = _label(kind, entry)
@@ -850,7 +852,10 @@ def _other_camera_written(
         read: The read.
     """
     camera = written.get(read.run_entry)
-    if camera is None or camera.resolved.paths[0] == read.camera.resolved.paths[0]:
+    if (
+        camera is None
+        or camera.resolved.row_keys[0] == read.camera.resolved.row_keys[0]
+    ):
         return None
     return camera
 

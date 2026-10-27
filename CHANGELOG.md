@@ -8,6 +8,55 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: one media index row per division of a store, and reads of a division's chunks
+
+**Seven trailing media index columns.** `media_raw/index.csv` gains `chunk_first`,
+`chunk_last`, `first_frame`, `start_utc`, `start_source`, `follows_gap` and
+`division_rule` after `cm_per_pixel`. All seven are text and blank on an
+undivided row, and every write adds them blank to an index that lacks them. A
+division row fills all seven, and a row that fills some and not others is
+refused when it is read. A division row's `frame_count`, facts, `size_bytes` and
+`mtime_iso` are those of its chunks, its `video_uuid` is its
+`imgstore-division/1` uid, its `camera` is blank, its `camera_serial` is the
+store's, and its `assignment_source` is the new `scan-imgstore-division`, or
+`assigned` when a `MediaIndexScope` writes it. Nothing writes a division row
+yet: `build_division_rows` (`core/media/store_division.py`) builds them from a
+plan.
+
+- A media row is keyed by `media_row_key`: its path and its chunks.
+  `Dataset.media_rows_of`, `indexed_entries_of` and `indexed_entry`, and
+  `MediaRows.positions`, take these keys, and `ResolvedMedia.row_keys` gives them.
+  `media_row_division_key` is `media_row_path_key` with the chunks, for the
+  control plane, which keys a row on `media_row_path_key` today.
+- `ResolvedMedia.windows` gives the chunks of each path that a division reads,
+  `None` for a file read whole. `NativeStore`, `ImgStoreCapture`,
+  `ImgStoreFrameReader`, `open_frame_reader`, `read_frames_at`,
+  `extract_candidate_features`, `extract_frames` and `get_video_metadata` take a
+  `window`, and `open_multi_video_reader` and `read_entry_frames` a required
+  `windows`. Frame 0 is the window's first frame, and a window on a plain video is
+  refused. Every reader, tracker, `infer-*` op, `extract-frames`, `preprocess`,
+  the crops, the renderer and `export-store` read a division's chunks alone.
+- A division of a continuous group is placed at the `first_frame` its row
+  records. A continuous group that holds division rows and other rows places
+  none of its sequences, and a division of a group that `continuous_groups`
+  does not list reads its window but is not placed.
+- `export-store` exports a division's chunks alone, named by its uid, and links
+  the division's row. `entry_stores` returns `EntryStore` records.
+- `probe_store` reads a store once, and `window_probe` gives the facts, size and
+  time and uid of the store or of a window. `reprobe-media` probes a divided
+  store once, and its `content_digest_changed` and `video_uuid_changed` lists
+  name a division row by its path and chunks (`rec [chunks 4-4]`).
+- The dataset summary counts a divided store as one video.
+- `load_media_index_frame` reads the text columns as text. `rewrite_index_paths`
+  and `make_portable` read every index as text and write back each cell they do
+  not rewrite as it was read, where a blank cell beside a number used to turn
+  `0` into `0.0` and `false` became `False`.
+- `refuse_unjoinable`, `refuse_unidentified_clips` and `current_join` take the
+  entry's `windows`, and the command in a refusal names the entry by its first
+  row's path and chunks.
+- Undivided rows keep their keys, compositions, uuids and run ids. Golden corpora
+  do not change.
+
 ## Unreleased: the division of a store recording, planned from its chunks
 
 **`core/media/store_division.py`.** `plan_division` divides a recording's stores

@@ -116,6 +116,9 @@ pipeline graph are in `graph/CLAUDE.md`.
   recomputes the entries whose neighbors changed, and a row written without the cell
   recomputes once. It is empty at `overlap_frames=0`
   (`tests/core/pipeline/test_run_feature.py`).
+- A division of a store is a member of its entry's media composition under its
+  `imgstore-division/1` uid, so each division has its own composition, and a division
+  whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).
 - `drifted_entries` (`index.py`) compares the declared-root `consumed_composition`,
   and `consumed_media_composition` on tracks rows, media variant rows and tracker run
   rows is compared the same way, through `compositions_disagree` (`composition.py`).

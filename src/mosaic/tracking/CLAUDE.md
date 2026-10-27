@@ -111,7 +111,9 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
   files in order on one frame axis (`entry_runner_sources`). Nothing is joined for it.
   A store whose chunks hold the frames (`readable_chunks`) is read chunk by chunk, and
   any other store through its `export-store` video. Each file's facts are gated in
-  mosaic before they cross.
+  mosaic before they cross. A division of a store is handed the chunks of its window,
+  or its own export, found by its row key (`TrackerWorkItem.row_keys`), and plans its
+  own `export-store` run.
   `tests/tracking/ultralytics_track/test_runner_entry_files.py` compares the result
   with the join, pixel for pixel.
 - `infer-localizer` (`in-process`) reads through `read_entry_frames`, and a join only

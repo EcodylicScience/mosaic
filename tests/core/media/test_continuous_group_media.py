@@ -6,11 +6,13 @@ returns the sequence's files and the sequence's ``first_frame``: the frames
 of the members before it, in member order.
 
 The fixture records ``rec`` as two sequences: ``s1`` contains frames 0 to 4 in one
-clip, and ``s2`` frames 5 to 8 in two clips.
+clip, and ``s2`` frames 5 to 8 in two clips. The divisions of a store are placed by
+the ``first_frame`` that their rows record instead.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -28,14 +30,27 @@ from mosaic.core.pipeline.joined_export import (
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.recording import FrameOutsideSequenceError
 from mosaic.core.scope import Scope
+from mosaic.core.media.store_division import StoreWindow
+from mosaic.core.pipeline.media_index import (
+    load_media_index_frame,
+    write_media_index_rows,
+)
 from tests.helpers import (
+    DIVISION_CREATED_UTC,
     add_tracks_table,
     make_dataset,
+    paint_frame_code,
+    store_dataset,
     track_table,
+    video_store_maker,
+    write_division_rows,
+    write_painted_entry,
     write_painted_recording,
 )
 
 pytestmark = pytest.mark.media
+
+_DIVISION_TOKENS = ("20210219T192253Z", "20210219T192255Z", "20210219T192258Z")
 
 _FIRST_FRAMES = 5
 _SECOND_FRAMES = 4
@@ -265,3 +280,80 @@ def test_a_frame_past_the_end_of_an_undivided_recording_is_its_own(
     resolved = dataset.resolve_media("rec", "s2")
 
     assert resolved.sequence_frame(_SECOND_FRAMES + 3) == _SECOND_FRAMES + 3
+
+
+@pytest.fixture
+def divided_store(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> Dataset:
+    """A store of chunks of 5, 5, 5, 5 and 2 frames at 4 fps, indexed and undivided."""
+    return store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 5, 5, 2], fps=4.0, created_utc=DIVISION_CREATED_UTC),
+    )
+
+
+def _store_path(dataset: Dataset) -> Path:
+    return dataset.get_root("media_raw") / "recordings" / "rec"
+
+
+def test_a_division_is_placed_at_the_first_frame_its_row_records(
+    divided_store: Dataset,
+) -> None:
+    """The cell places the division, and the media before it is not counted."""
+    _ = write_division_rows(divided_store, _store_path(divided_store), 10)
+    index = divided_store.get_root("media_raw") / "index.csv"
+    frame = load_media_index_frame(index)
+    frame["first_frame"] = ["100", "110", "120"]
+    write_media_index_rows(index, frame)
+
+    placed = [
+        divided_store.resolve_media("rec", token).first_frame
+        for token in _DIVISION_TOKENS
+    ]
+    scoped = [
+        entry.resolved.first_frame
+        for entry in divided_store.resolve_media_scope(
+            [("rec", token) for token in _DIVISION_TOKENS]
+        )
+    ]
+
+    assert placed == scoped == [100, 110, 120]
+
+
+def test_a_division_of_an_undeclared_group_reads_its_window_and_is_not_placed(
+    divided_store: Dataset,
+) -> None:
+    """A recording that the manifest does not declare continuous has no frame axis."""
+    _ = write_division_rows(
+        divided_store, _store_path(divided_store), 10, declare=False
+    )
+    entry = ("rec", _DIVISION_TOKENS[1])
+
+    resolved = divided_store.resolve_media(*entry)
+    (scoped,) = divided_store.resolve_media_scope([entry])
+
+    assert resolved.windows == scoped.resolved.windows == [StoreWindow(2, 3)]
+    for media in (resolved, scoped.resolved):
+        with pytest.raises(MediaProbeError, match="'rec' .* not declared continuous"):
+            _ = media.first_frame
+
+
+def test_a_recording_that_mixes_division_rows_with_other_rows_is_not_placed(
+    divided_store: Dataset,
+) -> None:
+    """A clip indexed under the recording's group beside its divisions."""
+    _ = write_division_rows(divided_store, _store_path(divided_store), 10)
+    _ = write_painted_entry(
+        divided_store,
+        "clip",
+        [(3, 4.0)],
+        paint_frame_code,
+        group="rec",
+    )
+
+    for sequence in (*_DIVISION_TOKENS, "clip"):
+        resolved = divided_store.resolve_media("rec", sequence)
+        with pytest.raises(MediaProbeError, match="3 division rows .* 1 other rows"):
+            _ = resolved.first_frame

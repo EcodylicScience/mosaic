@@ -307,7 +307,7 @@ def test_capture_get_props(make_imgstore):
 
 def test_mvr_single_store(make_imgstore):
     store_dir, _ = make_imgstore(nframes=12)
-    reader = MultiVideoReader(store_dir, target="analysis")
+    reader = MultiVideoReader(store_dir, windows=None, target="analysis")
     assert reader.total_frames == 12
     assert (reader.width, reader.height) == (64, 48)
 
@@ -331,7 +331,7 @@ def test_mvr_single_store(make_imgstore):
 def test_mvr_two_stores_boundary(make_imgstore):
     s1, _ = make_imgstore(name="a", nframes=12)
     s2, _ = make_imgstore(name="b", nframes=12)
-    reader = MultiVideoReader([s1, s2], target="analysis")
+    reader = MultiVideoReader([s1, s2], windows=None, target="analysis")
     assert reader.total_frames == 24
     # second store starts at global frame 12 (its local frame 0 → tag 0)
     seg_idx, local = reader.segment_for_frame(12)
@@ -348,7 +348,7 @@ def test_mvr_rejects_fps_mismatch(make_imgstore):
     s1, _ = make_imgstore(name="a", nframes=12, fps=30.0)
     s2, _ = make_imgstore(name="b", nframes=12, fps=60.0)
     with pytest.raises(ValueError, match="property mismatch"):
-        MultiVideoReader([s1, s2], target="analysis")
+        MultiVideoReader([s1, s2], windows=None, target="analysis")
 
 
 def test_mvr_reads_stores_whose_measured_rates_differ_in_the_last_digits(
@@ -361,7 +361,7 @@ def test_mvr_reads_stores_whose_measured_rates_differ_in_the_last_digits(
     """
     s1, _ = make_imgstore(name="a", nframes=60, fps=30.0)
     s2, _ = make_imgstore(name="b", nframes=60, fps=30.002)
-    reader = MultiVideoReader([s1, s2], target="analysis")
+    reader = MultiVideoReader([s1, s2], windows=None, target="analysis")
     assert reader.total_frames == 120
     reader.close()
 
@@ -371,7 +371,7 @@ def test_mvr_rejects_mixed_sequence(make_imgstore, tmp_path):
     mp4 = tmp_path / "v.mp4"
     write_mpeg4_mp4(mp4, frames=4)
     with pytest.raises(ValueError, match="mixed"):
-        MultiVideoReader([mp4, store_dir], target="analysis")
+        MultiVideoReader([mp4, store_dir], windows=None, target="analysis")
 
 
 # ── ImgStoreFrameReader / open_frame_reader ──

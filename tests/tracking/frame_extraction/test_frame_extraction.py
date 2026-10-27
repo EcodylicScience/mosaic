@@ -396,6 +396,7 @@ def _spec(*, seq_dir, overwrite: bool):
         camera="",
         video_paths=(),
         facts=(),
+        windows=(),
         video_uuids="",
         media_composition="",
         seq_dir=seq_dir,

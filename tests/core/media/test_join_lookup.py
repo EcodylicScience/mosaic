@@ -70,7 +70,9 @@ def _entry(tmp_path: Path, facts: tuple[MediaFacts, ...]) -> ResolvedScopeEntry:
         group="",
         sequence="sess",
         camera="",
-        resolved=ResolvedMedia(paths=paths, facts=list(facts)),
+        resolved=ResolvedMedia(
+            paths=paths, facts=list(facts), windows=[None] * len(paths)
+        ),
     )
 
 
@@ -225,7 +227,14 @@ def test_a_clip_set_without_identity_cannot_be_addressed(ds: Dataset) -> None:
     paths = [Path(f"clip{order}.mp4") for order in range(len(clips))]
     with pytest.raises(JoinedExportMissingError, match="content identity"):
         _ = current_join(
-            ds, "", "sess", paths, clips, asker="extract-frames", why="unused."
+            ds,
+            "",
+            "sess",
+            paths,
+            clips,
+            windows=[None, None],
+            asker="extract-frames",
+            why="unused.",
         )
 
 

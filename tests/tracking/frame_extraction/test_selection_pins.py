@@ -477,7 +477,7 @@ def test_exact_reads_of_videos_match_their_candidate_features(media: Media) -> N
         ),
         29,
     )
-    reader = MultiVideoReader(list(media.clips), target="analysis")
+    reader = MultiVideoReader(list(media.clips), windows=None, target="analysis")
     try:
         _assert_exact_reads_match_the_candidates(
             MultiClipFeatures(
@@ -503,7 +503,7 @@ def test_exact_reads_of_imgstores_match_their_candidate_features(
         make_imgstore(name=name, nframes=10, fill=True, parent=tmp_path / "two")[0]
         for name in ("a", "b")
     ]
-    reader = MultiVideoReader(stores, target="analysis")
+    reader = MultiVideoReader(stores, windows=None, target="analysis")
     try:
         _assert_exact_reads_match_the_candidates(
             MultiClipFeatures(

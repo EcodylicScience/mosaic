@@ -262,12 +262,14 @@ def test_multi_video_reader_plain_video_branch_is_gated(
     with pytest.raises(MediaProbeError, match="not fit for an analysis read"):
         MultiVideoReader(
             [clip_a, clip_b],
+            windows=None,
             facts=[defective, _playable(clip_b)],
             target="analysis",
         )
 
     reader = MultiVideoReader(
         [clip_a, clip_b],
+        windows=None,
         facts=[_playable(clip_a), _playable(clip_b)],
         target="analysis",
     )

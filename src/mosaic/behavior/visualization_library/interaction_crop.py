@@ -381,7 +381,10 @@ class InteractionCropPipeline:
         # seeked by frame index from a per-frame interaction filter, so this is
         # an analysis read, not a browser-delivery one.
         reader = MultiVideoReader(
-            resolved.paths, facts=resolved.facts, target="analysis"
+            resolved.paths,
+            windows=resolved.windows,
+            facts=resolved.facts,
+            target="analysis",
         )
         output_fps = p.output_fps or reader.fps
 

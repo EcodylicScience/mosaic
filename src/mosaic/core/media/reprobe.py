@@ -28,6 +28,11 @@ preserves.
 entropy, so re-probing an unchanged file reproduces its exact identity. That is
 what makes the fresh probe safe to treat as authoritative for the identity
 columns, and what makes a second run over an unchanged dataset a no-op.
+
+The rows of a divided store share its path. The store is probed once, and each
+row's facts, size and time and ``video_uuid`` are those of its window of chunks
+(:func:`~mosaic.core.media.imgstore_io.window_probe`), the values that its row
+recorded when it was written.
 """
 
 from __future__ import annotations
@@ -38,6 +43,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mosaic_media import MediaProbeError
 
@@ -55,10 +61,15 @@ from .facts_columns import (
     FACTS_JSON_COLUMN,
     MEDIA_INDEX_COLUMNS,
     ProbeMetadata,
+    media_row_key,
     read_link_cell,
     row_facts_or_none,
 )
 from .probe_row import probe_video_metadata
+from .store_division import StoreWindow
+
+if TYPE_CHECKING:
+    from .imgstore_io import StoreProbe
 
 # The six cells a fresh probe always leaves empty because they record a
 # transcode decision rather than a measurement. The patch must never write them:
@@ -141,6 +152,19 @@ class ProbedRow:
     change: IdentityChange
     needs_patch: bool
     facts_rebuilt: bool
+    window: StoreWindow | None = None
+
+    @property
+    def reported_path(self) -> str:
+        """The row's stored path, and its chunks for a division of a store.
+
+        The divisions of a store share its path, and the chunks tell them
+        apart in a report.
+        """
+        if self.window is None:
+            return self.stored_path
+        chunks = f"{self.window.chunk_first}-{self.window.chunk_last}"
+        return f"{self.stored_path} [chunks {chunks}]"
 
 
 @dataclass(frozen=True)
@@ -427,8 +451,9 @@ def _probe_media_index(
     run can name the whole repair across both of them.
     """
     # ``imgstore_io`` imports cv2 and av, and ``Dataset`` imports this module.
-    from .imgstore_io import imgstore_probe, is_imgstore, store_stat
+    from .imgstore_io import is_imgstore, probe_store, window_probe
 
+    stores: dict[Path, StoreProbe] = {}
     probed: list[ProbedRow] = []
     missing: list[str] = []
     unprobeable: list[str] = []
@@ -456,15 +481,22 @@ def _probe_media_index(
             is_store = stored_type == "imgstore" or (
                 not stored_type and is_imgstore(path)
             )
-            probe = imgstore_probe(path) if is_store else probe_video_metadata(path)
-        except (OSError, MediaProbeError) as error:
+            window = media_row_key(row).window
+            if is_store:
+                resolved = path.resolve()
+                if resolved not in stores:
+                    stores[resolved] = probe_store(path)
+                measured = window_probe(stores[resolved], window)
+                probe = measured.probe_metadata()
+                size_bytes, modified_at = stat_cells(measured.stat)
+            else:
+                probe = probe_video_metadata(path)
+                size_bytes, modified_at = stat_cells(path.stat())
+        except (OSError, MediaProbeError, ValueError) as error:
             unprobeable.append(
                 f"{label} row {row_number}: {path} cannot be probed: {error}"
             )
             continue
-        size_bytes, modified_at = stat_cells(
-            store_stat(path) if is_store else path.stat()
-        )
         change = classify_identity(row, probe)
         probed.append(
             ProbedRow(
@@ -477,6 +509,7 @@ def _probe_media_index(
                 change=change,
                 needs_patch=_needs_patch(row, change),
                 facts_rebuilt=_rebuilds_facts(row, change),
+                window=window,
             )
         )
     return ProbeOutcome(probed=probed, missing=missing, unprobeable=unprobeable)
@@ -498,7 +531,7 @@ def _patches_for(
 
 def _plan_derivatives(
     index_path: Path | None,
-    uuid_by_path: Mapping[Path, str],
+    uuid_by_path: Mapping[Path, frozenset[str]],
     *,
     label: str,
     media_raw_root: Path,
@@ -509,6 +542,9 @@ def _plan_derivatives(
     The derivative rows carry ``source_video_uuid``, which nothing else in a
     rewrite touches, and a fresh probe leaves it empty. Re-keying it here is what
     keeps the link graph resolvable by uuid once the originals are minted.
+    *uuid_by_path* holds each original's uuids, several for a divided store. A
+    back-link that names one of them is kept, and one that names none is re-keyed
+    only when its source has one uuid.
 
     *index_path* is ``None`` when there is no ``media`` index distinct from the
     ``media_raw`` one, which makes the whole pass a no-op. A path that names
@@ -543,12 +579,13 @@ def _plan_derivatives(
             )
             continue
         source = resolve_stored_path(source_cell, media_raw_root).resolve()
-        source_uuid = uuid_by_path.get(source)
-        if source_uuid is None:
+        source_uuids = uuid_by_path.get(source, frozenset())
+        if read_link_cell(row, "source_video_uuid") in source_uuids:
+            continue
+        if len(source_uuids) != 1:
             unresolved.append(f"{label} row {probed.row_number}: {source_cell}")
             continue
-        if read_link_cell(row, "source_video_uuid") == source_uuid:
-            continue
+        (source_uuid,) = source_uuids
         patches.setdefault(probed.row_number, {})["source_video_uuid"] = source_uuid
         relinked += 1
 
@@ -563,12 +600,12 @@ def _plan_derivatives(
         # Nothing is dropped by a run that does not rewrite this file.
         unknown_columns=media_index.unknown_columns if changed else [],
         content_digest_changed=[
-            row.stored_path
+            row.reported_path
             for row in outcome.probed
             if row.change == "content_digest_changed"
         ],
         video_uuid_changed=[
-            row.stored_path
+            row.reported_path
             for row in outcome.probed
             if row.change == "video_uuid_changed"
         ],
@@ -644,11 +681,11 @@ def reprobe_media(
         media_index, "media_raw index", base_directory=base_directory
     )
     patches = _patches_for(media_index, outcome)
-    uuid_by_path = {
-        row.resolved_path: row.probe["video_uuid"]
-        for row in outcome.probed
-        if row.probe["video_uuid"]
-    }
+    uuids: dict[Path, set[str]] = {}
+    for row in outcome.probed:
+        if row.probe["video_uuid"]:
+            uuids.setdefault(row.resolved_path, set()).add(row.probe["video_uuid"])
+    uuid_by_path = {path: frozenset(found) for path, found in uuids.items()}
     derivative = _plan_derivatives(
         derivative_index_path,
         uuid_by_path,
@@ -689,12 +726,12 @@ def reprobe_media(
         unchanged=sum(1 for row in outcome.probed if row.change == "unchanged"),
         unmintable=sum(1 for row in outcome.probed if row.change == "unmintable"),
         content_digest_changed=[
-            row.stored_path
+            row.reported_path
             for row in outcome.probed
             if row.change == "content_digest_changed"
         ],
         video_uuid_changed=[
-            row.stored_path
+            row.reported_path
             for row in outcome.probed
             if row.change == "video_uuid_changed"
         ],

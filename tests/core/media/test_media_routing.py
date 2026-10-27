@@ -18,6 +18,7 @@ from mosaic.core.dataset import AmbiguousMediaMatchError, Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS
+from mosaic.core.media.store_division import MediaRowKey
 
 from tests.helpers import MediaClip, make_dataset, write_media_index, write_mpeg4_mp4
 
@@ -31,6 +32,11 @@ _ROOTS = ("media_raw", "media", "tracks")
 
 def _facts_json(path: Path) -> str:
     return json.dumps(dataclasses.asdict(probe_media(path)))
+
+
+def _whole(path: Path) -> MediaRowKey:
+    """The key of the row that lists *path* whole."""
+    return MediaRowKey.of(str(path), None)
 
 
 def _row(
@@ -672,15 +678,15 @@ def test_a_file_is_found_under_its_indexed_key_whatever_its_label(
             MediaClip(sequence="b", filename="other.mp4"),
         ],
     )
-    files = [
-        path
+    keys = [
+        key
         for camera in ds.resolve_media_scope(None)
-        for path in camera.resolved.paths
+        for key in camera.resolved.row_keys
     ]
 
-    found = ds.indexed_entries_of([*files, tmp_path / "unlisted.mp4"])
+    found = ds.indexed_entries_of([*keys, _whole(tmp_path / "unlisted.mp4")])
 
-    assert {path.name: entry for path, entry in found.items()} == {
+    assert {Path(key.abs_path).name: entry for key, entry in found.items()} == {
         "a.mp4": ("", ""),
         "b.mp4": ("", ""),
         "other.mp4": ("", "b"),
@@ -713,18 +719,20 @@ def test_a_routed_file_is_found_as_the_row_that_it_is_derived_from(
     )
     (camera,) = ds.resolve_media_scope(None)
     (routed,) = camera.resolved.paths
+    (key,) = camera.resolved.row_keys
 
-    rows = ds.media_rows_of([routed])
+    rows = ds.media_rows_of([key])
 
     assert routed.name == derivative.name
+    assert key == _whole(routed)
     assert [str(row["abs_path"]) for row in rows.values()] == [str(original)]
-    assert ds.indexed_entries_of([routed]) == {routed: ("g1", "needs")}
+    assert ds.indexed_entries_of([key]) == {key: ("g1", "needs")}
 
 
 def test_no_file_is_found_without_a_media_index(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
 
-    assert ds.media_rows_of([tmp_path / "clip.mp4"]) == {}
+    assert ds.media_rows_of([_whole(tmp_path / "clip.mp4")]) == {}
 
 
 def test_a_lookup_resolves_no_cell_of_an_index_read_before(
@@ -736,7 +744,7 @@ def test_a_lookup_resolves_no_cell_of_an_index_read_before(
         ds, [MediaClip(sequence=name, filename=f"{name}.mp4") for name in "abc"]
     )
     first, second, _ = (
-        camera.resolved.paths[0] for camera in ds.resolve_media_scope(None)
+        camera.resolved.row_keys[0] for camera in ds.resolve_media_scope(None)
     )
     resolved: list[str] = []
     resolve_path = Dataset.resolve_path
@@ -759,12 +767,12 @@ def test_a_lookup_reads_the_rows_of_a_rewritten_index(tmp_path: Path) -> None:
     ds = make_dataset(tmp_path / "ds")
     write_media_index(ds, [MediaClip(sequence="s", filename="s.mp4")])
     (camera,) = ds.resolve_media_scope(None)
-    (path,) = camera.resolved.paths
-    assert ds.indexed_entries_of([path]) == {path: ("", "s")}
+    (key,) = camera.resolved.row_keys
+    assert ds.indexed_entries_of([key]) == {key: ("", "s")}
 
     write_media_index(ds, [MediaClip(group="g", sequence="s", filename="s.mp4")])
 
-    assert ds.indexed_entries_of([path]) == {path: ("g", "s")}
+    assert ds.indexed_entries_of([key]) == {key: ("g", "s")}
 
 
 def test_a_lookup_resolves_the_cells_again_under_a_new_path_map(
@@ -778,11 +786,11 @@ def test_a_lookup_resolves_the_cells_again_under_a_new_path_map(
     row = _row(group="g", sequence="moved", abs_path=clip)
     row["abs_path"] = str(elsewhere / clip.name)
     _write_index(ds.get_root("media_raw") / "index.csv", [row])
-    assert ds.indexed_entries_of([clip]) == {}
+    assert ds.indexed_entries_of([_whole(clip)]) == {}
 
     ds.remap_roots({str(elsewhere): str(ds.get_root("media_raw"))})
 
-    assert ds.indexed_entries_of([clip]) == {clip: ("g", "moved")}
+    assert ds.indexed_entries_of([_whole(clip)]) == {_whole(clip): ("g", "moved")}
 
 
 def test_a_lookup_finds_a_derivative_under_a_new_media_root(tmp_path: Path) -> None:
@@ -801,11 +809,11 @@ def test_a_lookup_finds_a_derivative_under_a_new_media_root(tmp_path: Path) -> N
             )
         ],
     )
-    derivative = ds.get_root("media") / "needs.analysis.mp4"
+    derivative = _whole(ds.get_root("media") / "needs.analysis.mp4")
     assert ds.indexed_entries_of([derivative]) == {derivative: ("g1", "needs")}
 
     ds.set_root("media", "derived")
-    moved = ds.get_root("media") / "needs.analysis.mp4"
+    moved = _whole(ds.get_root("media") / "needs.analysis.mp4")
 
     assert ds.indexed_entries_of([moved]) == {moved: ("g1", "needs")}
 
@@ -821,6 +829,6 @@ def test_a_path_cell_is_read_without_its_surrounding_whitespace(
     table["abs_path"] = [f"{cell} " for cell in table["abs_path"]]
     table.to_csv(index, index=False)
     (camera,) = ds.resolve_media_scope(None)
-    (path,) = camera.resolved.paths
+    (key,) = camera.resolved.row_keys
 
-    assert ds.indexed_entries_of([path]) == {path: ("", "")}
+    assert ds.indexed_entries_of([key]) == {key: ("", "")}

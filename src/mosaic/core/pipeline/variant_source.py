@@ -46,6 +46,7 @@ from mosaic.core.pipeline.sequence_index import media_compositions_for
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset, ResolvedScopeEntry
     from mosaic.core.entry import CameraEntry, Entry
+    from mosaic.core.media.store_division import MediaRowKey
 
 __all__ = [
     "VariantLookup",
@@ -67,6 +68,8 @@ class VariantSource:
             media.
         entry_paths: The entry media's clips, in ``video_order``.
         entry_facts: The entry media's probed facts, parallel to *entry_paths*.
+        entry_row_keys: The media index keys of the entry media's rows, parallel
+            to *entry_paths*.
     """
 
     run_id: str
@@ -75,6 +78,7 @@ class VariantSource:
     placement: Placement
     entry_paths: tuple[Path, ...]
     entry_facts: tuple[MediaFacts, ...]
+    entry_row_keys: tuple[MediaRowKey, ...]
 
     def __post_init__(self) -> None:
         """Refuse entry media that the placement does not map into.
@@ -223,7 +227,7 @@ class VariantLookup:
         where = f"{key} (camera {camera})" if camera else key
 
         def command() -> str:
-            named = ds.indexed_entry(entry.resolved.paths[0], (group, sequence))
+            named = ds.indexed_entry(entry.resolved.row_keys[0], (group, sequence))
             return preprocess_command(ds, run_id, [named])
 
         row = self.rows.get((group, sequence, camera))
@@ -260,6 +264,7 @@ class VariantLookup:
                 placement=media_variant_placement(row),
                 entry_paths=tuple(entry.resolved.paths),
                 entry_facts=tuple(entry.resolved.facts),
+                entry_row_keys=tuple(entry.resolved.row_keys),
             )
         except ValueError as exc:
             message = (

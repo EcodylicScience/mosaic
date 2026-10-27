@@ -19,7 +19,9 @@ through :class:`mosaic_media.io.VideoReader`.
 Frame addressing follows mosaic's convention: the 0-based *contiguous*
 ``frame_index`` (imgstore's ``frame_index``), which is the running position
 across chunks in ascending chunk order -- **not** the camera-provided,
-possibly-sparse ``frame_number``.
+possibly-sparse ``frame_number``. A store opened on a window
+(:class:`~mosaic.core.media.store_division.StoreWindow`) counts the frames of
+the window's chunks alone, from 0 at the window's first frame.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ from mosaic_media import MediaFacts, MediaProbeError
 from mosaic_media.io import VideoReader
 
 from .read_target import verified_read_facts
-from .store_division import ChunkRecord
+from .store_division import ChunkRecord, StoreWindow
 
 # imgstore on-disk constants, inlined so reading needs no imgstore package.
 _STORE_MD_FILENAME = "metadata.yaml"
@@ -207,9 +209,16 @@ class NativeStore:
     chunk and rolling to the next at the chunk boundary. Frames are returned in
     the same dtype / shape / channel order the imgstore package returns, so
     downstream BGR normalization is unaffected.
+
+    A store opened on a *window* reads only the window's chunks. Frame ``i`` is
+    the ``i``-th frame of those chunks, and :attr:`frame_count`,
+    :attr:`frame_times`, :attr:`duration`, :meth:`chunk_table` and
+    :meth:`chunk_spans` describe them alone. A window whose chunk is absent or
+    has no index is refused, because counting past it would renumber the
+    window's later frames.
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, window: StoreWindow | None = None) -> None:
         # Video-chunk reader state, set first so close() (reachable from
         # __del__) is safe even if construction raises before the rest of
         # __init__ runs (e.g. probing a malformed store).
@@ -273,12 +282,23 @@ class NativeStore:
         self._chunk_ids: list[int] = []
         self._chunk_starts: list[int] = []
         chunk_times: list[npt.NDArray[np.float64]] = []
+        self._times_by_chunk: dict[int, npt.NDArray[np.float64]] = {}
         frame_count = 0
-        for chunk_id in self._discover_chunks(store_class):
+        discovered = self._discover_chunks(store_class)
+        if window is not None:
+            discovered = self._window_chunks(discovered, window)
+        for chunk_id in discovered:
             index_base = self._chunk_index_base(chunk_id)
             times = _load_chunk_frame_times(index_base)
             path = self._chunk_path(chunk_id)
             if times is None:
+                if window is not None:
+                    message = (
+                        f"chunk {chunk_id} of the imgstore {self._basedir} has no "
+                        f"index, and the window of chunks {window.chunk_first}-"
+                        f"{window.chunk_last} reads it"
+                    )
+                    raise MediaProbeError(message)
                 message = f"missing index for imgstore chunk {chunk_id}, skipping: {index_base}"
                 warnings.warn(message, stacklevel=2)
                 records.append(ChunkRecord(chunk_id, path, None, None, None, None))
@@ -287,6 +307,8 @@ class NativeStore:
             self._chunk_ids.append(chunk_id)
             self._chunk_starts.append(frame_count)
             chunk_times.append(times)
+            times.setflags(write=False)
+            self._times_by_chunk[chunk_id] = times
             frame_count += len(times)
         self._chunk_table = tuple(records)
 
@@ -357,9 +379,19 @@ class NativeStore:
         """Every chunk of the store in ascending order, a chunk without an index included.
 
         A chunk without an index has ``None`` for its count and times, and a
-        reader skips it.
+        reader skips it. A store opened on a window lists the window's chunks.
         """
         return self._chunk_table
+
+    def chunk_frame_times(self, chunk_id: int) -> npt.NDArray[np.float64]:
+        """The ``frame_time`` of every frame of the indexed chunk *chunk_id*.
+
+        The array is read-only.
+
+        Raises:
+            KeyError: If the store, or its window, has no indexed chunk *chunk_id*.
+        """
+        return self._times_by_chunk[chunk_id]
 
     def chunk_paths(self) -> list[Path]:
         """The store's video chunk files, in frame order.
@@ -377,7 +409,8 @@ class NativeStore:
         ``frame_index`` advances by across it, so the counts sum to
         :attr:`frame_count`. A chunk skipped for a missing index is absent, as it
         is from what a reader of the store reads. Empty for a store whose chunks
-        are not video files.
+        are not video files. A store opened on a window lists the window's
+        chunks.
         """
         if not self._is_video:
             return []
@@ -408,6 +441,19 @@ class NativeStore:
             message = f"unsupported imgstore class: {store_class!r}"
             raise MediaProbeError(message)
         return sorted(ids)
+
+    def _window_chunks(self, discovered: list[int], window: StoreWindow) -> list[int]:
+        """Return the chunks of *window*, refusing a chunk that the store lacks."""
+        present = set(discovered)
+        wanted = list(range(window.chunk_first, window.chunk_last + 1))
+        missing = [chunk_id for chunk_id in wanted if chunk_id not in present]
+        if missing:
+            message = (
+                f"the imgstore {self._basedir} has no chunk {missing[0]}, and the "
+                f"window of chunks {window.chunk_first}-{window.chunk_last} reads it"
+            )
+            raise MediaProbeError(message)
+        return wanted
 
     def _chunk_path(self, chunk_id: int) -> Path:
         if self._is_video:

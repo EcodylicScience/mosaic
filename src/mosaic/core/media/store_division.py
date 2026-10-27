@@ -30,6 +30,11 @@ division contains. :func:`plan_division` applies the rule to chunk records
   does not reproduce. A frozen division shorter than ``n`` chunks ends its run,
   so the chunks recorded after a released partial division start a new run on
   the same frame axis.
+- **Rows.** :func:`build_division_rows` turns a plan into one media index row per
+  division of a store, from the store's undivided row and each window's
+  measured cells. The division cells (:data:`DIVISION_COLUMNS`) are text, blank
+  on an undivided row, and :func:`division_cells` and
+  :func:`parse_division_cells` write and read them.
 
 The module imports only the standard library and other standard-library leaves,
 so a dataset read can use its types without loading a frame reader.
@@ -50,12 +55,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from typing_extensions import TypeIs
 
-from mosaic.core.entry import validate_entry_name
+from mosaic.core.entry import to_safe_name, validate_entry_name
 from mosaic.core.narrowing import is_str_mapping
 
 from .store_rate import store_rate_mismatch
 
 __all__ = [
+    "DIVISION_ASSIGNMENT_SOURCE",
+    "DIVISION_COLUMNS",
     "DIVISION_IDENTITY_SCHEME",
     "GAP_INTERVALS",
     "ChunkRecord",
@@ -75,9 +82,13 @@ __all__ = [
     "StoreClock",
     "StorePlanInput",
     "StoreWindow",
+    "build_division_rows",
+    "chunk_window",
+    "division_cells",
     "division_rule",
     "division_token",
     "division_uid",
+    "parse_division_cells",
     "plan_division",
     "store_base_name",
     "store_clock",
@@ -88,6 +99,25 @@ DIVISION_IDENTITY_SCHEME: Final = "imgstore-division/1"
 
 GAP_INTERVALS: Final = 10
 """The nominal frame intervals that a step between frames exceeds to be a gap."""
+
+DIVISION_COLUMNS: Final = (
+    "chunk_first",
+    "chunk_last",
+    "first_frame",
+    "start_utc",
+    "start_source",
+    "follows_gap",
+    "division_rule",
+)
+"""The media index cells of a division row, in column order, blank when undivided.
+
+Every cell is text. ``start_utc`` is ISO 8601 UTC with microseconds,
+``follows_gap`` is ``true`` or ``false`` and ``division_rule`` is
+:meth:`DivisionRule.to_cell`.
+"""
+
+DIVISION_ASSIGNMENT_SOURCE: Final = "scan-imgstore-division"
+"""The ``assignment_source`` of a division row."""
 
 StartSource = Literal["created_utc", "frame_time", "extra_data", "dirname"]
 """Where a store's clock takes its anchor, in the order :func:`store_clock` tries."""
@@ -124,6 +154,8 @@ HoldBackReason = Literal["store_recording"]
 """Why a sequence is held back: its store is still recording it."""
 
 _RECORDING_IDENTITIES: Final = frozenset(get_args(RecordingIdentity))
+_START_SOURCES: Final = frozenset(get_args(StartSource))
+_FOLLOWS_GAP_CELLS: Final = {"true": True, "false": False}
 _FRAME_TIME_FLOOR: Final = datetime(2000, 1, 1, tzinfo=UTC)
 _FRAME_TIME_AGREEMENT: Final = timedelta(hours=1)
 _DIRNAME_TIME: Final = re.compile(r"(?<!\d)(\d{8}_\d{6})(?!\d)")
@@ -580,11 +612,29 @@ class StorePlanInput:
 
 @dataclass(frozen=True, slots=True)
 class MediaRowKey:
-    """The key of one media index row, with blank chunk cells for an undivided row."""
+    """The key of one media index row, with blank chunk cells for an undivided row.
+
+    An undivided row's key is its file alone, and the rows of a divided store
+    share the store's path and differ in their chunks.
+    """
 
     abs_path: str
     chunk_first: int | None
     chunk_last: int | None
+
+    @classmethod
+    def of(cls, abs_path: str, window: StoreWindow | None) -> MediaRowKey:
+        """Return the key of the row of *abs_path* that reads *window*."""
+        if window is None:
+            return cls(abs_path, None, None)
+        return cls(abs_path, window.chunk_first, window.chunk_last)
+
+    @property
+    def window(self) -> StoreWindow | None:
+        """The chunks of the row, ``None`` for an undivided row."""
+        if self.chunk_first is None or self.chunk_last is None:
+            return None
+        return StoreWindow(self.chunk_first, self.chunk_last)
 
 
 @dataclass(frozen=True, slots=True)
@@ -622,6 +672,133 @@ class RowDivision:
     def window(self) -> StoreWindow:
         """The division's chunks."""
         return StoreWindow(self.chunk_first, self.chunk_last)
+
+
+def _int_cell(column: str, text: str) -> int:
+    """Return the non-negative integer that a division cell spells."""
+    if not text.isdigit():
+        message = f"the media index cell {column}={text!r} is not a whole number"
+        raise ValueError(message)
+    return int(text)
+
+
+def chunk_window(cells: Mapping[str, str]) -> StoreWindow | None:
+    """Return the window that a row's ``chunk_first`` and ``chunk_last`` cells name.
+
+    Args:
+        cells: The row's cells as trimmed text, a blank cell as ``""``.
+
+    Returns:
+        The window, or ``None`` when both cells are blank.
+
+    Raises:
+        ValueError: If one cell is blank and the other is not, or a cell is not
+            a whole number, or the window is empty.
+    """
+    first = cells.get("chunk_first", "")
+    last = cells.get("chunk_last", "")
+    if not first and not last:
+        return None
+    if not first or not last:
+        message = (
+            f"a media index row names chunk_first={first!r} and "
+            f"chunk_last={last!r}; a division row names both"
+        )
+        raise ValueError(message)
+    return StoreWindow(_int_cell("chunk_first", first), _int_cell("chunk_last", last))
+
+
+def division_cells(row: RowDivision, rule: DivisionRule) -> dict[str, str]:
+    """Return the :data:`DIVISION_COLUMNS` cells of *row* under *rule*."""
+    return {
+        "chunk_first": str(row.chunk_first),
+        "chunk_last": str(row.chunk_last),
+        "first_frame": str(row.first_frame),
+        "start_utc": row.start_utc.astimezone(UTC).isoformat(timespec="microseconds"),
+        "start_source": row.start_source,
+        "follows_gap": "true" if row.follows_gap else "false",
+        "division_rule": rule.to_cell(),
+    }
+
+
+def _start_utc_cell(text: str) -> datetime:
+    """Return the timezone-aware UTC time that a ``start_utc`` cell spells."""
+    try:
+        start = datetime.fromisoformat(text)
+    except ValueError as exc:
+        message = f"the media index cell start_utc={text!r} is not an ISO time"
+        raise ValueError(message) from exc
+    if start.tzinfo is None or start.utcoffset() is None:
+        message = f"the media index cell start_utc={text!r} lacks a timezone"
+        raise ValueError(message)
+    return start.astimezone(UTC)
+
+
+def _start_source_cell(text: str) -> StartSource:
+    """Return the clock source that a ``start_source`` cell names."""
+    for source in get_args(StartSource):
+        if text == source:
+            return source
+    message = (
+        f"the media index cell start_source={text!r} is not one of "
+        f"{sorted(_START_SOURCES)}"
+    )
+    raise ValueError(message)
+
+
+def parse_division_cells(
+    cells: Mapping[str, str], *, abs_path: str, sequence: str, frame_count: int
+) -> RowDivision | None:
+    """Return the division that a media index row's division cells record.
+
+    Args:
+        cells: The row's :data:`DIVISION_COLUMNS` cells as trimmed text, a blank
+            cell as ``""``.
+        abs_path: The row's stored path.
+        sequence: The row's sequence.
+        frame_count: The row's frame count.
+
+    Returns:
+        The division, or ``None`` when every division cell is blank.
+
+    Raises:
+        ValueError: If some division cells are blank and others are not, or a
+            cell does not read.
+    """
+    filled = [column for column in DIVISION_COLUMNS if cells.get(column, "")]
+    if not filled:
+        return None
+    blank = [column for column in DIVISION_COLUMNS if column not in filled]
+    if blank:
+        message = (
+            f"the media index row of {abs_path!r} ({sequence!r}) fills the "
+            f"division cells {filled} and leaves {blank} blank; a division row "
+            "fills every one, and an undivided row none"
+        )
+        raise ValueError(message)
+    window = chunk_window(cells)
+    if window is None:
+        message = f"the media index row of {abs_path!r} names no chunks"
+        raise ValueError(message)
+    follows = _FOLLOWS_GAP_CELLS.get(cells["follows_gap"])
+    if follows is None:
+        message = (
+            f"the media index cell follows_gap={cells['follows_gap']!r} is not "
+            "true or false"
+        )
+        raise ValueError(message)
+    _ = DivisionRule.from_cell(cells["division_rule"])
+    return RowDivision(
+        abs_path=abs_path,
+        chunk_first=window.chunk_first,
+        chunk_last=window.chunk_last,
+        first_frame=_int_cell("first_frame", cells["first_frame"]),
+        frame_count=frame_count,
+        follows_gap=follows,
+        sequence=sequence,
+        start_utc=_start_utc_cell(cells["start_utc"]),
+        start_source=_start_source_cell(cells["start_source"]),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1153,3 +1330,72 @@ def plan_division(
         held_back=tuple(held_back),
         refused=tuple(refused),
     )
+
+
+# Division rows
+
+
+def build_division_rows(
+    store_row: Mapping[str, object],
+    plan: DivisionPlan,
+    window_cells: Mapping[StoreWindow, Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Return the media index rows of the divisions of one store under *plan*.
+
+    Each row is *store_row*, the store's undivided row, with the measured cells
+    of the division's window from *window_cells* laid over it: the size, time,
+    dimensions, rate, frame count and facts cells, and the division's
+    ``video_uuid``. The window's facts cells clear the store row's derivative
+    links. The row is then named for the division: ``group`` is the recording,
+    ``sequence`` the division's token, ``camera`` is blank and ``camera_serial``
+    is the store's. Its division cells are :func:`division_cells`. The rows are
+    in the plan's order, and the plan's divisions of other stores are left out.
+
+    Args:
+        store_row: The store's undivided media index row. Its ``abs_path`` is
+            the stored path that the plan's stores record.
+        plan: The recording's plan.
+        window_cells: The measured cells of each division's window.
+
+    Raises:
+        ValueError: If a division's window has no measured cells, or the cells
+            record another ``video_uuid`` or frame count than the plan.
+    """
+    abs_path = str(store_row.get("abs_path", ""))
+    rows: list[dict[str, object]] = []
+    for division in plan.divisions:
+        row = division.row
+        if row.abs_path != abs_path:
+            continue
+        measured = window_cells.get(row.window)
+        if measured is None:
+            message = (
+                f"chunks {row.chunk_first}-{row.chunk_last} of the store "
+                f"{abs_path!r} have no measured cells"
+            )
+            raise ValueError(message)
+        uid = str(measured.get("video_uuid", ""))
+        count = measured.get("frame_count")
+        if uid != division.uid or count != row.frame_count:
+            message = (
+                f"chunks {row.chunk_first}-{row.chunk_last} of the store "
+                f"{abs_path!r} measure {count!r} frames under the uid {uid!r}, "
+                f"and the plan divides {row.frame_count} under {division.uid!r}"
+            )
+            raise ValueError(message)
+        built = dict(store_row)
+        built.update(measured)
+        built.update(
+            {
+                "group": plan.recording,
+                "group_safe": to_safe_name(plan.recording),
+                "sequence": row.sequence,
+                "sequence_safe": to_safe_name(row.sequence),
+                "camera": "",
+                "video_order": 0,
+                "assignment_source": DIVISION_ASSIGNMENT_SOURCE,
+                **division_cells(row, plan.rule),
+            }
+        )
+        rows.append(built)
+    return rows

@@ -216,6 +216,7 @@ def play_video(
         hide_individual_bboxes_for_pair=hide_individual_bboxes_for_pair,
         facts=resolved.facts,
         first_frame=resolved.first_frame,
+        windows=resolved.windows,
     )
     writer = None
     out_path = None

@@ -802,7 +802,10 @@ class EgocentricCrop:
         frame_to_pos = {int(f): i for i, f in enumerate(frame_array)}
 
         reader = MultiVideoReader(
-            resolved.paths, facts=resolved.facts, target="analysis"
+            resolved.paths,
+            windows=resolved.windows,
+            facts=resolved.facts,
+            target="analysis",
         )
         output_fps = p.output_fps or reader.fps
 

@@ -13,12 +13,25 @@ from pathlib import Path
 
 import pytest
 
+from collections.abc import Callable
+
+import numpy as np
+
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.drift import classify_identity
+from mosaic.core.media.facts_columns import media_row_uuid
 from mosaic.core.pipeline.media_index import MediaIndexScope
+from mosaic.core.pipeline.sequence_index import media_compositions_for
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.params import Params
-from tests.helpers import make_dataset, write_mpeg4_mp4
+from tests.helpers import (
+    DIVISION_CREATED_UTC,
+    make_dataset,
+    store_dataset,
+    video_store_maker,
+    write_division_rows,
+    write_mpeg4_mp4,
+)
 
 
 class _P(Params):
@@ -430,3 +443,55 @@ class TestTheRefusalInRunFeature:
         assert _crop_outputs(ds, third.run_id) == after, (
             "the refusal did not converge: the entry recomputed twice"
         )
+
+
+class TestDivisionIdentity:
+    """A store of chunks of 5, 5, 5, 5 and 2 frames at 4 fps, divided every 10."""
+
+    @pytest.fixture
+    def divided(
+        self, tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+    ) -> Dataset:
+        dataset = store_dataset(
+            tmp_path,
+            make_media_dataset,
+            video_store_maker(
+                [5, 5, 5, 5, 2], fps=4.0, created_utc=DIVISION_CREATED_UTC
+            ),
+        )
+        store = dataset.get_root("media_raw") / "recordings" / "rec"
+        _ = write_division_rows(dataset, store, 10)
+        return dataset
+
+    def test_each_division_has_its_own_media_composition(
+        self, divided: Dataset
+    ) -> None:
+        entries = [
+            (str(row["group"]), str(row["sequence"]))
+            for row in divided.read_media_index()
+        ]
+
+        compositions = media_compositions_for(divided, entries)
+
+        assert len(set(compositions.values())) == 3
+        assert all(compositions.values())
+
+    def test_a_division_whose_frame_count_changes_moves_its_uid(
+        self, divided: Dataset
+    ) -> None:
+        """The last chunk's index loses a frame, and its division is another one."""
+        store = divided.get_root("media_raw") / "recordings" / "rec"
+        index = store / "000004.npz"
+        with np.load(index) as data:
+            numbers, times = data["frame_number"][:1], data["frame_time"][:1]
+        np.savez(index, frame_number=numbers, frame_time=times)
+        rows = divided.read_media_index()
+        before = [media_row_uuid(row) for row in rows]
+
+        report = divided.reprobe_media(apply=True)
+
+        assert report.unchanged == 2
+        assert report.video_uuid_changed == [f"{rows[2]['abs_path']} [chunks 4-4]"]
+        after = [media_row_uuid(row) for row in divided.read_media_index()]
+        assert after[:2] == before[:2]
+        assert after[2] not in ("", before[2])

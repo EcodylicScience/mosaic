@@ -47,6 +47,7 @@ from mosaic.core.media.preprocess.crop import MIN_CROP_SIDE
 from mosaic.core.media.preprocess.geometry import FrameMap, Placement
 from mosaic.core.media.preprocess.registry import Frame, FrameFn, MediaStep
 from mosaic.core.media.preprocess.specs import MediaStepSpec
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
@@ -500,10 +501,15 @@ def _require_libx264() -> None:
 
 @dataclass(frozen=True, slots=True)
 class _EntryMedia:
-    """An entry's clips, read one at a time and placed on one frame axis."""
+    """An entry's clips, read one at a time and placed on one frame axis.
+
+    ``windows`` are the chunks of each store that a division reads, parallel
+    to ``paths``.
+    """
 
     paths: tuple[Path, ...]
     facts: tuple[MediaFacts, ...]
+    windows: tuple[StoreWindow | None, ...]
     timeline: ConcatenatedTimeline
 
 
@@ -640,7 +646,7 @@ def _entry_media(key: str, media: ResolvedScopeEntry) -> tuple[_EntryMedia, Plac
         )
     except ValueError as exc:
         raise MediaProbeError(f"{key}: {exc}") from exc
-    return _EntryMedia(paths, facts, timeline), start
+    return _EntryMedia(paths, facts, tuple(media.resolved.windows), timeline), start
 
 
 def _place(
@@ -771,7 +777,12 @@ def preprocess_entry_failures(
 
 
 def _clip_frames(
-    path: Path, facts: MediaFacts, first: int, last: int, step: int
+    path: Path,
+    facts: MediaFacts,
+    window: StoreWindow | None,
+    first: int,
+    last: int,
+    step: int,
 ) -> Iterator[Frame]:
     """Yield frames ``first, first + step, ..., last`` of one clip, in order.
 
@@ -781,6 +792,7 @@ def _clip_frames(
     from an unverified position. Such a clip is read from its start, and the frames
     before *first* are discarded. Its analysis verdict requires a transcode, and an
     entry resolves to the derivative instead. This path is currently not reached.
+    A *window* reads those chunks of a store.
     """
     seekable = facts.timing_source != "absent"
     start, stride = (first, step) if seekable else (0, 1)
@@ -791,6 +803,7 @@ def _clip_frames(
         frame_step=stride,
         facts=facts,
         target="analysis",
+        window=window,
     ) as reader:
         for index, frame in reader:
             if index >= first and (index - first) % step == 0:
@@ -802,8 +815,12 @@ def _entry_frames(source: _EntryMedia, frames: FrameMap) -> Iterator[Frame]:
 
     A clip without a selected frame is not opened.
     """
-    for segment, path, facts in zip(
-        source.timeline.segments, source.paths, source.facts, strict=True
+    for segment, path, facts, chunks in zip(
+        source.timeline.segments,
+        source.paths,
+        source.facts,
+        source.windows,
+        strict=True,
     ):
         window = frames.within_segment(segment.start_frame, segment.end_frame)
         if window is not None:
@@ -811,6 +828,7 @@ def _entry_frames(source: _EntryMedia, frames: FrameMap) -> Iterator[Frame]:
             yield from _clip_frames(
                 path,
                 facts,
+                chunks,
                 first - segment.start_frame,
                 last - segment.start_frame,
                 frames.step,

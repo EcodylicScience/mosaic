@@ -441,7 +441,11 @@ class TestReadingAnEntrysClips:
         return [
             (frame, read_frame_code(image))
             for frame, image in read_entry_frames(
-                clips, start_frame=start, frame_step=step, target="analysis"
+                clips,
+                windows=None,
+                start_frame=start,
+                frame_step=step,
+                target="analysis",
             )
         ]
 
@@ -461,7 +465,10 @@ class TestReadingAnEntrysClips:
         _ds, (clip,) = _dataset(tmp_path, [30.0])
 
         for bare in (clip, str(clip)):
-            read = [frame for frame, _ in read_entry_frames(bare, target="analysis")]
+            read = [
+                frame
+                for frame, _ in read_entry_frames(bare, windows=None, target="analysis")
+            ]
             assert read == list(range(_CLIP_FRAMES)), bare
 
     def test_a_window_counts_entry_frames(

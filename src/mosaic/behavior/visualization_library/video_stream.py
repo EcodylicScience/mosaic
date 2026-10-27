@@ -11,6 +11,7 @@ from typing import Tuple, Optional, Iterable, Any, Dict, Sequence, Union
 import cv2
 from mosaic_media import MediaFacts
 
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.recording import FrameOutsideSequenceError, sequence_window
 
 from .helpers import _scaled_size
@@ -135,6 +136,7 @@ def render_stream(
     draw_options: Optional[Dict[str, Any]] = None,
     facts: Sequence[MediaFacts] | None = None,
     first_frame: int = 0,
+    windows: Sequence[StoreWindow | None] | None = None,
 ) -> _FrameStream:
     """
     Return an iterable that yields (frame_index, frame_bgr_with_overlay).
@@ -173,6 +175,10 @@ def render_stream(
         The sequence's first frame on its recording's frame axis
         (``ResolvedMedia.first_frame``). The media contains the sequence's frames
         from there, and the stream yields each frame on the tracks axis.
+    windows : sequence of StoreWindow or None, optional
+        The chunks of each store that the sequence reads, parallel to
+        *video_paths* (``ResolvedMedia.windows``). ``None`` reads every file
+        whole.
 
     Returns
     -------
@@ -190,7 +196,9 @@ def render_stream(
     # index, so a frame-index mismatch draws the wrong skeleton; that makes
     # this an analysis read, even though it feeds a human-facing player and an
     # overlay export rather than a browser-delivery read.
-    reader = MultiVideoReader(video_paths, facts=facts, target="analysis")
+    reader = MultiVideoReader(
+        video_paths, windows=windows, facts=facts, target="analysis"
+    )
     try:
         media_start, media_end = sequence_window(
             start,

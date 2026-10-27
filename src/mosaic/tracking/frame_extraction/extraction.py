@@ -16,6 +16,7 @@ from mosaic.user_paths import user_path
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.imgstore_io import is_imgstore
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.video_io import (
     MultiVideoReader,
     MultiVideoReaderLike,
@@ -80,6 +81,8 @@ class SingleFileFeatures:
         resize: The (width, height) that each frame is resized to.
         grayscale: Whether frames are converted to grayscale.
         crop_rect: The (x, y, w, h) crop applied before the resize, or ``None``.
+        window: The chunks of a store that are read, or ``None`` for the whole
+            file.
     """
 
     path: Path
@@ -87,6 +90,7 @@ class SingleFileFeatures:
     resize: tuple[int, int]
     grayscale: bool
     crop_rect: tuple[int, int, int, int] | None
+    window: StoreWindow | None = None
 
     def candidates(
         self, start: int, end: int, step: int
@@ -111,6 +115,7 @@ class SingleFileFeatures:
             crop_rect=self.crop_rect,
             max_candidates=None,
             facts=self.facts,
+            window=self.window,
         )
 
     def at(self, indices: np.ndarray) -> np.ndarray:
@@ -123,7 +128,7 @@ class SingleFileFeatures:
             The ``(M, D)`` features, one row per index in the order of *indices*.
         """
         return _features_in_order(
-            read_frames_at(self.path, indices, self.facts),
+            read_frames_at(self.path, indices, self.facts, window=self.window),
             indices,
             crop_rect=self.crop_rect,
             resize=self.resize,
@@ -323,6 +328,7 @@ def extract_frames(
     facts: MediaFacts | None = None,
     frame_indices: Sequence[int] | None = None,
     excluded: Exclusion | None = None,
+    window: StoreWindow | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a single video.
@@ -369,6 +375,9 @@ def extract_frames(
         The frames that "uniform" or "kmeans" sampling avoids and samples around,
         or ``None``. Its keys extend the ``sampling`` record. Not read under
         "list".
+    window
+        The chunks of a store that a division reads, or ``None`` for the whole
+        file. Frame indices count from the window's first frame.
     """
     method_norm = _checked_method(method, n_frames, candidate_step, frame_indices)
 
@@ -380,7 +389,7 @@ def extract_frames(
     resolved_facts = facts
     if resolved_facts is None and not is_imgstore(video_path):
         resolved_facts = probe_media(user_path(video_path).resolve())
-    meta = video_metadata_or_probe(video_path, resolved_facts)
+    meta = video_metadata_or_probe(video_path, resolved_facts, window)
     start, end = normalize_frame_range(meta.frame_count, start_frame, end_frame)
     crop_rect = normalize_crop_rect(crop, meta.width, meta.height)
 
@@ -410,6 +419,7 @@ def extract_frames(
                 resize=kmeans.resize,
                 grayscale=kmeans.grayscale,
                 crop_rect=crop_rect,
+                window=window,
             ),
             kmeans=kmeans,
             random_state=int(random_state),
@@ -432,6 +442,7 @@ def extract_frames(
         output_dir=out_dir,
         crop_rect=crop_rect,
         facts=resolved_facts,
+        window=window,
     )
 
     created_utc = (
@@ -488,6 +499,7 @@ def extract_frames_multi(
     facts: Sequence[MediaFacts] | None = None,
     frame_indices: Sequence[int] | None = None,
     excluded: Exclusion | None = None,
+    windows: Sequence[StoreWindow | None] | None = None,
 ) -> FrameExtractionResult:
     """
     Extract representative frames from a multi-video sequence.
@@ -508,6 +520,9 @@ def extract_frames_multi(
         Global frame indices to write under "list", counted across the clips.
     excluded : Exclusion, optional
         The global frames that sampling avoids and samples around.
+    windows : sequence of StoreWindow or None, optional
+        The chunks of each store that are read, parallel to *video_paths*.
+        ``None`` reads every file whole.
     """
     method_norm = _checked_method(method, n_frames, candidate_step, frame_indices)
 
@@ -515,7 +530,10 @@ def extract_frames_multi(
     # pose-annotation input, so a misindexed frame poisons the annotation set:
     # an analysis read.
     reader = MultiVideoReader(
-        [Path(p) for p in video_paths], facts=facts, target="analysis"
+        [Path(p) for p in video_paths],
+        windows=windows,
+        facts=facts,
+        target="analysis",
     )
     total_frames = reader.total_frames
     start, end = normalize_frame_range(total_frames, start_frame, end_frame)

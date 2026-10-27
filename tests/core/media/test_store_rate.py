@@ -20,6 +20,7 @@ import pytest
 from typer.testing import CliRunner
 
 import mosaic.core.media.video_io as video_io
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.store_rate import STORE_RATE_TOLERANCE, store_rate_mismatch
 from mosaic.core.media.video_io import MultiVideoReader, VideoMetadata
 from mosaic.cli import app
@@ -66,6 +67,8 @@ class TestTheRule:
 
 
 _STORE_SIZE = (64, 48)
+WHOLE: tuple[StoreWindow | None, ...] = (None, None)
+"""The windows of two stores read whole."""
 
 
 def _stores(tmp_path: Path, count: int) -> list[Path]:
@@ -84,7 +87,8 @@ def _read_as(
 ) -> None:
     """Make the store reader measure each store at its ``(fps, frames)``."""
 
-    def metadata(path: Path | str) -> VideoMetadata:
+    def metadata(path: Path | str, window: StoreWindow | None = None) -> VideoMetadata:
+        """The whole store's metadata, which a reader without windows asks for."""
         fps, frames = measured[Path(path)]
         width, height = _STORE_SIZE
         return VideoMetadata(
@@ -125,11 +129,18 @@ def test_the_reader_and_the_early_check_agree(
     facts = [clip_facts(fps=rate, frame_count=frames) for rate in rates]
 
     def read() -> None:
-        MultiVideoReader(stores, target="analysis").close()
+        MultiVideoReader(stores, windows=None, target="analysis").close()
 
     def check() -> None:
         refuse_unjoinable(
-            ds, "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+            ds,
+            "infer-localizer",
+            "",
+            "sess",
+            stores,
+            facts,
+            windows=WHOLE,
+            hands_over_path=False,
         )
 
     assert _accepted(read) is one_rate
@@ -144,7 +155,14 @@ def test_stores_at_two_rates_are_refused_as_unjoinable(tmp_path: Path) -> None:
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
         refuse_unjoinable(
-            ds, "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+            ds,
+            "infer-localizer",
+            "",
+            "sess",
+            stores,
+            facts,
+            windows=WHOLE,
+            hands_over_path=False,
         )
 
     message = str(refused.value)
@@ -162,7 +180,14 @@ def test_a_consumer_reading_stores_itself_takes_them_at_one_rate(
     facts = [clip_facts(fps=30.0), clip_facts(fps=30.0)]
 
     refuse_unjoinable(
-        ds, "infer-localizer", "", "sess", stores, facts, hands_over_path=False
+        ds,
+        "infer-localizer",
+        "",
+        "sess",
+        stores,
+        facts,
+        windows=WHOLE,
+        hands_over_path=False,
     )
 
 
@@ -176,7 +201,14 @@ def test_a_consumer_handing_over_a_path_refuses_stores_at_one_rate(
 
     with pytest.raises(JoinedSourceMismatchError) as refused:
         refuse_unjoinable(
-            ds, "infer-pose", "g", "s", stores, facts, hands_over_path=True
+            ds,
+            "infer-pose",
+            "g",
+            "s",
+            stores,
+            facts,
+            windows=WHOLE,
+            hands_over_path=True,
         )
 
     message = str(refused.value)
@@ -220,7 +252,9 @@ def test_the_remedy_for_stores_of_unmeasured_length_says_to_measure_them(
     facts = [clip_facts(fps=30.0, frame_count=0), clip_facts(fps=30.0, frame_count=60)]
 
     with pytest.raises(JoinedSourceMismatchError, match="reprobe-media --apply"):
-        refuse_unjoinable(ds, "trex", "", "s", stores, facts, hands_over_path=True)
+        refuse_unjoinable(
+            ds, "trex", "", "s", stores, facts, windows=WHOLE, hands_over_path=True
+        )
 
 
 @pytest.mark.parametrize("fmt", ["npy"])
@@ -235,7 +269,7 @@ def test_long_real_stores_measured_apart_are_read_as_one(
         name="b", nframes=8_000, fps=30.002, fmt=fmt, shape=(4, 4, 1), chunksize=2_000
     )
 
-    reader = MultiVideoReader([first, second], target="analysis")
+    reader = MultiVideoReader([first, second], windows=None, target="analysis")
 
     assert reader.total_frames == 16_000
     reader.close()

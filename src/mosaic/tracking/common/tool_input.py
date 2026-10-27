@@ -48,6 +48,7 @@ from mosaic.core.media.facts_columns import (
 )
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.read_target import verified_read_facts
+from mosaic.core.media.store_division import MediaRowKey, StoreWindow
 from mosaic.core.media.store_rate import positive_rate, store_rate_mismatch
 from mosaic.core.pipeline.joined_export import (
     current_join,
@@ -422,7 +423,7 @@ def _remake_remedy(
     The command names the entry by the indexed key of the entry media that the
     variant was made from.
     """
-    entry = ds.indexed_entry(variant.entry_paths[0], (group, sequence))
+    entry = ds.indexed_entry(variant.entry_row_keys[0], (group, sequence))
     run_id = variant.run_id
     return (
         f"\n    Or make the media variant in a codec that {kind} reads. Run the "
@@ -486,6 +487,7 @@ def resolve_tool_inputs(
             item.sequence,
             item.video_paths,
             item.source_facts,
+            windows=item.video_windows,
             kind=kind,
         )
     )
@@ -522,7 +524,13 @@ def resolve_tool_input(
 
 
 def resolve_entry_input(
-    ds: "Dataset", group: str, sequence: str, source: Path, *, kind: str
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    source: Path,
+    window: StoreWindow | None,
+    *,
+    kind: str,
 ) -> Path:
     """*source* itself, or the export registered for it when it is a store.
 
@@ -531,30 +539,39 @@ def resolve_entry_input(
     ops reach this boundary too and build no work items: they walk a media scope
     directly. Those two names are all a work item ever supplied here.
 
-    The store row is found by path rather than by camera, because the path
-    alone identifies the store within a multi-camera sequence.
+    The store row is found by path and *window* rather than by camera, because
+    the path alone identifies the store within a multi-camera sequence, and the
+    window identifies a division of it.
     """
     if not is_imgstore(source):
         return source
     why = f"which {kind} cannot open -- it reads a video file, not a store directory"
-    return _store_export(ds, group, sequence, source, kind=kind, why=why)
+    return _store_export(ds, group, sequence, source, window, kind=kind, why=why)
 
 
 def _store_export(
-    ds: "Dataset", group: str, sequence: str, store: Path, *, kind: str, why: str
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    store: Path,
+    window: StoreWindow | None,
+    *,
+    kind: str,
+    why: str,
 ) -> Path:
     """Return the export registered for *store*, or raise naming the command.
 
     *why* says why *kind* needs the export, after "is an imgstore recording,".
-    The store's row (:meth:`~mosaic.core.dataset.Dataset.media_rows_of`) gives
-    the export. The command names the entry by the row's key, which a run's scope
-    resolves.
+    The store's row (:meth:`~mosaic.core.dataset.Dataset.media_rows_of`), the
+    row of *window* for a division, gives the export. The command names the
+    entry by the row's key, which a run's scope resolves.
 
     The export's back-link row records the rate it was measured at, and an
     export at another rate than the store's row is refused. ``export-store``
     before 0.3 stamped a copy at its chunks' declared rate.
     """
-    row = ds.media_rows_of([store]).get(store)
+    key = MediaRowKey.of(str(store), window)
+    row = ds.media_rows_of([key]).get(key)
     export = _linked_export(ds, row)
     entry = (group, sequence) if row is None else media_row_entry(row)
     if export is None:
@@ -621,6 +638,7 @@ def entry_tool_input(
     sources: Sequence[Path],
     facts: Sequence[MediaFacts],
     *,
+    windows: Sequence[StoreWindow | None],
     kind: str,
 ) -> Path:
     """Return the one file that *kind*'s tool opens for an entry's media.
@@ -641,6 +659,8 @@ def entry_tool_input(
         sequence: The entry's sequence.
         sources: The entry's clips, in ``video_order``.
         facts: The clips' routed facts, parallel to *sources*.
+        windows: The chunks of each store in *sources* that the entry reads,
+            parallel to them, ``None`` for a file read whole.
         kind: The op that hands the file over, named in a refusal.
 
     Raises:
@@ -651,8 +671,8 @@ def entry_tool_input(
             current join of exactly those clips.
     """
     clips = [
-        resolve_entry_input(ds, group, sequence, source, kind=kind)
-        for source in sources
+        resolve_entry_input(ds, group, sequence, source, window, kind=kind)
+        for source, window in zip(sources, windows, strict=True)
     ]
     if len(clips) < 2:
         return clips[0]
@@ -660,7 +680,9 @@ def entry_tool_input(
         f"{kind} is handed one video file, and a tool that joins clips itself "
         f"loses frames at every boundary, so mosaic joins them first."
     )
-    return current_join(ds, group, sequence, sources, facts, asker=kind, why=why)
+    return current_join(
+        ds, group, sequence, sources, facts, windows=windows, asker=kind, why=why
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -684,6 +706,7 @@ def entry_runner_sources(
     sources: Sequence[Path],
     facts: Sequence[MediaFacts],
     *,
+    windows: Sequence[StoreWindow | None],
     kind: str,
     variant: VariantSource | None = None,
 ) -> tuple[ToolFile, ...]:
@@ -696,7 +719,8 @@ def entry_runner_sources(
     * a plain clip is itself, with the facts the media index stored for it;
     * a store whose chunk files hold the frames mosaic reads
       (:func:`~mosaic.core.pipeline.store_export.readable_chunks`) is its chunk
-      files, each probed and gated as mosaic's own store reader gates a chunk.
+      files, the chunks of its window for a division, each probed and gated as
+      mosaic's own store reader gates a chunk.
       Each chunk's measured frame count must equal the count the store's index
       gives it, or the chunks do not hold the store's frame axis;
     * any other store is its registered export, as a one-file tool reads it.
@@ -714,6 +738,8 @@ def entry_runner_sources(
         sources: The entry's clips, in ``video_order``, or the variant's file.
         facts: The stored facts of *sources*, parallel to them, or empty to
             probe every file.
+        windows: The chunks of each store in *sources* that the entry reads,
+            parallel to them, ``None`` for a file read whole.
         kind: The op whose runner reads the files, named in a refusal.
         variant: The media variant that *sources* is the file of, or ``None``. A
             codec refusal of a variant names how to remake it.
@@ -727,9 +753,9 @@ def entry_runner_sources(
     """
     stored: list[MediaFacts | None] = list(facts) if facts else [None] * len(sources)
     files: list[ToolFile] = []
-    for source, source_facts in zip(sources, stored, strict=True):
+    for source, source_facts, window in zip(sources, stored, windows, strict=True):
         handed = (
-            _store_files(ds, group, sequence, source, kind=kind)
+            _store_files(ds, group, sequence, source, window, kind=kind)
             if is_imgstore(source)
             else [ToolFile(source, _analysis_facts(source, source_facts))]
         )
@@ -759,13 +785,22 @@ def _unreadable_chunks_why(kind: str) -> str:
 
 
 def _store_files(
-    ds: "Dataset", group: str, sequence: str, store: Path, *, kind: str
+    ds: "Dataset",
+    group: str,
+    sequence: str,
+    store: Path,
+    window: StoreWindow | None,
+    *,
+    kind: str,
 ) -> list[ToolFile]:
-    """Return the files the runner reads for *store*: its chunks, or its export."""
-    spans = readable_chunks(store)
+    """Return the files the runner reads for *store*: its chunks, or its export.
+
+    The chunks are those of *window* for a division of the store.
+    """
+    spans = readable_chunks(store, window)
     if not spans:
         why = _unreadable_chunks_why(kind)
-        export = _store_export(ds, group, sequence, store, kind=kind, why=why)
+        export = _store_export(ds, group, sequence, store, window, kind=kind, why=why)
         return [ToolFile(export, _analysis_facts(export, None))]
 
     # Gated as mosaic's own store reader gates a chunk (`NativeStore`), so the
@@ -778,7 +813,9 @@ def _store_files(
                 f"its own measure and {count} by the store's index, so {kind} reads "
                 f"its export, whose frames the export verified"
             )
-            export = _store_export(ds, group, sequence, store, kind=kind, why=why)
+            export = _store_export(
+                ds, group, sequence, store, window, kind=kind, why=why
+            )
             return [ToolFile(export, _analysis_facts(export, None))]
     return [
         ToolFile(path, chunk_facts)
@@ -828,23 +865,26 @@ def handed_codecs(
     reads = tracking_root(kind).reads
     if reads == "in-process":
         return frozenset()
-    paths, facts = entry.resolved.paths, entry.resolved.facts
+    resolved = entry.resolved
+    paths, facts = resolved.paths, resolved.facts
     if reads == "one-file" and len(paths) > 1:
         return frozenset({join_codec(facts)} - {""})
     codecs: set[str] = set()
-    for path, clip in zip(paths, facts, strict=True):
+    for path, clip, window, key in zip(
+        paths, facts, resolved.windows, resolved.row_keys, strict=True
+    ):
         if not is_imgstore(path):
             codecs.add(clip.codec_name)
             continue
-        spans = readable_chunks(path) if reads == "entry-files" else []
+        spans = readable_chunks(path, window) if reads == "entry-files" else []
         if spans:
             codecs.add(header_codec(spans[0][0]))
             continue
-        export = _linked_export(ds, ds.media_rows_of([path]).get(path))
+        export = _linked_export(ds, ds.media_rows_of([key]).get(key))
         if export is not None and export.is_file():
             codecs.add(header_codec(export))
         else:
-            codecs.add(export_codec(path))
+            codecs.add(export_codec(path, window))
     return frozenset(codecs - {""})
 
 
@@ -877,7 +917,11 @@ def refuse_unreadable_entry(
     """
     root = tracking_root(kind)
     group, sequence = entry.group, entry.sequence
-    paths, facts = entry.resolved.paths, entry.resolved.facts
+    paths, facts, windows = (
+        entry.resolved.paths,
+        entry.resolved.facts,
+        entry.resolved.windows,
+    )
     refuse_unjoinable(
         ds,
         kind,
@@ -885,19 +929,26 @@ def refuse_unreadable_entry(
         sequence,
         paths,
         facts,
+        windows=windows,
         hands_over_path=root.reads != "in-process",
     )
     if root.retention == "tracker":
-        refuse_unidentified_clips(ds, group, sequence, paths, facts, asker=kind)
+        refuse_unidentified_clips(
+            ds, group, sequence, paths, facts, windows=windows, asker=kind
+        )
     if root.reads == "in-process":
         _ = join_to_read(ds, entry, asker=kind)
     elif root.reads == "one-file":
-        _ = entry_tool_input(ds, group, sequence, paths, facts, kind=kind)
+        _ = entry_tool_input(
+            ds, group, sequence, paths, facts, windows=windows, kind=kind
+        )
     else:
-        for store in paths:
-            if is_imgstore(store) and not readable_chunks(store):
+        for store, window in zip(paths, windows, strict=True):
+            if is_imgstore(store) and not readable_chunks(store, window):
                 why = _unreadable_chunks_why(kind)
-                _ = _store_export(ds, group, sequence, store, kind=kind, why=why)
+                _ = _store_export(
+                    ds, group, sequence, store, window, kind=kind, why=why
+                )
 
 
 def _linked_export(ds: "Dataset", row: Mapping[str, object] | None) -> Path | None:

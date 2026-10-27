@@ -32,7 +32,9 @@ Sharing that layout is what makes ``mosaic prune-media`` reach an orphaned expor
 without knowing this op exists.
 
 An entry's cameras each export separately -- a store per camera, a
-``video_uuid`` per store, so the recipe-addressed filenames never collide.
+``video_uuid`` per store, so the recipe-addressed filenames never collide. A
+division of a store exports its window of chunks alone, named by the division's
+``video_uuid``, and exported frame *i* is frame *i* of the division.
 """
 
 from __future__ import annotations
@@ -57,11 +59,13 @@ from mosaic_media.transcode import ANALYSIS_ENCODING, Target, TranscodeError
 from mosaic.core.entry import Entry
 from mosaic.core.media.facts_columns import (
     derivative_cell,
+    media_row_key,
     media_row_uuid,
     row_mapping,
     series_facts_or_none,
 )
 from mosaic.core.media.imgstore_io import fps_from_duration, is_imgstore
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.store_rate import store_rate_mismatch
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
@@ -196,10 +200,10 @@ class StoreTiming:
     fps: float
 
 
-def _store_timing(store: Path) -> StoreTiming:
+def _store_timing(store: Path, window: StoreWindow | None) -> StoreTiming:
     """Return *store*'s frame count and rate, read from its metadata and chunk indexes.
 
-    It does not open a chunk.
+    A *window* counts its chunks alone. It does not open a chunk.
 
     Raises:
         MediaProbeError: If the store's metadata or a chunk index does not read.
@@ -207,7 +211,7 @@ def _store_timing(store: Path) -> StoreTiming:
     """
     from mosaic.core.media.imgstore_native import NativeStore
 
-    with NativeStore(store) as native:
+    with NativeStore(store, window) as native:
         frame_count = int(native.frame_count)
         fps = fps_from_duration(frame_count, float(native.duration))
     if fps <= 0:
@@ -256,12 +260,30 @@ def _one_entry(scope: ResolvedScope) -> Entry:
     return entries[0]
 
 
+@dataclass(frozen=True, slots=True)
+class EntryStore:
+    """One imgstore recording of an entry, as its media index row records it.
+
+    Attributes:
+        video_order: The row's ``video_order``.
+        path: The store's directory, resolved.
+        window: The chunks that a division row reads, ``None`` for the whole
+            store.
+        row: The row.
+    """
+
+    video_order: int
+    path: Path
+    window: StoreWindow | None
+    row: "pd.Series"
+
+
 def entry_stores(
     ds: "Dataset",
     group: str,
     sequence: str,
     cameras: frozenset[str] | None = None,
-) -> list[tuple[int, Path, "pd.Series"]]:
+) -> list[EntryStore]:
     """Return an entry's imgstore recordings in index order, with each one's row.
 
     ``match_media_rows`` rather than ``resolve_media``: this reads the raw cells
@@ -276,28 +298,37 @@ def entry_stores(
         cameras: The cameras to keep, or ``None`` for every camera.
 
     Returns:
-        One ``(video_order, store path, index row)`` per store, empty when the
-        entry records none under *cameras*.
+        One store per row, empty when the entry records none under *cameras*.
 
     Raises:
         FileNotFoundError: If the media index is missing or empty, or no row
             matches the entry.
+        TranscodeError: If a row's chunk cells do not read.
     """
-    stores: list[tuple[int, Path, "pd.Series"]] = []
+    stores: list[EntryStore] = []
     for _, row in ds.match_media_rows(group, sequence).iterrows():
         cells = row_mapping(row)
         if str(cells.get("media_type", "")) != "imgstore":
             continue
         if cameras is not None and str(cells.get("camera", "")) not in cameras:
             continue
-        video_order = int(str(cells.get("video_order", "") or 0))
-        stores.append((video_order, ds.resolve_path(str(cells["abs_path"])), row))
+        try:
+            key = media_row_key(cells)
+        except ValueError as exc:
+            message = f"{group}/{sequence}: {exc}"
+            raise TranscodeError(message) from exc
+        stores.append(
+            EntryStore(
+                video_order=int(str(cells.get("video_order", "") or 0)),
+                path=ds.resolve_path(key.abs_path),
+                window=key.window,
+                row=row,
+            )
+        )
     return stores
 
 
-def _stores_for(
-    ds: "Dataset", scope: ResolvedScope
-) -> list[tuple[int, Path, "pd.Series"]]:
+def _stores_for(ds: "Dataset", scope: ResolvedScope) -> list[EntryStore]:
     """The imgstore recordings one export would read, in index order.
 
     Every camera of the entry is matched and the selector's cameras filter
@@ -310,8 +341,8 @@ def _stores_for(
     stores = entry_stores(ds, group, sequence, frozenset(cameras) if cameras else None)
     if not stores:
         held = {
-            str(row_mapping(row).get("camera", ""))
-            for _, _, row in entry_stores(ds, group, sequence)
+            str(row_mapping(store.row).get("camera", ""))
+            for store in entry_stores(ds, group, sequence)
         }
         raise TranscodeError(_nothing_to_export(group, sequence, cameras, held))
     return stores
@@ -341,16 +372,18 @@ def _nothing_to_export(
     )
 
 
-def unnamed_stores(stores: Iterable[tuple[int, Path, pd.Series]]) -> list[Path]:
+def unnamed_stores(stores: Iterable[EntryStore]) -> list[Path]:
     """Return each of *stores* whose media-index row records no ``video_uuid``.
 
-    An export is named by its store's ``video_uuid``. ``export-store`` refuses
-    a store without one.
+    An export is named by its store's ``video_uuid``, a division's by the
+    division's. ``export-store`` refuses a store without one.
 
     Args:
         stores: What :func:`entry_stores` returned.
     """
-    return [store for _, store, row in stores if not media_row_uuid(row_mapping(row))]
+    return [
+        store.path for store in stores if not media_row_uuid(row_mapping(store.row))
+    ]
 
 
 def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
@@ -368,7 +401,7 @@ def _store_uuids(ds: "Dataset", scope: ResolvedScope) -> list[str]:
             f"{group}/{sequence}: the media index does not record a video_uuid "
             f"for {unnamed[0]}; run 'mosaic reprobe-media --apply' before exporting"
         )
-    return [media_row_uuid(row_mapping(row)) for _, _, row in stores]
+    return [media_row_uuid(row_mapping(store.row)) for store in stores]
 
 
 @register_op
@@ -465,7 +498,13 @@ class StoreExportOp(Op[StoreExportParams]):
         export_root.mkdir(parents=True, exist_ok=True)
         ctx.set_total(len(stores) * _TICKS)
 
-        for index, (video_order, store, row) in enumerate(stores):
+        for index, entry_store in enumerate(stores):
+            video_order, store, row = (
+                entry_store.video_order,
+                entry_store.path,
+                entry_store.row,
+            )
+            window = entry_store.window
             ctx.check_cancel()
             label = f"{group}/{sequence}[{index}]"
             dest = (
@@ -491,19 +530,21 @@ class StoreExportOp(Op[StoreExportParams]):
             # did not. The choice is made per store and reported, because the two
             # differ by two orders of magnitude in time and by everything in
             # fidelity.
-            chunks = copyable_chunks(store)
+            chunks = copyable_chunks(store, window)
             if chunks:
                 ctx.progress.on_phase(
                     "export-store",
                     f"{label}: {store.name}, copying {len(chunks)} chunks",
                 )
                 facts = copy_export(
-                    store, dest, chunks, _store_timing(store), ctx, index
+                    store, dest, chunks, _store_timing(store, window), ctx, index
                 )
                 encoder = ""
             else:
                 ctx.progress.on_phase("export-store", f"{label}: {store.name}")
-                encoder = write_export(store, dest, row, params.av1_crf, ctx, index)
+                encoder = write_export(
+                    store, dest, row, params.av1_crf, ctx, index, window=window
+                )
                 facts = probe_media(dest)
 
             verdict = derive(facts, CHROME_149, media_thresholds())
@@ -528,8 +569,12 @@ class StoreExportOp(Op[StoreExportParams]):
         return run_id
 
 
-def readable_chunks(store: Path) -> list[tuple[Path, int]]:
+def readable_chunks(
+    store: Path, window: StoreWindow | None = None
+) -> list[tuple[Path, int]]:
     """*store*'s chunk files and their frame counts, when they hold what mosaic reads.
+
+    A *window* lists its chunks alone.
 
     Empty otherwise. Two conditions, and each rules out a store whose chunk
     files are not the frames mosaic reads from it:
@@ -545,27 +590,29 @@ def readable_chunks(store: Path) -> list[tuple[Path, int]]:
     """
     from mosaic.core.media.imgstore_native import NativeStore
 
-    with NativeStore(store) as native:
+    with NativeStore(store, window) as native:
         if not native.is_video or native.encoding is not None:
             return []
         return native.chunk_spans()
 
 
-def _copied_chunks(store: Path) -> tuple[list[Path], str]:
+def _copied_chunks(store: Path, window: StoreWindow | None) -> tuple[list[Path], str]:
     """*store*'s chunk files when an export copies them, and their codec.
 
     Empty and ``""`` when an export encodes the store instead. The rule is
     :func:`copyable_chunks`'s.
     """
-    chunks = [path for path, _ in readable_chunks(store)]
+    chunks = [path for path, _ in readable_chunks(store, window)]
     codec = header_codec(chunks[0]) if chunks else ""
     if codec not in SOFTWARE_DECODABLE_CODECS:
         return [], ""
     return chunks, codec
 
 
-def copyable_chunks(store: Path) -> list[Path]:
+def copyable_chunks(store: Path, window: StoreWindow | None = None) -> list[Path]:
     """*store*'s chunk files when they can be copied out verbatim, else empty.
+
+    A *window* lists its chunks alone.
 
     **A store whose chunks are already video does not need re-encoding, and must
     not get it.** The recorder wrote H.264; decoding every frame and encoding it
@@ -578,22 +625,23 @@ def copyable_chunks(store: Path) -> list[Path]:
     codec any libavcodec build decodes. A store written in AV1 has to be
     re-encoded for exactly the reason this op's own output did.
     """
-    return _copied_chunks(store)[0]
+    return _copied_chunks(store, window)[0]
 
 
-def export_codec(store: Path) -> str:
+def export_codec(store: Path, window: StoreWindow | None = None) -> str:
     """Return the codec of *store*'s export, before the export is written.
 
     An export copies the chunks when :func:`copyable_chunks` lists them, and keeps
     their codec. Otherwise :func:`write_export` encodes the store in AV1. Reads the
-    store's metadata and chunk indexes, and the first chunk's header.
+    store's metadata and chunk indexes, and the first chunk's header. A *window*
+    is the export of a division.
 
     A first chunk whose header does not read is encoded.
 
     Raises:
         MediaProbeError: If the store's metadata or a chunk index cannot be read.
     """
-    return _copied_chunks(store)[1] or _ENCODED_EXPORT_CODEC
+    return _copied_chunks(store, window)[1] or _ENCODED_EXPORT_CODEC
 
 
 def copy_export(
@@ -725,9 +773,12 @@ def write_export(
     av1_crf: int,
     ctx: "JobContext",
     position: int,
+    *,
+    window: StoreWindow | None = None,
 ) -> str:
     """Decode every frame of *store* in order and encode it into *dest*, and
-    report the encoder that wrote it.
+    report the encoder that wrote it. A *window* is the frames of its chunks
+    alone.
 
     Writes to a sibling partial file and renames, so an interrupted encode never
     leaves a truncated video at the recipe address -- where the name alone would
@@ -744,7 +795,9 @@ def write_export(
     # A frame read is a raw read. The store branch of open_frame_reader calls no
     # gate at all -- target is the caller's declaration of intent -- and a
     # store's verdict carries nothing to gate on.
-    reader = open_frame_reader(store, facts=series_facts_or_none(row), target="raw")
+    reader = open_frame_reader(
+        store, facts=series_facts_or_none(row), target="raw", window=window
+    )
     # The partial keeps the .mp4 suffix: the writer picks its output format from
     # the extension, and a bare ".partial" leaves it with nothing to go on.
     partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")

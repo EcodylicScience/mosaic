@@ -50,18 +50,19 @@ from .media.facts_columns import (
     MEDIA_INDEX_COLUMNS as MEDIA_INDEX_COLUMNS,  # re-exported for API/tests
     AnalysisDerivativeMissingError,
     ProbeMetadata,
-    derivative_column_for_target,
     derivative_path_for_target,
     media_row_entry,
+    media_row_key,
     media_row_uuid,
     read_link_cell,
+    row_division,
     row_facts_or_none,
     row_mapping,
     row_to_facts,
     series_facts_or_none,
 )
 from .media.probe_row import probe_video_metadata, row_from_facts
-from .media.store_division import store_base_name
+from .media.store_division import MediaRowKey, StoreWindow, store_base_name
 from .media.store_rate import store_rate_mismatch
 from .media.uniformity import UniformityVerdict, camera_uniformity
 from .schema import (
@@ -745,20 +746,44 @@ class ResolvedMedia:
     ``paths`` are ordered by ``video_order`` (one element for a single-file
     sequence). ``facts`` is a parallel list of
     :class:`~mosaic_media.MediaFacts`, one per path, that readers inject instead
-    of re-probing.
+    of re-probing. ``windows`` is parallel to them too: the chunks of a store
+    that a division row reads, and ``None`` for a file read whole. A reader
+    opens each path on its window, and :attr:`row_keys` finds each path's row.
 
-    ``placement`` is ``None`` for an undivided recording. For a sequence of a
-    continuous group, whose tracks count ``frame`` across the group, it is the
-    sequence's first frame on the recording's frame axis, or why the sequence
-    cannot be placed there. The media contains the frames of this sequence
-    alone. A reader subtracts :attr:`first_frame` from a tracks frame
+    ``placement`` is ``None`` for an undivided recording, and why the
+    sequence cannot be placed when such a recording holds a division row of a
+    store. For a sequence of a continuous group, whose tracks count ``frame``
+    across the group, it is the sequence's first frame on the recording's
+    frame axis, or why the sequence cannot be placed there. The media contains
+    the frames of this sequence alone. A reader subtracts :attr:`first_frame` from a tracks frame
     (:meth:`sequence_frame`). A consumer that reads the media without a tracks
     frame does not ask for it, and resolves a sequence that cannot be placed.
     """
 
     paths: list[Path]
     facts: list[MediaFacts]
+    windows: list[StoreWindow | None]
     placement: int | UnplacedSequence | None = None
+
+    def __post_init__(self) -> None:
+        """Refuse windows that are not parallel to the paths."""
+        if len(self.windows) != len(self.paths):
+            message = (
+                f"{len(self.windows)} windows for {len(self.paths)} media paths; "
+                "they are parallel"
+            )
+            raise ValueError(message)
+
+    @property
+    def row_keys(self) -> list[MediaRowKey]:
+        """The media index key of each path's row, parallel to :attr:`paths`.
+
+        :meth:`Dataset.media_rows_of` takes them.
+        """
+        return [
+            MediaRowKey.of(str(path), window)
+            for path, window in zip(self.paths, self.windows, strict=True)
+        ]
 
     @property
     def first_frame(self) -> int:
@@ -836,6 +861,116 @@ class _ScopedMediaRows:
     def entry(self) -> Entry:
         """The ``(group, sequence)`` pair as indexed."""
         return (self.group, self.sequence)
+
+
+def _row_window(row: pd.Series) -> StoreWindow | None:
+    """Return the chunks of a store that a media index row reads, ``None`` when whole.
+
+    Raises:
+        MediaProbeError: If the row's chunk cells do not read.
+    """
+    try:
+        return media_row_key(row_mapping(row)).window
+    except ValueError as exc:
+        raise MediaProbeError(str(exc)) from exc
+
+
+def _recording_divided(group: str, group_rows: pd.DataFrame) -> bool | UnplacedSequence:
+    """Return whether the recording *group* is the divisions of its stores.
+
+    *group_rows* are every originals row of the recording. A recording whose
+    rows are all division rows is divided, and one with no division row is not.
+
+    Returns:
+        Whether every row is a division row, or why no sequence of the
+        recording can be placed: it mixes division rows with other rows.
+
+    Raises:
+        MediaProbeError: If a row's division cells do not read.
+    """
+    try:
+        divided = [
+            row_division(row_mapping(row)) is not None
+            for _, row in group_rows.iterrows()
+        ]
+    except ValueError as exc:
+        raise MediaProbeError(str(exc)) from exc
+    if not any(divided):
+        return False
+    if all(divided):
+        return True
+    reason = (
+        f"the recording {group!r} holds {divided.count(True)} division rows "
+        f"of a store and {divided.count(False)} other rows. A recording is "
+        "the divisions of its stores or the sequences of its files, and "
+        "not both."
+    )
+    return UnplacedSequence(reason)
+
+
+def _undeclared_division(group: str, matched: pd.DataFrame) -> UnplacedSequence | None:
+    """Return why a division of an undeclared recording has no frame axis.
+
+    *matched* are the sequence's own rows in the recording *group*, which the
+    manifest does not declare continuous. Such a recording has no frame axis, so
+    a division row among them is not placed at frame 0.
+
+    Returns:
+        Why the sequence cannot be placed, or ``None`` when no row is a division
+        row.
+
+    Raises:
+        MediaProbeError: If a row's division cells do not read.
+    """
+    try:
+        divisions = [row_division(row_mapping(row)) for _, row in matched.iterrows()]
+    except ValueError as exc:
+        raise MediaProbeError(str(exc)) from exc
+    if all(division is None for division in divisions):
+        return None
+    reason = (
+        f"the recording {group!r} holds division rows of a store but is not "
+        "declared continuous, so its sequences have no frame axis. "
+        "Dataset.set_continuous_groups declares it."
+    )
+    return UnplacedSequence(reason)
+
+
+def _division_placement(
+    group: str, divided: bool | UnplacedSequence, matched: pd.DataFrame
+) -> int | UnplacedSequence | None:
+    """Return a sequence's first frame from its division row, ``None`` when undivided.
+
+    A divided store's rows record each division's ``first_frame`` on the
+    recording's frame axis. *divided* is :func:`_recording_divided` of the
+    recording *group*, and *matched* are the sequence's own rows. ``None``
+    means that the recording holds no division row, and its sequences are
+    placed by their media frames (:class:`_MemberPlacement`).
+
+    Returns:
+        The first frame, ``None``, or why the sequence cannot be placed: the
+        recording mixes division rows with other rows, or the sequence has more
+        than one division row.
+
+    Raises:
+        MediaProbeError: If a row's division cells do not read.
+    """
+    if divided is False:
+        return None
+    if isinstance(divided, UnplacedSequence):
+        return divided
+    try:
+        own = [row_division(row_mapping(row)) for _, row in matched.iterrows()]
+    except ValueError as exc:
+        raise MediaProbeError(str(exc)) from exc
+    divisions = [division for division in own if division is not None]
+    if len(divisions) != 1:
+        reason = (
+            f"a sequence of the recording {group!r} has {len(divisions)} division "
+            "rows, and a division is one row"
+        )
+        return UnplacedSequence(reason)
+    return divisions[0].first_frame
 
 
 class _MemberPlacement:
@@ -1101,27 +1236,30 @@ class LabelConversionOutcome:
 
 @dataclass(frozen=True, slots=True)
 class MediaRows:
-    """An originals media index, with the position of each listed file's row.
+    """An originals media index, with the position of each listed row.
 
     Attributes:
         frame: The index as :meth:`Dataset.read_media_rows` read it.
-        positions: The position in :attr:`frame` of each listed file's row, by
-            the file's resolved path.
+        positions: The position in :attr:`frame` of each listed row, by its key:
+            the resolved path of its file, or of its analysis derivative, and
+            the chunks of a division row.
     """
 
     frame: pd.DataFrame
-    positions: Mapping[Path, int]
+    positions: Mapping[MediaRowKey, int]
 
-    def rows_of(self, paths: Iterable[Path]) -> dict[Path, dict[str, object]]:
-        """Return the row of each of *paths* that the index lists.
+    def rows_of(
+        self, keys: Iterable[MediaRowKey]
+    ) -> dict[MediaRowKey, dict[str, object]]:
+        """Return the row of each of *keys* that the index lists.
 
-        Each row is a new ``{column: cell}`` mapping. A path that the index does
+        Each row is a new ``{column: cell}`` mapping. A key that the index does
         not list is left out.
         """
         return {
-            path: row_mapping(self.frame.iloc[self.positions[path]])
-            for path in set(paths)
-            if path in self.positions
+            key: row_mapping(self.frame.iloc[self.positions[key]])
+            for key in set(keys)
+            if key in self.positions
         }
 
 
@@ -2930,9 +3068,14 @@ class Dataset:
         raised ``EmptyDataError`` out of the whole-dataset hygiene passes, so one
         such file stopped ``reindex`` and ``make_portable`` over every other root
         with a message that named no path.
+
+        Every cell is read as its text, an empty cell as ``""``. A pass that
+        rewrites one column then writes every other cell back as it was read:
+        a ``follows_gap`` of ``false`` stays ``false``, and a blank cell beside a
+        ``chunk_first`` of ``0`` leaves it ``0`` rather than ``0.0``.
         """
         try:
-            return pd.read_csv(path)
+            return pd.read_csv(path, dtype=str, keep_default_na=False)
         except pd.errors.EmptyDataError:
             return None
 
@@ -3503,7 +3646,7 @@ class Dataset:
         exts: set[str],
         recursive: bool,
         facts_by_name: Mapping[str, MediaFacts] | None = None,
-        cached_facts_by_path: Mapping[Path, MediaFacts] | None = None,
+        cached_facts_by_key: Mapping[MediaRowKey, MediaFacts] | None = None,
     ) -> list[ProbedEntry]:
         """Probe every media file + imgstore under *search_dirs* (identity-free).
 
@@ -3519,15 +3662,16 @@ class Dataset:
         *facts_by_name* maps a plain video's basename to an already-measured
         :class:`~mosaic_media.MediaFacts` -- a caller's own measurement, which
         always wins; a file present in it has its row built from those facts and
-        is never probed. *cached_facts_by_path* maps a resolved source path to a
-        prior row's measurement, reused only for a file with no injected facts;
+        is never probed. *cached_facts_by_key* maps the key of a prior undivided
+        row, by its resolved path, to the row's measurement, reused only for a
+        file with no injected facts;
         the caller admits an entry only when the file's size and mtime still
         match what that row recorded. Everything else is probed;
         :meth:`index_media` passes neither map, so it probes every file. The
         precedence is injection, then cache, then probe.
         """
         facts_map = facts_by_name or {}
-        cache = cached_facts_by_path or {}
+        cache = cached_facts_by_key or {}
         from .media.imgstore_io import (
             imgstore_probe,
             imgstore_store_identity,
@@ -3636,7 +3780,8 @@ class Dataset:
             futures = {
                 p: executor.submit(probe_video_metadata, p)
                 for p, _st in probe_candidates
-                if p.name not in facts_map and p.resolve() not in cache
+                if p.name not in facts_map
+                and MediaRowKey.of(str(p.resolve()), None) not in cache
             }
             for p, st in probe_candidates:
                 injected = facts_map.get(p.name)
@@ -3647,7 +3792,7 @@ class Dataset:
                         )
                     )
                     continue
-                cached = cache.get(p.resolve())
+                cached = cache.get(MediaRowKey.of(str(p.resolve()), None))
                 if cached is not None:
                     results.append(
                         ProbedEntry(
@@ -3895,11 +4040,11 @@ class Dataset:
             self._imgstore_rows(imgstore_entries, seq_key_map, sequence_match_mode)
         )
 
-        # De-duplicate by stored path.
-        seen: set[object] = set()
+        # De-duplicate by row key: the stored path, and a division's chunks.
+        seen: set[MediaRowKey] = set()
         dedup: list[dict[str, object]] = []
         for r in rows:
-            k = r["abs_path"]
+            k = media_row_key(r)
             if k in seen:
                 continue
             seen.add(k)
@@ -4219,8 +4364,8 @@ class Dataset:
         # there: a cache that skips the probe skips the comparison that IS the
         # check. What escapes here is narrower than that sounds -- a replacement
         # preserving size *and* mtime exactly -- and is recorded in `drift.py`.
-        prior_row_by_path: dict[Path, dict[str, str]] = {}
-        cached_facts_by_path: dict[Path, MediaFacts] = {}
+        prior_row_by_key: dict[MediaRowKey, dict[str, str]] = {}
+        cached_facts_by_key: dict[MediaRowKey, MediaFacts] = {}
         for row in existing:
             if not self._row_under_dirs(row, scope_dirs):
                 continue
@@ -4228,7 +4373,8 @@ class Dataset:
             if not stored:
                 continue
             resolved = self.resolve_path(stored).resolve()
-            prior_row_by_path[resolved] = dict(row)
+            key = dataclasses.replace(media_row_key(row), abs_path=str(resolved))
+            prior_row_by_key[key] = dict(row)
             facts = row_facts_or_none(row)
             if facts is None:
                 continue
@@ -4240,7 +4386,7 @@ class Dataset:
                 continue
             if read_link_cell(row, "mtime_iso") != mtime_iso(stat_result.st_mtime):
                 continue
-            cached_facts_by_path[resolved] = facts
+            cached_facts_by_key[key] = facts
 
         disagreements: list[MediaIndexDisagreement] = []
         drift: list[MediaDrift] = []
@@ -4257,7 +4403,7 @@ class Dataset:
                 exts,
                 recursive,
                 scope.facts_by_name,
-                cached_facts_by_path,
+                cached_facts_by_key,
             )
             self._refuse_unsynced_cameras(scope, entries)
             for entry in entries:
@@ -4273,7 +4419,9 @@ class Dataset:
                 # one it is the bytes having moved under a stable path, which is
                 # drift. A CACHED measurement *is* the stored one, so comparing
                 # it could only ever produce a false positive.
-                prior = prior_row_by_path.get(entry.path.resolve())
+                prior = prior_row_by_key.get(
+                    MediaRowKey.of(str(entry.path.resolve()), None)
+                )
                 if prior is not None and entry.origin != "cached":
                     change = classify_identity(prior, entry.probe)
                     if change in ("content_digest_changed", "video_uuid_changed"):
@@ -4576,22 +4724,25 @@ class Dataset:
 
     @staticmethod
     def _dedupe_scope_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-        """Keep one row per stored ``abs_path``, first occurrence winning.
+        """Keep one row per row key, first occurrence winning.
 
-        Two :class:`MediaIndexScope`s over one directory each probe the same
-        files and each stamp their own ``(group, sequence)``, so the same file
-        lands twice under two identities. Reported to stderr rather than
-        collapsed silently: the scopes come from a caller who believes they are
-        disjoint, and nothing else would tell them otherwise.
+        The key is the stored ``abs_path`` and a division's chunks
+        (:func:`~mosaic.core.media.facts_columns.media_row_key`), so the
+        divisions of one store are each kept. Two :class:`MediaIndexScope`s over
+        one directory each probe the same files and each stamp their own
+        ``(group, sequence)``, so the same file lands twice under two
+        identities. Reported to stderr rather than collapsed silently: the
+        scopes come from a caller who believes they are disjoint, and nothing
+        else would tell them otherwise.
         """
-        seen: dict[str, dict[str, object]] = {}
+        seen: dict[MediaRowKey, dict[str, object]] = {}
         kept: list[dict[str, object]] = []
         for row in rows:
-            stored = str(row.get("abs_path", ""))
+            stored = media_row_key(row)
             first = seen.get(stored)
             if first is not None:
                 print(
-                    f"[write_media_index] {stored} is under two scopes "
+                    f"[write_media_index] {stored.abs_path} is under two scopes "
                     f"({first.get('group', '')!r}, {first.get('sequence', '')!r}) "
                     f"and ({row.get('group', '')!r}, {row.get('sequence', '')!r}); "
                     f"keeping the first.",
@@ -5252,24 +5403,24 @@ class Dataset:
         it. The measured cells -- size, mtime, probe, facts -- are still taken
         from this scan, because those genuinely are what the scan just observed.
 
+        Rows are matched by key: the resolved path and a division's chunks.
+
         Returns:
             How many rows kept an assigned identity.
         """
-        assigned: dict[Path, Mapping[str, object]] = {}
+        assigned: dict[MediaRowKey, Mapping[str, object]] = {}
         for row in committed:
             if read_link_cell(row, "assignment_source") != "assigned":
                 continue
-            stored = str(row.get("abs_path", "") or "").strip()
-            if stored:
-                assigned[self.resolve_path(stored).resolve()] = row
+            key = self._stored_row_key(row)
+            if key is not None:
+                assigned[key] = row
         if not assigned:
             return 0
         kept = 0
         for row in fresh:
-            stored = str(row.get("abs_path", "") or "").strip()
-            if not stored:
-                continue
-            prior = assigned.get(self.resolve_path(stored).resolve())
+            key = self._stored_row_key(row)
+            prior = None if key is None else assigned.get(key)
             if prior is None:
                 continue
             for column in self._IDENTITY_COLUMNS:
@@ -5376,28 +5527,50 @@ class Dataset:
         no probe measures it, so a scan never proposes one -- and it is equally
         real whether the row's identity came from a caller or from a filename.
 
+        A fresh row takes the calibration of the committed row with its key: its
+        resolved path and its division's chunks. A fresh row without such a row
+        takes the calibration of its file when every committed row of the file
+        records one value, so a store divided after it was calibrated keeps its
+        scale on each division, and a division row's scale reaches its store's
+        undivided row.
+
         Returns:
             How many rows kept a calibration.
         """
-        calibrated: dict[Path, str] = {}
+        by_key: dict[MediaRowKey, str] = {}
+        by_file: dict[str, set[str]] = {}
         for row in committed:
+            key = self._stored_row_key(row)
+            if key is None:
+                continue
             value = read_link_cell(row, "cm_per_pixel")
-            stored = str(row.get("abs_path", "") or "").strip()
-            if value and stored:
-                calibrated[self.resolve_path(stored).resolve()] = value
-        if not calibrated:
+            if value:
+                by_key[key] = value
+            by_file.setdefault(key.abs_path, set()).add(value)
+        if not by_key:
             return 0
         kept = 0
         for row in fresh:
-            stored = str(row.get("abs_path", "") or "").strip()
-            if not stored:
+            key = self._stored_row_key(row)
+            if key is None:
                 continue
-            prior = calibrated.get(self.resolve_path(stored).resolve())
+            prior = by_key.get(key)
             if prior is None:
+                values = by_file.get(key.abs_path, set())
+                prior = next(iter(values)) if len(values) == 1 else None
+            if not prior:
                 continue
             row["cm_per_pixel"] = prior
             kept += 1
         return kept
+
+    def _stored_row_key(self, row: Mapping[str, object]) -> MediaRowKey | None:
+        """Return *row*'s key with its stored path fully resolved, ``None`` without one."""
+        key = media_row_key(row)
+        if not key.abs_path:
+            return None
+        resolved = self.resolve_path(key.abs_path).resolve()
+        return dataclasses.replace(key, abs_path=str(resolved))
 
     def _row_claimed(self, row: Mapping[str, object], claim: ScanClaim) -> bool:
         """True if *row*'s ``abs_path`` falls inside *claim*.
@@ -5816,9 +5989,9 @@ class Dataset:
         return matched
 
     def media_rows_of(
-        self, paths: Iterable[Path], index_filename: str = "index.csv"
-    ) -> dict[Path, dict[str, object]]:
-        """Return the originals-index row of each of *paths* that the index lists.
+        self, keys: Iterable[MediaRowKey], index_filename: str = "index.csv"
+    ) -> dict[MediaRowKey, dict[str, object]]:
+        """Return the originals-index row of each of *keys* that the index lists.
 
         The rows are :meth:`read_media_rows`'s. The dataset keeps its last read
         of each index, and reads the index again when the index's
@@ -5827,15 +6000,16 @@ class Dataset:
         reads the index once.
 
         Args:
-            paths: The files to look up.
+            keys: The rows to look up, as :attr:`ResolvedMedia.row_keys` names
+                them.
             index_filename: The originals index to read.
 
         Returns:
-            The row of each listed path, as a ``{column: cell}`` mapping. A path
-            that the index does not list is left out, and so is every path when
+            The row of each listed key, as a ``{column: cell}`` mapping. A key
+            that the index does not list is left out, and so is every key when
             the index does not exist.
         """
-        wanted = set(paths)
+        wanted = set(keys)
         if not wanted:
             return {}
         index = self.get_root(self.resolve_media_root()) / index_filename
@@ -5864,51 +6038,60 @@ class Dataset:
         caller names its entry. Several rows can list one file. The first row
         that records it as ``abs_path`` answers for it, and otherwise the first
         row linking it. Resolving each ``abs_path`` cell (:meth:`resolve_path`)
-        costs a stat or a path resolution.
+        costs a stat or a path resolution. A row is keyed by its resolved path
+        and its division's chunks, so the divisions of one store are told apart.
 
         Args:
             index_filename: The originals index to read.
 
         Raises:
             FileNotFoundError: If the index does not exist.
+            ValueError: If a row's chunk cells do not read
+                (:func:`~mosaic.core.media.facts_columns.media_row_key`).
         """
         df = self._load_media_index(index_filename)
         media_root = self.get_root("media")
-        column = derivative_column_for_target("analysis")
-        own: dict[Path, int] = {}
-        derived: dict[Path, int] = {}
-        for position, (stored, link) in enumerate(
-            zip(df["abs_path"], df[column], strict=True)
-        ):
-            _ = own.setdefault(self.resolve_path(str(stored)), position)
-            derivative = derivative_path_for_target(
-                {column: link}, "analysis", media_root
-            )
+        own: dict[MediaRowKey, int] = {}
+        derived: dict[MediaRowKey, int] = {}
+        for position, (_, row) in enumerate(df.iterrows()):
+            cells = row_mapping(row)
+            _ = own.setdefault(self._resolved_row_key(cells), position)
+            derivative = derivative_path_for_target(cells, "analysis", media_root)
             if derivative is not None:
-                _ = derived.setdefault(derivative, position)
+                _ = derived.setdefault(MediaRowKey.of(str(derivative), None), position)
         return MediaRows(frame=df, positions={**derived, **own})
 
-    def indexed_entries_of(self, paths: Iterable[Path]) -> dict[Path, Entry]:
-        """Return the indexed ``(group, sequence)`` of each of *paths* that a row lists.
+    def _resolved_row_key(self, row: Mapping[str, object]) -> MediaRowKey:
+        """Return *row*'s key with its stored path resolved (:meth:`resolve_path`).
+
+        Raises:
+            ValueError: If the row's chunk cells do not read.
+        """
+        key = media_row_key(row)
+        return dataclasses.replace(key, abs_path=str(self.resolve_path(key.abs_path)))
+
+    def indexed_entries_of(
+        self, keys: Iterable[MediaRowKey]
+    ) -> dict[MediaRowKey, Entry]:
+        """Return the indexed ``(group, sequence)`` of each of *keys* that a row lists.
 
         The pair is the entry's key in the media index, which a run's scope names.
         A media scope labels a nameless entry
         (:func:`~mosaic.core.helpers.is_nameless_entry`) by its first file's stem
-        instead, and a scope does not resolve that label. Each path is looked up by
-        :meth:`media_rows_of`, and a path that the index does not list is left out.
+        instead, and a scope does not resolve that label. Each key is looked up by
+        :meth:`media_rows_of`, and a key that the index does not list is left out.
         """
         return {
-            path: media_row_entry(row)
-            for path, row in self.media_rows_of(paths).items()
+            key: media_row_entry(row) for key, row in self.media_rows_of(keys).items()
         }
 
-    def indexed_entry(self, path: Path, named: Entry) -> Entry:
-        """Return the indexed key of *path*'s entry, or *named* when unlisted.
+    def indexed_entry(self, key: MediaRowKey, named: Entry) -> Entry:
+        """Return the indexed key of *key*'s entry, or *named* when unlisted.
 
         The key is :meth:`indexed_entries_of`'s. *named* is the entry as the caller
         names it.
         """
-        return self.indexed_entries_of([path]).get(path, named)
+        return self.indexed_entries_of([key]).get(key, named)
 
     def _derivative_facts(
         self,
@@ -6120,11 +6303,16 @@ class Dataset:
         raises rather than returning both. Single-camera and temporal-chunk
         sequences (every row ``camera=""``) resolve unchanged.
 
-        A sequence of a continuous group resolves to its own media too. Its
-        ``placement`` counts the media frames of the group's sequences before
-        it, in member order: a natural sort on the names of the sequences that
-        the media index or the tracks index names. A sequence that cannot be
-        placed resolves, and :attr:`ResolvedMedia.first_frame` raises.
+        A sequence of a continuous group resolves to its own media too. A
+        division of a store is placed at the ``first_frame`` its row records,
+        and reads its window of the store's chunks. A recording that mixes
+        division rows with other rows cannot be placed, and neither can a
+        division of a recording that the manifest does not declare continuous.
+        Any other sequence's ``placement`` counts the media frames of the
+        group's sequences before it, in member order: a natural sort on the
+        names of the sequences that the media index or the tracks index names.
+        A sequence that cannot be placed resolves, and
+        :attr:`ResolvedMedia.first_frame` raises.
 
         Raises:
             FileNotFoundError: If the index is missing/empty or no row matches.
@@ -6151,13 +6339,24 @@ class Dataset:
         first = matched.iloc[0]
         entry_group, entry_sequence = str(first["group"]), str(first["sequence"])
         if self.recording_kind(entry_group) == "undivided":
-            return resolved
-        members = self._member_placement(
-            df, entry_group, str(first["camera"]), (route_derivatives, derivative_df)
+            unplaced = _undeclared_division(entry_group, matched)
+            if unplaced is None:
+                return resolved
+            return dataclasses.replace(resolved, placement=unplaced)
+        placement = _division_placement(
+            entry_group,
+            _recording_divided(entry_group, df[df["group"] == entry_group]),
+            matched,
         )
-        return dataclasses.replace(
-            resolved, placement=members.place(entry_sequence, resolved.facts)
-        )
+        if placement is None:
+            members = self._member_placement(
+                df,
+                entry_group,
+                str(first["camera"]),
+                (route_derivatives, derivative_df),
+            )
+            placement = members.place(entry_sequence, resolved.facts)
+        return dataclasses.replace(resolved, placement=placement)
 
     def _member_placement(
         self,
@@ -6220,13 +6419,15 @@ class Dataset:
         """
         paths: list[Path] = []
         facts: list[MediaFacts] = []
+        windows: list[StoreWindow | None] = []
         for _, row in matched.iterrows():
             routed_path, routed_facts = self.route_media_row(
                 group, sequence, row, route_derivatives, derivative_df
             )
             paths.append(routed_path)
             facts.append(routed_facts)
-        return ResolvedMedia(paths=paths, facts=facts)
+            windows.append(_row_window(row))
+        return ResolvedMedia(paths=paths, facts=facts, windows=windows)
 
     def resolve_scope(
         self,
@@ -6331,6 +6532,9 @@ class Dataset:
         resolved_entries: list[tuple[Entry, ResolvedScopeEntry]] = []
         failed: dict[Entry, MediaProbeError] = {}
         divided: dict[tuple[str, str], _MemberPlacement] = {}
+        # One verdict per recording, so that placing its n sequences reads its
+        # rows once rather than n times.
+        verdicts: dict[str, bool | UnplacedSequence | MediaProbeError] = {}
         for block in scoped:
             if block.entry in failed:
                 continue
@@ -6343,13 +6547,29 @@ class Dataset:
                     derivative_df,
                 )
                 if self.recording_kind(block.group) == "divided":
-                    place = (block.group, block.camera)
-                    if place not in divided:
-                        divided[place] = self._member_placement(
-                            df, *place, (route_derivatives, derivative_df)
-                        )
-                    placement = divided[place].place(block.sequence, resolved.facts)
+                    if block.group not in verdicts:
+                        try:
+                            verdicts[block.group] = _recording_divided(
+                                block.group, df[df["group"] == block.group]
+                            )
+                        except MediaProbeError as exc:
+                            verdicts[block.group] = exc
+                    verdict = verdicts[block.group]
+                    if isinstance(verdict, MediaProbeError):
+                        raise verdict
+                    placement = _division_placement(block.group, verdict, block.rows)
+                    if placement is None:
+                        place = (block.group, block.camera)
+                        if place not in divided:
+                            divided[place] = self._member_placement(
+                                df, *place, (route_derivatives, derivative_df)
+                            )
+                        placement = divided[place].place(block.sequence, resolved.facts)
                     resolved = dataclasses.replace(resolved, placement=placement)
+                else:
+                    unplaced = _undeclared_division(block.group, block.rows)
+                    if unplaced is not None:
+                        resolved = dataclasses.replace(resolved, placement=unplaced)
             except MediaProbeError as exc:
                 if errors is None:
                     raise

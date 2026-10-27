@@ -17,6 +17,14 @@ from typing import TYPE_CHECKING, Literal, TypedDict
 from mosaic_media import MediaFacts, MediaProbeError, Verdict
 from mosaic_media.transcode import Target
 
+from .store_division import (
+    DIVISION_COLUMNS,
+    MediaRowKey,
+    RowDivision,
+    chunk_window,
+    parse_division_cells,
+)
+
 if TYPE_CHECKING:
     import pandas as pd
 
@@ -101,10 +109,19 @@ MEDIA_INDEX_COLUMNS: list[str] = [
     # measures it -- no probe can -- so facts_to_row leaves it alone, exactly as
     # it does for source_video_uuid and recipe_hash.
     "cm_per_pixel",
+    # The division of a store into sequences, blank on an undivided row. Text,
+    # and trailing, so a reader of the earlier columns is unaffected. See
+    # store_division.DIVISION_COLUMNS.
+    *DIVISION_COLUMNS,
 ]
 
 AssignmentSource = Literal[
-    "", "assigned", "scan-stem", "scan-keymap", "scan-imgstore-sync"
+    "",
+    "assigned",
+    "scan-stem",
+    "scan-keymap",
+    "scan-imgstore-sync",
+    "scan-imgstore-division",
 ]
 """Where a media row's ``(group, sequence)`` came from.
 
@@ -118,6 +135,10 @@ AssignmentSource = Literal[
   well defined: converting more tracks would silently repartition media.
 - ``"scan-imgstore-sync"`` -- a store's directory name, minus its camera-serial
   suffix, grouped with the other cameras sharing its ``sync_uuid``.
+- ``"scan-imgstore-division"`` -- one division of a store: its recording's name
+  and the UTC start of its chunks, written by
+  :func:`~mosaic.core.media.store_division.build_division_rows`. A division
+  written through a ``MediaIndexScope`` is ``"assigned"``.
 - ``""`` -- no claim. Either the row predates the column (the house idiom for an
   honest unknown) or it is a derivative under ``media/``, which takes its
   identity from the source row it was made from and has none of its own. Both
@@ -204,16 +225,84 @@ def media_row_entry(row: Mapping[str, object]) -> Entry:
 
 
 def media_row_path_key(row: Mapping[str, object]) -> tuple[str, str]:
-    """A row's path key: the two leaf components of its stored ``abs_path``.
+    """A row's file key: the two leaf components of its stored ``abs_path``.
 
     The parent directory name and the filename, stable whether the stored path
     is absolute or root-relative. ``mosaic`` matches media rows by ``video_uuid``
     alone; this key is the control plane's disambiguator, telling apart two
     byte-identical files that share one uuid under different names so their
     distinct derivative links stay separate. It does not survive a rename.
+
+    It names a file. The divisions of one store are several rows of one file,
+    which :func:`media_row_division_key` tells apart.
     """
     path = Path(read_link_cell(row, "abs_path"))
     return (path.parent.name, path.name)
+
+
+def _division_text_cells(row: Mapping[str, object]) -> dict[str, str]:
+    """The row's division cells as trimmed text, a blank cell as ``""``."""
+    return {column: read_link_cell(row, column) for column in DIVISION_COLUMNS}
+
+
+def media_row_key(row: Mapping[str, object]) -> MediaRowKey:
+    """Return a row's key: its stored ``abs_path`` and its division's chunks.
+
+    The chunks are ``None`` on an undivided row, whose key is its file.
+
+    Raises:
+        ValueError: If one chunk cell is blank and the other is not, or a cell
+            is not a whole number.
+    """
+    window = chunk_window(_division_text_cells(row))
+    return MediaRowKey.of(read_link_cell(row, "abs_path"), window)
+
+
+def media_row_division_key(
+    row: Mapping[str, object],
+) -> tuple[str, str, int | None, int | None]:
+    """Return :func:`media_row_path_key` with the row's chunks, ``None`` when undivided.
+
+    The control plane's key for one row: the divisions of a store share its
+    path key and differ in their chunks.
+
+    Raises:
+        ValueError: As :func:`media_row_key` raises it.
+    """
+    key = media_row_key(row)
+    return (*media_row_path_key(row), key.chunk_first, key.chunk_last)
+
+
+def _frame_count_cell(row: Mapping[str, object]) -> int:
+    """The row's ``frame_count``, which a CSV round trip may read as a float."""
+    text = read_link_cell(row, "frame_count")
+    try:
+        value = float(text)
+    except ValueError as exc:
+        message = f"the media index cell frame_count={text!r} is not a number"
+        raise ValueError(message) from exc
+    if not value.is_integer() or value < 0:
+        message = f"the media index cell frame_count={text!r} is not a frame count"
+        raise ValueError(message)
+    return int(value)
+
+
+def row_division(row: Mapping[str, object]) -> RowDivision | None:
+    """Return the division that a media index row records, ``None`` when undivided.
+
+    Raises:
+        ValueError: If the row fills some division cells and leaves others
+            blank, or a cell does not read.
+    """
+    cells = _division_text_cells(row)
+    if not any(cells.values()):
+        return None
+    return parse_division_cells(
+        cells,
+        abs_path=read_link_cell(row, "abs_path"),
+        sequence=read_link_cell(row, "sequence"),
+        frame_count=_frame_count_cell(row),
+    )
 
 
 def derivative_cell(row: Mapping[str, object], target: Target) -> str:

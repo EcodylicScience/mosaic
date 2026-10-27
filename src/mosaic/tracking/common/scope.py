@@ -53,6 +53,7 @@ from mosaic_media import MediaProbeError
 
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.imgstore_io import is_imgstore
+from mosaic.core.media.store_division import MediaRowKey, StoreWindow
 from mosaic.core.media.store_rate import store_rate_mismatch
 from mosaic.core.media.uniformity import geometry_mismatch
 from mosaic.core.pipeline.consumed_camera import one_camera_per_entry
@@ -138,6 +139,13 @@ class TrackerWorkItem:
     camera: str = ""
     """The camera of the entry that this item reads, ``""`` for single-camera media."""
 
+    windows: tuple[StoreWindow | None, ...] = ()
+    """The chunks of each store in ``video_paths`` that the item reads.
+
+    Parallel to ``video_paths``, ``None`` for a file read whole. Empty reads every
+    file whole. A division of a store reads its window.
+    """
+
     first_frame: int = 0
     """The sequence's first frame on its recording's frame axis.
 
@@ -172,6 +180,24 @@ class TrackerWorkItem:
                 f"({self.group}, {self.sequence}) has {len(self.video_paths)} "
                 f"videos but {len(self.source_facts)} facts; they must be parallel"
             )
+        if self.windows and len(self.windows) != len(self.video_paths):
+            raise ValueError(
+                f"({self.group}, {self.sequence}) has {len(self.video_paths)} "
+                f"videos but {len(self.windows)} windows; they must be parallel"
+            )
+
+    @property
+    def video_windows(self) -> tuple[StoreWindow | None, ...]:
+        """The window of each file in ``video_paths``, ``None`` for a file read whole."""
+        return self.windows or (None,) * len(self.video_paths)
+
+    @property
+    def row_keys(self) -> tuple[MediaRowKey, ...]:
+        """The media index key of each file's row, parallel to ``video_paths``."""
+        return tuple(
+            MediaRowKey.of(str(path), window)
+            for path, window in zip(self.video_paths, self.video_windows, strict=True)
+        )
 
     @property
     def video_path(self) -> Path:
@@ -411,8 +437,20 @@ def build_work_items(
             continue
         paths = list(resolved.paths)
         facts = list(resolved.facts)
-        refuse_unjoinable(ds, kind, group, sequence, paths, facts, hands_over_path=True)
-        refuse_unidentified_clips(ds, group, sequence, paths, facts, asker=kind)
+        windows = resolved.windows
+        refuse_unjoinable(
+            ds,
+            kind,
+            group,
+            sequence,
+            paths,
+            facts,
+            windows=windows,
+            hands_over_path=True,
+        )
+        refuse_unidentified_clips(
+            ds, group, sequence, paths, facts, windows=windows, asker=kind
+        )
 
         items.append(
             TrackerWorkItem(
@@ -424,6 +462,7 @@ def build_work_items(
                 source_facts=tuple(facts),
                 camera=entry.camera,
                 first_frame=first_frame,
+                windows=tuple(resolved.windows),
             )
         )
 
@@ -444,14 +483,14 @@ def run_entries(
 ) -> list[Entry]:
     """Return the entry that a run's scope names for each of *cameras*, in order.
 
-    It is the indexed key of the camera's first file
+    It is the indexed key of the camera's first row
     (:meth:`~mosaic.core.dataset.Dataset.indexed_entries_of`). A media scope
     labels a nameless entry by its first file's stem, and a run's scope does not
     resolve that label. The entry paired with a camera names it when the media
     index does not list the file.
     """
-    keys = ds.indexed_entries_of(camera.resolved.paths[0] for _, camera in cameras)
-    return [keys.get(camera.resolved.paths[0], named) for named, camera in cameras]
+    keys = ds.indexed_entries_of(camera.resolved.row_keys[0] for _, camera in cameras)
+    return [keys.get(camera.resolved.row_keys[0], named) for named, camera in cameras]
 
 
 def _variant_item(
@@ -484,6 +523,7 @@ def refuse_unjoinable(
     paths: Sequence[Path],
     facts: Sequence[MediaFacts],
     *,
+    windows: Sequence[StoreWindow | None],
     hands_over_path: bool,
 ) -> None:
     """Raise unless *facts* describe clips that can be read as one video.
@@ -501,7 +541,8 @@ def refuse_unjoinable(
     (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`).
     Either refusal says how to make a media variant that contains the entry as
     one file, with a command that names the entry by its first clip's indexed
-    key (:meth:`~mosaic.core.dataset.Dataset.indexed_entry`).
+    key (:meth:`~mosaic.core.dataset.Dataset.indexed_entry`), its path and its
+    window in *windows*, which are parallel to *paths*.
 
     Raises:
         JoinedSourceMismatchError: If the clips lack one set of facts each,
@@ -548,7 +589,7 @@ def refuse_unjoinable(
             f"[{kind}] {entry} cannot be read as one video: {kind} reads a store "
             f"only as an entry's one clip, and export-joined does not join stores, "
             f"so nothing holds {', '.join(stores)} with the entry's other clips. "
-            f"{_variant_remedy(ds, group, sequence, paths, facts)}"
+            f"{_variant_remedy(ds, group, sequence, paths, facts, windows)}"
         )
     other = store_rate_mismatch([clip.fps for clip in facts])
     if other is not None:
@@ -558,7 +599,7 @@ def refuse_unjoinable(
             f"{paths[0].name} at {facts[0].fps:g}. Stores cannot be joined, so no "
             f"reader places their frames on one axis. Re-record the stores at one "
             f"rate, or read them through a media variant. "
-            f"{_variant_remedy(ds, group, sequence, paths, facts)}"
+            f"{_variant_remedy(ds, group, sequence, paths, facts, windows)}"
         )
 
 
@@ -568,6 +609,7 @@ def _variant_remedy(
     sequence: str,
     paths: Sequence[Path],
     facts: Sequence[MediaFacts],
+    windows: Sequence[StoreWindow | None],
 ) -> str:
     """Return how to make a media variant that reads an entry of stores as one file.
 
@@ -576,7 +618,8 @@ def _variant_remedy(
     therefore names a trim over every frame of the entry, which keeps them all.
     The trim's end is the entry's frame count from *facts*. When a store's length
     is unknown, the remedy first names a measurement of the stores. The command
-    names the entry by the indexed key of its first file in *paths*.
+    names the entry by the indexed key of its first file in *paths*, read on
+    its window in *windows*.
     """
     counts = [int(clip.frame_count) for clip in facts]
     if min(counts) <= 0:
@@ -591,7 +634,8 @@ def _variant_remedy(
         {"steps": [{"step": "trim", "start": 0, "stop": total}]},
         separators=(",", ":"),
     )
-    entry = ds.indexed_entry(paths[0], (group, sequence))
+    key = MediaRowKey.of(str(paths[0]), windows[0])
+    entry = ds.indexed_entry(key, (group, sequence))
     command = mosaic_run_command("preprocess", [entry], params=steps)
     return (
         f"Make a media variant of the entry, which reads each store at its own "

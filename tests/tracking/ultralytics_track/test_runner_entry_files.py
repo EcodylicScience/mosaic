@@ -34,15 +34,19 @@ from mosaic.core.media.imgstore_native import NativeStore
 from mosaic.core.media.read_target import verified_read_facts
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline.joined_export import JOINED_KIND_DIRECTORY
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.store_export import readable_chunks
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.transcode import TRANSCODE_KIND_DIRECTORY
 from mosaic.core.scope import Scope
 from mosaic.core.track_library.ultralytics_tracks import raw_columns
+from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
     ToolFile,
     entry_runner_sources,
+    resolve_tool_inputs,
 )
 from mosaic.tracking.common.ultralytics_env import request_sources
 from mosaic.tracking.external.runner.ultralytics_protocol import (
@@ -52,6 +56,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
 )
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 from tests.helpers import (
+    DIVISION_CREATED_UTC,
     FakeDetections,
     FakeResult,
     FakeUltralytics,
@@ -67,6 +72,7 @@ from tests.helpers import (
     read_frame_code,
     store_dataset,
     video_store_maker,
+    write_division_rows,
     write_painted_entry,
 )
 
@@ -211,7 +217,13 @@ def _runner_files(
     """The files that *kind*'s runner is handed for one entry."""
     resolved = ds.resolve_media(group, sequence)
     return entry_runner_sources(
-        ds, group, sequence, resolved.paths, resolved.facts, kind=kind
+        ds,
+        group,
+        sequence,
+        resolved.paths,
+        resolved.facts,
+        windows=resolved.windows,
+        kind=kind,
     )
 
 
@@ -525,8 +537,10 @@ def test_chunks_that_disagree_with_the_stores_index_need_its_export(
     """
     ds, _group, _sequence, _store = _store_entry(tmp_path, make_media_dataset)
 
-    def overcounted(store: Path) -> list[tuple[Path, int]]:
-        return [(path, count + 1) for path, count in readable_chunks(store)]
+    def overcounted(
+        store: Path, window: StoreWindow | None = None
+    ) -> list[tuple[Path, int]]:
+        return [(path, count + 1) for path, count in readable_chunks(store, window)]
 
     monkeypatch.setattr(tool_input, "readable_chunks", overcounted)
     fake, params = _install_ultralytics(tmp_path, monkeypatch)
@@ -555,3 +569,111 @@ def test_the_chunks_are_read_while_an_export_exists_and_a_tracked_entry_needs_ne
     _ = ultralytics_runs.run_ultralytics(ds, params)
 
     assert fake.tracked == [tuple(path for path, _ in readable_chunks(store))]
+
+
+# --- the divisions of a store ----------------------------------------------
+
+
+_DIVISION_TOKENS = ("20210219T192253Z", "20210219T192255Z", "20210219T192258Z")
+_DIVISION_CHUNKS = ((0, 1), (2, 3), (4,))
+
+
+def _divided_entries(
+    tmp_path: Path, make_media_dataset: MakeMediaDataset
+) -> tuple[Dataset, Path]:
+    """A store of chunks of 5, 5, 5, 5 and 2 frames at 4 fps, divided every 10."""
+    ds = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 5, 5, 2], fps=4.0, created_utc=DIVISION_CREATED_UTC),
+    )
+    store = ds.get_root("media_raw") / "recordings" / "rec"
+    _ = write_division_rows(ds, store, 10)
+    return ds, store
+
+
+def _division_chunks(store: Path) -> list[tuple[Path, ...]]:
+    """The chunk files of each division, in recording order."""
+    return [
+        tuple(store / f"{chunk:06d}.mp4" for chunk in chunks)
+        for chunks in _DIVISION_CHUNKS
+    ]
+
+
+def test_ultralytics_tracks_each_division_from_its_chunks(
+    tmp_path: Path,
+    make_media_dataset: MakeMediaDataset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ds, store = _divided_entries(tmp_path, make_media_dataset)
+    fake, params = _install_ultralytics(tmp_path, monkeypatch)
+
+    _ = ultralytics_runs.run_ultralytics(ds, params)
+
+    assert sorted(fake.tracked) == _division_chunks(store)
+    assert _nothing_copied(ds)
+
+
+def test_infer_pose_reads_each_division_from_its_chunks(
+    tmp_path: Path,
+    make_media_dataset: MakeMediaDataset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each division's table is placed at its first frame on the recording's axis."""
+    ds, store = _divided_entries(tmp_path, make_media_dataset)
+    fake = install_fake_pose_inference(monkeypatch, pose_per_frame)
+    model = tmp_path / "weights" / "best.pt"
+    model.parent.mkdir()
+    _ = model.write_bytes(b"weights")
+
+    _ = run_op(
+        ds,
+        "infer-pose",
+        {"model": str(model)},
+        scope=Scope(entries=[("rec", token) for token in _DIVISION_TOKENS]),
+    )
+
+    assert sorted(fake.videos) == [
+        path for chunks in _division_chunks(store) for path in chunks
+    ]
+    tracks = read_tracks_index(ds)
+    starts = {
+        str(row["sequence"]): sorted(
+            {
+                int(frame)
+                for frame in pd.read_parquet(ds.resolve_path(str(row["abs_path"])))[
+                    "frame"
+                ]
+            }
+        )
+        for _, row in tracks.iterrows()
+        if row["producer"] == "infer-pose"
+    }
+    assert starts == {
+        _DIVISION_TOKENS[0]: list(range(0, 10)),
+        _DIVISION_TOKENS[1]: list(range(10, 20)),
+        _DIVISION_TOKENS[2]: [20, 21],
+    }
+
+
+@pytest.mark.parametrize("kind", ["trex", "sleap", "litpose"])
+def test_a_one_file_tracker_is_handed_each_divisions_export(
+    tmp_path: Path,
+    make_media_dataset: MakeMediaDataset,
+    kind: str,
+    requires_ffmpeg: None,
+) -> None:
+    ds, _store = _divided_entries(tmp_path, make_media_dataset)
+    entries = [("rec", token) for token in _DIVISION_TOKENS]
+    for entry in entries:
+        _ = run_op(ds, "export-store", {}, scope=Scope(entries=[entry]))
+    exports = [
+        ds.get_root("media") / str(row["analysis_derivative_path"])
+        for row in ds.read_media_index()
+    ]
+
+    items = build_work_items(ds, ds.resolve_media_scope(entries), kind=kind).items
+    handed = [resolve_tool_inputs(ds, item, kind=kind) for item in items]
+
+    assert handed == [(export,) for export in exports]
+    assert len(set(exports)) == 3

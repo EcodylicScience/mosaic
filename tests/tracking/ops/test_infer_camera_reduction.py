@@ -26,7 +26,7 @@ def _entry(group: str, sequence: str, camera: str) -> ResolvedScopeEntry:
         group=group,
         sequence=sequence,
         camera=camera,
-        resolved=ResolvedMedia(paths=[], facts=[]),
+        resolved=ResolvedMedia(paths=[], facts=[], windows=[]),
     )
 
 

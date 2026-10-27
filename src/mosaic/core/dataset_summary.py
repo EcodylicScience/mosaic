@@ -80,8 +80,8 @@ class DatasetCounts(StrictModel):
             tracks index names. The sequences of a continuous group are one
             divided recording, and every other entry is an undivided one.
         divided_recordings: The recordings among them that are divided.
-        videos: The rows of the originals media index, one per video file or
-            imgstore store.
+        videos: The files of the originals media index, one per video file or
+            imgstore store. The divisions of a store count as one.
         tracks_variants: The tracks variants in the tracks index. ``None`` when
             the inventory did not report the kind.
         feature_runs: The feature runs, one per storage directory and run id.
@@ -192,8 +192,8 @@ class DatasetSummary(StrictModel):
         api_managed: Whether ``managed_by`` names a managing service.
         counts: Sequences, videos and artifacts.
         track_schemas: The schemas of the tracks tables, by name.
-        frame_rates: The frame rates of the indexed videos, ascending. Rows
-            with a blank or non-positive rate are left out.
+        frame_rates: The frame rates of the indexed videos, ascending, one per
+            file. Rows with a blank or non-positive rate are left out.
         inventory_errors: The inventory's read failures, one per kind, each
             prefixed with its kind. That kind's count omits what failed.
         next_steps: What the dataset needs before a pipeline reads its tracks
@@ -242,7 +242,7 @@ def dataset_summary(
     manifest = ds.manifest
     tracks_index = read_tracks_index(ds)
     tracks = existing_tracks_records(ds, tracks_index)
-    media = _media_rows(ds)
+    media = _media_files(_media_rows(ds))
     entries = ds.recording_entries()
     extents = _member_extents(ds, tracks_index, entries)
     every_recording = ds.recordings(
@@ -343,6 +343,23 @@ def _media_rows(ds: Dataset) -> list[dict[str, str]]:
     if not ds.has_root(ds.resolve_media_root()):
         return []
     return ds.read_media_index()
+
+
+def _media_files(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
+    """Return the first row of each file of *rows*, by its stored ``abs_path``.
+
+    The divisions of one store are rows of one file. A row without a path is
+    its own.
+    """
+    files: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        path = row.get("abs_path", "")
+        if path and path in seen:
+            continue
+        seen.add(path)
+        files.append(row)
+    return files
 
 
 def _frame_rate_counts(rates: Iterable[float]) -> tuple[FrameRateCount, ...]:

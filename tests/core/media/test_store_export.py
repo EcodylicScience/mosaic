@@ -54,7 +54,14 @@ from mosaic.tracking.common.tool_input import (
     resolve_tool_input,
 )
 
-from tests.helpers import MakeStore, read_frame_code, store_dataset, video_store_maker
+from tests.helpers import (
+    DIVISION_CREATED_UTC,
+    MakeStore,
+    read_frame_code,
+    store_dataset,
+    video_store_maker,
+    write_division_rows,
+)
 
 # Only the fixtures that write real stores need the imgstore package. None of the
 # imports above loads it, so the skip can follow them.
@@ -399,14 +406,15 @@ def test_an_entrys_stores_are_listed_by_camera_without_a_refusal(
 
     stores = entry_stores(ds, group, sequence)
 
-    assert sorted(str(row_mapping(row)["camera"]) for _, _, row in stores) == [
+    assert sorted(str(row_mapping(store.row)["camera"]) for store in stores) == [
         "CAMA",
         "CAMB",
     ]
-    assert all(is_imgstore(store) for _, store, _ in stores)
-    assert all(media_row_uuid(row_mapping(row)) for _, _, row in stores)
-    ((_, _, only),) = entry_stores(ds, group, sequence, frozenset({"CAMB"}))
-    assert row_mapping(only)["camera"] == "CAMB"
+    assert all(is_imgstore(store.path) for store in stores)
+    assert all(store.window is None for store in stores)
+    assert all(media_row_uuid(row_mapping(store.row)) for store in stores)
+    (only,) = entry_stores(ds, group, sequence, frozenset({"CAMB"}))
+    assert row_mapping(only.row)["camera"] == "CAMB"
     assert entry_stores(ds, group, sequence, frozenset({"CAMZ"})) == []
 
 
@@ -438,9 +446,9 @@ def test_the_export_codec_is_the_codec_an_export_is_written_in(
     """
     make_store = video_store_maker([5, 5, 2]) if chunks == "video" else make_imgstore
     ds, group, sequence = _store_dataset(tmp_path, make_media_dataset, make_store)
-    ((_, store, _),) = entry_stores(ds, group, sequence)
+    (store,) = entry_stores(ds, group, sequence)
 
-    assert export_codec(store) == codec
+    assert export_codec(store.path) == codec
     _export(ds, group, sequence)
     assert probe_media(_exports(ds)[0]).codec_name == codec
 
@@ -1119,3 +1127,43 @@ def test_an_operator_can_vouch_for_a_codec_the_declaration_refuses(
     monkeypatch.setenv("MOSAIC_ALLOW_TOOL_CODECS", "av1")
 
     assert resolve_tool_input(ds, item, kind="sleap") == _exports(ds)[0]
+
+
+def test_each_division_of_a_store_exports_its_window_under_its_uid(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """Chunks 0-1 and 2-3 of a 4 fps store each export alone, at the store's rate.
+
+    Exported frame *i* of a division is frame *i* of its window, and the export's
+    file name is the division's ``video_uuid``.
+    """
+    ds = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker(
+            [5, 5, 5, 5, 2],
+            fps=4.0,
+            container_fps=25.0,
+            created_utc=DIVISION_CREATED_UTC,
+        ),
+    )
+    store = ds.get_root("media_raw") / "recordings" / "rec"
+    rows = write_division_rows(ds, store, 10)
+    first, second = rows[0], rows[1]
+
+    for row in (first, second):
+        _export(ds, "rec", str(row["sequence"]))
+
+    exports = {path.name.split(".")[0]: path for path in _exports(ds)}
+    assert sorted(exports) == sorted(str(row["video_uuid"]) for row in (first, second))
+    for row, start in ((first, 0), (second, 10)):
+        export = exports[str(row["video_uuid"])]
+        assert [read_frame_code(frame) for frame in _read_all(export)] == list(
+            range(start, start + 10)
+        )
+        assert probe_media(export).fps == pytest.approx(4.0, rel=STORE_RATE_TOLERANCE)
+    linked = _originals(ds)
+    assert list(linked["analysis_derivative_path"])[:2] == [
+        f"transcode/{exports[str(row['video_uuid'])].name}" for row in (first, second)
+    ]
+    assert list(linked["analysis_derivative_path"])[2] == ""

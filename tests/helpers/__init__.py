@@ -166,6 +166,7 @@ from tests.helpers.golden import (
     write_golden,
 )
 from tests.helpers.media import (
+    DIVISION_CREATED_UTC,
     EVEN_STORE_TIMING,
     MOTIF_SYNC_UUID,
     MakeStore,
@@ -189,6 +190,7 @@ from tests.helpers.media import (
     stub_join,
     stub_media_dataset,
     video_store_maker,
+    write_division_rows,
     write_h264_mp4,
     write_media_index,
     write_mpeg4_mp4,
@@ -418,6 +420,7 @@ __all__ = [
     "CI_MCP_MODULES",
     "CI_REQUIRED_MODULES",
     "CropLike",
+    "DIVISION_CREATED_UTC",
     "EVEN_STORE_TIMING",
     "EnvironmentMarker",
     "Event",
@@ -649,6 +652,7 @@ __all__ = [
     "write_fake_runner",
     "write_frames_run",
     "write_golden",
+    "write_division_rows",
     "write_h264_mp4",
     "write_litpose_model",
     "write_media_index",

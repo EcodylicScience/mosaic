@@ -214,8 +214,10 @@ def load_media_index_frame(index_path: Path) -> pd.DataFrame:
     """Read a media index CSV into the full schema, text cells as object ``""``.
 
     Missing columns are added, and text columns (everything non-numeric) are
-    coerced to an object dtype with NaN replaced by ``""`` so later cell writes
-    do not trip pandas' incompatible-dtype warning on all-empty float columns.
+    read as text and held as an object dtype with NaN replaced by ``""``, so
+    later cell writes do not trip pandas' incompatible-dtype warning on
+    all-empty float columns, and a text cell such as a division's
+    ``chunk_first`` of ``0`` is written back as it was read.
 
     An empty file reads as an empty frame, not as an error. ``index_lock``
     creates the index it is asked to hold when it does not exist yet -- a lock
@@ -225,7 +227,14 @@ def load_media_index_frame(index_path: Path) -> pd.DataFrame:
     index is always a freshly-locked absent one rather than a truncated one.
     """
     if index_path.exists() and index_path.stat().st_size > 0:
-        df = pd.read_csv(index_path)
+        df = pd.read_csv(
+            index_path,
+            dtype={
+                column: str
+                for column in MEDIA_INDEX_COLUMNS
+                if column not in MEDIA_NUMERIC_COLUMNS
+            },
+        )
     else:
         df = pd.DataFrame(columns=MEDIA_INDEX_COLUMNS)
     for column in MEDIA_INDEX_COLUMNS:

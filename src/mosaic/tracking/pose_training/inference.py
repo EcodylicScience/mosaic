@@ -14,6 +14,7 @@ caller holding an Ultralytics of their own can. Its ``localizer`` input, plain
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ import numpy as np
 from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.video_io import get_video_metadata, open_frame_reader
 from mosaic.user_paths import user_path
 
@@ -227,7 +229,7 @@ def _extract_point_detections(result: Any) -> list[dict]:
 
 def visualize_inference(
     video_path: str | Path,
-    results: list,
+    results: Sequence[object],
     *,
     result_type: str | None = None,
     output_path: str | Path | None = None,
@@ -250,6 +252,7 @@ def visualize_inference(
     crf: int = 23,
     # Progress
     verbose: bool = True,
+    window: StoreWindow | None = None,
 ) -> Path | None:
     """Visualize inference results overlaid on the source video.
 
@@ -301,6 +304,9 @@ def visualize_inference(
         H.264 quality (0–51, lower = better).  Only used with ffmpeg writer.
     verbose : bool
         Show tqdm progress bar.
+    window : StoreWindow, optional
+        The chunks of a store that the results were read from, for a division
+        of a store. Frame 0 is the window's first frame.
 
     Returns
     -------
@@ -321,7 +327,7 @@ def visualize_inference(
     if rtype not in ("pose", "point", "localizer"):
         raise ValueError(f"Unknown result_type: {rtype!r}")
 
-    meta = get_video_metadata(video_path)
+    meta = get_video_metadata(video_path, window)
 
     # Compute scale factors for coordinate mapping
     # Ultralytics results store orig_shape = (H, W) of the inference input
@@ -337,7 +343,11 @@ def visualize_inference(
     # frame `start_frame + i * frame_step`, exactly the sequence this reader
     # yields.
     reader = open_frame_reader(
-        video_path, start_frame=start_frame, frame_step=frame_step, target="analysis"
+        video_path,
+        start_frame=start_frame,
+        frame_step=frame_step,
+        target="analysis",
+        window=window,
     )
     frame_iterator = iter(reader)
 

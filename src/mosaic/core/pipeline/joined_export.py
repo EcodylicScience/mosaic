@@ -105,6 +105,7 @@ from mosaic_media.ffmpeg import run_to_completion
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.entry import Entry
+from mosaic.core.media.store_division import MediaRowKey, StoreWindow
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.params import Params
@@ -399,15 +400,18 @@ def _join_command(
     sequence: str,
     paths: Sequence[Path],
     facts: Sequence[MediaFacts],
+    windows: Sequence[StoreWindow | None],
 ) -> str:
     """The indented command that builds the current join of an entry's clips.
 
-    It names the entry by its first clip's indexed key
-    (:meth:`~mosaic.core.dataset.Dataset.indexed_entry`), which a run's scope
-    resolves. It sets ``reencode`` when :func:`join_needs_reencode` says the clips
-    need it. The command then works as shown.
+    It names the entry by its first clip's indexed key, its path and its
+    window in *windows* (:meth:`~mosaic.core.dataset.Dataset.indexed_entry`),
+    which a run's scope resolves. It sets ``reencode`` when
+    :func:`join_needs_reencode` says the clips need it. The command then works
+    as shown.
     """
-    entry = ds.indexed_entry(paths[0], (group, sequence))
+    key = MediaRowKey.of(str(paths[0]), windows[0])
+    entry = ds.indexed_entry(key, (group, sequence))
     params = '{"reencode": true}' if join_needs_reencode(facts) else ""
     command = mosaic_run_command("export-joined", [entry], params=params)
     return f"    {command}"
@@ -420,6 +424,7 @@ def refuse_unidentified_clips(
     paths: Sequence[Path],
     facts: Sequence[MediaFacts],
     *,
+    windows: Sequence[StoreWindow | None],
     asker: str,
 ) -> None:
     """Raise when several clips include one that carries no content identity.
@@ -435,6 +440,8 @@ def refuse_unidentified_clips(
         sequence: The entry's sequence, likewise.
         paths: The clips, in order.
         facts: The clips' facts, parallel to *paths*.
+        windows: The chunks of each store in *paths* that the entry reads,
+            parallel to them, ``None`` for a file read whole.
         asker: The op asking, which prefixes the refusal.
 
     Raises:
@@ -447,7 +454,7 @@ def refuse_unidentified_clips(
         f"[{asker}] ({group}, {sequence}) has {len(facts)} clips and at least "
         f"one carries no content identity, so the join of them cannot be "
         f"addressed. Run 'mosaic reprobe-media --apply' to mint one for every "
-        f"clip, then:\n{_join_command(ds, group, sequence, paths, facts)}"
+        f"clip, then:\n{_join_command(ds, group, sequence, paths, facts, windows)}"
     )
     raise EntryJoinMissingError(message, cause="unidentified_clips")
 
@@ -459,6 +466,7 @@ def current_join(
     paths: Sequence[Path],
     facts: Sequence[MediaFacts],
     *,
+    windows: Sequence[StoreWindow | None],
     asker: str,
     why: str,
 ) -> Path:
@@ -502,6 +510,8 @@ def current_join(
         paths: The clips, in order: the routed ones, as
             ``ds.resolve_media(group, sequence).paths`` returns them.
         facts: The clips' facts, parallel to *paths*.
+        windows: The chunks of each store in *paths* that the entry reads,
+            parallel to them, ``None`` for a file read whole.
         asker: The op asking, which prefixes every refusal.
         why: Why *asker* needs one file rather than the clips, stated where no
             join exists at all.
@@ -513,7 +523,9 @@ def current_join(
         EntryJoinMissingError: If the clip set cannot be addressed, has two
             current joins, has only superseded ones, or has none.
     """
-    refuse_unidentified_clips(ds, group, sequence, paths, facts, asker=asker)
+    refuse_unidentified_clips(
+        ds, group, sequence, paths, facts, windows=windows, asker=asker
+    )
     source_uid = joined_source_uid(facts)
     n_sources = len(facts)
     current, superseded = joins_of(ds.get_root("media"), source_uid)
@@ -530,7 +542,7 @@ def current_join(
         raise EntryJoinMissingError(message, cause="several_joins")
     if current:
         return current[0]
-    where = _join_command(ds, group, sequence, paths, facts)
+    where = _join_command(ds, group, sequence, paths, facts, windows)
     if superseded:
         listed = "\n".join(f"      {p.name}" for p in superseded)
         message = (
@@ -607,6 +619,7 @@ def join_to_read(
         entry.sequence,
         paths,
         facts,
+        windows=entry.resolved.windows,
         asker=asker,
         why=_MIXED_RATE_WHY,
     )

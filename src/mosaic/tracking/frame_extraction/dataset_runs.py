@@ -17,6 +17,7 @@ from pydantic import Field, ValidationInfo, field_validator
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import entry_camera_path, make_entry_key
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params, json_ready
+from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.pipeline.media_index import media_members_from_rows
 from mosaic.core.pipeline.sequence_index import (
     media_compositions_for,
@@ -476,6 +477,7 @@ class _ExtractSpec:
     camera: str
     video_paths: tuple[Path, ...]
     facts: tuple[MediaFacts, ...]
+    windows: tuple[StoreWindow | None, ...]
     video_uuids: str
     media_composition: str
     seq_dir: Path
@@ -590,6 +592,7 @@ def _extract_one(spec: _ExtractSpec) -> _Outcome:
                 facts=spec.facts[0] if spec.facts else None,
                 frame_indices=spec.frame_indices,
                 excluded=excluded,
+                window=spec.windows[0],
                 **kmeans_kw,
             )
         else:
@@ -607,6 +610,7 @@ def _extract_one(spec: _ExtractSpec) -> _Outcome:
                 facts=list(spec.facts),
                 frame_indices=spec.frame_indices,
                 excluded=excluded,
+                windows=list(spec.windows),
                 **kmeans_kw,
             )
     except Exception as exc:
@@ -1008,6 +1012,7 @@ def _run_extract_frames(
         joined = join_to_read(ds, entry, asker="extract-frames")
         paths = (joined,) if joined is not None else tuple(resolved.paths)
         facts = () if joined is not None else tuple(resolved.facts)
+        windows = (None,) if joined is not None else tuple(resolved.windows)
         # A multi-camera recording writes each camera into its own subdir so the
         # cameras never collide; single-camera media keeps the flat layout.
         seq_dir = entry_camera_path(run_root, group, sequence, camera)
@@ -1018,6 +1023,7 @@ def _run_extract_frames(
                 camera=camera,
                 video_paths=paths,
                 facts=facts,
+                windows=windows,
                 video_uuids=source_uids.get((group, sequence, camera), ""),
                 media_composition=source_compositions.get((group, sequence), ""),
                 seq_dir=seq_dir,
