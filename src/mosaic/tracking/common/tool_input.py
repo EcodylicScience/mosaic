@@ -38,15 +38,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts, MediaProbeError
-from mosaic_media.probe.ffprobe import read_header
+from mosaic_media import SOFTWARE_DECODABLE_CODECS, MediaFacts
 
 from mosaic.core.media.facts_columns import (
     derivative_path_for_target,
     media_row_entry,
+    read_link_cell,
+    row_mapping,
 )
 from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.read_target import verified_read_facts
+from mosaic.core.media.store_rate import positive_rate, store_rate_mismatch
 from mosaic.core.pipeline.joined_export import (
     current_join,
     join_codec,
@@ -59,6 +61,7 @@ from mosaic.core.pipeline.store_export import (
     export_codec,
     readable_chunks,
 )
+from mosaic.core.pipeline.stream_copy import header_codec
 from mosaic.core.pipeline.subprocess_util import run_supervised
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
@@ -106,22 +109,15 @@ class StoreExportMissingError(FileNotFoundError):
     """An imgstore has no exported video for a subprocess tool to open."""
 
 
-def _stream_codec(path: Path) -> str:
-    """*path*'s video codec, from its header.
+class StoreExportStaleError(StoreExportMissingError):
+    """An imgstore's exported video is at another frame rate than the store.
 
-    A header read, not :func:`~mosaic_media.probe_media` -- that scans every
-    packet, which is minutes over a joined session, and the codec is in the
-    first few bytes. This runs once per file handed to a tool.
-
-    An unreadable header answers ``""``, which passes, and so does a read that
-    outlasts mosaic-media's header timeout. A file a tool cannot open at all is
-    the tool's own error to report, with its own message; inventing a codec
-    refusal for it here would name the wrong cause.
+    A planner answers it as it answers a missing export, with the store's
+    ``export-store`` run. The run does not pass ``--overwrite``. It replaces the
+    export because the stale export's file name records an older recipe. A run
+    of the current recipe reuses an export at the current recipe's name, and a
+    stale export at that name is refused again on the next plan.
     """
-    try:
-        return read_header(path).codec_name
-    except MediaProbeError:
-        return ""
 
 
 def _operator_allowed_codecs() -> frozenset[str]:
@@ -364,7 +360,7 @@ def refuse_undecodable_codec(
     """
     root = TRACKING_ROOTS.get(kind)
     decoder = root.decoder if root is not None else CONSERVATIVE_DECODER
-    codec = _stream_codec(path)
+    codec = header_codec(path)
     if not codec or codec in _allowed_codecs(decoder):
         return
     remedy = f"\n    {decoder.remedy}." if decoder.remedy else ""
@@ -476,7 +472,8 @@ def resolve_tool_inputs(
 
     Raises:
         StoreExportMissingError: If a source is a store with no export
-            registered, or with a link pointing at a file that is gone.
+            registered, with a link pointing at a file that is gone, or with an
+            export at another rate (:class:`StoreExportStaleError`).
         JoinedExportMissingError: If the entry has several clips and no joined
             export has been built for exactly that clip set.
     """
@@ -552,11 +549,15 @@ def _store_export(
     The store's row (:meth:`~mosaic.core.dataset.Dataset.media_rows_of`) gives
     the export. The command names the entry by the row's key, which a run's scope
     resolves.
+
+    The export's back-link row records the rate it was measured at, and an
+    export at another rate than the store's row is refused. ``export-store``
+    before 0.3 stamped a copy at its chunks' declared rate.
     """
     row = ds.media_rows_of([store]).get(store)
     export = _linked_export(ds, row)
+    entry = (group, sequence) if row is None else media_row_entry(row)
     if export is None:
-        entry = (group, sequence) if row is None else media_row_entry(row)
         command = mosaic_run_command("export-store", [entry])
         message = (
             f"[{kind}] ({group}, {sequence}) is an imgstore recording, {why}. "
@@ -570,7 +571,47 @@ def _store_export(
             f"export-store' to rebuild it"
         )
         raise StoreExportMissingError(message)
+    _refuse_stale_export(
+        ds, row, export, entry, label=f"[{kind}] ({group}, {sequence})"
+    )
     return export
+
+
+def _refuse_stale_export(
+    ds: "Dataset",
+    row: Mapping[str, object] | None,
+    export: Path,
+    entry: tuple[str, str],
+    *,
+    label: str,
+) -> None:
+    """Raise when *export* is at another rate than the store whose *row* links it.
+
+    The rates are the ``fps`` cells of the store's row and of the export's
+    back-link row, compared under
+    :func:`~mosaic.core.media.store_rate.store_rate_mismatch`. A missing row or
+    cell compares nothing.
+    """
+    if row is None:
+        return
+    _, derivatives = ds.media_routing_context()
+    back_link = ds.derivative_row(export, derivatives)
+    if back_link is None:
+        return
+    store_rate = positive_rate(read_link_cell(row, "fps"))
+    export_rate = positive_rate(read_link_cell(row_mapping(back_link), "fps"))
+    if store_rate is None or export_rate is None:
+        return
+    if store_rate_mismatch([store_rate, export_rate]) is None:
+        return
+    command = mosaic_run_command("export-store", [entry])
+    message = (
+        f"{label} links to an exported video at {export_rate:.3f} fps, and "
+        f"the store records {store_rate:.3f} fps. A tool times each frame of "
+        f"the export by the export's rate. Export the store again:\n"
+        f"    {command} --overwrite"
+    )
+    raise StoreExportStaleError(message)
 
 
 def entry_tool_input(
@@ -604,7 +645,8 @@ def entry_tool_input(
 
     Raises:
         StoreExportMissingError: If a clip is a store with no export registered,
-            or with a link pointing at a file that is gone.
+            with a link pointing at a file that is gone, or with an export at
+            another rate (:class:`StoreExportStaleError`).
         JoinedExportMissingError: If the entry has several clips and no single
             current join of exactly those clips.
     """
@@ -678,7 +720,7 @@ def entry_runner_sources(
 
     Raises:
         StoreExportMissingError: If a store's chunks cannot be read directly and
-            it has no export.
+            it lacks an export, or its export is at another rate.
         ToolCodecError: If a file is in a codec that *kind* does not read.
         MediaProbeError: If a file's verdict says it needs a transcode before it
             can be read for analysis.
@@ -796,11 +838,11 @@ def handed_codecs(
             continue
         spans = readable_chunks(path) if reads == "entry-files" else []
         if spans:
-            codecs.add(_stream_codec(spans[0][0]))
+            codecs.add(header_codec(spans[0][0]))
             continue
         export = _linked_export(ds, ds.media_rows_of([path]).get(path))
         if export is not None and export.is_file():
-            codecs.add(_stream_codec(export))
+            codecs.add(header_codec(export))
         else:
             codecs.add(export_codec(path))
     return frozenset(codecs - {""})
@@ -830,7 +872,7 @@ def refuse_unreadable_entry(
         EntryJoinMissingError: If the clips need a single current join and have
             none, with the cause.
         StoreExportMissingError: If a store that the tool reads through its export
-            has none, or its linked file is gone.
+            has none, its linked file is gone, or the export is at another rate.
         MediaProbeError: If a store's metadata cannot be read.
     """
     root = tracking_root(kind)

@@ -26,10 +26,11 @@ columns that one rate computes.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Final
 
-__all__ = ["STORE_RATE_TOLERANCE", "store_rate_mismatch"]
+__all__ = ["STORE_RATE_TOLERANCE", "positive_rate", "store_rate_mismatch"]
 
 STORE_RATE_TOLERANCE: Final = 5e-4
 """The largest relative difference between two estimates of one store rate.
@@ -64,3 +65,12 @@ def store_rate_mismatch(rates: Sequence[float]) -> int | None:
         if abs(rate - reference) / reference > STORE_RATE_TOLERANCE:
             return position
     return None
+
+
+def positive_rate(cell: str) -> float | None:
+    """Return a media index ``fps`` cell as a positive finite rate, else ``None``."""
+    try:
+        rate = float(cell)
+    except ValueError:
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None

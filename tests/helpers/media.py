@@ -650,14 +650,18 @@ def video_store_maker(
     chunk_frames: Sequence[int],
     *,
     fps: float = 30.0,
+    container_fps: float | None = None,
     size: tuple[int, int] = (64, 48),
     paint: Callable[[int], npt.NDArray[np.uint8]] | None = None,
 ) -> MakeStore:
     """Return a ``make_imgstore``-shaped factory that writes H.264 video stores.
 
     Each store has one chunk per count in *chunk_frames*, and store frame ``i`` is
-    ``paint(i)``, by default the frame code of ``i`` at *size*. The layout is the
-    one the imgstore package writes for ``avc1/mp4``: ``metadata.yaml``,
+    ``paint(i)``, by default the frame code of ``i`` at *size*. The chunk indexes
+    record frame ``i`` at ``i / fps`` seconds, and the chunk files declare
+    *container_fps*, by default *fps*. Motif declares 25 fps on the chunks of a
+    store recorded at another rate. The layout is the one the imgstore package
+    writes for ``avc1/mp4``: ``metadata.yaml``,
     ``NNNNNN.mp4`` chunks and ``NNNNNN.npz`` indexes. The chunks are encoded by
     ffmpeg (:func:`write_h264_mp4`), because the imgstore package encodes through
     OpenCV, whose Linux wheel cannot write H.264.
@@ -706,7 +710,7 @@ def video_store_maker(
             write_h264_mp4(
                 store / f"{chunk:06d}.mp4",
                 frames=count,
-                fps=fps,
+                fps=fps if container_fps is None else container_fps,
                 size=size,
                 paint=paint_chunk,
             )

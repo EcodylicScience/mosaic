@@ -73,7 +73,7 @@ class _StoreMeta:
     duration: float
 
 
-def _fps_from_duration(frame_count: int, duration: float) -> float:
+def fps_from_duration(frame_count: int, duration: float) -> float:
     """Estimate fps from the timestamp span.
 
     imgstore stores per-frame timestamps but no explicit fps. For ``N`` evenly
@@ -218,7 +218,7 @@ def _read_store_meta(path: Path | str) -> _StoreMeta:
         width = int(shape[1])
         frame_count = int(store.frame_count)
         duration = float(store.duration)
-        fps = _fps_from_duration(frame_count, duration)
+        fps = fps_from_duration(frame_count, duration)
         codec = store.format
     finally:
         store.close()
@@ -236,7 +236,7 @@ def imgstore_metadata(path: Path | str) -> VideoMetadata:
     """Read :class:`VideoMetadata` (width/height/fps/frame_count) from a store.
 
     ``fps`` is derived as ``(frame_count - 1) / duration`` (imgstore does not
-    store an explicit fps; see :func:`_fps_from_duration`); it is ``0.0`` for
+    store an explicit fps; see :func:`fps_from_duration`); it is ``0.0`` for
     stores with no usable timestamps.
     """
     p = user_path(path).resolve()
@@ -316,7 +316,7 @@ class ImgStoreCapture:
         self._height = int(shape[0])
         self._width = int(shape[1])
         duration = float(self._store.duration)
-        self._fps = _fps_from_duration(self._frame_count, duration)
+        self._fps = fps_from_duration(self._frame_count, duration)
         self._pos = 0  # frame_index the next plain read() will return
         self._pending_seek: int | None = None
 

@@ -69,7 +69,9 @@ What a tool needs before it reads such an entry depends on how it reads:
 TRex, SLEAP and Lightning Pose open one video file, so mosaic writes the clips' join or
 the store's video first. Ultralytics and the two inference ops read the entry's files
 one after another, so nothing is copied. A store whose chunks hold images, raw arrays,
-or Bayer or YUV data is still read through its export.
+or Bayer or YUV data is still read through its export. The store's video has the
+store's frame rate, measured from its frame times. The export ignores the rate that the
+chunk files declare, and Motif declares 25 fps on every chunk.
 
 [`mosaic prerequisites`](../../reference/cli.md#mosaic-prerequisites) takes the
 `--kind`, `--params` and scope flags of a `mosaic run` command and prints the runs to

@@ -11,7 +11,6 @@ creates no root.
 
 from __future__ import annotations
 
-import math
 from collections import Counter
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Annotated, Final, Literal
@@ -21,7 +20,7 @@ from pydantic import Field
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.manifest import DatasetTag, LibraryLink, SplitRole
-from mosaic.core.media.store_rate import store_rate_mismatch
+from mosaic.core.media.store_rate import positive_rate, store_rate_mismatch
 from mosaic.core.pipeline.inventory import (
     ArtifactKind,
     DatasetInventory,
@@ -289,7 +288,7 @@ def dataset_summary(
         ),
         frame_rates=_frame_rate_counts(
             fps
-            for fps in (_frame_rate(row.get("fps") or "") for row in media)
+            for fps in (positive_rate(row.get("fps") or "") for row in media)
             if fps is not None
         ),
         inventory_errors=held.errors,
@@ -364,15 +363,6 @@ def _frame_rate_counts(rates: Iterable[float]) -> tuple[FrameRateCount, ...]:
         else:
             counts.append(FrameRateCount(fps=rate, videos=1))
     return tuple(counts)
-
-
-def _frame_rate(cell: str) -> float | None:
-    """Return a media index ``fps`` cell as a positive finite rate, else ``None``."""
-    try:
-        rate = float(cell)
-    except ValueError:
-        return None
-    return rate if math.isfinite(rate) and rate > 0 else None
 
 
 def dataset_next_steps(

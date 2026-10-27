@@ -17,34 +17,89 @@ puts two frames on one timestamp. Measured on a real 17-clip session, the join
 held all 390,986 frames and the probe reported 390,984.
 
 **Timing is imposed, never inherited.** ffmpeg's concat demuxer offsets each
-segment by the previous one's duration expressed in the *first* input's ticks
-and never rescales, so an input that counts time differently lands at a wrong
-timestamp and drags every later frame with it. :func:`restamp_expression`
-rewrites every packet by its index instead, which puts that arithmetic out of
-reach. ``PTS-DTS`` is carried through unchanged, so B-frame reordering survives:
-the demuxer shifts both ends of that difference equally, making it the one
-quantity it cannot corrupt.
+segment by the previous one's duration expressed in the first input's ticks and
+does not rescale. An input that counts time differently is offset to a wrong
+timestamp, and every later frame moves with it. :func:`restamp_expression`
+writes each packet's timestamps in one of two forms:
+
+- ``export-joined`` stamps each packet by its index, and the demuxer's offsets do
+  not enter the result. ``PTS-DTS`` is copied unchanged, which keeps B-frame
+  reordering. The demuxer adds one offset to both timestamps and leaves their
+  difference intact.
+- ``export-store`` copies onto the time base of :func:`copy_time_base` and takes
+  each packet's presentation frame from the demuxer's PTS, offset included. The
+  form is sound only when every input counts the same time base and rate, as one
+  recorder's chunks do. ``PTS-DTS`` is not used there, because chunks that
+  reorder by different depths give two packets one presentation timestamp under
+  it.
+  :func:`~mosaic.core.pipeline.store_export.copy_export` refuses a copy that
+  presents two frames at one timestamp.
 """
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from mosaic_media import MediaProbeError
 from mosaic_media.ffmpeg import run_to_completion
+from mosaic_media.probe.ffprobe import read_header
 from mosaic_media.transcode import TranscodeError
 
 __all__ = [
+    "CopyTimeBase",
     "coded_frame_count",
+    "copy_time_base",
     "first_packet_dts",
+    "header_codec",
     "restamp_expression",
-    "stream_codec",
     "stream_timescale",
     "write_concat_listing",
 ]
 
 PROBE_TIMEOUT_SECONDS: Final = 3600.0
 """Ceiling for a packet scan, which is minutes over tens of gigabytes."""
+
+_MINIMUM_TICKS_PER_FRAME: Final = 1000
+"""The fewest ticks per frame of a copy restamped onto a time base of its own."""
+
+_MINIMUM_TICKS_PER_SECOND: Final = 20_000
+"""The fewest ticks per second of a copy restamped onto a time base of its own.
+
+Rounding the ticks per second to a whole number then moves the stated rate by at
+most 2.5e-5 of itself, a twentieth of the store rate tolerance.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class CopyTimeBase:
+    """Record the time base that a copy is restamped onto, and its frame length.
+
+    Attributes:
+        ticks_per_second: The denominator of the copy's time base.
+        ticks_per_frame: The duration of one frame, in those ticks.
+    """
+
+    ticks_per_second: int
+    ticks_per_frame: int
+
+
+def copy_time_base(fps: float) -> CopyTimeBase:
+    """Return the time base that states *fps* to within 2.5e-5 of itself.
+
+    A frame is 1000 ticks at 20 fps and above, and more at a lower rate, so that
+    the time base counts at least 20,000 ticks per second. A 0.5003 fps
+    time-lapse store gets 39,977 ticks to a frame. At 1000 ticks to a frame, its
+    time base would state 0.5 fps.
+    """
+    ticks_per_frame = max(
+        _MINIMUM_TICKS_PER_FRAME, math.ceil(_MINIMUM_TICKS_PER_SECOND / fps)
+    )
+    return CopyTimeBase(
+        ticks_per_second=round(fps * ticks_per_frame), ticks_per_frame=ticks_per_frame
+    )
 
 
 def coded_frame_count(path: Path) -> int:
@@ -83,9 +138,19 @@ def coded_frame_count(path: Path) -> int:
         raise TranscodeError(message) from exc
 
 
-def stream_codec(path: Path) -> str:
-    """*path*'s video codec name, read from its header."""
-    return _header_field(path, "codec_name", "codec").lower()
+def header_codec(path: Path) -> str:
+    """Return *path*'s video codec name from its header, or ``""`` if unreadable.
+
+    The header is read in place of :func:`~mosaic_media.probe_media`, which scans
+    every packet, because the codec is in the first few bytes. A header that does
+    not read, or a read that outlasts mosaic-media's header timeout, answers
+    ``""``. A codec gate passes it, and the tool that cannot open the file reports
+    the error. A store export encodes chunks of an unknown codec.
+    """
+    try:
+        return read_header(path).codec_name
+    except MediaProbeError:
+        return ""
 
 
 def stream_timescale(path: Path) -> int:
@@ -151,19 +216,44 @@ def first_packet_dts(path: Path) -> int:
         return 0
 
 
-def restamp_expression(*, timescale: int, fps: float, origin: int) -> str:
+def restamp_expression(
+    *, timescale: int, fps: float, origin: int, out_fps: float | None = None
+) -> str:
     """A ``setts`` bitstream filter putting every packet on a uniform grid.
 
-    *fps* is the rate the grid is expressed at, and it is the **first** input's:
-    a grid has to be written in the ticks the output counts in, and the output's
-    tick rate comes from the first input. A set of files recorded at several
-    rates therefore gets one label for all of it, which is deliberate. This
-    file's timing is not authoritative -- real time per frame comes from the
-    sources' own facts -- and what it has to be is *uniform*, so that frame
-    ``i`` is findable at ``i`` periods by a tool that seeks.
+    *timescale* is the input's ticks per second, *fps* the rate the input counts
+    frames at, and *origin* its first packet's decode timestamp, in input ticks.
+
+    Without *out_fps*, the grid is in the input's ticks and the output keeps
+    the input's time base. A frame is then ``round(timescale / fps)`` ticks, and
+    *fps* is the **first** input's. A set of files recorded at several rates gets
+    one label for all of it. Real time per frame comes from the sources' facts,
+    and this file's timing is uniform: frame ``i`` is at ``i`` periods for a tool
+    that seeks.
+
+    With *out_fps*, the output is stamped at that rate on the time base of
+    :func:`copy_time_base`. A copy can then be stamped at a rate that the input's
+    ticks cannot express or that the input does not declare. Every offset is
+    converted in frames: *origin*, and each packet's presentation frame. A
+    presentation frame is the packet's presentation timestamp counted in
+    input frames. It keeps a reordered picture in its place, and keeps the order
+    of a file whose segments reorder by different depths. The conversion assumes
+    inputs that all count *timescale* ticks per second and *fps* frames per
+    second, as one recorder's chunks do.
     """
-    period = max(1, round(timescale / fps))
-    return f"setts=dts=N*{period}{origin:+d}:pts=N*{period}{origin:+d}+PTS-DTS"
+    if out_fps is None:
+        period = max(1, round(timescale / fps))
+        return f"setts=dts=N*{period}{origin:+d}:pts=N*{period}{origin:+d}+PTS-DTS"
+    time_base = copy_time_base(out_fps)
+    ticks = time_base.ticks_per_frame
+    start = round(origin * fps / timescale) * ticks
+    frame = f"round(PTS*{fps!r}/{timescale})"
+    return (
+        f"setts=time_base=1/{time_base.ticks_per_second}"
+        f":dts=N*{ticks}{start:+d}"
+        f":pts={frame}*{ticks}"
+        f":duration={ticks}"
+    )
 
 
 def write_concat_listing(paths: list[Path], listing: Path) -> None:

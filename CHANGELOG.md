@@ -8,6 +8,36 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: an imgstore export is stamped at the store's frame rate
+
+**`export-store` 0.2 to 0.3.** A store whose chunks are H.264 was copied at the
+rate its chunk files declare. Motif declares 25 fps on every chunk. A store
+recorded at 20 fps therefore exported at 25 fps, and a tool reading the export
+timed every frame 20 percent early. The copy is now stamped at the store's rate,
+measured from its frame times, on a time base of at least 20,000 ticks per second
+and 1000 ticks or more to a frame, which states the rate to within 2.5e-5 of
+itself. A store below one frame per second is copied at its rate too. A copy is
+refused when its measured rate differs from the store's by more than the store
+tolerance, when it presents two frames at one timestamp, or when two neighboring
+frames are more than 1.5 frame periods apart. The encode of a store without H.264
+chunks is unchanged.
+
+- Export file names (`media/transcode/<video_uuid>.<recipe>.analysis.mp4`) and the
+  `export-store` run id move with the version, so `export-store` copies every store
+  again. Run `mosaic prune-media` to remove the old exports.
+- A tracker or `infer-*` op refuses a linked export whose rate differs from the
+  store's, and names `mosaic run --kind export-store ... --overwrite`
+  (`StoreExportStaleError`, a `StoreExportMissingError`). A planner answers it
+  with the store's `export-store` run.
+- Tracks converted from a tool run over an old 25 fps export are timed at that
+  rate, and the run should be repeated.
+- A store whose first chunk header does not read is encoded instead of refused, and
+  `stream_copy.stream_codec` is replaced by the tolerant `header_codec`.
+- `stream_copy.restamp_expression` takes the copy's rate as `out_fps` in place of
+  a time base, and `stream_copy.copy_time_base` replaces `TICKS_PER_FRAME`.
+- Feature and tracker run ids, the ids of every other op, compositions and media
+  uuids do not move.
+
 ## Unreleased: neighbor maps over every neighbor, and body lengths as a unit
 
 **`nn-delta-bins` 0.1 to 0.2.** The two-dimensional output gained an `occupancy`

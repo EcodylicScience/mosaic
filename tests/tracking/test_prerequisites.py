@@ -27,7 +27,14 @@ from mosaic.core.pipeline.joined_export import (
 )
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variant_recipe_path
-from mosaic.core.pipeline.store_export import StoreExportParams, export_run_id
+from mosaic.core.pipeline.media_index import write_media_index_rows
+from mosaic.core.pipeline.ops import run_op
+from mosaic.core.pipeline.store_export import (
+    StoreExportOp,
+    StoreExportParams,
+    export_run_id,
+)
+from mosaic.core.scope import Scope
 from mosaic.tracking.frame_extraction.dataset_runs import ListedFramesRefused
 from mosaic.tracking.prerequisites import (
     PrerequisitePlan,
@@ -431,6 +438,41 @@ def test_a_built_export_needs_nothing(
     assert plan_prerequisites(ds, "trex").runs == ()
 
 
+def test_an_export_at_another_rate_than_its_store_is_exported_again(
+    tmp_path: Path,
+    make_media_dataset: MakeMediaDataset,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ``export-store`` 0.2 export, at its chunks' 25 fps, is planned a new export.
+
+    The planned run writes a file under the current recipe's name and links it in
+    place of the stale export, and the next plan needs nothing.
+    """
+    ds = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=20.0, container_fps=25.0),
+    )
+    (media,) = ds.resolve_media_scope(None)
+    entry = (media.group, media.sequence)
+    with monkeypatch.context() as older:
+        older.setattr(StoreExportOp, "version", "0.2")
+        stale = export_entry_store(ds, *entry)
+    index = ds.get_root("media") / "index.csv"
+    derivatives = pd.read_csv(index, dtype=str, keep_default_na=False)
+    derivatives["fps"] = "25.0"
+    write_media_index_rows(index, derivatives)
+
+    plan = plan_prerequisites(ds, "trex")
+
+    assert plan.runs == (_store_run(entry),)
+    (run,) = plan.runs
+    _ = run_op(ds, run.kind, run.params, scope=Scope(entries=list(run.entries)))
+    exports = sorted(stale.parent.glob("*.mp4"))
+    assert len(exports) == 2, "the stale export and the current recipe's"
+    assert plan_prerequisites(ds, "trex").runs == ()
+
+
 def test_a_store_without_an_identity_is_refused_an_export(tmp_path: Path) -> None:
     """``export-store`` names an export by the store's ``video_uuid``."""
     ds = make_dataset(tmp_path / "ds")
@@ -752,23 +794,25 @@ def test_an_h264_store_is_exported_for_lightning_pose_without_a_variant(
     assert (plan.refusals, plan.entries) == ((), (entry,))
 
 
-def test_a_store_whose_export_codec_does_not_read_is_refused_for_lightning_pose(
+def test_a_store_whose_first_chunk_header_does_not_read_is_read_through_a_variant(
     tmp_path: Path, make_media_dataset: MakeMediaDataset
 ) -> None:
     """The export's codec is read from the header of the store's first chunk.
 
-    A missing chunk file is not a store chunk. The first chunk is overwritten instead.
+    Chunks of no known codec are not copied, and their export is encoded in AV1,
+    which Lightning Pose does not read. A missing chunk file is not a store chunk.
+    The first chunk is overwritten instead.
     """
     ds = store_dataset(tmp_path, make_media_dataset, video_store_maker([5, 5, 2]))
     (media,) = ds.resolve_media_scope(None)
+    entry = (media.group, media.sequence)
     (store,) = media.resolved.paths
     _ = (store / "000000.mp4").write_bytes(b"not video")
 
     plan = plan_prerequisites(ds, "litpose")
 
-    assert _refused(plan) == [(media.group, media.sequence, "", "unresolved_media")]
-    assert "000000.mp4" in _reason(plan)
-    assert (plan.media, plan.runs, plan.entries) == ("", (), ())
+    assert (plan.media, plan.runs) == (_CODEC_VARIANT, (_preprocess_run((entry,)),))
+    assert (plan.refusals, plan.entries) == ((), (entry,))
 
 
 def test_av1_clips_of_two_sizes_are_unjoinable_for_lightning_pose(

@@ -9,16 +9,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from mosaic_media import MediaProbeError
 
 from mosaic.core.dataset import Dataset, ResolvedScopeEntry
 from mosaic.core.pipeline.joined_export import EntryJoinMissingError
+from mosaic.core.pipeline.media_index import write_media_index_rows
 from mosaic.core.pipeline.preprocess_layout import media_variant_path
 from mosaic.core.pipeline.tracking_roots import ToolCodecError
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import (
     StoreExportMissingError,
+    StoreExportStaleError,
     handed_codecs,
     refuse_unreadable_entry,
     resolve_tool_inputs,
@@ -125,6 +128,34 @@ def test_a_video_store_is_read_by_chunk_or_through_its_export(
 
     export.unlink()
     assert handed_codecs(ds, entry, kind="trex") == {"h264"}, "the export to write"
+
+
+def test_an_export_at_another_rate_than_its_store_is_refused(
+    tmp_path: Path, make_media_dataset: MakeMediaDataset
+) -> None:
+    """An export stamped at its chunks' 25 fps is not the 20 fps store it copies.
+
+    The refusal names the run that exports the store again. mosaic's runner reads
+    the store's chunks and is not refused.
+    """
+    ds = store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=20.0, container_fps=25.0),
+    )
+    (entry,) = ds.resolve_media_scope(None)
+    _ = export_entry_store(ds, entry.group, entry.sequence)
+    refuse_unreadable_entry(ds, entry, kind="trex")
+
+    index = ds.get_root("media") / "index.csv"
+    derivatives = pd.read_csv(index, dtype=str, keep_default_na=False)
+    derivatives["fps"] = "25.0"
+    write_media_index_rows(index, derivatives)
+
+    with pytest.raises(StoreExportStaleError, match="--overwrite") as refused:
+        refuse_unreadable_entry(ds, entry, kind="trex")
+    assert printed_scope_files(ds, str(refused.value)) == entry.resolved.paths
+    refuse_unreadable_entry(ds, entry, kind="ultralytics")
 
 
 @pytest.mark.parametrize(

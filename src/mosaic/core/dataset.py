@@ -5945,14 +5945,12 @@ class Dataset:
             )
             raise MediaProbeError(message)
 
-        target = derivative_path.resolve()
         target_name = derivative_path.name
 
         # Pass 1: exact resolved-file match on abs_path.
-        for _, drow in derivative_df.iterrows():
-            abs_cell = _media_cell(drow, "abs_path")
-            if abs_cell and self.resolve_path(abs_cell).resolve() == target:
-                return _facts_or_stale_probe_error(drow, group, sequence)
+        exact = self.derivative_row(derivative_path, derivative_df)
+        if exact is not None:
+            return _facts_or_stale_probe_error(exact, group, sequence)
 
         # Pass 2, uuid form: match the derivative row by the source's video_uuid,
         # keeping the basename guard so the analysis and playback siblings --
@@ -5970,6 +5968,32 @@ class Dataset:
             f"matching row with stored facts in the media index"
         )
         raise MediaProbeError(message)
+
+    def derivative_row(
+        self, derivative_path: Path, derivative_df: "pd.DataFrame | None"
+    ) -> "pd.Series | None":
+        """Return the ``media`` index row of the derivative at *derivative_path*.
+
+        The row is the one whose ``abs_path`` resolves to *derivative_path*, the
+        back-link that registration writes.
+
+        Args:
+            derivative_path: The derivative's file.
+            derivative_df: The ``media`` index, as :meth:`media_routing_context`
+                returns it.
+
+        Returns:
+            The row, or ``None`` when *derivative_df* is ``None`` or does not
+            list that file.
+        """
+        if derivative_df is None:
+            return None
+        target = derivative_path.resolve()
+        for _, drow in derivative_df.iterrows():
+            abs_cell = _media_cell(drow, "abs_path")
+            if abs_cell and self.resolve_path(abs_cell).resolve() == target:
+                return drow
+        return None
 
     def routes_derivatives(self) -> bool:
         """Return whether media reads route to derivatives under the ``media`` root.

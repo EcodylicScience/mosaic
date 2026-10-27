@@ -775,7 +775,7 @@ Join one entry's clips into the single video an external tool opens.
 
 #### `export-store`
 
-Version `0.2` &middot; `mosaic.core.pipeline.store_export.StoreExportOp` &middot; resource class `heavy`
+Version `0.3` &middot; `mosaic.core.pipeline.store_export.StoreExportOp` &middot; resource class `heavy`
 
 Export one entry's imgstore recordings as plain video and link them.
 

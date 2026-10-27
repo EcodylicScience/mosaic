@@ -37,6 +37,7 @@ An entry's cameras each export separately -- a store per camera, a
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final
 
@@ -44,10 +45,13 @@ import pandas as pd
 from mosaic_media import (
     CHROME_149,
     SOFTWARE_DECODABLE_CODECS,
+    MediaFacts,
+    MediaProbeError,
     derive,
     probe_media,
 )
 from mosaic_media.ffmpeg import run_to_completion
+from mosaic_media.probe.ffprobe import read_header
 from mosaic_media.transcode import ANALYSIS_ENCODING, Target, TranscodeError
 
 from mosaic.core.entry import Entry
@@ -57,7 +61,8 @@ from mosaic.core.media.facts_columns import (
     row_mapping,
     series_facts_or_none,
 )
-from mosaic.core.media.imgstore_io import is_imgstore
+from mosaic.core.media.imgstore_io import fps_from_duration, is_imgstore
+from mosaic.core.media.store_rate import store_rate_mismatch
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.pipeline._utils import ResolvedScope, hash_params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
@@ -74,8 +79,8 @@ from mosaic.core.params import (
 from mosaic.core.pipeline.stream_copy import (
     coded_frame_count,
     first_packet_dts,
+    header_codec,
     restamp_expression,
-    stream_codec,
     stream_timescale,
     write_concat_listing,
 )
@@ -118,6 +123,14 @@ _HEARTBEAT_EVERY: Final = 25
 
 _COPY_TIMEOUT_SECONDS: Final = 21600.0
 """Ceiling for a chunk copy. Generous: it is I/O over tens of gigabytes."""
+
+_LARGEST_COPY_GAP_FRAME_PERIODS: Final = 1.5
+"""The widest step between neighboring frames of a copy, in frame periods.
+
+A copy places frame *i* at *i* periods, so its neighbors are one period apart. A
+chunk whose container duration is one frame too long moves every later frame by
+one period, and the step at that chunk boundary measures two.
+"""
 
 
 _AV1_CRF_DESCRIPTION = (
@@ -168,16 +181,42 @@ def export_recipe_hash(params: StoreExportParams) -> str:
     return hash_params(fingerprint)
 
 
-def _store_frame_count(store: Path) -> int:
-    """How many frames *store*'s own index records.
+@dataclass(frozen=True, slots=True)
+class StoreTiming:
+    """Record the frames of a store and their rate, as the store's indexes list them.
 
-    The store's count, not the chunks': it is what every consumer addresses the
-    export by, and what a copy has to reproduce exactly.
+    Attributes:
+        frame_count: The frames the store's chunk indexes list. Every consumer
+            addresses the export by them, and a copy reproduces each of them.
+        fps: The rate of the store's frame times, ``(frames - 1) / span``, which
+            mosaic reads the store at. The chunk files can declare another.
+    """
+
+    frame_count: int
+    fps: float
+
+
+def _store_timing(store: Path) -> StoreTiming:
+    """Return *store*'s frame count and rate, read from its metadata and chunk indexes.
+
+    It does not open a chunk.
+
+    Raises:
+        MediaProbeError: If the store's metadata or a chunk index does not read.
+        TranscodeError: If the frame times do not give a positive rate.
     """
     from mosaic.core.media.imgstore_native import NativeStore
 
     with NativeStore(store) as native:
-        return int(native.frame_count)
+        frame_count = int(native.frame_count)
+        fps = fps_from_duration(frame_count, float(native.duration))
+    if fps <= 0:
+        message = (
+            f"{store}: the frame times of its {frame_count} frames do not give "
+            f"a frame rate. An export is stamped at the store's rate."
+        )
+        raise TranscodeError(message)
+    return StoreTiming(frame_count=frame_count, fps=fps)
 
 
 def export_run_id(params: StoreExportParams) -> str:
@@ -345,7 +384,7 @@ class StoreExportOp(Op[StoreExportParams]):
     kind = "export-store"
     domain = "media"
     category = "transcode"
-    version = "0.2"
+    version = "0.3"
     # Encoding thousands of full-resolution frames is long and CPU-bound, and
     # nothing here touches a GPU: the writer runs a CPU AV1 encode.
     resource_class = "heavy"
@@ -458,14 +497,15 @@ class StoreExportOp(Op[StoreExportParams]):
                     "export-store",
                     f"{label}: {store.name}, copying {len(chunks)} chunks",
                 )
-                encoder = copy_export(
-                    store, dest, chunks, _store_frame_count(store), ctx, index
+                facts = copy_export(
+                    store, dest, chunks, _store_timing(store), ctx, index
                 )
+                encoder = ""
             else:
                 ctx.progress.on_phase("export-store", f"{label}: {store.name}")
                 encoder = write_export(store, dest, row, params.av1_crf, ctx, index)
+                facts = probe_media(dest)
 
-            facts = probe_media(dest)
             verdict = derive(facts, CHROME_149, media_thresholds())
             set_back_link(
                 ds,
@@ -518,7 +558,7 @@ def _copied_chunks(store: Path) -> tuple[list[Path], str]:
     :func:`copyable_chunks`'s.
     """
     chunks = [path for path, _ in readable_chunks(store)]
-    codec = stream_codec(chunks[0]) if chunks else ""
+    codec = header_codec(chunks[0]) if chunks else ""
     if codec not in SOFTWARE_DECODABLE_CODECS:
         return [], ""
     return chunks, codec
@@ -548,9 +588,10 @@ def export_codec(store: Path) -> str:
     their codec. Otherwise :func:`write_export` encodes the store in AV1. Reads the
     store's metadata and chunk indexes, and the first chunk's header.
 
+    A first chunk whose header does not read is encoded.
+
     Raises:
         MediaProbeError: If the store's metadata or a chunk index cannot be read.
-        TranscodeError: If ``ffprobe`` cannot read the first chunk's header.
     """
     return _copied_chunks(store)[1] or _ENCODED_EXPORT_CODEC
 
@@ -559,20 +600,30 @@ def copy_export(
     store: Path,
     dest: Path,
     chunks: list[Path],
-    expected: int,
+    timing: StoreTiming,
     ctx: "JobContext",
     position: int,
-) -> str:
-    """Concatenate *chunks* into *dest* without decoding, and report no encoder.
-
-    Returns ``""``: nothing encoded, which is what the derivative row's
-    ``encoder`` cell already means for a copy remux.
+) -> MediaFacts:
+    """Concatenate *chunks* into *dest* without decoding, and return its facts.
 
     The timeline is imposed rather than inherited, the same way
-    ``export-joined`` imposes one. A store's chunks agree on tick rate far more
-    often than an entry's clips do, so the restamp is usually a formality here
-    -- but it costs nothing, and it makes the guarantee the same one in both
-    places: exported frame *i* sits at *i* periods, for a tool that seeks.
+    ``export-joined`` imposes one: exported frame *i* is at *i* periods, for a
+    tool that seeks. A period lasts one frame at *timing*'s rate. *timing*
+    measures the rate from the store's frame times. Chunk files declare a rate
+    too, and Motif declares 25 fps on the chunks of a store recorded at another
+    rate. The copy is stamped on the time base of
+    :func:`~mosaic.core.pipeline.stream_copy.copy_time_base`, which states the
+    store's rate whatever ticks the chunks count.
+
+    The copy is checked before it is renamed to *dest*. It contains *timing*'s
+    frames, each at a distinct presentation timestamp, and no two neighbors are
+    more than :data:`_LARGEST_COPY_GAP_FRAME_PERIODS` apart. Its measured rate is
+    the store's under :func:`~mosaic.core.media.store_rate.store_rate_mismatch`.
+
+    Raises:
+        TranscodeError: If the copy fails, contains another number of frames,
+            presents two frames at one timestamp, skips a frame period or
+            measures at another rate, or the first chunk does not declare a rate.
     """
     partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
     listing = dest.with_name(f"{dest.stem}.concat.txt")
@@ -581,8 +632,9 @@ def copy_export(
         ctx.check_cancel()
         restamp = restamp_expression(
             timescale=stream_timescale(chunks[0]),
-            fps=_chunk_frame_rate(chunks[0], store),
+            fps=_declared_frame_rate(chunks[0], store),
             origin=first_packet_dts(chunks[0]),
+            out_fps=timing.fps,
         )
         _ = run_to_completion(
             [
@@ -610,12 +662,36 @@ def copy_export(
             error_type=TranscodeError,
         )
         written = coded_frame_count(partial)
-        if written != expected:
+        if written != timing.frame_count:
             message = (
                 f"{store}: copied {written} frames from {len(chunks)} chunks "
-                f"but the store's index records {expected}; the export would "
-                f"not line up with the store, which is the one thing it exists "
-                f"to guarantee."
+                f"but the store's index records {timing.frame_count}. A tool "
+                f"addresses the export by store frame index."
+            )
+            raise TranscodeError(message)
+        facts = probe_media(partial)
+        if facts.frame_count != timing.frame_count:
+            message = (
+                f"{store}: the copy of its {len(chunks)} chunks presents "
+                f"{timing.frame_count} frames at {facts.frame_count} distinct "
+                f"timestamps. A tool that seeks by timestamp reads one frame for "
+                f"each pair that shares a timestamp."
+            )
+            raise TranscodeError(message)
+        gap = facts.max_timestamp_gap_frame_periods
+        if gap > _LARGEST_COPY_GAP_FRAME_PERIODS:
+            message = (
+                f"{store}: the copy of its {len(chunks)} chunks presents two "
+                f"neighboring frames {gap:.3g} frame periods apart. Every later "
+                f"frame is presented at least one period after its place."
+            )
+            raise TranscodeError(message)
+        if store_rate_mismatch([timing.fps, facts.fps]) is not None:
+            message = (
+                f"{store}: the copy of its {len(chunks)} chunks measures "
+                f"{facts.fps:.6g} fps, and the store's frame times give "
+                f"{timing.fps:.6g} fps. A tool times each frame of an export by "
+                f"the export's rate."
             )
             raise TranscodeError(message)
         partial.replace(dest)
@@ -623,16 +699,20 @@ def copy_export(
         partial.unlink(missing_ok=True)
         listing.unlink(missing_ok=True)
     ctx.heartbeat(done=(position + 1) * _TICKS)
-    return ""
+    return facts
 
 
-def _chunk_frame_rate(chunk: Path, store: Path) -> float:
-    """The rate *chunk* was recorded at, for the grid the copy is stamped onto."""
-    rate = probe_media(chunk).fps
+def _declared_frame_rate(chunk: Path, store: Path) -> float:
+    """Return the rate that *chunk*'s header declares and its timestamps count."""
+    try:
+        rate = read_header(chunk).declared_fps
+    except MediaProbeError as exc:
+        message = f"{store}: the header of chunk {chunk.name} does not read: {exc}"
+        raise TranscodeError(message) from exc
     if rate <= 0:
         message = (
-            f"{store}: chunk {chunk.name} reports no frame rate, so the export "
-            f"could not be given a uniform timeline."
+            f"{store}: chunk {chunk.name} does not declare a frame rate. The "
+            f"copy counts the chunk's timestamps in frames of that rate."
         )
         raise TranscodeError(message)
     return rate

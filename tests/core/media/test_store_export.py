@@ -10,13 +10,15 @@ mosaic's own readers open.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from mosaic_media import probe_media
+from mosaic_media import MediaProbeError, probe_media
+from mosaic_media.probe.ffprobe import Header, read_header
 from mosaic_media.transcode import TranscodeError
 
 from mosaic.core.dataset import Dataset
@@ -25,7 +27,14 @@ from mosaic.core.media.imgstore_io import is_imgstore
 from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline.media_index import write_media_index_rows
 from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op
-from mosaic.core.pipeline.stream_copy import coded_frame_count
+from mosaic.core.media.store_rate import STORE_RATE_TOLERANCE, store_rate_mismatch
+from mosaic.core.pipeline import store_export
+from mosaic.core.pipeline.stream_copy import (
+    coded_frame_count,
+    copy_time_base,
+    restamp_expression,
+    stream_timescale,
+)
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracking_roots import ToolCodecError
 from mosaic.core.pipeline.store_export import (
@@ -45,7 +54,7 @@ from mosaic.tracking.common.tool_input import (
     resolve_tool_input,
 )
 
-from tests.helpers import MakeStore, store_dataset, video_store_maker
+from tests.helpers import MakeStore, read_frame_code, store_dataset, video_store_maker
 
 # Only the fixtures that write real stores need the imgstore package. None of the
 # imports above loads it, so the skip can follow them.
@@ -764,6 +773,246 @@ def test_a_copied_export_holds_every_frame_on_a_uniform_timeline(
     measured = probe_media(_exports(ds)[0])
     assert coded_frame_count(_exports(ds)[0]) == frames
     assert measured.max_timestamp_gap_frame_periods <= 1.5
+
+
+def test_a_copy_is_stamped_at_the_store_rate_rather_than_the_chunk_rate(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """Motif declares 25 fps on the chunks of a store recorded at another rate.
+
+    The store's frame times record 20 fps. A tool that reads the copy at 25 fps
+    times every frame 20 percent early, and a table converted with that rate is
+    stretched by as much.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=20.0, container_fps=25.0),
+    )
+    _export(ds, group, sequence)
+
+    (export,) = _exports(ds)
+    measured = probe_media(export)
+    assert measured.fps == pytest.approx(20.0, rel=STORE_RATE_TOLERANCE)
+    assert measured.duration == pytest.approx(0.6, rel=1e-3)
+    assert coded_frame_count(export) == 12
+    assert [read_frame_code(frame) for frame in _read_all(export)] == list(range(12))
+
+
+def test_a_rate_the_chunk_ticks_do_not_divide_is_kept(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """A 29.97 fps store on chunks that count 1/12800 s exports at 29.97 fps.
+
+    A frame lasts 427.09 of those ticks, and a copy stamped in them rounds every
+    frame to 427.
+    """
+    rate = 30000 / 1001
+    ds, group, sequence = _store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=rate, container_fps=25.0),
+    )
+    store = ds.resolve_media(group, sequence).paths[0]
+    assert stream_timescale(store / "000000.mp4") == 12800, "the fixture premise"
+
+    _export(ds, group, sequence)
+
+    (export,) = _exports(ds)
+    assert store_rate_mismatch([rate, probe_media(export).fps]) is None
+    assert coded_frame_count(export) == 12
+
+
+def test_a_copy_off_the_store_rate_is_refused(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A copy stamped at its chunks' rate is refused, and the export is not written.
+
+    Each frame keeps its presentation frame. The copy presents every frame at a
+    distinct timestamp, 25 to the second.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=20.0, container_fps=25.0),
+    )
+
+    def chunk_rate(
+        *, timescale: int, fps: float, origin: int, out_fps: float | None = None
+    ) -> str:
+        del out_fps
+        return restamp_expression(
+            timescale=timescale, fps=fps, origin=origin, out_fps=fps
+        )
+
+    monkeypatch.setattr(store_export, "restamp_expression", chunk_rate)
+
+    with pytest.raises(TranscodeError, match="measures 25 fps"):
+        _export(ds, group, sequence)
+    assert _exports(ds) == []
+
+
+def test_a_copy_with_two_frames_on_one_timestamp_is_refused(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A copy that presents frames 0 and 1 at one timestamp is not written.
+
+    It contains every coded frame and measures the store's rate. A tool that seeks
+    by timestamp reads one frame for the two.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=20.0, container_fps=25.0),
+    )
+
+    def first_two_frames_collide(
+        *, timescale: int, fps: float, origin: int, out_fps: float | None = None
+    ) -> str:
+        expression = restamp_expression(
+            timescale=timescale, fps=fps, origin=origin, out_fps=out_fps
+        )
+        frame = f"round(PTS*{fps!r}/{timescale})"
+        # Frame 0 is presented as frame 1. A comma would end the filter's option.
+        return expression.replace(f":pts={frame}", f":pts=(abs({frame}-0.5)+0.5)")
+
+    monkeypatch.setattr(store_export, "restamp_expression", first_two_frames_collide)
+
+    with pytest.raises(TranscodeError, match="12 frames at 11 distinct timestamps"):
+        _export(ds, group, sequence)
+    assert _exports(ds) == []
+
+
+def test_a_copy_that_skips_a_frame_period_is_refused(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A copy that presents frames 6 to 11 one period late is not written.
+
+    Every frame is at a distinct timestamp. Over a long store, one skipped period
+    moves the measured rate by less than the store tolerance, and every frame after
+    the gap is presented one period late.
+    """
+    ds, group, sequence = _store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=20.0, container_fps=25.0),
+    )
+
+    def frames_after_five_shift(
+        *, timescale: int, fps: float, origin: int, out_fps: float | None = None
+    ) -> str:
+        expression = restamp_expression(
+            timescale=timescale, fps=fps, origin=origin, out_fps=out_fps
+        )
+        frame = f"round(PTS*{fps!r}/{timescale})"
+        # (x + abs(x)) / (2x) is 1 above frame 5.5 and 0 below it. A comma would
+        # end the filter's option.
+        step = f"(({frame}-5.5)+abs({frame}-5.5))/(2*({frame}-5.5))"
+        return expression.replace(f":pts={frame}", f":pts=({frame}+{step})")
+
+    monkeypatch.setattr(store_export, "restamp_expression", frames_after_five_shift)
+
+    with pytest.raises(TranscodeError, match="frame periods apart"):
+        _export(ds, group, sequence)
+    assert _exports(ds) == []
+
+
+def test_a_rate_below_one_frame_per_second_is_kept(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """A time-lapse store at 0.5003 fps exports at 0.5003 fps.
+
+    A time base of 500 ticks per second, 1000 to a frame, states the rate as
+    0.5 fps, 6e-4 of it away.
+    """
+    rate = 0.5003
+    ds, group, sequence = _store_dataset(
+        tmp_path,
+        make_media_dataset,
+        video_store_maker([5, 5, 2], fps=rate, container_fps=25.0),
+    )
+    _export(ds, group, sequence)
+
+    (export,) = _exports(ds)
+    assert store_rate_mismatch([rate, probe_media(export).fps]) is None
+    assert coded_frame_count(export) == 12
+
+
+@pytest.mark.parametrize("rate", [0.001, 0.5003, 1.0, 7.3, 20.0, 30000 / 1001, 240.0])
+def test_a_copy_time_base_states_its_rate_within_a_twentieth_of_the_tolerance(
+    rate: float,
+) -> None:
+    """The copy's time base states every rate to 2.5e-5 of itself or closer."""
+    time_base = copy_time_base(rate)
+    stated = time_base.ticks_per_second / time_base.ticks_per_frame
+    assert abs(stated - rate) / rate <= STORE_RATE_TOLERANCE / 20
+
+
+def test_a_store_whose_frame_times_give_no_rate_is_not_exported(
+    tmp_path: Path, make_media_dataset: Callable[[Path], Dataset]
+) -> None:
+    """A store whose frames are all stamped at one time has no rate to stamp at."""
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, video_store_maker([5, 5, 2])
+    )
+    store = ds.resolve_media(group, sequence).paths[0]
+    for index in sorted(store.glob("*.npz")):
+        with np.load(index) as arrays:
+            numbers = arrays["frame_number"]
+        np.savez(index, frame_number=numbers, frame_time=np.zeros(len(numbers)))
+
+    with pytest.raises(TranscodeError, match="do not give a frame rate"):
+        _export(ds, group, sequence)
+    assert _exports(ds) == []
+
+
+def test_a_chunk_that_declares_no_rate_is_not_copied(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The copy counts a chunk's timestamps in frames of the rate that it declares."""
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, video_store_maker([5, 5, 2])
+    )
+
+    def no_declared_rate(path: Path) -> Header:
+        return replace(read_header(path), declared_fps=0.0)
+
+    monkeypatch.setattr(store_export, "read_header", no_declared_rate)
+
+    with pytest.raises(TranscodeError, match="does not declare a frame rate"):
+        _export(ds, group, sequence)
+    assert _exports(ds) == []
+
+
+def test_a_chunk_header_that_stops_reading_is_named(
+    tmp_path: Path,
+    make_media_dataset: Callable[[Path], Dataset],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first chunk whose header reads for the codec and then fails is named."""
+    ds, group, sequence = _store_dataset(
+        tmp_path, make_media_dataset, video_store_maker([5, 5, 2])
+    )
+
+    def unreadable(path: Path) -> Header:
+        message = f"reading the header of {path}: ffprobe exited 1"
+        raise MediaProbeError(message)
+
+    monkeypatch.setattr(store_export, "read_header", unreadable)
+
+    with pytest.raises(
+        TranscodeError, match="header of chunk 000000.mp4 does not read"
+    ):
+        _export(ds, group, sequence)
+    assert _exports(ds) == []
 
 
 def test_a_raw_store_is_still_encoded(
