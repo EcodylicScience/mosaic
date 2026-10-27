@@ -127,9 +127,10 @@ saved.written    # False if nothing had changed since revision 2
 ```
 
 `annotation_set` is a `PoseAnnotationSet` from
-`mosaic.core.annotations.pose_annotations`: every frame with whether it is finished,
-every pose with its aliases and left-right keypoint pairs, and every object. Save the
-whole set, not just what one model should see; choosing that is the next step's job.
+`mosaic.core.annotations.pose_annotations`: every frame with whether it is finished and
+the group and sequence it came from, every pose with its aliases and left-right keypoint
+pairs, and every object. Save the whole set, not just what one model should see;
+choosing that is the next step's job.
 
 Each revision holds that state as `annotations.mosaic.json`, and beside it a COCO
 Keypoints export, `annotations.coco.json`, that CVAT and other COCO tools open. The
@@ -169,10 +170,12 @@ This merges the sets into one training dataset and **copies the images in**, so 
 library can be moved, and the datasets it drew from can be archived, without breaking
 the model. `target` is `yolo-pose`, `polo`, `sleap` or `litpose`. Frames from one
 recording are kept together in one split, so a validation score measures recordings the
-model has not seen. Every sequence of a
-[divided recording](../../dataset.md#divide-a-recording) is part of that recording, and
-the dataset that holds the frames declares which recordings are divided: this dataset,
-or a library it links. `"split_by": "sequence"` keeps only each sequence together, so
+model has not seen. Every sequence of a [divided
+recording](../../dataset.md#divide-a-recording) is part of that recording. A revision
+records the divided recording of each frame, as the dataset it was saved in declared the
+frame's group then, so the library needs no link to that dataset. Declare a continuous
+group before the save that should split by it. A revision saved earlier splits each of
+its sequences on its own. `"split_by": "sequence"` keeps only each sequence together, so
 the hours of one recording can fall on both sides of the split. `"split_by": "frame"`
 splits image by image, and its scores are optimistic. The split is a hash of each
 recording and the `"seed"`, so a recording keeps its split when others are added, and a

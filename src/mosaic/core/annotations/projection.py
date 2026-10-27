@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from mosaic.core.annotations.pose_annotations import (
+    FrameRecording,
     PoseAnnotationSet,
+    PoseFrame,
     pose_annotations_payload,
 )
 from mosaic.core.annotations.writers.coco import coco_keypoints_payload
@@ -64,18 +66,36 @@ def anchored_keypoint_set(
     dataset keeps its absolute path, the rule every index follows for a file the
     dataset does not own. Anchoring comes first because a relative path and an
     absolute one can name the same image.
+
+    Each frame records its recording as *ds* declares the frame's group now
+    (:func:`_saved_recording`), in place of the recording that it was given.
     """
     frames = sorted(
         (
             replace(
                 frame,
                 image_path=Path(ds.relative_to_root(annotations.resolve(frame))),
+                recording=_saved_recording(ds, frame),
             )
             for frame in annotations.frames
         ),
         key=lambda frame: frame.image_path.as_posix(),
     )
     return replace(annotations, frames=tuple(frames), image_root=ds.base_dir)
+
+
+def _saved_recording(ds: Dataset, frame: PoseFrame) -> FrameRecording | None:
+    """Return the divided recording that *ds* declares *frame*'s group to be.
+
+    A frame of any other group records none, because its sequence is not part of
+    a divided recording. A preparation then reads the recording from the
+    revision, so a declaration made after a save applies from the next save.
+    """
+    if not frame.group or ds.recording_kind(frame.group) != "divided":
+        return None
+    return FrameRecording(
+        kind="divided", key=ds.recording_of(frame.group, frame.sequence)
+    )
 
 
 def write_keypoint_set_revision(
@@ -89,8 +109,10 @@ def write_keypoint_set_revision(
     """Save *annotations* as the next revision of *set_key*, unless nothing changed.
 
     Pass the set's whole state: every frame, finished or not, with its
-    ``usable`` sign-off, and every object. What a training run uses of it is
-    chosen when the run is prepared, so one saved state serves every run.
+    ``usable`` sign-off, its group and its sequence, and every object. What a
+    training run uses of it is chosen when the run is prepared, so one saved state
+    serves every run. Each frame of a group that *ds* declares continuous records
+    that divided recording.
 
     Safe to call whenever a pinned copy is needed -- when a training run is
     submitted, or when the annotations are exported. An unchanged state returns

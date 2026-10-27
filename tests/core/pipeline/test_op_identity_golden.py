@@ -761,22 +761,6 @@ def _prepare_run_id_with_a_holdout() -> str:
     )
 
 
-def _prepare_run_id_with_divided_recordings() -> str:
-    # Two divided recordings hold sequences of the sets, given out of order: the
-    # minter sorts the pairs.
-    params = _op_params(
-        "prepare-training-data", sets=[{"set_key": "17-mice"}, {"set_key": "21-rats"}]
-    )
-    assert isinstance(params, PrepareTrainingDataParams)
-    return prepare_training_data_run_id(
-        "prepare-training-data",
-        OPS["prepare-training-data"].version,
-        params,
-        _prepared_sets(),
-        divided_recordings=(("uuid-b", "night"), ("uuid-a", "night")),
-    )
-
-
 def _convert_points_run_id() -> str:
     # The digest case above omits the version. This one mints through the op's
     # minter with the registered version. A version bump changes its golden line.
@@ -1161,7 +1145,6 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
         _prepare_run_id_with_revisions_named
     ),
     "prepare-training-data/holdout": _prepare_run_id_with_a_holdout,
-    "prepare-training-data/divided-recordings": _prepare_run_id_with_divided_recordings,
     "preprocess/one-step": _preprocess_one_step,
     "preprocess/three-steps": _preprocess_three_steps,
     "preprocess/upstream": _preprocess_upstream,

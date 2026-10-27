@@ -14,6 +14,7 @@ from typing import Final
 from mosaic.core.annotations.bbox import BboxPolicy
 from mosaic.core.annotations.model import Bbox, Keypoint, KeypointSchema, ObjectOrigin
 from mosaic.core.annotations.pose_annotations import (
+    FrameRecording,
     PoseAnnotationSet,
     PoseDefinition,
     PoseFrame,
@@ -72,6 +73,7 @@ def pose_frame(
     frame_index: int = 0,
     usable: bool = True,
     group: str = "",
+    recording: FrameRecording | None = None,
 ) -> PoseFrame:
     """A 64x48 frame holding *objects*, finished unless *usable* says otherwise."""
     return PoseFrame(
@@ -83,6 +85,7 @@ def pose_frame(
         sequence=sequence,
         frame_index=frame_index,
         group=group,
+        recording=recording,
     )
 
 

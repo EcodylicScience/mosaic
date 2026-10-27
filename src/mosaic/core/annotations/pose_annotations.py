@@ -55,6 +55,7 @@ from mosaic.core.annotations.model import (
 )
 from mosaic.core.annotations.versioned_file import read_versioned_file
 from mosaic.core.json_value import JsonValue
+from mosaic.core.recording import RecordingKey, RecordingKind
 from mosaic.core.strict_model import StrictModel
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "FORMAT_VERSION",
     "UNGROUPED_FORMAT_VERSION",
     "Alias",
+    "FrameRecording",
     "PoseAnnotationSet",
     "PoseDefinition",
     "PoseFrame",
@@ -78,10 +80,11 @@ FORMAT_NAME: Final = "mosaic-pose-annotations"
 """The ``format`` every file of this kind declares."""
 
 FORMAT_VERSION: Final = 2
-"""The newest version this module reads, written for a set that records a frame's group."""
+"""The newest version this module reads, written for a set that records a frame's
+group or recording."""
 
 UNGROUPED_FORMAT_VERSION: Final = 1
-"""The version written for a set whose frames record no group.
+"""The version written for a set whose frames record no group and no recording.
 
 A mosaic that predates a frame's ``group`` reads such a file, and its bytes are the
 ones written before the field existed.
@@ -151,6 +154,36 @@ class PoseObject:
 
 
 @dataclass(frozen=True, slots=True)
+class FrameRecording:
+    """The recording that a frame's sequence belongs to, recorded when its set is saved.
+
+    A preparation draws a frame's split unit from it, so the split depends on the
+    revision alone.
+
+    Attributes:
+        kind: Whether the recording is divided into sequences.
+        key: The recording's key: ``(group, "")`` for a divided recording, and the
+            entry's own pair for an undivided one.
+    """
+
+    kind: RecordingKind
+    key: RecordingKey
+
+    def __post_init__(self) -> None:
+        if self.kind == "divided":
+            keyed = bool(self.key.group) and not self.key.sequence
+        else:
+            keyed = bool(self.key.sequence)
+        if not keyed:
+            msg = (
+                f"a {self.kind} recording cannot have the key "
+                f"{(self.key.group, self.key.sequence)!r}. A divided recording is "
+                "keyed (group, ''), and an undivided one by its entry."
+            )
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, slots=True)
 class PoseFrame:
     """One image, the objects annotated in it, and whether it is finished.
 
@@ -167,6 +200,11 @@ class PoseFrame:
         group: The group of that sequence, or ``""``. A sequence of a divided
             recording is named by its group and its token, and the tokens of two
             recordings can be equal.
+        recording: The divided recording that the sequence belonged to when the
+            set was saved, or ``None`` when the sequence was not part of one then.
+            A save records no undivided recording, and a preparation reads one as
+            ``None``. It draws the sequence as itself unless another saved frame of
+            it records a divided recording.
     """
 
     image_path: Path
@@ -177,6 +215,7 @@ class PoseFrame:
     sequence: str = ""
     frame_index: int = -1
     group: str = ""
+    recording: FrameRecording | None = None
 
     def as_annotation_frame(
         self, objects: tuple[AnnotationObject, ...] = ()
@@ -294,7 +333,7 @@ def pose_annotations_document(annotations: PoseAnnotationSet) -> dict[str, JsonV
         if earlier.image_path == later.image_path:
             msg = f"two frames name the image {later.image_path.as_posix()}"
             raise ValueError(msg)
-    grouped = any(frame.group for frame in frames)
+    grouped = any(frame.group or frame.recording for frame in frames)
     return {
         "format": FORMAT_NAME,
         "version": FORMAT_VERSION if grouped else UNGROUPED_FORMAT_VERSION,
@@ -344,6 +383,12 @@ def _frame_document(frame: PoseFrame) -> dict[str, JsonValue]:
     }
     if frame.group:
         document["group"] = frame.group
+    if frame.recording is not None:
+        document["recording"] = {
+            "kind": frame.recording.kind,
+            "group": frame.recording.key.group,
+            "sequence": frame.recording.key.sequence,
+        }
     return document
 
 
@@ -443,6 +488,18 @@ class ObjectRecord(StrictModel):
     )
 
 
+class RecordingRecord(StrictModel):
+    """A frame's recording as the file holds it."""
+
+    kind: RecordingKind = Field(
+        description="divided for a sequence of a continuous group, else undivided."
+    )
+    group: str = Field(description="The recording's group.")
+    sequence: str = Field(
+        description="Empty for a divided recording, else the entry's sequence."
+    )
+
+
 class FrameRecord(StrictModel):
     """A frame as the file holds it."""
 
@@ -472,6 +529,15 @@ class FrameRecord(StrictModel):
     frame_index: int | None = Field(
         default=None, description="The frame's position in that sequence."
     )
+    recording: RecordingRecord | None = Field(
+        default=None,
+        description=(
+            "The divided recording that the sequence belonged to when the set was "
+            "saved, from version 2. Absent when the sequence was not part of a "
+            "divided recording then. An undivided recording is accepted, and a "
+            "preparation reads it as absent."
+        ),
+    )
     objects: list[ObjectRecord] = Field(
         default_factory=list,
         description="The objects, in the order the annotator's tool holds them.",
@@ -487,7 +553,7 @@ class PoseAnnotationsFile(StrictModel):
     version: int = Field(
         description=(
             "The format version the file was written in: 2 when a frame records "
-            "its group, else 1."
+            "its group or its recording, else 1."
         )
     )
     bbox_policy: BboxPolicy = Field(
@@ -519,8 +585,8 @@ def read_pose_annotations(
 
     Raises:
         ValueError: The file is not this format, is a newer version of it than
-            this mosaic reads, is a version 1 file that records a frame's group,
-            or holds a state the model refuses.
+            this mosaic reads, is a version 1 file that records a frame's group
+            or recording, or holds a state the model refuses.
     """
     parsed = read_versioned_file(
         Path(path),
@@ -529,13 +595,16 @@ def read_pose_annotations(
         newest_version=FORMAT_VERSION,
     )
     if parsed.version == UNGROUPED_FORMAT_VERSION:
-        grouped = [frame.image for frame in parsed.frames if frame.group is not None]
-        if grouped:
-            msg = (
-                f"{path}: this version 1 file records the group of {grouped[0]}, "
-                f"and a frame's group exists from version {FORMAT_VERSION}."
-            )
-            raise ValueError(msg)
+        for frame in parsed.frames:
+            recorded = {"group": frame.group, "recording": frame.recording}
+            for field_name, value in recorded.items():
+                if value is not None:
+                    msg = (
+                        f"{path}: this version 1 file records the {field_name} of "
+                        f"{frame.image}, and a frame's {field_name} exists from "
+                        f"version {FORMAT_VERSION}."
+                    )
+                    raise ValueError(msg)
     return PoseAnnotationSet(
         poses=tuple(
             PoseDefinition(
@@ -560,11 +629,20 @@ def read_pose_annotations(
                 sequence=frame.sequence or "",
                 frame_index=-1 if frame.frame_index is None else frame.frame_index,
                 group=frame.group or "",
+                recording=_read_recording(frame.recording),
             )
             for frame in parsed.frames
         ),
         bbox_policy=parsed.bbox_policy,
         image_root=None if image_root is None else Path(image_root),
+    )
+
+
+def _read_recording(entry: RecordingRecord | None) -> FrameRecording | None:
+    if entry is None:
+        return None
+    return FrameRecording(
+        kind=entry.kind, key=RecordingKey(group=entry.group, sequence=entry.sequence)
     )
 
 

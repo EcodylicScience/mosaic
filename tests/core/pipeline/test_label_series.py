@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.annotations.pose_annotations import (
+    FrameRecording,
     PoseAnnotationSet,
     PoseFrame,
     pose_annotations_payload,
@@ -50,7 +51,9 @@ from mosaic.core.pipeline.label_series_index import (
     write_series_revision,
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
+from mosaic.core.recording import RecordingKey
 from tests.helpers import (
+    add_track_sequences,
     make_dataset,
     pose_frame,
     pose_object,
@@ -168,6 +171,59 @@ def test_a_revision_names_its_images_relative_to_the_dataset(tmp_path: Path) -> 
     assert reread.frames[0].sequence == "mouse003"
     assert reread.frames[0].frame_index == 0
     assert reread.resolve(reread.frames[0]).parent.is_relative_to(ds.base_dir)
+
+
+def test_a_save_records_the_divided_recording_of_each_frame(tmp_path: Path) -> None:
+    """The dataset's declaration replaces a recording that the caller set."""
+    ds = make_dataset(tmp_path / "52", name="project")
+    add_track_sequences(ds, ("night", "h01"), ("day", "h01"))
+    ds.set_continuous_groups(("night",))
+    stale = FrameRecording(kind="divided", key=RecordingKey("day", ""))
+    frames = [
+        pose_frame("frames/night/h01/frame_000000.png", group="night", sequence="h01"),
+        pose_frame(
+            "frames/day/h01/frame_000000.png",
+            group="day",
+            sequence="h01",
+            recording=stale,
+        ),
+        pose_frame("frames/m01/frame_000000.png", sequence="m01"),
+    ]
+
+    saved = write_keypoint_set_revision(
+        ds, set_key="k", annotations=pose_set(frames, image_root=ds.base_dir), origin={}
+    )
+
+    recorded = {
+        frame.image_path.parts[1]: frame.recording
+        for frame in read_pose_annotations(saved.path).frames
+    }
+    assert recorded == {
+        "night": FrameRecording(kind="divided", key=RecordingKey("night", "")),
+        "day": None,
+        "m01": None,
+    }
+
+
+def test_a_group_declared_after_a_save_applies_at_the_next_save(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "52", name="project")
+    add_track_sequences(ds, ("night", "h01"))
+    frame = pose_frame(
+        "frames/night/h01/frame_000000.png", group="night", sequence="h01"
+    )
+    state = pose_set([frame], image_root=ds.base_dir)
+
+    first = write_keypoint_set_revision(ds, set_key="k", annotations=state, origin={})
+    ds.set_continuous_groups(("night",))
+    second = write_keypoint_set_revision(ds, set_key="k", annotations=state, origin={})
+
+    assert (first.revision, second.revision, second.written) == (1, 2, True)
+    assert read_pose_annotations(first.path).frames[0].recording is None
+    assert read_pose_annotations(second.path).frames[0].recording == FrameRecording(
+        kind="divided", key=RecordingKey("night", "")
+    )
 
 
 def test_every_revision_carries_a_coco_export_of_its_state(tmp_path: Path) -> None:

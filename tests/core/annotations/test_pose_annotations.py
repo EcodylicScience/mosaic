@@ -15,6 +15,7 @@ import json
 import math
 from dataclasses import replace
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -30,6 +31,7 @@ from mosaic.core.annotations.pose_annotations import (
     FORMAT_VERSION,
     UNGROUPED_FORMAT_VERSION,
     Alias,
+    FrameRecording,
     PoseAnnotationSet,
     PoseDefinition,
     PoseObject,
@@ -42,6 +44,7 @@ from mosaic.core.annotations.writers.coco import (
     coco_keypoints_payload,
 )
 from mosaic.core.json_value import JsonValue
+from mosaic.core.recording import RecordingKey, RecordingKind
 from tests.helpers import (
     MOUSE,
     golden_path,
@@ -258,6 +261,57 @@ def test_a_frame_group_in_a_version_1_file_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="version 1 file records the group") as refused:
         _ = read_pose_annotations(path)
     assert "a/frame_000001.png" in str(refused.value)
+
+
+NIGHT: Final = FrameRecording(kind="divided", key=RecordingKey("night", ""))
+"""The divided recording ``night``, as a frame of one of its sequences records it."""
+
+
+def test_a_frame_recording_is_written_at_the_newest_version_and_reads_back(
+    tmp_path: Path,
+) -> None:
+    frames = [
+        pose_frame(
+            "a/frame_000001.png", group="night", sequence="h01", recording=NIGHT
+        ),
+        pose_frame("b/frame_000001.png", group="day", sequence="h01"),
+    ]
+    path = tmp_path / "state.json"
+    _ = path.write_bytes(pose_annotations_payload(pose_set(frames)))
+
+    document = json.loads(path.read_bytes())
+    reread = read_pose_annotations(path)
+
+    assert document["version"] == FORMAT_VERSION
+    assert [frame.get("recording") for frame in document["frames"]] == [
+        {"kind": "divided", "group": "night", "sequence": ""},
+        None,
+    ]
+    assert [frame.recording for frame in reread.frames] == [NIGHT, None]
+    assert pose_annotations_payload(reread) == path.read_bytes()
+
+
+def test_a_frame_recording_in_a_version_1_file_is_refused(tmp_path: Path) -> None:
+    frames = [pose_frame("a/frame_000001.png", sequence="h01", recording=NIGHT)]
+    document = json.loads(pose_annotations_payload(pose_set(frames)))
+    document["version"] = UNGROUPED_FORMAT_VERSION
+    path = tmp_path / "state.json"
+    _ = path.write_text(json.dumps(document))
+
+    with pytest.raises(ValueError, match="version 1 file records the recording"):
+        _ = read_pose_annotations(path)
+
+
+@pytest.mark.parametrize(
+    ("kind", "key"),
+    [("divided", RecordingKey("night", "h01")), ("undivided", RecordingKey("a", ""))],
+    ids=["divided-with-a-sequence", "undivided-without-one"],
+)
+def test_a_recording_key_that_contradicts_its_kind_is_refused(
+    kind: RecordingKind, key: RecordingKey
+) -> None:
+    with pytest.raises(ValueError, match="recording"):
+        _ = FrameRecording(kind=kind, key=key)
 
 
 def test_an_unplaced_keypoint_reads_back_unplaced(tmp_path: Path) -> None:

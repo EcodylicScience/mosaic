@@ -10,6 +10,7 @@ from mosaic.core.annotations.split import (
     unit_key,
 )
 from mosaic.core.entry import from_safe_name
+from mosaic.core.recording import RecordingKey
 
 
 def _frame(
@@ -78,9 +79,15 @@ def test_group_unit_falls_back_to_the_sequence_key() -> None:
     assert unit_key(_frame(), "group", {"other": "x"}, {}) == "o1:g1:s1"
 
 
-def test_a_recording_unit_key_leaves_the_sequence_part_empty() -> None:
-    assert recording_unit_key(_frame()) == "o1:g1:"
-    assert recording_unit_key(_frame(origin="o:1", group="a:b")) == "o%3A1:a%3Ab:"
+def test_a_divided_recording_unit_key_leaves_the_sequence_part_empty() -> None:
+    assert recording_unit_key("o1", RecordingKey("g1", "")) == "o1:g1:"
+    assert recording_unit_key("o:1", RecordingKey("a:b", "")) == "o%3A1:a%3Ab:"
+
+
+def test_an_undivided_recording_unit_key_is_its_sequence_key() -> None:
+    frame = _frame()
+    key = RecordingKey(frame.group, frame.sequence)
+    assert recording_unit_key(frame.origin_uuid, key) == sequence_key(frame)
 
 
 def test_a_member_of_a_continuous_group_is_drawn_as_its_recording() -> None:

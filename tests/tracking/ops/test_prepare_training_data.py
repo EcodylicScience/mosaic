@@ -25,14 +25,23 @@ from mosaic.core.annotations.pose_annotations import (
     PoseAnnotationSet,
     PoseDefinition,
     PoseFrame,
+    FrameRecording,
     PoseObject,
+    pose_annotations_payload,
+    read_pose_annotations,
 )
-from mosaic.core.annotations.projection import write_keypoint_set_revision
+from mosaic.core.annotations.projection import (
+    COCO_EXPORT_FILENAME,
+    KEYPOINTS_SERIES,
+    write_keypoint_set_revision,
+)
+from mosaic.core.annotations.writers.coco import coco_keypoints_payload
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import make_entry_key
 from mosaic.core.manifest import LabelsScanSource, LibraryLink
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import index_records
+from mosaic.core.pipeline.label_series_index import write_series_revision
 from mosaic.core.pipeline.inventory import inventory
 from mosaic.core.pipeline.models import (
     SPLIT_RECORD_FILENAME,
@@ -41,8 +50,9 @@ from mosaic.core.pipeline.models import (
 )
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, run_op
+from mosaic.core.recording import RecordingKey
 from mosaic.tracking import register_ops
-from mosaic.tracking.keypoint_sets import ResolvedSet
+from mosaic.tracking.keypoint_sets import ResolvedSet, resolve_keypoint_sets
 from mosaic.tracking.ops import prepare
 from mosaic.tracking.ops._common import (
     fingerprint_dataset,
@@ -1631,43 +1641,6 @@ def test_the_hold_out_enters_the_identity_only_by_its_units() -> None:
     )
 
 
-def test_the_identity_names_each_divided_recording() -> None:
-    """Without one the payload is the one minted before recordings were drawn."""
-    sets = (
-        ResolvedSet(
-            origin_uuid="uuid-a",
-            set_key="train",
-            revision=1,
-            digest="aaaaaaaaaaaaaaaa",
-            payload=Path("train.json"),
-        ),
-    )
-    params = PrepareTrainingDataParams.model_validate({"sets": [{"set_key": "train"}]})
-    dumped = params.identity_dump()
-    _ = dumped.pop("sets")
-    _ = dumped.pop("holdout")
-    version = OPS[KIND].version
-    payload: dict[str, object] = {
-        "params": dumped,
-        "sets": [["uuid-a", "train", "aaaaaaaaaaaaaaaa"]],
-    }
-
-    assert prepare_training_data_run_id(
-        KIND, version, params, sets, divided_recordings=()
-    ) == op_run_id(KIND, version, payload)
-    assert prepare_training_data_run_id(
-        KIND,
-        version,
-        params,
-        sets,
-        divided_recordings=(("uuid-a", "night"), ("uuid-a", "day")),
-    ) == op_run_id(
-        KIND,
-        version,
-        {**payload, "recordings": [["uuid-a", "day"], ["uuid-a", "night"]]},
-    )
-
-
 # ------------------------------------------------------------- divided recordings
 
 DIVIDED_ENTRIES: Final = (
@@ -1689,12 +1662,14 @@ def _divided_library(tmp_path: Path, declared: tuple[str, ...]) -> Dataset:
 
     A frames run extracted the frames of every entry of ``DIVIDED_ENTRIES``, and
     the set ``hourly`` contains each of them. ``night-h02`` contains frame 0 of
-    ``night/h02``, which ``hourly`` contains too.
+    ``night/h02``, which ``hourly`` contains too. Both sets are saved after
+    *declared* is declared, so their frames record its recordings.
     """
     library = make_dataset(
         tmp_path / "libraries" / "8", name="library", uuid=DIVIDED_UUID
     )
     add_track_sequences(library, *DIVIDED_ENTRIES)
+    library.set_continuous_groups(declared)
     frames: list[PoseFrame] = []
     for group, sequence in DIVIDED_ENTRIES:
         images = extract_entry_camera(
@@ -1727,8 +1702,16 @@ def _divided_library(tmp_path: Path, declared: tuple[str, ...]) -> Dataset:
         pose_set([replace(held, objects=(pose_object((11.0, 13.0), (31.0, 21.0)),))],
                  image_root=library.base_dir),
     )  # fmt: skip
-    library.set_continuous_groups(declared)
     return library
+
+
+def _save_again(ds: Dataset, key: str, revision: int) -> int:
+    """Save revision *revision* of *key* again, unchanged, and return the new number.
+
+    The save records each frame's recording as *ds* declares it now.
+    """
+    saved = ds.get_root("labels_raw") / "keypoints" / key / revision_file(revision)
+    return _save(ds, key, read_pose_annotations(saved, ds.base_dir))
 
 
 @pytest.fixture
@@ -1741,6 +1724,33 @@ def _hourly(**overrides: object) -> dict[str, object]:
     return {"sets": [{"set_key": "hourly"}], "split": (0.5, 0.5, 0.0), **overrides}
 
 
+HOURLY_UNITS: Final = {
+    ("dawn", "h01"): f"{DIVIDED_UUID}:dawn:h01",
+    ("day", "h01"): f"{DIVIDED_UUID}:day:",
+    ("day", "h02"): f"{DIVIDED_UUID}:day:",
+    ("lone", "s1"): f"{DIVIDED_UUID}:lone:s1",
+    ("night", "h01"): f"{DIVIDED_UUID}:night:",
+    ("night", "h02"): f"{DIVIDED_UUID}:night:",
+    ("night", "h03"): f"{DIVIDED_UUID}:night:",
+}
+"""The unit of each entry of ``hourly`` saved with ``day`` and ``night`` divided."""
+
+
+def _units(record: pd.DataFrame) -> dict[tuple[str, str], str]:
+    """Each entry of a split record, and the unit that its frames were drawn in."""
+    return {
+        (str(group), str(sequence)): str(unit)
+        for group, sequence, unit in zip(
+            record["group"], record["sequence"], record["unit_key"], strict=True
+        )
+    }
+
+
+def _plan(ds: Dataset, params: dict[str, object]) -> str:
+    validated = PrepareTrainingDataParams.model_validate(params)
+    return OPS[KIND]().plan_identity(ds, validated, ResolvedScope()).run_id
+
+
 def test_the_sequences_of_a_divided_recording_never_straddle_the_split(
     divided: Dataset,
 ) -> None:
@@ -1748,16 +1758,7 @@ def test_the_sequences_of_a_divided_recording_never_straddle_the_split(
         model_run_root(divided, KIND, run_op(divided, KIND, _hourly()))
     )
 
-    units = record.groupby(["group", "sequence"])["unit_key"].first().to_dict()
-    assert units == {
-        ("dawn", "h01"): f"{DIVIDED_UUID}:dawn:h01",
-        ("day", "h01"): f"{DIVIDED_UUID}:day:",
-        ("day", "h02"): f"{DIVIDED_UUID}:day:",
-        ("lone", "s1"): f"{DIVIDED_UUID}:lone:s1",
-        ("night", "h01"): f"{DIVIDED_UUID}:night:",
-        ("night", "h02"): f"{DIVIDED_UUID}:night:",
-        ("night", "h03"): f"{DIVIDED_UUID}:night:",
-    }
+    assert _units(record) == HOURLY_UNITS
     assert record.groupby("unit_key")["split"].nunique().eq(1).all()
     assert set(record["split"]) == {"train", "valid"}
 
@@ -1776,6 +1777,44 @@ def test_undivided_data_splits_as_a_sequence_split_does(extracted: Dataset) -> N
 
     columns = ["placed_name", "unit_key", "split"]
     assert by_recording[columns].equals(by_sequence[columns])
+
+
+def test_a_saved_undivided_recording_draws_its_sequence_on_its_own(
+    divided: Dataset,
+) -> None:
+    """A revision written outside the toolkit records each frame's own recording."""
+    saved = read_pose_annotations(
+        divided.get_root("labels_raw") / "keypoints" / "hourly" / revision_file(1),
+        divided.base_dir,
+    )
+    own = replace(
+        saved,
+        frames=tuple(
+            replace(
+                frame,
+                recording=FrameRecording(
+                    kind="undivided", key=RecordingKey(frame.group, frame.sequence)
+                ),
+            )
+            for frame in saved.frames
+        ),
+    )
+    _ = write_series_revision(
+        divided,
+        series=KEYPOINTS_SERIES,
+        key="own",
+        payload=pose_annotations_payload(own),
+        origin={"dolt_commit": "c1"},
+        n_records=len(own.frames),
+        exports={COCO_EXPORT_FILENAME: coco_keypoints_payload(own)},
+    )
+
+    params = {"sets": [{"set_key": "own"}], "split": (0.5, 0.5, 0.0)}
+    record = _split_record(model_run_root(divided, KIND, run_op(divided, KIND, params)))
+
+    assert _units(record) == {
+        entry: f"{DIVIDED_UUID}:{entry[0]}:{entry[1]}" for entry in HOURLY_UNITS
+    }
 
 
 @pytest.mark.parametrize(
@@ -1798,22 +1837,34 @@ def test_a_hold_out_is_keyed_by_its_recording(
     )
 
 
-def test_declaring_a_continuous_group_moves_the_identity(tmp_path: Path) -> None:
-    """Each declared group that holds a sequence of the sets moves it."""
-    library = _divided_library(tmp_path, ())
+def test_a_recording_split_is_named_by_its_parameters_and_revisions_alone(
+    divided: Dataset,
+) -> None:
     params = PrepareTrainingDataParams.model_validate(_hourly())
+    sets = resolve_keypoint_sets(divided, params.sets, kind=KIND)
 
-    def plan(declared: tuple[str, ...]) -> str:
+    assert _plan(divided, _hourly()) == prepare_training_data_run_id(
+        KIND, OPS[KIND].version, params, sets
+    )
+
+
+def test_declaring_a_continuous_group_moves_the_identity_at_the_next_save(
+    tmp_path: Path,
+) -> None:
+    """Each declared group that holds a sequence of the set moves it once saved."""
+    library = _divided_library(tmp_path, ())
+    identities = [_plan(library, _hourly())]
+
+    for declared in (("night",), ("day", "night"), ("dawn", "day", "night")):
         library.set_continuous_groups(declared)
-        return OPS[KIND]().plan_identity(library, params, ResolvedScope()).run_id
+        assert _plan(library, _hourly()) == identities[-1], "the revision is unchanged"
+        _ = _save_again(library, "hourly", len(identities))
+        identities.append(_plan(library, _hourly()))
+    library.set_continuous_groups(())
+    _ = _save_again(library, "hourly", len(identities))
 
-    undeclared = plan(())
-    night = plan(("night",))
-    both = plan(("day", "night"))
-    all_three = plan(("dawn", "day", "night"))
-
-    assert len({undeclared, night, both, all_three}) == 4, "dawn holds one sequence"
-    assert plan(()) == undeclared
+    assert len(set(identities)) == 4, "dawn holds one sequence"
+    assert _plan(library, _hourly()) == identities[0]
 
 
 def test_declaring_a_recording_of_one_annotated_sequence_moves_the_run(
@@ -1822,15 +1873,15 @@ def test_declaring_a_recording_of_one_annotated_sequence_moves_the_run(
     """Its sequence is drawn as the recording, and the run id follows that draw."""
     library = _divided_library(tmp_path, ())
 
-    def run(declared: tuple[str, ...]) -> tuple[str, str]:
-        library.set_continuous_groups(declared)
+    def run() -> tuple[str, str]:
         run_id = run_op(library, KIND, _hourly())
         record = _split_record(model_run_root(library, KIND, run_id))
-        dawn = record.loc[record["group"] == "dawn", "unit_key"]
-        return run_id, dawn.iloc[0]
+        return run_id, _units(record)[("dawn", "h01")]
 
-    undeclared, undeclared_unit = run(())
-    declared, declared_unit = run(("dawn",))
+    undeclared, undeclared_unit = run()
+    library.set_continuous_groups(("dawn",))
+    _ = _save_again(library, "hourly", 1)
+    declared, declared_unit = run()
 
     assert (undeclared_unit, declared_unit) == (
         f"{DIVIDED_UUID}:dawn:h01",
@@ -1888,35 +1939,74 @@ def test_frames_of_one_sequence_name_in_two_groups_are_two_units(
     assert record["placed_name"].nunique() == 2
 
 
-def test_a_grouped_frame_from_a_dataset_out_of_reach_is_refused(
+def _claiming_library(tmp_path: Path, project: Dataset) -> Dataset:
+    """Return a library that claims revision 1 of *project*'s ``hourly`` and links none."""
+    library = make_dataset(
+        tmp_path / "libraries" / "7", name="claims", uuid=WORLD_UUIDS["library"]
+    )
+    _claim(library, project, "hourly", 1)
+    return library
+
+
+def test_a_library_draws_the_recordings_of_a_project_that_it_does_not_link(
     tmp_path: Path,
 ) -> None:
-    """The library cannot read whether the project declares ``night`` divided."""
-    project = make_dataset(tmp_path / "52", name="mice", uuid=WORLD_UUIDS["mice"])
-    library = make_dataset(
-        tmp_path / "libraries" / "7", name="library", uuid=WORLD_UUIDS["library"]
-    )
-    _claim(library, project, "night", _save(project, "night", _grouped_frames(
-        project, ("night",)
-    )))  # fmt: skip
-    params: dict[str, object] = {"sets": [{"set_key": "night"}], "target": "litpose"}
-    refusal = (
-        f"split_by='recording' reads whether group 'night' of dataset "
-        f"{WORLD_UUIDS['mice']!r} is a divided recording, and this dataset neither "
-        "is that dataset nor links it. Link it under libraries, or split by sequence."
+    library = _claiming_library(tmp_path, _divided_library(tmp_path, ("day", "night")))
+
+    record = _split_record(
+        model_run_root(library, KIND, run_op(library, KIND, _hourly()))
     )
 
-    assert _refusal_of_both(library, params) == [refusal, refusal]
-    check_preparation(
-        library,
-        PrepareTrainingDataParams.model_validate({**params, "split_by": "sequence"}),
+    assert library.manifest.libraries == ()
+    assert _units(record) == HOURLY_UNITS
+    assert record.groupby("unit_key")["split"].nunique().eq(1).all()
+
+
+def test_a_declaration_changed_after_the_save_leaves_the_split_unchanged(
+    divided: Dataset,
+) -> None:
+    """``night`` is withdrawn and ``dawn`` declared, and nothing is saved again."""
+    divided.set_continuous_groups(("dawn", "day"))
+
+    record = _split_record(
+        model_run_root(divided, KIND, run_op(divided, KIND, _hourly()))
     )
+
+    assert _units(record) == HOURLY_UNITS
+
+
+def test_a_preparation_follows_the_declaration_that_its_revision_records(
+    tmp_path: Path,
+) -> None:
+    """A library that links the project claims it, then ``night`` is withdrawn."""
+    project = _divided_library(tmp_path, ("day", "night"))
+    library = _claiming_library(tmp_path, project)
+    _ = library.add_library(LibraryLink(id="project", path="../8"))
+    claimed = _plan(library, _hourly())
+
+    project.set_continuous_groups(("day",))
+    run_id = run_op(library, KIND, _hourly())
+    later = make_dataset(tmp_path / "libraries" / "9", name="later")
+    _claim(later, project, "hourly", _save_again(project, "hourly", 1))
+    resaved = _split_record(model_run_root(later, KIND, run_op(later, KIND, _hourly())))
+
+    assert run_id == claimed
+    assert _units(_split_record(model_run_root(library, KIND, run_id))) == (
+        HOURLY_UNITS
+    )
+    assert _units(resaved) == {
+        **HOURLY_UNITS,
+        **{
+            ("night", sequence): f"{DIVIDED_UUID}:night:{sequence}"
+            for sequence in ("h01", "h02", "h03")
+        },
+    }
 
 
 def test_a_frame_is_drawn_by_the_declaration_of_the_dataset_it_came_from(
     tmp_path: Path,
 ) -> None:
-    """The project declares ``dawn`` and not ``night``. The library, the reverse."""
+    """The library's revision records ``day`` and ``night``, and the project ``dawn``."""
     library = _divided_library(tmp_path, ("day", "night"))
     project = make_dataset(tmp_path / "52", name="mice", uuid=WORLD_UUIDS["mice"])
     add_track_sequences(project, ("dawn", "h01"), ("dawn", "h02"))
@@ -1927,41 +2017,26 @@ def test_a_frame_is_drawn_by_the_declaration_of_the_dataset_it_came_from(
     run_id = run_op(project, KIND, _hourly())
 
     record = _split_record(model_run_root(project, KIND, run_id))
-    units = record.groupby(["group", "sequence"])["unit_key"].first().to_dict()
-    assert units == {
-        ("dawn", "h01"): f"{DIVIDED_UUID}:dawn:h01",
-        ("day", "h01"): f"{DIVIDED_UUID}:day:",
-        ("day", "h02"): f"{DIVIDED_UUID}:day:",
-        ("lone", "s1"): f"{DIVIDED_UUID}:lone:s1",
-        ("night", "h01"): f"{DIVIDED_UUID}:night:",
-        ("night", "h02"): f"{DIVIDED_UUID}:night:",
-        ("night", "h03"): f"{DIVIDED_UUID}:night:",
-    }
+    assert _units(record) == HOURLY_UNITS
 
 
-def test_a_grouped_frame_behind_an_unreachable_link_names_the_link(
+def test_a_link_that_is_not_reachable_leaves_the_preparation_unchanged(
     tmp_path: Path,
 ) -> None:
     """The library links the project at a path that is gone, and claims in place."""
-    project = make_dataset(tmp_path / "52", name="mice", uuid=WORLD_UUIDS["mice"])
-    library = make_dataset(
-        tmp_path / "libraries" / "7", name="library", uuid=WORLD_UUIDS["library"]
-    )
-    _claim(library, project, "night", _save(project, "night", _grouped_frames(
-        project, ("night",)
-    )))  # fmt: skip
+    project = _divided_library(tmp_path, ("day", "night"))
+    library = _claiming_library(tmp_path, project)
     mounted = tmp_path / "mounted"
     mounted.symlink_to(project.base_dir, target_is_directory=True)
-    _ = library.add_library(LibraryLink(id="mice", path=str(mounted)))
-    mounted.unlink()
-    params: dict[str, object] = {"sets": [{"set_key": "night"}], "target": "litpose"}
-    refusal = (
-        f"split_by='recording' reads whether group 'night' of dataset "
-        f"{WORLD_UUIDS['mice']!r} is a divided recording, and the library 'mice' "
-        "that links it is not reachable now. Mount it, or split by sequence."
-    )
+    _ = library.add_library(LibraryLink(id="project", path=str(mounted)))
+    linked = _plan(library, _hourly())
 
-    assert _refusal_of_both(library, params) == [refusal, refusal]
+    mounted.unlink()
+    check_preparation(library, PrepareTrainingDataParams.model_validate(_hourly()))
+    run_id = run_op(library, KIND, _hourly())
+
+    assert run_id == linked
+    assert _units(_split_record(model_run_root(library, KIND, run_id))) == HOURLY_UNITS
 
 
 def test_a_derived_box_trains_as_the_annotator_saw_it(full_state: Dataset) -> None:

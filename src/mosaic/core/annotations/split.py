@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Literal
 
 from mosaic.core.entry import to_safe_name
+from mosaic.core.recording import RecordingKey
 from mosaic.core.seeded_digest import seeded_digest
 
 __all__ = [
@@ -80,17 +81,20 @@ class VideoFrame:
 
 def sequence_key(frame: VideoFrame) -> str:
     """Return ``"{origin}:{group}:{sequence}"``, each part percent-encoded."""
-    parts = (frame.origin_uuid, frame.group, frame.sequence)
-    return ":".join(to_safe_name(part) for part in parts)
+    return recording_unit_key(
+        frame.origin_uuid, RecordingKey(frame.group, frame.sequence)
+    )
 
 
-def recording_unit_key(frame: VideoFrame) -> str:
-    """Return ``"{origin}:{group}:"``, the unit of a member of a continuous group.
+def recording_unit_key(origin_uuid: str, key: RecordingKey) -> str:
+    """Return ``"{origin}:{group}:{sequence}"`` for the recording *key* of *origin_uuid*.
 
-    The empty last part keys the divided recording ``(group, "")``, which no
-    sequence key can equal, because a sequence name is never empty.
+    Each part is percent-encoded. A divided recording ``(group, "")`` ends in an
+    empty part, which no sequence key can equal, because a sequence name is never
+    empty. An undivided recording's key is its sequence key.
     """
-    return ":".join((to_safe_name(frame.origin_uuid), to_safe_name(frame.group), ""))
+    parts = (origin_uuid, key.group, key.sequence)
+    return ":".join(to_safe_name(part) for part in parts)
 
 
 def _index_part(frame: VideoFrame) -> str:
@@ -128,8 +132,8 @@ def unit_key(
             the label that ``sequence_groups`` holds for the sequence key, else for
             the bare sequence name, else the sequence key.
         sequence_groups: Maps a sequence key or a bare sequence name to a label.
-        recording_units: Maps the sequence key of a member of a continuous group
-            to its :func:`recording_unit_key`.
+        recording_units: Maps the sequence key of a member of a divided recording
+            to that recording's :func:`recording_unit_key`.
 
     Returns:
         The unit key.

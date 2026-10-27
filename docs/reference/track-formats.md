@@ -162,7 +162,7 @@ and each object's alias, origin and box provenance under `attributes`.
 | Field | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `format` | `"mosaic-pose-annotations"` | _required_ |  | Always mosaic-pose-annotations. |
-| `version` | `integer` | _required_ |  | The format version the file was written in: 2 when a frame records its group, else 1. |
+| `version` | `integer` | _required_ |  | The format version the file was written in: 2 when a frame records its group or its recording, else 1. |
 | `bbox_policy` | `BboxPolicy` | _required_ |  | How the annotator's tool derived a box the annotator did not draw. |
 | `poses` | list of `PoseRecord` | _required_ |  | Every pose an object uses, ascending by id. |
 | `frames` | list of `FrameRecord` | _required_ |  | Every frame of the set, finished or not, ascending by image. |
@@ -198,6 +198,7 @@ and each object's alias, origin and box provenance under `attributes`.
     | `sequence` | `string` \| `None` | `null` |  | The sequence the frame came from. |
     | `group` | `string` \| `None` | `null` |  | The group of that sequence, from version 2. Absent for the empty group. |
     | `frame_index` | `integer` \| `None` | `null` |  | The frame's position in that sequence. |
+    | `recording` | `RecordingRecord` \| `None` | `null` |  | The divided recording that the sequence belonged to when the set was saved, from version 2. Absent when the sequence was not part of a divided recording then. An undivided recording is accepted and read as absent. |
     | `objects` | list of `ObjectRecord` | _constructed_ |  | The objects, in the order the annotator's tool holds them. |
 
 ??? note "`ObjectRecord`"
@@ -222,6 +223,14 @@ and each object's alias, origin and box provenance under `attributes`.
     | `skeleton` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Edges as pairs of 0-based keypoint positions, ascending. |
     | `symmetries` | list of tuple of (`integer`, `integer`) | _constructed_ |  | Left-right mirror pairs as 0-based positions, lower first. What a trainer that flips images swaps. |
     | `aliases` | list of `AliasRecord` | _constructed_ |  | The aliases this pose declares, by id. |
+
+??? note "`RecordingRecord`"
+
+    | Field | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"divided"` \| `"undivided"` | _required_ |  | divided for a sequence of a continuous group, else undivided. |
+    | `group` | `string` | _required_ |  | The recording's group. |
+    | `sequence` | `string` | _required_ |  | Empty for a divided recording, else the entry's sequence. |
 
 ## Frame predictions
 

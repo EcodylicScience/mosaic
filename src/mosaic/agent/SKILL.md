@@ -322,10 +322,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - `prepare-training-data` splits by recording by default: every sequence of a divided
   recording falls in one split, and so does the hold-out's recording. Keep that default
   for a divided recording, because `"split_by": "sequence"` lets its hours straddle the
-  split. Declaring a continuous group that holds an annotated sequence names a new
-  preparation. Frames that record a group are refused when their dataset is neither
-  this one nor a reachable library it links. Link that dataset with
-  `mosaic libraries add`.
+  split. A revision records each frame's divided recording when the set is saved, so
+  declare the continuous group before that save. A set saved before the declaration
+  splits by sequence until it is saved again.
 - Annotation revisions (`labels_raw/keypoints/<set>/rev<N>/`) are immutable. A changed
   save becomes a new revision, and an edited revision is refused.
 - Refer to a model by its run id. To use a model trained in another dataset, link that
