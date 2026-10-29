@@ -1,0 +1,165 @@
+#!/usr/bin/env -S python3 -B
+"""Exit 0 rewrapped or already correct, 1 content would change, 2 usage error."""
+
+import argparse
+import difflib
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+from command_line_parser import program_parser
+from lossless_text import print_error, read_text
+from prettier_pin import (
+    prettier_fault,
+    prettier_prefix,
+    prettier_program,
+)
+from program_entry import run_main
+from program_messages import say
+from program_start import run_program
+from quiet_paths import linked_file, nonempty, present, sibling_file
+from shell_whitespace import SHELL_WHITESPACE_CLASS
+from tool_installers import installer
+from wrap_width import wrap_width
+
+PROGRAM = "rewrap-md"
+
+# Lines shown of a difference that refuses a rewrite.
+SHOWN_DIFFERENCE = 6
+
+LEADING_MARKUP = re.compile(f"^(?:{SHELL_WHITESPACE_CLASS}|>)*")
+DELIMITER_ROW = re.compile(f"[|:-](?:{SHELL_WHITESPACE_CLASS}|[|:-])*")
+DASHES = re.compile("-+")
+EMPHASIS = re.compile(r"\*\*|\*")
+WHITESPACE = re.compile(SHELL_WHITESPACE_CLASS)
+
+OK, CHANGE, ERROR = "ok", "change", "error"
+
+
+def content(text: str) -> str:
+    """Return `text` without the changes that prettier makes beyond its line
+    breaks.
+
+    Every difference left is a content change.
+    """
+    folded: list[str] = []
+    for line in text.split("\n"):
+        # Wrapped blockquotes gain "> " on each continuation line, the
+        # delimiter rows of tables gain dashes, and emphasis comes back with
+        # underscores.
+        line = LEADING_MARKUP.sub("", line, count=1)
+        if DELIMITER_ROW.fullmatch(line):
+            line = DASHES.sub("-", line)
+        # Doubled delimiters are kept, because prettier turns `__init__`
+        # outside backticks into `**init**`. Delimiters are read left to right,
+        # not matched into pairs, so `***x***` is refused.
+        folded.append(EMPHASIS.sub(lambda match: "**" if len(match.group()) == 2 else "_", line))
+    return WHITESPACE.sub("", "".join(folded))
+
+
+def terminated_lines(text: str) -> list[str]:
+    pieces = text.split("\n")
+    return [piece + "\n" for piece in pieces[:-1]] + ([pieces[-1]] if pieces[-1] else [])
+
+
+def first_differences(before: str, after: str) -> list[str]:
+    """Return the first lines of a diff: `< ` a removed line, `> ` an added
+    one."""
+    old, new = terminated_lines(before), terminated_lines(after)
+    shown: list[str] = []
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for tag, old_start, old_stop, new_start, new_stop in matcher.get_opcodes():
+        if tag != "equal":
+            shown.extend("< " + line.removesuffix("\n") for line in old[old_start:old_stop])
+            shown.extend("> " + line.removesuffix("\n") for line in new[new_start:new_stop])
+    return shown[:SHOWN_DIFFERENCE]
+
+
+def rewrap(name: str, prettier: Path) -> str:
+    file = Path(name)
+    if file.name == "_INDEX.md":
+        # Separator rows are padded to the widest cell, and the description
+        # cells of index rows run for hundreds of characters.
+        say(PROGRAM, f"skipped {name} (index table)")
+        return OK
+    if not present(file.is_file):
+        say(PROGRAM, f"{name} is not a file")
+        return ERROR
+    # The link stays a link, and the file that it names is rewrapped.
+    linked = linked_file(file)
+    if linked is None:
+        say(PROGRAM, f"cannot resolve the link {name}")
+        return ERROR
+    if linked != file:
+        file, name = linked, str(linked)
+    width = wrap_width(file)
+
+    # Prettier truncates its target and writes in place, where an interrupt
+    # leaves the file empty. Prettier formats a sibling copy instead,
+    # renamed over the target. The copy keeps the suffix, because prettier
+    # picks its parser by extension. An empty --ignore-path replaces the
+    # default .gitignore and .prettierignore of the working directory, which
+    # would skip a named target silently.
+    with sibling_file(file, ".rewrap-md.", ".md") as temporary:
+        if temporary is None:
+            say(PROGRAM, f"cannot write beside {name}")
+            return ERROR
+        try:
+            _ = shutil.copy2(file, temporary)
+        except OSError:
+            formatted = False
+        else:
+            formatted = run_program(
+                [prettier, "--prose-wrap", "always", "--print-width", str(width),
+                 "--embedded-language-formatting=off", "--ignore-path=", "--write", "--", temporary],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode == 0
+        if not formatted:
+            say(PROGRAM, f"prettier failed on {name}")
+            return ERROR
+        if not nonempty(temporary) and nonempty(file):
+            say(PROGRAM, f"prettier emptied {name}, refusing")
+            return ERROR
+        before = read_text(file)
+        after = read_text(temporary)
+        if content(before) != content(after):
+            say(PROGRAM, f"{name} left unchanged, prettier would alter the lines below (backtick an identifier such as __init__):")
+            for line in first_differences(before, after):
+                print_error(line)
+            return CHANGE
+        _ = temporary.replace(file)
+    return OK
+
+
+def rewrap_files(names: list[str]) -> int:
+    prettier = prettier_program(prettier_prefix())
+    fault = prettier_fault(prettier)
+    if fault is not None:
+        say(PROGRAM, f"{fault}. Run {installer('rewrap-md')}")
+        return 2
+
+    outcomes = [rewrap(name, prettier) for name in names]
+    if ERROR in outcomes:
+        return 2
+    return 1 if CHANGE in outcomes else 0
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.files: list[str] = []
+
+
+def main(words: list[str]) -> int:
+    parser = program_parser("Rewrap markdown prose to a column.")
+    _ = parser.add_argument("files", nargs="+", metavar="FILE", help="a markdown file to rewrap in place")
+    arguments = parser.parse_args(words, namespace=Arguments())
+    return rewrap_files(arguments.files)
+
+
+if __name__ == "__main__":
+    # Terminating signals unwind the stack, which removes the sibling copy.
+    run_main(lambda: main(sys.argv[1:]))

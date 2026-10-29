@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Run the full mosaic test suite and compare its failures with this machine's
+# baseline.
+#
+# Usage, from the repository toplevel:
+#   remote --log=FILE.log .claude/skills/tools/mosaic-suite [pytest args...]
+#   remote --log=FILE.log .claude/skills/tools/mosaic-suite --update-baseline
+#
+# Runs `.venv/bin/python -m pytest -m "slow or not slow" -q -rfE` in the
+# checkout that holds this script, with any extra pytest arguments appended.
+# The per-machine settings live outside the repository, in the directory
+# named by MOSAIC_SUITE_CONFIG (default ~/.config/mosaic-suite):
+#   env                    sourced with every assignment exported, for
+#                          PATH and the MOSAIC_* variables that enable the
+#                          external-tool tests on this machine; $root names
+#                          the checkout, for paths of environments inside it
+#   baseline-failures.txt  the node ids that fail on main here, one per line
+#
+# Exit status: 0 when every failure is in the baseline (or none failed),
+# 1 when a test outside the baseline failed, and pytest's own status for
+# anything else (an interrupted run, a usage or collection error). With no
+# baseline every failure counts as new. --update-baseline replaces the
+# baseline with this run's failures and exits 0 when the run completed.
+set -u
+
+root="$(cd "$(dirname "$0")/../../.." && pwd)"
+config="${MOSAIC_SUITE_CONFIG:-$HOME/.config/mosaic-suite}"
+baseline="$config/baseline-failures.txt"
+
+update=0
+if [ "${1:-}" = "--update-baseline" ]; then
+    update=1
+    shift
+fi
+
+if [ -f "$config/env" ]; then
+    set -a
+    . "$config/env"
+    set +a
+else
+    echo "mosaic-suite: no $config/env; running with this shell's environment"
+fi
+
+cd "$root" || exit 2
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+.venv/bin/python -m pytest -m "slow or not slow" -q -rfE -p no:cacheprovider "$@" 2>&1 | tee "$work/output"
+status=${PIPESTATUS[0]}
+
+grep -E '^(FAILED|ERROR) ' "$work/output" \
+    | sed -E 's/^(FAILED|ERROR) //; s/ - .*$//' \
+    | sort -u > "$work/failures"
+count=$(wc -l < "$work/failures" | tr -d ' ')
+
+echo
+if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+    echo "mosaic-suite: pytest exited $status (not a test failure); no baseline comparison"
+    exit "$status"
+fi
+
+if [ "$status" -eq 1 ] && [ "$count" -eq 0 ]; then
+    echo "mosaic-suite: pytest exited 1 but no FAILED or ERROR line was found; read the output"
+    exit 1
+fi
+
+if [ "$update" -eq 1 ]; then
+    mkdir -p "$config"
+    cp "$work/failures" "$baseline"
+    echo "mosaic-suite: baseline updated with $count failure(s)"
+    exit 0
+fi
+
+if [ ! -f "$baseline" ]; then
+    echo "mosaic-suite: no baseline at $baseline; $count failure(s), all counted as new"
+    [ "$count" -eq 0 ] && exit 0 || exit 1
+fi
+
+sort -u "$baseline" > "$work/baseline"
+comm -23 "$work/failures" "$work/baseline" > "$work/new"
+comm -13 "$work/failures" "$work/baseline" > "$work/fixed"
+new=$(wc -l < "$work/new" | tr -d ' ')
+
+if [ "$new" -gt 0 ]; then
+    echo "mosaic-suite: $new failure(s) outside the baseline:"
+    sed 's/^/  /' "$work/new"
+fi
+if [ "$#" -eq 0 ] && [ -s "$work/fixed" ]; then
+    echo "mosaic-suite: baseline failure(s) that passed this run:"
+    sed 's/^/  /' "$work/fixed"
+fi
+echo "mosaic-suite: $count failure(s), $new outside the baseline"
+[ "$new" -eq 0 ] && exit 0 || exit 1

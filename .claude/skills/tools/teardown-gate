@@ -1,0 +1,239 @@
+#!/usr/bin/env -S python3 -B
+"""Tear down a review-prose gate and hand its prose back.
+
+Usage: teardown-gate <token> [--discard]
+--discard writes nothing into the caller's tree.
+"""
+
+import subprocess
+import sys
+from pathlib import Path
+
+from git_in_directory import nul_separated_names, resolved_commit, run_git
+from lossless_text import (
+    error_descriptor,
+    nonempty_lines,
+    print_error,
+    read_text,
+    split_lines,
+)
+from program_entry import run_main
+from program_messages import refuse, say
+from quiet_paths import nonempty, present
+from review_prose_gate import (
+    REFUSED_STATUS,
+    STATE_KEYS,
+    CommandFailed,
+    checked,
+    gate_branch,
+    gate_file,
+    gate_status,
+    line_buffered_output,
+    peer_session,
+    required_git_text,
+)
+from shell_whitespace import blank_separated_words
+from tmux_commands import kill_session, kill_window, tmux_lines, tmux_session_exists
+
+PROGRAM = "teardown-gate"
+PERMIT_KINDS = ("permitted", "wrap-permitted")
+
+
+def read_state(state: Path) -> dict[str, str]:
+    """Return the state file's keys, each split from its value at the first
+    `=`."""
+    values: dict[str, str] = {}
+    for line in split_lines(read_text(state)):
+        key, _, value = line.partition("=")
+        if not key:
+            continue
+        if key not in STATE_KEYS:
+            refuse(PROGRAM, f"{state} has an unexpected key: '{key}'", REFUSED_STATUS)
+        values[key] = value
+    return values
+
+
+def refuse_foreign_commits(repo: Path, branch: str, snapshot: str, tip: str, operands: list[str]) -> None:
+    """Refuse a gate branch that changes a file outside <paths>.
+
+    The editor may write inside <paths> alone. Such files come from commits
+    that this gate did not make. The refusal keeps the branch, and with it
+    those commits.
+    Rename detection is off. With it, a move from outside <paths> into it lists
+    as one rename inside <paths>, and the deletion outside does not show.
+    """
+    commits = f"{snapshot}..{tip}"
+    in_scope = required_git_text(repo, ["diff", "--no-renames", "--name-only", commits, "--", *operands])
+    changed = required_git_text(repo, ["diff", "--no-renames", "--name-only", commits])
+    foreign = sorted(set(nonempty_lines(changed)) - set(nonempty_lines(in_scope)))
+    if not foreign:
+        return
+    say(PROGRAM, f"{branch} changes files outside <paths>:")
+    for path in foreign:
+        print_error(f"  {path}")
+    say(PROGRAM, "the commits that did it:")
+    _ = checked(run_git(repo, ["log", "--oneline", commits, "--", *foreign], stdout=error_descriptor()))
+    refuse(PROGRAM, f"nothing was deleted. Move that work off {branch} first, then run this command again.", REFUSED_STATUS)
+
+
+def refuse_uncommitted_work(worktree: Path, discard: bool) -> None:
+    """Refuse uncommitted work in the worktree, unless discarding.
+
+    The hand-back takes the branch tip. The .claude/ directory there is the
+    launch's copy and does not count as the editor's work.
+    """
+    if not present(worktree.is_dir):
+        return
+    pending = required_git_text(worktree, ["status", "--porcelain", "--", ":(exclude,top).claude"])
+    if not pending:
+        return
+    if not discard:
+        say(PROGRAM, f"{worktree} has uncommitted changes and the hand-back takes the branch tip:")
+        for line in pending.split("\n"):
+            print_error(f"  {line}")
+        refuse(PROGRAM, "commit them in the worktree, or rerun with --discard to drop them.", REFUSED_STATUS)
+    say(PROGRAM, f"dropping uncommitted changes in {worktree}")
+
+
+def changed_names(repo: Path, change_filter: str, commits: str, operands: list[str]) -> list[str]:
+    listing = run_git(
+        repo,
+        ["diff", "-z", "--no-renames", "--name-only", f"--diff-filter={change_filter}", commits, "--", *operands],
+        stdout=subprocess.PIPE,
+    )
+    return nul_separated_names(checked(listing).stdout)
+
+
+def hand_back(repo: Path, snapshot: str, tip: str, paths: str) -> None:
+    """Write the gate's version of each file it changed into the caller's tree.
+
+    The index is left alone. Staged versions of the caller then stay staged.
+    The restore names each file that the gate wrote. It runs with --overlay.
+    Naming the files keeps the edits of other sessions under <paths>. The
+    overlay mode keeps the files that another session committed there while
+    the gate ran. The gate's deletions are applied by name afterward.
+    """
+    operands = blank_separated_words(paths)
+    if run_git(repo, ["diff", "--quiet", snapshot, tip, "--", *operands]).returncode == 0:
+        print(f"{PROGRAM}: the gate changed nothing under '{paths}'")
+        return
+    commits = f"{snapshot}..{tip}"
+    written = [f":(top,literal){name}" for name in changed_names(repo, "d", commits, operands)]
+    if written:
+        _ = checked(run_git(repo, ["restore", f"--source={tip}", "--overlay", "--worktree", "--", *written]))
+    for name in changed_names(repo, "D", commits, operands):
+        gone = repo / name
+        try:
+            gone.unlink(missing_ok=True)
+        except OSError as error:
+            say(PROGRAM, f"cannot remove '{gone}': {error.strerror}")
+            raise CommandFailed(1) from error
+    print(f"{PROGRAM}: restored the gate's version of '{paths}' into {repo} and left the index unchanged")
+
+
+def remove_gate(repo: Path, worktree: Path, branch: str) -> None:
+    """Remove the worktree first, because git keeps a branch that is checked
+    out."""
+    if present(worktree.is_dir):
+        _ = checked(run_git(repo, ["worktree", "remove", "--force", str(worktree)]))
+    # Worktree directories removed by hand leave entries that only prune
+    # clears.
+    _ = checked(run_git(repo, ["worktree", "prune"]))
+    _ = checked(run_git(repo, ["branch", "-D", branch], stdout=subprocess.DEVNULL))
+
+
+def peer_window(name: str) -> str | None:
+    """Return the id of the tmux window named `name`, or None."""
+    for line in tmux_lines(["list-windows", "-a", "-F", "#{window_id} #{window_name}"]):
+        window, _, window_name = line.partition(" ")
+        if window_name == name:
+            return window
+    return None
+
+
+def kill_peers(token: str) -> None:
+    """Kill both peers, each a top-level session or a window of the caller's
+    session.
+
+    Clients attached to a peer session move first to a session that outlives
+    the kill, and they stay in tmux. Neither peer is a destination, because
+    both are killed.
+    """
+    peers = (peer_session(token, "reviewer"), peer_session(token, "editor"))
+    keep = next((name for name in tmux_lines(["list-sessions", "-F", "#{session_name}"]) if name not in peers), None)
+    for name in peers:
+        if tmux_session_exists(name):
+            killed = kill_session(name, keep)
+        else:
+            window = peer_window(name)
+            killed = window is not None and kill_window(window)
+        print(f"killed {name}" if killed else f"{name} already gone")
+
+
+def teardown(token: str, discard: bool) -> int:
+    state = gate_file(token, "state")
+    if not present(state.is_file):
+        refuse(PROGRAM, f"no state file for {token} at {state}; list {state.parent}/review-prose-*.state for the live tokens", REFUSED_STATUS)
+    # Every key is read before the first write. Launch writes the file whole,
+    # so one with a key missing was truncated.
+    values = read_state(state)
+    for key in STATE_KEYS:
+        if not values.get(key):
+            refuse(PROGRAM, f"{state} has no {key}", REFUSED_STATUS)
+    repo, worktree = Path(values["repo"]), Path(values["worktree"])
+    snapshot, paths = values["snapshot"], values["paths"]
+    if not present(repo.is_dir):
+        refuse(PROGRAM, f"repo is not a directory: '{values['repo']}'", REFUSED_STATUS)
+
+    # The hand-back needs the branch and the snapshot, and both are checked
+    # before it starts.
+    branch = gate_branch(token)
+    missing = ""
+    if resolved_commit(repo, f"refs/heads/{branch}") is None:
+        missing += f" branch {branch}"
+    if resolved_commit(repo, snapshot) is None:
+        missing += f" commit {snapshot}"
+    if missing:
+        refuse(PROGRAM, f"{repo} has no{missing}", REFUSED_STATUS)
+    try:
+        tip = required_git_text(repo, ["rev-parse", f"refs/heads/{branch}"])
+        refuse_foreign_commits(repo, branch, snapshot, tip, blank_separated_words(paths))
+        refuse_uncommitted_work(worktree, discard)
+    except CommandFailed as failed:
+        return failed.status
+
+    # From here on the run has written something, and a second run reads the
+    # state file to finish.
+    try:
+        if not discard:
+            hand_back(repo, snapshot, tip, paths)
+        remove_gate(repo, worktree, branch)
+    except CommandFailed as failed:
+        say(PROGRAM, f"the teardown stopped part way and the state file is kept; run 'teardown-gate {token}' again to finish it")
+        return failed.status
+
+    kill_peers(token)
+    # The reviewer's permit records are what the run leaves behind.
+    for kind in PERMIT_KINDS:
+        record = gate_file(token, kind)
+        if nonempty(record):
+            print(f"permits: {record}")
+    # The state file is removed last. Teardowns that die part way can then be
+    # run again.
+    state.unlink(missing_ok=True)
+    return 0
+
+
+def main(arguments: list[str]) -> int:
+    line_buffered_output()
+    if not 1 <= len(arguments) <= 2:
+        print_error("usage: teardown-gate <token> [--discard]")
+        return REFUSED_STATUS
+    option = arguments[1] if len(arguments) == 2 else ""
+    if option and option != "--discard":
+        refuse(PROGRAM, f"unknown option: '{option}'", REFUSED_STATUS)
+    return gate_status(PROGRAM, lambda: teardown(arguments[0], option == "--discard"))
+
+
+if __name__ == "__main__":
+    run_main(lambda: main(sys.argv[1:]))

@@ -1,0 +1,113 @@
+#!/usr/bin/env -S python3 -B
+"""Install programs and the modules that they import into ~/.local/bin.
+
+Usage: install-tool [--check] NAME... | --setup INSTALLER
+
+Each program's #! interpreter must meet the minimum version that the program
+and its modules declare. --setup installs the programs of the skill installer
+named INSTALLER, checks each program's preconditions before the copy, and runs
+its first-time setup step after it. --check copies nothing, names each program
+and module whose installed copy differs from its source, and exits 1 if any
+does.
+"""
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+from install_steps import INSTALL_PRECONDITIONS, INSTALL_STEPS, PROGRAM, interpreter_meets_minimum
+from library_imports import library_modules
+from lossless_text import print_error
+from program_entry import run_main
+from program_messages import say
+from tool_installers import installed_commands
+
+TOOLS_DIRECTORY = Path(__file__).resolve().parent
+
+
+def install(source: Path, target: Path) -> None:
+    """Replace `target` with a fresh copy of `source`.
+
+    Copies, unlike symlinks, survive the repository moving. The existing entry
+    is removed first, because a copy onto a symlink writes through it.
+    """
+    target.unlink(missing_ok=True)
+    _ = shutil.copyfile(source, target)
+
+
+def differs(source: Path, target: Path) -> bool:
+    try:
+        return target.read_bytes() != source.read_bytes()
+    except OSError:
+        return True
+
+
+def check_tools(sources: list[Path], bin_directory: Path) -> int:
+    modules = sorted({module for source in sources for module in library_modules(source)})
+    drifted = [path.name for path in [*sources, *modules] if differs(path, bin_directory / path.name)]
+    for name in drifted:
+        print(f"tools: {name} differs from source")
+    return 1 if drifted else 0
+
+
+def install_tools(arguments: list[str]) -> int:
+    mode = arguments[0] if arguments[:1] in (["--setup"], ["--check"]) else ""
+    names = arguments[1:] if mode else arguments
+    setup = mode == "--setup"
+    if not names or (setup and len(names) > 1):
+        print_error("usage: install-tool [--check] NAME... | --setup INSTALLER")
+        return 2
+    if setup:
+        installer_name = names[0]
+        names = list(installed_commands(installer_name))
+        if not names:
+            say(PROGRAM, f"no installer is named {installer_name}")
+            return 2
+    sources = [TOOLS_DIRECTORY / name for name in names]
+    for source in sources:
+        if not source.is_file():
+            say(PROGRAM, f"cannot find {source.name} next to this installer ({source})")
+            return 1
+
+    bin_directory = Path.home() / ".local" / "bin"
+    if mode == "--check":
+        return check_tools(sources, bin_directory)
+    if not all(interpreter_meets_minimum(source) for source in sources):
+        return 1
+    if setup:
+        for source in sources:
+            precondition = INSTALL_PRECONDITIONS.get(source.name)
+            if precondition is not None and not precondition(source, bin_directory):
+                return 1
+    for source in sources:
+        target = bin_directory / source.name
+        action = "refreshed" if target.exists() else "installed"
+        try:
+            bin_directory.mkdir(parents=True, exist_ok=True)
+            install(source, target)
+            target.chmod(target.stat().st_mode | 0o111)
+            for module in library_modules(source):
+                install(module, bin_directory / module.name)
+        except OSError as error:
+            say(PROGRAM, f"FAILED -- {error}")
+            return 1
+        print(f"install-tool: {action} {source.name} at {target}")
+
+    if str(bin_directory) not in os.environ.get("PATH", "").split(":"):
+        say(PROGRAM, f"WARNING -- {bin_directory} is not on your PATH.")
+        say(PROGRAM, "add this line to your shell profile, then restart the shell:")
+        print_error('    export PATH="$HOME/.local/bin:$PATH"')
+
+    if setup:
+        for source in sources:
+            step = INSTALL_STEPS.get(source.name)
+            if step is not None and not step(bin_directory / source.name):
+                return 1
+    return 0
+
+
+if __name__ == "__main__":
+    # Terminating signals unwind the stack, which removes a setup step's
+    # scratch files.
+    run_main(lambda: install_tools(sys.argv[1:]))

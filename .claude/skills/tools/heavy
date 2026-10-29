@@ -1,0 +1,338 @@
+#!/usr/bin/env -S python3 -B
+"""Run a command under the global heavy lock, the queue for heavy runs here.
+
+HEAVY_TASK_TIMEOUT caps the lock wait and --wait, in seconds. A wrapper sets
+HEAVY_TASK_NAME to remote-task for the name in messages, which is heavy-task
+otherwise, HEAVY_TASK_LABEL for the command that waiters see, and HEAVY_TASK_DIR
+to move the lock directory from ~/.claude/heavy-task. The command writes to the
+file that HEAVY_TASK_NOTRUN_FILE names to report that it did not start.
+"""
+
+import fcntl
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from contextlib import suppress
+from pathlib import Path
+from types import FrameType
+from typing import BinaryIO, NamedTuple
+
+from command_line_parser import EXIT_USAGE
+from heavy_lock import holder_record, lock_directory, lock_paths, read_holder
+from lexical_paths import appended_to_name
+from lock_runner_arguments import (
+    LockRunnerArguments,
+    lock_runner_parser,
+    parse_lock_runner_arguments,
+)
+from lock_runner_contract import (
+    EXIT_MARKER_SUFFIX,
+    EXIT_NOT_RUN,
+    NOT_RUN_MARKER_SUFFIX,
+    NOT_RUN_VARIABLE,
+    WAIT_TIMEOUT_STATUS,
+    RunnerName,
+    command_not_run,
+    exit_not_run,
+    handed_back,
+    mark_not_run,
+    mint_not_run_marker,
+    runner_name,
+    wait_timeout_line,
+)
+from lossless_text import pass_undecodable_bytes, print_error
+from program_messages import say
+from program_start import report_start_failure, shell_status, start_program
+from quiet_paths import nonempty, present, read_quietly, remove_quietly, sibling_file, write_quietly
+from terminating_signals import (
+    die_of_signal,
+    handle_terminating_signals,
+    handle_unless_ignored,
+)
+
+EXIT_BAD_MARKER = 70
+WAIT_POLL_SECONDS = 2.0
+LOCK_POLL_SECONDS = 0.1
+
+
+class ResultPaths(NamedTuple):
+    """Name the captured log and the file through which the command reports
+    that it did not start."""
+
+    log: Path
+    notrun_file: Path
+
+
+# Removed however the run ends, including by a terminating signal. The
+# `current` record joins only once the lock is taken. Before that, the record
+# belongs to another run.
+cleanup_paths: list[Path] = []
+# Set under --log. A terminating signal then still writes the markers beside the
+# log, which say that the command did not run when it had not started.
+result_paths: ResultPaths | None = None
+command_started = False
+
+
+def clean_up() -> None:
+    for path in cleanup_paths:
+        remove_quietly(path)
+
+
+def terminate(signum: int, _frame: FrameType | None) -> None:
+    if result_paths is not None:
+        not_run = not command_started or command_not_run(result_paths.notrun_file)
+        write_result_markers(shell_status(-signum), result_paths.log, not_run)
+    clean_up()
+    die_of_signal(signum)
+
+
+def timeout_seconds() -> float | None:
+    """Return HEAVY_TASK_TIMEOUT, or None when unset.
+
+    Values that are not numbers give up at once.
+    """
+    text = os.environ.get("HEAVY_TASK_TIMEOUT", "")
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def wait_for_result(name: RunnerName, log: Path) -> int:
+    """Wait for a run that logs to `log` to end, then report its result."""
+    exit_file = appended_to_name(log, EXIT_MARKER_SUFFIX)
+    timeout = timeout_seconds()
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while not nonempty(exit_file):
+        if deadline is not None and time.monotonic() >= deadline:
+            timeout_text = os.environ["HEAVY_TASK_TIMEOUT"]
+            print_error(f"FAILED {name}: --wait timed out after {timeout_text}s; no result yet in {exit_file}")
+            print_error(wait_timeout_line(name))
+            return WAIT_TIMEOUT_STATUS
+        time.sleep(WAIT_POLL_SECONDS)
+    marker = (read_quietly(exit_file) or b"").rstrip(b"\n").decode("ascii", "replace")
+    if not marker.isdigit():
+        say(name, f"--wait found a malformed result marker in {exit_file}")
+        say(name, f"exit-status={EXIT_BAD_MARKER} (bad marker)")
+        return EXIT_BAD_MARKER
+    # The abort marker is read on the same terms that `report` reads the
+    # not-run file. Only a non-zero status can be an abort.
+    if int(marker) == 0:
+        print_error(f"OK {name}: detached run succeeded (exit 0) -- log: {log}")
+    elif command_not_run(appended_to_name(log, NOT_RUN_MARKER_SUFFIX)):
+        print_error(f"FAILED {name}: ABORTED before the command ran (exit {marker}) -- log: {log}; command NOT run")
+    else:
+        print_error(f"FAILED {name}: detached run FAILED (exit {marker}) -- log: {log}")
+    say(name, f"exit-status={marker}")
+    return int(marker) & 0xFF
+
+
+def resolve_lock_directory(name: RunnerName) -> Path | None:
+    """Create the lock directory and return it as an absolute path, or None
+    when it is unusable.
+
+    Absolute paths keep the not-run marker inside the directory the same file
+    when the command changes its working directory.
+    """
+    directory = lock_directory(os.environ, Path.home())
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        say(name, f"cannot create {directory}: {error.strerror}")
+    if not (present(directory.is_dir) and os.access(directory, os.X_OK)):
+        return None
+    return directory.absolute()
+
+
+def take_lock_within(descriptor: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+        except OSError:
+            return False
+        time.sleep(LOCK_POLL_SECONDS)
+
+
+def take_lock(name: RunnerName, descriptor: int, lock_file: Path, current_file: Path) -> None:
+    """Take the global lock on `descriptor`, or abort before the command."""
+    # Probe without blocking first. The probe names the holder that the user
+    # waits behind.
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    except OSError:
+        pass
+    holder = read_holder(current_file).rstrip("\n")
+    if holder:
+        print_error(f"waiting: {name}: lock held -- waiting behind: {holder}")
+    else:
+        print_error(f"waiting: {name}: lock held by another session -- waiting...")
+    timeout = timeout_seconds()
+    if timeout is not None:
+        # The message says "did not get the lock within Ns" and does not claim
+        # a wait. Locks that refuse at once fail here without waiting.
+        if not take_lock_within(descriptor, timeout):
+            exit_not_run(name, f"did not get the lock within {os.environ['HEAVY_TASK_TIMEOUT']}s", EXIT_NOT_RUN, "lock not taken")
+        return
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    except OSError:
+        # Unsupported filesystems fail here, typically an NFS home without
+        # working locks. The run stops, because the command must not run under
+        # a lock that nobody owns.
+        exit_not_run(name, f"cannot take the global lock on {lock_file}", EXIT_NOT_RUN, "cannot take the lock")
+
+
+def run_command(name: RunnerName, arguments: list[str], output: BinaryIO | None) -> int:
+    """Run the command, its output to `output` when given, and return its
+    status.
+
+    Interrupts are the command's to answer, as under a shell. Commands that
+    handle one and exit are reported. Commands dying of one take this run down
+    too.
+    """
+    global command_started
+    interrupted = False
+
+    def note_interrupt(_signum: int, _frame: FrameType | None) -> None:
+        nonlocal interrupted
+        interrupted = True
+
+    handle_unless_ignored(signal.SIGINT, note_interrupt)
+    try:
+        stderr = None if output is None else subprocess.STDOUT
+        command_started = True
+        returncode = start_program(arguments, stdout=output, stderr=stderr).wait()
+    except OSError as error:
+        return report_start_failure(name, arguments[0], error, output)
+    finally:
+        handle_unless_ignored(signal.SIGINT, terminate)
+    if interrupted and returncode == -signal.SIGINT:
+        terminate(signal.SIGINT, None)
+    return shell_status(returncode)
+
+
+def run_captured(name: RunnerName, arguments: list[str], log: Path | None) -> int:
+    """Run the command, capturing to `log` when given.
+
+    The capture path is opened before the command starts. Logs that cannot be
+    written are not command failures.
+    """
+    if log is None:
+        return run_command(name, arguments, None)
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        handle = log.open("wb")
+    except OSError:
+        exit_not_run(name, f"cannot capture output to {log}", EXIT_NOT_RUN, "cannot write the log")
+    print_error(f"  capturing output to: {log}")
+    with handle:
+        return run_command(name, arguments, handle)
+
+
+def write_result_markers(status: int, log: Path, not_run: bool) -> None:
+    """Write the abort marker and the exit code beside the log."""
+    # The abort marker is written before the exit code. Waiters that see the
+    # code see the marker too.
+    if not_run:
+        mark_not_run(appended_to_name(log, NOT_RUN_MARKER_SUFFIX))
+    # The code is written whole and renamed into place, and waiters cannot read
+    # a half-written code. The marker takes the log's mode.
+    exit_file = appended_to_name(log, EXIT_MARKER_SUFFIX)
+    with sibling_file(exit_file, f"{exit_file.name}.", ".tmp") as pending:
+        if pending is not None and write_quietly(pending, f"{status}\n"):
+            with suppress(OSError):
+                shutil.copymode(log, pending)
+            with suppress(OSError):
+                _ = pending.replace(exit_file)
+
+
+def report(name: RunnerName, status: int, log: Path | None, notrun_file: Path) -> None:
+    """Print closing lines that match the result, and write the markers beside
+    a captured log."""
+    # The outer phase announces a run handed back to it.
+    if handed_back(os.environ):
+        return
+    where = ""
+    if log is not None:
+        write_result_markers(status, log, command_not_run(notrun_file))
+        where = f" -- log: {log}"
+    if status == 0:
+        print_error(f"OK {name}: command succeeded (exit 0){where}; lock released")
+    elif command_not_run(notrun_file):
+        print_error(f"FAILED {name}: ABORTED before the command ran (exit {status}){where}; command NOT run; lock released")
+    else:
+        print_error(f"FAILED {name}: command FAILED (exit {status}){where}; lock released")
+    say(name, f"exit-status={status}")
+
+
+def main(words: list[str]) -> int:
+    global result_paths
+    pass_undecodable_bytes()
+    name = runner_name(os.environ)
+    handle_terminating_signals(terminate)
+
+    parser = lock_runner_parser(name, "Run a command under the global heavy lock.")
+    parsed = parse_lock_runner_arguments(parser, words, LockRunnerArguments())
+    if parsed.wait is not None:
+        return wait_for_result(name, Path(parsed.wait))
+    arguments = parsed.command
+    if not arguments:
+        parser.error("no command given")
+
+    directory = resolve_lock_directory(name)
+    if directory is None:
+        exit_not_run(name, "could not resolve the lock directory to an absolute path", EXIT_USAGE, "usage")
+    paths = lock_paths(directory)
+
+    # The command reports through this file that it did not start. The pid
+    # keeps concurrent runs on one lock directory from sharing a marker.
+    notrun_file = directory / f"notrun.{os.getpid()}"
+    cleanup_paths.append(notrun_file)
+    try:
+        mint_not_run_marker(notrun_file)
+        os.environ[NOT_RUN_VARIABLE] = str(notrun_file)
+        label = os.environ.get("HEAVY_TASK_LABEL") or " ".join(arguments)
+        log = None if parsed.log is None else Path(parsed.log)
+        if log is not None:
+            result_paths = ResultPaths(log, notrun_file)
+
+        try:
+            opened = os.open(paths.lock_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        except OSError as error:
+            say(name, f"{paths.lock_file}: {error.strerror}")
+            exit_not_run(name, f"cannot open the lock file at {paths.lock_file}", EXIT_NOT_RUN, "cannot take the lock")
+        # The descriptor moves to 3 or above. Standard streams that the caller
+        # closed then stay closed in the command. They do not become the lock
+        # file. F_DUPFD leaves the copy inheritable. Processes that the command
+        # leaves running in the background keep the lock until they end.
+        descriptor = fcntl.fcntl(opened, fcntl.F_DUPFD, 3)
+        os.close(opened)
+        take_lock(name, descriptor, paths.lock_file, paths.current_file)
+
+        cleanup_paths.append(paths.current_file)
+        _ = write_quietly(paths.current_file, holder_record(label, os.getpid(), int(time.time())))
+        print_error(f"running: {name}: running under global lock: {label}")
+
+        status = run_captured(name, arguments, log)
+        report(name, status, log, notrun_file)
+        return status
+    finally:
+        clean_up()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

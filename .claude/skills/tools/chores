@@ -1,0 +1,115 @@
+#!/usr/bin/env -S python3 -B
+"""Track ordered steps, one `[ ] name` or `[x] name` per line of $CHORES_FILE."""
+
+import argparse
+import os
+import sys
+from pathlib import Path
+from typing import Literal, get_args
+
+from command_line_parser import CommandLineParser, program_parser
+from lossless_text import encoded, read_text, split_lines
+from program_entry import run_main
+from program_messages import refuse
+
+PROGRAM = "chores"
+PENDING = "[ ] "
+COMPLETE = "[x] "
+
+Verb = Literal["create", "tick", "done"]
+VERBS: tuple[Verb, ...] = get_args(Verb)
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        # Set by the parser, which requires a verb.
+        self.verb: Verb
+        self.names: list[str] = []
+        self.name: str = ""
+
+
+def state_path() -> Path:
+    # The chores hook sets the variable per agent. It does not come from an
+    # argument.
+    value = os.environ.get("CHORES_FILE")
+    if not value:
+        refuse(PROGRAM, "CHORES_FILE is not set; the chores hook sets it per agent", 1)
+    return Path(value)
+
+
+def existing_state_path() -> Path:
+    path = state_path()
+    if not path.is_file():
+        refuse(PROGRAM, f"no steps created yet (state file {path} is missing)", 1)
+    return path
+
+
+def create(names: list[str]) -> None:
+    path = state_path()
+    for index, name in enumerate(names):
+        if name in names[:index]:
+            refuse(PROGRAM, f"duplicate step name: {name}", 1)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("ab") as handle:
+            _ = handle.write(encoded("".join(f"{PENDING}{name}\n" for name in names)))
+    except OSError as error:
+        refuse(PROGRAM, f"{error.filename}: {error.strerror}", 1)
+
+
+def tick(name: str) -> None:
+    path = existing_state_path()
+    lines = split_lines(read_text(path))
+    for index, line in enumerate(lines):
+        if not line.startswith(PENDING):
+            continue
+        expected = line[len(PENDING) :]
+        if expected != name:
+            refuse(PROGRAM, f"cannot tick '{name}'; expected step: {expected}", 1)
+        lines[index] = f"{COMPLETE}{expected}"
+        text = "".join(f"{line}\n" for line in lines)
+        _ = path.write_bytes(encoded(text))
+        return
+    refuse(PROGRAM, "all steps already complete", 1)
+
+
+def done() -> int:
+    text = read_text(existing_state_path())
+    lines = split_lines(text)
+    complete = sum(line.startswith(COMPLETE) for line in lines)
+    _ = sys.stdout.write(f"{complete}/{len(lines)} complete\n")
+    _ = sys.stdout.write(text)
+    return 0 if complete == len(lines) else 1
+
+
+def command_line_parser() -> CommandLineParser:
+    parser = program_parser("Track ordered steps.")
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    for verb in VERBS:
+        match verb:
+            case "create":
+                create_verb = verbs.add_parser(verb, help="append named steps", allow_abbrev=False)
+                _ = create_verb.add_argument("names", nargs="+", metavar="NAME", help="a step name")
+            case "tick":
+                tick_verb = verbs.add_parser(verb, help="complete the next step, which must be NAME", allow_abbrev=False)
+                _ = tick_verb.add_argument("name", metavar="NAME", help="the next step's name")
+            case "done":
+                _ = verbs.add_parser(verb, help="list the steps; exit 0 when all are complete, else 1", allow_abbrev=False)
+    return parser
+
+
+def main(words: list[str]) -> int:
+    arguments = command_line_parser().parse_args(words, namespace=Arguments())
+    match arguments.verb:
+        case "create":
+            create(arguments.names)
+        case "tick":
+            tick(arguments.name)
+        case "done":
+            return done()
+    return 0
+
+
+if __name__ == "__main__":
+    run_main(lambda: main(sys.argv[1:]))

@@ -1,0 +1,240 @@
+#!/usr/bin/env -S python3 -B
+"""Check a mosaic branch's changes before a commit or a review.
+
+Usage, from anywhere in a mosaic checkout or worktree, under `heavy`:
+  heavy --log=FILE.log .claude/skills/tools/mosaic-check [--base REF] [--no-tests]
+  heavy --log=FILE.log .claude/skills/tools/mosaic-check --update-baseline
+
+The changed files are those that differ from the merge base with REF (default
+`main`), uncommitted and untracked files included. Four checks run on them,
+each importing this checkout's `src/`:
+
+  ruff         `ruff check` and `ruff format --check`
+  types        basedpyright, failing a file that has more errors than its
+               count in the baseline (a file absent from it counts 0)
+  docs         `scripts/gen_docs_reference.py --check`, when a changed module
+               registers into a registry or lives under src/mosaic/cli/
+  tests        the tests `locate-tests` selects for the changed files, plus
+               the LOCATE_TESTS_ALWAYS paths of .claude/settings.json
+
+The baseline is `.claude/baselines/basedpyright-errors-by-file.txt` in the
+main checkout, which every worktree shares. It is untracked. --update-baseline
+type-checks the whole project and rewrites it, so run it on an up-to-date
+main.
+
+Exits 0 when every check passes and 1 when one fails.
+"""
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+from json_value import Json, parse_json
+from mosaic_repository import (
+    docs_findings,
+    is_mosaic_toplevel,
+    lint_findings,
+    lint_files,
+    run,
+    tail,
+    tool,
+)
+
+BASELINE_NAME = Path(".claude") / "baselines" / "basedpyright-errors-by-file.txt"
+TYPED_DIRECTORIES = ("src/", "tests/", "tools/", "scripts/")
+
+
+def git(root: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        sys.exit(
+            f"mosaic-check: git {' '.join(arguments)} failed: {completed.stderr.strip()}"
+        )
+    return completed.stdout
+
+
+def main_checkout(root: Path) -> Path:
+    common = git(
+        root, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    ).strip()
+    return Path(common).parent
+
+
+def changed_files(root: Path, base: str) -> list[str]:
+    merge_base = git(root, "merge-base", "HEAD", base).strip()
+    names = set(
+        git(root, "diff", "--name-only", "--diff-filter=ACMR", merge_base).split("\n")
+    )
+    names.update(git(root, "ls-files", "--others", "--exclude-standard").split("\n"))
+    return sorted(name for name in names if name and (root / name).is_file())
+
+
+def error_counts(root: Path, files: list[str]) -> dict[str, int] | str:
+    """Return basedpyright's error count per file, or its failure output."""
+    basedpyright = tool(root, "basedpyright")
+    if basedpyright is None:
+        return "basedpyright is not installed in this checkout's .venv or on PATH"
+    _, output = run(root, [basedpyright, "--outputjson", *files], timeout=None)
+    try:
+        report: Json = parse_json(output[output.index("{") :])
+    except ValueError:
+        return tail(output)
+    if not isinstance(report, dict) or not isinstance(
+        diagnostics := report.get("generalDiagnostics"), list
+    ):
+        return tail(output)
+    counts: dict[str, int] = {}
+    for diagnostic in diagnostics:
+        if not isinstance(diagnostic, dict) or diagnostic.get("severity") != "error":
+            continue
+        path = diagnostic.get("file")
+        if isinstance(path, str):
+            relative = (
+                str(Path(path).resolve().relative_to(root.resolve()))
+                if Path(path).is_absolute()
+                else path
+            )
+            counts[relative] = counts.get(relative, 0) + 1
+    return counts
+
+
+def read_baseline(path: Path) -> dict[str, int] | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    baseline: dict[str, int] = {}
+    for line in text.split("\n"):
+        count, _, name = line.partition(" ")
+        if name and count.isdigit():
+            baseline[name] = int(count)
+    return baseline
+
+
+def update_baseline(root: Path) -> int:
+    counts = error_counts(root, [])
+    if isinstance(counts, str):
+        print(f"mosaic-check: basedpyright failed:\n{counts}")
+        return 1
+    path = main_checkout(root) / BASELINE_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{count} {name}" for name, count in sorted(counts.items())]
+    _ = path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(
+        f"mosaic-check: wrote {len(lines)} file(s), {sum(counts.values())} error(s) to {path}"
+    )
+    return 0
+
+
+def type_findings(root: Path, files: list[str]) -> list[str]:
+    typed = [
+        name
+        for name in files
+        if name.endswith(".py") and name.startswith(TYPED_DIRECTORIES)
+    ]
+    if not typed:
+        return []
+    counts = error_counts(root, typed)
+    if isinstance(counts, str):
+        return [f"basedpyright failed:\n{counts}"]
+    baseline_path = main_checkout(root) / BASELINE_NAME
+    baseline = read_baseline(baseline_path)
+    if baseline is None:
+        print(
+            f"mosaic-check: no type baseline at {baseline_path}; every error counts as new"
+        )
+        baseline = {}
+    over = [
+        f"  {name}: {count} error(s), baseline {baseline.get(name, 0)}"
+        for name, count in sorted(counts.items())
+        if count > baseline.get(name, 0)
+    ]
+    if not over:
+        return []
+    listed = "\n".join(over)
+    return [
+        f"basedpyright reports errors above the baseline (run it on these files to see them):\n{listed}"
+    ]
+
+
+def docs_check(root: Path, files: list[str]) -> list[str]:
+    findings, note = docs_findings(root, files)
+    if note is not None:
+        print(f"mosaic-check: {note}")
+    return findings
+
+
+def test_findings(root: Path, files: list[str]) -> list[str]:
+    locate = Path(__file__).with_name("locate-tests")
+    status, output = run(root, [sys.executable, "-B", str(locate), *files])
+    if status != 0:
+        return [f"locate-tests failed:\n{tail(output)}"]
+    selected = [
+        line for line in output.split("\n") if line.endswith(".py") or "::" in line
+    ]
+    python = tool(root, "python")
+    if python is None:
+        return ["no python in this checkout's .venv or on PATH"]
+    if not selected:
+        return []
+    print(f"mosaic-check: running {len(selected)} selected test file(s)")
+    status, output = run(
+        root,
+        [python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *selected],
+        timeout=None,
+    )
+    return [] if status == 0 else [f"selected tests failed:\n{tail(output, 40)}"]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="mosaic-check", description="Check a mosaic branch's changes."
+    )
+    _ = parser.add_argument(
+        "--base", default="main", help="the ref whose merge base the changes start from"
+    )
+    _ = parser.add_argument(
+        "--no-tests", action="store_true", help="skip the selected tests"
+    )
+    _ = parser.add_argument(
+        "--update-baseline", action="store_true", help="rewrite the type baseline"
+    )
+    arguments = parser.parse_args()
+    root = Path(git(Path.cwd(), "rev-parse", "--show-toplevel").strip())
+    if not is_mosaic_toplevel(root):
+        sys.exit(f"mosaic-check: {root} is not a mosaic checkout")
+    if bool(arguments.update_baseline):
+        return update_baseline(root)
+    files = changed_files(root, str(arguments.base))
+    if not files:
+        print("mosaic-check: no changed files")
+        return 0
+    print(
+        f"mosaic-check: {len(files)} changed file(s), {len(lint_files(files))} to lint"
+    )
+    checks = [
+        ("ruff", lambda: lint_findings(root, files)),
+        ("types", lambda: type_findings(root, files)),
+        ("docs", lambda: docs_check(root, files)),
+    ]
+    if not bool(arguments.no_tests):
+        checks.append(("tests", lambda: test_findings(root, files)))
+    failed = 0
+    for name, check in checks:
+        findings = check()
+        print(f"mosaic-check: {name}: {'FAIL' if findings else 'ok'}")
+        for finding in findings:
+            print(finding)
+        failed += bool(findings)
+    print(f"mosaic-check: {'FAILED' if failed else 'passed'}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

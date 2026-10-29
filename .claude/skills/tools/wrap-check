@@ -1,0 +1,127 @@
+#!/usr/bin/env -S python3 -B
+"""Exit 0 clean, 1 findings, 2 error."""
+
+import argparse
+import sys
+from pathlib import Path
+
+from command_line_parser import CommandLineParser, program_parser
+from git_range import RangeError, range_targets
+from lossless_text import read_text
+from permitted_records import PermittedFileError, PermittedRecords, read_records, report_unused
+from program_entry import run_main
+from program_messages import say
+from prose_scan import language_for, scan
+from quiet_paths import present
+from wrap_findings import RULES, Finding, findings
+from wrap_width import MARKDOWN_SUFFIXES, wrap_width
+
+PROGRAM = "wrap-check"
+PERMITTED_KEYWORDS = ("unbreakable",)
+
+
+def read_permitted(name: str) -> PermittedRecords[str]:
+    """Return the `path:line:rule` keys of the `path:line:rule: unbreakable:
+    reason` records in the file `name`, in file order, none without a name."""
+    if not name:
+        return PermittedRecords([])
+    records = read_records(Path(name), PERMITTED_KEYWORDS, PROGRAM)
+    return PermittedRecords(f"{record.path}:{record.number}:{record.rule}" for _, record in records)
+
+
+def file_findings(file: Path) -> list[Finding] | None:
+    try:
+        text = read_text(file)
+    except OSError:
+        return None
+    return findings(scan(text, language_for(file, text)), wrap_width(file))
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paths: list[str] = []
+        self.range: str = ""
+        self.permitted: str = ""
+        self.list_rules: bool = False
+
+
+def command_line_parser() -> CommandLineParser:
+    parser = program_parser("Report the comment runs whose prose breaks the wrap rules, outside markdown.")
+    _ = parser.add_argument("paths", nargs="*", metavar="PATH", help="a file to check")
+    _ = parser.add_argument("--range", default="", metavar="RANGE", help="report only the runs this git range adds to")
+    _ = parser.add_argument(
+        "--permitted", default="", metavar="FILE", help="records that clear unbreakable findings"
+    )
+    _ = parser.add_argument("--list-rules", action="store_true", help="print the rule names")
+    return parser
+
+
+def check(words: list[str]) -> int:
+    parser = command_line_parser()
+    arguments = parser.parse_args(words, namespace=Arguments())
+    if arguments.list_rules:
+        print("\n".join(RULES))
+        return 0
+    operands = arguments.paths
+    if not operands:
+        parser.error("give a path, or --list-rules")
+    permits = read_permitted(arguments.permitted)
+
+    saw_finding = False
+    saw_error = False
+    checked = 0
+    for name, file, lines in range_targets(arguments.range or None, operands):
+        if name.endswith(MARKDOWN_SUFFIXES):
+            if lines is None:
+                say(PROGRAM, f"{name}: markdown; run rewrap-md {name}")
+                saw_error = True
+            continue
+        if not present(file.is_file):
+            if lines is not None:
+                say(PROGRAM, f"{name}: no such file")
+                continue
+            say(PROGRAM, f"{name} is not a file")
+            saw_error = True
+            continue
+        found = file_findings(file)
+        if found is None:
+            say(PROGRAM, f"cannot read {name}")
+            saw_error = True
+            continue
+        checked += 1
+        for finding in found:
+            # Runs enter the report when the range adds a line that they name.
+            if lines is not None and not lines.intersection(finding.lines):
+                continue
+            print(finding.report(name), flush=True)
+            # Permitted runs print. They stop blocking once every line that
+            # they name has a record. Records for one unbreakable line do not
+            # excuse another line.
+            cleared = [permits.clears(f"{name}:{number}:{finding.rule}") for number in finding.lines]
+            if not all(cleared):
+                saw_finding = True
+
+    report_unused(PROGRAM, permits.unused())
+
+    if saw_error:
+        return 2
+    if saw_finding:
+        return 1
+    # Print a positive line. Without it, an empty run looks like a clean one,
+    # and a run with only permitted findings looks like a run without findings.
+    permitted = f", {len(permits.used)} permitted" if permits.used else ""
+    print(f"wrap-check: clean, {checked} file(s){permitted}")
+    return 0
+
+
+def main(arguments: list[str]) -> int:
+    try:
+        return check(arguments)
+    except (PermittedFileError, RangeError) as error:
+        say(PROGRAM, str(error))
+        return 2
+
+
+if __name__ == "__main__":
+    run_main(lambda: main(sys.argv[1:]))

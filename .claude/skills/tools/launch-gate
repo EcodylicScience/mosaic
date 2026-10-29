@@ -1,0 +1,320 @@
+#!/usr/bin/env -S python3 -B
+"""Launch the review-prose gate: a reviewer and an editor peer in a worktree.
+
+Usage: launch-gate <repo-dir> <base> <paths> <target> <caller-session>
+REVIEW_PROSE_DRY_RUN=1 reports the filled prompts instead of starting peers.
+"""
+
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+from git_in_directory import repository_toplevel, resolved_commit, run_git
+from lexical_paths import temporary_directory
+from lossless_text import decoded, encoded, print_error, substitution_text
+from program_entry import run_main
+from program_messages import refuse
+from program_start import run_program
+from quiet_paths import new_file, present, remove_quietly
+from review_prose_gate import (
+    REFUSED_STATUS,
+    CommandFailed,
+    checked,
+    gate_branch,
+    gate_file,
+    gate_status,
+    line_buffered_output,
+    peer_session,
+)
+from review_prose_prompts import EDITOR_PROMPT, REVIEWER_PROMPT
+from shell_whitespace import blank_separated_words
+from tmux_commands import caller_session, claude_command, tmux, tmux_output
+from tool_installers import installer
+from working_tree_snapshot import SnapshotError, build_snapshot_commit, git_runner
+
+PROGRAM = "launch-gate"
+REQUIRED_COMMANDS = ("prose-check", "rewrap-md", "wrap-check", "rewrap-comment")
+READY_TEXT = b"auto mode on"
+READY_POLLS = 90
+SNAPSHOT_MESSAGE = "Snapshot the target before review"
+
+
+def scratch_file(prefix: str) -> Path:
+    directory = temporary_directory()
+    path = new_file(directory, prefix)
+    if path is None:
+        raise OSError(f"cannot create a file in {directory}")
+    return path
+
+
+def rewrap_fault() -> str | None:
+    """Return the message of rewrap-md when it cannot run, or None.
+
+    rewrap-md refuses without the pinned prettier that it installs outside the
+    repository, and an editor that meets the refusal mid-round is stuck. Lines
+    already wrapped come back unchanged at exit 0.
+    """
+    smoke = scratch_file("review-prose-preflight.")
+    try:
+        _ = smoke.write_bytes(b"The reviewer reads the target and reports every finding.\n")
+        completed = run_program(["rewrap-md", smoke], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    finally:
+        remove_quietly(smoke)
+    return None if completed.returncode == 0 else substitution_text(completed.stdout)
+
+
+def preflight() -> None:
+    for command in REQUIRED_COMMANDS:
+        if shutil.which(command) is None:
+            refuse(PROGRAM, f"{command} is not on PATH; install it with {installer(command)}", REFUSED_STATUS)
+    listing = run_program(["wrap-check", "--list-rules"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if listing.returncode != 0:
+        refuse(PROGRAM, f"wrap-check does not support --list-rules; reinstall it with {installer('wrap-check')}", REFUSED_STATUS)
+    fault = rewrap_fault()
+    if fault is not None:
+        refuse(PROGRAM, f"rewrap-md cannot run: {fault}", REFUSED_STATUS)
+
+
+def resolved_directory(argument: str) -> Path:
+    """Return <repo-dir> as an absolute path, or refuse one that is not a
+    directory that this process can enter."""
+    # `git -C ""` is a no-op and points every command at the repository that
+    # contains the caller's directory.
+    if not argument or not present(Path(argument).is_dir):
+        refuse(PROGRAM, f"<repo-dir> is not a directory: '{argument}'", REFUSED_STATUS)
+    if not os.access(argument, os.X_OK):
+        refuse(PROGRAM, f"cannot resolve <repo-dir>: '{argument}'", REFUSED_STATUS)
+    return Path(argument).resolve()
+
+
+def rule_path(toplevel: Path, skill: str, description: str) -> Path:
+    """Return the SKILL.md of a skill in the caller's repository: the tracked
+    source in the skills repository, else the synced mirror that every other
+    repository has."""
+    tracked = toplevel / "general" / skill / "SKILL.md"
+    mirror = toplevel / ".claude" / "skills" / skill / "SKILL.md"
+    for candidate in (tracked, mirror):
+        if candidate.is_file():
+            return candidate
+    refuse(PROGRAM, f"the gate needs the {description} at {tracked} or {mirror}", REFUSED_STATUS)
+
+
+def resolved_base(repo: Path, base: str) -> str:
+    """Resolve <base> to a commit of the caller's repository.
+
+    In the worktree, a name such as HEAD means another commit. In a
+    repository without a commit, the base does not resolve and passes through
+    as is.
+    """
+    commit = resolved_commit(repo, base)
+    if commit is not None:
+        return commit
+    if resolved_commit(repo, "HEAD") is not None:
+        refuse(PROGRAM, f"<base> does not name a commit in {repo}: '{base}'", REFUSED_STATUS)
+    return base
+
+
+def snapshot_commit(repo: Path, token: str, operands: list[str]) -> str:
+    """Commit HEAD's tree plus the working-tree version of <paths>.
+
+    It is staged in a scratch index. The caller's index stays unopened, and
+    another session's uncommitted work stays out. commit-tree does not move a
+    ref.
+    """
+    parent = resolved_commit(repo, "HEAD")
+    index = scratch_file(f"review-prose-{token}.index.")
+    try:
+        return build_snapshot_commit(
+            git_runner(repo),
+            index,
+            parent or "",
+            ["--", *operands],
+            SNAPSHOT_MESSAGE,
+            parent=parent,
+            empty_tree_refuses=False,
+        )
+    except SnapshotError as error:
+        # Every step of a commit seed is a git step.
+        assert error.git_status is not None
+        raise CommandFailed(error.git_status) from error
+    finally:
+        remove_quietly(index)
+
+
+def special_files(directory: str, names: list[str]) -> set[str]:
+    """Return the entries of `directory` that are neither a regular file, a
+    directory nor a symbolic link."""
+    kept = (stat.S_ISREG, stat.S_ISDIR, stat.S_ISLNK)
+    return {name for name in names if not any(kind((Path(directory) / name).lstat().st_mode) for kind in kept)}
+
+
+def copy_claude_directory(repo: Path, worktree: Path) -> None:
+    """Copy the caller's working-tree .claude/ into the worktree, owner-only.
+
+    Settings, hooks, skills and agents then match the ones that the caller runs
+    with. As a copy, it keeps a gate that targets a skill from rewriting the
+    caller's. FIFOs, sockets and devices are left out, because their content
+    cannot be copied.
+    """
+    source = repo / ".claude"
+    if not present(source.is_dir):
+        return
+    destination = worktree / ".claude"
+    if destination.is_symlink() or destination.is_file():
+        destination.unlink()
+    elif destination.exists():
+        shutil.rmtree(destination)
+    _ = shutil.copytree(source, destination, symlinks=True, ignore=special_files, copy_function=shutil.copy)
+    for directory, _subdirectories, files in os.walk(destination):
+        for path in [Path(directory), *(Path(directory) / name for name in files)]:
+            if not path.is_symlink():
+                path.chmod(path.stat().st_mode & ~0o077)
+
+
+def start_peer(name: str, agent: str, prompt: Path, worktree: Path, session: str | None) -> str:
+    """Start one peer with `prompt` as its first prompt and return its pane
+    id: a window of `session`, or a detached top-level session without one."""
+    command = claude_command([], agent, name, prompt, ["--permission-mode", "auto"])
+    place = ["new-window", "-d", "-t", f"{session}:", "-n", name] if session else ["new-session", "-d", "-s", name]
+    started = checked(tmux([*place, "-c", str(worktree), "-P", "-F", "#{pane_id}", command], stdout=subprocess.PIPE))
+    return decoded(started.stdout).strip()
+
+
+def wait_until_ready(name: str, pane: str) -> None:
+    for _ in range(READY_POLLS):
+        if READY_TEXT in tmux_output(["capture-pane", "-pt", pane]):
+            return
+        time.sleep(1)
+    print_error(f"ERROR: {name} did not become ready")
+    sys.exit(1)
+
+
+def start_peers(peers: list[tuple[str, str, Path]], worktree: Path) -> None:
+    """Start each peer in the worktree and wait for its ready prompt before
+    the next one starts.
+
+    Inside tmux the peers open as windows of the caller's session, and outside
+    it as detached top-level sessions. The peers run in auto permission mode.
+    The caller's classifier blocks a subprocess with
+    --dangerously-skip-permissions, and a detached session cannot answer the
+    prompt that the reviewer's grep raises.
+    """
+    session = caller_session()
+    for name, agent, prompt in peers:
+        wait_until_ready(name, start_peer(name, agent, prompt, worktree, session))
+
+
+def filled(template: str, values: list[tuple[str, str]]) -> str:
+    """Return `template` with each placeholder replaced in order, literally."""
+    for placeholder, value in values:
+        template = template.replace(placeholder, value)
+    return template
+
+
+def launch(repo_argument: str, base: str, paths: str, target: str, caller_session: str) -> int:
+    dry_run = bool(os.environ.get("REVIEW_PROSE_DRY_RUN"))
+    preflight()
+
+    token = os.environ.get("REVIEW_PROSE_TOKEN") or f"rp{os.urandom(2).hex()}"
+    reviewer = peer_session(token, "reviewer")
+    editor = peer_session(token, "editor")
+    state = gate_file(token, "state")
+    worktree = gate_file(token, "worktree")
+    branch = gate_branch(token)
+
+    # Two bytes of randomness name the run. The launch refuses a token that a
+    # live run already uses, and the state file and worktree of that run stay
+    # intact.
+    if present(state.exists) or present(worktree.exists):
+        refuse(PROGRAM, f"{state} names a run already in flight; launch again", REFUSED_STATUS)
+
+    resolved = resolved_directory(repo_argument)
+    # <paths> is the gate's whole permission to edit, and teardown restores it.
+    if not paths:
+        refuse(PROGRAM, "<paths> names the files the gate may edit and is empty", REFUSED_STATUS)
+    # Teardown reads the state file one key=value line at a time.
+    if "\n" in f"{resolved}{paths}":
+        refuse(PROGRAM, "<repo-dir> and <paths> may not contain a newline", REFUSED_STATUS)
+    # The state file records the toplevel. Teardown joins the toplevel-relative
+    # paths that git reports to it, from whatever directory teardown runs in.
+    repo = repository_toplevel(resolved)
+    if repo is None:
+        refuse(PROGRAM, f"<repo-dir> is not inside a git repository: '{resolved}'", REFUSED_STATUS)
+    ruleset = rule_path(repo, "concise-prose", "ruleset")
+    house_style = rule_path(repo, "code-style", "house style")
+
+    # The dry run resolves the pathspec by the staging's rules and does not
+    # write. Unlike ls-files, it includes an untracked spec still under review.
+    operands = blank_separated_words(paths)
+    dry_add = run_git(repo, ["add", "--dry-run", "--", *operands], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    if dry_add.returncode != 0:
+        refuse(PROGRAM, f"<paths> names nothing git can stage in {repo}: {substitution_text(dry_add.stderr)}", REFUSED_STATUS)
+    base = resolved_base(repo, base)
+
+    snapshot = snapshot_commit(repo, token, operands)
+    # The branch and the state file come before the worktree. Teardown can then
+    # finish a run whose worktree failed to be added.
+    _ = checked(run_git(repo, ["branch", branch, snapshot]))
+    _ = state.write_bytes(encoded(f"repo={repo}\nworktree={worktree}\nsnapshot={snapshot}\npaths={paths}\n"))
+
+    print(f"TOKEN={token}")
+    print(f"REVIEWER={reviewer}")
+    print(f"EDITOR={editor}")
+    print(f"SNAPSHOT={snapshot}")
+    print(f"WORKTREE={worktree}")
+
+    _ = checked(run_git(repo, ["worktree", "add", "--quiet", str(worktree), branch]))
+    copy_claude_directory(repo, worktree)
+
+    # paths goes to both prompts. The editor's write scope and teardown's
+    # restore scope are then one string. Peers resumed after teardown read the
+    # state path, find the file missing, and stop.
+    values = [
+        ("__TARGET__", target),
+        ("__EDITOR__", editor),
+        ("__REVIEWER__", reviewer),
+        ("__CALLER__", caller_session),
+        ("__RULESET__", str(ruleset)),
+        ("__HOUSE_STYLE__", str(house_style)),
+        ("__RANGE__", f"{base}...{branch}"),
+        ("__REPO__", str(worktree)),
+        ("__PATHS__", paths),
+        ("__TOKEN__", token),
+        ("__STATE__", str(state)),
+    ]
+    editor_prompt = scratch_file("tmp.")
+    reviewer_prompt = scratch_file("tmp.")
+    _ = editor_prompt.write_bytes(encoded(filled(EDITOR_PROMPT, values)))
+    _ = reviewer_prompt.write_bytes(encoded(filled(REVIEWER_PROMPT, values)))
+
+    if dry_run:
+        print(f"EDITOR_PROMPT={editor_prompt}")
+        print(f"REVIEWER_PROMPT={reviewer_prompt}")
+    else:
+        # The editor is ready before the reviewer starts. Each peer's shell
+        # reads its prompt file as it starts, and a ready peer has read it.
+        try:
+            start_peers([(editor, "prose-editor", editor_prompt), (reviewer, "prose-reviewer", reviewer_prompt)], worktree)
+        finally:
+            remove_quietly(editor_prompt)
+            remove_quietly(reviewer_prompt)
+
+    print(f"Wait for CONVERGED from {reviewer}, then run: teardown-gate {token}")
+    return 0
+
+
+def main(arguments: list[str]) -> int:
+    line_buffered_output()
+    if len(arguments) != 5:
+        print_error("usage: launch-gate <repo-dir> <base> <paths> <target> <caller-session>")
+        return REFUSED_STATUS
+    return gate_status(PROGRAM, lambda: launch(*arguments))
+
+
+if __name__ == "__main__":
+    # Terminating signals unwind the stack, which removes the scratch index.
+    run_main(lambda: main(sys.argv[1:]))

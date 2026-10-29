@@ -90,7 +90,10 @@ python scripts/gen_docs_reference.py --write
   the result. The docs workflow runs it with `--check`.
 - Do not run `mkdocs gh-deploy`. Pages deploys from `.github/workflows/docs.yml`.
 - Before reporting work done, run `basedpyright` and `pytest -m "slow or not slow"`. CI
-  skips the type check and runs the unmarked slow tests only weekly.
+  skips the type check and runs the unmarked slow tests only weekly. An agent runs the
+  first through `.claude/skills/tools/mosaic-check`, which compares each changed file
+  with a per-file baseline, and the second on the task machine through `mosaic-suite`
+  (the `mosaic-testing` skill). A hook refuses a full suite on this machine.
 
 ## CI
 
@@ -237,6 +240,26 @@ every registered step (`tests/core/media/preprocess/test_media_steps.py`).
 
 Google style. A public object is documented only by its docstring, because the site has
 no rendered API reference.
+
+## Agent skills and hooks
+
+`.claude/skills/` has the skills for work on this repository: `mosaic-worktree`,
+`mosaic-testing`, `extending-mosaic` and `mosaic-release`. A skill that a session loads
+from another open repository applies only to that repository.
+
+`.claude/settings.json` runs these PreToolUse hooks from `.claude/skills/tools/`:
+
+- `mosaic-suite-hook.py` denies a full test suite on this machine.
+- `mosaic-worktree-hook.py` makes a python or pytest run in a worktree import that
+  worktree's `src/`. It also applies the shared `chores-hook.py` rewrite, because
+  two hooks that rewrite one call do not combine.
+- `mosaic-commit-hook.py` refuses a commit with a ruff finding, a stale
+  `docs/reference/` page, or an added line naming something private to this machine.
+- The shared `heavy-hook.py` and `remote-leak-hook.py`.
+
+Their tests run with `python3 -B -m unittest mosaic_hook_tests` from
+`.claude/skills/tools/`. The repository is public: a task machine's names and paths
+stay in `.claude/settings.local.json` and on that machine.
 
 ## Area guides
 

@@ -1,0 +1,122 @@
+#!/usr/bin/env -S python3 -B
+"""Exit 0 filled or already right, 1 the range is not one whole comment run, 2 a
+usage error."""
+
+import argparse
+import re
+import shutil
+import sys
+from pathlib import Path
+
+from command_line_parser import program_parser
+from comment_fill import Fill, fill
+from lossless_text import encoded, read_text
+from program_entry import run_main
+from program_messages import say
+from prose_scan import language_for, scan
+from quiet_paths import linked_file, present, sibling_file
+from wrap_width import wrap_width
+
+PROGRAM = "rewrap-comment"
+RANGE_FORM = re.compile(r"([0-9]+)-([0-9]+)")
+
+
+def filled(file: Path, shown: str, start: int, end: int) -> tuple[str, Fill] | int:
+    """Return the file's text and its fill, with the fill's notes said, or the
+    exit status of an unreadable file or of a range refused by the fill."""
+    try:
+        text = read_text(file)
+    except OSError:
+        say(PROGRAM, f"cannot read {shown}")
+        return 2
+    result = fill(scan(text, language_for(file, text)), wrap_width(file), start, end)
+    if result.status:
+        say(PROGRAM, result.refusal)
+        return result.status
+    for note in result.notes:
+        say(PROGRAM, note)
+    return text, result
+
+
+def write_back(file: Path, shown: str, start: int, end: int) -> int:
+    # The fill is written to a sibling temp file and renamed over the target.
+    # Runs interrupted part way leave the original as it was.
+    with sibling_file(file, ".rewrap-comment.") as temporary:
+        if temporary is None:
+            # Exit 2, because exit 1 reads as a refusal that sends the caller
+            # to a fresh check.
+            say(PROGRAM, f"cannot write beside {shown}")
+            return 2
+        outcome = filled(file, shown, start, end)
+        if isinstance(outcome, int):
+            return outcome
+        text, result = outcome
+        new_text = result.text(run_only=False)
+        # Runs already wrapped right keep their modification time, which
+        # callers read.
+        if new_text == text:
+            return 0
+        try:
+            _ = temporary.write_bytes(encoded(new_text))
+            shutil.copymode(file, temporary)
+            _ = temporary.replace(file)
+        except OSError:
+            say(PROGRAM, f"cannot write {shown}")
+            return 2
+    return 0
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.dry_run: bool = False
+        self.file: str = ""
+        self.range: tuple[int, int] = (0, 0)
+
+
+def line_range(text: str) -> tuple[int, int]:
+    match = RANGE_FORM.fullmatch(text)
+    if not match:
+        raise argparse.ArgumentTypeError(f'the range is written START-END, got "{text}"')
+    return int(match[1]), int(match[2])
+
+
+def rewrap(arguments: Arguments) -> int:
+    shown = arguments.file
+    start, end = arguments.range
+    file = Path(shown)
+    if not present(file.is_file):
+        say(PROGRAM, f"{shown} is not a file")
+        return 2
+    # The link stays a link, and the file that it names is filled.
+    linked = linked_file(file)
+    if linked is None:
+        say(PROGRAM, "cannot resolve the link")
+        return 2
+    if linked != file:
+        file, shown = linked, str(linked)
+
+    if not arguments.dry_run:
+        return write_back(file, shown, start, end)
+    outcome = filled(file, shown, start, end)
+    if isinstance(outcome, int):
+        return outcome
+    _ = sys.stdout.buffer.write(encoded(outcome[1].text(run_only=True)))
+    return 0
+
+
+def main(words: list[str]) -> int:
+    parser = program_parser("Refill one comment run, as wrap-check names it, and write it back.")
+    _ = parser.add_argument("--dry-run", action="store_true", help="print the filled run instead of writing it")
+    _ = parser.add_argument("file", metavar="FILE", help="the file that holds the run")
+    _ = parser.add_argument(
+        "range", metavar="START-END", type=line_range, help="the run's lines, as wrap-check names them"
+    )
+    arguments = parser.parse_args(words, namespace=Arguments())
+    return rewrap(arguments)
+
+
+if __name__ == "__main__":
+    # Terminating signals unwind the stack, which removes the sibling temp
+    # file.
+    run_main(lambda: main(sys.argv[1:]))

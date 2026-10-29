@@ -1,6 +1,28 @@
 # OS / editor
 .DS_Store
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+# Shared skills mirrored from elsewhere stay local: they describe internal
+# repositories and process, and their upstream copies change without review here.
+.claude/skills/chores/
+.claude/skills/clean-branch-protocol/
+.claude/skills/code-style/
+.claude/skills/coding-principles/
+.claude/skills/concise-prose/
+.claude/skills/diagnosing-environmental-failures/
+.claude/skills/doc-lifecycle/
+.claude/skills/heavy-task/
+.claude/skills/locate-tests/
+.claude/skills/mutate/
+.claude/skills/no-process-language/
+.claude/skills/python-type-hinting/
+.claude/skills/remote-task/
+.claude/skills/review-prose/
+.claude/skills/rewrap/
+.claude/skills/skill-maintenance/
+.claude/skills/think-before-code/
+.claude/skills/writing-issues/
 CLAUDE.local.md
 .worktrees/
 

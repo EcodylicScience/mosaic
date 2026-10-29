@@ -1,0 +1,312 @@
+#!/usr/bin/env -S python3 -B
+"""Print the tests that exercise changed files.
+
+Usage: locate-tests CHANGED_FILE...
+
+Prints each selected test path relative to the git toplevel of the current
+directory, one per line, sorted, together with the tests that the
+LOCATE_TESTS_ALWAYS declaration names. Writes one note per changed path to
+standard error when the path does not exist, does not parse, or no test imports
+it.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import tempfile
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+from claude_settings import SETTINGS_PATH, MissingSettingsError, SettingsError, environment_block
+from command_line_parser import CommandLineParser, program_parser
+from git_in_directory import COMMON_DIRECTORY_QUERY, git_text, nul_separated_names, repository_toplevel, run_git
+from json_value import Json, parse_json
+from lexical_paths import lexically_normal
+from lossless_text import decoded, write_error
+from program_entry import run_main
+from program_messages import refuse, say
+from program_start import shell_status, start_failure, start_program
+from python_import_graph import is_test_file, select_tests
+from quiet_paths import present, read_quietly
+from test_runner import Runner, RunnerError, detect_runner
+
+PROGRAM = "locate-tests"
+EXIT_FAILURE = 1
+EXIT_REFUSAL = 2
+# Declares the tests that every run prints, as a key of a settings file's env
+# block and as an environment variable.
+ALWAYS_KEY = "LOCATE_TESTS_ALWAYS"
+ENVIRONMENT_SOURCE = "the environment"
+
+# Asks vitest, installed in the working directory, for the tests related to the
+# changed paths, and adds the specifications whose project lists a changed path
+# as a setup file and those that read sources as text. Arguments: the result
+# file, then the absolute changed paths. Writes the selected module IDs and
+# every test's module ID to the result file as {"selected": [...], "tests":
+# [...]}, because vitest's logger writes to standard output.
+VITEST_SCRIPT = """\
+import { readFileSync, writeFileSync } from "node:fs";
+import { createVitest } from "vitest/node";
+
+const moduleIds = (specifications) => specifications.map((specification) => specification.moduleId);
+const [resultFile, ...related] = process.argv.slice(1);
+const vitest = await createVitest("test", { related, watch: false, run: true });
+const selected = new Set(moduleIds(await vitest.getRelevantTestSpecifications()));
+const specifications = await vitest.globTestSpecifications();
+for (const specification of specifications) {
+    const setupFiles = specification.project.config.setupFiles;
+    const readsText = /\\?raw|readFile/.test(readFileSync(specification.moduleId, "utf8"));
+    if (related.some((path) => setupFiles.includes(path)) || readsText) {
+        selected.add(specification.moduleId);
+    }
+}
+writeFileSync(resultFile, JSON.stringify({ selected: [...selected], tests: moduleIds(specifications) }));
+await vitest.close();
+"""
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.changed: list[str] = []
+
+
+@dataclass
+class Selection:
+    """The selected test paths, relative to the toplevel and possibly repeated,
+    one note per changed path at most, and every test file of the language."""
+
+    paths: list[PurePosixPath]
+    notes: list[str]
+    test_files: list[PurePosixPath]
+
+
+def command_line_parser() -> CommandLineParser:
+    parser = program_parser("Print the tests that exercise changed files.")
+    _ = parser.add_argument(
+        "changed", nargs="*", metavar="CHANGED_FILE", help="a changed file, absolute or relative to this directory"
+    )
+    return parser
+
+
+def relative_changed_paths(arguments: list[str], toplevel: Path) -> list[PurePosixPath]:
+    """Return each argument relative to `toplevel`, once each, in argument
+    order. Refuses a path outside `toplevel` and a directory."""
+    changed: list[PurePosixPath] = []
+    for argument in arguments:
+        path = Path(argument).resolve()
+        if not path.is_relative_to(toplevel):
+            refuse(PROGRAM, f"{argument} is outside {toplevel}", EXIT_REFUSAL)
+        if present(path.is_dir):
+            refuse(PROGRAM, f"{argument} is a directory; name the files in it", EXIT_REFUSAL)
+        relative = PurePosixPath(path.relative_to(toplevel))
+        if relative not in changed:
+            changed.append(relative)
+    return changed
+
+
+def python_sources(toplevel: Path) -> dict[PurePosixPath, bytes]:
+    """Return the source of each Python file that git lists as tracked or
+    untracked and not ignored, and that exists as a regular file."""
+    listing = run_git(
+        toplevel, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], stdout=subprocess.PIPE
+    )
+    if listing.returncode != 0:
+        refuse(PROGRAM, f"git ls-files failed in {toplevel}", EXIT_REFUSAL)
+    sources: dict[PurePosixPath, bytes] = {}
+    for name in nul_separated_names(listing.stdout):
+        path = PurePosixPath(name)
+        if path.suffix != ".py" or not present((toplevel / path).is_file):
+            continue
+        source = read_quietly(toplevel / path)
+        if source is not None:
+            sources[path] = source
+    return sources
+
+
+def python_selection(toplevel: Path, changed: list[PurePosixPath]) -> Selection:
+    sources = python_sources(toplevel)
+    graph = select_tests(sources, changed)
+    paths: list[PurePosixPath] = []
+    notes: list[str] = []
+    for path in changed:
+        selected = graph.selected[path]
+        paths.extend(selected)
+        if not present((toplevel / path).exists):
+            notes.append(f"{path}: does not exist")
+        elif path in graph.unparsable:
+            notes.append(f"{path}: does not parse")
+        elif not selected:
+            notes.append(f"{path}: no test imports it")
+    return Selection(paths=paths, notes=notes, test_files=[path for path in sources if is_test_file(path)])
+
+
+def relative_module_paths(result: Json, key: str, toplevel: Path) -> list[PurePosixPath]:
+    """Return the module IDs that the vitest script wrote under `key`, relative
+    to `toplevel`. Exits 1 when they are not a list of strings or one lies
+    outside `toplevel`."""
+    module_ids = result.get(key) if isinstance(result, dict) else None
+    strings = [item for item in module_ids if isinstance(item, str)] if isinstance(module_ids, list) else []
+    if not isinstance(module_ids, list) or len(strings) != len(module_ids):
+        refuse(PROGRAM, f'node wrote a selection without a list of module IDs under "{key}"', EXIT_FAILURE)
+    paths: list[PurePosixPath] = []
+    for module_id in strings:
+        path = Path(module_id)
+        if not path.is_relative_to(toplevel):
+            refuse(PROGRAM, f"vitest named {module_id}, which is outside {toplevel}", EXIT_FAILURE)
+        paths.append(PurePosixPath(path.relative_to(toplevel)))
+    return paths
+
+
+def typescript_selection(toplevel: Path, changed: list[PurePosixPath]) -> Selection:
+    """Run VITEST_SCRIPT with `node` in `toplevel`. Exits 1 when `node`
+    cannot start, exits nonzero, forwarding its standard error, or writes no
+    selection."""
+    if not present((toplevel / "node_modules" / "vitest").is_dir):
+        refuse(PROGRAM, f"{toplevel} has no node_modules/vitest; run npm ci in {toplevel}", EXIT_REFUSAL)
+    with tempfile.TemporaryDirectory(prefix=f"{PROGRAM}-") as directory:
+        result_file = Path(directory) / "selection.json"
+        arguments = ["node", "--input-type=module", "--eval", VITEST_SCRIPT, str(result_file)]
+        arguments.extend(str(toplevel / path) for path in changed)
+        try:
+            process = start_program(arguments, directory=toplevel, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except FileNotFoundError:
+            refuse(PROGRAM, "node was not found on PATH", EXIT_FAILURE)
+        except OSError as error:
+            reason, _ = start_failure("node", error)
+            refuse(PROGRAM, f"node cannot start: {reason}", EXIT_FAILURE)
+        _, errors = process.communicate()
+        status = shell_status(process.returncode)
+        if status != 0:
+            write_error(errors)
+            refuse(PROGRAM, f"node exited with status {status}", EXIT_FAILURE)
+        written = read_quietly(result_file)
+    if written is None:
+        refuse(PROGRAM, "node exited with status 0 without writing the selection", EXIT_FAILURE)
+    try:
+        result = parse_json(decoded(written))
+    except ValueError:
+        result = None
+    notes = [f"{path}: does not exist" for path in changed if not present((toplevel / path).exists)]
+    return Selection(
+        paths=relative_module_paths(result, "selected", toplevel),
+        notes=notes,
+        test_files=relative_module_paths(result, "tests", toplevel),
+    )
+
+
+def selection_for(runner: Runner, toplevel: Path, changed: list[PurePosixPath]) -> Selection:
+    match runner:
+        case "pytest":
+            return python_selection(toplevel, changed)
+        case "vitest":
+            return typescript_selection(toplevel, changed)
+
+
+def main_worktree(toplevel: Path) -> Path:
+    """Return the main worktree of the repository whose toplevel is
+    `toplevel`."""
+    status, common_directory = git_text(toplevel, [*COMMON_DIRECTORY_QUERY])
+    if status != 0:
+        refuse(PROGRAM, f"git rev-parse --git-common-dir failed in {toplevel}", EXIT_REFUSAL)
+    return Path(common_directory).parent
+
+
+def settings_files(toplevel: Path) -> Iterator[Path]:
+    """Yield the toplevel's settings file, then the main worktree's, looking up
+    the main worktree only when asked for it."""
+    yield toplevel / SETTINGS_PATH
+    yield main_worktree(toplevel) / SETTINGS_PATH
+
+
+def declared_paths(value: str) -> list[PurePosixPath]:
+    """Return each whitespace-separated word of `value` as a lexically normal
+    path."""
+    return [PurePosixPath(lexically_normal(Path(word))) for word in value.split()]
+
+
+def always_declaration(toplevel: Path) -> tuple[str, list[PurePosixPath]]:
+    """Return the source of the LOCATE_TESTS_ALWAYS declaration and the paths
+    it declares, relative to the toplevel.
+
+    The source is the first that exists of the toplevel's settings file, the
+    main worktree's settings file and the environment. A settings file without
+    the key declares nothing.
+    """
+    for settings in settings_files(toplevel):
+        try:
+            block = environment_block(settings)
+        except MissingSettingsError:
+            continue
+        except SettingsError as error:
+            refuse(PROGRAM, str(error), EXIT_REFUSAL)
+        value = block.get(ALWAYS_KEY, "")
+        if not isinstance(value, str):
+            refuse(PROGRAM, f"{settings}: {ALWAYS_KEY} is not a string", EXIT_REFUSAL)
+        return str(settings), declared_paths(value)
+    return ENVIRONMENT_SOURCE, declared_paths(os.environ.get(ALWAYS_KEY, ""))
+
+
+def check_declared_paths(toplevel: Path, source: str, declared: list[PurePosixPath]) -> None:
+    """Refuse a declared path that is absolute, resolves outside `toplevel` or
+    does not exist, naming `source` as the place to fix it."""
+    for path in declared:
+        if path.is_absolute():
+            problem = "is absolute"
+        elif not (toplevel / path).resolve().is_relative_to(toplevel):
+            problem = f"is outside {toplevel}"
+        elif not present((toplevel / path).exists):
+            problem = f"does not exist in {toplevel}"
+        else:
+            continue
+        refuse(PROGRAM, f"{ALWAYS_KEY} names {path}, which {problem}; fix the declaration in {source}", EXIT_REFUSAL)
+
+
+def always_selected(
+    declared: list[PurePosixPath], directories: set[PurePosixPath], test_files: list[PurePosixPath]
+) -> list[PurePosixPath]:
+    """Return each declared path that is not in `directories` as it is, and for
+    each that is, the test files under it."""
+    selected: list[PurePosixPath] = []
+    for path in declared:
+        if path in directories:
+            selected.extend(test_file for test_file in test_files if test_file.is_relative_to(path))
+        else:
+            selected.append(path)
+    return selected
+
+
+def print_selection(selection: Selection, always: list[PurePosixPath]) -> None:
+    """Write the notes to standard error and each path of the selection and of
+    `always` once, sorted, to standard output."""
+    for note in selection.notes:
+        say(PROGRAM, note)
+    for line in sorted({path.as_posix() for path in [*selection.paths, *always]}):
+        _ = sys.stdout.write(f"{line}\n")
+
+
+def main(words: list[str]) -> int:
+    arguments = command_line_parser().parse_args(words, namespace=Arguments())
+    if not arguments.changed:
+        refuse(PROGRAM, "name at least one changed file", EXIT_REFUSAL)
+    directory = Path.cwd()
+    toplevel = repository_toplevel(directory)
+    if toplevel is None:
+        refuse(PROGRAM, f"{directory} is not in a git working tree", EXIT_REFUSAL)
+    changed = relative_changed_paths(arguments.changed, toplevel)
+    try:
+        runner = detect_runner(toplevel)
+    except RunnerError as error:
+        refuse(PROGRAM, str(error), EXIT_REFUSAL)
+    source, declared = always_declaration(toplevel)
+    check_declared_paths(toplevel, source, declared)
+    directories = {path for path in declared if present((toplevel / path).is_dir)}
+    selection = selection_for(runner, toplevel, changed)
+    print_selection(selection, always_selected(declared, directories, selection.test_files))
+    return 0
+
+
+if __name__ == "__main__":
+    run_main(lambda: main(sys.argv[1:]))

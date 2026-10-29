@@ -1,0 +1,1461 @@
+#!/usr/bin/env -S python3 -B
+import argparse
+import glob
+import hashlib
+import math
+import os
+import re
+import select
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
+from pathlib import Path
+from types import FrameType
+from typing import Final, Literal, NoReturn
+from xml.etree import ElementTree
+
+from command_line_parser import CommandLineParser, program_parser
+from git_in_directory import COMMON_DIRECTORY_QUERY, repository_toplevel, run_git
+from json_value import Json, parse_json
+from lexical_paths import appended_to_name, lexically_normal, normal_join
+from lock_runner_contract import IGNORE_UNTRACKED_VARIABLE, start_case
+from lossless_text import decoded, encoded, print_error, split_lines, substitution_text, write_error
+from program_messages import discard, say
+from quiet_paths import present, read_quietly
+from terminating_signals import TERMINATING_SIGNALS, handle_terminating_signals
+from test_runner import PYTEST_MARKER, VITEST_MARKER, Runner, RunnerError, detect_runner
+from working_tree_snapshot import (
+    CALLER_INDEX,
+    SnapshotError,
+    build_snapshot_commit,
+    git_runner,
+    untracked_files,
+    untracked_listing,
+)
+
+PROGRAM = "mutate"
+
+VerdictKind = Literal["killed", "survived", "error"]
+# The problem on disk of a mutant path or a lockfile, empty for a tracked
+# regular file.
+PathState = Literal["", "is not a regular file", "is not tracked by git"]
+
+INVOCATION = (
+    'mutate --check DIR "$(cat LIST.json)" && remote --directory DIR --log FILE.log --tool mutate "$(cat LIST.json)"'
+)
+START_REFUSAL = f"runs only when remote starts it; run: {INVOCATION}"
+KEYS = ("name", "path", "old", "new", "tests")
+NAME_PATTERN = "[A-Za-z0-9._-]+"
+VITEST_BINARY = "node_modules/.bin/vitest"
+# The characters that a JavaScript regular expression treats as syntax.
+JAVASCRIPT_SYNTAX = re.compile(r"[\\^$.*+?()[\]{}|]")
+# The statuses of a vitest assertion that ran.
+VITEST_RAN = ("passed", "failed")
+PYTEST_EXIT_MEANINGS = {
+    2: "interrupted",
+    3: "internal error",
+    4: "usage error",
+    5: "no tests collected",
+}
+OUTPUT_TAIL_LINES = 40
+TIMEOUT_FACTOR = 10
+MINIMUM_TIMEOUT = 60
+POLL_SECONDS = 1.0
+PYTEST_LAUNCHER = ("uv", "run", "--frozen")
+# The variables that point uv and the tests at the caller's virtual
+# environment.
+CALLER_ENVIRONMENT_VARIABLES = ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV")
+INSTALL_STAMP = ".mutate-install-stamp"
+NOT_REGULAR_FILE: Final = "is not a regular file"
+NOT_TRACKED: Final = "is not tracked by git"
+SNAPSHOT_MESSAGE = "mutate working-tree snapshot"
+# Keeps the caller's hooks, which a linked worktree shares, from running
+# against the fallback worktree.
+HOOKS_OFF = ("-c", "core.hooksPath=/dev/null")
+SURROGATE_FIX = "replace the lone \\u surrogate escape with the character"
+COPY_OLD_FIX = "copy old from the formatted file on disk"
+RUNNER_FAILURE_FIX = "keep the mutant importable and parseable"
+STDOUT_CLOSED = "stdout was closed; rerun the list"
+
+
+class Abort(Exception):
+    """Signal a refusal or abort, which ends the run with exit 2 and one
+    `mutate: <message>` line per message."""
+
+    def __init__(self, *messages: str) -> None:
+        super().__init__(*messages)
+        self.messages: tuple[str, ...] = messages
+
+
+class Disconnected(Abort):
+    """The parent process or the connection on stdout went away."""
+
+
+class TimedOut(Exception):
+    """A runner ran past its time limit."""
+
+
+@dataclass(frozen=True)
+class Mutant:
+    name: str
+    path: str
+    old: str
+    new: str
+    tests: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Problem:
+    """A problem of a mutant and the fix that its error line names after it."""
+
+    text: str
+    fix: str
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """The score of a mutant run: the failing test of a killed mutant, the
+    problems of an error."""
+
+    kind: VerdictKind
+    failed_test: str = ""
+    problems: tuple[Problem, ...] = ()
+
+
+@dataclass(frozen=True)
+class PytestCase:
+    file: str
+    name: str
+    classname: str
+    failed: bool
+
+
+@dataclass(frozen=True)
+class Original:
+    """Record a mutated file as the run found it: its bytes and its permission
+    bits."""
+
+    content: bytes
+    mode: int
+
+
+@dataclass(frozen=True)
+class Install:
+    """The dependency install of a runner: its command, the lockfile it
+    installs from and the command that writes that lockfile."""
+
+    command: tuple[str, ...]
+    lockfile: str
+    lock_command: str
+
+    def command_line(self) -> str:
+        return " ".join(self.command)
+
+
+INSTALLS: dict[Runner, Install] = {
+    "pytest": Install(("uv", "sync", "--frozen"), PYTEST_MARKER, "uv lock"),
+    # A lifecycle script can rewrite the caller's git hooks, which a linked
+    # worktree shares.
+    "vitest": Install(("npm", "ci", "--ignore-scripts"), VITEST_MARKER, "npm install"),
+}
+
+
+# --- pure functions --------------------------------------------------------
+
+
+def assert_never(value: NoReturn) -> NoReturn:
+    """Fail type checking at a branch that a value can still reach, as
+    typing.assert_never does from Python 3.11."""
+    raise AssertionError(f"unhandled value {value!r}")
+
+
+def load_json(text: str) -> tuple[Json, bool]:
+    """Return the parsed value and True, or None and False for invalid JSON."""
+    try:
+        value = parse_json(text)
+    except ValueError:
+        return None, False
+    return value, True
+
+
+def parse_entries(text: str) -> tuple[list[Json], str]:
+    """Return the list's entries, or an empty list and the problem with the
+    list."""
+    document, parsed = load_json(text)
+    if not parsed:
+        return [], "the mutant list is not valid JSON; check it with python3 -m json.tool <list.json>"
+    if not isinstance(document, list):
+        return [], "the mutant list is not a JSON array; wrap the mutants in [ and ]"
+    if not document:
+        return [], "the mutant list is empty; add at least one mutant"
+    return document, ""
+
+
+def resolve_inside(path: str, run_directory: Path, toplevel: Path) -> Path | None:
+    """Return the absolute form of a path relative to the run directory, None
+    outside the toplevel."""
+    resolved = normal_join(run_directory, path)
+    if resolved == toplevel or not resolved.is_relative_to(toplevel):
+        return None
+    return resolved
+
+
+def candidate_paths(entries: Sequence[Json], run_directory: Path, toplevel: Path) -> list[Path]:
+    """The absolute paths whose state on disk the validation needs."""
+    paths: list[Path] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str) and not Path(path).is_absolute():
+            resolved = resolve_inside(path, run_directory, toplevel)
+            if resolved is not None:
+                paths.append(resolved)
+    return paths
+
+
+def path_problem(
+    path: Json, run_directory: Path, toplevel: Path, path_states: Mapping[Path, PathState], directory_option: str
+) -> str:
+    if not isinstance(path, str):
+        return "path must be a string; write path relative to the run directory"
+    if Path(path).is_absolute():
+        return f"path {path} must be relative to the run directory; write it relative to the run directory"
+    resolved = resolve_inside(path, run_directory, toplevel)
+    if resolved is None:
+        return f"path {path} is outside the repository; pass {directory_option} the repository that contains it"
+    state = path_states.get(resolved, "")
+    if not state:
+        return ""
+    if state == NOT_REGULAR_FILE:
+        return f"path {path} {state}; name a regular file"
+    if state == NOT_TRACKED:
+        return f"path {path} {state}; run git add -N {path} in the run directory"
+    assert_never(state)
+
+
+def tests_problems(tests: Json) -> list[str]:
+    if not isinstance(tests, list) or not tests:
+        return ["tests must be a non-empty array; name the tests that claim the behavior"]
+    problems: list[str] = []
+    if not all(isinstance(selector, str) and selector for selector in tests):
+        problems.append("each test selector must be a non-empty string; remove the empty selector")
+    if not all(is_utf8(selector) for selector in tests if isinstance(selector, str)):
+        problems.append(f"each test selector must be valid UTF-8; {SURROGATE_FIX}")
+    for selector in tests:
+        if isinstance(selector, str) and selector.startswith("-"):
+            problems.append(f"test selector {selector} begins with -; name a test file, or a node id for pytest")
+    return problems
+
+
+def is_utf8(text: str) -> bool:
+    """Return whether the text encodes as UTF-8.
+
+    JSON escapes can produce lone surrogates.
+    """
+    try:
+        _ = text.encode()
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def printable(text: str) -> str:
+    """Return the text with each lone surrogate, which a report's JSON escapes
+    can produce and UTF-8 cannot encode, written as its backslash escape."""
+    return text.encode("utf-8", "backslashreplace").decode()
+
+
+def entry_problems(
+    entry: dict[str, Json],
+    seen_names: set[str],
+    run_directory: Path,
+    toplevel: Path,
+    path_states: Mapping[Path, PathState],
+    directory_option: str,
+) -> list[str]:
+    problems = [f"missing key {key}; add it" for key in KEYS if key not in entry]
+    problems += [
+        f"unknown key {key}; the keys are name, path, old, new and tests" for key in sorted(entry) if key not in KEYS
+    ]
+    if "name" in entry:
+        name = entry["name"]
+        if not isinstance(name, str) or not re.fullmatch(NAME_PATTERN, name):
+            problems.append(f"name must match {NAME_PATTERN}; rename the mutant")
+        elif name in seen_names:
+            problems.append("duplicate name; give each mutant a unique name")
+    if "path" in entry:
+        problem = path_problem(entry["path"], run_directory, toplevel, path_states, directory_option)
+        if problem:
+            problems.append(problem)
+    if "old" in entry:
+        old = entry["old"]
+        if not isinstance(old, str) or not old:
+            problems.append(f"old must be a non-empty string; {COPY_OLD_FIX}")
+        elif not is_utf8(old):
+            problems.append(f"old must be valid UTF-8; {SURROGATE_FIX}")
+    if "new" in entry:
+        new = entry["new"]
+        if not isinstance(new, str) or not new:
+            problems.append(
+                "new must be a non-empty string; to delete lines, keep the lines on both sides in old and new"
+            )
+        elif not is_utf8(new):
+            problems.append(f"new must be valid UTF-8; {SURROGATE_FIX}")
+        elif new == entry.get("old"):
+            problems.append("new must differ from old; change new")
+    if "tests" in entry:
+        problems += tests_problems(entry["tests"])
+    return problems
+
+
+def validate_entries(
+    entries: Sequence[Json],
+    run_directory: Path,
+    toplevel: Path,
+    path_states: Mapping[Path, PathState],
+    directory_option: str,
+) -> tuple[list[Mutant], list[str]]:
+    """The mutants, or every problem as `entry <index> (<name>): <problem>`.
+
+    `path_states` maps each candidate path to the problem its state on disk
+    raises, the empty string for a tracked regular file. A fix names
+    `directory_option`, the option that passes the run directory.
+    """
+    mutants: list[Mutant] = []
+    problems: list[str] = []
+    seen_names: set[str] = set()
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            problems.append(
+                f"entry {index} (unnamed): not an object;"
+                + " write each mutant as an object with name, path, old, new and tests"
+            )
+            continue
+        name = entry.get("name")
+        label = name if isinstance(name, str) else "unnamed"
+        found = entry_problems(entry, seen_names, run_directory, toplevel, path_states, directory_option)
+        problems += [f"entry {index} ({label}): {problem}" for problem in found]
+        if isinstance(name, str):
+            seen_names.add(name)
+        path, old, new, tests = (
+            entry.get("path"),
+            entry.get("old"),
+            entry.get("new"),
+            entry.get("tests"),
+        )
+        if (
+            not found
+            and isinstance(name, str)
+            and isinstance(path, str)
+            and isinstance(old, str)
+            and isinstance(new, str)
+            and isinstance(tests, list)
+        ):
+            selectors = tuple(selector for selector in tests if isinstance(selector, str))
+            mutants.append(Mutant(name, path, old, new, selectors))
+    return mutants, problems
+
+
+def count_matches(content: bytes, text: bytes) -> int:
+    """Count the occurrences of `text` in `content`, overlapping ones
+    included."""
+    count = 0
+    position = content.find(text)
+    while position != -1:
+        count += 1
+        position = content.find(text, position + 1)
+    return count
+
+
+def apply_mutant(content: bytes, mutant: Mutant) -> bytes:
+    """Return the content with the one occurrence of the mutant's `old`
+    replaced by its `new`."""
+    return content.replace(mutant.old.encode(), mutant.new.encode(), 1)
+
+
+def apply_problems(content: bytes, mutant: Mutant) -> list[Problem]:
+    """Return why the mutant does not apply to the file's original bytes, empty
+    when it does: `old` must occur exactly once."""
+    old_count = count_matches(content, mutant.old.encode())
+    if old_count == 0:
+        return [Problem("old matches 0 times, expected 1", COPY_OLD_FIX)]
+    if old_count > 1:
+        return [Problem(f"old matches {old_count} times, expected 1", "widen old with neighboring lines")]
+    return []
+
+
+def unapplied_verdict(problems: Sequence[Problem]) -> Verdict:
+    return Verdict("error", problems=tuple(problems))
+
+
+def runner_failure(text: str) -> Verdict:
+    """The error verdict of a runner that failed without a failed test."""
+    return Verdict("error", problems=(Problem(text, RUNNER_FAILURE_FIX),))
+
+
+def unique_selectors(mutants: Sequence[Mutant]) -> list[str]:
+    """Every selector of the mutants, once each, in list order."""
+    return list(dict.fromkeys(selector for mutant in mutants for selector in mutant.tests))
+
+
+def vitest_selector(selector: str) -> tuple[str, str]:
+    """Return the test file of a vitest selector and the full name after its
+    first `::`. A whole-file selector has an empty name."""
+    file, _, name = selector.partition("::")
+    return file, name
+
+
+def vitest_arguments(selectors: Sequence[str]) -> list[str]:
+    """Return each test file once, then a `-t` pattern anchored to match only
+    the full names of the named tests.
+
+    vitest takes one pattern for every file of a run. A whole-file selector
+    therefore runs its files without one.
+    """
+    parts = [vitest_selector(selector) for selector in selectors]
+    files = list(dict.fromkeys(file for file, _ in parts))
+    names = [name for _, name in parts]
+    if not all(names):
+        return files
+    escaped = (JAVASCRIPT_SYNTAX.sub(r"\\\g<0>", name) for name in dict.fromkeys(names))
+    return [*files, "-t", f"^(?:{'|'.join(escaped)})$"]
+
+
+def runner_command(
+    runner: Runner, toplevel: Path, report: Path, selectors: Sequence[str], config: Path | None
+) -> list[str]:
+    if runner == "pytest":
+        return [
+            *PYTEST_LAUNCHER,
+            "pytest",
+            "-p",
+            "no:cacheprovider",
+            "-o",
+            "junit_family=xunit1",
+            f"--junitxml={report}",
+            *selectors,
+        ]
+    return [
+        str(toplevel / VITEST_BINARY),
+        "run",
+        *(["--config", str(config)] if config is not None else []),
+        "--reporter=json",
+        f"--outputFile={report}",
+        *vitest_arguments(selectors),
+    ]
+
+
+def pytest_cases(report: str | None) -> list[PytestCase]:
+    """Return the test cases of a JUnit report, empty for a missing or
+    unreadable report."""
+    if report is None:
+        return []
+    try:
+        root = ElementTree.fromstring(report)
+    except ElementTree.ParseError:
+        return []
+    return [
+        PytestCase(
+            file=case.get("file", ""),
+            name=case.get("name", ""),
+            classname=case.get("classname", ""),
+            failed=case.find("failure") is not None or case.find("error") is not None,
+        )
+        for case in root.iter("testcase")
+    ]
+
+
+def pytest_verdict(status: int, report: str | None) -> Verdict:
+    if status == 0:
+        return Verdict("survived")
+    if status == 1:
+        for case in pytest_cases(report):
+            if case.failed:
+                return Verdict("killed", f"{case.file}::{case.name}")
+        return runner_failure("pytest exit 1 without a failed test")
+    if status in PYTEST_EXIT_MEANINGS:
+        return runner_failure(f"pytest exit {status} ({PYTEST_EXIT_MEANINGS[status]})")
+    return runner_failure(f"pytest exit {status}")
+
+
+def ends_path(path: Path, suffix: str) -> bool:
+    """Whether the components of `suffix` end those of `path`."""
+    suffix_parts = lexically_normal(Path(suffix)).parts
+    return bool(suffix_parts) and path.parts[len(path.parts) - len(suffix_parts) :] == suffix_parts
+
+
+def pytest_selector_matches(selector: str, case: PytestCase, run_directory: Path) -> bool:
+    """Whether a selector names the test case.
+
+    The case's file is relative to pytest's rootdir, an ancestor of every
+    selected file. The selector's file, resolved from the run directory,
+    therefore ends with it.
+    """
+    parts = selector.split("::")
+    if not ends_path(normal_join(run_directory, parts[0]), case.file):
+        return False
+    if len(parts) == 1:
+        return True
+    last = parts[-1]
+    return last in (case.name, case.name.split("[")[0], case.classname.rsplit(".", 1)[-1])
+
+
+def unmatched_pytest_selectors(
+    selectors: Sequence[str], report: str | None, run_directory: Path
+) -> list[str]:
+    cases = pytest_cases(report)
+    return [
+        selector
+        for selector in selectors
+        if not any(pytest_selector_matches(selector, case, run_directory) for case in cases)
+    ]
+
+
+def vitest_files(report: str | None) -> list[dict[str, Json]] | None:
+    """Return the test files of a JSON report, None for a missing or unreadable
+    report."""
+    if report is None:
+        return None
+    document, parsed = load_json(report)
+    if not parsed or not isinstance(document, dict):
+        return None
+    results = document.get("testResults")
+    if not isinstance(results, list):
+        return None
+    return [result for result in results if isinstance(result, dict)]
+
+
+def vitest_assertions(file: dict[str, Json]) -> list[dict[str, Json]]:
+    assertions = file.get("assertionResults")
+    if not isinstance(assertions, list):
+        return []
+    return [assertion for assertion in assertions if isinstance(assertion, dict)]
+
+
+def vitest_ran(files: Sequence[dict[str, Json]]) -> int:
+    """Count the assertions that ran. A name pattern skips the others."""
+    return sum(assertion.get("status") in VITEST_RAN for file in files for assertion in vitest_assertions(file))
+
+
+def vitest_verdict(status: int, report: str | None, run_directory: Path) -> Verdict:
+    files = vitest_files(report)
+    if files is None:
+        return runner_failure("no report")
+    for file in files:
+        for assertion in vitest_assertions(file):
+            if assertion.get("status") == "failed":
+                return Verdict("killed", vitest_test_id(file, assertion, run_directory))
+    if any(file.get("status") == "failed" for file in files):
+        return runner_failure("a test file failed without a failed assertion")
+    if vitest_ran(files) == 0:
+        return runner_failure("no tests ran")
+    if status != 0:
+        return runner_failure(f"vitest exit {status} without a failed assertion")
+    return Verdict("survived")
+
+
+def relative_name(name: Json, run_directory: Path) -> str:
+    """Return the path of a test file relative to the run directory, when
+    inside it."""
+    text = str(name)
+    path = Path(text)
+    if path == run_directory or not path.is_relative_to(run_directory):
+        return text
+    return str(path.relative_to(run_directory))
+
+
+def vitest_test_id(file: dict[str, Json], assertion: dict[str, Json], run_directory: Path) -> str:
+    """Return the `file::full name` id of a test, its file relative to the run
+    directory."""
+    return f"{relative_name(file.get('name'), run_directory)}::{assertion.get('fullName')}"
+
+
+def vitest_names_file(selector: str, file: dict[str, Json]) -> bool:
+    """Whether a selector names the test file."""
+    return vitest_selector(selector)[0] in str(file.get("name"))
+
+
+def vitest_selector_matches(selector: str, file: dict[str, Json]) -> bool:
+    """Whether a selector names the test file, and the test it names, if any,
+    is in it."""
+    if not vitest_names_file(selector, file):
+        return False
+    _, name = vitest_selector(selector)
+    return not name or any(assertion.get("fullName") == name for assertion in vitest_assertions(file))
+
+
+def unmatched_vitest_selectors(selectors: Sequence[str], report: str | None) -> list[str]:
+    files = vitest_files(report) or []
+    return [selector for selector in selectors if not any(vitest_selector_matches(selector, file) for file in files)]
+
+
+def collected_vitest_tests(selectors: Sequence[str], report: str | None, run_directory: Path) -> list[str]:
+    """Return the id of each test, run or skipped, in the files that the
+    selectors name."""
+    files = vitest_files(report) or []
+    return [
+        vitest_test_id(file, assertion, run_directory)
+        for file in files
+        if any(vitest_names_file(selector, file) for selector in selectors)
+        for assertion in vitest_assertions(file)
+    ]
+
+
+def verdict(runner: Runner, status: int, report: str | None, run_directory: Path) -> Verdict:
+    if runner == "pytest":
+        return pytest_verdict(status, report)
+    return vitest_verdict(status, report, run_directory)
+
+
+def unmatched_selectors(
+    runner: Runner, selectors: Sequence[str], report: str | None, run_directory: Path
+) -> list[str]:
+    if runner == "pytest":
+        return unmatched_pytest_selectors(selectors, report, run_directory)
+    return unmatched_vitest_selectors(selectors, report)
+
+
+def collected_tests(
+    runner: Runner, selectors: Sequence[str], report: str | None, run_directory: Path
+) -> list[str]:
+    """Return the ids of the tests that the run collects from the files of the
+    selectors. A pytest report gives none: it lists only the selected
+    tests."""
+    if runner == "pytest":
+        return []
+    return collected_vitest_tests(selectors, report, run_directory)
+
+
+def test_count(runner: Runner, report: str | None) -> int:
+    if runner == "pytest":
+        return len(pytest_cases(report))
+    files = vitest_files(report)
+    return vitest_ran(files) if files is not None else 0
+
+
+def baseline_problems(result: Verdict, unmatched: Sequence[str], collected: Sequence[str]) -> list[str]:
+    """Why a baseline is not green, empty when it is. Unmatched selectors are
+    followed by one `collected` line per test of `collected`."""
+    problems: list[str] = []
+    if result.kind == "killed":
+        problems.append(
+            f"baseline red: {printable(result.failed_test)} failed; make the suite pass before mutating it"
+        )
+    problems += [
+        f"baseline error: {problem.text}; fix the cause in the runner output below" for problem in result.problems
+    ]
+    if unmatched:
+        problems += [
+            f"baseline matched no test for selector {selector}; name a test that the run collects"
+            for selector in unmatched
+        ]
+        problems += [f"collected {printable(test)}" for test in collected]
+    return problems
+
+
+def format_verdict(name: str, result: Verdict) -> str:
+    if result.kind == "survived":
+        return f"survived {name}"
+    if result.kind == "killed":
+        return f"killed {name}: {printable(result.failed_test)}"
+    return f"error {name}: " + "; ".join(f"{problem.text}; {problem.fix}" for problem in result.problems)
+
+
+def format_baseline(runner: Runner, count: int, seconds: float) -> str:
+    return f"mutate: baseline green ({runner}, {count} tests, {round(seconds)}s)"
+
+
+def format_summary(results: Sequence[Verdict]) -> str:
+    killed, survived, errors = (
+        sum(result.kind == kind for result in results) for kind in ("killed", "survived", "error")
+    )
+    return f"mutate: {killed} killed, {survived} survived, {errors} error"
+
+
+def exit_status(results: Sequence[Verdict]) -> int:
+    if any(result.kind == "error" for result in results):
+        return 2
+    if any(result.kind == "survived" for result in results):
+        return 1
+    return 0
+
+
+def output_tail(output: str) -> str:
+    return "".join(output.splitlines(keepends=True)[-OUTPUT_TAIL_LINES:])
+
+
+def sha256(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def mutant_timeout(baseline_seconds: float, minimum: int) -> int:
+    return max(math.ceil(TIMEOUT_FACTOR * baseline_seconds), minimum)
+
+
+def timeout_verdict(seconds: int) -> Verdict:
+    problem = Problem(f"timed out after {seconds}s", "replace the mutant with one that lets the tests finish")
+    return Verdict("error", problems=(problem,))
+
+
+def runner_environment(environment: Mapping[str, str], fallback: bool) -> dict[str, str]:
+    """Return the environment of the install and the runner.
+    A fallback drops the variables that name the caller's virtual
+    environment."""
+    dropped = CALLER_ENVIRONMENT_VARIABLES if fallback else ()
+    kept = {name: value for name, value in environment.items() if name not in dropped}
+    return {**kept, "PYTHONDONTWRITEBYTECODE": "1"}
+
+
+def exception_chain(error: BaseException) -> list[BaseException]:
+    """Return the exception and its context chain, oldest first."""
+    chain: list[BaseException] = []
+    link: BaseException | None = error
+    while link is not None:
+        chain.insert(0, link)
+        link = link.__context__
+    return chain
+
+
+def failure_lines(chain: Sequence[BaseException]) -> list[str]:
+    """The messages of every Abort in the chain, oldest first.
+
+    A last link that is not an Abort adds its internal-error line.
+    """
+    lines = [message for link in chain if isinstance(link, Abort) for message in link.messages]
+    error = chain[-1]
+    if not isinstance(error, Abort):
+        lines.append(f"internal error: {type(error).__name__}: {error}; report this line to the user")
+    return lines
+
+
+def bytecode_pattern(path: Path) -> str | None:
+    """Return the glob of the cached bytecode of a `.py` file, relative to its
+    directory, None for any other file."""
+    if path.suffix != ".py":
+        return None
+    return f"__pycache__/{glob.escape(path.stem)}.*.pyc"
+
+
+def stamp_text(command: str, toplevel: Path, digest: str) -> str:
+    """Return the install stamp: the install command, the toplevel's absolute
+    path and the lockfile's SHA-256, one per line."""
+    return f"{command}\n{toplevel}\n{digest}\n"
+
+
+def worktree_path(toplevel: Path) -> Path:
+    """Return the fallback worktree of a checkout: `.<name>-mutate` beside it,
+    where the checkout's relative paths out of the repository resolve alike."""
+    return toplevel.parent / f".{toplevel.name}-mutate"
+
+
+def git_message(stderr: bytes, status: int) -> str:
+    """Return git's first stderr line that starts with `fatal:` or `error:`,
+    else its first line, without one trailing `;` or `:`. Without a line,
+    return its exit status."""
+    lines = split_lines(decoded(stderr))
+    if not lines:
+        return f"git exited {status}"
+    line = next((line for line in lines if line.startswith(("fatal:", "error:"))), lines[0])
+    return line[:-1] if line.endswith((";", ":")) else line
+
+
+def snapshot_fix(error: SnapshotError, toplevel: Path) -> str:
+    """Return the fix for the step at which the snapshot failed."""
+    if error.step == "index-missing":
+        return f"rebuild it with git read-tree HEAD in {toplevel} and rerun the list"
+    if error.step == "index-copy":
+        return f"make {error.index_path} readable and the temporary directory writable, then rerun the list"
+    if error.step == "empty-tree":
+        return f"track the files under test in {toplevel} and rerun the list"
+    return "fix the git error above and rerun the list"
+
+
+# --- files and processes ---------------------------------------------------
+
+
+def path_state(path: Path, run_directory: Path) -> PathState:
+    """Return the problem on disk of a mutant path, empty for a tracked regular
+    file."""
+    if present(path.is_symlink) or not present(path.is_file):
+        return NOT_REGULAR_FILE
+    completed = run_git(
+        run_directory,
+        ["--literal-pathspecs", "ls-files", "--error-unmatch", "--", str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return "" if completed.returncode == 0 else NOT_TRACKED
+
+
+def require_vitest_binary(toplevel: Path) -> None:
+    """Refuse a toplevel that lacks the vitest binary, deleting the install
+    stamp so that the next run installs again."""
+    if not present((toplevel / VITEST_BINARY).exists):
+        record_install(toplevel / INSTALL_STAMP, None)
+        raise Abort(
+            f"cannot run the tests: {toplevel} lacks {VITEST_BINARY};"
+            + " add vitest to the devDependencies of package.json and rerun the list"
+        )
+
+
+def require_lockfile(toplevel: Path, install: Install) -> None:
+    """Refuse a lockfile at the toplevel that is not a regular file git
+    tracks."""
+    lockfile = install.lockfile
+    state = path_state(toplevel / lockfile, toplevel)
+    if not state:
+        return
+    if state == NOT_REGULAR_FILE:
+        raise Abort(
+            f"cannot install dependencies: {lockfile} in {toplevel} is not a regular file;"
+            + f" write a regular {lockfile} with {install.lock_command} in {toplevel}"
+        )
+    if state == NOT_TRACKED:
+        raise Abort(
+            f"cannot install dependencies: {lockfile} is not tracked by git in {toplevel};"
+            + f" run git add -N {lockfile} in {toplevel}"
+        )
+    assert_never(state)
+
+
+def common_directory(toplevel: Path) -> str:
+    """Return the absolute common git directory of `toplevel`."""
+    completed = run_git(toplevel, [*COMMON_DIRECTORY_QUERY], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if completed.returncode != 0:
+        raise Abort(
+            f"cannot read the git common directory of {toplevel}:"
+            + f" {git_message(completed.stderr, completed.returncode)};"
+            + f" fix the git error in {toplevel} and rerun the list"
+        )
+    return substitution_text(completed.stdout)
+
+
+def is_worktree_of(path: Path, toplevel: Path) -> bool:
+    """Return whether `path` is the toplevel of a worktree that shares the
+    common directory of `toplevel`.
+
+    Both halves are needed: a plain directory inside another checkout resolves
+    to that checkout's common directory.
+    """
+    expected = [common_directory(toplevel), str(path)]
+    found = run_git(
+        path, [*COMMON_DIRECTORY_QUERY, "--show-toplevel"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+    )
+    return found.returncode == 0 and split_lines(substitution_text(found.stdout)) == expected
+
+
+def locate_worktree(path: Path, toplevel: Path) -> bool:
+    """Create the worktree `path` of `toplevel` when absent, else repair its
+    links and confirm its identity. Return whether it was created."""
+    if present(path.exists):
+        # The repair relinks a worktree whose parent directory moved with the
+        # repository.
+        _ = run_git(
+            toplevel,
+            [*HOOKS_OFF, "worktree", "repair", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if not is_worktree_of(path, toplevel):
+            raise Abort(f"{path} exists and is not a worktree of {toplevel}; move {path} aside and rerun the list")
+        return False
+    # --force clears the registration of a directory deleted by hand.
+    added = run_git(
+        toplevel,
+        [*HOOKS_OFF, "worktree", "add", "--force", "--detach", "--no-checkout", str(path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if added.returncode != 0:
+        raise Abort(
+            f"cannot create the worktree {path}: {git_message(added.stderr, added.returncode)};"
+            + f" fix the git error in {toplevel} and rerun the list"
+        )
+    return True
+
+
+def check_out_snapshot(path: Path, snapshot: str) -> str | None:
+    """Check `snapshot` out in the worktree `path`. Return git's message when
+    the checkout fails, else None.
+
+    The forced checkout overwrites every tracked file, a mutant left by a
+    killed run included, and leaves untracked files in place.
+    """
+    checked_out = run_git(
+        path,
+        [*HOOKS_OFF, "checkout", "--quiet", "--detach", "--force", snapshot],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    return None if checked_out.returncode == 0 else git_message(checked_out.stderr, checked_out.returncode)
+
+
+def prepare_worktree(toplevel: Path, snapshot: str) -> Path:
+    """Locate the fallback worktree of `toplevel` and check `snapshot` out in
+    it. Return its path.
+
+    A worktree that existed before the run and fails the checkout is removed
+    and created again once. A new worktree that fails it refuses at once,
+    because a recreated one would fail alike.
+    """
+    path = worktree_path(toplevel)
+    created = locate_worktree(path, toplevel)
+    failure = check_out_snapshot(path, snapshot)
+    if failure is None:
+        return path
+    if created:
+        fix = "fix the git error and rerun the list"
+    else:
+        fix = f"run git worktree remove --force --force {path} and rerun the list"
+        say(PROGRAM, f"recreating the worktree {path}: {failure}")
+        removed = run_git(
+            toplevel,
+            [*HOOKS_OFF, "worktree", "remove", "--force", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        if removed.returncode == 0:
+            _ = locate_worktree(path, toplevel)
+            failure = check_out_snapshot(path, snapshot)
+            if failure is None:
+                return path
+        else:
+            failure = git_message(removed.stderr, removed.returncode)
+    raise Abort(f"cannot check out the snapshot in {path}: {failure}; {fix}")
+
+
+def prepare_fallback(
+    toplevel: Path, run_directory: Path, environment: Mapping[str, str], temporary_directory: Path
+) -> tuple[Path, Path]:
+    """Check the caller's working tree out in the fallback worktree, and return
+    the worktree and the run directory mapped into it.
+
+    The caller's index, working tree and refs stay untouched. Untracked files
+    refuse the run unless the ignore variable is set, as remote refuses them.
+    """
+    run_caller_git = git_runner(toplevel)
+    try:
+        snapshot = build_snapshot_commit(
+            run_caller_git,
+            temporary_directory / "snapshot-index",
+            CALLER_INDEX,
+            ["-u"],
+            SNAPSHOT_MESSAGE,
+            parent="HEAD",
+            empty_tree_refuses=True,
+        )
+        untracked = [] if environment.get(IGNORE_UNTRACKED_VARIABLE) else untracked_files(run_caller_git)
+    except SnapshotError as error:
+        raise Abort(
+            f"cannot snapshot the working tree of {toplevel}: {error.message}; {snapshot_fix(error, toplevel)}"
+        ) from None
+    if untracked:
+        say(PROGRAM, "untracked files in the working tree:")
+        for line in untracked_listing(untracked):
+            print_error(line)
+        raise Abort(
+            f"{toplevel} contains {len(untracked)} file(s) that git does not track; run git add -N :/<path>"
+            + " for each listed file the tests need, or pass --ignore-untracked to remote to run anyway"
+        )
+    worktree = prepare_worktree(toplevel, snapshot)
+    relative = run_directory.relative_to(toplevel)
+    require_run_directory(worktree, relative)
+    return worktree, worktree / relative
+
+
+def require_run_directory(worktree: Path, relative: Path) -> None:
+    """Refuse a run directory that holds no tracked file of the worktree.
+
+    The forced checkout leaves untracked files, which can keep a directory
+    without tracked files in place.
+    """
+    tracked = run_git(
+        worktree,
+        ["--literal-pathspecs", "ls-files", "--", str(relative)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if tracked.returncode != 0:
+        raise Abort(
+            f"cannot list the tracked files of {relative} in {worktree}:"
+            + f" {git_message(tracked.stderr, tracked.returncode)};"
+            + f" fix the git error in {worktree} and rerun the list"
+        )
+    if not tracked.stdout:
+        raise Abort(
+            f"the run directory {relative} is absent from the snapshot;"
+            + " pass --directory a directory that contains tracked files"
+        )
+
+
+def read_text_or_none(path: Path) -> str | None:
+    content = read_quietly(path)
+    return None if content is None else content.decode("utf-8", "replace")
+
+
+@dataclass(frozen=True)
+class Watch:
+    """The parent process id and the stdout poller, recorded at start."""
+
+    parent: int
+    stdout: select.poll
+
+
+def start_watch() -> Watch:
+    stdout = select.poll()
+    stdout.register(sys.stdout.fileno(), select.POLLERR | select.POLLHUP)
+    return Watch(os.getppid(), stdout)
+
+
+def check_connection(watch: Watch) -> None:
+    """Raises Disconnected when the parent process or the reader of stdout has
+    gone away."""
+    if os.getppid() != watch.parent:
+        raise Disconnected(f"the parent process {watch.parent} exited; rerun the list")
+    if watch.stdout.poll(0):
+        raise Disconnected(STDOUT_CLOSED)
+
+
+@dataclass(frozen=True)
+class Context:
+    runner: Runner
+    toplevel: Path
+    run_directory: Path
+    environment: Mapping[str, str]
+    watch: Watch
+    config: Path | None
+
+
+def wait_for(process: "subprocess.Popen[bytes]", watch: Watch, limit: int | None) -> int:
+    """The runner's exit status, polling the connection once per second.
+
+    Raises TimedOut once the runner has run for `limit` seconds.
+    """
+    deadline = None if limit is None else time.monotonic() + limit
+    while True:
+        remaining = POLL_SECONDS if deadline is None else deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimedOut
+        try:
+            return process.wait(timeout=min(remaining, POLL_SECONDS))
+        except subprocess.TimeoutExpired:
+            check_connection(watch)
+
+
+def launch_and_wait(
+    command: Sequence[str],
+    directory: Path,
+    environment: Mapping[str, str],
+    output_path: Path,
+    watch: Watch,
+    limit: int | None,
+) -> int:
+    """Run a command in `directory` to its exit, writing its combined output to
+    `output_path`, and return its exit status.
+
+    The command starts in its own process group, with the handled signals
+    unblocked. When the wait ends without the command's exit, the whole group
+    is killed. Raises TimedOut once the command has run for `limit` seconds,
+    and the OSError of a command that cannot start.
+    """
+    with signal_mask(signal.SIG_BLOCK):
+        with output_path.open("wb") as output:
+            process = subprocess.Popen(
+                list(command),
+                cwd=directory,
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                start_new_session=True,
+                preexec_fn=unblock_signals,  # noqa: PLW1509
+            )
+        try:
+            with signal_mask(signal.SIG_UNBLOCK):
+                return wait_for(process, watch, limit)
+        finally:
+            if process.returncode is None:
+                # Reaps with waitpid, not Popen.wait: a handler that raised
+                # inside Popen's wait loop can leave its lock held, and
+                # Popen.wait would then block for good.
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                with suppress(ChildProcessError):
+                    _, status = os.waitpid(process.pid, 0)
+                    process.returncode = os.waitstatus_to_exitcode(status)
+
+
+def run_tests(
+    command: Sequence[str], context: Context, report: Path, limit: int | None
+) -> tuple[int, str | None, str]:
+    """Invoke the runner once, and return its exit status, its report text and
+    its combined output."""
+    output_path = appended_to_name(report, ".out")
+    try:
+        status = launch_and_wait(
+            command,
+            context.run_directory,
+            context.environment,
+            output_path,
+            context.watch,
+            limit,
+        )
+    except FileNotFoundError:
+        raise Abort(f"cannot run the tests: {command[0]} was not found; install it and rerun the list") from None
+    return status, read_text_or_none(report), read_text_or_none(output_path) or ""
+
+
+def install_dependencies(
+    toplevel: Path, install: Install, environment: Mapping[str, str], watch: Watch, output_path: Path
+) -> bool:
+    """Install the dependencies at the toplevel of a task clone or of the
+    fallback worktree unless its stamp matches the expected one, and return
+    whether they are installed.
+
+    The stamp is deleted before the install and written after its exit 0, so
+    that a failed or killed install leaves it absent. Prints the refusal and
+    the install output's tail, returning False, when the install fails.
+    """
+    lockfile = toplevel / install.lockfile
+    try:
+        digest = sha256(lockfile.read_bytes())
+    except OSError as error:
+        raise Abort(
+            f"cannot read the lockfile {lockfile}: {error.strerror};"
+            + f" make {lockfile} readable and rerun the list"
+        ) from None
+    stamp = toplevel / INSTALL_STAMP
+    command = install.command_line()
+    expected = stamp_text(command, toplevel, digest)
+    if read_text_or_none(stamp) == expected:
+        return True
+    record_install(stamp, None)
+    say(PROGRAM, f"installing dependencies: {command}")
+    program = install.command[0]
+    try:
+        status = launch_and_wait(install.command, toplevel, environment, output_path, watch, limit=None)
+    except FileNotFoundError:
+        raise Abort(f"cannot install dependencies: {program} is not on PATH; install {program}") from None
+    if status != 0:
+        say_failure(
+            [f"cannot install dependencies: {command} exited {status}; fix the cause in the install output below"],
+            read_text_or_none(output_path) or "",
+        )
+        return False
+    record_install(stamp, expected)
+    return True
+
+
+def record_install(stamp: Path, text: str | None) -> None:
+    """Write the install stamp, or delete it for None."""
+    try:
+        if text is None:
+            stamp.unlink(missing_ok=True)
+        else:
+            _ = stamp.write_text(text, encoding="utf-8")
+    except OSError as error:
+        raise Abort(
+            f"cannot record the install in {stamp}: {error.strerror};"
+            + f" fix the reason in {stamp.parent} and rerun the list"
+        ) from None
+
+
+def write_bytes(path: Path, content: bytes, mode: int) -> None:
+    """Write the content over the file in place, then set its permission bits.
+
+    A write cut short leaves a partial file.
+    """
+    with path.open("wb") as handle:
+        _ = handle.write(content)
+    path.chmod(mode)
+
+
+def restore(path: Path, original: Original, list_path: str) -> None:
+    """Write the original bytes and permission bits back, or abort naming the
+    path as the list gave it."""
+    try:
+        write_bytes(path, original.content, original.mode)
+    except OSError as error:
+        raise Abort(f"cannot restore {list_path}: {error.strerror}; rerun the list") from error
+
+
+def purge_bytecode(path: Path) -> None:
+    pattern = bytecode_pattern(path)
+    if pattern is None:
+        return
+    for cached in path.parent.glob(pattern):
+        cached.unlink(missing_ok=True)
+
+
+def stop_on_signal(number: int, _frame: FrameType | None) -> None:
+    """Ends the run. Every later handled signal is ignored, so that `main`
+    prints the abort lines to their end."""
+    for handled in TERMINATING_SIGNALS:
+        _ = signal.signal(handled, signal.SIG_IGN)
+    raise Abort(f"stopped by {signal.Signals(number).name}; rerun the list")
+
+
+@contextmanager
+def signal_mask(how: int) -> Generator[None, None, None]:
+    """Blocks or unblocks the handled signals until the block ends.
+
+    A signal that arrives while blocked is handled once the mask is restored.
+    """
+    previous = signal.pthread_sigmask(how, TERMINATING_SIGNALS)
+    try:
+        yield
+    finally:
+        _ = signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def unblock_signals() -> None:
+    _ = signal.pthread_sigmask(signal.SIG_UNBLOCK, TERMINATING_SIGNALS)
+
+
+# --- main ------------------------------------------------------------------
+
+
+def say_failure(lines: Sequence[str], output: str) -> None:
+    """Writes each line to stderr as `say` does, then the tail of a command's
+    output."""
+    for line in lines:
+        say(PROGRAM, line)
+    write_error(encoded(output_tail(output)))
+
+
+def emit(line: str) -> None:
+    """Writes a line to stdout. A broken pipe counts as a lost connection."""
+    try:
+        print(line, flush=True)
+    except BrokenPipeError as error:
+        raise Disconnected(STDOUT_CLOSED) from error
+
+
+def outside_repository(run_directory: Path, directory_option: str) -> Abort:
+    """The refusal of a run directory outside a git repository, which names the
+    option that passes it."""
+    return Abort(
+        f"{run_directory} is not inside a git repository;"
+        + f" pass {directory_option} a directory inside the repository under test"
+    )
+
+
+def load_mutants(text: str, run_directory: Path, toplevel: Path, directory_option: str) -> list[Mutant]:
+    entries, problem = parse_entries(text)
+    if problem:
+        raise Abort(problem)
+    path_states: dict[Path, PathState] = {
+        path: path_state(path, run_directory)
+        for path in candidate_paths(entries, run_directory, toplevel)
+    }
+    mutants, problems = validate_entries(entries, run_directory, toplevel, path_states, directory_option)
+    if problems:
+        raise Abort(*problems)
+    return mutants
+
+
+def run_baseline(context: Context, report: Path, selectors: Sequence[str]) -> float | None:
+    """Runs every selector once and prints the green line, returning the wall
+    time.
+
+    Prints the abort and the output's tail, returning None, when the baseline
+    is not green.
+    """
+    runner, run_directory = context.runner, context.run_directory
+    started = time.monotonic()
+    status, report_text, output = run_tests(
+        runner_command(runner, context.toplevel, report, selectors, context.config),
+        context,
+        report,
+        limit=None,
+    )
+    seconds = time.monotonic() - started
+    unmatched = unmatched_selectors(runner, selectors, report_text, run_directory)
+    problems = baseline_problems(
+        verdict(runner, status, report_text, run_directory),
+        unmatched,
+        collected_tests(runner, unmatched, report_text, run_directory),
+    )
+    if problems:
+        say_failure(problems, output)
+        return None
+    emit(format_baseline(runner, test_count(runner, report_text), seconds))
+    return seconds
+
+
+def run_mutant(
+    context: Context, report: Path, mutant: Mutant, original: Original, limit: int
+) -> Verdict:
+    """Applies the mutant, runs its tests, restores the original bytes and
+    scores the run.
+
+    A failed apply aborts. The file is restored only once the runner has exited
+    or timed out, so any abort before that leaves the mutant in the file.
+    """
+    path = normal_join(context.run_directory, mutant.path)
+    mutated = apply_mutant(original.content, mutant)
+    command = runner_command(context.runner, context.toplevel, report, mutant.tests, context.config)
+    say(PROGRAM, f"applying {mutant.name} to {mutant.path}")
+    try:
+        write_bytes(path, mutated, original.mode)
+    except OSError as error:
+        raise Abort(
+            f"cannot apply {mutant.name} to {mutant.path}: {error.strerror}; resolve the error and rerun the list"
+        ) from error
+    purge_bytecode(path)
+    try:
+        status, report_text, _ = run_tests(command, context, report, limit)
+        result = verdict(context.runner, status, report_text, context.run_directory)
+    except TimedOut:
+        result = timeout_verdict(limit)
+    restore(path, original, mutant.path)
+    purge_bytecode(path)
+    return result
+
+
+class Arguments(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.mutants: str | None = None
+        self.check: str | None = None
+        self.config: Path | None = None
+
+
+def command_line_parser() -> CommandLineParser:
+    parser = program_parser(
+        "Apply, run and score a list of mutants against a repository's tests.",
+        f"Check the list here, then run it through remote:\n  {INVOCATION}",
+        usage="%(prog)s [-h] [--check DIR | --config FILE] LIST",
+    )
+    exclusive_options = parser.add_mutually_exclusive_group()
+    _ = exclusive_options.add_argument(
+        "--check",
+        metavar="DIR",
+        help="validate the list against the working tree, with paths relative to DIR, and exit",
+    )
+    _ = exclusive_options.add_argument(
+        "--config",
+        metavar="FILE",
+        type=Path,
+        help="run vitest with the config FILE, relative to the run directory",
+    )
+    # Optional to the parser, because a run that remote did not start is
+    # refused ahead of a missing list. The usage line shows it as required.
+    _ = parser.add_argument("mutants", nargs="?", metavar="LIST", help="the mutant list as JSON text")
+    return parser
+
+
+def check_list(text: str, run_directory: Path) -> int:
+    """Validate the list and the match count of each `old` against the working
+    tree, exiting 0 when every mutant applies."""
+    toplevel = repository_toplevel(run_directory)
+    if toplevel is None:
+        raise outside_repository(run_directory, "--check")
+    mutants = load_mutants(text, run_directory, toplevel, "--check")
+    problems = [
+        f"entry {index} ({mutant.name}): {problem.text}; {problem.fix}"
+        for index, mutant in enumerate(mutants)
+        for problem in apply_problems(normal_join(run_directory, mutant.path).read_bytes(), mutant)
+    ]
+    if problems:
+        raise Abort(*problems)
+    return 0
+
+
+def run_mutants(parser: CommandLineParser, arguments: Arguments) -> int:
+    if arguments.check is not None:
+        if arguments.mutants is None:
+            parser.error("the mutant list is required")
+        return check_list(arguments.mutants, Path(arguments.check).resolve())
+    watch = start_watch()
+    run_directory = Path.cwd()
+    toplevel = repository_toplevel(run_directory)
+    start = start_case(toplevel, os.environ)
+    if start == "bare":
+        raise Abort(START_REFUSAL)
+    if arguments.mutants is None:
+        parser.error("the mutant list is required")
+    if toplevel is None:
+        raise outside_repository(run_directory, "--directory")
+    mutants = load_mutants(arguments.mutants, run_directory, toplevel, "--directory")
+    try:
+        runner = detect_runner(toplevel)
+    except RunnerError as error:
+        raise Abort(str(error)) from error
+    if runner == "pytest" and arguments.config is not None:
+        parser.error("drop --config for a pytest repository, because it names a vitest config")
+    install = INSTALLS[runner]
+    fallback = start == "fallback"
+    require_lockfile(toplevel, install)
+    environment = runner_environment(os.environ, fallback)
+    minimum = int(os.environ.get("MUTATE_MINIMUM_TIMEOUT", str(MINIMUM_TIMEOUT)))
+    limit = minimum
+    extension = "xml" if runner == "pytest" else "json"
+    results: list[Verdict] = []
+    with tempfile.TemporaryDirectory(prefix="mutate-") as temporary_name:
+        temporary = Path(temporary_name)
+        if fallback:
+            toplevel, run_directory = prepare_fallback(toplevel, run_directory, environment, temporary)
+            say(PROGRAM, f"running in {run_directory}")
+        if not install_dependencies(toplevel, install, environment, watch, temporary / "install.out"):
+            return 2
+        if runner == "vitest":
+            require_vitest_binary(toplevel)
+        originals: dict[str, Original] = {}
+        for mutant in mutants:
+            path = normal_join(run_directory, mutant.path)
+            content = path.read_bytes()
+            originals[mutant.path] = Original(content, stat.S_IMODE(path.stat().st_mode))
+        problems = {
+            mutant.name: apply_problems(originals[mutant.path].content, mutant) for mutant in mutants
+        }
+        applicable = [mutant for mutant in mutants if not problems[mutant.name]]
+        context = Context(runner, toplevel, run_directory, environment, watch, arguments.config)
+        if applicable:
+            baseline_report = temporary / f"baseline.{extension}"
+            seconds = run_baseline(context, baseline_report, unique_selectors(applicable))
+            if seconds is None:
+                return 2
+            limit = mutant_timeout(seconds, minimum)
+        for index, mutant in enumerate(mutants):
+            if not problems[mutant.name]:
+                report = temporary / f"mutant-{index}.{extension}"
+                result = run_mutant(context, report, mutant, originals[mutant.path], limit)
+            else:
+                result = unapplied_verdict(problems[mutant.name])
+            results.append(result)
+            emit(format_verdict(mutant.name, result))
+    emit(format_summary(results))
+    return exit_status(results)
+
+
+def main() -> int:
+    """Runs the list. Every exception other than SystemExit ends the run with
+    exit 2.
+
+    An abort raised while another was handled adds its lines to the earlier
+    abort's.
+    """
+    parser = command_line_parser()
+    arguments = parser.parse_args(namespace=Arguments())
+    handle_terminating_signals(stop_on_signal)
+    try:
+        return run_mutants(parser, arguments)
+    except Exception as error:  # noqa: BLE001
+        chain = exception_chain(error)
+        if any(isinstance(link, Disconnected) for link in chain):
+            discard(sys.stdout)
+        for line in failure_lines(chain):
+            say(PROGRAM, line)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

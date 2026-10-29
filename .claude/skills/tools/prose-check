@@ -1,0 +1,280 @@
+#!/usr/bin/env -S python3 -B
+"""Exit 1 when a finding blocks, 2 on an error, else 0."""
+
+import argparse
+import re
+from pathlib import Path
+
+from command_line_parser import CommandLineParser, program_parser
+from git_range import RangeError, Target, range_targets
+from lossless_text import read_text, split_lines
+from permitted_records import PermittedFileError, PermittedRecords, read_records, report_unused, unreadable
+from program_entry import run_main
+from program_messages import say
+
+PROGRAM = "prose-check"
+
+# End-of-options separators of shell commands are not prose em dashes. The word
+# in front identifies one: an option flag, a quoted operand, a number, or a
+# command name that takes the separator. The operand behind it has to be a
+# token that a prose clause does not open with: a non-letter, or a whole word
+# with a `.` or `/` inside it (`staged.md`, `docs/plans/`, but not `e.g.`).
+# Backticks may close a quoted command at either end.
+DASH = r" -- "
+SHELL_WORD_OPERAND = r"[A-Za-z][\w.-]*[./][\w./-]*[\w/]`?(?=\s|$)"
+SHELL_OPERAND = rf"(?:[^\sA-Za-z-]|{SHELL_WORD_OPERAND})"
+# Tokens ending in a quote take only path-like operands. Prose closes a
+# quotation before a dash often, and SHELL_OPERAND misreads that case.
+SHELL_PATH_OPERAND = rf"(?:[.:/$~]|{SHELL_WORD_OPERAND})"
+SHELL_COMMANDS = (
+    "add|basename|cat|cd|checkout|chmod|cp|diff|dirname|exec|find|grep"
+    + "|head|ln|log|mkdir|mv|restore|rm|sed|tail|touch|xargs"
+)
+SHELL_END_OF_OPTIONS = (
+    r"`?(?:-{1,2}\w[\w-]*(?:=\S*)?"
+    + rf"|[^\s]*[\"'](?={DASH}{SHELL_PATH_OPERAND})"
+    + r"|(?:\"[^\"]*\"|'[^']*'|\d+|"
+    + SHELL_COMMANDS
+    + rf")(?={DASH}{SHELL_OPERAND}))"
+    + DASH
+)
+
+# Matches the prose dash at the start of a line, or after a word that does not
+# begin a shell operand list. The word may not span `(`, and a line resolving a
+# directory then does not match from its start.
+EM_DASH = (
+    r"^[ \t]*-- [^-]"
+    + rf"|(?:^|(?<=[\s;|&(`]))(?!{SHELL_END_OF_OPTIONS})[^\s(]*[^\s(-]{DASH}[^-]"
+)
+
+# `(?i:...)` marks a pattern where case does not matter, such as a word list of
+# banned vocabulary. The patterns without it are case-sensitive.
+
+# Constructions with no admissible use. Every hit blocks.
+FIX: dict[str, str] = {
+    EM_DASH: "prose em dash",
+    r"(?i:, which is (why|what|how|the))\b": "clause-scope gloss",
+    r", so \b": '", so" clause joiner',
+    r"(?i:\bwould (silently|quietly|swallow|hide|drop))\b":
+        "hypothetical defense",
+    r"(?i:\bis what (makes|turns|lets))\b": "pseudo-cleft",
+    r"(?i:\b(silently|quietly|load[- ]bearing))\b":
+        "stock word for a plain fact",
+    r"(?i:\b(deliberately|by design|by construction))\b": "asserted intent",
+    r"(?i:\b(authoritative|honest|genuinely|actually))\b": "stock evaluative",
+    r"(?i:\b(merely|simply|outright|correctly))\b": "empty intensifier",
+}
+
+# Matches direct objects of the form `no <noun>`. Its verb may be an
+# imperative. The excepted words are the prepositions, conjunctions and copulas
+# after which `no` heads a prepositional object or a predicate complement.
+# Matching is case-insensitive so a sentence-opening `With no project
+# directory` escapes. Words after `no` are not excluded. `reported no such
+# file` negates the object as `reported no file` does.
+NEGATED_OBJECT_EXCEPT = (
+    "and|are|as|at|be|been|being|but|by|for|from|in|is|of|on|or|than|that"
+    "|then|to|was|were|which|while|with"
+)
+NEGATED_OBJECT = (
+    rf"\b(?!(?i:{NEGATED_OBJECT_EXCEPT})\b)[A-Za-z][A-Za-z-]* no [A-Za-z]"
+)
+
+# Matches `no <noun>` or `nothing` as the subject, including the existential
+# `there is no <noun>`.
+NEGATED_SUBJECT = (
+    r"(?i:\b(?:nothing|no [a-z]+) "
+    r"(?:is|was|are|were|can|does|do|says|say|will|has|have)\b"
+    r"|\bthere (?:is|was|are|were) no [a-z])"
+)
+
+# Matches `what` clauses standing where a noun phrase belongs. Noun-phrase
+# subjects take a verb with `s`, and pronoun subjects do not.
+HEADLESS_RELATIVE = (
+    r"(?i:\b(?:what|whatever) "
+    r"(?:[a-z]+ [a-z]+s\b|(?:you|we|they|it|I) [a-z]+))"
+)
+
+# Matches metaphors for containment, motion or control, in the imperative and
+# base forms too. `gate` needs its `s`, because the bare noun names the thing
+# under test.
+METAPHOR_VERB = (
+    r"(?i:\b(?:"
+    r"hold|holds|holding|held"
+    r"|reach|reaches|reaching|reached"
+    r"|land|lands|landing|landed"
+    r"|ride|rides|riding|rode|ridden"
+    r"|sit|sits|sitting|sat"
+    r"|travel|travels|traveling|travelling|traveled|travelled"
+    r"|surface|surfaces|surfacing|surfaced"
+    r")\b|\bgates\b)"
+)
+
+# Constructions with a pattern that also matches text outside the rule. Each
+# --permitted record clears one hit. "own" stands where the sentence names the
+# competing owner, and the ban on "never" is on the directive use. Patterns
+# cannot see either exception.
+CHECK: dict[str, str] = {
+    r"(?i:\bnever)\b": 'directive "never"',
+    r"(?i:\b(its|their|[a-z]+'s) own)\b": "contrastive filler",
+    r"(?i:, (and )?(not|never|no|nothing))\b": "corrective tail",
+    r"(?i:\bcarr(y|ies|ied|ying))\b": "unnamed relation",
+    r"(?i:\brather than)\b": "contrast monoculture",
+    NEGATED_SUBJECT: "negated subject",
+    NEGATED_OBJECT: "negated object",
+    # Case decides. The capital identifies a heading, and the lowercase the
+    # gloss.
+    r"^[A-Z][^.:]{5,80}: [a-z]": "headline-colon-gloss summary",
+    # The pattern is anchored to a sentence start, because a wrapped line
+    # opening on `what` is not a headless relative.
+    r"^(What|Whatever)\b": "headless relative as subject",
+    HEADLESS_RELATIVE: "headless relative mid-sentence",
+    r"(?i:\b(that|which|whose)\b.*\b(that|which|whose))\b":
+        "stacked relative clauses",
+    METAPHOR_VERB: "metaphor verb",
+    r"(?i:\bexactly\b(?! (one|two|three|once|twice)))":
+        "intensifier, not a count",
+}
+
+TABLES: tuple[tuple[str, dict[str, str]], ...] = (("fix", FIX), ("check", CHECK))
+
+# Every check rule takes `overmatch:`, for a pattern that matched a spelling
+# outside the rule. The record names the spelling. Rules that state an
+# exception take one further reason. Rules do not take the reasons of other
+# rules.
+OVERMATCH = "overmatch"
+CHECK_REASONS: dict[str, tuple[str, ...]] = {
+    # The record names the section. Further records for it show the clash.
+    "contrast monoculture": ("only-in-section",),
+    # The record names the competing owner.
+    "contrastive filler": ("competing-owner",),
+}
+REASON_KEYWORDS = tuple(
+    sorted({OVERMATCH, *(reason for reasons in CHECK_REASONS.values() for reason in reasons)})
+)
+# Matches records that name a path, a line and a rule but open their reason
+# without a keyword.
+LOOSE_RECORD = re.compile(r"(.*):([0-9]+):([^:]+):(.*)")
+
+
+def reasons_for(rule: str) -> tuple[str, ...]:
+    """Return the reason keywords that a record for this rule may open with."""
+    return (OVERMATCH, *CHECK_REASONS.get(rule, ()))
+
+
+def keyword_list(rule: str) -> str:
+    return ", ".join(f"`{keyword}:`" for keyword in reasons_for(rule))
+
+
+class Args(argparse.Namespace):
+    def __init__(self) -> None:
+        super().__init__()
+        self.paths: list[Path] = []
+        self.permitted: Path | None = None
+        self.list_patterns: bool = False
+        self.range: str | None = None
+
+
+def build_parser() -> CommandLineParser:
+    parser = program_parser("Report prose Construction violations as file:line:severity:rule:match.")
+    _ = parser.add_argument("paths", nargs="*", metavar="PATH", type=Path, help="a file to check")
+    _ = parser.add_argument("--list", dest="list_patterns", action="store_true", help="print severity:rule:pattern")
+    _ = parser.add_argument("--range", metavar="RANGE", help="report only the lines this git range adds")
+    _ = parser.add_argument("--permitted", metavar="FILE", type=Path, help="records that clear check hits")
+    return parser
+
+
+Permitted = PermittedRecords[tuple[str, int, str]]
+
+
+def misread_record(line: str) -> str:
+    """Return why `line` is not a permitted record."""
+    loose = LOOSE_RECORD.fullmatch(line)
+    if loose is None:
+        return unreadable(line)
+    return f"a record for `{loose[3]}` opens with {keyword_list(loose[3].strip())}"
+
+
+def load_permitted(path: Path | None) -> Permitted:
+    """Read `file:line:rule: reason` records into the findings they clear."""
+    records: list[tuple[str, int, str]] = []
+    if path is None:
+        return Permitted(records)
+    for where, record in read_records(path, REASON_KEYWORDS, PROGRAM, misread_record):
+        rule = record.rule.strip()
+        if record.keyword not in reasons_for(rule):
+            say(PROGRAM, f"{where}: `{record.keyword}:` is not a reason the rule `{rule}` states. It takes {keyword_list(rule)}")
+            continue
+        records.append((record.path, int(record.number), rule))
+    return Permitted(records)
+
+
+def scan(target: Target, permitted: Permitted) -> int:
+    """Print the findings in the target's file, in its `lines` alone when
+    given. Findings and permitted records name it by the target's name.
+
+    Return the count that blocks.
+    """
+    blocking = 0
+    for number, line in enumerate(split_lines(read_text(target.path)), start=1):
+        if target.lines is not None and number not in target.lines:
+            continue
+        for severity, table in TABLES:
+            for pattern, rule in table.items():
+                found = re.search(pattern, line)
+                if found is None:
+                    continue
+                cleared = severity != "fix" and permitted.clears((target.name, number, rule))
+                label = " PERMITTED" if cleared else ""
+                print(f"{target.name}:{number}:{severity}:{rule}:{found.group(0).strip()}{label}")
+                if not cleared:
+                    blocking += 1
+    return blocking
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args(namespace=Args())
+
+    if args.list_patterns:
+        for severity, table in TABLES:
+            for pattern, rule in table.items():
+                print(f"{severity}:{rule}:{pattern}")
+        return 0
+
+    if not args.paths and args.range is None:
+        parser.error("give a path, a --range, or --list")
+
+    try:
+        permitted = load_permitted(args.permitted)
+        operands = [str(path) for path in args.paths]
+        targets = list({target.path: target for target in range_targets(args.range, operands)}.values())
+    except (PermittedFileError, RangeError, OSError) as error:
+        say(PROGRAM, str(error))
+        return 2
+
+    blocking = 0
+    for target in targets:
+        if not target.path.is_file():
+            say(PROGRAM, f"{target.name}: {'is a directory' if target.path.is_dir() else 'no such file'}")
+            if target.lines is None:
+                return 2
+            continue
+        try:
+            blocking += scan(target, permitted)
+        except OSError as error:
+            say(PROGRAM, str(error))
+            return 2
+
+    # Report them in file, line and rule order.
+    report_unused(PROGRAM, (f"{name}:{number}:{rule}" for name, number, rule in sorted(permitted.unused())))
+
+    exit_code = 1 if blocking else 0
+    parts = [f"exit {exit_code}", f"{blocking} blocking" if blocking else "clean"]
+    if permitted.used:
+        parts.append(f"{len(permitted.used)} permitted")
+    print(f"prose-check: {', '.join(parts)}")
+    return exit_code
+
+
+if __name__ == "__main__":
+    run_main(main)

@@ -1,0 +1,1365 @@
+#!/usr/bin/env -S python3 -B
+"""Run one heavy command on a task machine, against the local tracked files.
+
+Under env in .claude/settings.local.json, REMOTE_TASK_HOST names the task
+machine's SSH destination and REMOTE_TASK_DIR the absolute path of the task
+clone. REMOTE_TASK_TIMEOUT there caps the queue wait, in seconds. --wait reads
+it from the environment. Set up the task clone once: clone the repository into
+a dedicated directory, create .remote-task-workdir at its root, and install the
+dependencies there.
+
+--tool runs the program with the interpreter named on its #! line. Put the
+interpreter on the task machine's login PATH. A line among the first ten of the
+program, or of a sibling module that it imports, that reads
+remote-tool-minimum-version: <X.Y> sets a minimum version. The highest applies.
+"""
+
+import os
+import re
+import signal
+import subprocess
+import sys
+import unicodedata
+from collections.abc import Callable
+from pathlib import Path, PurePosixPath
+from types import FrameType
+from typing import NamedTuple, NoReturn, TypeVar, override
+
+from claude_settings import SETTINGS_LOCAL_PATH, SettingsError, environment_block
+from command_line_parser import CommandLineParser, nonempty_value
+from git_in_directory import git_environment, git_text, repository_toplevel, resolved_commit
+from lexical_paths import appended_to_name, from_working_directory, normal_join, working_directory
+from library_imports import library_modules
+from lock_runner_arguments import (
+    LockRunnerArguments,
+    lock_runner_parser,
+    parse_lock_runner_arguments,
+)
+from lock_runner_contract import (
+    EXIT_NOT_RUN,
+    FALLBACK_VARIABLE,
+    HANDOFF_VARIABLE,
+    IGNORE_UNTRACKED_VARIABLE,
+    NOT_RUN_VARIABLE,
+    RUNNER_NAME_VARIABLE,
+    TASK_CLONE_MARKER,
+    RunnerName,
+    exit_not_run,
+    hand_back,
+    handoff_reason,
+    report_not_run,
+)
+from lossless_text import print_error, substitution_text, write_error
+from program_entry import run_main
+from program_messages import say
+from program_start import (
+    Stream,
+    exec_program,
+    report_start_failure,
+    run_program,
+    shell_status,
+)
+from quiet_paths import present, read_quietly, remove_quietly
+from remote_configuration import CONFIGURATION_KEYS, DIRECTORY_CHARACTERS, HOST_CHARACTERS
+from shell_whitespace import SHELL_WHITESPACE, blank_separated_words
+from terminating_signals import Terminated, handle_unless_ignored
+from tool_installers import installer
+from tool_interpreter import (
+    MINIMUM_MARKER,
+    first_dotted_number,
+    first_line,
+    program_head,
+    required_minimum,
+    shebang_interpreter,
+    version_at_least,
+)
+from working_tree_snapshot import (
+    CALLER_INDEX,
+    SnapshotError,
+    build_snapshot_commit,
+    untracked_files,
+    untracked_listing,
+)
+
+NAME: RunnerName = "remote-task"
+EXIT_CONFIG = 78
+
+# The outer phase overrides these variables for its queue, from a settings
+# file, and for git's ssh. The fallback restores the caller's values.
+CALLER_ENVIRONMENT_NAMES = (
+    "HEAVY_TASK_DIR",
+    "HEAVY_TASK_TIMEOUT",
+    "REMOTE_TASK_HOST",
+    "REMOTE_TASK_DIR",
+    "REMOTE_TASK_TIMEOUT",
+    "REMOTE_TASK_LOCK_DIR",
+    "GIT_SSH_COMMAND",
+)
+
+# WAITER_LABEL_LIMIT caps the command line that a waiter is shown whole.
+WAITER_LABEL_LIMIT = 120
+
+# Outside refs/heads/, the ref cannot be the branch that the task clone has
+# checked out. receive.denyCurrentBranch then accepts every push.
+SYNC_REF = "refs/remote-task/snapshot"
+REMOTE_SCRIPT_DIRECTORY = ".git/remote-task"
+REMOTE_SCRIPT = f"{REMOTE_SCRIPT_DIRECTORY}/script"
+# How long the remote script waits after SIGTERM before it kills a command whose
+# run has ended.
+STOP_GRACE_SECONDS = 5
+
+# Printed right before the interpreter's version report. The version is read
+# from the text after the last copy of the marker, because a login profile may
+# print other dotted numbers.
+TOOL_VERSION_MARKER = "remote-task-interpreter-version:"
+
+# These ssh diagnostics mean a human has to change something. Every other ssh
+# failure is worth a retry.
+PERMANENT_SSH_FAILURE = re.compile(
+    rb"Could not resolve hostname|Host key verification failed|Permission denied"
+)
+
+SELF = Path(__file__).absolute()
+
+
+Refusal = Callable[[str], NoReturn]
+Result = TypeVar("Result")
+
+
+class Tool(NamedTuple):
+    """Describe a program shipped with the job, and its `#!` line's
+    interpreter."""
+
+    path: Path
+    interpreter: str
+    minimum: str
+
+
+class Dependency(NamedTuple):
+    """Name a repository that a run syncs ahead of its own, and its task
+    clone."""
+
+    toplevel: Path
+    directory: str
+
+
+class DeclaredDependency(NamedTuple):
+    """Pair a --depends value as given with its task machine and its
+    repository."""
+
+    given: str
+    host: str
+    dependency: Dependency
+
+
+# --- output ------------------------------------------------------------------
+
+
+def die_config(message: str) -> NoReturn:
+    exit_not_run(NAME, message, EXIT_CONFIG, "preconditions unmet")
+
+
+def die_transient(message: str) -> NoReturn:
+    exit_not_run(NAME, message, EXIT_NOT_RUN, "transient failure")
+
+
+# --- quoting for the remote bash ---------------------------------------------
+
+BACKSLASHED = frozenset(b"\t\n !\"$&'()*,;<>?[\\]^`{|}")
+ANSI_C_ESCAPES = {
+    0x07: b"a", 0x08: b"b", 0x09: b"t", 0x0A: b"n",
+    0x0B: b"v", 0x0C: b"f", 0x0D: b"r", 0x1B: b"E",
+}
+
+
+def printable_ascii(byte: int) -> bool:
+    return 0x20 <= byte < 0x7F
+
+
+def utf8_character(data: bytes, index: int) -> tuple[int, bool]:
+    """Return the byte length of the UTF-8 character at `index`, 0 when it is
+    invalid, and whether it is printable."""
+    for length in (2, 3, 4):
+        try:
+            character = data[index : index + length].decode("utf-8")
+        except UnicodeDecodeError as error:
+            if error.reason == "unexpected end of data" and index + length < len(data):
+                continue
+            return 0, False
+        category = unicodedata.category(character)
+        return length, category not in ("Cc", "Cn", "Cs", "Zl", "Zp")
+    return 0, False
+
+
+def needs_ansi_c_quoting(data: bytes) -> bool:
+    index = 0
+    while index < len(data):
+        byte = data[index]
+        if byte < 0x80:
+            if not printable_ascii(byte):
+                return True
+            index += 1
+            continue
+        length, printable = utf8_character(data, index)
+        if not printable:
+            return True
+        index += length
+    return False
+
+
+def ansi_c_quote(data: bytes) -> bytes:
+    quoted = bytearray(b"$'")
+    index = 0
+    while index < len(data):
+        byte = data[index]
+        if byte in ANSI_C_ESCAPES:
+            quoted += b"\\" + ANSI_C_ESCAPES[byte]
+        elif byte in b"\\'":
+            quoted += bytes((0x5C, byte))
+        elif byte < 0x80:
+            quoted += bytes((byte,)) if printable_ascii(byte) else b"\\%03o" % byte
+        else:
+            length, printable = utf8_character(data, index)
+            if printable:
+                quoted += data[index : index + length]
+                index += length
+                continue
+            quoted += b"\\%03o" % byte
+        index += 1
+    return bytes(quoted + b"'")
+
+
+def backslash_quote(data: bytes) -> bytes:
+    quoted = bytearray()
+    for index, byte in enumerate(data):
+        at_word_start = index == 0 and byte in b"#~"
+        tilde_after_separator = byte == 0x7E and index > 0 and data[index - 1] in b":="
+        if byte in BACKSLASHED or at_word_start or tilde_after_separator:
+            quoted.append(0x5C)
+        quoted.append(byte)
+    return bytes(quoted)
+
+
+def shell_quote(text: str) -> str:
+    """Return `text` quoted for one bash parse, byte for byte as bash's
+    `printf %q` quotes it under a UTF-8 locale."""
+    data = os.fsencode(text)
+    if not data:
+        quoted = b"''"
+    elif needs_ansi_c_quoting(data):
+        quoted = ansi_c_quote(data)
+    else:
+        quoted = backslash_quote(data)
+    return os.fsdecode(quoted)
+
+
+# --- processes ---------------------------------------------------------------
+
+# Shells waiting on a foreground command answer an interrupt once the command
+# has ended. The run phase traps the interrupt and always stops then. In the
+# outer phase, a git call always stops then, and any other command stops only
+# when its status is that of a death by the interrupt.
+child_running = False
+interrupt_pending = False
+interrupt_trapped = False
+INTERRUPTED_STATUS = shell_status(-signal.SIGINT)
+
+
+def defer_interrupt(signum: int, _frame: FrameType | None) -> None:
+    global interrupt_pending
+    if not child_running:
+        raise Terminated(signum)
+    interrupt_pending = True
+
+
+def in_foreground(call: Callable[[], Result], died_of_interrupt: Callable[[Result], bool]) -> Result:
+    """Return what `call` returns, with an interrupt held until the child that
+    it runs has ended.
+
+    The interrupt then stops this program when the run phase traps it or
+    `died_of_interrupt` reads the result as the child's death by it.
+    """
+    global child_running, interrupt_pending
+    child_running = True
+    try:
+        result = call()
+    finally:
+        child_running = False
+    if interrupt_pending:
+        if interrupt_trapped or died_of_interrupt(result):
+            raise Terminated(signal.SIGINT)
+        interrupt_pending = False
+    return result
+
+
+def git_in_foreground(call: Callable[[], Result]) -> Result:
+    """Return what the git call `call` returns, as `in_foreground` runs it.
+
+    git dies of an interrupt that reaches it, which then stops this program.
+    """
+    return in_foreground(call, lambda _result: True)
+
+
+def run(
+    arguments: list[str],
+    *,
+    stdin: Stream = None,
+    input_data: bytes | None = None,
+    stdout: Stream = None,
+    stderr: Stream = None,
+    environment: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Run a command to its end and return its status as a shell reports it,
+    and its captured standard output when `stdout` is PIPE."""
+    completed = in_foreground(
+        lambda: run_program(
+            arguments,
+            name=NAME,
+            environment=environment,
+            stdin=stdin,
+            input_data=input_data,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+        lambda completed: completed.returncode == INTERRUPTED_STATUS,
+    )
+    return completed.returncode, completed.stdout
+
+
+def git_capturing(arguments: list[str], *, index_file: Path | None = None) -> tuple[int, str]:
+    """Run git in the working directory as `git_text` runs it."""
+    return git_in_foreground(lambda: git_text(Path(), arguments, index_file=index_file))
+
+
+def exec_or_die(arguments: list[str]) -> NoReturn:
+    error = exec_program(arguments)
+    sys.exit(report_start_failure(NAME, arguments[0], error, None))
+
+
+# --- the working directory ---------------------------------------------------
+
+
+def change_directory(target: str) -> bool:
+    """Move to `target` as `cd` does.
+
+    `..` is resolved on the spelling of $PWD before any symbolic link, and $PWD
+    then names the new directory.
+    """
+    logical = normal_join(working_directory(), target)
+    try:
+        os.chdir(logical)
+    except OSError:
+        try:
+            os.chdir(target)
+        except OSError:
+            return False
+        logical = Path.cwd()
+    os.environ["PWD"] = str(logical)
+    return True
+
+
+# --- configuration -----------------------------------------------------------
+
+
+def validate_configuration(host: str, directory: str, refuse: Refusal) -> None:
+    """Refuse a host or task directory that could not be interpolated into a
+    remote command line unquoted."""
+    if not host:
+        refuse(f"REMOTE_TASK_HOST is not set; set it under env in {SETTINGS_LOCAL_PATH}")
+    if not directory:
+        refuse(f"REMOTE_TASK_DIR is not set; set it under env in {SETTINGS_LOCAL_PATH}")
+    if not re.fullmatch(f"[{HOST_CHARACTERS}]+", host):
+        refuse(f"REMOTE_TASK_HOST must use only [{HOST_CHARACTERS}]")
+    # SSH reads a value starting with a dash as an option.
+    if not re.match(r"[A-Za-z0-9]", host):
+        refuse("REMOTE_TASK_HOST must start with a letter or digit")
+    if not re.fullmatch(f"[{DIRECTORY_CHARACTERS}]+", directory):
+        refuse(f"REMOTE_TASK_DIR must use only [{DIRECTORY_CHARACTERS}]")
+    if not directory.startswith("/"):
+        refuse("REMOTE_TASK_DIR must be an absolute path")
+
+
+def configured_values(settings: Path, refuse: Refusal) -> list[str]:
+    """Return the three configuration keys from the settings file, empty for a
+    key that it omits.
+
+    Messages do not print a value, because the keys name a private host and
+    path.
+    """
+    try:
+        block = environment_block(settings)
+    except SettingsError as error:
+        refuse(str(error))
+    values: list[str] = []
+    for key in CONFIGURATION_KEYS:
+        value = block.get(key, "")
+        if not isinstance(value, str):
+            refuse(f"{key} in {settings} must be a string")
+        if "\n" in value:
+            refuse(f"{key} in {settings} must be a single line")
+        values.append(value.replace("\0", ""))
+    return values
+
+
+def configured_pair(toplevel: Path, refuse: Refusal) -> list[str]:
+    """Return the three configuration keys from the settings file of the
+    repository whose toplevel is `toplevel`, all empty without the file.
+
+    The two required keys come as a pair, and files that supply only one are
+    refused.
+    """
+    settings = toplevel / SETTINGS_LOCAL_PATH
+    if not present(settings.is_file):
+        return ["", "", ""]
+    host, directory, timeout = configured_values(settings, refuse)
+    if directory and not host:
+        refuse(f"{settings} sets REMOTE_TASK_DIR without REMOTE_TASK_HOST")
+    if host and not directory:
+        refuse(f"{settings} sets REMOTE_TASK_HOST without REMOTE_TASK_DIR")
+    return [host, directory, timeout]
+
+
+def resolve_repository_configuration(toplevel: Path, directory_given: bool) -> None:
+    """Take the configuration from the repository whose toplevel is `toplevel`.
+
+    The environment cannot complete half a pair with a key that names the clone
+    of another repository. Settings files without either key leave the keys to
+    the environment, except under --directory. There the inherited keys belong
+    to another repository and are cleared.
+    """
+    host, directory, timeout = configured_pair(toplevel, die_config)
+    if not host and not directory:
+        if directory_given:
+            _ = os.environ.pop("REMOTE_TASK_HOST", None)
+            _ = os.environ.pop("REMOTE_TASK_DIR", None)
+        return
+    os.environ["REMOTE_TASK_HOST"] = host
+    os.environ["REMOTE_TASK_DIR"] = directory
+    if timeout:
+        os.environ["REMOTE_TASK_TIMEOUT"] = timeout
+    else:
+        _ = os.environ.pop("REMOTE_TASK_TIMEOUT", None)
+
+
+def require_commit(path: Path, refuse: Refusal) -> None:
+    if git_in_foreground(lambda: resolved_commit(path, "HEAD")) is None:
+        refuse("HEAD does not resolve; the repository has no commits")
+
+
+def resolve_dependency(given: str) -> DeclaredDependency:
+    """Return the repository named by a --depends value, with the task machine
+    and clone from its settings file. Each refusal names the value as given.
+
+    The environment does not supply the keys of dependencies, because its keys
+    belong to the run's repository. Timeouts of dependencies are ignored.
+    """
+
+    def refuse(message: str) -> NoReturn:
+        die_config(f"--depends {given}: {message}")
+
+    path = from_working_directory(given)
+    if not present(path.is_dir):
+        die_config(f"--depends {given} is not a directory")
+    toplevel = git_in_foreground(lambda: repository_toplevel(path))
+    if toplevel is None:
+        die_config(f"--depends {given} is not inside a git repository")
+    require_commit(path, refuse)
+    host, directory, _ = configured_pair(toplevel, refuse)
+    if not host:
+        refuse(f"set REMOTE_TASK_HOST and REMOTE_TASK_DIR under env in {toplevel / SETTINGS_LOCAL_PATH}")
+    validate_configuration(host, directory, refuse)
+    return DeclaredDependency(given, host, Dependency(toplevel, directory))
+
+
+def check_dependency_clones(host: str, directory: str, dependencies: list[DeclaredDependency]) -> None:
+    """Refuse a dependency on another task machine, and a task clone shared by
+    two repositories of the run. The run's lock covers one task machine, and
+    each task clone receives one snapshot per run."""
+    owners = {PurePosixPath(directory): "the run's repository"}
+    for declared in dependencies:
+        if declared.host != host:
+            die_config(
+                f"--depends {declared.given}: its REMOTE_TASK_HOST is not the run's,"
+                + " and the run's lock covers one task machine"
+            )
+        clone = PurePosixPath(declared.dependency.directory)
+        if clone in owners:
+            die_config(f"--depends {declared.given} shares its task clone with {owners[clone]}")
+        owners[clone] = f"--depends {declared.given}"
+
+
+def ssh_is_set() -> bool:
+    """Return whether REMOTE_TASK_SSH contains a command beyond whitespace."""
+    return os.environ.get("REMOTE_TASK_SSH", "").strip(SHELL_WHITESPACE) != ""
+
+
+def ssh_command() -> list[str]:
+    """Split REMOTE_TASK_SSH into words, or return plain `ssh`.
+
+    Values across two lines are refused, because one half runs without the
+    key, proxy, or port that the other half names.
+    """
+    if not ssh_is_set():
+        return ["ssh"]
+    value = os.environ["REMOTE_TASK_SSH"]
+    if "\n" in value:
+        die_config("REMOTE_TASK_SSH must be a single line")
+    return blank_separated_words(value)
+
+
+def lock_directory_for_host(host: str) -> Path:
+    """Return one queue per task machine, separate from the heavy lock.
+
+    Remote jobs and local heavy jobs are meant to run at once. The path is
+    absolute, because the run phase moves to the repository toplevel before it
+    writes there.
+    """
+    configured = os.environ.get("REMOTE_TASK_LOCK_DIR", "")
+    if configured:
+        return from_working_directory(configured)
+    return Path.home() / ".claude" / "remote-task" / re.sub(r"[^A-Za-z0-9._-]", "-", host)
+
+
+def apply_timeout() -> None:
+    """Cap the queue wait by REMOTE_TASK_TIMEOUT alone, because a timeout
+    exported for a local heavy run must not cap an unrelated remote one."""
+    timeout = os.environ.get("REMOTE_TASK_TIMEOUT", "")
+    if timeout:
+        os.environ["HEAVY_TASK_TIMEOUT"] = timeout
+    else:
+        _ = os.environ.pop("HEAVY_TASK_TIMEOUT", None)
+
+
+# --- the lock runner ---------------------------------------------------------
+
+
+def runner_supports_contract(runner: Path) -> bool:
+    """Return whether the runner knows the knobs for a command that did not
+    start and for a run handed back for the fallback.
+
+    Runners older than the knobs break both reports without an error.
+
+    The names are searched in the runner and the modules that it imports.
+    """
+    try:
+        sources = [path.read_bytes() for path in (runner, *library_modules(runner))]
+    except OSError:
+        return False
+    return all(
+        any(name.encode() in source for source in sources)
+        for name in (NOT_RUN_VARIABLE, HANDOFF_VARIABLE)
+    )
+
+
+def runner_candidate() -> str:
+    configured = os.environ.get("REMOTE_TASK_RUNNER", "")
+    if configured:
+        return configured
+    found = program_on_path("heavy")
+    if found:
+        return found
+    sibling = SELF.parent / "heavy"
+    return str(sibling) if present(sibling.exists) else ""
+
+
+def require_runner(reason: str = "") -> str:
+    """Return the lock runner's path, or a refusal led by any fallback
+    reason."""
+    runner = runner_candidate()
+    if not runner:
+        message = f"no lock runner found: set REMOTE_TASK_RUNNER, or install heavy with {installer('heavy')}"
+    elif not present(Path(runner).exists):
+        message = f"no lock runner found: {runner} does not exist"
+    elif not os.access(runner, os.X_OK):
+        message = f"no lock runner found: {runner} is not executable"
+    elif not runner_supports_contract(Path(runner)):
+        message = f"the lock runner at {runner} is too old; reinstall heavy with {installer('heavy')}"
+    else:
+        return runner
+    die_config(f"{reason}, and {message}" if reason else message)
+
+
+def program_on_path(name: str) -> str:
+    """Search PATH for `name` as bash searches it.
+
+    Return the first executable file, else the first file of that name, else
+    empty. Empty entries are the current directory.
+    """
+    fallback = ""
+    for entry in os.environ.get("PATH", os.defpath).split(":"):
+        candidate = f"{entry or '.'}/{name}"
+        path = Path(candidate)
+        if present(path.is_file) and os.access(path, os.X_OK):
+            return candidate
+        if not fallback and present(path.exists) and not present(path.is_dir):
+            fallback = candidate
+    return fallback
+
+
+# --- the fallback ------------------------------------------------------------
+
+
+def waiter_label(line: str) -> str:
+    """Return the command line that a queued session is shown, cut with its
+    byte count after it."""
+    if len(line) <= WAITER_LABEL_LIMIT:
+        return line
+    return f"{line[:WAITER_LABEL_LIMIT]}... ({len(os.fsencode(line))} bytes)"
+
+
+def print_fallback_notice(reason: str, diagnostic: str) -> None:
+    say(NAME, f"fallback: {reason}; running the command on this machine under heavy")
+    if diagnostic:
+        for line in diagnostic.split("\n"):
+            say(NAME, f"  {line}")
+
+
+def save_caller_environment() -> dict[str, str]:
+    return {name: os.environ[name] for name in CALLER_ENVIRONMENT_NAMES if name in os.environ}
+
+
+def start_fallback(
+    reason: str,
+    diagnostic: str,
+    arguments: list[str],
+    log_flag: list[str],
+    runner: str,
+    caller_environment: dict[str, str],
+    ignore_untracked: bool,
+) -> NoReturn:
+    """Run the command on this machine as a fresh heavy job, which replaces
+    this process.
+
+    The job prints the notice itself. Under --log that copy goes into the log,
+    and the terminal gets its own copy here.
+    """
+    if log_flag:
+        print_fallback_notice(reason, diagnostic)
+    for name in (RUNNER_NAME_VARIABLE, "REMOTE_TASK_UNDER_LOCK", "REMOTE_TASK_HANDOFF_FILE",
+                 HANDOFF_VARIABLE, IGNORE_UNTRACKED_VARIABLE, *CALLER_ENVIRONMENT_NAMES):
+        _ = os.environ.pop(name, None)
+    os.environ["HEAVY_TASK_LABEL"] = waiter_label(" ".join(arguments))
+    os.environ.update(caller_environment)
+    os.environ[FALLBACK_VARIABLE] = reason
+    if ignore_untracked:
+        os.environ[IGNORE_UNTRACKED_VARIABLE] = "1"
+    os.environ["REMOTE_TASK_FALLBACK_DIAGNOSTIC"] = diagnostic
+    exec_or_die([runner, *log_flag, "--", str(SELF), "--fallback-phase", *arguments])
+
+
+def fallback_phase(arguments: list[str]) -> list[str]:
+    """Run the fallback's heavy job: print the notice and become the command.
+
+    Returns only when a command is missing, and the outer phase then refuses
+    the run.
+    """
+    reason = os.environ.get(FALLBACK_VARIABLE, "")
+    if not reason:
+        command_line_parser().error("--fallback-phase is internal: it runs only as the fallback's heavy job")
+    print_fallback_notice(reason, os.environ.get("REMOTE_TASK_FALLBACK_DIAGNOSTIC", ""))
+    _ = os.environ.pop("HEAVY_TASK_LABEL", None)
+    if arguments:
+        exec_or_die(arguments)
+    return arguments
+
+
+# --- a program shipped with the job ------------------------------------------
+
+
+def resolve_tool(word: str) -> Tool:
+    """Return the program that the first word of a --tool command names, or a
+    refusal.
+
+    Faults here are this machine's, because the program cannot run here either.
+    """
+    if "/" in word:
+        die_config(f"--tool {word}: name a program on PATH, not a path")
+    found = program_on_path(word)
+    if not (found and present(Path(found).is_file) and os.access(found, os.X_OK)):
+        die_config(f"--tool {word}: no executable program of that name on PATH")
+    # Relative PATH entries resolve from this directory, which the run phase
+    # leaves.
+    path = from_working_directory(found)
+    head = program_head(path)
+    line = first_line(head)
+    if not line.startswith("#!"):
+        die_config(f"--tool {word}: {path} has no #! line naming its interpreter")
+    # The task machine runs the tool as `<interpreter> <file>`, without the
+    # flags that an `env -S` line passes.
+    interpreter = shebang_interpreter(line)
+    if interpreter is None:
+        die_config(
+            f"--tool {word}: the #! line of {path} is none of #!<absolute path>,"
+            + " #!/usr/bin/env <name>, and #!/usr/bin/env -S <name> [flags]"
+        )
+    try:
+        minimum = required_minimum(path)
+    except OSError:
+        die_config(f"--tool {word}: cannot read the modules that {path} imports")
+    if minimum is None:
+        die_config(
+            f"--tool {word}: {path} or a module that it imports declares no version after {MINIMUM_MARKER}"
+        )
+    return Tool(path, interpreter, minimum)
+
+
+# --- run phase ---------------------------------------------------------------
+
+
+class RunPhase:
+    """Run the part of a run that owns the queue lock: snapshot, push,
+    checkout, delivery, and the remote command."""
+
+    def __init__(self, sync_only: bool, tool: Tool | None, dependencies: list[Dependency]) -> None:
+        self.sync_only: bool = sync_only
+        self.tool: Tool | None = tool
+        self.dependencies: list[Dependency] = dependencies
+        self.host: str = os.environ.get("REMOTE_TASK_HOST", "")
+        self.directory: str = os.environ.get("REMOTE_TASK_DIR", "")
+        self.ssh: list[str] = []
+        self.caller_prefix: str = ""
+        # One path collects the captured stderr of every remote call, and one
+        # sweep covers it.
+        self.stderr_file: Path | None = None
+        self.snapshot_index: Path | None = None
+        # The marker stays armed until the remote command starts. Every abort
+        # before it is a command that did not run.
+        self.notrun_armed: bool = True
+        # Only the run's repository hands failures back to the fallback.
+        self.may_hand_off: bool = False
+
+    def clean_up(self) -> None:
+        if self.stderr_file is not None:
+            remove_quietly(self.stderr_file)
+        if self.snapshot_index is not None:
+            # git writes an index through a sibling .lock. Gits that die
+            # uncleanly leave the .lock behind.
+            remove_quietly(self.snapshot_index)
+            remove_quietly(appended_to_name(self.snapshot_index, ".lock"))
+        if self.notrun_armed:
+            report_not_run(os.environ)
+
+    def run_capturing_stderr(self, arguments: list[str], *, input_data: bytes | None = None,
+                             stdin: Stream = None, stdout: Stream = None,
+                             environment: dict[str, str] | None = None,
+                             show: bool = True) -> tuple[int, bytes]:
+        """Run a remote call with its stderr captured for the classifier, then
+        shown unless `show` is false."""
+        assert self.stderr_file is not None
+        try:
+            errors = self.stderr_file.open("wb")
+        except OSError as error:
+            say(NAME, f"{self.stderr_file}: {error.strerror}")
+            return 1, b""
+        with errors:
+            result = run(
+                arguments, input_data=input_data, stdin=stdin, stdout=stdout, stderr=errors, environment=environment
+            )
+        if show:
+            self.show_stderr_file()
+        return result
+
+    def show_stderr_file(self) -> None:
+        assert self.stderr_file is not None
+        write_error(read_quietly(self.stderr_file) or b"")
+
+    def ssh_quiet(self, command: str, stdout: Stream = None) -> tuple[int, bytes]:
+        """Run an ssh call and capture its diagnostics without showing them.
+
+        -n pins the remote command's stdin to /dev/null, because a command that
+        reads stdin blocks while it owns the lock. BatchMode makes credential
+        problems fail instead of prompting.
+        """
+        return self.run_capturing_stderr(
+            [*self.ssh, "-n", "-o", "BatchMode=yes", self.host, command], stdout=stdout
+        )
+
+    def permanent_ssh_failure(self) -> bool:
+        assert self.stderr_file is not None
+        return PERMANENT_SSH_FAILURE.search(read_quietly(self.stderr_file) or b"") is not None
+
+    def refusal(self, status: int) -> Refusal:
+        """Classify a failed call.
+
+        255 is ssh itself failing, where the diagnostic decides. Any other
+        status is the remote side refusing, which is something to fix.
+        """
+        if status == 255 and not self.permanent_ssh_failure():
+            return die_transient
+        return die_config
+
+    def hand_off(self, reason: str, refuse: Refusal, message: str = "") -> NoReturn:
+        """Hand the run back to the outer phase for the fallback: the reason,
+        then the failed call's stderr, and exit 75 in silence. Under --sync,
+        while a dependency syncs, or without a handoff file to write, refuse
+        instead."""
+        handoff = os.environ.get("REMOTE_TASK_HANDOFF_FILE", "")
+        if handoff and self.may_hand_off:
+            assert self.stderr_file is not None
+            diagnostic = read_quietly(self.stderr_file) or b""
+            if hand_back(Path(handoff), reason, diagnostic):
+                sys.exit(EXIT_NOT_RUN)
+        refuse(message or reason)
+
+    def marker_gate(self, directory: str) -> None:
+        """Refuse a task directory that is not a marked clone, before a push.
+
+        .git must be a directory. Linked worktrees have a .git file, and .git
+        directories symlinked into a live deployment pass the link-following
+        `test -d`.
+        """
+        status, _ = self.ssh_quiet(
+            f"test -f {directory}/{TASK_CLONE_MARKER} && test -d {directory}/.git"
+            + f" && test ! -L {directory}/.git"
+        )
+        if status == 255:
+            self.hand_off(f"cannot reach {self.host}", self.refusal(status))
+        if status != 0:
+            reason = f"{directory} is not a marked task clone"
+            self.hand_off(
+                reason,
+                die_config,
+                f"{reason}: it must be a git clone containing {TASK_CLONE_MARKER}, whose"
+                + " .git is a real directory and not a worktree file or a symlink",
+            )
+
+    def require_no_untracked_files(self) -> None:
+        """Refuse a tree with files that git does not track, outside the
+        toplevel docs/specs/, docs/plans/ and docs/issues/.
+
+        The snapshot leaves them behind, and a suite missing one reports green.
+        Each path is relative to the toplevel. The hint's `:/<path>` then
+        pastes from any subdirectory.
+        """
+        try:
+            paths = untracked_files(git_capturing)
+        except SnapshotError as error:
+            die_transient(error.message)
+        if not paths:
+            return
+        say(NAME, "untracked files in the working tree:")
+        for line in untracked_listing(paths):
+            print_error(line)
+        die_config(
+            f"the working tree holds {len(paths)} file(s) git does not track and the"
+            + " snapshot ships only what git tracks; run 'git add -N :/<path>' to send a"
+            + " file's current contents without committing it, or pass --ignore-untracked"
+            + " to run anyway"
+        )
+
+    def push_snapshot(self, commit: str, directory: str) -> None:
+        """Force the snapshot onto a ref that nothing else writes.
+
+        Each snapshot is a sibling of the last.
+        """
+        status, _ = self.run_capturing_stderr(
+            ["git", "push", "--force", "--quiet", f"{self.host}:{directory}", f"{commit}:{SYNC_REF}"],
+            environment=git_environment(),
+        )
+        if status != 0:
+            self.hand_off(f"cannot push the snapshot to {self.host}", die_transient)
+
+    def checkout_snapshot(self, directory: str) -> None:
+        """Make the clone's working tree the snapshot, leaving untracked files
+        alone. -q silences the advice about the orphaned previous snapshot."""
+        status, _ = self.ssh_quiet(f"git -C {directory} checkout -q --detach --force {SYNC_REF}")
+        if status != 0:
+            self.hand_off(f"cannot check the snapshot out in {directory}", self.refusal(status))
+
+    def target_directory(self) -> str:
+        """Return the task clone plus the caller's path within the
+        repository."""
+        if self.caller_prefix:
+            return f"{self.directory}/{self.caller_prefix.removesuffix('/')}"
+        return self.directory
+
+    def tool_destination(self, name: str) -> str:
+        return f"{self.directory}/{REMOTE_SCRIPT_DIRECTORY}/tools/{name}"
+
+    def remote_script(self, arguments: list[str]) -> bytes:
+        """Return the script that the remote bash runs from a file, every word
+        quoted for that one parse.
+
+        The cd lacks `|| exit`, because the delivery has already checked the
+        directory. The command runs as a job in a process group of its own and
+        reads the script's standard input. Beside it, a watchdog reads
+        descriptor 3 to its end, which comes when the run ends, and then stops
+        the group: SIGTERM, and SIGKILL after STOP_GRACE_SECONDS. While it
+        stops the group, the watchdog ignores the SIGTERM that the script sends
+        it once the job ends, so processes left in the group still get the
+        SIGKILL. The script exits with the command's status.
+        """
+        command = arguments
+        if self.tool is not None:
+            command = [self.tool.interpreter, self.tool_destination(arguments[0]), *arguments[1:]]
+        words = "".join(f"{shell_quote(word)} " for word in command)
+        return os.fsencode(
+            f"cd {shell_quote(self.target_directory())}\n"
+            + "set -m\n"
+            + f"{words}3<&- &\n"
+            + "job=$!\n"
+            + "set +m\n"
+            + "{\n"
+            + "    read -r -u 3 _\n"
+            + "    trap '' TERM\n"
+            + '    kill -TERM -- "-$job" 2>/dev/null\n'
+            + f"    for ((tick = 0; tick < {STOP_GRACE_SECONDS}; tick++)); do\n"
+            + "        sleep 1\n"
+            + '        kill -0 -- "-$job" 2>/dev/null || exit\n'
+            + "    done\n"
+            + '    kill -KILL -- "-$job" 2>/dev/null\n'
+            + "} >/dev/null 2>&1 &\n"
+            + "watchdog=$!\n"
+            + 'wait "$job"\n'
+            + "status=$?\n"
+            + 'kill "$watchdog" 2>/dev/null\n'
+            + 'exit "$status"\n'
+        )
+
+    def deliver_verified(self, content: bytes | Path, destination: str, then: str = "") -> int:
+        """Write `content` to a remote file, verify its byte count there, and
+        run `then`.
+
+        Files run by `bash -l` and checked for their full length close these
+        silent successes: a pipeline that masks a missing decoder, a login
+        profile that eats a script read from stdin, and a delivery truncated
+        after its cd line.
+        """
+        file = shell_quote(destination)
+        directory = shell_quote(destination.rpartition("/")[0])
+        size = content.stat().st_size if isinstance(content, Path) else len(content)
+        command = f'mkdir -p {directory} && cat > {file} && [ "$(wc -c < {file})" -eq {size} ]'
+        if then:
+            command += f" && {then}"
+        arguments = [*self.ssh, "-o", "BatchMode=yes", self.host, command]
+        if isinstance(content, Path):
+            with content.open("rb") as source:
+                status, _ = self.run_capturing_stderr(arguments, stdin=source)
+        else:
+            status, _ = self.run_capturing_stderr(arguments, input_data=content)
+        return status
+
+    def deliver_script(self, script: bytes) -> None:
+        """Write the script to a file, and check the command's directory on the
+        same call.
+
+        The check on the same call keeps a failed cd from running the command
+        in the login directory.
+        """
+        target = self.target_directory()
+        status = self.deliver_verified(
+            script,
+            f"{self.directory}/{REMOTE_SCRIPT}",
+            f"{{ test -d {shell_quote(target)} || exit {EXIT_CONFIG}; }}",
+        )
+        if status == EXIT_CONFIG:
+            die_config(
+                f"the command's directory is not a directory in the task clone: {target};"
+                + " a run ships only directories that contain tracked files"
+            )
+        if status != 0:
+            self.hand_off(f"cannot deliver the command script to {self.host}", die_transient)
+
+    def deliver_tool(self, tool: Tool, name: str) -> None:
+        """Ship the tool under its run name, and the modules that
+        it imports beside it, where its imports find them."""
+        self.deliver_tool_file(tool.path, name)
+        try:
+            modules = library_modules(tool.path)
+        except OSError:
+            self.hand_off(f"cannot deliver {name} to {self.host}", die_transient)
+        for module in modules:
+            self.deliver_tool_file(module, module.name)
+
+    def deliver_tool_file(self, path: Path, name: str) -> None:
+        try:
+            status = self.deliver_verified(path, self.tool_destination(name))
+        except OSError:
+            status = 1
+        if status != 0:
+            self.hand_off(f"cannot deliver {name} to {self.host}", die_transient)
+
+    def check_tool_interpreter(self, tool: Tool) -> None:
+        """Confirm the task machine has the interpreter, in a `bash -l` as the
+        command will run, and that its version meets the declared minimum."""
+        interpreter = shell_quote(tool.interpreter)
+        check = f"command -v {interpreter} >/dev/null 2>&1 || exit {EXIT_CONFIG}"
+        if tool.minimum:
+            check += f"; echo {TOOL_VERSION_MARKER}; {interpreter} --version 2>&1"
+        status, output = self.ssh_quiet(f"bash -l -c {shell_quote(check)}", stdout=subprocess.PIPE)
+        report = substitution_text(output)
+        if status == 0:
+            report = report.rpartition(TOOL_VERSION_MARKER)[2]
+        elif status == 255:
+            self.hand_off(f"cannot reach {self.host}", die_transient)
+        elif status == EXIT_CONFIG:
+            self.hand_off(f"the task machine has no {tool.interpreter}", die_config)
+        else:
+            report = ""
+        if not tool.minimum:
+            return
+        found = first_dotted_number(report)
+        if not found or not version_at_least(found, tool.minimum):
+            self.hand_off(
+                f"{tool.interpreter} on the task machine is {found or 'unknown'}, below {tool.minimum}",
+                die_config,
+            )
+
+    def run_script(self) -> int:
+        """Run the delivered script and return its status.
+
+        ssh reads a pipe whose write end only this process holds, open until
+        the call ends. The pipe closes however this process ends, and the
+        script then stops the command. The script reads the pipe on descriptor
+        3. A login profile and the command read /dev/null.
+        """
+        read_end, write_end = os.pipe()
+        try:
+            script = f"bash -l {self.directory}/{REMOTE_SCRIPT} 3<&0 </dev/null"
+            status, _ = run([*self.ssh, "-o", "BatchMode=yes", self.host, script], stdin=read_end)
+        finally:
+            os.close(read_end)
+            os.close(write_end)
+        return status
+
+    def classify_execute_255(self) -> int:
+        """Tell ssh's own 255 from the command's with one confirmation call.
+
+        Hosts answering now do not prove that the connection stayed up during
+        the command. Dropped channels on recovered hosts read as the command's
+        255.
+        """
+        status, _ = self.run_capturing_stderr(
+            [*self.ssh, "-n", "-o", "BatchMode=yes", self.host, "true"], show=False
+        )
+        if status == 0:
+            return 255
+        permanent = self.permanent_ssh_failure()
+        self.show_stderr_file()
+        # The abort sweep was disarmed before the command. The transport died,
+        # the command did not run, and only this call can say so.
+        report_not_run(os.environ)
+        if permanent:
+            die_config(f"lost the connection to {self.host}")
+        die_transient(f"lost the connection to {self.host}")
+
+    def sync_repository(self, toplevel: Path, directory: str, ignore_untracked: bool) -> None:
+        """Make the task clone `directory` contain the tracked files of the
+        repository whose toplevel is `toplevel`, as its working tree has them
+        now."""
+        self.marker_gate(directory)
+        try:
+            os.chdir(toplevel)
+        except OSError:
+            die_transient(f"cannot enter {toplevel}")
+        os.environ["PWD"] = str(toplevel)
+        assert self.snapshot_index is not None
+        # The caller's index seeds the snapshot, because a file staged and not
+        # committed is tracked.
+        try:
+            commit = build_snapshot_commit(
+                git_capturing,
+                self.snapshot_index,
+                CALLER_INDEX,
+                ["-u"],
+                "remote-task working-tree snapshot",
+                parent="HEAD",
+                empty_tree_refuses=True,
+            )
+        except SnapshotError as error:
+            if error.step == "empty-tree":
+                die_config("the snapshot tree is empty; refusing to wipe the remote checkout")
+            if error.permanent:
+                die_config(error.message)
+            die_transient(error.message)
+        # The check runs inside the lock and after the snapshot. Files created
+        # during the wait are then seen, and a missing index does not report
+        # every file as untracked.
+        if not ignore_untracked:
+            self.require_no_untracked_files()
+        say(NAME, f"snapshot={commit}")
+        self.push_snapshot(commit, directory)
+        self.checkout_snapshot(directory)
+
+    def run(self, ignore_untracked: bool, arguments: list[str]) -> int:
+        repository_root = git_in_foreground(lambda: repository_toplevel(Path()))
+        if repository_root is None:
+            die_config("not inside a git repository")
+        # The configuration is revalidated here. This entry is reachable
+        # without the outer phase, and the gate interpolates the directory
+        # unquoted.
+        validate_configuration(self.host, self.directory, die_config)
+        for dependency in self.dependencies:
+            validate_configuration(self.host, dependency.directory, die_config)
+        self.ssh = ssh_command()
+        # Read before any move to a toplevel, after which it is always empty.
+        status, prefix = git_capturing(["rev-parse", "--show-prefix"])
+        if status != 0:
+            die_config("cannot resolve the caller's path within the repository")
+        self.caller_prefix = prefix
+        lock_directory = os.environ.get("HEAVY_TASK_DIR", "")
+        if not lock_directory:
+            die_config("the run phase requires the lock runner's directory: HEAVY_TASK_DIR is not set")
+        # The scratch files live in the lock directory, because this phase must
+        # not depend on a writable TMPDIR.
+        self.stderr_file = Path(lock_directory) / f"remote-stderr.{os.getpid()}"
+        self.snapshot_index = Path(lock_directory) / f"snapshot-index.{os.getpid()}"
+        for dependency in self.dependencies:
+            say(NAME, f"dependency {dependency.toplevel}")
+            self.sync_repository(dependency.toplevel, dependency.directory, ignore_untracked)
+        # A header attributes the lines that follow to the run's repository
+        # instead of the last dependency.
+        if self.dependencies:
+            say(NAME, f"repository {repository_root}")
+        self.may_hand_off = not self.sync_only
+        self.sync_repository(repository_root, self.directory, ignore_untracked)
+        if self.sync_only:
+            self.notrun_armed = False
+            return 0
+        self.deliver_script(self.remote_script(arguments))
+        if self.tool is not None:
+            self.deliver_tool(self.tool, arguments[0])
+            self.check_tool_interpreter(self.tool)
+        # Past this line a non-zero status is the command's result.
+        self.notrun_armed = False
+        status = self.run_script()
+        if status == 255:
+            return self.classify_execute_255()
+        return status
+
+
+def run_phase(arguments: list[str]) -> int:
+    global interrupt_trapped
+    sync_only = ignore_untracked = False
+    tool_path = tool_interpreter = tool_minimum = ""
+    dependencies: list[Dependency] = []
+    while arguments:
+        flag = arguments[0]
+        if flag in ("--sync", "--ignore-untracked"):
+            sync_only = sync_only or flag == "--sync"
+            ignore_untracked = ignore_untracked or flag == "--ignore-untracked"
+            arguments = arguments[1:]
+        elif flag in ("--tool-path", "--tool-interpreter", "--tool-minimum"):
+            value = arguments[1] if len(arguments) > 1 else ""
+            if flag == "--tool-path":
+                tool_path = value
+            elif flag == "--tool-interpreter":
+                tool_interpreter = value
+            else:
+                tool_minimum = value
+            arguments = arguments[2:]
+        elif flag == "--dependency":
+            toplevel, directory = [*arguments[1:3], "", ""][:2]
+            dependencies.append(Dependency(Path(toplevel), directory))
+            arguments = arguments[3:]
+        else:
+            if flag == "--":
+                arguments = arguments[1:]
+            break
+    tool = Tool(Path(tool_path), tool_interpreter, tool_minimum) if tool_path else None
+    # ssh catches an interrupt and exits 255, which reads as a handoff.
+    # Stopping once the call ends stops the runner and the outer phase as an
+    # interrupt instead.
+    interrupt_trapped = True
+    phase = RunPhase(sync_only, tool, dependencies)
+    try:
+        return phase.run(ignore_untracked, arguments)
+    finally:
+        phase.clean_up()
+
+
+# --- outer phase -------------------------------------------------------------
+
+
+class RemoteArguments(LockRunnerArguments):
+    def __init__(self) -> None:
+        super().__init__()
+        self.directory: str | None = None
+        self.ignore_untracked: bool = False
+        self.tool: bool = False
+        self.sync: bool = False
+        self.depends: list[str] = []
+
+    @override
+    def beside_wait(self) -> bool:
+        """Return whether an argument that --wait refuses was given: --log,
+        a command, --directory, --ignore-untracked, --tool, --sync, or
+        --depends."""
+        return (
+            super().beside_wait()
+            or self.directory is not None
+            or self.ignore_untracked
+            or self.tool
+            or self.sync
+            or bool(self.depends)
+        )
+
+
+def command_line_parser() -> CommandLineParser:
+    parser = lock_runner_parser(
+        NAME,
+        "Run a command on the task machine, against the tracked files here. "
+        + "Untracked files and files under /tmp are not copied there.",
+        "%(prog)s --depends ../mosaic --depends ../mosaic-queue --log FILE.log <command>",
+    )
+    _ = parser.add_argument(
+        "--directory", metavar="DIR", type=nonempty_value, help="run in DIR, inside another repository"
+    )
+    _ = parser.add_argument(
+        "--depends",
+        metavar="DIR",
+        action="append",
+        default=[],
+        type=nonempty_value,
+        help="sync the repository at DIR into its task clone first",
+    )
+    _ = parser.add_argument(
+        "--ignore-untracked", action="store_true", help="run even though the working tree holds untracked files"
+    )
+    form = parser.add_mutually_exclusive_group()
+    _ = form.add_argument("--tool", action="store_true", help="ship the command's program from PATH here")
+    _ = form.add_argument("--sync", action="store_true", help="refresh the task clone and run no command")
+    return parser
+
+
+def absolutize_variable(name: str) -> None:
+    value = os.environ.get(name, "")
+    if value:
+        os.environ[name] = str(from_working_directory(value))
+
+
+def outer_phase(words: list[str]) -> int:
+    # Inherited from an enclosing heavy run, whose command did start.
+    _ = os.environ.pop(NOT_RUN_VARIABLE, None)
+
+    parser = command_line_parser()
+    parsed = parse_lock_runner_arguments(parser, words, RemoteArguments())
+    # --wait does not take a lock, run a command, or need configuration.
+    if parsed.wait is not None:
+        runner = require_runner()
+        os.environ[RUNNER_NAME_VARIABLE] = NAME
+        apply_timeout()
+        exec_or_die([runner, f"--wait={parsed.wait}"])
+
+    arguments = parsed.command
+    sync = parsed.sync
+    ignore_untracked = parsed.ignore_untracked
+    run_directory = parsed.directory
+    # --sync refuses a command. Dropping the command exits 0, which reads as a
+    # passing suite.
+    if sync and arguments:
+        parser.error("--sync takes no command; it refreshes the checkout and runs nothing")
+    if not arguments and not sync:
+        parser.error("no command given")
+
+    log = parsed.log
+    # Each resolves from the caller's directory, before the --directory move.
+    dependencies = [resolve_dependency(given) for given in parsed.depends]
+    directory_given = run_directory is not None
+    if run_directory is not None:
+        # Each means a place beside the caller, and the move below changes the
+        # base. The runner resolves a relative log from the run directory.
+        if log is not None:
+            log = str(from_working_directory(log))
+        absolutize_variable("REMOTE_TASK_LOCK_DIR")
+        absolutize_variable("HEAVY_TASK_DIR")
+    caller_environment = save_caller_environment()
+    if run_directory is not None:
+        if not present(Path(run_directory).is_dir):
+            die_config(f"--directory {run_directory} is not a directory")
+        if not change_directory(run_directory):
+            die_config(f"--directory {run_directory} cannot be entered")
+    # The flag takes the one-word form, which reads a value that starts with a
+    # dash as the file.
+    log_flag = [] if log is None else [f"--log={log}"]
+
+    toplevel = git_in_foreground(lambda: repository_toplevel(Path()))
+    if toplevel is None:
+        die_config(f"not inside a git repository: {working_directory()}")
+    require_commit(Path(), die_config)
+    resolve_repository_configuration(toplevel, directory_given)
+
+    # The tool is resolved ahead of the fallback decision, because a program
+    # that cannot be shipped cannot run here either.
+    tool_flags: list[str] = []
+    if parsed.tool:
+        tool = resolve_tool(arguments[0])
+        tool_flags = ["--tool-path", str(tool.path), "--tool-interpreter", tool.interpreter,
+                      "--tool-minimum", tool.minimum]
+
+    host = os.environ.get("REMOTE_TASK_HOST", "")
+    directory = os.environ.get("REMOTE_TASK_DIR", "")
+    if not host and not directory and not sync:
+        reason = "no task machine configured"
+        runner = require_runner(reason)
+        start_fallback(reason, "", arguments, log_flag, runner, caller_environment, ignore_untracked)
+
+    validate_configuration(host, directory, die_config)
+    check_dependency_clones(host, directory, dependencies)
+    # Refuses a multi-line REMOTE_TASK_SSH before the queue wait.
+    _ = ssh_command()
+    runner = require_runner()
+
+    apply_timeout()
+    lock_directory = lock_directory_for_host(host)
+    os.environ["HEAVY_TASK_DIR"] = str(lock_directory)
+    os.environ[RUNNER_NAME_VARIABLE] = NAME
+    # An empty label is not neutral, because the runner then shows its argv,
+    # the re-entry.
+    os.environ["HEAVY_TASK_LABEL"] = waiter_label("--sync" if sync else " ".join(arguments))
+    # git reads GIT_SSH_COMMAND alone. Set only for a set seam, because an
+    # inherited value may contain a key or a ProxyCommand.
+    if ssh_is_set():
+        os.environ["GIT_SSH_COMMAND"] = os.environ["REMOTE_TASK_SSH"]
+
+    # The run phase hands a run back through this file. Removing a file left by
+    # an earlier run of a reused pid keeps a remote success from turning into a
+    # second, local run.
+    handoff = lock_directory / f"handoff.{os.getpid()}"
+    remove_quietly(handoff)
+    os.environ["REMOTE_TASK_HANDOFF_FILE"] = str(handoff)
+    os.environ[HANDOFF_VARIABLE] = str(handoff)
+    try:
+        # The token proves that the run phase started through the lock runner.
+        os.environ["REMOTE_TASK_UNDER_LOCK"] = "1"
+        run_phase_flags = [
+            *(["--sync"] if sync else []),
+            *(["--ignore-untracked"] if ignore_untracked else []),
+            *tool_flags,
+            *(
+                word
+                for declared in dependencies
+                for word in ("--dependency", str(declared.dependency.toplevel), declared.dependency.directory)
+            ),
+        ]
+        status, _ = run([runner, *log_flag, "--", str(SELF), "--run-phase", *run_phase_flags, "--", *arguments])
+        handed_back = handoff_reason(handoff)
+        if handed_back is not None:
+            reason, diagnostic = handed_back
+            remove_quietly(handoff)
+            # The fallback's lock runner refuses used log paths.
+            if log is not None:
+                remove_quietly(Path(log))
+            start_fallback(
+                reason, diagnostic, arguments, log_flag, runner, caller_environment, ignore_untracked
+            )
+        return status
+    finally:
+        remove_quietly(handoff)
+
+
+def dispatch(arguments: list[str]) -> int:
+    handle_unless_ignored(signal.SIGINT, defer_interrupt)
+    if arguments[:1] == ["--run-phase"]:
+        if not os.environ.get("REMOTE_TASK_UNDER_LOCK"):
+            # Refusing a misuse must not rewrite an enclosing run's verdict.
+            _ = os.environ.pop(NOT_RUN_VARIABLE, None)
+            die_config("--run-phase is internal: it runs only under the lock runner")
+        return run_phase(arguments[1:])
+    if arguments[:1] == ["--fallback-phase"]:
+        arguments = fallback_phase(arguments[1:])
+    return outer_phase(arguments)
+
+
+if __name__ == "__main__":
+    run_main(lambda: dispatch(sys.argv[1:]))
