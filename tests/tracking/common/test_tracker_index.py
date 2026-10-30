@@ -154,4 +154,24 @@ def test_an_absent_root_lists_empty_but_typed(ds: Dataset) -> None:
         "model_type",
         "slp_path",
         "analysis_h5_path",
+        "n_vectors_unmatched",
     ]
+
+
+# --- the unmatched-vector count --------------------------------------------
+
+
+def test_the_unmatched_vector_count_is_the_last_sleap_column() -> None:
+    fields = SleapIndexRow.__dataclass_fields__
+    assert list(fields)[-1] == "n_vectors_unmatched"
+    assert fields["n_vectors_unmatched"].default == ""
+
+
+def test_a_row_written_before_the_unmatched_vector_count_reads_blank(
+    ds: Dataset,
+) -> None:
+    _legacy_index(tracker_index_path(ds, "sleap"), "n_ids")
+
+    listed = list_tracker_runs(ds, "sleap", SleapIndexRow)
+
+    assert listed.iloc[0]["n_vectors_unmatched"] == ""

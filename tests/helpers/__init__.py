@@ -373,6 +373,7 @@ from tests.helpers.litpose import (
     write_litpose_model,
 )
 from tests.helpers.sleap import (
+    EMBEDDING_TRACKER_SETTINGS,
     STUB_NODES,
     FakeSleap,
     FakeSleapFrames,
@@ -390,6 +391,7 @@ from tests.helpers.sleap import (
     sleap_instance,
     write_appearance_readback,
     write_sleap_model,
+    write_sleap_model_set,
     write_stub_sleap_io,
     write_stub_slp,
 )
@@ -436,6 +438,7 @@ __all__ = [
     "CropLike",
     "DIVISION_CREATED_UTC",
     "EVEN_STORE_TIMING",
+    "EMBEDDING_TRACKER_SETTINGS",
     "EnvironmentMarker",
     "Event",
     "EventRecorder",
@@ -688,6 +691,7 @@ __all__ = [
     "write_pv_header",
     "write_sleap_analysis_h5",
     "write_sleap_model",
+    "write_sleap_model_set",
     "write_stub_sleap_io",
     "write_stub_slp",
     "write_templates",

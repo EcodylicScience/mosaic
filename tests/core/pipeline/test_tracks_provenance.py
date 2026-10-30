@@ -808,7 +808,6 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
         recorded_first_frame=None,
     )
 
-    assert written is not None
     assert written.n_rows == 6 and written.n_ids == 1
     row = _one_row(ds)
     assert str(row["producer"]) == "sleap"

@@ -1,10 +1,13 @@
 """Stand in for SLEAP in the tests of the SLEAP tracker, frame adapter and preparation.
 
-``run_sleap`` calls SLEAP through two module-level seams in
-``sleap/dataset_runs.py``: ``sleap-nn track`` and ``sleap-convert``.
-:func:`install_fake_sleap` replaces both with a :class:`FakeSleap`, whose
-inference writes a ``.slp`` and whose export writes a small, converter-readable
-analysis ``.h5``. A test runs the whole tracker protocol without a model.
+``run_sleap`` calls SLEAP through module-level seams in ``sleap/dataset_runs.py``:
+``sleap-nn track``, ``sleap-nn predict``, ``sleap-convert`` and the readback of
+tracked instances. :func:`install_fake_sleap` replaces them with a
+:class:`FakeSleap`, whose inference writes a ``.slp`` and whose export writes a
+small, converter-readable analysis ``.h5``. A test runs the whole tracker
+protocol without a model. Its ``predict`` stands in for ``run_sleap_predict``,
+and writes a ``.slp`` or reports ``No detections to embed``. Its ``readback``
+writes the ``.npz`` of an embedding run, one unit vector per frame.
 :func:`write_sleap_model` writes the model directory that a run names.
 :func:`record_slp_writes` stands in for the labels writer of a sleap
 preparation.
@@ -46,19 +49,44 @@ from mosaic.tracking.sleap.frames import (
     SleapReadback,
 )
 from mosaic.tracking.sleap.probe import SleapProbeResponse
-from mosaic.tracking.sleap.run import SleapConvertResult, SleapTrackResult
+from mosaic.tracking.sleap.run import (
+    SleapConvertResult,
+    SleapNoDetections,
+    SleapTrackResult,
+)
 
 from tests.helpers.tracks import write_sleap_analysis_h5
 
 
 @dataclass
 class FakeSleap:
-    """Recording stand-ins for the two SLEAP phases."""
+    """Recording stand-ins for the SLEAP phases of a tracker run.
+
+    The export holds one track, :data:`_FAKE_TRACK`, in every frame of
+    :attr:`frames`, with every keypoint NaN in :attr:`nan_frames`. The readback
+    of an embedding run records that track in every frame, with a unit vector
+    of :attr:`dim` components, ``e_(frame mod dim)``, except in
+    :attr:`unembedded_frames`, where the instance has no vector.
+    """
 
     tracked: list[Path] = field(default_factory=list)
     track_settings: list[dict[str, object]] = field(default_factory=list)
     converted: list[Path] = field(default_factory=list)
+    predicted: list[Path] = field(default_factory=list)
+    predict_settings: list[dict[str, object]] = field(default_factory=list)
+    read_back: list[Path] = field(default_factory=list[Path])
+    detects: bool = True
     frames: int = 6
+    nan_frames: tuple[int, ...] = ()
+    unembedded_frames: tuple[int, ...] = ()
+    dim: int = 128
+    version: str = "0.3.5"
+    probed: int = 0
+
+    def probe(self, *_args: object, **_kwargs: object) -> SleapProbeResponse:
+        """Count the call, and report sleap-nn at :attr:`version`."""
+        self.probed += 1
+        return SleapProbeResponse(has_sleap_nn=True, sleap_nn_version=self.version)
 
     def track(
         self, video_path: Path, output_slp: Path, **kwargs: object
@@ -70,25 +98,79 @@ class FakeSleap:
         out.write_bytes(b"slp")
         return SleapTrackResult(slp_path=out, stdout="", stderr="")
 
+    def predict(
+        self, video_path: Path, output_slp: Path, **kwargs: object
+    ) -> SleapNoDetections | None:
+        """Record the call, and write a ``.slp`` unless :attr:`detects` is false.
+
+        Returns sleap-nn's report when the video had no detection, else
+        ``None``, as ``run_sleap_predict`` does.
+        """
+        self.predicted.append(Path(video_path))
+        self.predict_settings.append(kwargs)
+        if not self.detects:
+            return SleapNoDetections(
+                message="No detections to embed",
+                argv=("sleap-nn", "predict", "-i", str(video_path)),
+            )
+        out = Path(output_slp)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"slp")
+        return None
+
     def convert(
         self, slp_path: Path, output_h5: Path, **_kwargs: object
     ) -> SleapConvertResult:
         self.converted.append(Path(slp_path))
         out = Path(output_h5)
         tracks = np.random.default_rng(0).random((self.frames, 1, 1, 2))
-        write_sleap_analysis_h5(out, tracks)
+        tracks[list(self.nan_frames)] = np.nan
+        write_sleap_analysis_h5(out, tracks, track_names=(_FAKE_TRACK,))
         return SleapConvertResult(analysis_h5_path=out, stdout="", stderr="")
+
+    def readback(self, predicted: Path, out: Path, **_kwargs: object) -> Path:
+        """Record the call, and write the readback of every frame to *out*."""
+        self.read_back.append(Path(predicted))
+        records = [
+            ReadbackRecord(
+                frame_idx=frame,
+                track_name=_FAKE_TRACK,
+                vector=(
+                    None
+                    if frame in self.unembedded_frames
+                    else tuple(
+                        float(component == frame % self.dim)
+                        for component in range(self.dim)
+                    )
+                ),
+            )
+            for frame in range(self.frames)
+        ]
+        return write_appearance_readback(out, records, dim=self.dim)
+
+
+_FAKE_TRACK: Final = "track_0"
+"""The name of the one track that :class:`FakeSleap` exports and reads back."""
 
 
 def install_fake_sleap(
     monkeypatch: pytest.MonkeyPatch, fake: FakeSleap | None = None
 ) -> FakeSleap:
-    """Replace the tracker's two seams with *fake*, or a new :class:`FakeSleap`."""
+    """Replace the tracker's SLEAP seams and the SLEAP probe with *fake*.
+
+    The seams are ``sleap-nn track``, ``sleap-nn predict``, ``sleap-convert``
+    and the readback of tracked instances. Without *fake*, a new
+    :class:`FakeSleap` is installed and returned.
+    """
     import mosaic.tracking.sleap.dataset_runs as dataset_runs
+    import mosaic.tracking.sleap.probe as sleap_probe
 
     installed = fake if fake is not None else FakeSleap()
+    monkeypatch.setattr(sleap_probe, "probe_sleap", installed.probe)
     monkeypatch.setattr(dataset_runs, "run_sleap_track", installed.track)
+    monkeypatch.setattr(dataset_runs, "run_sleap_predict", installed.predict)
     monkeypatch.setattr(dataset_runs, "run_sleap_convert", installed.convert)
+    monkeypatch.setattr(dataset_runs, "read_back_embeddings", installed.readback)
     return installed
 
 
@@ -118,6 +200,7 @@ def write_sleap_model(
     *,
     head: str = "",
     merged: bool = False,
+    embedding_dim: object = 128,
 ) -> Path:
     """Write a SLEAP model directory at *directory*, and return it.
 
@@ -132,12 +215,16 @@ def write_sleap_model(
     but *head*, and ``data_config.skeletons`` names the nodes of
     :data:`_MERGED_NODES`. The section of *head* names those nodes and anchors on
     the ``centroid`` node, so the document's scalar values name a head that was not
-    trained. A merged config without *head* configures no head.
+    trained. A merged config without *head* configures no head. A merged
+    ``embedding`` config declares *embedding_dim* as the vector length, and
+    leaves the key out when it is ``None``.
     """
     directory.mkdir(parents=True, exist_ok=True)
     _ = (directory / "best.ckpt").write_bytes(weights)
     if merged:
-        config = yaml.safe_dump(_merged_training_config(head), sort_keys=False)
+        config = yaml.safe_dump(
+            _merged_training_config(head, embedding_dim), sort_keys=False
+        )
         _ = (directory / "training_config.yaml").write_text(config)
     elif head:
         _ = (directory / "training_config.yaml").write_text(
@@ -146,7 +233,34 @@ def write_sleap_model(
     return directory
 
 
-def _merged_training_config(head: str) -> dict[str, object]:
+def write_sleap_model_set(directory: Path, *heads: str) -> list[str]:
+    """Write one merged model per head under *directory*, and return their paths.
+
+    Each model has its own weights and the merged config of its head, in the
+    order of *heads*, so the list is a sleap op's ``model_paths``.
+    """
+    return [
+        str(
+            write_sleap_model(
+                directory / f"{index}-{head}",
+                f"{index}-{head}".encode(),
+                head=head,
+                merged=True,
+            )
+        )
+        for index, head in enumerate(heads)
+    ]
+
+
+EMBEDDING_TRACKER_SETTINGS: Final[dict[str, object]] = {
+    "features": "embeddings",
+    "scoring_method": "cosine_sim",
+    "candidates_method": "local_queues",
+}
+"""The tracker settings that a sleap run with an embedding model requires."""
+
+
+def _merged_training_config(head: str, embedding_dim: object) -> dict[str, object]:
     """Return the merged training config of a sleap-nn model of *head*."""
     nodes = list(_MERGED_NODES)
     confmaps: dict[str, object] = {
@@ -155,6 +269,8 @@ def _merged_training_config(head: str) -> dict[str, object]:
         "sigma": 5.0,
         "output_stride": 2,
     }
+    if head == "embedding" and embedding_dim is not None:
+        confmaps["embedding_dim"] = embedding_dim
     section = "embedding" if head == "embedding" else "confmaps"
     heads = {
         name: {section: confmaps} if name == head else None for name in _MERGED_HEADS

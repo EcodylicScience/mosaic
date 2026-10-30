@@ -35,6 +35,11 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.appearance import (
+    appearance_path,
+    validate_appearance,
+    write_appearance,
+)
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
@@ -85,6 +90,12 @@ class BridgeCounts:
     they do not map onto the source media's pixels, frames or clock, in the
     table's column order: those that a joined entry's retiming or a media
     variant's mapping removed. It is empty when the table kept every column.
+
+    ``n_vectors_unmatched`` is how many appearance vectors were dropped because
+    their detection has no row in the published table. ``None`` when nothing
+    was measured: a run without appearance vectors, or a reused table.
+    :func:`publish_tracks_table` refuses an unmatched vector and never sets it;
+    the caller that drops the vectors before publishing sets it.
     """
 
     n_rows: int
@@ -94,6 +105,7 @@ class BridgeCounts:
     dropped: tuple[str, ...] = ()
     producer: str = ""
     known_tail_loss: int | None = None
+    n_vectors_unmatched: int | None = None
 
     @property
     def frame_axis(self) -> FrameAxisVerdict | None:
@@ -189,6 +201,7 @@ def publish_tracks_table(
     frames_read: int | None,
     known_tail_loss: int | None = None,
     strict: bool = False,
+    appearance: pd.DataFrame | None = None,
 ) -> BridgeCounts:
     """Write one converted frame as this variant's table for one entry.
 
@@ -230,6 +243,11 @@ def publish_tracks_table(
             producer loses on any file.
         strict: Raise when the table lacks a column that its schema requires,
             rather than printing the report and publishing it.
+        appearance: The entry's appearance table, keyed by *df*'s ``(frame,
+            id)`` on the same axes as *df*, or ``None``. It is placed by
+            *axis* like *df*, checked against the placed table, and written
+            before the tracks table, so a row never names a missing appearance
+            table. The row records its path.
 
     Returns:
         Counts of the published table, and every column dropped from it.
@@ -243,14 +261,26 @@ def publish_tracks_table(
         ForbiddenTrackColumnError: If the table has a column that its schema
             forbids, whatever *strict* says.
         TrackSchemaError: If *strict* and the table lacks a required column.
+        AppearanceTableError: If the placed *appearance* breaks the appearance
+            contract against the placed table. Nothing is written.
     """
     root = tracking_root(kind)
     placed = axis.place(df)
     df = placed.frame
     media_frames = axis.media_frames
-    out_path = tracks_table_path(ds, tracks_variant, make_entry_key(group, sequence))
+    entry_key = make_entry_key(group, sequence)
+    out_path = tracks_table_path(ds, tracks_variant, entry_key)
     std_format = root.output_schema
     ensure_track_schema(df, std_format, strict=strict, source=f"{group}/{sequence}")
+
+    vectors_path: Path | None = None
+    if appearance is not None:
+        vectors_path = appearance_path(out_path.parent, entry_key)
+        # The columns placing drops from the vectors go unreported: every
+        # ``emb_`` column is invariant, and ``time`` is only tolerated.
+        vectors = axis.place(appearance).frame
+        _ = validate_appearance(vectors, df, source=str(vectors_path))
+        write_appearance(vectors_path, vectors)
 
     _ = write_parquet_atomic(df, out_path)
 
@@ -271,6 +301,7 @@ def publish_tracks_table(
         frames_read=frames_read,
         known_tail_loss=known_tail_loss,
         first_frame=axis.first_frame,
+        appearance_path=vectors_path,
         # A bridge opens the entry's media, so its row records what that
         # media was. The variant identity has no term for the pixels, so
         # this cell is the only thing that notices a re-transcode.

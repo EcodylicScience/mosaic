@@ -3,6 +3,8 @@
 ``publish_tracks_table`` maps a table tracked on a media variant into its entry's
 source space, and times a table tracked on the join of an entry's clips by the
 clips, before the schema is checked. It reports the columns that either dropped.
+An appearance table goes through the same placement, is checked against the
+placed table, and is written before the tracks table and its row.
 ``publish_or_record`` turns that report into a run-log event, and a table the
 mapping refuses into a failed entry.
 """
@@ -13,12 +15,20 @@ import json
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 
+import mosaic.tracking.common.bridge as bridge
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.media.preprocess import CropStep, Placement, TrimStep
 from mosaic.core.media.timeline import concatenated_timeline
+from mosaic.core.pipeline.appearance import (
+    AppearanceTableError,
+    appearance_path,
+    read_appearance,
+)
 from mosaic.core.pipeline.job import job_context
 from mosaic.core.pipeline.placement import (
     EntryAxis,
@@ -26,6 +36,7 @@ from mosaic.core.pipeline.placement import (
     UnclassifiedColumnError,
 )
 from mosaic.core.pipeline.run_log import read_run, run_log_dir, run_log_path
+from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.schema import TrackSchemaError
 from mosaic.tracking.common.bridge import (
@@ -99,6 +110,7 @@ def _publish(
     *,
     axis: EntryAxis | None = None,
     strict: bool = False,
+    appearance: pd.DataFrame | None = None,
 ) -> BridgeCounts:
     return publish_tracks_table(
         ds,
@@ -113,7 +125,28 @@ def _publish(
         axis=EntryAxis() if axis is None else axis,
         frames_read=None,
         strict=strict,
+        appearance=appearance,
     )
+
+
+def _appearance(frames: npt.NDArray[np.int64]) -> pd.DataFrame:
+    """Return one unit vector of two components for track 0 at each of *frames*."""
+    angles = frames.astype(np.float32)
+    return pd.DataFrame(
+        {
+            "group": "g",
+            "sequence": "s",
+            "frame": frames,
+            "id": np.zeros(len(frames), dtype=np.int64),
+            "emb_0": np.cos(angles),
+            "emb_1": np.sin(angles),
+        }
+    )
+
+
+def _appearance_file(ds: Dataset) -> Path:
+    root = tracks_variant_root(ds.get_root("tracks"), _VARIANT)
+    return appearance_path(root, make_entry_key("g", "s"))
 
 
 def _events(ds: Dataset, execution_id: str) -> list[dict[str, object]]:
@@ -353,4 +386,86 @@ def test_a_table_the_mapping_refuses_is_a_failed_entry(tmp_path: Path) -> None:
         if record["ev"] == "entry_error"
     ]
     assert [error["type"] for error in errors] == [UnclassifiedColumnError.__name__]
+    assert read_tracks_index(ds).empty
+
+
+def test_an_appearance_table_is_published_with_its_cell(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    vectors = _appearance(np.arange(_ROWS, dtype=np.int64))
+
+    _ = _publish(ds, _variant_table(), appearance=vectors)
+
+    row = read_tracks_index(ds).iloc[0]
+    assert ds.resolve_path(str(row["appearance_abs_path"])) == _appearance_file(ds)
+    table = read_appearance(ds, _VARIANT, ("g", "s"))
+    assert table is not None
+    assert table.frame.tolist() == list(range(_ROWS))
+    np.testing.assert_array_equal(
+        table.vectors, vectors[["emb_0", "emb_1"]].to_numpy(dtype=np.float32)
+    )
+
+
+def test_a_table_without_appearance_records_a_blank_cell(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+
+    _ = _publish(ds, _variant_table())
+
+    assert str(read_tracks_index(ds).iloc[0]["appearance_abs_path"]) == ""
+    assert not _appearance_file(ds).exists()
+
+
+def test_a_media_variant_publishes_vectors_keyed_in_source_space(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    vectors = _appearance(np.arange(_ROWS, dtype=np.int64))
+
+    _ = _publish(ds, _variant_table(), axis=_variant_axis(), appearance=vectors)
+
+    table = read_appearance(ds, _VARIANT, ("g", "s"))
+    assert table is not None
+    source_frames = (_TRIM_START + np.arange(_ROWS)).tolist()
+    assert table.frame.tolist() == source_frames
+    assert _published(ds)["frame"].tolist() == source_frames
+    np.testing.assert_array_equal(
+        table.vectors, vectors[["emb_0", "emb_1"]].to_numpy(dtype=np.float32)
+    )
+
+
+def test_a_vector_without_a_placed_row_is_refused_before_any_write(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    vectors = _appearance(np.arange(_ROWS + 1, dtype=np.int64))
+
+    with pytest.raises(AppearanceTableError, match=r"\(4, 0\) is not in the tracks"):
+        _ = _publish(ds, _variant_table(), appearance=vectors)
+
+    assert read_tracks_index(ds).empty
+    assert not _appearance_file(ds).exists()
+    assert not (
+        tracks_variant_root(ds.get_root("tracks"), _VARIANT) / "g__s.parquet"
+    ).exists()
+
+
+def test_a_publication_interrupted_after_the_appearance_write_records_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The appearance table is written first, so a row never names a missing one."""
+    ds = make_dataset(tmp_path)
+
+    def interrupted(df: pd.DataFrame, path: Path) -> int:
+        del df
+        msg = f"killed before writing {path}"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(bridge, "write_parquet_atomic", interrupted)
+    with pytest.raises(RuntimeError, match="killed"):
+        _ = _publish(
+            ds,
+            _variant_table(),
+            appearance=_appearance(np.arange(_ROWS, dtype=np.int64)),
+        )
+
+    assert _appearance_file(ds).is_file()
     assert read_tracks_index(ds).empty

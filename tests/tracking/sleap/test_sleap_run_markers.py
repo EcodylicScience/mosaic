@@ -5,27 +5,54 @@ established in ``test_trex_run_markers.py``): the fake inference writes a ``.slp
 and the fake export writes a small, converter-readable analysis ``.h5``. This
 exercises the Job-Contract machinery -- content ``run_id``, phase-marker reuse,
 the analysis-h5 -> tracks bridge, and the two index writers -- with no models.
+
+A run whose last model is an embedding model predicts with ``sleap-nn predict``,
+reads the vectors back from its ``.slp``, and publishes an appearance table
+beside each tracks table. Its readback is ensured like the export, and a reused
+tracks table is republished when its appearance table does not read.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 import mosaic.tracking.sleap.dataset_runs as dr
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.appearance import AppearanceTable, read_appearance
+from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pipeline.markers import (
+    InflightMarker,
+    PhaseName,
+    phase_marker_path,
+)
+from mosaic.core.pipeline.run import AllEntriesFailed
+from mosaic.core.pipeline.tracks_identity import (
+    read_variant_sidecar,
+    tracks_variant_root,
+)
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.tracking.model_refs import resolve_model_set
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.params import SleapParams
 
 from tests.helpers import (
+    EMBEDDING_TRACKER_SETTINGS,
     FakeSleap,
+    MediaClip,
+    entry_error_lines,
     install_fake_sleap,
+    latest_snapshot,
+    make_dataset,
+    set_tracks_cell,
     stub_media_dataset,
     write_media_index,
     write_sleap_model,
+    write_sleap_model_set,
 )
 
 
@@ -360,3 +387,342 @@ def test_naming_the_training_run_records_lineage_a_path_cannot(
     # One model, reached two ways: both runs inferred from the same checkpoint.
     slp_paths = {path.name for path in sleap.tracked}
     assert slp_paths == {"vid1.mp4"}
+
+
+# --- a run with an embedding model ------------------------------------------
+
+
+def _embedding_params(tmp_path: Path) -> SleapParams:
+    models = write_sleap_model_set(tmp_path / "models", "bottomup", "embedding")
+    return SleapParams.model_validate(
+        {"model_paths": models, **EMBEDDING_TRACKER_SETTINGS}
+    )
+
+
+def _variant(ds: Dataset) -> str:
+    return str(read_tracks_index(ds).iloc[0]["run_id"])
+
+
+def _appearance(ds: Dataset) -> AppearanceTable:
+    table = read_appearance(ds, _variant(ds), ("", "vid1"))
+    assert table is not None
+    return table
+
+
+def _tracks_table(ds: Dataset) -> pd.DataFrame:
+    row = read_tracks_index(ds).iloc[0]
+    return pd.read_parquet(ds.resolve_path(str(row["abs_path"])))
+
+
+def _observed(ds: Dataset) -> dict[str, str]:
+    """Return the ``observed`` block of the variant's ``params.json``."""
+    root = tracks_variant_root(ds.get_root("tracks"), _variant(ds))
+    sidecar = read_variant_sidecar(root / "params.json")
+    assert sidecar is not None
+    return sidecar.observed
+
+
+def _readback(ds: Dataset, run_id: str) -> Path:
+    return sleap_run_root(ds, run_id) / "vid1" / "vid1.embeddings.npz"
+
+
+def _sleap_cells(ds: Dataset, column: str) -> list[str]:
+    index = pd.read_csv(sleap_index_path(ds), dtype=str, keep_default_na=False)
+    return index[column].tolist()
+
+
+def test_an_embedding_run_writes_one_vector_per_tracks_row(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    params = _embedding_params(tmp_path)
+
+    run_id = dr.run_sleap(ds, params)
+
+    assert sleap.tracked == []
+    assert len(sleap.predicted) == 1
+    (settings,) = sleap.predict_settings
+    assert settings["model_paths"] == [Path(model) for model in params.model_paths]
+    assert sleap.read_back == [
+        sleap_run_root(ds, run_id) / "vid1" / "vid1.predictions.slp"
+    ]
+    table = _appearance(ds)
+    tracks = _tracks_table(ds)
+    assert list(zip(table.frame.tolist(), table.id.tolist(), strict=True)) == list(
+        zip(tracks["frame"].tolist(), tracks["id"].tolist(), strict=True)
+    )
+    assert table.vectors.shape == (6, sleap.dim)
+    expected = np.eye(sleap.dim, dtype=np.float32)[np.arange(6) % sleap.dim]
+    np.testing.assert_array_equal(table.vectors, expected)
+    assert _sleap_cells(ds, "n_vectors_unmatched") == ["0"]
+
+
+def test_a_detection_without_keypoints_drops_its_vector_and_counts_it(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The export keeps a slot whose keypoints are all NaN, and the converter drops it."""
+    _ = install_fake_sleap(monkeypatch, FakeSleap(nan_frames=(2,)))
+
+    _ = dr.run_sleap(ds, _embedding_params(tmp_path))
+
+    assert _tracks_table(ds)["frame"].tolist() == [0, 1, 3, 4, 5]
+    assert _appearance(ds).frame.tolist() == [0, 1, 3, 4, 5]
+    assert _sleap_cells(ds, "n_vectors_unmatched") == ["1"]
+
+
+def test_a_tracks_row_without_a_vector_fails_the_entry(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = install_fake_sleap(monkeypatch, FakeSleap(unembedded_frames=(1, 3)))
+
+    with pytest.raises(AllEntriesFailed):
+        _ = dr.run_sleap(ds, _embedding_params(tmp_path), execution_id="unembedded")
+
+    (line,) = entry_error_lines(ds, "unembedded")
+    assert "2 tracks rows" in line
+    assert "no appearance vector" in line
+    assert read_tracks_index(ds).empty
+    assert not list(ds.get_root("tracks").rglob("appearance/*.parquet"))
+
+
+def test_a_rerun_reuses_the_readback_and_both_tables(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    params = _embedding_params(tmp_path)
+    _ = dr.run_sleap(ds, params)
+    published = _tracks_table(ds)
+
+    _ = dr.run_sleap(ds, params)
+
+    assert len(sleap.predicted) == 1
+    assert len(sleap.converted) == 1
+    assert len(sleap.read_back) == 1
+    pd.testing.assert_frame_equal(_tracks_table(ds), published)
+    assert _sleap_cells(ds, "n_vectors_unmatched") == ["0"]
+
+
+def test_a_rerun_that_reuses_the_table_keeps_the_recorded_unmatched_count(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sleap = install_fake_sleap(monkeypatch, FakeSleap(nan_frames=(2,)))
+    params = _embedding_params(tmp_path)
+    _ = dr.run_sleap(ds, params)
+
+    _ = dr.run_sleap(ds, params)
+
+    assert len(sleap.converted) == 1
+    assert _sleap_cells(ds, "n_vectors_unmatched") == ["1"]
+
+
+def test_the_readback_is_rerun_when_its_file_is_missing(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    params = _embedding_params(tmp_path)
+    run_id = dr.run_sleap(ds, params)
+    _readback(ds, run_id).unlink()
+
+    _ = dr.run_sleap(ds, params)
+
+    assert len(sleap.predicted) == 1
+    assert len(sleap.converted) == 1
+    assert len(sleap.read_back) == 2
+    assert _readback(ds, run_id).is_file()
+
+
+def test_a_reused_table_without_its_appearance_file_is_republished(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    params = _embedding_params(tmp_path)
+    _ = dr.run_sleap(ds, params)
+    cell = str(read_tracks_index(ds).iloc[0]["appearance_abs_path"])
+    ds.resolve_path(cell).unlink()
+
+    _ = dr.run_sleap(ds, params)
+
+    assert len(sleap.predicted) == 1
+    assert _appearance(ds).frame.tolist() == list(range(6))
+    assert _sleap_cells(ds, "n_vectors_unmatched") == ["0"]
+
+
+def test_a_reused_table_whose_row_records_no_appearance_file_is_republished(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    params = _embedding_params(tmp_path)
+    _ = dr.run_sleap(ds, params)
+    set_tracks_cell(ds, "appearance_abs_path", "")
+
+    _ = dr.run_sleap(ds, params)
+
+    assert len(sleap.predicted) == 1
+    assert _appearance(ds).frame.tolist() == list(range(6))
+
+
+def test_an_embedding_run_records_its_embedding_model_and_release(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    params = _embedding_params(tmp_path)
+
+    _ = dr.run_sleap(ds, params)
+
+    observed = _observed(ds)
+    embedding_model = resolve_model_set(None, [params.model_paths[-1]], "sleap")
+    assert observed["embedding_model_id"] == embedding_model.model_id
+    assert observed["embedding_dim"] == "128"
+    assert observed["sleap_nn_version"] == sleap.version
+
+
+def test_a_run_without_an_embedding_model_writes_no_appearance(
+    ds: Dataset, model: Path, sleap: FakeSleap
+) -> None:
+    _ = dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
+
+    assert sleap.predicted == []
+    assert sleap.read_back == []
+    assert str(read_tracks_index(ds).iloc[0]["appearance_abs_path"]) == ""
+    assert not {"embedding_model_id", "embedding_dim", "sleap_nn_version"} & set(
+        _observed(ds)
+    )
+
+
+# --- an entry with no detections ---------------------------------------------
+
+
+def _no_detections_marker(ds: Dataset, run_id: str) -> Path:
+    return sleap_run_root(ds, run_id) / "vid1" / "vid1.no-detections.json"
+
+
+def test_an_entry_with_no_detections_is_written_empty(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = install_fake_sleap(monkeypatch, FakeSleap(detects=False))
+
+    run_id = dr.run_sleap(ds, _embedding_params(tmp_path))
+
+    assert fake.converted == []
+    assert fake.read_back == []
+    marker = json.loads(_no_detections_marker(ds, run_id).read_text())
+    assert marker == {
+        "sleap_nn_version": fake.version,
+        "argv": ["sleap-nn", "predict", "-i", str(fake.predicted[0])],
+        "message": "No detections to embed",
+    }
+    row = read_tracks_index(ds).iloc[0]
+    assert int(row["n_rows"]) == 0
+    assert _tracks_table(ds).empty
+    table = _appearance(ds)
+    assert table.frame.size == 0
+    assert table.vectors.shape == (0, fake.dim)
+    assert _sleap_cells(ds, "slp_path") == [""]
+    assert _sleap_cells(ds, "analysis_h5_path") == [""]
+    assert latest_snapshot(ds)["entries_written"] == 1
+
+
+def test_an_entry_with_no_detections_is_not_predicted_again(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = install_fake_sleap(monkeypatch, FakeSleap(detects=False))
+    params = _embedding_params(tmp_path)
+    _ = dr.run_sleap(ds, params)
+
+    _ = dr.run_sleap(ds, params)
+
+    assert len(fake.predicted) == 1
+    assert fake.converted == []
+    assert _sleap_cells(ds, "slp_path") == [""]
+    assert _sleap_cells(ds, "analysis_h5_path") == [""]
+    assert _sleap_cells(ds, "n_vectors_unmatched") == ["0"]
+    assert _tracks_table(ds).empty
+    assert latest_snapshot(ds)["entries_written"] == 1
+
+
+def test_a_new_prediction_clears_a_stale_no_detections_marker(
+    ds: Dataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run killed after it wrote the marker but before it recorded the phase."""
+    fake = install_fake_sleap(monkeypatch, FakeSleap(detects=False))
+    params = _embedding_params(tmp_path)
+    run_id = dr.run_sleap(ds, params)
+    phase_marker_path(sleap_run_root(ds, run_id) / "vid1", "track").unlink()
+    fake.detects = True
+
+    _ = dr.run_sleap(ds, params)
+
+    assert not _no_detections_marker(ds, run_id).exists()
+    assert _appearance(ds).frame.tolist() == list(range(6))
+    assert _sleap_cells(ds, "slp_path") != [""]
+
+
+# --- the idle limit of an entry ------------------------------------------------
+
+
+@pytest.fixture
+def claimed(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the idle limit of every claim that the run writes."""
+    seen: list[float] = []
+    real = dr.claim
+
+    def recording(
+        ctx: JobContext, work_dir: Path, phase: PhaseName | None, idle_seconds: float
+    ) -> InflightMarker:
+        seen.append(idle_seconds)
+        return real(ctx, work_dir, phase, idle_seconds)
+
+    monkeypatch.setattr(dr, "claim", recording)
+    return seen
+
+
+def _idle_params(tmp_path: Path, **fields: object) -> SleapParams:
+    models = write_sleap_model_set(tmp_path / "models", "bottomup", "embedding")
+    return SleapParams.model_validate(
+        {"model_paths": models, **EMBEDDING_TRACKER_SETTINGS, **fields}
+    )
+
+
+def test_an_embedding_entry_waits_for_its_frames(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap, claimed: list[float]
+) -> None:
+    """The 100 frames of the stub video earn 5 s over an idle limit of 1 s."""
+    _ = dr.run_sleap(ds, _idle_params(tmp_path, idle_timeout=1))
+
+    assert sleap.predict_settings[0]["idle_timeout"] == pytest.approx(5.0)
+    assert claimed == [pytest.approx(5.0)] * 3
+
+
+def test_an_embedding_entry_under_an_analysis_range_waits_for_the_range(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap, claimed: list[float]
+) -> None:
+    params = _idle_params(tmp_path, idle_timeout=1, analysis_range=(10, 59))
+
+    _ = dr.run_sleap(ds, params)
+
+    assert sleap.predict_settings[0]["idle_timeout"] == pytest.approx(2.5)
+    assert claimed == [pytest.approx(2.5)] * 3
+
+
+def test_an_embedding_entry_without_a_frame_count_waits_an_hour(
+    tmp_path: Path, sleap: FakeSleap, claimed: list[float]
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="vid1", frame_count=0)])
+
+    _ = dr.run_sleap(ds, _idle_params(tmp_path, idle_timeout=1))
+
+    assert sleap.predict_settings[0]["idle_timeout"] == 3600
+    assert claimed == [3600] * 3
+
+
+def test_an_idle_limit_above_the_frame_allowance_is_kept(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap, claimed: list[float]
+) -> None:
+    _ = dr.run_sleap(ds, _idle_params(tmp_path, idle_timeout=900))
+
+    assert sleap.predict_settings[0]["idle_timeout"] == 900
+    assert claimed == [900] * 3
+
+
+def test_a_run_without_an_embedding_model_keeps_its_idle_limit(
+    ds: Dataset, model: Path, sleap: FakeSleap, claimed: list[float]
+) -> None:
+    _ = dr.run_sleap(ds, SleapParams(model_paths=[str(model)], idle_timeout=1))
+
+    assert sleap.track_settings[0]["idle_timeout"] == 1
+    assert claimed == [1, 1]

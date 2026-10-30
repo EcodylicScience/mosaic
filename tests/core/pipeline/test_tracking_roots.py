@@ -61,6 +61,31 @@ def test_an_unregistered_tracker_gets_no_root_rather_than_a_composed_one() -> No
         _ = tracking_root_default("deepsomething")
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "vid1.no-detections.json",
+        "vid1.embeddings.npz",
+        "vid1.embeddings.npz.partial",
+    ],
+)
+def test_the_sleap_root_declares_its_marker_and_readback_as_outputs(
+    name: str,
+) -> None:
+    """A directory that holds only one of them is still a SLEAP run's directory."""
+    outputs = TRACKING_ROOTS["sleap"].outputs
+
+    assert any(fnmatch.fnmatch(name, pattern) for pattern in outputs)
+
+
+def test_the_sleap_track_phase_owns_the_no_detections_marker() -> None:
+    """A new prediction removes a stale marker, and leaves the readback to its own ensure."""
+    owned = TRACKING_ROOTS["sleap"].clear_globs("track")
+
+    assert any(fnmatch.fnmatch("vid1.no-detections.json", glob) for glob in owned)
+    assert not any(fnmatch.fnmatch("vid1.embeddings.npz", glob) for glob in owned)
+
+
 def test_the_tracking_root_test_is_component_wise_not_a_prefix() -> None:
     """A sibling named ``_tracking_backup`` is not under ``_tracking``.
 

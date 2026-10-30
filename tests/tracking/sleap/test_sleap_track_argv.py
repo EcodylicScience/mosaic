@@ -25,9 +25,11 @@ from pydantic import ValidationError
 from mosaic.tracking.sleap import run as sleap_run
 from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import (
+    SleapError,
     SleapFeatures,
     SleapScoringMethod,
     run_sleap_convert,
+    run_sleap_predict,
     run_sleap_track,
     sleap_track_device_args,
 )
@@ -50,6 +52,10 @@ class Launched:
 
     script: str = ""
     args: list[str] = field(default_factory=list)
+    stdout: str = ""
+    writes_output: bool = True
+    exit_code: int = 0
+    stderr: str = ""
 
 
 @pytest.fixture
@@ -65,8 +71,13 @@ def launched(monkeypatch: pytest.MonkeyPatch) -> Launched:
         _invocation: list[str], args: list[str], **_kwargs: object
     ) -> tuple[str, str]:
         seen.args = list(args)
-        Path(args[args.index("-o") + 1]).write_bytes(b"")
-        return ("", "")
+        if seen.exit_code:
+            raise SleapError(
+                ["sleap-nn", *args], seen.exit_code, seen.stdout, seen.stderr
+            )
+        if seen.writes_output:
+            Path(args[args.index("-o") + 1]).write_bytes(b"")
+        return (seen.stdout, seen.stderr)
 
     monkeypatch.setattr(sleap_run, "sleap_invocation", fake_invocation)
     monkeypatch.setattr(sleap_run, "_run_sleap", fake_run)
@@ -364,3 +375,195 @@ def test_centroid_is_not_a_feature() -> None:
     keypoint OKS. The closed set has no ``centroid`` to mis-map."""
     with pytest.raises(ValidationError, match="centroids"):
         SleapParams.model_validate({"model_paths": ["m"], "features": "centroid"})
+
+
+# --- the embedding run -----------------------------------------------------------
+
+
+def test_predict_sends_the_whole_appearance_tracker(
+    tmp_path: Path, launched: Launched
+) -> None:
+    """Every tracking option is sent, and the vectors are saved into the file."""
+    video, out = tmp_path / "v.mp4", tmp_path / "e1.predictions.slp"
+
+    empty = run_sleap_predict(
+        video, out, model_paths=["detect", "embed"], max_tracks=4, device="0"
+    )
+
+    assert empty is None
+    assert launched.script == "sleap-nn"
+    assert launched.args == [
+        "predict",
+        "-i",
+        str(video),
+        "-o",
+        str(out),
+        "-m",
+        "detect",
+        "-m",
+        "embed",
+        "--peak_threshold",
+        "0.2",
+        "-d",
+        "cuda:0",
+        "-t",
+        "--features",
+        "embeddings",
+        "--scoring_method",
+        "cosine_sim",
+        "--candidates_method",
+        "local_queues",
+        "--save_embeddings",
+        "slp",
+        "--track_matching_method",
+        "hungarian",
+        "--tracking_window_size",
+        "5",
+        "--max_tracks",
+        "4",
+    ]
+
+
+def test_predict_sends_the_models_in_order(tmp_path: Path, launched: Launched) -> None:
+    """The embedding model is last, after the detection models."""
+    models = [tmp_path / "centroid", tmp_path / "centered", tmp_path / "embed"]
+
+    run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=models)
+
+    sent = [launched.args[i + 1] for i, a in enumerate(launched.args) if a == "-m"]
+    assert sent == [str(m) for m in models]
+
+
+def test_predict_sends_the_batch_size_only_when_it_is_not_the_default(
+    tmp_path: Path, launched: Launched
+) -> None:
+    """``-b`` also sets the embedder's crop batch, so the default leaves it off."""
+    run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
+    assert "-b" not in launched.args
+    assert "--batch_size" not in launched.args
+
+    run_sleap_predict(
+        tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"], batch_size=16
+    )
+    assert _value_of(launched.args, "-b") == "16"
+    assert "--batch_size" not in launched.args
+
+
+def test_predict_translates_the_shared_options_as_track_does(
+    tmp_path: Path, launched: Launched
+) -> None:
+    run_sleap_track(
+        tmp_path / "v.mp4",
+        tmp_path / "out.slp",
+        model_paths=["m"],
+        candidates_method="local_queues",
+        max_instances=3,
+        frames="0-99",
+        peak_threshold=0.3,
+        device="cpu",
+        max_tracks=5,
+    )
+    tracked = launched.args
+
+    run_sleap_predict(
+        tmp_path / "v.mp4",
+        tmp_path / "out.slp",
+        model_paths=["m"],
+        tracking_window_size=9,
+        track_matching_method="greedy",
+        max_instances=3,
+        frames="0-99",
+        peak_threshold=0.3,
+        device="cpu",
+        max_tracks=5,
+    )
+    predicted = launched.args
+
+    for option in ("-n", "--frames", "--peak_threshold", "-d", "--max_tracks"):
+        assert _value_of(predicted, option) == _value_of(tracked, option)
+    assert _value_of(predicted, "--tracking_window_size") == "9"
+    assert _value_of(predicted, "--track_matching_method") == "greedy"
+
+
+def test_predict_omits_the_optional_options_when_not_given(
+    tmp_path: Path, launched: Launched
+) -> None:
+    run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
+
+    for option in ("-n", "--max_tracks", "--frames", "-d", "--use_flow"):
+        assert option not in launched.args
+
+
+def test_predict_appends_the_extra_settings_last(
+    tmp_path: Path, launched: Launched
+) -> None:
+    """A flag such as ``--link_tracklets`` follows every option mosaic sends."""
+    run_sleap_predict(
+        tmp_path / "v.mp4",
+        tmp_path / "out.slp",
+        model_paths=["m"],
+        max_tracks=2,
+        extra_settings={"link_tracklets": True, "of_img_scale": 0.5, "gui": False},
+    )
+
+    assert launched.args[-3:] == ["--link_tracklets", "--of_img_scale", "0.5"]
+    assert launched.args.index("--max_tracks") < launched.args.index("--link_tracklets")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "No detections to embed: the labels contain no instances.",
+        "No detections found in v.mp4 to embed.",
+    ],
+)
+def test_predict_reports_an_empty_entry(
+    tmp_path: Path, launched: Launched, message: str
+) -> None:
+    """Either usage error sleap-nn 0.3.5 exits with is an entry with no instance."""
+    launched.exit_code = 2
+    launched.stderr = f"loading\nError: {message}\n"
+
+    empty = run_sleap_predict(
+        tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"]
+    )
+
+    assert empty is not None
+    assert message.startswith(empty.message)
+    assert empty.argv == ("sleap-nn", *launched.args)
+    assert not (tmp_path / "out.slp").exists()
+
+
+def test_predict_fails_on_another_non_zero_exit(
+    tmp_path: Path, launched: Launched
+) -> None:
+    launched.exit_code = 2
+    launched.stderr = "Error: no such option: --features\n"
+
+    with pytest.raises(SleapError):
+        run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
+
+
+def test_predict_ignores_the_phrase_on_a_clean_exit(
+    tmp_path: Path, launched: Launched
+) -> None:
+    """Only a failed run is an empty entry: a clean one without output is lost."""
+    launched.stdout = "No detections to embed\n"
+    launched.writes_output = False
+
+    with pytest.raises(FileNotFoundError):
+        run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
+
+
+def test_predict_without_output_or_notice_fails(
+    tmp_path: Path, launched: Launched
+) -> None:
+    launched.writes_output = False
+
+    with pytest.raises(FileNotFoundError):
+        run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
+
+
+def test_predict_refuses_an_empty_model_list(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="model directory"):
+        run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=[])

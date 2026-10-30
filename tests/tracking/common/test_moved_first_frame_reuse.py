@@ -22,13 +22,16 @@ import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import make_entry_key
+from mosaic.core.pipeline.appearance import read_appearance
 from mosaic.core.pipeline.placement import EntryAxis
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.common.bridge import BridgeCounts, tracks_table_path
 
 from tests.helpers import (
+    ReadbackRecord,
     clip_facts,
     make_dataset,
+    write_appearance_readback,
     write_dlc_csv,
     write_sleap_analysis_h5,
     write_trex_npz,
@@ -200,4 +203,72 @@ def test_a_table_numbered_from_another_first_frame_is_published_again(
 
     assert counts is not None
     assert _first_frame_of_table(ds, kind) == 7
+    assert _recorded_cell(ds) == "7"
+
+
+def _sleap_embedding(
+    ds: Dataset, axis: EntryAxis, recorded: int | None, overwrite: bool
+) -> BridgeCounts | None:
+    """Bridge an embedding run's output, which publishes an appearance table too."""
+    from mosaic.tracking.sleap.dataset_runs import bridge_analysis_h5_to_tracks
+
+    run = ds.get_root("sleap") / "run" / _SEQUENCE
+    h5 = run / f"{_SEQUENCE}.analysis.h5"
+    write_sleap_analysis_h5(
+        h5,
+        np.random.default_rng(0).random((_FRAMES, 1, 1, 2)),
+        track_names=("track_0",),
+    )
+    readback = write_appearance_readback(
+        run / f"{_SEQUENCE}.embeddings.npz",
+        [
+            ReadbackRecord(frame_idx=frame, track_name="track_0", vector=(0.6, 0.8))
+            for frame in range(_FRAMES)
+        ],
+        dim=2,
+    )
+    return bridge_analysis_h5_to_tracks(
+        ds,
+        _GROUP,
+        _SEQUENCE,
+        h5,
+        tracks_variant=_variant("sleap"),
+        producer_run_id=_variant("sleap"),
+        consumed_media=[],
+        model_checkpoints=[],
+        fps=30.0,
+        overwrite=overwrite,
+        axis=axis,
+        recorded_first_frame=recorded,
+        readback=readback,
+    )
+
+
+def _appearance_frames(ds: Dataset) -> list[int]:
+    table = read_appearance(ds, _variant("sleap"), (_GROUP, _SEQUENCE))
+    assert table is not None
+    return table.frame.tolist()
+
+
+def test_an_appearance_table_is_reused_with_its_tracks_table(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    _ = _sleap_embedding(ds, _axis(5), None, True)
+
+    _ = _sleap_embedding(ds, _axis(7), 7, False)
+
+    assert _first_frame_of_table(ds, "sleap") == 5
+    assert _appearance_frames(ds) == [5, 6, 7, 8]
+
+
+def test_an_appearance_table_is_published_again_at_the_moved_first_frame(
+    tmp_path: Path,
+) -> None:
+    """Both tables are numbered from the axis's first frame, and stay keyed alike."""
+    ds = make_dataset(tmp_path / "ds")
+    _ = _sleap_embedding(ds, _axis(5), None, True)
+
+    _ = _sleap_embedding(ds, _axis(7), 5, False)
+
+    assert _first_frame_of_table(ds, "sleap") == 7
+    assert _appearance_frames(ds) == [7, 8, 9, 10]
     assert _recorded_cell(ds) == "7"

@@ -638,6 +638,33 @@ def _sleap_run_id_settings(media: str = "") -> str:
     return sleap_run_id(sleap_settings(params, model_id="0123456789abcdef"))
 
 
+def _sleap_run_id_settings_embedding() -> str:
+    """The identifier that ``sleap_settings`` mints for an embedding model set.
+
+    An embedding run passes the same keys with its tracker values, so this pins
+    those values as :func:`_sleap_run_id_settings` pins the key set.
+    """
+    from mosaic.tracking.sleap.dataset_runs import sleap_run_id, sleap_settings
+    from mosaic.tracking.sleap.params import SleapParams
+
+    params = SleapParams(
+        model_paths=["models/bottomup", "models/embedding"],
+        tracking=True,
+        use_flow=False,
+        candidates_method="local_queues",
+        features="embeddings",
+        scoring_method="cosine_sim",
+        track_matching_method="hungarian",
+        tracking_window_size=5,
+        max_tracks=4,
+        max_instances=4,
+        peak_threshold=0.2,
+        analysis_range=None,
+        sleap_extra_settings={"link_tracklets": True},
+    )
+    return sleap_run_id(sleap_settings(params, model_id="0123456789abcdef"))
+
+
 def _litpose_run_id_settings(media: str = "") -> str:
     """The identifier ``litpose_settings``' *key set* mints, pinned.
 
@@ -1178,6 +1205,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "trex/run-id-settings": _trex_run_id_settings,
     "trex/conversion-run-id": _trex_conversion_run_id,
     "sleap/run-id-settings": _sleap_run_id_settings,
+    "sleap/run-id-settings-embedding": _sleap_run_id_settings_embedding,
     "litpose/run-id-settings": _litpose_run_id_settings,
     "ultralytics/run-id-settings": _ultralytics_run_id_settings,
     "ultralytics/tracker-defaults": _ultralytics_tracker_defaults,

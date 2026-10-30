@@ -22,6 +22,7 @@ from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.tracking.model_refs import (
     MODEL_KINDS,
+    embedding_dim,
     model_id_for_ref,
     resolve_model,
     resolve_model_set,
@@ -315,6 +316,46 @@ def test_a_merged_sleap_config_without_a_known_head_names_none(
     model = write_sleap_model(tmp_path / "model", head=head, merged=True)
 
     assert resolve_model_set(None, [str(model)], "sleap").model_type == ""
+
+
+# --- the vector length of an embedding model --------------------------------
+
+
+@pytest.mark.parametrize("dim", [128, 64])
+def test_the_vector_length_is_read_from_the_embedding_model(
+    tmp_path: Path, dim: int
+) -> None:
+    detector = write_sleap_model(tmp_path / "bottomup", b"b", head="bottomup")
+    reid = write_sleap_model(
+        tmp_path / "reid", b"r", head="embedding", merged=True, embedding_dim=dim
+    )
+
+    resolved = resolve_model_set(None, [str(detector), str(reid)], "sleap")
+    assert embedding_dim(resolved) == dim
+
+
+@pytest.mark.parametrize("dim", [None, 0, -4, 1.5, "128", True], ids=repr)
+def test_a_vector_length_that_is_not_a_positive_integer_is_refused(
+    tmp_path: Path, dim: object
+) -> None:
+    reid = write_sleap_model(
+        tmp_path / "reid", b"r", head="embedding", merged=True, embedding_dim=dim
+    )
+
+    resolved = resolve_model_set(None, [str(reid)], "sleap")
+    with pytest.raises(ValueError, match="embedding_dim") as caught:
+        _ = embedding_dim(resolved)
+    assert str(reid) in str(caught.value), "names the model"
+
+
+def test_a_model_set_without_an_embedding_model_has_no_vector_length(
+    tmp_path: Path,
+) -> None:
+    detector = write_sleap_model(tmp_path / "bottomup", head="bottomup", merged=True)
+
+    resolved = resolve_model_set(None, [str(detector)], "sleap")
+    with pytest.raises(ValueError, match="no embedding model"):
+        _ = embedding_dim(resolved)
 
 
 def test_the_preferred_checkpoint_wins_over_a_later_sibling(tmp_path: Path) -> None:

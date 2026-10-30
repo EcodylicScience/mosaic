@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,14 +61,29 @@ logger = logging.getLogger(__name__)
 # subcommand, so the verb is argv[1] rather than part of the script name.
 _SLEAP_TRACK_SCRIPT: Final = "sleap-nn"
 _SLEAP_TRACK_SUBCOMMAND: Final = "track"
+_SLEAP_PREDICT_SUBCOMMAND: Final = "predict"
+_NO_DETECTIONS: Final = re.compile(
+    r"No detections to embed|No detections found in .* to embed"
+)
+"""What ``sleap-nn predict`` 0.3.5 reports when a video has no instance to embed.
+
+It exits with code 2 through ``click.UsageError``, with the first message when
+the detection stage found none and the second when detections exist but none
+receives a vector."""
+SLEAP_DEFAULT_BATCH_SIZE: Final = 4
+"""The detection batch ``sleap-nn`` uses when ``-b`` is not sent."""
 _SLEAP_CONVERT: str = "sleap-convert"
 
 SleapCandidatesMethod = Literal["fixed_window", "local_queues"]
 """Where ``sleap-nn track`` draws match candidates from: every instance of the
 last few frames, or the last few instances of each track."""
 
-SleapFeatures = Literal["keypoints", "centroids", "bboxes", "image"]
-"""What ``sleap-nn track`` compares a detection and a candidate by."""
+SleapFeatures = Literal["keypoints", "centroids", "bboxes", "image", "embeddings"]
+"""What the SLEAP tracker compares a detection and a candidate by.
+
+``embeddings`` compares the appearance vectors of an embedding model, and is
+taken only by a run whose last model is one.
+"""
 
 SleapScoringMethod = Literal["oks", "cosine_sim", "iou", "euclidean_dist"]
 """How ``sleap-nn track`` scores the association between those features."""
@@ -136,6 +152,19 @@ class SleapTrackResult:
     slp_path: Path
     stdout: str
     stderr: str
+
+
+@dataclass(frozen=True, slots=True)
+class SleapNoDetections:
+    """sleap-nn's report that a video has no instance to embed.
+
+    Attributes:
+        message: The usage error that sleap-nn exited with.
+        argv: The command that exited with it.
+    """
+
+    message: str
+    argv: tuple[str, ...]
 
 
 @dataclass
@@ -274,6 +303,46 @@ def sleap_track_device_args(device: str | None) -> list[str]:
     raise ValueError(msg)
 
 
+def _inference_args(
+    subcommand: str,
+    video_path: Path,
+    output_slp: Path,
+    models: Sequence[Path],
+    *,
+    peak_threshold: float,
+    batch_args: Sequence[str],
+    max_instances: int | None,
+    frames: str | None,
+    device: str | None,
+    tracker_args: Sequence[str],
+    max_tracks: int | None,
+    extra_settings: Mapping[str, object] | None,
+) -> list[str]:
+    """Build the argv that ``sleap-nn track`` and ``sleap-nn predict`` share.
+
+    The verb comes first, because this CLI dispatches on a subcommand, and the
+    video is named by ``-i``: a positional path is an unexpected argument to it.
+    *tracker_args* are the caller's tracking options, sent before *max_tracks*
+    and the extra settings. *batch_args* is the batch size option with its
+    value, which the two subcommands spell differently, or empty.
+    """
+    args: list[str] = [subcommand, "-i", str(video_path), "-o", str(output_slp)]
+    for model in models:
+        args.extend(["-m", str(model)])
+    args.extend(["--peak_threshold", str(peak_threshold)])
+    args.extend(batch_args)
+    if max_instances is not None:
+        args.extend(["-n", str(max_instances)])
+    if frames is not None:
+        args.extend(["--frames", frames])
+    args.extend(sleap_track_device_args(device))
+    args.extend(tracker_args)
+    if max_tracks is not None:
+        args.extend(["--max_tracks", str(max_tracks)])
+    args.extend(_flatten_extra(extra_settings))
+    return args
+
+
 def run_sleap_track(
     video_path: Path | str,
     output_slp: Path | str,
@@ -289,7 +358,7 @@ def run_sleap_track(
     max_tracks: int | None = None,
     max_instances: int | None = None,
     peak_threshold: float = 0.2,
-    batch_size: int = 4,
+    batch_size: int = SLEAP_DEFAULT_BATCH_SIZE,
     frames: str | None = None,
     device: str | None = None,
     extra_settings: Mapping[str, object] | None = None,
@@ -389,36 +458,30 @@ def run_sleap_track(
     if not models:
         raise ValueError("run_sleap_track requires at least one model directory")
 
-    # The verb first, because this CLI dispatches on a subcommand, and the video
-    # by -i: a positional path is an unexpected argument to it.
-    args: list[str] = [
-        _SLEAP_TRACK_SUBCOMMAND,
-        "-i",
-        str(video_path),
-        "-o",
-        str(output_slp),
-    ]
-    for model in models:
-        args.extend(["-m", str(model)])
-    args.extend(["--peak_threshold", str(peak_threshold)])
-    args.extend(["--batch_size", str(batch_size)])
-    if max_instances is not None:
-        args.extend(["-n", str(max_instances)])
-    if frames is not None:
-        args.extend(["--frames", frames])
-    args.extend(sleap_track_device_args(device))
+    tracker_args: list[str] = []
     if tracking:
-        args.append("-t")
+        tracker_args.append("-t")
         if use_flow:
-            args.append("--use_flow")
-        args.extend(["--candidates_method", candidates_method])
-        args.extend(["--features", features])
-        args.extend(["--scoring_method", scoring_method])
-        args.extend(["--track_matching_method", track_matching_method])
-        args.extend(["--tracking_window_size", str(tracking_window_size)])
-        if max_tracks is not None:
-            args.extend(["--max_tracks", str(max_tracks)])
-    args.extend(_flatten_extra(extra_settings))
+            tracker_args.append("--use_flow")
+        tracker_args.extend(["--candidates_method", candidates_method])
+        tracker_args.extend(["--features", features])
+        tracker_args.extend(["--scoring_method", scoring_method])
+        tracker_args.extend(["--track_matching_method", track_matching_method])
+        tracker_args.extend(["--tracking_window_size", str(tracking_window_size)])
+    args = _inference_args(
+        _SLEAP_TRACK_SUBCOMMAND,
+        video_path,
+        output_slp,
+        models,
+        peak_threshold=peak_threshold,
+        batch_args=["--batch_size", str(batch_size)],
+        max_instances=max_instances,
+        frames=frames,
+        device=device,
+        tracker_args=tracker_args,
+        max_tracks=max_tracks if tracking else None,
+        extra_settings=extra_settings,
+    )
 
     stdout, stderr = _run_sleap(
         sleap_invocation(
@@ -436,6 +499,141 @@ def run_sleap_track(
         raise missing_output_error("SLEAP", output_slp, stdout, stderr)
 
     return SleapTrackResult(slp_path=output_slp, stdout=stdout, stderr=stderr)
+
+
+def run_sleap_predict(
+    video_path: Path | str,
+    output_slp: Path | str,
+    *,
+    model_paths: Sequence[Path | str],
+    track_matching_method: SleapMatchingMethod = "hungarian",
+    tracking_window_size: int = 5,
+    max_tracks: int | None = None,
+    max_instances: int | None = None,
+    peak_threshold: float = 0.2,
+    batch_size: int = SLEAP_DEFAULT_BATCH_SIZE,
+    frames: str | None = None,
+    device: str | None = None,
+    extra_settings: Mapping[str, object] | None = None,
+    idle_timeout: float = 900,
+    max_runtime: float | None = None,
+    sleap_conda_env: str | None = None,
+    sleap_bin: Path | str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
+) -> SleapNoDetections | None:
+    """Run ``sleap-nn predict`` with an embedding model and track by appearance.
+
+    The last of *model_paths* is the embedding model, and the ones before it
+    are the detection models. The run tracks by the cosine similarity of the
+    appearance vectors, matches against the last instances of each track, and
+    saves the vectors into the predictions ``.slp``. Every one of those options
+    is sent, so no sleap-nn default can move under an unchanged run id. The batch
+    size is sent as ``-b`` only when it differs from
+    :data:`SLEAP_DEFAULT_BATCH_SIZE`. ``-b`` also sets the embedding stage's crop
+    batch, which is 64 without it, so the default leaves the embedder at 64.
+
+    Args:
+        video_path: Input video file, passed as ``-i``.
+        output_slp: Destination ``.slp`` predictions file, passed as ``-o``.
+        model_paths: The detection models, then the embedding model, passed as
+            repeated ``-m`` flags in order.
+        track_matching_method: ``--track_matching_method``.
+        tracking_window_size: ``--tracking_window_size``: how many instances per
+            track are kept as candidates.
+        max_tracks: ``--max_tracks``, the cap on the number of tracks.
+        max_instances: Cap on instances per frame.
+        peak_threshold: Minimum confidence for a detected peak.
+        batch_size: Inference batch size, sent as ``-b`` when it is not the
+            default. It sets the detection batch and the embedding crop batch.
+        frames: Frame selection, e.g. ``"0-1000"``.
+        device: Translated by :func:`sleap_track_device_args`.
+        extra_settings: Additional ``sleap-nn predict`` options passed as
+            ``--key value`` pairs.
+        idle_timeout: Kill the subprocess after this many seconds with no output.
+        max_runtime: Optional absolute wall-clock ceiling.
+        sleap_conda_env: Run SLEAP inside this conda env (overrides
+            ``MOSAIC_SLEAP_CONDA_ENV``).
+        sleap_bin: Path to a SLEAP console script (overrides
+            ``MOSAIC_SLEAP_BIN``).
+        cancel_check: Polled while SLEAP runs.
+        on_output: Called with each chunk of output.
+        on_activity: Called with each line of either output stream.
+
+    Returns:
+        sleap-nn's report when the video has no instance to embed, else
+        ``None``. Then *output_slp* does not exist.
+
+    Raises:
+        SleapNotFoundError: No SLEAP install could be located.
+        SleapError: SLEAP exited non-zero for a reason other than an empty video.
+        FileNotFoundError: It exited cleanly and wrote no *output_slp*.
+        ValueError: *model_paths* is empty, or *device* is unusable.
+    """
+    video_path = Path(video_path)
+    output_slp = Path(output_slp)
+    output_slp.parent.mkdir(parents=True, exist_ok=True)
+    models = [Path(m) for m in model_paths]
+    if not models:
+        raise ValueError("run_sleap_predict requires at least one model directory")
+
+    args = _inference_args(
+        _SLEAP_PREDICT_SUBCOMMAND,
+        video_path,
+        output_slp,
+        models,
+        peak_threshold=peak_threshold,
+        batch_args=(
+            ["-b", str(batch_size)] if batch_size != SLEAP_DEFAULT_BATCH_SIZE else []
+        ),
+        max_instances=max_instances,
+        frames=frames,
+        device=device,
+        tracker_args=[
+            "-t",
+            "--features",
+            "embeddings",
+            "--scoring_method",
+            "cosine_sim",
+            "--candidates_method",
+            "local_queues",
+            "--save_embeddings",
+            "slp",
+            "--track_matching_method",
+            track_matching_method,
+            "--tracking_window_size",
+            str(tracking_window_size),
+        ],
+        max_tracks=max_tracks,
+        extra_settings=extra_settings,
+    )
+
+    try:
+        stdout, stderr = _run_sleap(
+            sleap_invocation(
+                _SLEAP_TRACK_SCRIPT,
+                sleap_conda_env=sleap_conda_env,
+                sleap_bin=sleap_bin,
+            ),
+            args,
+            idle_timeout=idle_timeout,
+            max_runtime=max_runtime,
+            cancel_check=cancel_check,
+            on_output=on_output,
+            on_activity=on_activity,
+        )
+    except SleapError as error:
+        found = _NO_DETECTIONS.search(error.stderr) or _NO_DETECTIONS.search(
+            error.stdout
+        )
+        if found is None:
+            raise
+        return SleapNoDetections(message=found.group(), argv=tuple(error.cmd))
+
+    if not output_slp.exists():
+        raise missing_output_error("SLEAP", output_slp, stdout, stderr)
+    return None
 
 
 def run_sleap_convert(

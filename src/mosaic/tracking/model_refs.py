@@ -61,6 +61,7 @@ __all__ = [
     "Role",
     "RoleSpec",
     "SLEAP_EMBEDDING_HEAD",
+    "embedding_dim",
     "model_id_for_ref",
     "model_id_for_ref_set",
     "model_kind_for",
@@ -519,31 +520,94 @@ def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
     The first config that exists is the one consulted -- a second candidate is a
     different serialisation of the same thing, not a fallback.
     """
+    text = _config_text(directory, spec)
+    if text is None:
+        return ""
+    document = _parsed_config(text)
+    configured = _configured_head(document, spec)
+    if configured is not None:
+        return configured
+    selected: set[str] = set()
+    _selected_tokens(document, selected)
+    for token in spec.model_types:
+        if token in selected:
+            return token
+    for token in spec.model_types:
+        if token in text:
+            return token
+    return ""
+
+
+def _config_text(directory: Path, spec: ModelKindSpec) -> str | None:
+    """Return the text of the first config of *spec* in *directory*.
+
+    ``None`` when *directory* has none of :attr:`ModelKindSpec.config_names`,
+    or the first that exists does not read.
+    """
     for name in spec.config_names:
         config = directory / name
         if not config.exists():
             continue
         try:
-            text = config.read_text()
+            return config.read_text()
         except OSError:
-            return ""
-        try:
-            document: object = yaml.safe_load(text)
-        except yaml.YAMLError:
-            document = None
-        configured = _configured_head(document, spec)
-        if configured is not None:
-            return configured
-        selected: set[str] = set()
-        _selected_tokens(document, selected)
-        for token in spec.model_types:
-            if token in selected:
-                return token
-        for token in spec.model_types:
-            if token in text:
-                return token
-        return ""
-    return ""
+            return None
+    return None
+
+
+def _parsed_config(text: str) -> object:
+    """Return the YAML document of *text*, or ``None`` when it does not parse."""
+    try:
+        document: object = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    return document
+
+
+_EMBEDDING_DIM_PATH: Final = (
+    "model_config",
+    "head_configs",
+    SLEAP_EMBEDDING_HEAD,
+    "embedding",
+    "embedding_dim",
+)
+"""Where a sleap-nn embedding model's config declares its vector length."""
+
+
+def embedding_dim(resolved: ResolvedModel) -> int:
+    """Return the vector length of the embedding model of *resolved*.
+
+    Reads the first embedding model's config at
+    ``model_config.head_configs.embedding.embedding.embedding_dim``.
+
+    Args:
+        resolved: A resolved SLEAP model set.
+
+    Returns:
+        The number of values in one appearance vector.
+
+    Raises:
+        ValueError: *resolved* has no embedding model, or its config declares no
+            ``embedding_dim`` that is a positive integer. The message names the
+            model.
+    """
+    if SLEAP_EMBEDDING_HEAD not in resolved.model_types:
+        msg = "The model set has no embedding model, so it has no embedding_dim."
+        raise ValueError(msg)
+    artifact = resolved.artifacts[resolved.model_types.index(SLEAP_EMBEDDING_HEAD)]
+    text = _config_text(artifact.root, _SLEAP_SPEC)
+    node = None if text is None else _parsed_config(text)
+    for key in _EMBEDDING_DIM_PATH:
+        node = node.get(key) if is_str_mapping(node) else None
+    if isinstance(node, int) and not isinstance(node, bool) and node > 0:
+        return node
+    location = ".".join(_EMBEDDING_DIM_PATH)
+    msg = (
+        f"The embedding model {str(artifact.root)!r} declares {node!r} at "
+        f"{location} in its training config, and an appearance vector needs a "
+        "positive integer length there."
+    )
+    raise ValueError(msg)
 
 
 def _resolve_artifact(reference: Path, spec: ModelKindSpec) -> ModelArtifact:

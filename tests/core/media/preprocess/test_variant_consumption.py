@@ -28,6 +28,7 @@ import mosaic.tracking.trex.dataset_runs as trex_runs
 import mosaic.tracking.ultralytics_track.dataset_runs as ultralytics_runs
 from mosaic.core.dataset import Dataset
 from mosaic.core.media.video_io import open_frame_reader
+from mosaic.core.pipeline.appearance import read_appearance
 from mosaic.core.pipeline.markers import (
     new_inflight,
     read_phase_marker,
@@ -62,6 +63,7 @@ from mosaic.tracking.trex.params import TrexParams
 from mosaic.tracking.ultralytics_track.params import UltralyticsParams
 
 from tests.helpers import (
+    EMBEDDING_TRACKER_SETTINGS,
     FakeLitpose,
     FakeSleap,
     FakeTrex,
@@ -85,6 +87,7 @@ from tests.helpers import (
     write_media_index,
     write_painted_entry,
     write_sleap_model,
+    write_sleap_model_set,
 )
 
 pytestmark = pytest.mark.media
@@ -382,6 +385,27 @@ def test_sleap_recomputes_after_the_variant_is_rewritten(
     assert runs["media"].tolist() == [variant]
     (row,) = [row for _, row in _tracks(ds, "sleap").iterrows()]
     assert set(_table(ds, row)["frame"]) <= {_source_frame(f) for f in range(6)}
+
+
+def test_a_sleap_embedding_run_keys_its_vectors_in_source_space(
+    tmp_path: Path, sleap: FakeSleap
+) -> None:
+    ds = _dataset(tmp_path)
+    variant = _variant(ds, codec="h264")
+    models = write_sleap_model_set(tmp_path / "models", "bottomup", "embedding")
+    params = SleapParams.model_validate(
+        {"model_paths": models, "media": variant, **EMBEDDING_TRACKER_SETTINGS}
+    )
+
+    _ = sleap_runs.run_sleap(ds, params)
+
+    assert sleap.predicted == [media_variant_path(ds, variant, "", "s", "")]
+    (row,) = [row for _, row in _tracks(ds, "sleap").iterrows()]
+    table = read_appearance(ds, str(row["run_id"]), ("", "s"))
+    assert table is not None
+    source_frames = [_source_frame(frame) for frame in range(6)]
+    assert table.frame.tolist() == source_frames
+    assert _table(ds, row)["frame"].tolist() == source_frames
 
 
 def test_an_av1_variant_handed_to_sleap_names_the_h264_remedy(

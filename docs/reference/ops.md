@@ -232,7 +232,7 @@ Run SLEAP (infer + track) over scoped videos, bridging results into ``tracks/``.
 | `tracking` | `boolean` | `true` |  | Assign identities to detections across frames. When False, no tracker is attached. |
 | `use_flow` | `boolean` | `false` |  | Shift each candidate pose by optical flow before matching it to a detection, sent as --use_flow. |
 | `candidates_method` | `"fixed_window"` \| `"local_queues"` | `"fixed_window"` |  | Where match candidates come from, sent as --candidates_method: fixed_window takes every instance of the last few frames, local_queues the last few instances of each track. |
-| `features` | `"keypoints"` \| `"centroids"` \| `"bboxes"` \| `"image"` | `"keypoints"` |  | What a detection and a candidate are compared by, sent as --features: keypoints, centroids, bboxes or image. |
+| `features` | `"keypoints"` \| `"centroids"` \| `"bboxes"` \| `"image"` \| `"embeddings"` | `"keypoints"` |  | What a detection and a candidate are compared by, sent as --features: keypoints, centroids, bboxes, image or embeddings. embeddings compares the appearance vectors of an embedding model, and requires one as the last model. |
 | `scoring_method` | `"oks"` \| `"cosine_sim"` \| `"iou"` \| `"euclidean_dist"` | `"oks"` |  | How that comparison is scored, sent as --scoring_method: oks, cosine_sim, iou or euclidean_dist. |
 | `track_matching_method` | `"hungarian"` \| `"greedy"` | `"hungarian"` |  | How detections are assigned to tracks from those scores, sent as --track_matching_method: hungarian or greedy. |
 | `tracking_window_size` | `integer` | `5` |  | How many frames, or instances per track under local_queues, are kept as match candidates, sent as --tracking_window_size. |

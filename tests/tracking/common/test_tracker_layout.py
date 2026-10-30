@@ -275,6 +275,7 @@ def test_sleap_leaves_this_shape(
         "model_type",
         "slp_path",
         "analysis_h5_path",
+        "n_vectors_unmatched",
     ]
     assert got["index_rows"] == 1
     assert got["run_params_keys"] == [

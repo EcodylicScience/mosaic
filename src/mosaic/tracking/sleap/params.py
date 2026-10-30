@@ -27,6 +27,7 @@ from mosaic.core.params import (
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE, TrackerOpParams
 from mosaic.tracking.sleap.run import (
+    SLEAP_DEFAULT_BATCH_SIZE,
     SleapCandidatesMethod,
     SleapFeatures,
     SleapMatchingMethod,
@@ -59,7 +60,8 @@ _CANDIDATES_METHOD_DESCRIPTION = (
 
 _FEATURES_DESCRIPTION = (
     "What a detection and a candidate are compared by, sent as --features: "
-    "keypoints, centroids, bboxes or image."
+    "keypoints, centroids, bboxes, image or embeddings. embeddings compares the "
+    "appearance vectors of an embedding model, and requires one as the last model."
 )
 
 _SCORING_METHOD_DESCRIPTION = (
@@ -155,7 +157,9 @@ class SleapParams(TrackerOpParams, MediaInputParams):
         dict[str, JsonValue] | None, Declared(_SLEAP_EXTRA_SETTINGS_DESCRIPTION)
     ] = None
     # execution knobs -- throughput/environment only, excluded from the run_id.
-    batch_size: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_SIZE_DESCRIPTION)] = 4
+    batch_size: Annotated[int, HASH_EXCLUDE, Declared(_BATCH_SIZE_DESCRIPTION)] = (
+        SLEAP_DEFAULT_BATCH_SIZE
+    )
     # cpu / cuda / mps / a CUDA index / None (auto). Where it ran, not what it
     # produced.
     device: Annotated[

@@ -40,6 +40,7 @@ record per instance with a track, and its appearance vector where it has one.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Final
@@ -224,6 +225,11 @@ class SleapConvertParams(TrackConvertParams):
     fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
 
 
+def empty_sleap_tracks() -> pd.DataFrame:
+    """Return the tracks table of an entry that has no tracked instance."""
+    return pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
+
+
 @register_track_converter
 class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
     """SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table."""
@@ -258,12 +264,7 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
             if df is not None:
                 frames.append(df)
 
-        out = (
-            pd.concat(frames, ignore_index=True)
-            if frames
-            else pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
-        )
-        return out
+        return pd.concat(frames, ignore_index=True) if frames else empty_sleap_tracks()
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +312,17 @@ class AppearanceReadback:
         if self.vectors.shape[1] == 0 and bool(self.has_vector.any()):
             msg = "has_vector is true on a row, but vectors has no columns"
             raise ValueError(msg)
+
+    @classmethod
+    def empty(cls, dim: int) -> AppearanceReadback:
+        """Return the readback of a file without a tracked instance, for vectors of *dim*."""
+        return cls(
+            frame_idx=np.empty(0, dtype=np.int64),
+            track_name=np.empty(0, dtype=np.str_),
+            is_user=np.empty(0, dtype=np.bool_),
+            has_vector=np.empty(0, dtype=np.bool_),
+            vectors=np.empty((0, dim), dtype=np.float32),
+        )
 
 
 _READBACK_KINDS: Final = {
@@ -360,3 +372,109 @@ def read_appearance_readback(path: Path) -> AppearanceReadback:
     except ValueError as exc:
         msg = f"the readback {path} is malformed: {exc}"
         raise ValueError(msg) from exc
+
+
+def read_analysis_track_names(path: Path) -> tuple[str, ...]:
+    """Read the ``track_names`` of the SLEAP analysis HDF5 at *path*.
+
+    Position ``i`` names the track that :class:`SleapAnalysisH5Converter`
+    writes as ``id`` ``i``.
+
+    Args:
+        path: The SLEAP analysis HDF5.
+
+    Returns:
+        The decoded track names, in track-axis order.
+
+    Raises:
+        ValueError: The file has no ``track_names`` dataset.
+    """
+    # Deferred for the reason that ``_read_analysis_h5`` gives.
+    import h5py
+
+    with h5py.File(str(path), "r") as handle:
+        if "track_names" not in handle:
+            msg = f"SLEAP analysis HDF5 has no 'track_names' dataset: {path}"
+            raise ValueError(msg)
+        raw = np.asarray(handle["track_names"]).reshape(-1)
+    return tuple(_decode_token(item) for item in raw.tolist())
+
+
+def appearance_rows(
+    readback: AppearanceReadback,
+    track_names: Sequence[str],
+    *,
+    group: str,
+    sequence: str,
+) -> pd.DataFrame:
+    """Key the vectors of *readback* by the tracks table's ``(frame, id)``.
+
+    A record's ``id`` is the position of its track in *track_names*, the track
+    axis of the analysis HDF5. Each ``(frame, id)`` slot takes the record that
+    the analysis export keeps: the last user instance in file order, else the
+    last predicted instance.
+
+    Args:
+        readback: The tracked instances of a predictions file.
+        track_names: The analysis HDF5's ``track_names``
+            (:func:`read_analysis_track_names`).
+        group: The ``group`` cell of every row.
+        sequence: The ``sequence`` cell of every row.
+
+    Returns:
+        One row per slot, sorted by ``frame`` and ``id``, with string
+        ``group`` and ``sequence``, int64 ``frame`` and ``id``, bool
+        ``has_vector`` and one float32 ``emb_<k>`` column per vector
+        component. A slot whose winning record has no vector has
+        ``has_vector`` false and NaN in its ``emb_`` columns. A readback of
+        dimension 0 gives no ``emb_`` columns.
+
+    Raises:
+        ValueError: *track_names* repeats a name, or a record's track is not
+            in *track_names*.
+    """
+    # Deferred because ``core.pipeline.appearance`` imports the tracks index,
+    # which imports ``core.track_library`` and with it this module.
+    from mosaic.core.pipeline.appearance import appearance_columns
+
+    index: dict[str, int] = {}
+    for position, name in enumerate(track_names):
+        if name in index:
+            msg = f"track_names repeats the track {name!r}"
+            raise ValueError(msg)
+        index[name] = position
+
+    winners: dict[tuple[int, int], tuple[int, bool]] = {}
+    for record, (frame, name, is_user) in enumerate(
+        zip(
+            readback.frame_idx.tolist(),
+            readback.track_name.tolist(),
+            readback.is_user.tolist(),
+            strict=True,
+        )
+    ):
+        if name not in index:
+            msg = f"the readback names the track {name!r}, which track_names lacks"
+            raise ValueError(msg)
+        slot = (frame, index[name])
+        held = winners.get(slot)
+        if is_user or held is None or not held[1]:
+            winners[slot] = (record, is_user)
+
+    slots = sorted(winners)
+    chosen = np.asarray([winners[slot][0] for slot in slots], dtype=np.int64)
+    has_vector = readback.has_vector[chosen]
+    vectors = readback.vectors[chosen].astype(np.float32, copy=True)
+    vectors[~has_vector] = np.nan
+    # A string dtype stated rather than inferred, which an empty list would
+    # make float64.
+    data: dict[str, npt.NDArray[np.generic] | pd.Series[str]] = {
+        "group": pd.Series([group] * len(slots), dtype=str),
+        "sequence": pd.Series([sequence] * len(slots), dtype=str),
+        "frame": np.asarray([frame for frame, _ in slots], dtype=np.int64),
+        "id": np.asarray([identity for _, identity in slots], dtype=np.int64),
+        "has_vector": has_vector,
+    }
+    for position, column in enumerate(appearance_columns(vectors.shape[1])):
+        data[column] = vectors[:, position]
+    return pd.DataFrame(data)

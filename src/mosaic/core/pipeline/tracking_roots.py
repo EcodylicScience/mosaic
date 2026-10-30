@@ -506,7 +506,10 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # The analysis export has no phase of its own -- it is ensured rather
         # than gated -- so the `.h5` is cleared with the inference it derives
         # from. Leaving it would strand a stale export from a superseded `.slp`
-        # that the existence-gated export then declines to regenerate.
+        # that the existence-gated export then declines to regenerate. The
+        # no-detections marker stands in for the `.slp` of an entry without a
+        # detection, so a new prediction clears it too. The readback `.npz` of
+        # an embedding run is ensured like the export and owned by no phase.
         TrackingRoot(
             key="sleap",
             decoder=ToolDecoder(
@@ -526,9 +529,18 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
             ),
             retention="tracker",
             output_schema="mosaic_v1",
-            outputs=("*.predictions.slp", "*.analysis.h5"),
+            outputs=(
+                "*.predictions.slp",
+                "*.analysis.h5",
+                "*.no-detections.json",
+                "*.embeddings.npz",
+                "*.embeddings.npz.partial",
+            ),
             phase_outputs=(
-                TrackingPhase("track", ("*.predictions.slp", "*.analysis.h5")),
+                TrackingPhase(
+                    "track",
+                    ("*.predictions.slp", "*.analysis.h5", "*.no-detections.json"),
+                ),
             ),
             path_columns=("video_abs_path", "slp_path", "analysis_h5_path"),
             # A top-down pair: the centroid model, then the centered-instance one.
