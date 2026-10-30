@@ -186,6 +186,10 @@ INVARIANT_BASES: Final[frozenset[str]] = frozenset(
         "det_cls",
         "confidence",
         "class_id",
+        # How a tracklet was assigned its identity, and its id before.
+        "identity_score",
+        "identity_margin",
+        "identity_source_id",
         # The scale TRex applied, which a crop does not change.
         "cm_per_pixel",
     }

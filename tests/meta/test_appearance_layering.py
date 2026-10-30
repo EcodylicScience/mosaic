@@ -15,7 +15,10 @@ import pytest
 
 from tests.helpers import SOURCE_ROOT, imports_reaching, package_of, source_tree
 
-APPEARANCE_MODULES: Final = ("core/pipeline/appearance.py",)
+APPEARANCE_MODULES: Final = (
+    "core/pipeline/appearance.py",
+    "core/pipeline/appearance_assignment.py",
+)
 """The modules of the appearance contract, relative to ``src/mosaic``."""
 
 HIGHER_PACKAGES: Final = ("mosaic.behavior", "mosaic.tracking")

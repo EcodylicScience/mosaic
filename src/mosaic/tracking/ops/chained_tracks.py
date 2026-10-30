@@ -1,23 +1,26 @@
 """The source tables of an op that reads one tracks variant and writes another.
 
-``resample-tracks`` and ``assign-arenas`` chain: each reads a tracks variant and
-writes a new one whose identity carries the source variant as its ``upstream``.
-They resolve their source, refuse a scope spanning two variants and refuse to
-leave a partial variant by the same rules, defined here once.
+``resample-tracks``, ``assign-arenas`` and ``assign-identities`` chain: each reads
+a tracks variant and writes a new one whose identity carries the source variant
+as its ``upstream``. They resolve their source, refuse a scope spanning two
+variants, read what a written table was built from and refuse to leave a partial
+variant by the same rules, defined here once.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 import pandas as pd
 
-from mosaic.core.entry import Entry
+from mosaic.core.entry import Entry, make_entry_key
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.tracks_index import (
+    read_first_frame,
     read_tracks_index,
-    row_in_scope,
+    rows_in_scope,
     select_variant_rows,
 )
 
@@ -26,9 +29,13 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SOURCE_TRACKS_RUN_ID_DESCRIPTION",
+    "WrittenTable",
     "chained_source_rows",
+    "folded_composition",
+    "incomplete_variant_message",
     "one_source_variant",
     "refuse_incomplete_variant",
+    "written_tables",
 ]
 
 SOURCE_TRACKS_RUN_ID_DESCRIPTION: Final = (
@@ -64,12 +71,7 @@ def chained_source_rows(
     resolved = select_variant_rows(index, source_tracks_run_id)
     if resolved.empty:
         return resolved
-    keep = [
-        i
-        for i, (_, row) in enumerate(resolved.iterrows())
-        if row_in_scope(row, entries)
-    ]
-    return resolved.iloc[keep].reset_index(drop=True)
+    return rows_in_scope(resolved, entries)
 
 
 def one_source_variant(rows: pd.DataFrame, kind: str) -> str:
@@ -93,6 +95,41 @@ def one_source_variant(rows: pd.DataFrame, kind: str) -> str:
     return variants[0]
 
 
+@dataclass(frozen=True, slots=True)
+class WrittenTable:
+    """What the row of one written table of a chained variant records.
+
+    Attributes:
+        consumed_composition: The composition the table was built from.
+        first_frame: The first frame the table is numbered from, or ``None``.
+    """
+
+    consumed_composition: str
+    first_frame: int | None
+
+
+def folded_composition(source_composition: str, term: str, digest: str) -> str:
+    """Return the composition of a table built from its source and from *digest*."""
+    folded = f"{term}={digest}"
+    return f"{source_composition};{folded}" if source_composition else folded
+
+
+def written_tables(ds: Dataset, variant: str) -> dict[str, WrittenTable]:
+    """Return what each written table of *variant* records, by entry key."""
+    index = read_tracks_index(ds)
+    if index.empty:
+        return {}
+    return {
+        make_entry_key(text_cell(row["group"]), text_cell(row["sequence"])): (
+            WrittenTable(
+                consumed_composition=text_cell(row.get("consumed_composition", "")),
+                first_frame=read_first_frame(row),
+            )
+        )
+        for _, row in index[index["run_id"] == variant].iterrows()
+    }
+
+
 def refuse_incomplete_variant(
     kind: str, variant: str, failed: Sequence[str], total: int
 ) -> None:
@@ -108,10 +145,16 @@ def refuse_incomplete_variant(
     """
     if not failed:
         return
+    raise RuntimeError(incomplete_variant_message(kind, variant, failed, total))
+
+
+def incomplete_variant_message(
+    kind: str, variant: str, failed: Sequence[str], total: int
+) -> str:
+    """Return the refusal of a run that left the entries *failed* of its variant unwritten."""
     shown = f"{list(failed[:5])}{'...' if len(failed) > 5 else ''}"
-    message = (
+    return (
         f"{kind} left {len(failed)} of {total} entries unwritten ({shown}). "
         f"Variant {variant} is incomplete; fix the named entries and re-run to "
         "resume."
     )
-    raise RuntimeError(message)

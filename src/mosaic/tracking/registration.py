@@ -22,6 +22,7 @@ REGISTERING_MODULES: Final = (
     "mosaic.tracking.frame_predictions.index",
     "mosaic.tracking.litpose.dataset_runs",
     "mosaic.tracking.ops.assign_arenas",
+    "mosaic.tracking.ops.assign_identities",
     "mosaic.tracking.ops.convert",
     "mosaic.tracking.ops.infer",
     "mosaic.tracking.ops.litpose",

@@ -43,6 +43,7 @@ from mosaic.core.pipeline.tracks_index import (
     legacy_view,
     read_tracks_index,
     row_in_scope,
+    rows_in_scope,
     select_variant_rows,
     variant_candidate_rows,
     tracks_index,
@@ -925,6 +926,15 @@ def test_an_entry_list_covers_the_rows_it_names() -> None:
 def test_a_blank_group_cell_is_the_empty_group() -> None:
     row = pd.Series({"group": float("nan"), "sequence": "a"})
     assert row_in_scope(row, [("", "a")])
+
+
+def test_rows_in_scope_keeps_the_covered_rows_in_order_with_a_fresh_index() -> None:
+    rows = _rows(
+        ("trex.0.1-bb", "", "a"), ("trex.0.1-bb", "g", "b"), ("trex.0.1-bb", "", "c")
+    )
+    kept = rows_in_scope(rows, [("", "c"), ("", "a")])
+    assert list(kept["sequence"]) == ["a", "c"]
+    assert list(kept.index) == [0, 1]
 
 
 # --- legacy_view -----------------------------------------------------------

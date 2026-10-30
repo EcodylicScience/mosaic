@@ -39,14 +39,15 @@ from mosaic.core.pipeline.tracks_identity import (
 )
 from mosaic.core.pipeline.tracks_index import (
     read_first_frame,
-    read_tracks_index,
     write_tracks_row,
 )
 from mosaic.tracking.ops.chained_tracks import (
     SOURCE_TRACKS_RUN_ID_DESCRIPTION,
     chained_source_rows,
+    folded_composition,
     one_source_variant,
     refuse_incomplete_variant,
+    written_tables,
 )
 
 if TYPE_CHECKING:
@@ -56,7 +57,6 @@ if TYPE_CHECKING:
 __all__ = [
     "AssignArenasOp",
     "AssignArenasParams",
-    "arena_composition",
     "assign_arenas_run_id",
 ]
 
@@ -97,12 +97,6 @@ def assign_arenas_run_id(
         "layouts": dict(sorted(layouts.items())),
     }
     return op_run_id(kind, version, payload)
-
-
-def arena_composition(source_composition: str, digest: str) -> str:
-    """Return the composition an assigned table records: its source's and its layout's."""
-    term = f"{_ARENAS_TERM}={digest}"
-    return f"{source_composition};{term}" if source_composition else term
 
 
 def _media_cameras(ds: Dataset) -> dict[Entry, set[str]]:
@@ -247,7 +241,7 @@ class AssignArenasOp(Op[AssignArenasParams]):
             tracks_root, variant, self.kind, self.version, params.identity_dump()
         )
         variant_root = tracks_variant_root(tracks_root, variant)
-        written = _written_compositions(ds, variant)
+        written = written_tables(ds, variant)
 
         failed: list[str] = []
         for done, (_, row) in enumerate(rows.iterrows(), start=1):
@@ -267,13 +261,17 @@ class AssignArenasOp(Op[AssignArenasParams]):
                         "Dataset.set_arena_layout or 'mosaic arenas set'."
                     )
                     raise LookupError(message)
-                composition = arena_composition(
-                    text_cell(row.get("consumed_composition", "")), layout.digest
+                composition = folded_composition(
+                    text_cell(row.get("consumed_composition", "")),
+                    _ARENAS_TERM,
+                    layout.digest,
                 )
+                recorded = written.get(key)
                 if (
                     out_path.exists()
                     and not overwrite
-                    and written.get(key) == composition
+                    and recorded is not None
+                    and recorded.consumed_composition == composition
                 ):
                     ctx.heartbeat(done)
                     continue
@@ -311,16 +309,3 @@ class AssignArenasOp(Op[AssignArenasParams]):
 
         refuse_incomplete_variant(self.kind, variant, failed, len(rows))
         return identity.run_id
-
-
-def _written_compositions(ds: Dataset, variant: str) -> dict[str, str]:
-    """Return the composition each written table of *variant* records, by entry key."""
-    index = read_tracks_index(ds)
-    if index.empty:
-        return {}
-    return {
-        make_entry_key(text_cell(row["group"]), text_cell(row["sequence"])): text_cell(
-            row.get("consumed_composition", "")
-        )
-        for _, row in index[index["run_id"] == variant].iterrows()
-    }

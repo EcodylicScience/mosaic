@@ -644,6 +644,13 @@ def test_every_trex_field_is_classified(name: str) -> None:
     assert classify_column(name) is not None
 
 
+@pytest.mark.parametrize(
+    "name", ["identity_score", "identity_margin", "identity_source_id"]
+)
+def test_an_identity_assignment_column_is_invariant(name: str) -> None:
+    assert classify_column(name) == "invariant"
+
+
 def _crop_and_trim(frame_count: int) -> SourceMapping:
     timeline = concatenated_timeline([_clip(30.0, frame_count)])
     return _mapping(

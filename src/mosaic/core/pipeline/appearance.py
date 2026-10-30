@@ -9,6 +9,7 @@ component. This module defines the contract and imports no tracker code.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -19,7 +20,8 @@ import pandas as pd
 
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell
-from mosaic.core.pipeline.tracks_index import variant_entry_rows
+from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
+from mosaic.core.pipeline.tracks_index import CellRow, variant_entry_rows
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 if TYPE_CHECKING:
@@ -64,11 +66,9 @@ class AppearanceTable:
     vectors: npt.NDArray[np.float32]
 
 
-def _vector_columns(df: pd.DataFrame, source: str) -> tuple[str, ...]:
-    """Returns the ``emb_`` columns of *df*, which must run from ``emb_0``."""
-    names = {
-        str(name) for name in df.columns if str(name).startswith(APPEARANCE_PREFIX)
-    }
+def _vector_columns(columns: Iterable[object], source: str) -> tuple[str, ...]:
+    """Returns the ``emb_`` names among *columns*, which must run from ``emb_0``."""
+    names = {str(name) for name in columns if str(name).startswith(APPEARANCE_PREFIX)}
     if not names:
         msg = f"{source}: the table has no {APPEARANCE_PREFIX} columns"
         raise AppearanceTableError(msg)
@@ -132,7 +132,7 @@ def validate_appearance(df: pd.DataFrame, tracks: pd.DataFrame, *, source: str) 
     """
     _require_columns(tracks, _KEY_COLUMNS, source, table="the tracks table")
     _require_columns(df, (*_LABEL_COLUMNS, *_KEY_COLUMNS), source)
-    columns = _vector_columns(df, source)
+    columns = _vector_columns(df.columns, source)
     _require_dtypes(df, columns, source)
     vectors = df[list(columns)].to_numpy(dtype=np.float64)
     bad_nan = np.isnan(vectors)
@@ -172,6 +172,54 @@ def write_appearance(path: Path, df: pd.DataFrame) -> None:
     _ = write_parquet_atomic(df, path)
 
 
+def recorded_appearance_path(ds: Dataset, row: CellRow) -> Path | None:
+    """Returns the appearance table that a tracks-index *row* records.
+
+    Returns ``None`` for a blank ``appearance_abs_path`` cell.
+    """
+    cell = text_cell(row.get("appearance_abs_path"))
+    return ds.resolve_path(cell) if cell else None
+
+
+def read_appearance_dim(path: Path) -> int:
+    """Reads the dimension ``D`` of the appearance table at *path* from its footer.
+
+    Raises:
+        FileNotFoundError: The file is missing.
+        AppearanceTableError: The footer does not parse, or the file has no
+            contiguous ``emb_`` columns.
+    """
+    names = read_parquet_column_names(path)
+    if names is None:
+        if not path.is_file():
+            msg = f"the appearance table is missing: {path}"
+            raise FileNotFoundError(msg)
+        msg = f"{path}: the parquet footer does not parse"
+        raise AppearanceTableError(msg)
+    return len(_vector_columns(names, str(path)))
+
+
+def read_appearance_file(path: Path, *, what: str) -> AppearanceTable:
+    """Reads the appearance table at *path*, which belongs to *what*.
+
+    Raises:
+        FileNotFoundError: The file is missing. The message names *what*.
+        AppearanceTableError: The file lacks ``frame`` or ``id`` or has no
+            contiguous ``emb_`` columns.
+    """
+    if not path.is_file():
+        msg = f"the appearance table of {what} is missing: {path}"
+        raise FileNotFoundError(msg)
+    df = pd.read_parquet(path)
+    _require_columns(df, _KEY_COLUMNS, str(path))
+    columns = _vector_columns(df.columns, str(path))
+    return AppearanceTable(
+        frame=df["frame"].to_numpy(dtype=np.int64),
+        id=df["id"].to_numpy(dtype=np.int64),
+        vectors=np.ascontiguousarray(df[list(columns)].to_numpy(dtype=np.float32)),
+    )
+
+
 def read_appearance(ds: Dataset, variant: str, entry: Entry) -> AppearanceTable | None:
     """Reads the appearance table that *variant* records for *entry*.
 
@@ -194,18 +242,7 @@ def read_appearance(ds: Dataset, variant: str, entry: Entry) -> AppearanceTable 
     hit = variant_entry_rows(ds, variant, entry)
     if hit.empty:
         return None
-    cell = text_cell(hit.iloc[-1]["appearance_abs_path"])
-    if not cell:
+    path = recorded_appearance_path(ds, hit.iloc[-1])
+    if path is None:
         return None
-    path = ds.resolve_path(cell)
-    if not path.is_file():
-        msg = f"the appearance table of {entry} in {variant} is missing: {path}"
-        raise FileNotFoundError(msg)
-    df = pd.read_parquet(path)
-    _require_columns(df, _KEY_COLUMNS, str(path))
-    columns = _vector_columns(df, str(path))
-    return AppearanceTable(
-        frame=df["frame"].to_numpy(dtype=np.int64),
-        id=df["id"].to_numpy(dtype=np.int64),
-        vectors=np.ascontiguousarray(df[list(columns)].to_numpy(dtype=np.float32)),
-    )
+    return read_appearance_file(path, what=f"{entry} in {variant}")

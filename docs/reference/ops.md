@@ -3,7 +3,7 @@
 
 # Ops
 
-27 ops are registered. An op is the unit `mosaic run --kind <kind>`
+28 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -32,6 +32,35 @@ Name each tracks row's arena and keep each id in one arena.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `source_tracks_run_id` | `string` \| `None` | `null` |  | Which tracks variant to read, e.g. 'trex.0.1-abc123def0'. Unset resolves whichever variant the scope's entries hold, and refuses when they hold two. |
+
+#### `assign-identities`
+
+Version `0.1` &middot; `mosaic.tracking.ops.assign_identities.AssignIdentitiesOp`
+
+Relabel a tracks variant with the identities its references name.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `source_tracks_run_id` | `string` | _required_ | min length `1` | The tracks variant to relabel, e.g. 'sleap.1.6-abc123def0'. Each scoped entry's row must record an appearance table. |
+| `references` | list of `IdentityReference` | _required_ |  | Where each identity is seen. At least two identities are named. |
+| `min_similarity` | `number` | `0.5` |  | A tracklet whose best prototype cosine is below this is not assigned. |
+| `min_margin` | `number` | `0.05` |  | A tracklet whose best cosine exceeds its second by less than this is not assigned. |
+| `max_gap` | `integer` | `15` | >= `0` | A source track whose consecutive rows are further apart than this is split into tracklets there. [frames] |
+
+??? note "`EntryRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
+    | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
+
+??? note "`IdentityReference`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `identity` | `string` | _required_ | min length `1` | The name of the individual seen in this reference. |
+    | `entry` | `EntryRef` | _required_ |  | The entry the individual is seen in. |
+    | `id` | `integer` \| `None` | `null` |  | The source track id of the individual in that entry. Unset means the individual is alone in the entry, and every row of the entry is that identity. |
 
 #### `convert-labels`
 

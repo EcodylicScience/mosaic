@@ -521,8 +521,13 @@ def add_tracks_table(
     std_format: str = "trex_v1",
     producer_run_id: str = "",
     media_frames: int | None = None,
+    frames_read: int | None = None,
+    known_tail_loss: int | None = None,
+    first_frame: int | None = None,
+    consumed_composition: str | None = None,
     source: Path | str = "",
     appearance_dim: int | None = None,
+    appearance: pd.DataFrame | None = None,
 ) -> None:
     """Write *table*, one entry's rows, into the tracks variant *run_id*.
 
@@ -542,9 +547,20 @@ def add_tracks_table(
         producer_run_id: As in :func:`add_tracks_variant`.
         media_frames: The frame count of the entry's media that the row records,
             or ``None`` for a blank, as a conversion records it.
+        frames_read: The frame count read by the tool that the row records, or
+            ``None`` for a blank.
+        known_tail_loss: The known tail loss that the row records, or ``None``
+            for a blank.
+        first_frame: The first frame that the row records the table was
+            numbered from, or ``None`` for a blank, as a conversion records it.
+        consumed_composition: The composition that the row records, or ``None``
+            for the composition of *consumed_source_roots*.
         source: The raw file that the row records, or ``""`` for a blank.
-        appearance_dim: The vector length of an appearance table written beside
-            the tracks table and recorded in the row, or ``None`` for no table.
+        appearance_dim: The vector length of an appearance table drawn by
+            :func:`appearance_table`, written beside the tracks table and
+            recorded in the row, or ``None`` for no drawn table.
+        appearance: An appearance table to write and record in place of a drawn
+            one, or ``None``.
     """
     from mosaic.behavior.feature_library.helpers import entry_identity
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
@@ -556,9 +572,11 @@ def add_tracks_table(
     out_path = root / f"{key}.parquet"
     table.to_parquet(out_path)
     recorded: Path | None = None
-    if appearance_dim is not None:
+    if appearance is None and appearance_dim is not None:
+        appearance = appearance_table(table, appearance_dim)
+    if appearance is not None:
         recorded = appearance_path(root, key)
-        write_appearance(recorded, appearance_table(table, appearance_dim))
+        write_appearance(recorded, appearance)
     write_tracks_row(
         dataset,
         run_id=run_id,
@@ -571,6 +589,10 @@ def add_tracks_table(
         n_rows=len(table) if n_rows is None else n_rows,
         consumed_source_roots=consumed_source_roots,
         media_frames=media_frames,
+        frames_read=frames_read,
+        known_tail_loss=known_tail_loss,
+        first_frame=first_frame,
+        consumed_composition=consumed_composition,
         source=source,
         appearance_path=recorded,
     )

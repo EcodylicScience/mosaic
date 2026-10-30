@@ -11,6 +11,13 @@ register_ops()
 
 _MINIMAL: dict[str, dict[str, object]] = {
     "assign-arenas": {},
+    "assign-identities": {
+        "source_tracks_run_id": "sleap.1.6-abcdef0123",
+        "references": [
+            {"identity": "a", "entry": {"sequence": "s1"}, "id": 0},
+            {"identity": "b", "entry": {"sequence": "s1"}, "id": 1},
+        ],
+    },
     "convert-labels": {"source_format": "calms21_npy"},
     "convert-points": {
         "cvat_xml": "labels_raw/cvat/annotations.xml",

@@ -202,7 +202,8 @@ def chained_variant_payload(
     Its op params and nothing else. The other half of what determines it, the
     variant it was computed from, is the ``upstream`` term :func:`tracks_run_id`
     adds separately, so one recipe is recognized as the same recipe applied to
-    two sources. ``resample-tracks`` and ``assign-arenas`` mint through it.
+    two sources. ``resample-tracks``, ``assign-arenas`` and ``assign-identities``
+    mint through it.
 
     A named wrapper for the reason the other three give: the golden corpus pins
     the wrapper, so a later change to how a chained variant is addressed fails

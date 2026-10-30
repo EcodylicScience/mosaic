@@ -545,6 +545,15 @@ def test_a_payload_requirement_is_met_by_any_measurement() -> None:
     assert not need.met_by(NON_PAYLOAD_COLS)
 
 
+@pytest.mark.parametrize(
+    "name", ["identity_score", "identity_margin", "identity_source_id"]
+)
+def test_an_identity_assignment_column_is_not_a_measurement(name: str) -> None:
+    (need,) = needs_of((Payload(),), {})
+
+    assert not need.met_by({"frame", "id", name})
+
+
 def test_a_payload_requirement_is_tagged_in_the_closed_set() -> None:
     adapter = TypeAdapter(tuple[Requirement, ...])
 

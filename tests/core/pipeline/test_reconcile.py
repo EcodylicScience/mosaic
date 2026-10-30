@@ -32,6 +32,7 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
     feature_run_root,
 )
+from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.reconcile_variants import TracksReconciler, relocated_cell
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import (
@@ -539,6 +540,34 @@ def test_reconcile_registers_no_appearance_table_as_a_variant(
 
     _only_finding(report, "ok")
     pd.testing.assert_frame_equal(_tracks_cells(ds, variant), before)
+
+
+def test_an_assign_identities_variant_is_reported_and_not_moved(
+    scenario_dataset: Dataset,
+) -> None:
+    """The sidecar records no upstream, so the recompute is declined."""
+    ds = scenario_dataset
+    source = _make_tracks_variant(ds, appearance_dim=4)
+    params = {
+        "source_tracks_run_id": source,
+        "references": [
+            {"identity": "a", "entry": {"group": "", "sequence": "seq_a"}, "id": 0},
+            {"identity": "b", "entry": {"group": "", "sequence": "seq_a"}, "id": 1},
+        ],
+    }
+    _ = run_op(ds, "assign-identities", params, track=False)
+    index = tracks_index(tracks_index_path(ds))
+    (relabeled,) = {str(run_id) for run_id in index.read()["run_id"]} - {"", source}
+    before = _tracks_cells(ds, relabeled)
+
+    report = ds.reconcile(apply=True, only=("tracks",))
+
+    verdicts = {finding.old_address: finding for finding in report.findings}
+    assert verdicts[source].verdict == "ok"
+    assert verdicts[relabeled].verdict == "unresolvable_pre_provenance"
+    assert verdicts[relabeled].action != "relocated"
+    assert (ds.get_root("tracks") / relabeled).is_dir()
+    pd.testing.assert_frame_equal(_tracks_cells(ds, relabeled), before)
 
 
 def test_tracks_missing_sidecar_is_unresolvable(scenario_dataset: Dataset) -> None:

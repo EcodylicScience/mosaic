@@ -260,7 +260,17 @@ ALIGN_COLS: frozenset[str] = frozenset(
 META_COLS: frozenset[str] = frozenset(COLUMNS.meta_set() | PAIR_COLS)
 
 BOOKKEEPING_COLS: frozenset[str] = frozenset(
-    {"attention_target_id", "entity_level", "fps", "label", "nn_id", "split"}
+    {
+        "attention_target_id",
+        "entity_level",
+        "fps",
+        "identity_margin",
+        "identity_score",
+        "identity_source_id",
+        "label",
+        "nn_id",
+        "split",
+    }
 )
 """Columns that are neither identity nor measurement.
 
@@ -284,6 +294,10 @@ model's ``apply`` keeps every column outside its fitted set, so
 ``fps`` and ``label``. Readers of the neighbor (``nn-delta-response``,
 ``social-motion-summary``, the ``pair_filter`` lookup) read ``nn_id`` by name
 from ``nearest-neighbor``'s output.
+
+``identity_score``, ``identity_margin`` and ``identity_source_id``
+(``assign-identities``) record how a tracklet was assigned its identity and the
+track id it had before. They describe the assignment and not the individual.
 
 The identity names are in ``META_COLS`` and absent here. The payload and the
 metadata passthrough both read them there. Two lists once disagreed, and

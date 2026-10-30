@@ -88,8 +88,9 @@ pipeline graph are in `graph/CLAUDE.md`.
   unlabeled tables. It raises `AmbiguousTracksVariant`, and it reduces
   `variant_candidate_rows`, which keeps each recipe of an entry for a caller that
   chooses none (`refuse_mixed_track_schemas`).
-- `row_in_scope` is the one filter of resolved rows to a run's entries. `None` covers
-  every row, and an empty list covers none.
+- `row_in_scope` is the one filter of resolved rows to a run's entries, and
+  `rows_in_scope` applies it to a frame. `None` covers every row, and an empty list
+  covers none.
 - The writer measures `n_keypoints` and `frame_min`/`frame_max` from the parquet. The
   producer passes `media_frames`, `frames_read` and `known_tail_loss`. A blank cell on
   every count column means unknown. The `TracksIndexRow` docstring defines each

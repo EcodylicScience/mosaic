@@ -122,6 +122,7 @@ __all__ = [
     "read_tracks_index",
     "row_in_scope",
     "recorded_first_frames",
+    "rows_in_scope",
     "select_variant_rows",
     "tail_allowance",
     "variant_candidate_rows",
@@ -593,6 +594,20 @@ def row_in_scope(row: CellRow, entries: Collection[Entry] | None) -> bool:
     group = text_cell(row.get("group"))
     sequence = text_cell(row.get("sequence"))
     return (group, sequence) in entries
+
+
+def rows_in_scope(df: pd.DataFrame, entries: Collection[Entry] | None) -> pd.DataFrame:
+    """Return the tracks-index rows of *df* that a run over *entries* covers.
+
+    Applies `row_in_scope` to each row and keeps the order of *df*, with a fresh
+    positional index.
+    """
+    keep = [
+        position
+        for position, (_, row) in enumerate(df.iterrows())
+        if row_in_scope(row, entries)
+    ]
+    return df.iloc[keep].reset_index(drop=True)
 
 
 def variant_for_producer_run(df: pd.DataFrame, producer_run_id: str) -> str | None:
