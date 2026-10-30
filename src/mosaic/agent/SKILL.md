@@ -321,12 +321,13 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   tracked by passing its run id as `media` (`--set media=<run_id>`). Its tracks are
   published in the source video's pixels and frames. Do not add crop offsets. A frame
   window cannot be combined with `media`.
+- A `sleap` run is silent while it predicts, so it allows each entry
+  `max(idle_timeout, 0.05 s x frames)` of silence. Raise `idle_timeout` on a slow GPU.
 - A `sleap` model list that ends in an embedding model (a `train-sleap` run with
   `head=embedding`) is an embedding run. It tracks by appearance and writes an appearance
   table, `tracks/<variant>/appearance/<entry>.parquet`, beside each tracks table. Set
   `features=embeddings`, `scoring_method=cosine_sim` and `candidates_method=local_queues`
-  yourself, since the run refuses other values. It needs sleap-nn 0.3.5 or later and
-  stays silent for minutes while it embeds. Raise `idle_timeout` on a slow GPU.
+  yourself, since the run refuses other values. It needs sleap-nn 0.3.5 or later.
   `prepare-embedding-data` cuts the training windows from an earlier `sleap` run, with
   `train_entries` and `val_entries` that share no recording. `train-sleap` with
   `head=embedding` refuses scopes and labels it cannot train, and `global_id` needs the

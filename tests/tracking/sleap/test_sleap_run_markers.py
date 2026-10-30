@@ -1,6 +1,6 @@
 """End-to-end ``run_sleap`` reuse and provenance, without a real SLEAP binary.
 
-``sleap-nn track`` / ``sleap-convert`` are replaced with recording fakes (the shape
+``sleap-nn track`` and the analysis export are replaced with recording fakes (the shape
 established in ``test_trex_run_markers.py``): the fake inference writes a ``.slp``
 and the fake export writes a small, converter-readable analysis ``.h5``. This
 exercises the Job-Contract machinery -- content ``run_id``, phase-marker reuse,
@@ -23,6 +23,7 @@ import pytest
 
 import mosaic.tracking.sleap.dataset_runs as dr
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import make_entry_key
 from mosaic.core.pipeline.appearance import AppearanceTable, read_appearance
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.markers import (
@@ -36,6 +37,7 @@ from mosaic.core.pipeline.tracks_identity import (
     tracks_variant_root,
 )
 from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.runlog import read_entry_error_keys, run_log_dir
 from mosaic.tracking.model_refs import resolve_model_set
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
 from mosaic.tracking.sleap.params import SleapParams
@@ -132,34 +134,43 @@ def test_a_completed_run_reuses_the_inference(
 
 
 def test_an_interrupted_analysis_export_is_not_trusted(
-    ds: Dataset, model: Path, monkeypatch: pytest.MonkeyPatch
+    ds: Dataset, model: Path, monkeypatch: pytest.MonkeyPatch, sleap: FakeSleap
 ) -> None:
-    """A killed sleap-convert must not leave a partial .h5 that reuse trusts."""
-    fake = FakeSleap()
-    monkeypatch.setattr(dr, "run_sleap_track", fake.track)
+    """A killed export must not leave a partial .h5 that reuse trusts."""
 
-    def dying_convert(slp_path: Path, output_h5: Path, **_kw: object):
-        # h5py opens "w" and truncates immediately; a kill leaves a partial file.
-        Path(output_h5).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_h5).write_bytes(b"partial-not-a-real-h5")
+    def dying_export(slp_path: Path, output_h5: Path, **_kw: object):
+        # h5py opens "w" and truncates immediately; a kill leaves the export's
+        # partial file, which the export writes beside its output.
+        partial = Path(output_h5).with_name(f"{Path(output_h5).name}.partial")
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_bytes(b"partial-not-a-real-h5")
         raise RuntimeError("killed mid-convert")
 
-    monkeypatch.setattr(dr, "run_sleap_convert", dying_convert)
+    monkeypatch.setattr(dr, "run_sleap_analysis_export", dying_export)
     with pytest.raises(RuntimeError):
         dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
+
+    # The entry is reported lost, not written.
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "failed"
+    assert snapshot["entries_written"] == 0
+    assert snapshot["entries_failed"] == 1
+    log_dir = run_log_dir(ds.base_dir)
+    keys = read_entry_error_keys(log_dir, snapshot["execution_id"])
+    assert keys == [make_entry_key("", "vid1")]
 
     sleap_root = ds.get_root("sleap")
     # Inference finished (its .slp and marker are valid) but no canonical .h5 was
     # published -- only a *.partial temp, which the ensure step ignores.
     assert list(sleap_root.rglob("*.predictions.slp"))
     assert not list(sleap_root.rglob("*.analysis.h5"))
-    assert len(fake.tracked) == 1
+    assert len(sleap.tracked) == 1
 
     # A working export now publishes the canonical .h5 and bridges to tracks,
     # WITHOUT re-running the already-complete inference.
-    monkeypatch.setattr(dr, "run_sleap_convert", fake.convert)
+    monkeypatch.setattr(dr, "run_sleap_analysis_export", sleap.convert)
     dr.run_sleap(ds, SleapParams(model_paths=[str(model)]))
-    assert len(fake.tracked) == 1  # inference reused
+    assert len(sleap.tracked) == 1  # inference reused
     assert list(sleap_root.rglob("*.analysis.h5"))
     assert len(read_tracks_index(ds)) == 1
 
@@ -752,10 +763,23 @@ def test_an_idle_limit_above_the_frame_allowance_is_kept(
     assert claimed == [900] * 3
 
 
-def test_a_run_without_an_embedding_model_keeps_its_idle_limit(
+def test_a_pose_entry_waits_for_its_frames(
     ds: Dataset, model: Path, sleap: FakeSleap, claimed: list[float]
 ) -> None:
+    """The 100 frames of the stub video earn 5 s over an idle limit of 1 s."""
     _ = dr.run_sleap(ds, SleapParams(model_paths=[str(model)], idle_timeout=1))
 
-    assert sleap.track_settings[0]["idle_timeout"] == 1
-    assert claimed == [1, 1]
+    assert sleap.track_settings[0]["idle_timeout"] == pytest.approx(5.0)
+    assert claimed == [pytest.approx(5.0)] * 2
+
+
+def test_a_pose_entry_without_a_frame_count_waits_an_hour(
+    tmp_path: Path, model: Path, sleap: FakeSleap, claimed: list[float]
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    write_media_index(ds, [MediaClip(sequence="vid1", frame_count=0)])
+
+    _ = dr.run_sleap(ds, SleapParams(model_paths=[str(model)], idle_timeout=1))
+
+    assert sleap.track_settings[0]["idle_timeout"] == 3600
+    assert claimed == [3600] * 2

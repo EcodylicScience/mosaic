@@ -57,7 +57,7 @@ def test_every_running_line_is_the_summary_of_the_argv_run(
                 env=trex_run.TREX_ENV.placed(bin_path=tmp_path / "trex"),
             )
         elif site == "sleap":
-            _ = sleap_run.run_sleap_convert(
+            _ = sleap_run.run_sleap_analysis_export(
                 tmp_path / "in.slp",
                 tmp_path / "out.h5",
                 sleap_bin=tmp_path / "sleap-convert",

@@ -44,6 +44,7 @@ from mosaic.tracking.trex.version import TREX_KIND, TREX_TRACK_VERSION
 from tests.helpers import (
     add_track_sequences,
     add_tracks_variant,
+    install_fake_sleap,
     install_fake_trex,
     make_dataset,
     register_trained_model,
@@ -225,6 +226,12 @@ def _variants(ds: Dataset) -> list[str]:
     )
 
 
+@pytest.fixture
+def fake_sleap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for the SLEAP environment, which a SLEAP run probes first."""
+    _ = install_fake_sleap(monkeypatch)
+
+
 def _sleap_run_variant(ds: Dataset, model_paths: list[str]) -> str:
     """The tracks variant that a SLEAP run with *model_paths* records, over s1.
 
@@ -238,6 +245,7 @@ def _sleap_run_variant(ds: Dataset, model_paths: list[str]) -> str:
     return variant
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_each_member_of_a_sleap_model_set_is_found(tmp_path: Path) -> None:
     """A set of several references is named by one digest over its artifacts.
 
@@ -261,6 +269,7 @@ def test_each_member_of_a_sleap_model_set_is_found(tmp_path: Path) -> None:
     assert tracks_made_with(ds, OTHER, digest=DIGEST).entries == ()
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_a_set_run_again_by_path_is_still_found_by_its_members(
     tmp_path: Path,
 ) -> None:
@@ -282,6 +291,7 @@ def test_a_set_run_again_by_path_is_still_found_by_its_members(
         assert entry.variant == variant
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_a_sleap_set_recorded_with_its_models_rules_out_another_model(
     tmp_path: Path,
 ) -> None:
@@ -306,6 +316,7 @@ def test_a_sleap_set_recorded_with_its_models_rules_out_another_model(
     )
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_a_sleap_set_recorded_without_its_models_is_unconfirmed(
     tmp_path: Path,
 ) -> None:
@@ -330,6 +341,7 @@ def test_a_sleap_set_recorded_without_its_models_is_unconfirmed(
     assert found.unreadable_variants == ()
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_a_variant_that_names_another_model_by_run_id_is_ruled_out(
     tmp_path: Path,
 ) -> None:
@@ -342,6 +354,7 @@ def test_a_variant_that_names_another_model_by_run_id_is_ruled_out(
     assert (found.entries, found.unconfirmed_variants) == ((), ())
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_a_sleap_model_handed_in_by_path_is_found_by_its_digest(
     tmp_path: Path,
 ) -> None:
@@ -468,6 +481,7 @@ def test_the_digest_is_required() -> None:
     assert parameter.default is inspect.Parameter.empty
 
 
+@pytest.mark.usefixtures("fake_sleap")
 def test_a_set_member_handed_in_by_path_is_found_by_its_digest(tmp_path: Path) -> None:
     """One member named by its run and one by a path to the other's bytes."""
     ds = make_dataset(tmp_path)

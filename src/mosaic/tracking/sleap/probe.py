@@ -1,7 +1,7 @@
-"""Asking a SLEAP environment what it holds, before a training run pays for it.
+"""Asking a SLEAP environment what it holds, before a run pays for it.
 
-Two questions a training run cannot answer for itself, and both of them look
-like success until hours later.
+Three questions a run cannot answer for itself, and each of them looks like
+success until hours later.
 
 **Is the trainer actually installed?** ``pip install sleap`` without the ``nn``
 extra puts SLEAP's console scripts on ``$PATH`` anyway: they belong to the
@@ -15,6 +15,11 @@ is the whole reason this exists.
 so a ``.slp`` whose instances have no track trains one of them against no
 classes at all. That run succeeds, writes a loadable model and registers a row,
 and the model learned nothing.
+
+**Can the environment write the analysis export?** A tracker run exports each
+entry's predictions through ``sleap_io.save_analysis_h5`` after its inference.
+An environment whose sleap-io lacks that function runs the inference, which is
+the expensive part, and fails at the export.
 
 **The probe reports; every refusal is mosaic's.** Nothing here raises on a
 finding, so :func:`require_sleap_nn` and :func:`require_identity_labels` are
@@ -61,6 +66,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "SleapProbeResponse",
     "probe_sleap",
+    "require_analysis_export",
     "require_embedding_labels",
     "require_identity_labels",
     "require_sleap_nn",
@@ -72,6 +78,13 @@ SLEAP_NN_BOOTSTRAP: str = (
     "environment MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN names."
 )
 """How to turn an environment that cannot train into one that can."""
+
+SLEAP_IO_BOOTSTRAP: str = (
+    "install a release of sleap-io that provides it ('pip install -U "
+    "sleap-io'), or 'sleap[nn]', whose sleap-io does, into the environment "
+    "MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN names."
+)
+"""How to turn an environment that cannot export into one that can."""
 
 # Run by the SLEAP interpreter. Its only inputs are argv -- the labels file, or
 # an empty string for none, and where to write the answer -- so no path is ever
@@ -88,6 +101,8 @@ _found = {
     "sleap_nn_version": "",
     "sleap_nn_import_error": "",
     "sleap_io_version": "",
+    "has_analysis_export": False,
+    "analysis_export_error": "",
     "n_labeled_frames": 0,
     "n_tracks": 0,
     "labels_load_error": "",
@@ -101,12 +116,23 @@ try:
 except Exception as exc:
     _found["sleap_nn_import_error"] = f"{type(exc).__name__}: {exc}"
 
+_sleap_io = None
+try:
+    import sleap_io as _sleap_io
+
+    _found["sleap_io_version"] = str(getattr(_sleap_io, "__version__", ""))
+    if callable(getattr(_sleap_io, "save_analysis_h5", None)):
+        _found["has_analysis_export"] = True
+    else:
+        _found["analysis_export_error"] = "sleap_io has no save_analysis_h5"
+except Exception as exc:
+    _found["analysis_export_error"] = f"{type(exc).__name__}: {exc}"
+
 if _labels_path:
     try:
-        import sleap_io
-
-        _found["sleap_io_version"] = str(getattr(sleap_io, "__version__", ""))
-        _labels = sleap_io.load_slp(_labels_path)
+        if _sleap_io is None:
+            raise ImportError(_found["analysis_export_error"])
+        _labels = _sleap_io.load_slp(_labels_path)
         _found["n_labeled_frames"] = len(_labels.labeled_frames)
         _found["n_tracks"] = len(_labels.tracks)
     except Exception as exc:
@@ -129,8 +155,13 @@ class SleapProbeResponse(BaseModel):
         sleap_nn_import_error: Why it did not import, empty when it did. A
             missing extra and a broken torch read the same at the console
             script and differently here.
-        sleap_io_version: The installed sleap-io's version, empty when no
-            labels file was probed or it did not import.
+        sleap_io_version: The installed sleap-io's version, empty when it did
+            not import.
+        has_analysis_export: Whether ``import sleap_io`` succeeded and holds
+            ``save_analysis_h5``, the call that writes a tracker run's analysis
+            export.
+        analysis_export_error: Why the export is not available, empty when it
+            is.
         n_labeled_frames: Labeled frames in the probed file.
         n_tracks: Distinct tracks in the probed file. Zero means no instance
             carries identity, which is what the ``multi_class_`` heads need.
@@ -142,6 +173,8 @@ class SleapProbeResponse(BaseModel):
     sleap_nn_version: str = ""
     sleap_nn_import_error: str = ""
     sleap_io_version: str = ""
+    has_analysis_export: bool = False
+    analysis_export_error: str = ""
     n_labeled_frames: int = 0
     n_tracks: int = 0
     labels_load_error: str = ""
@@ -230,6 +263,22 @@ def require_sleap_nn(probe: SleapProbeResponse) -> None:
         "the SLEAP environment resolved, and sleap_nn does not import there "
         f"({reason}), so sleap-nn train cannot train anything. "
         f"{SLEAP_NN_BOOTSTRAP}"
+    )
+
+
+def require_analysis_export(probe: SleapProbeResponse) -> None:
+    """Refuse an environment that cannot write the analysis export.
+
+    Without the export, a tracker run fails at its first entry's export, after
+    the inference that is most of its cost.
+    """
+    if probe.has_analysis_export:
+        return
+    reason = probe.analysis_export_error or "it is not available"
+    raise SleapNotFoundError(
+        "the SLEAP environment resolved, and sleap_io.save_analysis_h5 is not "
+        f"available there ({reason}), so the analysis export of a tracker run "
+        f"cannot be written. {SLEAP_IO_BOOTSTRAP}"
     )
 
 

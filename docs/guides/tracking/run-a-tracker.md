@@ -46,6 +46,12 @@ overwriting the old one. The exceptions are the knobs describing *how* a run hap
 rather than what it produced — `batch_size`, `device`, `precision`, `idle_timeout` —
 so retuning throughput costs you no recompute.
 
+A `sleap` run is silent while it predicts: sleap-nn prints nothing while it detects or
+embeds when its output is a pipe. A 54,000-frame entry was silent for about 30 minutes
+of pose inference, and an embedding run adds about 20 more.
+The run therefore allows each entry `max(idle_timeout, 0.05 s x frames)` of silence, and
+a slower GPU needs a larger `idle_timeout`.
+
 ### Settings mosaic does not declare
 
 Every tracker has a passthrough for the settings its tool takes and mosaic has no field
@@ -91,12 +97,8 @@ sleap-nn's `--link_tracklets` goes through the passthrough:
 [a measured run on four mice](../analysis/identify-individuals.md#how-well-it-separates)
 it changed no track.
 
-**An embedding run is silent while it embeds.** sleap-nn prints a progress bar while it
-detects and nothing while it embeds, which took about 20 minutes for a 54,000-frame
-entry. The run therefore allows each entry `max(idle_timeout, 0.05 s x frames)` of
-silence, and a slower GPU needs a larger `idle_timeout`. `batch_size` left at its default
-detects four frames at a time and embeds 64 crops at a time, and any other value sets
-both.
+`batch_size` left at its default detects four frames at a time and embeds 64 crops at a
+time, and any other value sets both.
 
 Beside each tracks table the run publishes an appearance table,
 `tracks/<variant>/appearance/<group>__<sequence>.parquet`. It has one row for each

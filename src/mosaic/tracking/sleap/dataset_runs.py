@@ -20,7 +20,7 @@ mirroring :func:`mosaic.tracking.trex.run_trex`:
 There is one expensive, gated phase -- ``track`` (``sleap-nn track`` inference
 + identity tracking, producing a ``.slp``). Its completion marker lets a killed
 run resume without re-running inference. The cheap, deterministic analysis
-export (``sleap-convert``, producing the ``.h5`` the converter reads) is not
+export (sleap-io's, producing the ``.h5`` the converter reads) is not
 marker-gated: it is re-run only when its output is missing or the inference was
 recomputed.
 
@@ -33,16 +33,15 @@ the bridge publishes them as an appearance table beside the tracks table.
 An entry in which sleap-nn finds nothing to embed is an empty entry. Its
 ``track`` phase records ``<entry_key>.no-detections.json`` in place of a
 ``.slp``, nothing is exported or read back, and an empty tracks table and an
-empty appearance table are published. sleap-nn prints nothing while it embeds,
-so each entry of an embedding run waits for silence in proportion to its
-frames (:func:`_entry_idle_limit`).
+empty appearance table are published. sleap-nn prints nothing while it predicts
+or embeds, so each entry waits for silence in proportion to its frames
+(:func:`_entry_idle_limit`).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
-import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -117,7 +116,7 @@ from .run import (
     SLEAP_ENV,
     SleapNoDetections,
     read_back_embeddings,
-    run_sleap_convert,
+    run_sleap_analysis_export,
     run_sleap_predict,
     run_sleap_track,
 )
@@ -612,12 +611,31 @@ def _embedding_run_shape(
     return True
 
 
-def _require_embedding_release(
+def _probe_sleap_environment(
     *,
     sleap_conda_env: str | None,
     sleap_bin: Path | str | None,
     cancel_token: CancelToken | None,
-) -> str:
+) -> sleap_probe.SleapProbeResponse:
+    """Probe the SLEAP environment and refuse one that cannot export.
+
+    Returns:
+        What the probe found.
+
+    Raises:
+        SleapNotFoundError: sleap-io lacks the analysis export in the SLEAP
+            environment.
+    """
+    probe = sleap_probe.probe_sleap(
+        sleap_conda_env=sleap_conda_env,
+        sleap_bin=sleap_bin,
+        cancel_check=cancel_token.is_cancelled if cancel_token is not None else None,
+    )
+    sleap_probe.require_analysis_export(probe)
+    return probe
+
+
+def _require_embedding_release(probe: sleap_probe.SleapProbeResponse) -> str:
     """Refuse a SLEAP environment whose sleap-nn cannot predict with an embedding model.
 
     Returns:
@@ -628,11 +646,6 @@ def _require_embedding_release(
         ValueError: The installed sleap-nn is older than
             :data:`~mosaic.tracking.sleap.version.SLEAP_NN_EMBEDDING_MIN`.
     """
-    probe = sleap_probe.probe_sleap(
-        sleap_conda_env=sleap_conda_env,
-        sleap_bin=sleap_bin,
-        cancel_check=cancel_token.is_cancelled if cancel_token is not None else None,
-    )
     sleap_probe.require_sleap_nn(probe)
     require_sleap_nn_at_least(probe, SLEAP_NN_EMBEDDING_MIN)
     return probe.sleap_nn_version
@@ -646,40 +659,35 @@ class _EmbeddingRun:
     sleap_nn_version: str
 
 
-EMBEDDING_IDLE_SECONDS_PER_FRAME: Final = 0.05
-"""How long an entry of an embedding run may stay silent per frame, about twice
-the measured time per frame of the embedding stage."""
+IDLE_SECONDS_PER_FRAME: Final = 0.05
+"""How long an entry may stay silent per frame, about twice the measured time per
+frame of the embedding stage and 1.6 times that of pose inference."""
 
-EMBEDDING_IDLE_UNKNOWN_LENGTH_SECONDS: Final = 3600.0
-"""How long an entry of an embedding run of unknown length may stay silent."""
+IDLE_UNKNOWN_LENGTH_SECONDS: Final = 3600.0
+"""How long an entry of unknown length may stay silent."""
 
 
-def _entry_idle_limit(
-    params: SleapParams, axis: EntryAxis, *, embedding_run: bool
-) -> float:
+def _entry_idle_limit(params: SleapParams, axis: EntryAxis) -> float:
     """Return how long one entry's SLEAP calls may run without output.
 
-    sleap-nn prints nothing while it embeds. An embedding run therefore allows
-    :data:`EMBEDDING_IDLE_SECONDS_PER_FRAME` per frame when that exceeds
-    ``params.idle_timeout``. The frames are the analyzed range under
+    sleap-nn prints nothing while it predicts or embeds when its output is a
+    pipe. A run therefore allows :data:`IDLE_SECONDS_PER_FRAME` per frame when
+    that exceeds ``params.idle_timeout``. The frames are the analyzed range under
     ``analysis_range``, and otherwise the entry's
     :attr:`~mosaic.core.pipeline.placement.EntryAxis.media_frames`. An entry of
-    unknown length allows :data:`EMBEDDING_IDLE_UNKNOWN_LENGTH_SECONDS`. Any
-    other run allows ``params.idle_timeout``.
+    unknown length allows :data:`IDLE_UNKNOWN_LENGTH_SECONDS`.
 
     Returns:
         The idle limit in seconds.
     """
-    if not embedding_run:
-        return params.idle_timeout
     if params.analysis_range is not None:
         first, last = params.analysis_range
         frames: int | None = last - first + 1
     else:
         frames = axis.media_frames
     if frames is None:
-        return max(params.idle_timeout, EMBEDDING_IDLE_UNKNOWN_LENGTH_SECONDS)
-    return max(params.idle_timeout, EMBEDDING_IDLE_SECONDS_PER_FRAME * frames)
+        return max(params.idle_timeout, IDLE_UNKNOWN_LENGTH_SECONDS)
+    return max(params.idle_timeout, IDLE_SECONDS_PER_FRAME * frames)
 
 
 def _write_no_detections(
@@ -733,6 +741,9 @@ def run_sleap(
     result, so they reach no identifier and the op does not carry them: a queued
     job would ship a path that means something else on the host that runs it.
 
+    The run probes the SLEAP environment before it mints, so even a run over
+    finished entries needs a resolvable SLEAP environment that can export.
+
     Returns the content-addressed ``run_id``.
     """
     # Resolve the model *before* the settings that name it, because what the
@@ -754,17 +765,20 @@ def run_sleap(
         ds, refs, model_kind_for(SLEAP_KIND, SLEAP_MODEL, refs)
     )
     # A run of the wrong shape is refused before the mint, as an unresolvable
-    # reference is. So is a model without a vector length, and a sleap-nn
-    # release that cannot run the embedding model.
+    # reference is. So is a model without a vector length, a SLEAP environment
+    # that cannot write the analysis export, and a sleap-nn release that cannot
+    # run the embedding model.
+    embedding_run = _embedding_run_shape(refs, resolved_models.model_types, params)
+    dim = embedding_dim(resolved_models) if embedding_run else 0
+    probe = _probe_sleap_environment(
+        sleap_conda_env=sleap_conda_env,
+        sleap_bin=sleap_bin,
+        cancel_token=ctx.cancel_token if ctx is not None else cancel_token,
+    )
     embedding: _EmbeddingRun | None = None
     embedding_observed: dict[str, str] = {}
-    if _embedding_run_shape(refs, resolved_models.model_types, params):
-        dim = embedding_dim(resolved_models)
-        release = _require_embedding_release(
-            sleap_conda_env=sleap_conda_env,
-            sleap_bin=sleap_bin,
-            cancel_token=ctx.cancel_token if ctx is not None else cancel_token,
-        )
+    if embedding_run:
+        release = _require_embedding_release(probe)
         embedding_observed = {
             # The shape check puts the embedding model last.
             "embedding_model_id": resolved_models.members[-1],
@@ -814,7 +828,7 @@ def run_sleap(
         readback_path = work_dir / f"{item.key}.embeddings.npz"
         no_detections_path = work_dir / f"{item.key}.no-detections.json"
         axis = item.entry_axis(windowed=bool(params.frame_window))
-        idle = _entry_idle_limit(params, axis, embedding_run=embedding is not None)
+        idle = _entry_idle_limit(params, axis)
 
         # A .slp alone appears as inference proceeds; the .h5 only after the
         # export finished, so requiring both is what distinguishes a finished
@@ -901,7 +915,7 @@ def run_sleap(
                     frames=frames_arg,
                     device=params.device,
                     extra_settings=params.sleap_extra_settings,
-                    idle_timeout=params.idle_timeout,
+                    idle_timeout=idle,
                     max_runtime=params.max_runtime,
                     sleap_conda_env=sleap_conda_env,
                     sleap_bin=sleap_bin,
@@ -930,20 +944,14 @@ def run_sleap(
 
         # Analysis export: deterministic and cheap, so ensured rather than
         # marker-gated. Re-run only when its output is missing or the inference
-        # it derives from was just recomputed. Published atomically:
-        # sleap-convert truncates its output the instant h5py opens it, so a
-        # killed export would otherwise leave a partial .h5 at the canonical
-        # path -- and this step, unlike inference, is gated on existence rather
-        # than on a completion marker. The rename also settles the case where
-        # sleap-convert names its output per video rather than by -o.
+        # it derives from was just recomputed. The export publishes through a
+        # .partial file, because this step, unlike inference, is gated on the
+        # existence of its output rather than on a completion marker.
         if not no_detections and (recomputed or not h5_path.exists()):
-            h5_path.unlink(missing_ok=True)
-            h5_tmp = work_dir / f"{item.key}.analysis.h5.partial"
-            h5_tmp.unlink(missing_ok=True)
             export_claim = claim(seq_ctx, work_dir, "track", idle)
-            convert_result = run_sleap_convert(
+            _ = run_sleap_analysis_export(
                 slp_out,
-                h5_tmp,
+                h5_path,
                 idle_timeout=idle,
                 max_runtime=params.max_runtime,
                 sleap_conda_env=sleap_conda_env,
@@ -951,8 +959,6 @@ def run_sleap(
                 cancel_check=seq_ctx.cancel_token.is_cancelled,
                 on_activity=phase_activity(seq_ctx, work_dir, export_claim, idle),
             )
-            os.replace(convert_result.analysis_h5_path, h5_path)
-            h5_tmp.unlink(missing_ok=True)
 
         # The readback of an embedding run's vectors is ensured on the same
         # rule as the export, and publishes through its own ``.partial`` file.

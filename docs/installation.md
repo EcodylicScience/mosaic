@@ -226,7 +226,10 @@ This puts `sleap-convert` on `$PATH`, where mosaic finds it. `sleap-nn` itself n
 not be on `$PATH`, because mosaic runs `sleap-nn track` and `sleap-nn predict` from
 the same environment.
 Installed into a conda environment instead, name it with
-`export MOSAIC_SLEAP_CONDA_ENV=sleap`.
+`export MOSAIC_SLEAP_CONDA_ENV=sleap`. Such an environment needs only `sleap-nn`,
+because mosaic writes the analysis export with the `sleap-io` that it brings. Any
+other environment with only `sleap-nn`, such as a virtual environment, is named
+with `export MOSAIC_SLEAP_BIN=<env>/bin/sleap-nn`.
 
 **Give it an OpenCV that decodes AV1.** SLEAP reads video through OpenCV, and the
 Linux OpenCV wheel from PyPI lacks an AV1 decoder. In a conda environment, replace

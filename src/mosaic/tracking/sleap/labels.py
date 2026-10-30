@@ -24,22 +24,13 @@ beside the target and moved into place.
 
 from __future__ import annotations
 
-import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
 from mosaic.core.annotations.model import AnnotationSet
 from mosaic.core.annotations.writers import write_coco_keypoints
-from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
-from mosaic.core.pipeline.toolenv import (
-    subprocess_env,
-    tool_invocation,
-)
-from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
-
-logger = logging.getLogger(__name__)
+from mosaic.tracking.sleap.run import publish_from_snippet, sleap_invocation
 
 __all__ = [
     "SLEAP_VALIDATION_SUFFIX",
@@ -149,37 +140,22 @@ def write_slp(
         )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Beside the target rather than in a temp directory, so the move is a rename
-    # within one filesystem and cannot half-succeed across a device boundary.
-    staging = out_path.with_name(out_path.name + ".partial")
     coco_path = out_path.with_name(out_path.name + ".coco.json")
     _ = write_coco_keypoints(annotations, coco_path)
-
-    invocation = tool_invocation(
-        SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
-        executable="python",
-    )
-    cmd = [*invocation, "-c", _TO_SLP_SNIPPET, str(coco_path), str(root), str(staging)]
-    logger.info("Running: %s", command_summary(cmd, SleapError.head))
-
     try:
-        stdout, stderr, returncode = run_supervised(
-            cmd,
-            env=subprocess_env(),
-            cancel_check=cancel_check,
-            timeout=max_runtime,
+        _ = publish_from_snippet(
+            sleap_invocation(
+                "python", sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
+            ),
+            _TO_SLP_SNIPPET,
+            [coco_path, root],
+            out_path,
             idle_timeout=idle_timeout,
+            max_runtime=max_runtime,
+            cancel_check=cancel_check,
             on_output=on_output,
         )
-        if returncode != 0:
-            raise SleapError(cmd, returncode, stdout, stderr)
-        if not staging.exists():
-            raise FileNotFoundError(
-                f"sleap-io reported success but wrote no .slp at {staging}"
-            )
-        os.replace(staging, out_path)
     finally:
         coco_path.unlink(missing_ok=True)
-        staging.unlink(missing_ok=True)
 
     return out_path

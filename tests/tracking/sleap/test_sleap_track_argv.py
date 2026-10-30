@@ -28,7 +28,6 @@ from mosaic.tracking.sleap.run import (
     SleapError,
     SleapFeatures,
     SleapScoringMethod,
-    run_sleap_convert,
     run_sleap_predict,
     run_sleap_track,
     sleap_track_device_args,
@@ -107,22 +106,6 @@ def test_inference_asks_for_sleap_nns_own_cli(
         "removed, and not the legacy sleap-track, which imports it too"
     )
     assert launched.args[0] == "track", "sleap-nn dispatches on a subcommand"
-
-
-def test_the_export_still_asks_for_sleap_convert(
-    tmp_path: Path, launched: Launched
-) -> None:
-    """``sleap-convert`` imports no sleap_nn module and works on 0.3.3.
-
-    sleap-nn has no export writing the analysis-HDF5 layout the bridge reads, so
-    moving this to "finish the migration" would break the half that works.
-    """
-    slp, h5 = tmp_path / "v.slp", tmp_path / "v.analysis.h5"
-
-    run_sleap_convert(slp, h5)
-
-    assert launched.script == "sleap-convert"
-    assert launched.args == [str(slp), "--format", "analysis", "-o", str(h5)]
 
 
 # --- the argv that carries over, and the part that does not ---------------------

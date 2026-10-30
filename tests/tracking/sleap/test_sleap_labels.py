@@ -25,7 +25,7 @@ from mosaic.core.annotations import (
     Keypoint,
     KeypointSchema,
 )
-from mosaic.tracking.sleap import labels as labels_module
+from mosaic.tracking.sleap import run as sleap_run
 from mosaic.tracking.sleap.labels import (
     SLEAP_VALIDATION_SUFFIX,
     validation_labels_beside,
@@ -88,7 +88,7 @@ def _hand_over(
         return ("ok", "", 0)
 
     _stub_sleap(tmp_path, monkeypatch)
-    monkeypatch.setattr(labels_module, "run_supervised", capture)
+    monkeypatch.setattr(sleap_run, "run_supervised", capture)
     _ = write_slp(annotations, tmp_path / "out.slp")
     assert handed_over, "the subprocess was invoked"
     return handed_over[0]
@@ -108,6 +108,7 @@ def _fake_run(
         timeout: float | None = None,
         idle_timeout: float | None = None,
         on_output: object = None,
+        on_activity: object = None,
     ) -> tuple[str, str, int]:
         seen.append(list(argv))
         if write and returncode == 0:
@@ -243,7 +244,7 @@ def test_each_track_of_the_slp_is_named_by_its_track_id(
         )
         return (done.stdout, done.stderr, done.returncode)
 
-    monkeypatch.setattr(labels_module, "run_supervised", run)
+    monkeypatch.setattr(sleap_run, "run_supervised", run)
     _stub_sleap(tmp_path, monkeypatch)
 
     written = write_slp(_two_aliases(tmp_path), tmp_path / "out.slp")
@@ -281,7 +282,7 @@ def test_the_result_is_published_atomically(
         _ = Path(argv[-1]).write_bytes(b"slp")
         return ("", "", 0)
 
-    monkeypatch.setattr(labels_module, "run_supervised", run)
+    monkeypatch.setattr(sleap_run, "run_supervised", run)
     _stub_sleap(tmp_path, monkeypatch)
 
     written = write_slp(_set(tmp_path), target)
@@ -294,7 +295,7 @@ def test_a_failed_conversion_leaves_nothing_behind(
 ) -> None:
     """No half-written .slp, and no intermediate COCO for a later run to trip on."""
     run, _ = _fake_run(write=False, returncode=1)
-    monkeypatch.setattr(labels_module, "run_supervised", run)
+    monkeypatch.setattr(sleap_run, "run_supervised", run)
     _stub_sleap(tmp_path, monkeypatch)
 
     with pytest.raises(SleapError):
@@ -309,10 +310,10 @@ def test_a_silent_failure_is_still_a_failure(
 ) -> None:
     """Exit zero having written nothing is the case existence-gating misses."""
     run, _ = _fake_run(write=False, returncode=0)
-    monkeypatch.setattr(labels_module, "run_supervised", run)
+    monkeypatch.setattr(sleap_run, "run_supervised", run)
     _stub_sleap(tmp_path, monkeypatch)
 
-    with pytest.raises(FileNotFoundError, match="wrote no .slp"):
+    with pytest.raises(FileNotFoundError, match="did not write its expected output"):
         _ = write_slp(_set(tmp_path), tmp_path / "out.slp")
 
 

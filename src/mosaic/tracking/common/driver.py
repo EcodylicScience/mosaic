@@ -119,8 +119,9 @@ def run_tracker(
         index: This tracker's run index, already ensured.
         run_entry: The tool-specific work for one entry, returning the row
             that records it -- or ``None`` for an entry worth no row. ``None`` is
-            not the channel for failure: an exception propagates, ending the run
-            and leaving the rows for the entries that did finish.
+            not the channel for failure: an exception records the entry as lost
+            and propagates, ending the run and leaving the rows for the entries
+            that did finish.
         overwrite: Clear each entry's working directory before running it.
         ctx: An already-open Job Contract to run inside. The ``mosaic run
             --kind <tool>`` path hands its context here so a tracker rides the
@@ -192,6 +193,24 @@ def run_tracker(
                             ),
                         )
                     )
+                except (Cancelled, ProcessCancelled):
+                    # A cancelled entry published nothing and is not lost.
+                    attempted.discard(item.key)
+                    raise
+                except Exception as exc:
+                    # The run ends, and this entry published nothing. Recorded as
+                    # lost first, so `entries_written` below leaves it out. Under a
+                    # cancel the tool's error is the cancel's, and the attempt
+                    # ends cancelled with the entry neither written nor lost.
+                    if job.cancel_token.is_cancelled():
+                        attempted.discard(item.key)
+                    job.entry_failed_unless_cancelled(item.key, exc)
+                    raise
+                except BaseException:
+                    # An interrupt is a cancel the token never saw: the entry is
+                    # neither written nor lost.
+                    attempted.discard(item.key)
+                    raise
                 finally:
                     release_entry(work_dir, job.execution_id)
                     # An entry refused before it wrote anything -- a republish

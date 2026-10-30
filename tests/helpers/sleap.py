@@ -1,8 +1,8 @@
 """Stand in for SLEAP in the tests of the SLEAP tracker, frame adapter and preparation.
 
 ``run_sleap`` calls SLEAP through module-level seams in ``sleap/dataset_runs.py``:
-``sleap-nn track``, ``sleap-nn predict``, ``sleap-convert`` and the readback of
-tracked instances. :func:`install_fake_sleap` replaces them with a
+``sleap-nn track``, ``sleap-nn predict``, the analysis export and the readback
+of tracked instances. :func:`install_fake_sleap` replaces them with a
 :class:`FakeSleap`, whose inference writes a ``.slp`` and whose export writes a
 small, converter-readable analysis ``.h5``. A test runs the whole tracker
 protocol without a model. Its ``predict`` stands in for ``run_sleap_predict``,
@@ -50,7 +50,7 @@ from mosaic.tracking.sleap.frames import (
 )
 from mosaic.tracking.sleap.probe import SleapProbeResponse
 from mosaic.tracking.sleap.run import (
-    SleapConvertResult,
+    SleapAnalysisExportResult,
     SleapNoDetections,
     SleapTrackResult,
 )
@@ -81,12 +81,21 @@ class FakeSleap:
     unembedded_frames: tuple[int, ...] = ()
     dim: int = 128
     version: str = "0.3.5"
+    has_analysis_export: bool = True
     probed: int = 0
 
     def probe(self, *_args: object, **_kwargs: object) -> SleapProbeResponse:
-        """Count the call, and report sleap-nn at :attr:`version`."""
+        """Count the call, and report sleap-nn at :attr:`version`.
+
+        The report holds the analysis export unless :attr:`has_analysis_export`
+        is false.
+        """
         self.probed += 1
-        return SleapProbeResponse(has_sleap_nn=True, sleap_nn_version=self.version)
+        return SleapProbeResponse(
+            has_sleap_nn=True,
+            sleap_nn_version=self.version,
+            has_analysis_export=self.has_analysis_export,
+        )
 
     def track(
         self, video_path: Path, output_slp: Path, **kwargs: object
@@ -120,13 +129,13 @@ class FakeSleap:
 
     def convert(
         self, slp_path: Path, output_h5: Path, **_kwargs: object
-    ) -> SleapConvertResult:
+    ) -> SleapAnalysisExportResult:
         self.converted.append(Path(slp_path))
         out = Path(output_h5)
         tracks = np.random.default_rng(0).random((self.frames, 1, 1, 2))
         tracks[list(self.nan_frames)] = np.nan
         write_sleap_analysis_h5(out, tracks, track_names=(_FAKE_TRACK,))
-        return SleapConvertResult(analysis_h5_path=out, stdout="", stderr="")
+        return SleapAnalysisExportResult(analysis_h5_path=out, stdout="", stderr="")
 
     def readback(self, predicted: Path, out: Path, **_kwargs: object) -> Path:
         """Record the call, and write the readback of every frame to *out*."""
@@ -158,8 +167,8 @@ def install_fake_sleap(
 ) -> FakeSleap:
     """Replace the tracker's SLEAP seams and the SLEAP probe with *fake*.
 
-    The seams are ``sleap-nn track``, ``sleap-nn predict``, ``sleap-convert``
-    and the readback of tracked instances. Without *fake*, a new
+    The seams are ``sleap-nn track``, ``sleap-nn predict``, the analysis
+    export and the readback of tracked instances. Without *fake*, a new
     :class:`FakeSleap` is installed and returned.
     """
     import mosaic.tracking.sleap.dataset_runs as dataset_runs
@@ -169,7 +178,7 @@ def install_fake_sleap(
     monkeypatch.setattr(sleap_probe, "probe_sleap", installed.probe)
     monkeypatch.setattr(dataset_runs, "run_sleap_track", installed.track)
     monkeypatch.setattr(dataset_runs, "run_sleap_predict", installed.predict)
-    monkeypatch.setattr(dataset_runs, "run_sleap_convert", installed.convert)
+    monkeypatch.setattr(dataset_runs, "run_sleap_analysis_export", installed.convert)
     monkeypatch.setattr(dataset_runs, "read_back_embeddings", installed.readback)
     return installed
 
@@ -769,6 +778,23 @@ def load_slp(filename):
     return Labels(frames, [video], [skeleton], list(tracks.values()))
 
 
+def save_analysis_h5(
+    labels, filename, *, video=None, labels_path=None, all_frames=True, preset=None
+):
+    frames = [frame for frame in labels.labeled_frames if frame.video is video]
+    if not frames:
+        raise ValueError(f"No labeled frames in video: {video.filename}")
+    document = {
+        "video": video.filename,
+        "labels_path": labels_path,
+        "all_frames": all_frames,
+        "preset": preset,
+        "frames": [frame.frame_idx for frame in frames],
+    }
+    with open(filename, "w", encoding="utf-8") as handle:
+        json.dump(document, handle)
+
+
 def save_slp(labels, filename, embed=False):
     time.sleep(SAVE_SECONDS)
     positions = {id(video): position for position, video in enumerate(labels.videos)}
@@ -795,11 +821,13 @@ def save_slp(labels, filename, embed=False):
     with open(filename, "w", encoding="utf-8") as handle:
         json.dump(document, handle)
 """
-"""The stand-in ``sleap_io``: the classes, ``load_slp`` and ``save_slp`` a snippet uses.
+"""The stand-in ``sleap_io``: the classes and the readers and writers a snippet uses.
 
 ``PredictedInstance`` subclasses ``Instance``, as in sleap-io. ``save_slp`` writes
-what :func:`read_stub_labels` reads, after sleeping ``SAVE_SECONDS``. ``NODES``
-is :data:`STUB_NODES`.
+what :func:`read_stub_labels` reads, after sleeping ``SAVE_SECONDS``.
+``save_analysis_h5`` writes its arguments and the video's frame indices as JSON,
+and raises sleap-io's ``ValueError`` for a video without labeled frames.
+``NODES`` is :data:`STUB_NODES`.
 """
 
 

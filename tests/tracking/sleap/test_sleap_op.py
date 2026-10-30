@@ -15,10 +15,12 @@ import pytest
 
 import mosaic.tracking.sleap.dataset_runs as dataset_runs
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.markers import INFLIGHT_MARKER_NAME
 from mosaic.core.pipeline.ops import OPS, describe_op, run_op
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.bridge import BridgeCounts
 from mosaic.tracking.sleap.params import SleapParams
+from mosaic.tracking.sleap.run import SleapNotFoundError
 from mosaic.tracking.sleap.version import SLEAP_NN_EMBEDDING_MIN
 
 from tests.helpers import (
@@ -43,13 +45,16 @@ def test_sleap_registered_as_gpu_convert_op():
     assert op_resource_class("sleap") == "gpu"
 
 
-def test_sleap_op_run_id_matches_standalone_run_sleap(tmp_path):
+def test_sleap_op_run_id_matches_standalone_run_sleap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     # SleapOp must produce the same content run_id as calling run_sleap directly for the
     # same settings. Scope to a missing sequence so the run short-circuits (empty media)
-    # after the model resolves but before any sleap binary is used.
+    # after the model resolves and the environment is probed.
     from mosaic.tracking import run_sleap
     from mosaic.tracking.sleap.params import SleapParams
 
+    _ = install_fake_sleap(monkeypatch)
     ds = stub_media_dataset(tmp_path, ["vid1", "vid2"])
     model = write_sleap_model(tmp_path / "model")
     absent = ("", "nonexistent")
@@ -282,7 +287,7 @@ def test_an_embedding_model_set_runs_after_one_probe(
     assert fake.probed == 1
 
 
-def test_a_run_without_an_embedding_model_probes_nothing(
+def test_a_run_without_an_embedding_model_probes_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake = install_fake_sleap(monkeypatch)
@@ -295,7 +300,29 @@ def test_a_run_without_an_embedding_model_probes_nothing(
         scope=Scope(entries=[("", "nonexistent")]),
     )
 
-    assert fake.probed == 0
+    assert fake.probed == 1
+
+
+@pytest.mark.parametrize("heads", [("bottomup",), ("bottomup", "embedding")])
+def test_an_environment_without_the_analysis_export_is_refused_before_minting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, heads: tuple[str, ...]
+) -> None:
+    """A run whose export would fail after inference is refused before it starts.
+
+    The refusal leaves no claim, no run root and no tracks variant, and names
+    the piece the environment lacks.
+    """
+    fake = install_fake_sleap(monkeypatch, FakeSleap(has_analysis_export=False))
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    models = write_sleap_model_set(tmp_path, *heads)
+    settings = EMBEDDING_TRACKER_SETTINGS if "embedding" in heads else {}
+
+    with pytest.raises(SleapNotFoundError, match="save_analysis_h5"):
+        _ = run_op(ds, "sleap", {"model_paths": models, **settings})
+
+    assert fake.probed == 1
+    _assert_nothing_minted(ds, fake)
+    assert list(ds.base_dir.rglob(INFLIGHT_MARKER_NAME)) == []
 
 
 def test_an_embedding_run_is_refused_below_the_sleap_nn_release_floor(

@@ -1,8 +1,8 @@
 """Run SLEAP from the command line for inference + identity tracking.
 
-This module wraps two console scripts: ``sleap-nn``, for headless batch pose
-inference + tracking of animal videos, and ``sleap-convert``, for the analysis
-HDF5 export that mosaic bridges into standardized tracks. Inference runs
+This module wraps ``sleap-nn``, for headless batch pose inference + tracking of
+animal videos, and the SLEAP environment's ``python``, which writes the analysis
+HDF5 that mosaic bridges into standardized tracks with ``sleap-io``. Inference runs
 ``sleap-nn track``, or ``sleap-nn predict`` when the last model is an embedding
 model, which tracks by appearance and saves each detection's vector. A snippet run
 by the SLEAP interpreter reads the tracked instances of a predictions file and
@@ -15,23 +15,29 @@ after 0.3.1. ``sleap`` 1.6.4 therefore cannot infer on the sleap-nn 0.3.3 its ow
 dependency range allows, and reports the ``ImportError`` as "sleap-nn is not
 installed". ``sleap-nn`` (``sleap_nn.cli:cli``) ships with the modules it
 imports, so the two cannot skew. ``sleap-nn-track`` is the near-miss: it looks
-like that CLI and is the ``sleap`` wrapper. ``sleap-convert`` imports no
-``sleap_nn`` module and is unaffected.
+like that CLI and is the ``sleap`` wrapper.
+
+**The analysis export is sleap-io's, not sleap-convert's.** A snippet run by the
+SLEAP interpreter makes the ``sleap_io.save_analysis_h5`` call that sleap 1.6.5's
+``sleap-convert --format analysis`` makes (:func:`run_sleap_analysis_export`). An
+environment with only sleap-nn and its sleap-io therefore exports as well.
 
 Requires:
-    SLEAP 1.6 with its ``nn`` extra. It is heavy (PyTorch + Qt), so it usually
-    lives in its **own** environment rather than the mosaic env. Point the
-    wrappers at it one of three ways (highest precedence first), via per-call
-    args or env vars:
+    sleap-nn and its sleap-io. They are heavy (PyTorch), so they usually live
+    in their **own** environment rather than the mosaic env. Point the wrappers
+    at it one of three ways (highest precedence first), via per-call args or
+    env vars:
 
     * ``sleap_conda_env=`` / ``MOSAIC_SLEAP_CONDA_ENV`` -- run via
       ``conda run -n <env> sleap-nn``;
     * ``sleap_bin=`` / ``MOSAIC_SLEAP_BIN`` -- a path to one SLEAP console
       script (its siblings are resolved in the same directory);
-    * otherwise ``sleap-convert`` is looked up on ``$PATH`` and every script
-      runs from the environment it belongs to. That is the ``uv tool install
-      sleap[nn]`` case, which links ``sleap-convert`` into ``~/.local/bin`` but
-      not ``sleap-nn``, a script of the ``sleap-nn`` distribution.
+    * otherwise the ``sleap`` distribution's ``sleap-convert`` is looked up on
+      ``$PATH`` and every executable runs from the environment it belongs to.
+      That is the ``uv tool install "sleap[nn]"`` case, which links
+      ``sleap-convert`` into ``~/.local/bin`` but not ``sleap-nn``, a script of
+      the ``sleap-nn`` distribution. mosaic runs no ``sleap-convert``; it only
+      finds the environment through it.
 
     Unlike TRex, SLEAP inference is headless and needs no ``DISPLAY`` / ``Xvfb``.
 """
@@ -104,14 +110,19 @@ _DEVICE_FAMILIES: Final = frozenset({"cpu", "cuda", "mps"})
 
 
 class SleapNotFoundError(ToolNotFoundError):
-    """Raised when a SLEAP console script (or ``conda``) cannot be located."""
+    """Raised when the SLEAP environment cannot do what a run needs of it.
+
+    A SLEAP console script or ``conda`` cannot be located, or the environment
+    resolves and its sleap-io cannot write the analysis export.
+    """
 
     default_message = (
         "No SLEAP install was found: mosaic looks up 'sleap-convert' on $PATH "
         "and runs 'sleap-nn' from the same environment. Install SLEAP with its "
         "nn extra (e.g. 'uv tool install \"sleap[nn]\"'), or point "
         "MOSAIC_SLEAP_CONDA_ENV / MOSAIC_SLEAP_BIN at an environment that has "
-        "it. See https://sleap.ai for installation instructions."
+        "sleap-nn, which alone is enough. See https://sleap.ai for installation "
+        "instructions."
     )
 
 
@@ -124,8 +135,9 @@ class SleapError(ToolExitError):
 # SLEAP's console scripts are always installed together, so MOSAIC_SLEAP_BIN
 # pointing at any one of them names the directory the others live in. Plainly
 # named because the training, probe and label-export modules resolve through it
-# too: one environment serves sleap-nn (tracking and training), sleap-convert
-# and its own python alike, and declaring it twice is how they drift apart.
+# too: one environment serves sleap-nn (tracking and training) and its own
+# python (the export and the readbacks) alike, and declaring it twice is how
+# they drift apart.
 #
 # On $PATH the environment is found through sleap-convert rather than through
 # each executable, because a `uv tool install "sleap[nn]"` links only the sleap
@@ -170,7 +182,7 @@ class SleapNoDetections:
 
 
 @dataclass
-class SleapConvertResult:
+class SleapAnalysisExportResult:
     """Result of a SLEAP ``.slp`` -> analysis HDF5 export."""
 
     analysis_h5_path: Path
@@ -193,12 +205,80 @@ def sleap_invocation(
 
     The shared five-step ladder (:func:`tool_invocation`) applied to
     :data:`SLEAP_ENV`, with the script as the executable -- so one SLEAP
-    environment serves both ``sleap-nn`` and ``sleap-convert``.
+    environment serves both ``sleap-nn`` and its ``python``.
     """
     return tool_invocation(
         SLEAP_ENV.placed(conda_env=sleap_conda_env, bin_path=sleap_bin),
         executable=script,
     )
+
+
+def publish_from_snippet(
+    invocation: Sequence[str],
+    snippet: str,
+    inputs: Sequence[Path | str],
+    out: Path,
+    *,
+    idle_timeout: float,
+    max_runtime: float | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_output: Callable[[str], None] | None = None,
+    on_activity: Callable[[str], None] | None = None,
+    validate: Callable[[Path], object] | None = None,
+) -> tuple[str, str]:
+    """Run *snippet* in the SLEAP interpreter and publish the file it writes.
+
+    The snippet's argv is *inputs* followed by ``<out>.partial``, which it
+    writes. Once it exits cleanly having written it, *validate*, when given,
+    checks the file, and the file is moved onto *out* with ``os.replace``.
+    *out* is removed first, and a failed run leaves neither file. The staged
+    file sits beside *out*, so the move is a rename within one filesystem.
+
+    Args:
+        invocation: The argv prefix that launches the SLEAP ``python``.
+        snippet: The program run with ``-c``.
+        inputs: The arguments before the staged path.
+        out: Where the file is published.
+        idle_timeout: How long the snippet may print nothing, in seconds.
+        max_runtime: The longest the snippet may run, in seconds.
+        cancel_check: Polled while the snippet runs.
+        on_output: Called with each line of standard output.
+        on_activity: Called with each line of either output stream.
+        validate: Raises when the staged file is not what the snippet owes.
+
+    Returns:
+        The snippet's standard output and standard error.
+
+    Raises:
+        SleapError: The snippet exited non-zero.
+        FileNotFoundError: It exited cleanly and wrote no file.
+    """
+    partial = out.with_name(f"{out.name}.partial")
+    out.unlink(missing_ok=True)
+    partial.unlink(missing_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [*invocation, "-c", snippet, *(str(each) for each in inputs), str(partial)]
+    logger.info("Running: %s", command_summary(cmd, SleapError.head))
+    try:
+        stdout, stderr, returncode = run_supervised(
+            cmd,
+            env=subprocess_env(),
+            cancel_check=cancel_check,
+            timeout=max_runtime,
+            idle_timeout=idle_timeout,
+            on_output=on_output,
+            on_activity=on_activity,
+        )
+        if returncode != 0:
+            raise SleapError(cmd, returncode, stdout, stderr)
+        if not partial.is_file():
+            raise missing_output_error("SLEAP", out, stdout, stderr)
+        if validate is not None:
+            _ = validate(partial)
+        os.replace(partial, out)
+    finally:
+        partial.unlink(missing_ok=True)
+    return stdout, stderr
 
 
 def _flatten_extra(extra: Mapping[str, object] | None) -> list[str]:
@@ -640,7 +720,37 @@ def run_sleap_predict(
     return None
 
 
-def run_sleap_convert(
+# Run by the SLEAP interpreter. Its only inputs are argv: the predictions .slp
+# and where to write the analysis HDF5. The call is the one sleap 1.6.5's
+# sleap-convert makes for its analysis format. A video without labeled frames
+# writes no file and is reported on stdout, as sleap-convert reports it.
+_ANALYSIS_EXPORT_SNIPPET: str = """
+import sys
+
+import sleap_io
+
+_predicted, _out = sys.argv[1], sys.argv[2]
+_labels = sleap_io.load_slp(_predicted)
+if len(_labels.videos) != 1:
+    sys.exit(f"{_predicted} has {len(_labels.videos)} videos, not one")
+_video = _labels.videos[0]
+try:
+    sleap_io.save_analysis_h5(
+        _labels,
+        _out,
+        video=_video,
+        labels_path=_predicted,
+        all_frames=True,
+        preset="matlab",
+    )
+except ValueError as _error:
+    if "No labeled frames" not in str(_error):
+        raise
+    print(f"No labeled frames in {_video.filename}. Skipping.")
+"""
+
+
+def run_sleap_analysis_export(
     slp_path: Path | str,
     output_h5: Path | str,
     *,
@@ -651,65 +761,56 @@ def run_sleap_convert(
     cancel_check: Callable[[], bool] | None = None,
     on_output: Callable[[str], None] | None = None,
     on_activity: Callable[[str], None] | None = None,
-) -> SleapConvertResult:
+) -> SleapAnalysisExportResult:
     """Export a SLEAP ``.slp`` file to its analysis HDF5 form.
 
-    Invokes ``sleap-convert --format analysis`` (the ``matlab``-layout export);
-    the resulting HDF5 carries per-dataset ``dims`` attributes that the mosaic
-    converter uses to normalize the layout without any SLEAP dependency.
+    The SLEAP interpreter loads the file with ``sleap_io.load_slp`` and writes
+    ``<output_h5>.partial`` with ``sleap_io.save_analysis_h5`` in the ``matlab``
+    layout, every frame of the file's one video included. The file is then
+    moved onto *output_h5* with ``os.replace``. Its per-dataset ``dims``
+    attributes let the mosaic converter normalize the layout without any SLEAP
+    dependency. *output_h5* is removed first, and a failed export leaves
+    neither file.
 
-    Parameters
-    ----------
-    slp_path : path
-        Input ``.slp`` predictions file.
-    output_h5 : path
-        Destination analysis ``.h5`` (passed as ``-o``).
-    idle_timeout : float
-        Inactivity watchdog (default 300; the export is cheap).
+    Args:
+        slp_path: The predictions ``.slp``.
+        output_h5: Where the analysis ``.h5`` is published.
+        idle_timeout: How long the export may print nothing, in seconds.
+        max_runtime: The longest the export may run, in seconds.
+        sleap_conda_env: Run SLEAP inside this conda env (overrides
+            ``MOSAIC_SLEAP_CONDA_ENV``).
+        sleap_bin: Path to a SLEAP console script (overrides
+            ``MOSAIC_SLEAP_BIN``).
+        cancel_check: Polled while the snippet runs.
+        on_output: Called with each line of standard output.
+        on_activity: Called with each line of either output stream.
 
-    Returns
-    -------
-    SleapConvertResult
-        The path to the written analysis HDF5.
+    Returns:
+        The published path, with the snippet's output streams.
 
-    Raises
-    ------
-    SleapNotFoundError
-        If ``sleap-convert`` cannot be located.
-    SleapError
-        If SLEAP exits with a non-zero return code.
-    FileNotFoundError
-        If no analysis HDF5 is found after conversion.
+    Raises:
+        SleapNotFoundError: No SLEAP install could be located.
+        SleapError: The snippet exited non-zero.
+        FileNotFoundError: It exited cleanly and wrote no file, which is the
+            case of a video without labeled frames.
     """
-    slp_path = Path(slp_path)
     output_h5 = Path(output_h5)
-    output_h5.parent.mkdir(parents=True, exist_ok=True)
-
-    args = [str(slp_path), "--format", "analysis", "-o", str(output_h5)]
-    stdout, stderr = _run_sleap(
+    stdout, stderr = publish_from_snippet(
         sleap_invocation(
-            _SLEAP_CONVERT, sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
+            "python", sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
         ),
-        args,
+        _ANALYSIS_EXPORT_SNIPPET,
+        [slp_path],
+        output_h5,
         idle_timeout=idle_timeout,
         max_runtime=max_runtime,
         cancel_check=cancel_check,
         on_output=on_output,
         on_activity=on_activity,
     )
-
-    produced = output_h5
-    if not produced.exists():
-        # sleap-convert can name the output per video (<slp>.<idx>_<stem>.h5);
-        # fall back to whatever analysis HDF5 landed beside the requested path.
-        candidates = sorted(output_h5.parent.glob("*.analysis.h5"))
-        if not candidates:
-            candidates = sorted(output_h5.parent.glob("*.h5"))
-        if not candidates:
-            raise missing_output_error("sleap-convert", output_h5, stdout, stderr)
-        produced = candidates[0]
-
-    return SleapConvertResult(analysis_h5_path=produced, stdout=stdout, stderr=stderr)
+    return SleapAnalysisExportResult(
+        analysis_h5_path=output_h5, stdout=stdout, stderr=stderr
+    )
 
 
 _EMBEDDINGS_READBACK_IDLE_SECONDS: Final = 900.0
@@ -802,35 +903,16 @@ def read_back_embeddings(
         FileNotFoundError: It exited cleanly and wrote no file.
         ValueError: The file it wrote is not a readback.
     """
-    partial = out.with_name(f"{out.name}.partial")
-    out.unlink(missing_ok=True)
-    partial.unlink(missing_ok=True)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    invocation = sleap_invocation(
-        "python", sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
-    )
-    cmd = [
-        *invocation,
-        "-c",
+    _ = publish_from_snippet(
+        sleap_invocation(
+            "python", sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
+        ),
         _EMBEDDINGS_READBACK_SNIPPET,
-        str(predicted),
-        str(partial),
-    ]
-    logger.info("Running: %s", command_summary(cmd, SleapError.head))
-    try:
-        stdout, stderr, returncode = run_supervised(
-            cmd,
-            env=subprocess_env(),
-            cancel_check=cancel_check,
-            idle_timeout=_EMBEDDINGS_READBACK_IDLE_SECONDS,
-            on_activity=on_activity,
-        )
-        if returncode != 0:
-            raise SleapError(cmd, returncode, stdout, stderr)
-        if not partial.is_file():
-            raise missing_output_error("SLEAP", partial, stdout, stderr)
-        _ = read_appearance_readback(partial)
-        os.replace(partial, out)
-    finally:
-        partial.unlink(missing_ok=True)
+        [predicted],
+        out,
+        idle_timeout=_EMBEDDINGS_READBACK_IDLE_SECONDS,
+        cancel_check=cancel_check,
+        on_activity=on_activity,
+        validate=read_appearance_readback,
+    )
     return out

@@ -111,7 +111,11 @@ def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
 def test_sleap_nn_alone_on_path_is_not_a_sleap_install(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A bare ``pip install sleap-nn`` has no ``sleap-convert`` to export with."""
+    """``$PATH`` finds the environment through ``sleap-convert``, which sleap-nn lacks.
+
+    A bare ``pip install sleap-nn`` exports, and is named by
+    ``MOSAIC_SLEAP_CONDA_ENV`` or ``MOSAIC_SLEAP_BIN``.
+    """
     fake_path_lookup(monkeypatch, {"sleap-nn": "/elsewhere/sleap-nn"})
     with pytest.raises(SleapNotFoundError):
         sleap_invocation("sleap-nn")
