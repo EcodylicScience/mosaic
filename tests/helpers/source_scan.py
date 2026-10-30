@@ -42,6 +42,17 @@ from pathlib import Path
 from types import ModuleType
 from typing import Final, Literal
 
+from tests.helpers.paths import SOURCE_ROOT
+
+
+def package_of(path: Path) -> str:
+    """The absolute package of the file at *path* under ``src/mosaic``.
+
+    A relative import in the file resolves against it. An ``__init__.py`` and a
+    module in the same directory share one.
+    """
+    return ".".join(("mosaic", *path.relative_to(SOURCE_ROOT).parent.parts))
+
 
 def source_tree(path: Path) -> ast.Module:
     """Parses the file at *path*."""

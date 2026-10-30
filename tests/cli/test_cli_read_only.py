@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pytest
 from typer.testing import CliRunner
 
@@ -29,6 +30,13 @@ from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
+from mosaic.core.entry import make_entry_key
+from mosaic.core.pipeline.appearance import (
+    appearance_columns,
+    appearance_path,
+    read_appearance,
+    write_appearance,
+)
 from mosaic.core.pipeline.graph import (
     CleanupPolicy,
     FileFailureStore,
@@ -47,7 +55,8 @@ from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.preview import preview_artifact
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
-from mosaic.core.pipeline.tracks_index import read_tracks_index
+from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.recording import RecordingKey
 from mosaic.core.scope import Scope
 from mosaic.tracking import PrerequisitePlan, plan_prerequisites
@@ -78,6 +87,7 @@ from tests.helpers import (
     record_entry_selection,
     record_score_run,
     register_trained_model,
+    track_table,
     tree_snapshot,
     video_store_maker,
     write_calms21_npy,
@@ -131,11 +141,36 @@ def _recipe_file(tmp_path: Path) -> Path:
     return path
 
 
+def _record_appearance(dataset: Dataset, sequence: str) -> None:
+    """Writes *sequence*'s appearance table in ``VARIANT`` and records it in the index."""
+    tracks = track_table("", sequence, n_rows=40, n_ids=2)
+    table = tracks[["group", "sequence", "frame", "id"]].copy()
+    for column in appearance_columns(2):
+        table[column] = np.float32(0.0)
+    table["emb_0"] = np.float32(1.0)
+    root = tracks_variant_root(dataset.get_root("tracks"), VARIANT)
+    key = make_entry_key("", sequence)
+    path = appearance_path(root, key)
+    write_appearance(path, table)
+    write_tracks_row(
+        dataset,
+        run_id=VARIANT,
+        group="",
+        sequence=sequence,
+        out_path=root / f"{key}.parquet",
+        producer="convert-trex",
+        std_format="mosaic_v1",
+        n_rows=len(tracks),
+        appearance_path=path,
+    )
+
+
 @pytest.fixture
 def populated(tmp_path: Path) -> ReadDataset:
-    """Tracks, a feature run, its request, a model, predictions, and a selection."""
+    """Tracks and an appearance table, a feature run, its request, a model, predictions, and a selection."""
     dataset = make_dataset(tmp_path / "populated")
     add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _record_appearance(dataset, "seq_a")
     done = run_pipeline(dataset, speed_recipe())
     run_root = model_run_root(dataset, MODEL_KIND, MODEL_RUN_ID)
     run_root.mkdir(parents=True)
@@ -514,6 +549,7 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "preview_artifact": lambda f: preview_artifact(
         f.reopened(), FeatureRunRef(SPEED_STORAGE, f.feature_run_id), ("", "seq_a")
     ),
+    "read_appearance": lambda f: read_appearance(f.reopened(), VARIANT, ("", "seq_a")),
     "read_entry_predictions": lambda f: read_entry_predictions(
         f.reopened(), PREDICTION_RUN_ID, "", "seq_a"
     ),
@@ -556,6 +592,7 @@ def test_a_library_read_writes_nothing(populated: ReadDataset, read: str) -> Non
         "list_score_runs",
         "open_dataset",
         "plan_prerequisites",
+        "read_appearance",
         "read_entry_predictions",
         "read_runs",
         "read_score_frames",

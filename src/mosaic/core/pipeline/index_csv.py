@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 import pandas as pd
 
+from ..helpers import text_cell
 from ..scope import Scope
 from ._utils import atomic_write, now_iso
 from .index_lock import index_lock, index_lock_unless_dry_run
@@ -662,14 +663,17 @@ class IndexCSV(Generic[RowT]):
         new_run_id: str,
         *,
         path_rewrite: Callable[[str], str] | None = None,
+        path_columns: Sequence[str] = ("abs_path",),
         dry_run: bool = False,
     ) -> int:
         """Restamp every row of *old_run_id* to *new_run_id*, preserving all else.
 
         The index half of re-addressing a run whose identity *function* moved while
         its inputs did not: the run's directory is renamed on disk, and this
-        restamps the rows that named it -- ``run_id`` to the new value, and
-        ``abs_path`` through *path_rewrite* to point into the renamed directory.
+        restamps the rows that named it -- ``run_id`` to the new value, and each
+        cell of the *path_columns* that the header has through *path_rewrite*, to
+        point into the renamed directory. A blank cell reaches *path_rewrite* as
+        ``""``.
 
         A cell rewrite rather than a drop-and-append, deliberately: ``started_at``
         and ``finished_at`` are ``init=False`` on :class:`RunIndexRowBase`, so a
@@ -695,10 +699,13 @@ class IndexCSV(Generic[RowT]):
             if matched == 0 or dry_run:
                 return matched
             df.loc[mask, "run_id"] = new_run_id
-            if path_rewrite is not None and "abs_path" in df.columns:
-                df.loc[mask, "abs_path"] = [
-                    path_rewrite(str(cell)) for cell in df.loc[mask, "abs_path"]
-                ]
+            if path_rewrite is not None:
+                for column in path_columns:
+                    if column in df.columns:
+                        df.loc[mask, column] = [
+                            path_rewrite(text_cell(cell))
+                            for cell in df.loc[mask, column]
+                        ]
             atomic_write(self.path, lambda p: df.to_csv(p, index=False))
             return matched
 

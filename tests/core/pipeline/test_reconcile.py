@@ -15,10 +15,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import ClassVar
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.appearance import appearance_path, read_appearance
 from mosaic.core.pipeline.identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
     MARKER_NAME,
@@ -30,6 +32,7 @@ from mosaic.core.pipeline.index import (
     feature_index_path,
     feature_run_root,
 )
+from mosaic.core.pipeline.reconcile_variants import TracksReconciler, relocated_cell
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import (
     TRACKS_IDENTITY_SCHEME,
@@ -317,12 +320,20 @@ _TRACKS_VERSION = "0.1"
 _TRACKS_PARAMS: dict[str, object] = {"threshold": 1}
 
 
-def _make_tracks_variant(ds: Dataset, run_id: str | None = None) -> str:
+def _make_tracks_variant(
+    ds: Dataset,
+    run_id: str | None = None,
+    *,
+    source: Path | str = "",
+    appearance_dim: int | None = None,
+) -> str:
     """Build a tracks variant with a proper sidecar: parquet, index row, params.json."""
     variant = run_id or tracks_run_id(
         _TRACKS_OP, _TRACKS_VERSION, convert_variant_payload(_TRACKS_PARAMS)
     )
-    add_tracks_variant(ds, variant, "seq_a", "seq_b")
+    add_tracks_variant(
+        ds, variant, "seq_a", "seq_b", source=source, appearance_dim=appearance_dim
+    )
     _ = write_tracks_variant(
         ds.get_root("tracks"), variant, _TRACKS_OP, _TRACKS_VERSION, _TRACKS_PARAMS
     )
@@ -345,9 +356,10 @@ def _fabricate_tracks_shift(ds: Dataset, true_id: str, *, scheme: str) -> str:
     _ = tracks_index(tracks_index_path(ds)).remap_run_id(
         true_id,
         fake_id,
-        path_rewrite=lambda stored: ds.relative_to_root(
-            root / fake_id / Path(stored).name
+        path_rewrite=lambda stored: relocated_cell(
+            ds, stored, root / true_id, root / fake_id
         ),
+        path_columns=TracksReconciler.path_columns,
     )
     _set_variant_scheme(root / fake_id, scheme)
     return fake_id
@@ -397,6 +409,136 @@ def test_tracks_variant_relocates(scenario_dataset: Dataset) -> None:
     for stored in frame["abs_path"]:
         assert ds.resolve_path(str(stored)).exists()
     _only_finding(ds.reconcile(only=("tracks",)), "ok")
+
+
+def _tracks_cells(ds: Dataset, run_id: str) -> pd.DataFrame:
+    return tracks_index(tracks_index_path(ds)).read(run_id=run_id).set_index("sequence")
+
+
+def test_a_relocated_variant_keeps_its_appearance_tables(
+    scenario_dataset: Dataset, tmp_path: Path
+) -> None:
+    """Each appearance cell keeps ``appearance/`` under the new root, and reads back."""
+    ds = scenario_dataset
+    source = tmp_path / "raw" / "tracks.csv"
+    source.parent.mkdir()
+    _ = source.write_text("x")
+    true_id = _make_tracks_variant(ds, source=source, appearance_dim=4)
+    expected = read_appearance(ds, true_id, ("", "seq_a"))
+    assert expected is not None
+    recorded_source = _tracks_cells(ds, true_id)["source_abs_path"].tolist()
+    fake_id = _fabricate_tracks_shift(ds, true_id, scheme="1")
+
+    applied = ds.reconcile(apply=True, only=("tracks",))
+
+    assert [finding.action for finding in applied.findings] == ["relocated"]
+    root = ds.get_root("tracks") / true_id
+    cells = _tracks_cells(ds, true_id)
+    for sequence in ("seq_a", "seq_b"):
+        assert cells.loc[sequence, "abs_path"] == ds.relative_to_root(
+            root / f"{sequence}.parquet"
+        )
+        assert cells.loc[sequence, "appearance_abs_path"] == ds.relative_to_root(
+            appearance_path(root, sequence)
+        )
+    assert cells["source_abs_path"].tolist() == recorded_source
+    assert read_appearance(ds, fake_id, ("", "seq_a")) is None
+    table = read_appearance(ds, true_id, ("", "seq_a"))
+    assert table is not None
+    np.testing.assert_array_equal(table.vectors, expected.vectors)
+
+
+def test_a_relocated_variant_keeps_its_blank_cells_blank(
+    scenario_dataset: Dataset,
+) -> None:
+    """A row without an appearance table or a source keeps both cells blank."""
+    ds = scenario_dataset
+    true_id = _make_tracks_variant(ds)
+    _ = _fabricate_tracks_shift(ds, true_id, scheme="1")
+
+    _ = ds.reconcile(apply=True, only=("tracks",))
+
+    cells = _tracks_cells(ds, true_id)
+    assert cells["appearance_abs_path"].tolist() == ["", ""]
+    assert cells["source_abs_path"].tolist() == ["", ""]
+    assert read_appearance(ds, true_id, ("", "seq_a")) is None
+
+
+def test_a_relocated_cell_keeps_its_subpath_under_the_new_root(
+    scenario_dataset: Dataset, tmp_path: Path
+) -> None:
+    """A cell in the old root moves with its subpath; others are returned unchanged."""
+    ds = scenario_dataset
+    root = ds.get_root("tracks")
+    old_root, new_root = root / "old", root / "new"
+    outside = str(tmp_path / "raw" / "tracks.csv")
+
+    def relocate(cell: str) -> str:
+        return relocated_cell(ds, cell, old_root, new_root)
+
+    assert relocate(ds.relative_to_root(old_root / "seq_a.parquet")) == (
+        ds.relative_to_root(new_root / "seq_a.parquet")
+    )
+    assert relocate(ds.relative_to_root(old_root / "appearance" / "x.parquet")) == (
+        ds.relative_to_root(new_root / "appearance" / "x.parquet")
+    )
+    assert relocate(outside) == outside
+    assert relocate("") == ""
+    assert relocate("/otherhost/ds/tracks/old/appearance/x.parquet") == (
+        ds.relative_to_root(new_root / "appearance" / "x.parquet")
+    )
+
+
+def test_a_relocated_variant_repairs_cells_written_on_another_host(
+    scenario_dataset: Dataset, tmp_path: Path
+) -> None:
+    """Absolute cells from another host map under the new root; the source stays."""
+    ds = scenario_dataset
+    source = tmp_path / "raw" / "tracks.csv"
+    source.parent.mkdir()
+    _ = source.write_text("x")
+    true_id = _make_tracks_variant(ds, source=source, appearance_dim=4)
+    fake_id = _fabricate_tracks_shift(ds, true_id, scheme="1")
+    recorded_source = _tracks_cells(ds, fake_id)["source_abs_path"].tolist()
+    stale = f"/otherhost/ds/tracks/{fake_id}"
+    _ = tracks_index(tracks_index_path(ds)).remap_run_id(
+        fake_id,
+        fake_id,
+        path_rewrite=lambda stored: stored.replace(
+            ds.relative_to_root(ds.get_root("tracks") / fake_id), stale
+        ),
+        path_columns=("abs_path", "appearance_abs_path"),
+    )
+    stale_cells = _tracks_cells(ds, fake_id)
+    assert stale_cells.loc["seq_a", "abs_path"] == f"{stale}/seq_a.parquet"
+
+    applied = ds.reconcile(apply=True, only=("tracks",))
+
+    assert [finding.action for finding in applied.findings] == ["relocated"]
+    root = ds.get_root("tracks") / true_id
+    cells = _tracks_cells(ds, true_id)
+    for sequence in ("seq_a", "seq_b"):
+        assert cells.loc[sequence, "abs_path"] == ds.relative_to_root(
+            root / f"{sequence}.parquet"
+        )
+        assert cells.loc[sequence, "appearance_abs_path"] == ds.relative_to_root(
+            appearance_path(root, sequence)
+        )
+    assert cells["source_abs_path"].tolist() == recorded_source
+
+
+def test_reconcile_registers_no_appearance_table_as_a_variant(
+    scenario_dataset: Dataset,
+) -> None:
+    """The ``appearance/`` directory is not a variant, and its cells are kept."""
+    ds = scenario_dataset
+    variant = _make_tracks_variant(ds, appearance_dim=4)
+    before = _tracks_cells(ds, variant)
+
+    report = ds.reconcile(apply=True, only=("tracks",))
+
+    _only_finding(report, "ok")
+    pd.testing.assert_frame_equal(_tracks_cells(ds, variant), before)
 
 
 def test_tracks_missing_sidecar_is_unresolvable(scenario_dataset: Dataset) -> None:

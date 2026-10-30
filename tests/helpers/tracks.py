@@ -21,6 +21,11 @@ import pandas as pd
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.appearance import (
+    appearance_columns,
+    appearance_path,
+    write_appearance,
+)
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     tracks_index_path,
@@ -442,6 +447,8 @@ def add_tracks_variant(
     producer_run_id: str = "",
     keypoints: int = 7,
     pose_prefixes: tuple[str, str] = ("poseX", "poseY"),
+    source: Path | str = "",
+    appearance_dim: int | None = None,
 ) -> None:
     """Write a variant-addressed track table per sequence, through the real writer.
 
@@ -466,6 +473,9 @@ def add_tracks_variant(
 
     ``keypoints`` sets how many keypoints each table holds, and ``pose_prefixes``
     the names of their x and y columns before the index.
+
+    ``source`` and ``appearance_dim`` are passed to :func:`add_tracks_table` for
+    every sequence.
 
     Uses ``write_tracks_row`` rather than a hand-built CSV, so the index it
     produces is the index production produces -- including the dedup that decides
@@ -496,6 +506,8 @@ def add_tracks_variant(
             consumed_source_roots=consumed_source_roots,
             std_format=std_format,
             producer_run_id=producer_run_id,
+            source=source,
+            appearance_dim=appearance_dim,
         )
 
 
@@ -509,6 +521,8 @@ def add_tracks_table(
     std_format: str = "trex_v1",
     producer_run_id: str = "",
     media_frames: int | None = None,
+    source: Path | str = "",
+    appearance_dim: int | None = None,
 ) -> None:
     """Write *table*, one entry's rows, into the tracks variant *run_id*.
 
@@ -528,6 +542,9 @@ def add_tracks_table(
         producer_run_id: As in :func:`add_tracks_variant`.
         media_frames: The frame count of the entry's media that the row records,
             or ``None`` for a blank, as a conversion records it.
+        source: The raw file that the row records, or ``""`` for a blank.
+        appearance_dim: The vector length of an appearance table written beside
+            the tracks table and recorded in the row, or ``None`` for no table.
     """
     from mosaic.behavior.feature_library.helpers import entry_identity
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
@@ -535,8 +552,13 @@ def add_tracks_table(
     group, sequence = entry_identity(table)
     root = tracks_variant_root(dataset.get_root("tracks"), run_id)
     root.mkdir(parents=True, exist_ok=True)
-    out_path = root / f"{make_entry_key(group, sequence)}.parquet"
+    key = make_entry_key(group, sequence)
+    out_path = root / f"{key}.parquet"
     table.to_parquet(out_path)
+    recorded: Path | None = None
+    if appearance_dim is not None:
+        recorded = appearance_path(root, key)
+        write_appearance(recorded, appearance_table(table, appearance_dim))
     write_tracks_row(
         dataset,
         run_id=run_id,
@@ -549,7 +571,20 @@ def add_tracks_table(
         n_rows=len(table) if n_rows is None else n_rows,
         consumed_source_roots=consumed_source_roots,
         media_frames=media_frames,
+        source=source,
+        appearance_path=recorded,
     )
+
+
+def appearance_table(tracks: pd.DataFrame, dim: int) -> pd.DataFrame:
+    """Return an appearance table for *tracks*: one unit vector per row, each different."""
+    rng = np.random.default_rng(0)
+    vectors = rng.normal(size=(len(tracks), dim))
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    appearance = tracks[["group", "sequence", "frame", "id"]].copy()
+    for position, column in enumerate(appearance_columns(dim)):
+        appearance[column] = vectors[:, position].astype(np.float32)
+    return appearance
 
 
 def track_sequences(dataset: Dataset) -> list[str]:

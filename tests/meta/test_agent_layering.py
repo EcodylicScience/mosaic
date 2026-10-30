@@ -16,6 +16,7 @@ from tests.helpers import (
     SOURCE_ROOT,
     imports_reaching,
     inside_a_virtualenv,
+    package_of,
     source_tree,
 )
 
@@ -23,11 +24,6 @@ LIBRARY_PACKAGES = ("core", "behavior", "tracking")
 """The packages under ``src/mosaic`` that may not import ``mosaic.agent``."""
 
 AGENT = "mosaic.agent"
-
-
-def _package(path: Path) -> str:
-    """The package of the file at *path*, which a relative import resolves against."""
-    return ".".join(("mosaic", *path.relative_to(SOURCE_ROOT).parent.parts))
 
 
 def _agent_imports(tree: ast.Module, path: Path) -> list[int]:
@@ -40,7 +36,7 @@ def _agent_imports(tree: ast.Module, path: Path) -> list[int]:
     return [
         imported.line
         for imported in imports_reaching(
-            tree, _package(path), literal_packages=(AGENT,)
+            tree, package_of(path), literal_packages=(AGENT,)
         )
         if imported.into(AGENT)
     ]

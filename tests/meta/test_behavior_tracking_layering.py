@@ -34,6 +34,7 @@ from tests.helpers import (
     ReachedImport,
     imports_reaching,
     inside_a_virtualenv,
+    package_of,
     source_tree,
 )
 
@@ -84,7 +85,6 @@ def imports(tree: ast.Module, path: Path) -> list[Import]:
     ``__package__`` of an ``import_module`` call resolve against.
     """
     relative = path.relative_to(SOURCE_ROOT)
-    package = ".".join(("mosaic", *relative.parent.parts))
     return [
         Import(
             relative.as_posix(),
@@ -96,7 +96,7 @@ def imports(tree: ast.Module, path: Path) -> list[Import]:
             ),
         )
         for found in imports_reaching(
-            tree, package, literal_packages=sorted(ACROSS.values())
+            tree, package_of(path), literal_packages=sorted(ACROSS.values())
         )
     ]
 

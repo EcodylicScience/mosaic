@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import index_csv as index_csv_module
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.index_csv import (
@@ -18,8 +19,14 @@ from mosaic.core.pipeline.index_csv import (
     finished_rows,
     row_file_exists,
 )
+from mosaic.core.pipeline.tracks_index import (
+    TRACKS_INDEX_PATH_COLUMNS,
+    read_tracks_index,
+    tracks_index,
+    tracks_index_path,
+)
 from mosaic.core.scope import Scope
-from tests.helpers import index_locked_out, make_dataset
+from tests.helpers import add_tracks_table, index_locked_out, make_dataset, track_table
 
 
 @dataclass(frozen=True, slots=True)
@@ -1180,3 +1187,71 @@ def test_a_row_file_exists_only_where_its_path_resolves_to_a_file(
     assert not row_file_exists(ds, _finished_record("runs/G__S3/selection.parquet"))
     assert not row_file_exists(ds, _finished_record(""))
     assert not row_file_exists(ds, None)
+
+
+# --- remap_run_id ---
+
+_OLD_VARIANT = "convert-x.0.1-aaaaaaaaaa"
+_NEW_VARIANT = "convert-x.0.1-bbbbbbbbbb"
+
+
+def _tracks_with_path_cells(tmp_path: Path) -> Dataset:
+    """A tracks variant with one row holding every path cell and one holding none."""
+    dataset = make_dataset(tmp_path / "dataset")
+    source = tmp_path / "raw" / "a.csv"
+    source.parent.mkdir()
+    _ = source.write_text("x")
+    add_tracks_table(
+        dataset, _OLD_VARIANT, track_table("", "a"), source=source, appearance_dim=2
+    )
+    add_tracks_table(dataset, _OLD_VARIANT, track_table("", "b"))
+    return dataset
+
+
+def _moved(cell: str) -> str:
+    return f"moved/{cell}" if cell else cell
+
+
+class TestRemapRunId:
+    def test_the_default_rewrites_only_abs_path(self, tmp_path: Path) -> None:
+        dataset = _tracks_with_path_cells(tmp_path)
+        before = read_tracks_index(dataset).set_index("sequence")
+
+        _ = tracks_index(tracks_index_path(dataset)).remap_run_id(
+            _OLD_VARIANT, _NEW_VARIANT, path_rewrite=_moved
+        )
+
+        after = read_tracks_index(dataset).set_index("sequence")
+        assert set(after["run_id"]) == {_NEW_VARIANT}
+        for sequence in ("a", "b"):
+            assert after.loc[sequence, "abs_path"] == _moved(
+                str(before.loc[sequence, "abs_path"])
+            )
+            for column in TRACKS_INDEX_PATH_COLUMNS:
+                assert after.loc[sequence, column] == before.loc[sequence, column]
+
+    def test_each_named_column_is_rewritten_and_a_blank_cell_is_passed_blank(
+        self, tmp_path: Path
+    ) -> None:
+        dataset = _tracks_with_path_cells(tmp_path)
+        before = read_tracks_index(dataset).set_index("sequence")
+        columns = ("abs_path", *TRACKS_INDEX_PATH_COLUMNS, "not_in_the_header")
+        seen: list[str] = []
+
+        def rewrite(cell: str) -> str:
+            seen.append(cell)
+            return _moved(cell)
+
+        _ = tracks_index(tracks_index_path(dataset)).remap_run_id(
+            _OLD_VARIANT, _NEW_VARIANT, path_rewrite=rewrite, path_columns=columns
+        )
+
+        after = read_tracks_index(dataset).set_index("sequence")
+        assert "nan" not in seen
+        for sequence in ("a", "b"):
+            for column in columns[:-1]:
+                assert after.loc[sequence, column] == _moved(
+                    str(before.loc[sequence, column])
+                )
+        assert after.loc["b", "appearance_abs_path"] == ""
+        assert after.loc["b", "source_abs_path"] == ""

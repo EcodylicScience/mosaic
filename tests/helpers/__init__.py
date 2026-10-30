@@ -296,6 +296,7 @@ from tests.helpers.source_scan import (
     module_tree,
     names_called_by,
     names_read,
+    package_of,
     source_tree,
 )
 from tests.helpers.documents import dotted_values
@@ -334,6 +335,7 @@ from tests.helpers.tracks import (
     add_track_sequences,
     add_tracks_table,
     add_tracks_variant,
+    appearance_table,
     calms21_dataset,
     keypoint_rows,
     published_table,
@@ -519,6 +521,7 @@ __all__ = [
     "add_tracks_table",
     "add_tracks_variant",
     "add_transcode_derivative",
+    "appearance_table",
     "appender_program",
     "calms21_dataset",
     "chain_recipe",
@@ -600,6 +603,7 @@ __all__ = [
     "nameless_store_dataset",
     "names_called_by",
     "names_read",
+    "package_of",
     "paint_frame_code",
     "point_at_a_store",
     "point_image_rows",

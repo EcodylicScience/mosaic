@@ -49,7 +49,7 @@ from mosaic.core.pipeline.tracks_index import (
     tracks_index_path,
     write_tracks_row,
 )
-from tests.helpers import add_track_sequences, track_table
+from tests.helpers import add_track_sequences, add_tracks_variant, track_table
 
 # The exact header the hand-written writer emitted, in its order. Pinned as a
 # literal rather than imported, because the point of the adoption tests is that
@@ -153,8 +153,111 @@ def test_row_field_order_is_the_csv_column_order(tmp_path: Path) -> None:
 
 def test_the_registered_path_column_is_the_one_holding_a_path(tmp_path: Path) -> None:
     """A new path column must join this tuple or stop being portable."""
-    assert TRACKS_INDEX_PATH_COLUMNS == ("source_abs_path",)
+    assert TRACKS_INDEX_PATH_COLUMNS == ("source_abs_path", "appearance_abs_path")
     assert all(column in TRACKS_INDEX_COLUMNS for column in TRACKS_INDEX_PATH_COLUMNS)
+
+
+def test_the_appearance_cell_is_the_trailing_column() -> None:
+    """The cell joins the end of the header, so an older index only lacks a tail."""
+    assert TRACKS_INDEX_COLUMNS[-1] == "appearance_abs_path"
+    fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
+    assert fields["appearance_abs_path"].default == ""
+
+
+def test_a_written_appearance_path_is_stored_root_relative(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    appearance = ds.get_root("tracks") / "appearance" / "s.parquet"
+    appearance.parent.mkdir(parents=True)
+    _ = appearance.write_bytes(b"x")
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        appearance_path=appearance,
+    )
+    cell = str(read_tracks_index(ds).iloc[0]["appearance_abs_path"])
+    assert cell == ds.relative_to_root(appearance)
+    assert not Path(cell).is_absolute()
+    assert ds.resolve_path(cell) == appearance
+
+
+def test_a_row_without_an_appearance_table_has_a_blank_cell(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="s",
+        out_path=_track_parquet(ds, "s"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+    )
+    assert str(read_tracks_index(ds).iloc[0]["appearance_abs_path"]) == ""
+
+
+def test_an_index_without_the_appearance_column_reads_and_writes_blank(
+    tmp_path: Path,
+) -> None:
+    """An index written before the column adopts it on read and on write."""
+    ds = _dataset(tmp_path)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="old",
+        out_path=_track_parquet(ds, "old"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+    )
+    path = tracks_index_path(ds)
+    older = pd.read_csv(path, dtype=str, keep_default_na=False)
+    older = older.drop(columns=["appearance_abs_path"])
+    older.to_csv(path, index=False)
+    assert "appearance_abs_path" not in path.read_text().splitlines()[0]
+
+    assert str(read_tracks_index(ds).iloc[0]["appearance_abs_path"]) == ""
+
+    appearance = ds.get_root("tracks") / "appearance" / "new.parquet"
+    appearance.parent.mkdir(parents=True)
+    _ = appearance.write_bytes(b"x")
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="new",
+        out_path=_track_parquet(ds, "new"),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        appearance_path=appearance,
+    )
+    assert path.read_text().splitlines()[0].split(",") == TRACKS_INDEX_COLUMNS
+    frame = read_tracks_index(ds).set_index("sequence")
+    assert str(frame.loc["old", "appearance_abs_path"]) == ""
+    assert str(frame.loc["new", "appearance_abs_path"]) == ds.relative_to_root(
+        appearance
+    )
+
+
+def test_reindex_registers_no_appearance_table_and_keeps_the_cell(
+    tmp_path: Path,
+) -> None:
+    """``appearance/`` holds no tracks table, so reindex drops and adds no row."""
+    ds = _dataset(tmp_path)
+    add_tracks_variant(ds, "convert-x.0.1-aaaaaaaaaa", "a", "b", appearance_dim=4)
+    before = read_tracks_index(ds)
+
+    assert ds.reindex(dry_run=False) == {}
+
+    pd.testing.assert_frame_equal(read_tracks_index(ds), before)
+    assert all("/appearance/" in str(cell) for cell in before["appearance_abs_path"])
 
 
 def test_a_row_count_stays_an_integer_on_disk(tmp_path: Path) -> None:

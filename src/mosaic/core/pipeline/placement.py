@@ -211,8 +211,9 @@ _PREFIX_KINDS: Final[tuple[tuple[str, ColumnKind], ...]] = (
     ("poseX", "x_position"),
     ("poseY", "y_position"),
     ("poseP", "invariant"),
+    ("emb_", "invariant"),
 )
-"""Keypoint columns, which are named by a prefix and a keypoint index."""
+"""Columns named by a prefix and an index: keypoints and appearance vectors."""
 
 
 class UnclassifiedColumnError(ValueError):
@@ -306,12 +307,14 @@ def classify_column(name: str) -> ColumnKind | None:
     ``None`` means that the column is unclassified. Names are matched after
     :func:`~mosaic.core.track_library.trex.base_field` strips a TRex ``#`` suffix
     and a flattening index. For example, ``X#wcentroid`` is an x position and
-    ``video_size_0`` is extent-dependent. Keypoint columns are matched by prefix.
+    ``video_size_0`` is extent-dependent. Keypoint and appearance columns are
+    matched by the prefix of the whole name, because stripping the index of
+    ``emb_0`` would leave ``emb``.
     """
-    base = base_field(name)
     for prefix, kind in _PREFIX_KINDS:
-        if base.startswith(prefix):
+        if name.startswith(prefix):
             return kind
+    base = base_field(name)
     for bases, kind in _BASE_KINDS:
         if base in bases:
             return kind

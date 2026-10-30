@@ -125,6 +125,7 @@ __all__ = [
     "select_variant_rows",
     "tail_allowance",
     "variant_candidate_rows",
+    "variant_entry_rows",
     "variant_for_producer_run",
     "tracks_index",
     "tracks_index_path",
@@ -276,6 +277,10 @@ class TracksIndexRow(RunIndexRowBase):
     blank-is-unknown and read by :func:`read_first_frame`: blank for a
     conversion, which keeps the frame numbers of its source. A row that records a
     media composition and was written before this column was placed at frame 0.
+
+    ``appearance_abs_path`` is the root-relative path of the row's appearance
+    table, the per-instance vectors that sit beside the tracks table. Blank for
+    a row with no such table, and for every row written before the column.
     """
 
     group: str
@@ -296,6 +301,7 @@ class TracksIndexRow(RunIndexRowBase):
     frames_read: str = ""
     known_tail_loss: str = ""
     first_frame: str = ""
+    appearance_abs_path: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -319,7 +325,10 @@ _KNOWN_TAIL_LOSS: Final = "known_tail_loss"
 _FIRST_FRAME: Final = "first_frame"
 """The cell of the first frame that a table was numbered from, named once likewise."""
 
-TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = ("source_abs_path",)
+TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
+    "source_abs_path",
+    "appearance_abs_path",
+)
 """Path-bearing columns beyond ``abs_path``.
 
 Named here because both of ``Dataset``'s path-rewriting passes read raw CSVs and
@@ -554,6 +563,22 @@ def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataF
         if len(variants) > 1:
             raise AmbiguousTracksVariant(entry, sorted(variants))
     return candidates
+
+
+def variant_entry_rows(ds: Dataset, run_id: str | None, entry: Entry) -> pd.DataFrame:
+    """The tracks-index rows of *entry* in variant *run_id*, none when it has no row.
+
+    *run_id* is read as by :func:`select_variant_rows`. Reads the index and
+    writes nothing.
+    """
+    rows = select_variant_rows(read_tracks_index(ds), run_id)
+    if rows.empty:
+        return rows
+    group, sequence = entry
+    return rows[
+        (rows["group"].astype(str) == group)
+        & (rows["sequence"].astype(str) == sequence)
+    ]
 
 
 def row_in_scope(row: CellRow, entries: Collection[Entry] | None) -> bool:
@@ -1763,6 +1788,7 @@ def write_tracks_row(
     known_tail_loss: int | None = None,
     first_frame: int | None = None,
     consumed_composition: str | None = None,
+    appearance_path: Path | None = None,
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
@@ -1801,7 +1827,8 @@ def write_tracks_row(
     ``consumed_composition`` is recorded in place of the composition of the
     source roots among ``consumed_source_roots``. An op that computes a table
     from another variant passes what that table was built from, which no source
-    root records.
+    root records. ``appearance_path`` is the appearance table written beside
+    the tracks table, stored root-relative, and ``None`` records a blank.
 
     ``records_media`` says whether this producer read video. A **bridge** did --
     a tracker or an inference run opens the entry's media -- so its row records
@@ -1856,6 +1883,9 @@ def write_tracks_row(
         frames_read="" if frames_read is None else str(int(frames_read)),
         known_tail_loss=("" if known_tail_loss is None else str(int(known_tail_loss))),
         first_frame="" if first_frame is None else str(int(first_frame)),
+        appearance_abs_path=(
+            "" if appearance_path is None else ds.relative_to_root(appearance_path)
+        ),
     )
     append_refusing_key_collision(
         ds, tracks_index(tracks_index_path(ds)), [row], [(entry_group, entry_sequence)]

@@ -441,6 +441,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         "known_tail_loss": None,
         "first_frame": 0,
         "consumed_composition": None,
+        "appearance_path": None,
     }
     pd.testing.assert_frame_equal(
         pd.read_parquet(out_path),

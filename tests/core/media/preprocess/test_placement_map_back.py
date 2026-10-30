@@ -29,6 +29,7 @@ from mosaic.core.media.preprocess import (
     TrimStep,
 )
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
+from mosaic.core.pipeline.appearance import appearance_columns
 from mosaic.core.pipeline.placement import (
     RATE_DEPENDENT_BASES,
     EntryAxis,
@@ -535,6 +536,51 @@ def test_an_arena_is_invariant_under_a_mapping_and_the_recording_shift() -> None
     assert classify_column("arena") == "invariant"
     assert column_array(shifted, "arena").tolist() == ["A1", "A2", "A2", "B1"]
     assert column_array(shifted, "frame").tolist() == [100, 101, 102, 103]
+
+
+_EMBEDDING = list(appearance_columns(2))
+
+
+def _appearance_on(frames: npt.NDArray[np.int64]) -> pd.DataFrame:
+    """Return an appearance table with two vector components on *frames*."""
+    table = pd.DataFrame({"frame": frames, "id": np.zeros(len(frames), dtype=np.int64)})
+    for column, value in zip(_EMBEDDING, (0.6, 0.8), strict=True):
+        table[column] = np.full(len(frames), value, dtype=np.float32)
+    return table
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [[CropStep(x=120, y=40, width=320, height=240)], [DecimateStep(every=3)]],
+    ids=["crop", "decimate"],
+)
+def test_appearance_vectors_pass_through_keyed_by_the_mapped_frame(
+    steps: list[MediaStep],
+) -> None:
+    mapping = _mapping(_ONE_CLIP, steps)
+    frames = np.arange(10, dtype=np.int64)
+    tracked = _appearance_on(frames)
+
+    result = to_source_space(tracked, mapping)
+
+    assert result.dropped == ()
+    assert column_array(result.frame, "frame").tolist() == (
+        mapping.placement.frames.source_frames(frames).tolist()
+    )
+    pd.testing.assert_frame_equal(result.frame[_EMBEDDING], tracked[_EMBEDDING])
+
+
+def test_appearance_vectors_move_onto_the_recording_axis_unchanged() -> None:
+    """The entry axis shifts an appearance table's frames as it shifts the tracks'."""
+    axis = EntryAxis.of_entry_media([_clip(30.0, 4)], windowed=False, first_frame=100)
+    frames = np.arange(4, dtype=np.int64)
+    tracked = _appearance_on(frames)
+
+    placed = axis.place(tracked)
+
+    assert placed.dropped == ()
+    assert column_array(placed.frame, "frame").tolist() == [100, 101, 102, 103]
+    pd.testing.assert_frame_equal(placed.frame[_EMBEDDING], tracked[_EMBEDDING])
 
 
 def test_an_identity_mapping_returns_the_table_itself() -> None:

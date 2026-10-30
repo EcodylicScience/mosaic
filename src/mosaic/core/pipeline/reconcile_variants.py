@@ -25,9 +25,9 @@ without one is correct for every variant on disk.
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Protocol
 
 from mosaic.core.pipeline.dataset_indexes import label_kinds
@@ -60,6 +60,7 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import (
+    TRACKS_INDEX_PATH_COLUMNS,
     read_tracks_index,
     tracks_index,
     tracks_index_path,
@@ -78,8 +79,32 @@ class _Remappable(Protocol):
         new_run_id: str,
         *,
         path_rewrite: Callable[[str], str] | None = None,
+        path_columns: Sequence[str] = ("abs_path",),
         dry_run: bool = False,
     ) -> int: ...
+
+
+def relocated_cell(ds: Dataset, cell: str, old_root: Path, new_root: Path) -> str:
+    """Returns the stored path *cell* re-addressed from *old_root* to *new_root*.
+
+    A cell inside *old_root* maps to the same relative subpath under *new_root*, so
+    a table in a subdirectory such as ``appearance/`` keeps it. A cell that resolves
+    elsewhere but names the old run-id directory as a segment, such as an absolute
+    path written on another host, maps the tail after that segment. A blank cell
+    stays blank, and any other cell is returned unchanged.
+    """
+    if not cell:
+        return cell
+    try:
+        subpath = ds.resolve_path(cell).resolve().relative_to(old_root.resolve())
+    except ValueError:
+        # PureWindowsPath splits on both separators, whichever host wrote the cell.
+        parts = PureWindowsPath(cell).parts
+        if old_root.name not in parts:
+            return cell
+        last = len(parts) - 1 - parts[::-1].index(old_root.name)
+        subpath = Path(*parts[last + 1 :])
+    return ds.relative_to_root(new_root / subpath)
 
 
 @dataclass(frozen=True)
@@ -145,6 +170,8 @@ class _VariantReconciler:
     key: ReconcileKey
     depends_on: tuple[ReconcileKey, ...] = ()
     current_scheme: str
+    path_columns: tuple[str, ...] = ("abs_path",)
+    """The index columns whose cells a re-address rewrites."""
 
     def __init__(self, ds: Dataset) -> None:
         self._ds = ds
@@ -286,6 +313,7 @@ class _VariantReconciler:
         builder: PassBuilder,
     ) -> ReconcileFinding:
         ds = self._ds
+        old_root = site.variant_root.resolve()
         new_root = site.parent / finding.new_address
         if new_root.exists():
             builder.error(
@@ -302,10 +330,13 @@ class _VariantReconciler:
         self._write_variant(site, finding.new_address, sidecar)
 
         def _rewrite(stored: str) -> str:
-            return ds.relative_to_root(new_root / Path(stored).name)
+            return relocated_cell(ds, stored, old_root, new_root)
 
         _ = self._index(site.index_path).remap_run_id(
-            site.run_id, finding.new_address, path_rewrite=_rewrite
+            site.run_id,
+            finding.new_address,
+            path_rewrite=_rewrite,
+            path_columns=self.path_columns,
         )
         return finding.with_action("relocated")
 
@@ -338,6 +369,7 @@ class TracksReconciler(_VariantReconciler):
 
     key: ReconcileKey = "tracks"
     current_scheme = TRACKS_IDENTITY_SCHEME
+    path_columns = ("abs_path", *TRACKS_INDEX_PATH_COLUMNS)
 
     def _sites(self) -> Iterable[_VariantSite]:
         if not self._ds.has_root("tracks"):

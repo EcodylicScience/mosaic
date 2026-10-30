@@ -279,12 +279,15 @@ class _IndexedRow:
 
 
 def _tracks_row(base: Path) -> _IndexedRow:
-    """A converted table, and the upload it came from in ``source_abs_path``."""
+    """A converted table, its upload in ``source_abs_path`` and its appearance table."""
     ds = make_dataset(base)
     source = ds.get_root("tracks_raw") / "raw.npz"
     _ = source.write_bytes(b"x")
     out = ds.get_root("tracks") / "s.parquet"
     pd.DataFrame({"frame": [0], "id": [0]}).to_parquet(out)
+    appearance = out.parent / "appearance" / "s.parquet"
+    appearance.parent.mkdir()
+    _ = appearance.write_bytes(b"x")
     write_tracks_row(
         ds,
         run_id="convert-x.0.1-aaaaaaaaaa",
@@ -295,8 +298,10 @@ def _tracks_row(base: Path) -> _IndexedRow:
         std_format="trex_v1",
         n_rows=1,
         source=source,
+        appearance_path=appearance,
     )
-    return _IndexedRow(ds, tracks_index_path(ds), ("abs_path", "source_abs_path"))
+    columns = ("abs_path", "source_abs_path", "appearance_abs_path")
+    return _IndexedRow(ds, tracks_index_path(ds), columns)
 
 
 def _model_row(base: Path) -> _IndexedRow:

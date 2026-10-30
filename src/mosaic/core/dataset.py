@@ -270,8 +270,8 @@ from .pipeline.tracks_index import (
     legacy_view,
     read_frame_extent,
     read_tracks_index,
-    select_variant_rows,
     tracks_index_path,
+    variant_entry_rows,
     write_tracks_row,
 )
 from .pipeline.labels_index import (
@@ -10439,14 +10439,9 @@ class Dataset:
         # variant selector, not a bare read_csv: the old spelling matched on
         # ``len(hit) == 1`` and so, the moment an entry carried two variants,
         # fell through to *re-converting* rather than reading the table it had.
-        rows = select_variant_rows(read_tracks_index(self), run_id)
-        if not rows.empty:
-            hit = rows[
-                (rows["group"].astype(str) == group)
-                & (rows["sequence"].astype(str) == sequence)
-            ]
-            if len(hit) == 1:
-                return pd.read_parquet(self.resolve_path(hit.iloc[0]["abs_path"]))
+        hit = variant_entry_rows(self, run_id, (group, sequence))
+        if len(hit) == 1:
+            return pd.read_parquet(self.resolve_path(hit.iloc[0]["abs_path"]))
 
         if prefer != "standard":
             raise FileNotFoundError(

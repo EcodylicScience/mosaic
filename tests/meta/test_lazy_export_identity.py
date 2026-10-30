@@ -18,11 +18,11 @@ import sys
 
 import pytest
 
-from tests.helpers import SOURCE_ROOT
+from tests.helpers import SOURCE_ROOT, package_of
 
 LAZY_PACKAGES = tuple(
     sorted(
-        ".".join(("mosaic", *init.parent.relative_to(SOURCE_ROOT).parts))
+        package_of(init)
         for init in SOURCE_ROOT.rglob("__init__.py")
         if "lazy_export(__name__" in init.read_text()
     )
