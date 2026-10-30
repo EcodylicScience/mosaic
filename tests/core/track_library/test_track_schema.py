@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.pipeline.manifest import build_manifest
+from mosaic.core.pipeline.manifest import build_manifest, refuse_mixed_track_schemas
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.schema import (
     DERIVED_COLUMNS,
@@ -340,6 +340,16 @@ def test_mosaic_v1_and_trex_v2_mix_freely(tmp_path: Path) -> None:
     ds = _dataset_mixing(tmp_path, "mosaic_v1", "trex_v2")
     _, scope = build_manifest(ds, Inputs(("tracks",)))
     assert scope.entries == {("", "seq_a"), ("", "seq_b")}
+
+
+def test_the_check_alone_is_narrowed_as_a_run_is(tmp_path: Path) -> None:
+    """Asked of a scope or of one variant, it counts only the tables that names."""
+    ds = _dataset_mixing(tmp_path, "trex_v1", "mosaic_v1")
+
+    with pytest.raises(ValueError, match="incompatible schemas"):
+        refuse_mixed_track_schemas(ds)
+    refuse_mixed_track_schemas(ds, scope=Scope(sequences=["seq_a"]))
+    refuse_mixed_track_schemas(ds, tracks_run_id="convert-b.0.1-bbbbbbbbbb")
 
 
 def test_narrowing_the_scope_avoids_the_refusal(tmp_path: Path) -> None:

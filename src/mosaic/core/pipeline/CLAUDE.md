@@ -85,7 +85,9 @@ pipeline graph are in `graph/CLAUDE.md`.
 - `select_variant_rows` is the only resolver. An unlabeled row (`run_id` empty) loses
   to a labeled one, and two recipes for one entry raise. The caller answers with
   `tracks_run_id=` (`run_id=` on `load_tracks` and `drop_entries`), and `""` names the
-  unlabeled tables.
+  unlabeled tables. It raises `AmbiguousTracksVariant`, and it reduces
+  `variant_candidate_rows`, which keeps each recipe of an entry for a caller that
+  chooses none (`refuse_mixed_track_schemas`).
 - `row_in_scope` is the one filter of resolved rows to a run's entries. `None` covers
   every row, and an empty list covers none.
 - The writer measures `n_keypoints` and `frame_min`/`frame_max` from the parquet. The

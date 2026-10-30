@@ -152,9 +152,14 @@ def refuse_mixed_schemas(ds: Dataset, step_id: str) -> None:
     **Asked of the whole dataset, and before planning rather than after.** The
     term a feature identifier carries for the tables it reads is deliberately
     scope-free -- a scope-free feature must get one identifier for every scope --
-    so resolving *any* feature's identity against a mixed dataset already fails.
-    Running the check first is what turns that into a refusal naming the schemas,
-    instead of an exception out of the middle of a hash.
+    so resolving the identity of a feature reading unpinned tracks against a mixed
+    dataset already fails. Running the check first is what turns that into a
+    refusal naming the schemas, instead of an exception out of the middle of a
+    hash.
+
+    **Two variants of one entry are not a mixture.** Which of them to read is a
+    question for the step that reads tracks, and the plan reports a step that
+    leaves it open. A step that reads none, such as a tracker, has no such question.
     """
     try:
         refuse_mixed_track_schemas(ds)

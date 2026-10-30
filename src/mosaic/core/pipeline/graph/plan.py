@@ -60,6 +60,7 @@ from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
 from ..manifest import tracks_table_columns
+from ..tracks_index import AmbiguousTracksVariant
 from ..inventory.cache import InventoryCache
 from ..inventory.model import (
     ArtifactRef,
@@ -556,11 +557,18 @@ class _Findings:
 
         A variant without tables yet, such as one that an op of this graph
         writes, records nothing, and the step's tracks stay as the schemas
-        describe them.
+        describe them. So do tables with no single answer, which a step that
+        needs one reports through its identity.
         """
         if variant not in self.read:
-            tables = tracks_table_columns(ds, variant, Scope(entries=sorted(target)))
-            self.read[variant] = measured_columns(tables.values())
+            try:
+                tables = tracks_table_columns(
+                    ds, variant, Scope(entries=sorted(target))
+                )
+            except AmbiguousTracksVariant:
+                self.read[variant] = None
+            else:
+                self.read[variant] = measured_columns(tables.values())
         columns = self.read[variant]
         if columns is not None:
             self.tracks[step_id] = columns
@@ -581,6 +589,8 @@ class _Resolution:
     """Whether this step learns from the entries it covers, read beside the above."""
     reach: Reach | None = None
     """The temporal reach of the built feature, ``None`` where none was built."""
+    problems: tuple[Problem, ...] = ()
+    """What this dataset refuses in the step, found by resolving its identity."""
 
 
 def plan_pipeline(
@@ -697,6 +707,7 @@ def plan_pipeline(
             resolved=resolved,
             planned=planned,
             recorded=recorded or {},
+            problems=findings.problems,
             deferred_by=deferred_by,
         )
         if isinstance(step, FeatureStepSpec):
@@ -789,10 +800,12 @@ def _plan_step(
     resolved: Mapping[str, ResolvedStep],
     planned: Mapping[str, PlannedStep],
     recorded: Mapping[str, str],
+    problems: list[Problem],
     deferred_by: str | None = None,
 ) -> PlannedStep:
     """Resolve one step against everything the walk has already established.
 
+    What resolving its identity refuses in the step is added to *problems*.
     *deferred_by* names the conversion step that writes the dataset's first
     tracks, when this graph has one. The entries of a step whose identity
     covers its scope are not known before that step runs, so such a step is
@@ -845,11 +858,13 @@ def _plan_step(
         resolution = _resolve_op_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
         )
+        problems.extend(resolution.problems)
         base = resolution.step
     else:
         resolution = _resolve_feature_step(
             ds, recipe, step, target=target, bind=bind, resolved=resolved
         )
+        problems.extend(resolution.problems)
         base = replace(
             resolution.step,
             scope_dependent=resolution.scope_dependent,
@@ -1244,24 +1259,36 @@ def _resolve_feature_step(
         spec.filter_start_time,
         spec.filter_end_time,
     )
-    run_id, _ = resolve_feature_identity(
-        ds,
-        feature,
-        scope=Scope(entries=sorted(target)),
-        # The upstream's **minted** variant where the step names a producer,
-        # rather than whatever the index holds. That is what lets an
-        # op-to-feature edge resolve before the op has run: the variant payload
-        # is params-only, so the identifier is knowable now, and reading it back
-        # off an index with no rows in it yet would hash an empty term where
-        # execution hashes a real one.
-        tracks_run_id=spec.tracks_run_id,
-        # The minted labels variant where a labels reference names a
-        # conversion step, for the reason the tracks variant is minted.
-        labels_run_id=spec.labels_run_id,
-        frame_start=frame_start,
-        frame_end=frame_end,
-        overlap_frames=spec.overlap_frames,
-    )
+    try:
+        run_id, _ = resolve_feature_identity(
+            ds,
+            feature,
+            scope=Scope(entries=sorted(target)),
+            # The upstream's **minted** variant where the step names a producer,
+            # rather than whatever the index holds. That is what lets an
+            # op-to-feature edge resolve before the op has run: the variant
+            # payload is params-only, so the identifier is knowable now, and
+            # reading it back off an index with no rows in it yet would hash an
+            # empty term where execution hashes a real one.
+            tracks_run_id=spec.tracks_run_id,
+            # The minted labels variant where a labels reference names a
+            # conversion step, for the reason the tracks variant is minted.
+            labels_run_id=spec.labels_run_id,
+            frame_start=frame_start,
+            frame_end=frame_end,
+            overlap_frames=spec.overlap_frames,
+        )
+    except AmbiguousTracksVariant as ambiguous:
+        problem = _ambiguous_tracks_problem(
+            step.id, "tracks", ambiguous, _NAME_THE_TRACKS_STEP
+        )
+        return _Resolution(
+            step=_unresolved_feature(step, spec, [problem]),
+            scope_dependent=scope_dependent,
+            fits=fits,
+            reach=reach,
+            problems=(problem,),
+        )
     return _Resolution(
         step=PlannedStep(
             step_id=step.id,
@@ -1277,6 +1304,28 @@ def _resolve_feature_step(
         fits=fits,
         reach=reach,
     )
+
+
+_NAME_THE_TRACKS_STEP: Final = (
+    'Pin the step to one with "tracks": {"step": <id>}, naming the step that '
+    "produces it, and add that step to the recipe if it is not there: a step whose "
+    "output exists is complete"
+)
+"""How a recipe answers which tracks variant a feature reads."""
+
+
+def _ambiguous_tracks_problem(
+    step_id: str, where: str, ambiguous: AmbiguousTracksVariant, remedy: str
+) -> Problem:
+    """A problem at *where* for a step that reads tracks and names no variant."""
+    group, sequence = ambiguous.entry
+    listing = ", ".join(repr(variant) for variant in ambiguous.variants)
+    message = (
+        f"this step does not say which tracks variant to read, and the dataset "
+        f"holds {len(ambiguous.variants)} of (group={group!r}, "
+        f"sequence={sequence!r}): {listing}. {remedy}"
+    )
+    return Problem(step_id, where, message)
 
 
 def _unresolved_feature(
@@ -1394,6 +1443,24 @@ def _resolve_op_step(
                 run_id=None,
                 reason=IdentityUnresolved(step=step.id, because=exc.because),
             )
+        )
+    except AmbiguousTracksVariant as ambiguous:
+        problem = _ambiguous_tracks_problem(
+            step.id,
+            "params.source_tracks_run_id",
+            ambiguous,
+            "Name one with source_tracks_run_id",
+        )
+        return _Resolution(
+            step=PlannedStep(
+                step_id=step.id,
+                kind="op",
+                runs=step.kind,
+                spec=spec,
+                run_id=None,
+                reason=IdentityUnresolved(step=step.id, because=problem.message),
+            ),
+            problems=(problem,),
         )
     return _Resolution(
         step=PlannedStep(

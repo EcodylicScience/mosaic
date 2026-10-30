@@ -30,6 +30,8 @@ from mosaic.core.pipeline.graph import (
     Plan,
     PlannedStep,
     Recipe,
+    RecipeRefused,
+    RecipeRefusedAtStep,
     Request,
     StepAttempt,
     StepRefused,
@@ -509,6 +511,270 @@ def test_a_mixed_dataset_cannot_be_submitted_either(tmp_path: Path) -> None:
         _ = submit_request(dataset, Recipe.model_validate(_chain()))
 
     assert raised.value.reason == "schema_family_mismatch"
+
+
+# --- two tracks variants of one entry -----------------------------------------
+
+
+OTHER_VARIANT = "convert-other.0.1-2222222222"
+
+
+def _sweep(*speeds: float) -> Recipe:
+    """A tracker sweep: one ``trex`` op per setting, reading no tracks table."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": f"trex_{speed}",
+                    "type": "op",
+                    "kind": "trex",
+                    "params": {
+                        "track_max_individuals": 2,
+                        "track_max_speed": speed,
+                    },
+                }
+                for speed in speeds
+            ],
+        }
+    )
+
+
+def _tracked_then_read() -> Document:
+    """A tracker, a feature pinned to what it writes, and a reader of that feature."""
+    return {
+        "schema_version": 1,
+        "steps": [
+            {
+                "id": "track",
+                "type": "op",
+                "kind": "trex",
+                "params": {"track_max_individuals": 2},
+            },
+            {
+                "id": "speed",
+                "type": "feature",
+                "feature": "speed-angvel",
+                "inputs": ["tracks"],
+                "tracks": {"step": "track"},
+                "params": {"step_size": 1},
+            },
+            {
+                "id": "templates",
+                "type": "feature",
+                "feature": "extract-templates",
+                "inputs": [{"step": "speed"}],
+                "params": {"n_templates": 4},
+            },
+        ],
+    }
+
+
+def test_two_variants_of_one_family_do_not_refuse_a_sweep(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tracker sweep is exactly the dataset that holds two variants of an entry.
+
+    The schema check asks about families, and a choice between variants is no
+    business of a step that reads no tracks. Asserted on ``run_op`` being reached,
+    because the refusal this replaces was raised before it.
+    """
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    submitted = submit_request(tracked, _sweep(10, 20))
+    ran: list[str] = []
+
+    def _capture(*args: object, **kwargs: object) -> str:
+        ran.append(submitted.plan.step("trex_10").run_id or "")
+        return ran[-1]
+
+    monkeypatch.setattr(step_module, "run_op", _capture)
+    _ = execute_step(tracked, submitted.request, "trex_10")
+
+    assert len(ran) == 1
+
+
+def test_two_families_on_one_entry_refuse_by_name(tracked: Dataset) -> None:
+    """A choice between variants does not hide a mixture: each family is named."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="trex_v1")
+
+    with pytest.raises(StepRefused) as raised:
+        _ = submit_request(tracked, _sweep(10))
+
+    assert raised.value.reason == "schema_family_mismatch"
+    assert "mosaic_v1" in str(raised.value)
+    assert "trex_v1" in str(raised.value)
+
+
+def test_an_unlabelled_row_is_superseded_before_families_are_compared(
+    tmp_path: Path,
+) -> None:
+    """The rule that picks an entry's rows is the resolver's, so the two agree.
+
+    Beside a labelled row of its entry an unlabelled one is a record and not a
+    table anything reads, so its family does not count against the dataset.
+    """
+    dataset = make_dataset(tmp_path / "superseded")
+    add_tracks_variant(dataset, "", "seq_a", std_format="trex_v1")
+    add_tracks_variant(dataset, VARIANT, "seq_a", std_format="mosaic_v1")
+    add_tracks_variant(dataset, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    assert submit_request(dataset, _sweep(10)).request.request_id
+
+
+def test_a_row_without_its_table_does_not_count_as_a_family(tracked: Dataset) -> None:
+    """A table that is gone cannot be read, so it cannot be read beside another."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="trex_v1")
+    gone = Path(tracked.get_root("tracks")) / OTHER_VARIANT
+    for table in gone.glob("*.parquet"):
+        table.unlink()
+
+    assert submit_request(tracked, _sweep(10)).request.request_id
+
+
+def test_an_unpinned_reader_of_an_ambiguous_entry_is_refused_at_submit(
+    tracked: Dataset,
+) -> None:
+    """The refusal names the step and the variants, and says how a recipe answers."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    with pytest.raises(RecipeRefused) as raised:
+        _ = submit_request(tracked, Recipe.model_validate(_chain()))
+
+    [problem] = raised.value.problems
+    assert (problem.step, problem.where) == ("speed", "tracks")
+    assert VARIANT in problem.message
+    assert OTHER_VARIANT in problem.message
+    assert '"tracks": {"step":' in problem.message
+
+
+def test_an_unpinned_reader_refuses_itself_when_the_ambiguity_arrives_later(
+    tracked: Dataset,
+) -> None:
+    """As when an op of the same graph writes a second variant of an entry."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    with pytest.raises(RecipeRefusedAtStep) as raised:
+        _ = execute_step(tracked, request, "speed")
+
+    assert raised.value.reason == "recipe_refused"
+    assert [problem.where for problem in raised.value.problems] == ["tracks"]
+
+
+def test_an_unresolved_reader_keeps_what_its_guards_read(tracked: Dataset) -> None:
+    """The held-out and reach checks still ask a step whose identity is open."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "pca",
+                    "type": "feature",
+                    "feature": "pair-posedistance-pca",
+                    "inputs": ["tracks"],
+                }
+            ],
+        }
+    )
+
+    step = plan_pipeline(tracked, recipe, refuse=False).step("pca")
+
+    assert step.run_id is None
+    assert step.fits
+    assert step.scope_dependent
+
+
+def test_only_the_unpinned_reader_is_refused(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A problem belongs to its step, so a sibling op of the request still runs."""
+    document = _chain()
+    steps = cast("list[Document]", document["steps"])
+    steps.append(
+        {
+            "id": "trex",
+            "type": "op",
+            "kind": "trex",
+            "params": {"track_max_individuals": 2},
+        }
+    )
+    request = submit_request(tracked, Recipe.model_validate(document)).request
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    ran: list[str] = []
+
+    def _capture(*args: object, **kwargs: object) -> str:
+        ran.append("trex")
+        return "trex.0.1-0000000000"
+
+    monkeypatch.setattr(step_module, "run_op", _capture)
+    _ = execute_step(tracked, request, "trex")
+
+    assert ran == ["trex"]
+
+
+def test_a_chained_op_with_no_source_is_a_problem_on_an_ambiguous_entry(
+    tracked: Dataset,
+) -> None:
+    """An op that reads tracks needs a variant named as much as a feature does."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "regrid",
+                    "type": "op",
+                    "kind": "resample-tracks",
+                    "params": {"target_fps": 30.0},
+                }
+            ],
+        }
+    )
+
+    plan = plan_pipeline(tracked, recipe, refuse=False)
+
+    [problem] = plan.problems
+    assert (problem.step, problem.where) == (
+        "regrid",
+        "params.source_tracks_run_id",
+    )
+    assert plan.step("regrid").run_id is None
+
+
+def test_a_pinned_feature_and_its_reader_run_on_a_multi_variant_dataset(
+    tracked: Dataset,
+) -> None:
+    """The pin answers the choice, for the feature and for what reads the feature."""
+    recipe = Recipe.model_validate(_tracked_then_read())
+    planned = plan_pipeline(tracked, recipe).step("track")
+    add_tracks_variant(
+        tracked,
+        planned.tracks_variant or "",
+        "seq_a",
+        "seq_b",
+        std_format="trex_v2",
+        producer_run_id=planned.run_id or "",
+    )
+
+    request = submit_request(tracked, recipe).request
+
+    assert execute_step(tracked, request, "speed").covered == 2
+    assert execute_step(tracked, request, "templates").covered >= 1
+
+
+def test_a_finished_unpinned_parent_keeps_its_run_under_a_later_variant(
+    tracked: Dataset,
+) -> None:
+    """What a step was called is a fact, and an ambiguity since does not undo it."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    speed = execute_step(tracked, request, "speed")
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    templates = execute_step(tracked, request, "templates")
+
+    assert speed.run_id
+    assert templates.run_id
 
 
 # --- the CLI -----------------------------------------------------------------

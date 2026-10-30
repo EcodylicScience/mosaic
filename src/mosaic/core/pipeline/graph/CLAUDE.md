@@ -108,6 +108,10 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   nothing. A `scope_dependent` step's entries come from `intended_scope` (`scope.py`).
 - `resolve_feature_identity` (`core/pipeline/run.py`) decides a step's `run_id` for the
   planner and the live `Pipeline` alike (`test_the_live_pipeline_and_the_planner_agree`).
+- `refuse_mixed_schemas` compares families and chooses no variant. A step that reads
+  tracks and leaves an ambiguous entry open is a `Problem` at that step, at `tracks` or
+  `params.source_tracks_run_id`, so its siblings run and a step recording its run keeps
+  it (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
 - An op step's scope comes from the plan through `_op_scope`. An op with `scope_takes =
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a

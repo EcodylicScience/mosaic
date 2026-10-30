@@ -8,6 +8,23 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: two tracks variants of one entry through the graph
+
+**No identifier moves.**
+
+- A dataset with two tracks variants of an entry no longer refuses every graph step with
+  `schema_family_mismatch`. `refuse_mixed_track_schemas` compares the families of every
+  candidate row (`variant_candidate_rows`) and chooses no variant, so a tracker sweep
+  plans, submits and runs through a recipe and through the MCP. Two families on one entry
+  still refuse by name.
+- A step that reads tracks and names no variant of an ambiguous entry is now a plan
+  problem at that step: at `tracks` for a feature, and at `params.source_tracks_run_id`
+  for `resample-tracks` and `assign-arenas`. `plan_recipe` lists it, `submit_pipeline`
+  raises `RecipeRefused`, and a step that meets it after submit refuses as
+  `recipe_refused`. The other steps of the request run.
+- `select_variant_rows` raises `AmbiguousTracksVariant`, a `ValueError` with the same
+  message that carries `entry` and `variants`.
+
 ## Unreleased: the `hidra` feature
 
 **No identifier moves.** The feature run id golden gains `hidra/default`.

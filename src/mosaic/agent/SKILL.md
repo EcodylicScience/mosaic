@@ -253,6 +253,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - An entry with two tracks variants raises an error naming them. Pass `tracks_run_id=`
   to `run_feature` (`--tracks-run-id` on `mosaic run`), or `run_id=` to `load_tracks`
   and `drop_entries`. `""` names tables converted before mosaic recorded variants.
+  A tracker sweep holds such entries, and its op steps run because they read no tracks.
+  In a recipe, a feature that reads tracks on such an entry is a plan problem until it
+  is pinned with `"tracks": {"step": <id>}`. Add the step that produced the variant if
+  the recipe lacks it, since a step whose output exists is complete. `resample-tracks`
+  and `assign-arenas` take `source_tracks_run_id`.
 - A run that loses some entries finishes as `partial` and names them in
   `result.failed_entries`. Check it before any global fit, since a fit over fewer
   entries is a different result. Losing every entry raises.

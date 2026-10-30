@@ -22,6 +22,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import (
+    AmbiguousTracksVariant,
     DROPPED_LEGACY_COLUMNS,
     backfill_frame_extents,
     backfill_media_frames,
@@ -43,6 +44,7 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     row_in_scope,
     select_variant_rows,
+    variant_candidate_rows,
     tracks_index,
     tracks_index_path,
     write_tracks_row,
@@ -748,6 +750,54 @@ def test_the_unlabelled_tables_stay_addressable_by_name() -> None:
 def test_an_empty_frame_selects_to_an_empty_frame() -> None:
     """A cold dataset must not raise on the way to reporting it has no tracks."""
     assert select_variant_rows(_rows()).empty
+
+
+def test_the_refusal_carries_the_entry_and_its_candidates() -> None:
+    """A caller branches on these and never on the wording."""
+    rows = _rows(("trex.0.1-bb", "g", "a"), ("convert-x.0.1-aa", "g", "a"))
+    with pytest.raises(AmbiguousTracksVariant) as excinfo:
+        _ = select_variant_rows(rows)
+    assert excinfo.value.entry == ("g", "a")
+    assert excinfo.value.variants == ("convert-x.0.1-aa", "trex.0.1-bb")
+
+
+def test_the_candidates_of_an_ambiguous_entry_are_each_of_its_recipes() -> None:
+    rows = variant_candidate_rows(
+        _rows(("convert-x.0.1-aa", "", "a"), ("trex.0.1-bb", "", "a"))
+    )
+    assert list(rows["run_id"]) == ["convert-x.0.1-aa", "trex.0.1-bb"]
+
+
+def test_a_candidate_is_chosen_as_a_selected_row_is() -> None:
+    """Labelled over unlabelled, and the last row of one recipe, in index order."""
+    specs = (
+        ("", "", "a"),
+        ("convert-x.0.1-aa", "", "a"),
+        ("trex.0.1-bb", "", "a"),
+        ("convert-x.0.1-aa", "", "a"),
+        ("", "", "b"),
+    )
+    rows = variant_candidate_rows(_rows(*specs))
+    assert [str(value) for value in rows["run_id"]] == [
+        "trex.0.1-bb",
+        "convert-x.0.1-aa",
+        "",
+    ]
+
+
+def test_naming_a_variant_is_never_ambiguous() -> None:
+    """A repeated row of the named recipe is not a second recipe to choose from."""
+    rows = select_variant_rows(
+        _rows(("trex.0.1-bb", "", "a"), ("trex.0.1-bb", "", "a")), "trex.0.1-bb"
+    )
+    assert list(rows["run_id"]) == ["trex.0.1-bb", "trex.0.1-bb"]
+
+
+def test_a_named_variant_is_the_only_candidate() -> None:
+    rows = variant_candidate_rows(
+        _rows(("convert-x.0.1-aa", "", "a"), ("trex.0.1-bb", "", "a")), "trex.0.1-bb"
+    )
+    assert list(rows["run_id"]) == ["trex.0.1-bb"]
 
 
 # --- row_in_scope ------------------------------------------------------------

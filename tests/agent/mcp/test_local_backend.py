@@ -699,6 +699,60 @@ def test_a_plan_lists_the_media_that_awaits_an_analysis_transcode(
     ]
 
 
+def _tracker(speed: int) -> dict[str, object]:
+    return {
+        "id": f"trex_{speed}",
+        "type": "op",
+        "kind": "trex",
+        "params": {"track_max_individuals": 2, "track_max_speed": speed},
+    }
+
+
+def test_a_tracker_sweep_plans_and_submits_on_a_dataset_of_two_variants(
+    dataset: Dataset,
+) -> None:
+    """The second setting of a sweep runs on the first's second variant of an entry."""
+    add_tracks_variant(
+        dataset, "trex.0.1-2222222222", "seq_a", "seq_b", std_format="mosaic_v1"
+    )
+    starter = RecordingStarter()
+    backend = LocalBackend([dataset.manifest_path], warm=False, start_driver=starter)
+    recipe = {"schema_version": 1, "steps": [_tracker(10), _tracker(20)]}
+
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=recipe
+    )
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=_uuid(dataset),
+        recipe=recipe,
+        plan_fingerprint=plan.fingerprint,
+        confirm=True,
+    )
+
+    assert plan.problems == ()
+    assert [step.step for step in submitted.steps] == ["trex_10", "trex_20"]
+    assert starter.started == [submitted.request_id]
+
+
+def test_plan_recipe_lists_an_unpinned_reader_of_two_variants_as_a_problem(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    add_tracks_variant(dataset, "trex.0.1-2222222222", "seq_a", std_format="mosaic_v1")
+
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+    )
+
+    assert [problem.where for problem in plan.problems] == ["tracks"]
+
+
 def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
     backend: LocalBackend, dataset: Dataset
 ) -> None:

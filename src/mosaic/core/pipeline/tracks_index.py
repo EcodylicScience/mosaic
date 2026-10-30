@@ -107,6 +107,7 @@ __all__ = [
     "FrameAxisMismatch",
     "FrameAxisVerdict",
     "FrameTailShortfall",
+    "AmbiguousTracksVariant",
     "TailAllowance",
     "frame_axis_findings",
     "frame_axis_mismatches",
@@ -123,6 +124,7 @@ __all__ = [
     "recorded_first_frames",
     "select_variant_rows",
     "tail_allowance",
+    "variant_candidate_rows",
     "variant_for_producer_run",
     "tracks_index",
     "tracks_index_path",
@@ -456,6 +458,56 @@ def adopt_legacy_columns(df: pd.DataFrame) -> pd.DataFrame:
     return project_to_schema(df, TRACKS_INDEX_COLUMNS)
 
 
+class AmbiguousTracksVariant(ValueError):
+    """One entry carries two recipes, and the caller named neither.
+
+    Attributes:
+        entry: The ``(group, sequence)`` with no single answer.
+        variants: Its recipes, sorted.
+    """
+
+    def __init__(self, entry: Entry, variants: Sequence[str]) -> None:
+        self.entry: Entry = entry
+        self.variants: tuple[str, ...] = tuple(variants)
+        super().__init__(_ambiguous_variant_message(entry, list(variants)))
+
+
+def variant_candidate_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataFrame:
+    """Reduce a tracks frame to one row per entry and recipe. Order-preserving.
+
+    What :func:`select_variant_rows` chooses among, for a caller whose question
+    does not need the choice made. ``run_id`` given keeps that variant exactly.
+    ``None`` applies the rule that an empty ``run_id`` is unknown, so it keeps a
+    labelled row of an entry over an unlabelled one, and the last row of a recipe.
+    """
+    if df.empty:
+        return df.reset_index(drop=True)
+
+    # The three identity columns as plain lists, once. Row-wise ``df.iloc[i]``
+    # inside the loops below would be quadratic on an index with a row per
+    # sequence, and this is on the path of every feature run.
+    run_ids = [str(value) for value in df["run_id"]]
+    groups = [str(value) for value in df["group"]]
+    sequences = [str(value) for value in df["sequence"]]
+
+    if run_id is not None:
+        named = [i for i, value in enumerate(run_ids) if value == run_id]
+        return df.iloc[named].reset_index(drop=True)
+
+    positions_by_entry: dict[tuple[str, str], list[int]] = {}
+    for position, entry in enumerate(zip(groups, sequences, strict=True)):
+        positions_by_entry.setdefault(entry, []).append(position)
+
+    keep: list[int] = []
+    for positions in positions_by_entry.values():
+        labelled = [p for p in positions if run_ids[p]]
+        # Last wins within one recipe, matching what every reader effectively
+        # did with a duplicate before the index enforced uniqueness.
+        last_of_recipe = {run_ids[p]: p for p in labelled or positions}
+        keep.extend(last_of_recipe.values())
+    return df.iloc[sorted(keep)].reset_index(drop=True)
+
+
 def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataFrame:
     """Reduce a tracks frame to one row per ``(group, sequence)``.
 
@@ -481,35 +533,27 @@ def select_variant_rows(df: pd.DataFrame, run_id: str | None = None) -> pd.DataF
     default, and it raises. Different entries carrying different variants -- some
     converted, some tracked -- stays legal and is the mixed dataset the resolver
     has always been expected to handle.
+
+    The rows come from :func:`variant_candidate_rows`, so what counts as a
+    candidate is decided once.
+
+    Raises:
+        AmbiguousTracksVariant: An entry carries two recipes and ``run_id`` is
+            ``None``.
     """
-    if df.empty:
-        return df.reset_index(drop=True)
-
-    # The three identity columns as plain lists, once. Row-wise ``df.iloc[i]``
-    # inside the loops below would be quadratic on an index with a row per
-    # sequence, and this is on the path of every feature run.
-    run_ids = [str(value) for value in df["run_id"]]
-    groups = [str(value) for value in df["group"]]
-    sequences = [str(value) for value in df["sequence"]]
-
-    if run_id is not None:
-        named = [i for i, value in enumerate(run_ids) if value == run_id]
-        return df.iloc[named].reset_index(drop=True)
-
-    positions_by_entry: dict[tuple[str, str], list[int]] = {}
-    for position, entry in enumerate(zip(groups, sequences, strict=True)):
-        positions_by_entry.setdefault(entry, []).append(position)
-
-    keep: list[int] = []
-    for entry, positions in positions_by_entry.items():
-        labelled = [p for p in positions if run_ids[p]]
-        variants = sorted({run_ids[p] for p in labelled})
+    candidates = variant_candidate_rows(df, run_id)
+    if run_id is not None or candidates.empty:
+        return candidates
+    variants_by_entry: dict[tuple[str, str], list[str]] = {}
+    for variant, group, sequence in zip(
+        candidates["run_id"], candidates["group"], candidates["sequence"], strict=True
+    ):
+        entry = (str(group), str(sequence))
+        variants_by_entry.setdefault(entry, []).append(str(variant))
+    for entry, variants in variants_by_entry.items():
         if len(variants) > 1:
-            raise ValueError(_ambiguous_variant_message(entry, variants))
-        # Last wins within one variant, matching what every reader effectively
-        # did with a duplicate before the index enforced uniqueness.
-        keep.append((labelled or positions)[-1])
-    return df.iloc[sorted(keep)].reset_index(drop=True)
+            raise AmbiguousTracksVariant(entry, sorted(variants))
+    return candidates
 
 
 def row_in_scope(row: CellRow, entries: Collection[Entry] | None) -> bool:

@@ -280,7 +280,7 @@ def submit_request(
             over an overlapping scope is open. Neither the recipe nor the
             request is written.
         StepRefused: The dataset's tracks tables are of incompatible schemas, so
-            no feature identity resolves against it at all.
+            no feature reading unpinned tracks resolves against it at all.
         CleanupNeedsPlan: *cleanup* is given without *expect_plan*.
         CleanupOnManagedDataset: *cleanup* is given and a service manages the
             dataset.
@@ -289,10 +289,10 @@ def submit_request(
         RetireOwnRecipe: A digest is *recipe*'s own.
         RetireOpenRecipe: A retired recipe has a request that has not ended.
     """
-    # Before planning, and again at each step's own start. Resolving any feature
-    # identity against a dataset of mixed schemas already fails; checking first
-    # is what makes that a refusal naming the schemas rather than an exception
-    # out of the middle of a hash.
+    # Before planning, and again at each step's own start. Resolving the identity
+    # of a feature reading unpinned tracks against a dataset of mixed schemas
+    # already fails; checking first is what makes that a refusal naming the
+    # schemas rather than an exception out of the middle of a hash.
     if cleanup is not None:
         if expect_plan is None:
             raise CleanupNeedsPlan()

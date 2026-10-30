@@ -236,9 +236,10 @@ def _execute(
     """The body, with every refusal free to propagate to its recorder."""
     recipe = load_recipe_for_request(ds.base_dir, request)
     _refuse_moved_versions(recipe, request, step_id)
-    # Before planning, because resolving any feature identity against a dataset
-    # of mixed schemas already fails -- and failing there is an exception out of
-    # the middle of a hash rather than a refusal naming the schemas.
+    # Before planning, because resolving the identity of a feature reading
+    # unpinned tracks against a dataset of mixed schemas already fails -- and
+    # failing there is an exception out of the middle of a hash rather than a
+    # refusal naming the schemas.
     refuse_mixed_schemas(ds, step_id)
 
     held = InventoryCache(ds) if inventory is None else inventory

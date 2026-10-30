@@ -38,6 +38,7 @@ from .tracks_index import (
     read_tracks_index,
     select_variant_rows,
     tracks_index_path,
+    variant_candidate_rows,
 )
 from .types import (
     COLUMNS,
@@ -614,6 +615,63 @@ def verify_overlap_supported(manifest: Manifest, overlap_frames: int) -> None:
                 raise OverlapUnsupported(msg)
 
 
+@dataclass(frozen=True, slots=True)
+class _TracksTable:
+    """One tracks-index row whose table is on disk."""
+
+    entry: tuple[str, str]
+    path: Path
+    schema: str
+    variant: str
+
+
+def _tables_on_disk(
+    ds: Dataset, df: pd.DataFrame
+) -> tuple[list[_TracksTable], list[Path]]:
+    """Split the rows of *df* into the tables on disk and the paths that are not."""
+    tables: list[_TracksTable] = []
+    missing: list[Path] = []
+    for _, series in df.iterrows():
+        # Materialized as a string-keyed mapping once per row. A pandas ``Series``
+        # is keyed by an untyped index, so every cell read off it is untyped too
+        # -- and the columns here are all read as text. Cheap beside the ``Series``
+        # ``iterrows`` already builds.
+        row: dict[str, object] = {str(key): value for key, value in series.items()}
+        path = ds.resolve_path(str(row["abs_path"]))
+        if not path.exists():
+            missing.append(path)
+            continue
+        tables.append(
+            _TracksTable(
+                entry=(str(row["group"]), str(row["sequence"])),
+                path=path,
+                # Read straight off the row rather than through ``.get``: the
+                # reader projects onto the typed schema, so the column is always
+                # present and an index predating it carries "" rather than being
+                # absent.
+                schema=text_cell(row["std_format"]),
+                variant=str(row["run_id"]),
+            )
+        )
+    return tables, missing
+
+
+def _entry_selected(entry: tuple[str, str], selector: Scope) -> bool:
+    """Whether *selector* covers *entry*.
+
+    Each test is against ``None`` and never against emptiness. A selector that
+    lists nothing names nothing, the rule every other narrowing follows, from
+    ``IndexCSV.read`` to ``narrow_target``.
+    """
+    group, sequence = entry
+    if selector.groups is not None and group not in selector.groups:
+        return False
+    if selector.sequences is not None and sequence not in selector.sequences:
+        return False
+    pairs = selector.entry_pairs
+    return pairs is None or entry in pairs
+
+
 def _resolve_tracks(
     ds: Dataset,
     run_id: str | None,
@@ -657,9 +715,6 @@ def _resolve_tracks(
     predates variants yields an empty tuple and hashes exactly as it always has.
     """
     selector = scope if scope is not None else Scope()
-    groups = selector.groups
-    sequences = selector.sequences
-    entries = selector.entry_pairs
     df = select_variant_rows(read_tracks_index(ds), run_id)
     if run_id is not None and df.empty:
         if on_missing_run == "raise":
@@ -674,32 +729,17 @@ def _resolve_tracks(
     # the resolver keeps its single-answer shape whatever the index holds.
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     all_entries: list[tuple[str, str]] = []
-    missing: list[Path] = []
     resolved_variants: set[str] = set()
     schema_by_entry: dict[tuple[str, str], str] = {}
-    for _, series in df.iterrows():
-        # Materialized as a string-keyed mapping once per row. A pandas ``Series``
-        # is keyed by an untyped index, so every cell read off it is untyped too
-        # -- and the columns here are all read as text. Cheap beside the ``Series``
-        # ``iterrows`` already builds.
-        row: dict[str, object] = {str(key): value for key, value in series.items()}
-        g, s = str(row["group"]), str(row["sequence"])
-        entry = (g, s)
-        p = ds.resolve_path(str(row["abs_path"]))
-        if not p.exists():
-            missing.append(p)
-            continue
-        path_map_all[entry] = (p, ParquetLoadSpec())
-        all_entries.append(entry)
-        # Read straight off the row rather than through ``.get``: the reader
-        # projects onto the typed schema, so the column is always present and
-        # an index predating it carries "" rather than being absent.
-        schema_by_entry[entry] = text_cell(row["std_format"])
+    tables, missing = _tables_on_disk(ds, df)
+    for table in tables:
+        path_map_all[table.entry] = (table.path, ParquetLoadSpec())
+        all_entries.append(table.entry)
+        schema_by_entry[table.entry] = table.schema
         # Collected here, off the *unscoped* rows, and deliberately not below
         # in the narrowing loop -- see the note in the docstring.
-        variant = str(row["run_id"])
-        if variant:
-            resolved_variants.add(variant)
+        if table.variant:
+            resolved_variants.add(table.variant)
 
     if missing and not all_entries:
         print(
@@ -712,23 +752,15 @@ def _resolve_tracks(
     # Sort by (group, sequence) for stable ordering
     full_order = sorted(set(all_entries))
 
-    # Filter for scoped subset. Each test is against ``None`` and never against
-    # emptiness. A selector that lists nothing names nothing, the rule every
-    # other narrowing follows, from ``IndexCSV.read`` to ``narrow_target``.
+    # Filter for scoped subset.
     scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
     for entry, spec in path_map_all.items():
-        g, s = entry
-        if groups is not None and g not in groups:
-            continue
-        if sequences is not None and s not in sequences:
-            continue
-        if entries is not None and entry not in entries:
-            continue
-        scoped.add(entry)
-        path_map[entry] = spec
+        if _entry_selected(entry, selector):
+            scoped.add(entry)
+            path_map[entry] = spec
 
-    _refuse_mixed_schemas(scoped, schema_by_entry)
+    _refuse_mixed_schemas((entry, schema_by_entry[entry]) for entry in scoped)
 
     return ResolvedInput(
         scoped,
@@ -789,32 +821,41 @@ def refuse_mixed_track_schemas(
     tracks_run_id: str | None = None,
     scope: Scope | None = None,
 ) -> None:
-    """Raise if this scope resolves tracks tables of incompatible schemas.
+    """Raise if this scope holds tracks tables of incompatible schemas.
 
     The same question ``build_manifest`` asks on its way to loading, asked on its
     own so a caller can refuse *before* doing work rather than partway through
-    it. Going through the resolver rather than reading the index directly is what
-    keeps it one question: a second implementation would eventually disagree with
-    the first about which rows count, and the disagreement would show as a run
-    that loaded a mixture the check said was fine.
+    it. It reads rows through what the resolver reads them through, because a
+    second rule would eventually disagree with the first about which rows count,
+    and the disagreement would show as a run that loaded a mixture the check said
+    was fine.
+
+    **It asks about families and never chooses a variant.** A dataset holding two
+    variants of an entry leaves that choice to whoever reads the entry, so every
+    candidate counts here, and a tracker sweep of one family passes. Two families
+    on one entry raise, whichever one a reader would have named.
 
     Args:
         ds: The dataset whose tracks index to read.
-        tracks_run_id: Which variant to resolve, or ``None`` for whichever each
-            entry has.
+        tracks_run_id: Which variant to check, or ``None`` for every candidate of
+            each entry.
         scope: What to check, or ``None`` for everything.
 
     Raises:
         ValueError: Naming the families and a sample of the entries in each.
     """
-    _ = _resolve_tracks(ds, tracks_run_id, scope, "empty")
+    selector = scope if scope is not None else Scope()
+    candidates = variant_candidate_rows(read_tracks_index(ds), tracks_run_id)
+    tables, _ = _tables_on_disk(ds, candidates)
+    _refuse_mixed_schemas(
+        (table.entry, table.schema)
+        for table in tables
+        if _entry_selected(table.entry, selector)
+    )
 
 
-def _refuse_mixed_schemas(
-    scoped: set[tuple[str, str]],
-    schema_by_entry: dict[tuple[str, str], str],
-) -> None:
-    """Refuse a scope whose tables answer to incompatible schemas.
+def _refuse_mixed_schemas(tables: Iterable[tuple[tuple[str, str], str]]) -> None:
+    """Refuse *tables*, ``(entry, recorded schema)`` pairs, of incompatible schemas.
 
     ``select_variant_rows`` refuses two variants for **one entry**, and blesses
     different entries carrying different variants -- which is right, because a
@@ -844,10 +885,9 @@ def _refuse_mixed_schemas(
     blank beside a ``mosaic_v1`` row still refuses, which is the case that
     matters -- one is centimetres and the other pixels.
     """
-    families: dict[str, list[tuple[str, str]]] = {}
-    for entry in scoped:
-        recorded = schema_by_entry.get(entry, "") or LEGACY_SCHEMA
-        families.setdefault(schema_family(recorded), []).append(entry)
+    families: dict[str, set[tuple[str, str]]] = {}
+    for entry, recorded in tables:
+        families.setdefault(schema_family(recorded or LEGACY_SCHEMA), set()).add(entry)
     if len(families) < 2:
         return
 
