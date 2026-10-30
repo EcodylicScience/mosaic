@@ -12,6 +12,9 @@ Four classifiers ship. All are features, so all cache and take a `run_id`.
 | `lightning-action` | per-frame feature columns, modeled as sequences | `[lightning-action]` |
 | `feral` | video directly, through a V-JEPA backbone | `[feral]`, in its own environment |
 
+For mouse social behavior without labels of your own, the pretrained `hidra` feature
+runs HiDRA's published heads ([Classify mouse behavior with HiDRA](hidra.md)).
+
 `probability-ensemble` is a step beside them. It averages or blends the probabilities of
 several classifier runs ([Average and blend classifiers](#average-and-blend-classifiers)).
 

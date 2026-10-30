@@ -97,14 +97,17 @@ python scripts/gen_docs_reference.py --write
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs six jobs on a push to
-`main` and on pull requests. The five test jobs install the `test` dependency group.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs seven jobs on a push to
+`main` and on pull requests. The six test jobs install the `test` dependency group.
 
 - `test`: `-m "not slow and not tracker and not identity and not feral and not
-  lightning_action"`.
+  lightning_action and not hidra"`.
 - `identity`, `feral`: every test of that marker, in a `deep-learning` or `feral`
   environment.
 - `lightning-action`: every `lightning_action` test, which fits the real package on CPU.
+- `hidra`: every `hidra` test, against `hidra-predict` in its own environment with CPU
+  torch and the cached weights. It installs HiDRA from git unpinned, and also runs
+  weekly on its own, so an upstream change surfaces without a push here.
 - `tracking`: every `tracker` test against built Ultralytics and POLO environments.
 - `lint`: `ruff check` and `ruff format --check` over `src`, `tests` and `tools`.
 

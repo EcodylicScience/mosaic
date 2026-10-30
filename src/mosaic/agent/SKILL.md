@@ -283,6 +283,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   writes the members' fold table when they all have the same one, so an average of
   cross-validated runs can be a member of a blend. A list or `uniform` weights fit nothing,
   so those members need no fold table, and mixed members are averaged without one.
+- `hidra` runs HiDRA's pretrained mouse heads without labels (Linux; `hidra-predict` in
+  its own environment, located by `MOSAIC_HIDRA_BIN`; weights fetched once). It needs
+  `keypoint_map`, `heads` and `pix_per_cm`, takes two to four mice per arena and one frame
+  rate, and writes `prob_<action>__<lab>` and `call_<action>__<lab>` per ordered pair
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/hidra/).
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.

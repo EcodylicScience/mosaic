@@ -66,4 +66,4 @@ jobs:
           # does not resolve. The integration tests would otherwise skip.
           MOSAIC_CI_VAME: "1"
           MOSAIC_VAME_PYTHON: ${{ github.workspace }}/mosaic/src/mosaic/behavior/feature_library/external/vame-env/.venv/bin/python
-        run: uv run --no-sync pytest -q -m "slow and not tracker and not identity and not feral and not lightning_action" --durations=25
+        run: uv run --no-sync pytest -q -m "slow and not tracker and not identity and not feral and not lightning_action and not hidra" --durations=25

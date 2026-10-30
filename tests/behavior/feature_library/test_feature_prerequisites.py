@@ -20,6 +20,7 @@ import pytest
 
 from mosaic.behavior.feature_library.external.vame_protocol import VAME_VERSION
 from mosaic.behavior.feature_library.feral_feature import FERAL
+from mosaic.behavior.feature_library.hidra_feature import HidraPredictAvailable
 from mosaic.behavior.feature_library.kpms import KPMS_ENV, KpmsLicense
 from mosaic.behavior.feature_library.lightning_action_feature import (
     LIGHTNING_ACTION,
@@ -45,6 +46,7 @@ EXPECTED: dict[str, tuple[Prerequisite, ...]] = {
     "global-identity-dinov2-temporal": (TORCH,),
     "global-identity-embedding": (TIMM,),
     "global-identity-model": (TIMM,),
+    "hidra": (HidraPredictAvailable(),),
     "kpms": (KpmsLicense(), RunnerInterpreter(KPMS_ENV)),
     "lightning-action": (LIGHTNING_ACTION,),
     "movement-filter-interpolate": (MOVEMENT,),

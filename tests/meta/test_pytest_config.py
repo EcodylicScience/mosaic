@@ -161,11 +161,13 @@ def test_every_marker_used_in_the_suite_is_declared() -> None:
         "identity",
         "feral",
         "lightning_action",
+        "hidra",
     } <= declared
 
 
 @pytest.mark.parametrize(
-    "marker", ["slow", "media", "tracker", "identity", "feral", "lightning_action"]
+    "marker",
+    ["slow", "media", "tracker", "identity", "feral", "lightning_action", "hidra"],
 )
 def test_each_declared_marker_carries_a_description(marker: str) -> None:
     """A bare name in ``markers`` tells ``pytest --markers`` nothing."""

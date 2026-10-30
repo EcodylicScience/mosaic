@@ -36,6 +36,7 @@
   "global-kmeans/templates": "0.4-3c21bc4eb4",
   "global-scaler/templates": "0.2-3b6c3b3f75",
   "heading/default": "0.1-ace8a796bc",
+  "hidra/default": "0.1-4317c6bb2e",
   "id-tag-columns/default": "0.1-360e7720af",
   "id-tag-columns/labels-one-variant": "0.1-e538ec7fa1",
   "id-tag-columns/no-labels-variant": "0.1-0ed02bfded",

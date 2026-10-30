@@ -8,6 +8,21 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the `hidra` feature
+
+**No identifier moves.** The feature run id golden gains `hidra/default`.
+
+- `hidra` (`behavior/feature_library/hidra_feature.py`) runs HiDRA's published mouse
+  social-behavior heads zero-shot through `hidra-predict`, located by `HIDRA_ENV`
+  (`MOSAIC_HIDRA_CONDA_ENV`, `MOSAIC_HIDRA_BIN`). It writes one row per frame and
+  ordered pair with `prob_<action>__<lab>`, `call_<action>__<lab>` and
+  `predicted_label`. The weights revision is hashed. Its directory under `models_root`
+  (or `MOSAIC_HIDRA_MODELS_ROOT`, or `~/.cache/mosaic/hidra`) is not.
+- A run records the HiDRA install that predicted each entry (version, source commit,
+  bundled thresholds and head table) under `hidra_provenance/` in its run root.
+- A new `hidra` pytest marker and CI job run the feature against the real program. The
+  job installs HiDRA unpinned and also runs weekly.
+
 ## Unreleased: arena layouts, the `assign-arenas` op, and pairs within one arena
 
 **No identifier moves.** Run ids, entry keys, compositions and paths of existing

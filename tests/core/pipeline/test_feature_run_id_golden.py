@@ -97,6 +97,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "ffgroups",
     "ffgroups-metrics",
     "heading",
+    "hidra",
     "id-tag-columns",
     "interaction-crop-pipeline",
     "keypoint-kinematics",

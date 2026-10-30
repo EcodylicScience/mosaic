@@ -21,6 +21,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly, for the hidra job alone: it installs HiDRA from git, so an upstream
+  # change surfaces within a week even when nothing is pushed here. Every other
+  # job skips a scheduled run.
+  schedule:
+    # Mondays at 05:00 UTC, an hour after slow.yml.
+    - cron: "0 5 * * 1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -28,6 +34,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -102,7 +109,7 @@ jobs:
         # it, so every test runs in exactly one job and a failure is reported
         # once. The slow tests that no job marker claims run in `slow.yml`.
         # `tests/meta/test_pytest_config.py` holds the workflows to that partition.
-        run: uv run --no-sync pytest -q -m "not slow and not tracker and not identity and not feral and not lightning_action" --durations=25
+        run: uv run --no-sync pytest -q -m "not slow and not tracker and not identity and not feral and not lightning_action and not hidra" --durations=25
 
   # The identity tests need torch and timm, via the `deep-learning` extra, which
   # nothing else
@@ -113,6 +120,7 @@ jobs:
   # reload that tolerated missing weights would yield a random backbone --
   # which predicts happily and is wrong.
   identity:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -168,6 +176,7 @@ jobs:
         run: uv run --no-sync pytest -q -m identity --durations=25
 
   tracking:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -247,6 +256,7 @@ jobs:
   # shares. On its own runner those pins win uncontested, and its single
   # `opencv-python` build keeps conftest's two-builds guard satisfied.
   feral:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -299,6 +309,7 @@ jobs:
   # Without this job nothing in CI ran the package, and a stub that wrote CSVs
   # its own way hid a fit that raised on every real call.
   lightning-action:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -338,11 +349,72 @@ jobs:
         # `-m lightning_action` for the same reason as the identity job above.
         run: uv run --no-sync pytest -q -m lightning_action --durations=25
 
+  # HiDRA runs as its own program (`hidra-predict`), installed from git into a
+  # separate environment with CPU torch. Its weights (about 700 MB) are cached per
+  # revision; the revision is the feature's DEFAULT_WEIGHTS_REVISION.
+  hidra:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HIDRA_REVISION: b5b56d316117de5900832de2dea6f2b7fea6f75f
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mosaic
+
+      - uses: actions/checkout@v4
+        with:
+          repository: EcodylicScience/mosaic-media
+          path: mosaic-media
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install
+        working-directory: mosaic
+        run: |
+          uv venv
+          uv pip install -e '../mosaic-media[io,cli]'
+          uv pip install -e .
+          uv pip install --group test
+
+      - name: Install HiDRA
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/hidra-env"
+          uv pip install --python "$RUNNER_TEMP/hidra-env/bin/python" torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --python "$RUNNER_TEMP/hidra-env/bin/python" 'hidra[torch] @ git+https://github.com/neuroethology/HiDRA'
+
+      - uses: actions/cache@v4
+        id: weights
+        with:
+          path: ~/.cache/mosaic/hidra/${{ env.HIDRA_REVISION }}
+          key: hidra-weights-${{ env.HIDRA_REVISION }}
+
+      - name: Download HiDRA weights
+        if: steps.weights.outputs.cache-hit != 'true'
+        run: |
+          HIDRA_MODELS_DIR="$HOME/.cache/mosaic/hidra/$HIDRA_REVISION" \
+            "$RUNNER_TEMP/hidra-env/bin/hidra-download-models" --revision "$HIDRA_REVISION"
+
+      - name: Test hidra
+        working-directory: mosaic
+        env:
+          PYTHONHASHSEED: random
+          MOSAIC_CI_HIDRA: "1"
+          MOSAIC_HIDRA_BIN: ${{ runner.temp }}/hidra-env/bin/hidra-predict
+        run: uv run --no-sync pytest -q -m hidra --durations=25
+
   # Runs on push as well as on pull request. `uvx` resolves the newest ruff at
   # run time, so a rule set widening upstream surfaces here rather than on
   # whichever machine happens to upgrade first; `[tool.ruff.lint] select` in
   # pyproject pins which rules are in force against that drift.
   lint:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

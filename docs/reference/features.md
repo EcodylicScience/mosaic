@@ -3,7 +3,7 @@
 
 # Features
 
-56 features are registered. Each one runs as
+57 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -111,6 +111,45 @@ Per-frame body heading derived from pose keypoints.
 | `front_idx` | `integer` | `0` |  | The keypoint index of the forward landmark, such as the head, snout or rostrum. Used when method is two_point. |
 | `rear_idx` | `integer` | `1` |  | The keypoint index of the rearward landmark, such as the tail base or abdomen. Used when method is two_point. |
 | `output_col` | `string` | `"ANGLE"` |  | The column the heading is written to. Defaults to the library's own orientation column, the name a downstream feature reading ANGLE already expects. |
+
+### `hidra`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.hidra_feature.HidraFeature`
+
+HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
+| `keypoint_map` | `object` | _constructed_ |  | Which HiDRA bodypart each keypoint is, keyed by keypoint name (pose.keypoint_names, or kp0, kp1, ... when those are unset). HiDRA reads tail_base, ear_right, ear_left, nose, neck, body_center and tail_tip, and treats a bodypart no keypoint maps to as unobserved. A keypoint left out is not sent. Two keypoints may not map to one bodypart. |
+| `heads` | list of `HidraHead` | _constructed_ |  | The HiDRA heads to report, each a lab and an action from the published heads. Each lab costs one pass of the five-config ensemble, whatever number of its actions are chosen. |
+| `pix_per_cm` | `number` \| `None` | `null` |  | Pixels per centimeter of the tracks. HiDRA computes in centimeters, and a wrong scale lowers every head's accuracy. [px/cm] |
+| `min_confidence` | `number` | `0.0` |  | A keypoint whose confidence column is below this value is sent as unobserved. 0 sends every finite keypoint. |
+| `configs` | list of (`"11fps_4bp"` \| `"15fps_5bp"` \| `"19fps_6bp"` \| `"23fps_7bp"` \| `"27fps_6bp"`) \| `None` | `null` |  | The ensemble configs to run, or None for all five. A subset is faster and less accurate, and the bundled thresholds were calibrated on all five. |
+| `threshold` | `number` \| `None` | `null` |  | One decision threshold for every head, or None for HiDRA's per-head thresholds. |
+| `weights_revision` | `string` | `"b5b56d316117de5900832de2dea6f2b7fea6f75f"` |  | The Hugging Face revision of the Neuroethology/HiDRA weights. Probabilities from two revisions are not comparable. |
+| `models_root` | `string` \| `None` | `null` |  | The directory holding one subdirectory of weights per revision, or None for MOSAIC_HIDRA_MODELS_ROOT, and then ~/.cache/mosaic/hidra. |
+| `gpu` | `integer` \| `None` | `null` |  | The CUDA device index to run on, or None for HiDRA's choice. |
+| `hidra_conda_env` | `string` \| `None` | `null` |  | A conda environment with hidra-predict, or None to read MOSAIC_HIDRA_CONDA_ENV. |
+| `hidra_bin` | `string` \| `None` | `null` |  | The path of hidra-predict, or None to read MOSAIC_HIDRA_BIN and then $PATH. |
+
+??? note "`HidraHead`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `lab` | `string` | _required_ |  |  |
+    | `action` | `string` | _required_ |  |  |
+
+??? note "`PoseConfig`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `pose_n` | `integer` | `7` |  | Total number of pose keypoints per individual, before any subset selection by pose_indices. |
+    | `pose_indices` | list of `integer` \| `None` | `null` |  | Zero-based keypoint indices to use, as positions into the full keypoint set. Unset uses every keypoint counted by pose_n. |
+    | `x_prefix` | `string` | `"poseX"` |  | Column name prefix for a keypoint's X coordinate, followed by its index. |
+    | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
+    | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
+    | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
 
 ### `keypoint-kinematics`
 

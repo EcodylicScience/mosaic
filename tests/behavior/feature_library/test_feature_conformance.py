@@ -62,6 +62,7 @@ RELATES_LEVELS = frozenset({"none", "arena-aware", "arena-blind"})
 ARENA_AWARE = frozenset(
     {
         "approach-avoidance",
+        "hidra",
         "interaction-crop-pipeline",
         "neighbor-delta-response",
         "orientation-rel",

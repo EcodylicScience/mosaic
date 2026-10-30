@@ -195,6 +195,10 @@ UNRUN: dict[str, str] = {
     "global-identity-dinov2-temporal": _CROPS,
     "global-identity-embedding": _CROPS,
     "global-identity-model": _CROPS,
+    "hidra": (
+        "it runs hidra-predict in its own Linux environment, which test_hidra_feature.py "
+        "fakes and the hidra job's test_hidra_real.py runs"
+    ),
     "kpms": "it fits keypoint-MoSeq in a separate server, as the slow kpms tests do",
     "lightning-action": (
         "its extra requires nvidia-dali-cuda110, which installs on no runner "

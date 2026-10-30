@@ -460,6 +460,16 @@ FERAL
                The repository asks that the preprint be cited and notes
                that the revised manuscript (v2) adds further benchmarks.
 
+HiDRA
+  Origin:      https://github.com/neuroethology/HiDRA
+  Copyright:   Talmo Lab
+  License:     BSD-3-Clause, as its pyproject.toml declares. The repository
+               carries no LICENSE file.
+  Installed:   by the user, in an environment of its own, from git. No
+               mosaic extra installs it. Run as a separate program
+               (hidra-predict) by
+               src/mosaic/behavior/feature_library/hidra_feature.py.
+
 lightning-action
   Origin:      Paninski lab
   Copyright:   Matt Whiteway
@@ -498,6 +508,12 @@ FERAL backbones, built at first use.
   not been reconciled by either party. A user who needs certainty should
   obtain the weights from DeepMind directly and observe CC-BY-4.0
   attribution.
+
+HiDRA weights, fetched by the user with hidra-download-models from
+https://huggingface.co/Neuroethology/HiDRA into a directory the hidra
+feature reads. The model card declares BSD-3-Clause. The weights were
+trained on the MABe-2025 ("DooM") release, CalMS21, CRIM13 and MABe22,
+whose own terms govern that data.
 
 Identity backbones, loaded through timm by global-identity-embedding.
 The default, timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k, is MIT.
