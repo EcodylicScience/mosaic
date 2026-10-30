@@ -24,6 +24,7 @@ import pytest
 import mosaic.tracking.sleap.dataset_runs as dr
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import make_entry_key
+from mosaic.core.pipeline._utils import staging_path
 from mosaic.core.pipeline.appearance import AppearanceTable, read_appearance
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.markers import (
@@ -141,7 +142,7 @@ def test_an_interrupted_analysis_export_is_not_trusted(
     def dying_export(slp_path: Path, output_h5: Path, **_kw: object):
         # h5py opens "w" and truncates immediately; a kill leaves the export's
         # partial file, which the export writes beside its output.
-        partial = Path(output_h5).with_name(f"{Path(output_h5).name}.partial")
+        partial = staging_path(Path(output_h5))
         partial.parent.mkdir(parents=True, exist_ok=True)
         partial.write_bytes(b"partial-not-a-real-h5")
         raise RuntimeError("killed mid-convert")
@@ -579,6 +580,15 @@ def test_an_embedding_run_records_its_embedding_model_and_release(
     assert observed["embedding_model_id"] == embedding_model.model_id
     assert observed["embedding_dim"] == "128"
     assert observed["sleap_nn_version"] == sleap.version
+
+
+def test_the_variant_records_every_model_type_of_the_set_as_the_index_row_does(
+    ds: Dataset, tmp_path: Path, sleap: FakeSleap
+) -> None:
+    _ = dr.run_sleap(ds, _embedding_params(tmp_path))
+
+    assert _observed(ds)["model_type"] == "bottomup+embedding"
+    assert _sleap_cells(ds, "model_type") == ["bottomup+embedding"]
 
 
 def test_a_run_without_an_embedding_model_writes_no_appearance(

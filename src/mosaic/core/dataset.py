@@ -477,13 +477,16 @@ def _stem_as_sequence(stem: str) -> str:
 def _dataset_base_dir(ds) -> Path:
     """
     Resolve the directory that holds dataset-level config (sibling to dataset manifest).
+
+    The directory is absolute and resolved, so a manifest named relative to the
+    working directory still anchors the root-relative form of an index path.
     """
     base = getattr(ds, "manifest_path", None)
     if base is not None:
-        base = Path(base)
+        base = Path(base).resolve()
         base = base.parent if base.is_file() else base
     else:
-        base = Path(ds.get_root("features")).parent
+        base = Path(ds.get_root("features")).parent.resolve()
     base.mkdir(parents=True, exist_ok=True)
     return base
 

@@ -798,10 +798,12 @@ def run_sleap(
         version=SLEAP_VERSION,
         settings=settings,
         # Provenance, never identity: the weights digest (already the identity
-        # term) and the model type, recorded so a variant is explicable from disk.
+        # term) and every model type of the set in the order the run applies
+        # them, as the index row records them, so a variant is explicable from
+        # disk.
         observed={
             "model_id": resolved_models.model_id,
-            "model_type": resolved_models.model_type,
+            "model_type": "+".join(resolved_models.model_types),
             **observed_model_source(resolved_models),
             **embedding_observed,
         },
@@ -998,7 +1000,8 @@ def run_sleap(
             ),
             params_hash=minted.params_hash,
             model_id=resolved_models.model_id,
-            model_type=resolved_models.model_type,
+            # Every model of the set, in the order the run applied them.
+            model_type="+".join(resolved_models.model_types),
             n_ids=0,
             # Blank for an entry without a detection, which has neither file.
             slp_path="" if no_detections else job.ds.relative_to_root(slp_out),

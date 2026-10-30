@@ -54,7 +54,7 @@ def test_the_export_takes_its_paths_in_argv(
 
     (cmd,) = commands
     assert cmd[:2] == ["/fake/bin/python", "-c"]
-    assert cmd[3:] == [str(slp), str(tmp_path / "e1.analysis.h5.partial")]
+    assert cmd[3:] == [str(slp), str(tmp_path / "e1.analysis.partial.h5")]
     assert str(tmp_path) not in cmd[2]
     assert "sleap-convert" not in cmd
     assert result.analysis_h5_path == h5
@@ -113,7 +113,7 @@ def test_the_snippet_exports_every_frame_of_the_video_in_the_matlab_layout(
         "preset": "matlab",
         "frames": [3, 1],
     }
-    assert not (tmp_path / "work" / "e1.analysis.h5.partial").exists()
+    assert not (tmp_path / "work" / "e1.analysis.partial.h5").exists()
 
 
 def test_a_video_without_labeled_frames_writes_no_file(

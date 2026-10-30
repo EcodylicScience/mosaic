@@ -75,11 +75,13 @@ from ..inventory.model import (
     MediaDerivativeRef,
     MediaVariantRef,
     PredictionScoreRef,
+    PreparedDatasetRef,
     TracksVariantRef,
     TrainedModelRef,
     reclassify,
 )
 from ..inventory.scan import reportable_universe
+from ..models import PREPARED_DATA_KINDS
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
@@ -1491,7 +1493,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     run with one file per entry. A predict-frames run has one file per entry
     camera of the extraction run that it names, and a select-frames run one file
     per entry of the tracks variant that it names. A score-predictions run is
-    one artifact, named by its run.
+    one artifact, named by its run. A preparation is its prepared dataset under
+    ``models/<kind>/<run_id>/``, which answers for everything like a model.
 
     ``None`` is honest rather than a gap: an op whose output nothing inventories
     reads as having no coverage answer, where reporting zero would say it had
@@ -1523,6 +1526,8 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
         )
     if kind == "score-predictions":
         return PredictionScoreRef(run_id=identity.run_id)
+    if kind in PREPARED_DATA_KINDS:
+        return PreparedDatasetRef(op_kind=kind, run_id=identity.run_id)
     if kind == "select-frames":
         return FrameSelectionRef(
             run_id=identity.run_id,

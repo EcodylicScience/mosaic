@@ -307,6 +307,16 @@ def atomic_write(final_path: Path, write_fn: Callable[[Path], object]) -> None:
         raise
 
 
+def staging_path(path: Path) -> Path:
+    """The name *path* is written under until it is published beside it.
+
+    ``.partial`` goes before the last suffix: ``labels.slp`` stages as
+    ``labels.partial.slp``. The staged name keeps the suffix by which a writer,
+    such as sleap-io or ffmpeg, picks its format.
+    """
+    return path.with_name(f"{path.stem}.partial{path.suffix}")
+
+
 def coerce_np(obj: object) -> object:
     if isinstance(obj, np.generic):
         return obj.item()

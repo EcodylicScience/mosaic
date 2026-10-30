@@ -55,9 +55,13 @@ __all__ = [
     "EmbeddingPositiveScope",
     "EmbeddingSettings",
     "SleapBackbone",
+    "SleapBackboneSize",
     "SleapHead",
+    "SleapOptimizer",
     "SleapTrainConfig",
+    "SleapTrainSettings",
     "effective_train_config",
+    "effective_train_settings",
     "embedding_settings",
     "loader_worker_keys_in",
     "sleap_device_overrides",
@@ -127,12 +131,226 @@ what mosaic asks of it.
 _EMBEDDING_DIM: Final = 128
 """The length of an appearance vector, sleap-nn's default."""
 
-_EMBEDDING_OUTPUT_STRIDE: Final[Mapping[SleapBackbone, int]] = {
-    "unet": 16,
-    "convnext": 32,
-    "swint": 32,
+SleapBackboneSize = Literal["tiny", "small", "base", "large"]
+"""The size of a convnext or swint backbone. swint has no ``large``."""
+
+SleapOptimizer = Literal["Adam", "AdamW"]
+"""The optimizers sleap-nn names."""
+
+type _HierarchicalBackbone = Literal["convnext", "swint"]
+
+_IMAGENET_WEIGHTS: Final[
+    Mapping[_HierarchicalBackbone, Mapping[SleapBackboneSize, str]]
+] = {
+    "convnext": {
+        "tiny": "ConvNeXt_Tiny_Weights",
+        "small": "ConvNeXt_Small_Weights",
+        "base": "ConvNeXt_Base_Weights",
+        "large": "ConvNeXt_Large_Weights",
+    },
+    "swint": {
+        "tiny": "Swin_T_Weights",
+        "small": "Swin_S_Weights",
+        "base": "Swin_B_Weights",
+    },
 }
-"""The stride of the embedding head's input, each backbone's default ``max_stride``."""
+"""The ImageNet weights sleap-nn loads, by backbone and size."""
+
+_SLEAP_NN_BACKBONE_SIZE: Final[SleapBackboneSize] = "tiny"
+_SLEAP_NN_STEM_STRIDE: Final = 2
+_STRIDE_PER_STEM_STRIDE: Final = 16
+"""sleap-nn sets a convnext or swint ``max_stride`` to 16 times its stem stride."""
+
+_UNET_EMBEDDING_MAX_STRIDE: Final = 16
+"""The UNet's default ``max_stride``, at which an embedding head pools."""
+
+_CACHED_PIPELINE: Final = "torch_dataset_cache_img_memory"
+_STREAMED_PIPELINE: Final = "torch_dataset"
+
+EMBEDDING_SELECT_METRIC_MODES: Final[Mapping[str, Literal["min", "max"]]] = {
+    "rank1": "max",
+    "mAP": "max",
+    "auc": "max",
+    "knn_acc": "max",
+    "eer": "min",
+}
+"""The ``eval.select_metric`` values of an embedding run, each with its checkpoint mode.
+
+sleap-nn's own mapping, from ``ModelTrainer._setup_loggers_callbacks``.
+"""
+
+EMBEDDING_SELECT_METRIC: Final = "rank1"
+"""sleap-nn's default ``eval.select_metric`` for an embedding run."""
+
+
+@dataclass(frozen=True, slots=True)
+class SleapTrainSettings:
+    """The backbone and training settings of a document, each ``None`` when unset.
+
+    An unset setting writes nothing for a pose head, which keeps sleap-nn's
+    default. For the ``embedding`` head it takes the value of the measured
+    embedding training: a batch of 64, a tiny backbone with its ImageNet
+    weights at stem stride 4, AdamW at a learning rate of 1e-4, the images'
+    own channels, and no image cache.
+
+    Attributes:
+        batch_size: Samples per batch of both data loaders.
+        backbone_size: The convnext or swint ``model_type``.
+        pretrained_backbone: Whether a convnext or swint backbone starts from
+            the ImageNet weights of its size.
+        stem_stride: The stride of a convnext or swint stem. Its kernel stays at
+            sleap-nn's 4, the one kernel the ImageNet weights load into.
+        max_stride: The backbone's ``max_stride``.
+        optimizer: ``trainer_config.optimizer_name``.
+        learning_rate: ``trainer_config.optimizer.lr``.
+        ensure_grayscale: ``data_config.preprocessing.ensure_grayscale``.
+        cache_images: Whether sleap-nn caches the decoded images in memory.
+    """
+
+    batch_size: int | None = None
+    backbone_size: SleapBackboneSize | None = None
+    pretrained_backbone: bool | None = None
+    stem_stride: int | None = None
+    max_stride: int | None = None
+    optimizer: SleapOptimizer | None = None
+    learning_rate: float | None = None
+    ensure_grayscale: bool | None = None
+    cache_images: bool | None = None
+
+
+_UNSET_TRAIN_SETTINGS: Final = SleapTrainSettings()
+
+_EMBEDDING_BATCH_SIZE: Final = 64
+_EMBEDDING_STEM_STRIDE: Final = 4
+_EMBEDDING_OPTIMIZER: Final[SleapOptimizer] = "AdamW"
+_EMBEDDING_LEARNING_RATE: Final = 1e-4
+"""The measured embedding training's values for an embedding head's unset settings."""
+
+
+def _or[T](value: T | None, default: T) -> T:
+    return default if value is None else value
+
+
+def _hierarchical(backbone: SleapBackbone) -> _HierarchicalBackbone | None:
+    match backbone:
+        case "convnext" | "swint":
+            return backbone
+        case "unet":
+            return None
+
+
+def effective_train_settings(
+    head: SleapHead, backbone: SleapBackbone, settings: SleapTrainSettings
+) -> SleapTrainSettings:
+    """The settings a document writes, after the head's defaults fill *settings*.
+
+    A pose head's settings are *settings*. An embedding head fills each unset
+    setting with the measured training's value, except the convnext and swint
+    settings on a UNet. Its ``max_stride`` is 16 times the stem stride on
+    convnext and swint, and 16 on a UNet.
+
+    Raises:
+        ValueError: A combination sleap-nn refuses, or one whose value sleap-nn
+            replaces: ``backbone_size``, ``pretrained_backbone`` true or
+            ``stem_stride`` with ``unet``, ``backbone_size`` ``large`` with
+            ``swint``, a convnext or swint ``max_stride`` other than 16 times
+            the stem stride, or ``ensure_grayscale`` with ``pretrained_backbone``
+            on a pose head, which sleap-nn trains on RGB. The message names the
+            fields.
+    """
+    hierarchical = _hierarchical(backbone)
+    if hierarchical is None:
+        for name, refused in (
+            ("backbone_size", settings.backbone_size is not None),
+            ("pretrained_backbone", settings.pretrained_backbone is True),
+            ("stem_stride", settings.stem_stride is not None),
+        ):
+            if refused:
+                msg = f"{name} applies to a convnext or swint backbone, not to unet."
+                raise ValueError(msg)
+    if (
+        head != "embedding"
+        and settings.pretrained_backbone is True
+        and settings.ensure_grayscale is True
+    ):
+        msg = (
+            "pretrained_backbone with ensure_grayscale trains a pose head on "
+            "RGB images: sleap-nn converts them for the ImageNet weights. Unset "
+            "ensure_grayscale or pretrained_backbone."
+        )
+        raise ValueError(msg)
+    if head == "embedding":
+        if hierarchical is None:
+            stem_stride = None
+            max_stride = _or(settings.max_stride, _UNET_EMBEDDING_MAX_STRIDE)
+        else:
+            stem_stride = _or(settings.stem_stride, _EMBEDDING_STEM_STRIDE)
+            max_stride = _or(settings.max_stride, _STRIDE_PER_STEM_STRIDE * stem_stride)
+        settings = SleapTrainSettings(
+            batch_size=_or(settings.batch_size, _EMBEDDING_BATCH_SIZE),
+            backbone_size=(
+                None
+                if hierarchical is None
+                else _or(settings.backbone_size, _SLEAP_NN_BACKBONE_SIZE)
+            ),
+            pretrained_backbone=(
+                settings.pretrained_backbone
+                if hierarchical is None
+                else _or(settings.pretrained_backbone, True)
+            ),
+            stem_stride=stem_stride,
+            max_stride=max_stride,
+            optimizer=_or(settings.optimizer, _EMBEDDING_OPTIMIZER),
+            learning_rate=_or(settings.learning_rate, _EMBEDDING_LEARNING_RATE),
+            ensure_grayscale=_or(settings.ensure_grayscale, False),
+            cache_images=_or(settings.cache_images, False),
+        )
+    if hierarchical is not None:
+        _refuse_hierarchical_settings(hierarchical, settings)
+    return settings
+
+
+def _refuse_hierarchical_settings(
+    backbone: _HierarchicalBackbone, settings: SleapTrainSettings
+) -> None:
+    size = settings.backbone_size
+    if size is not None and size not in _IMAGENET_WEIGHTS[backbone]:
+        sizes = ", ".join(_IMAGENET_WEIGHTS[backbone])
+        msg = f"backbone_size {size!r} is not a {backbone} size. It is one of {sizes}."
+        raise ValueError(msg)
+    stem_stride = _or(settings.stem_stride, _SLEAP_NN_STEM_STRIDE)
+    derived = _STRIDE_PER_STEM_STRIDE * stem_stride
+    if settings.max_stride is not None and settings.max_stride != derived:
+        msg = (
+            f"max_stride {settings.max_stride} differs from the {derived} that "
+            f"sleap-nn sets for a {backbone} backbone at stem stride "
+            f"{stem_stride}, 16 times the stem stride. Set stem_stride instead."
+        )
+        raise ValueError(msg)
+
+
+def _backbone_block(
+    head: SleapHead, backbone: SleapBackbone, settings: SleapTrainSettings
+) -> dict[str, object]:
+    """The backbone's block, holding each setting that is set."""
+    block: dict[str, object] = {}
+    hierarchical = _hierarchical(backbone)
+    if hierarchical is not None:
+        if settings.backbone_size is not None:
+            block["model_type"] = settings.backbone_size
+        if settings.pretrained_backbone:
+            size: SleapBackboneSize = _or(
+                settings.backbone_size, _SLEAP_NN_BACKBONE_SIZE
+            )
+            block["pre_trained_weights"] = _IMAGENET_WEIGHTS[hierarchical][size]
+        if settings.stem_stride is not None:
+            block["stem_patch_stride"] = settings.stem_stride
+    if settings.max_stride is not None:
+        block["max_stride"] = settings.max_stride
+        if head == "embedding":
+            block["output_stride"] = settings.max_stride
+    return block
+
 
 EmbeddingPositiveScope = Literal["global_id", "tracklet", "aug_view"]
 """What makes two crops one identity: one track name across the labels, one
@@ -265,6 +483,8 @@ class _DataConfig(TypedDict):
     validation_fraction: NotRequired[float]
     provider: str
     preprocessing: _PreprocessingConfig
+    # Written when its setting is set, and for the embedding head.
+    data_pipeline_fw: NotRequired[str]
     # Written for the embedding head only.
     identity: NotRequired[_IdentityConfig]
     use_augmentations_train: NotRequired[bool]
@@ -274,9 +494,29 @@ class _DataConfig(TypedDict):
 class _ModelConfig(TypedDict):
     backbone_config: dict[str, dict[str, object]]
     head_configs: dict[str, dict[str, object]]
+    # Written for the embedding head only.
+    init_weights: NotRequired[str]
     # sleap_train_config writes both or neither, from one base checkpoint.
     pretrained_backbone_weights: NotRequired[str]
     pretrained_head_weights: NotRequired[str]
+
+
+class _LoaderConfig(TypedDict):
+    batch_size: int
+
+
+class _OptimizerConfig(TypedDict):
+    lr: float
+
+
+class _EvalConfig(TypedDict):
+    enabled: bool
+    frequency: int
+
+
+class _CheckpointConfig(TypedDict):
+    monitor: str
+    mode: Literal["min", "max"]
 
 
 class _TrainerConfig(TypedDict):
@@ -285,8 +525,15 @@ class _TrainerConfig(TypedDict):
     save_ckpt: bool
     ckpt_dir: str
     run_name: str
+    # Written when their setting is set, and for the embedding head.
+    train_data_loader: NotRequired[_LoaderConfig]
+    val_data_loader: NotRequired[_LoaderConfig]
+    optimizer_name: NotRequired[SleapOptimizer]
+    optimizer: NotRequired[_OptimizerConfig]
     # Written for the embedding head only.
     trainer_devices: NotRequired[int]
+    eval: NotRequired[_EvalConfig]
+    model_ckpt: NotRequired[_CheckpointConfig]
 
 
 class SleapTrainConfig(TypedDict):
@@ -315,26 +562,37 @@ def sleap_train_config(
     base_weights: Path | None,
     run_name: str,
     objective: EmbeddingObjective = DEFAULT_EMBEDDING_OBJECTIVE,
+    settings: SleapTrainSettings = _UNSET_TRAIN_SETTINGS,
+    select_metric: str = EMBEDDING_SELECT_METRIC,
 ) -> SleapTrainConfig:
     """The training configuration, as the mapping that is written to YAML.
 
-    Built rather than templated so it can be asserted on without running
-    anything, which is what the tests do. A *validation_labels* file is
-    written as ``val_labels_path``, and *validation_fraction* only without one.
-    A *base_weights* checkpoint is written as both
-    ``model_config.pretrained_backbone_weights`` and
-    ``model_config.pretrained_head_weights``, sleap-nn's fine-tune mapping. The
-    run starts from the base's weights at epoch zero.
+    Built rather than templated so it can be asserted on without running anything, which
+    is what the tests do. A *validation_labels* file is written as ``val_labels_path``,
+    and *validation_fraction* only without one. A *base_weights* checkpoint is written
+    as both ``model_config.pretrained_backbone_weights`` and
+    ``model_config.pretrained_head_weights``, sleap-nn's fine-tune mapping. The run
+    starts from the base's weights at epoch zero.
 
-    The ``embedding`` head's leaf holds the vector length, the backbone's
-    output stride and every term of *objective*. No other head reads
-    *objective*, and its default suits only labels that no
-    ``prepare-embedding-data`` run cut. A caller building an embedding
-    document chooses it with
-    :func:`mosaic.tracking.ops.train_sleap.embedding_objective`. That head's
-    document also declares track names per video, augments, and trains on one
-    device.
+    The ``embedding`` head's leaf holds the vector length, the backbone's output stride
+    and every term of *objective*. No other head reads *objective*, and its default
+    suits only labels that no ``prepare-embedding-data`` run cut. A caller building an
+    embedding document chooses it with
+    :func:`mosaic.tracking.ops.train_sleap.embedding_objective`. That head's document
+    also declares track names per video, augments, and trains on one device. It
+    initializes with xavier, evaluates every epoch, and keeps the checkpoint with the
+    best validation *select_metric*, the ``eval.select_metric`` that sleap-nn
+    early-stops an embedding run on. No other head reads *select_metric*.
+
+    Each of *settings* is written at its sleap-nn key, as
+    :func:`effective_train_settings` fills it for *head*.
+
+    Raises:
+        ValueError: *settings* holds a combination that :func:`effective_train_settings`
+            refuses, or an embedding *select_metric* is not one of
+            :data:`EMBEDDING_SELECT_METRIC_MODES`.
     """
+    effective = effective_train_settings(head, backbone, settings)
     data_config: _DataConfig = {
         "train_labels_path": [str(labels_path)],
         "provider": "LabelsReader",
@@ -348,8 +606,15 @@ def sleap_train_config(
         # ``ConfigAttributeError: Key 'preprocessing' is not in struct``.
         # Stating them changes no behavior and keeps the run from ending on an
         # error after the model is already on disk.
-        "preprocessing": {"ensure_rgb": False, "ensure_grayscale": False},
+        "preprocessing": {
+            "ensure_rgb": False,
+            "ensure_grayscale": _or(effective.ensure_grayscale, False),
+        },
     }
+    if effective.cache_images is not None:
+        data_config["data_pipeline_fw"] = (
+            _CACHED_PIPELINE if effective.cache_images else _STREAMED_PIPELINE
+        )
     if validation_labels is None:
         data_config["validation_fraction"] = validation_fraction
     else:
@@ -358,7 +623,7 @@ def sleap_train_config(
         # The backbone takes an empty block: its fields carry real defaults, so
         # merging one over sleap-nn's structured config yields those. A head
         # does not -- see ``_HEAD_SECTIONS``.
-        "backbone_config": {backbone: {}},
+        "backbone_config": {backbone: _backbone_block(head, backbone, effective)},
         "head_configs": {head: {section: {} for section in _HEAD_SECTIONS[head]}},
     }
     if base_weights is not None:
@@ -371,17 +636,38 @@ def sleap_train_config(
         "ckpt_dir": str(run_root),
         "run_name": run_name,
     }
+    if effective.batch_size is not None:
+        trainer_config["train_data_loader"] = {"batch_size": effective.batch_size}
+        trainer_config["val_data_loader"] = {"batch_size": effective.batch_size}
+    if effective.optimizer is not None:
+        trainer_config["optimizer_name"] = effective.optimizer
+    if effective.learning_rate is not None:
+        trainer_config["optimizer"] = {"lr": effective.learning_rate}
     if head == "embedding":
         model_config["head_configs"][head]["embedding"] = {
             "embedding_dim": _EMBEDDING_DIM,
-            "output_stride": _EMBEDDING_OUTPUT_STRIDE[backbone],
+            "output_stride": effective.max_stride,
             "objective": objective.document(),
         }
+        model_config["init_weights"] = "xavier"
         identity: _IdentityConfig = {"track_names_are_global": False}
         data_config["identity"] = identity
         data_config["use_augmentations_train"] = True
         data_config["augmentation_config"] = copy.deepcopy(_EMBEDDING_AUGMENTATION)
         trainer_config["trainer_devices"] = 1
+        trainer_config["eval"] = {"enabled": True, "frequency": 1}
+        mode = EMBEDDING_SELECT_METRIC_MODES.get(select_metric)
+        if mode is None:
+            accepted = ", ".join(EMBEDDING_SELECT_METRIC_MODES)
+            msg = (
+                f"select_metric is {select_metric!r}, and sleap-nn selects an "
+                f"embedding checkpoint on one of {accepted}."
+            )
+            raise ValueError(msg)
+        trainer_config["model_ckpt"] = {
+            "monitor": f"eval/val/{select_metric}",
+            "mode": mode,
+        }
     return {
         "data_config": data_config,
         "model_config": model_config,
@@ -726,6 +1012,12 @@ class EmbeddingSettings:
             holds it, ``None`` when unset, which trains on every device.
         trainer_device_indices: ``trainer_config.trainer_device_indices`` as
             the document holds it, ``None`` when unset.
+        select_metric: ``trainer_config.eval.select_metric``, which early
+            stopping follows. ``rank1`` when unset.
+        checkpoint_monitor: ``trainer_config.model_ckpt.monitor``, the metric
+            whose best epoch is kept. ``val/loss`` when unset, which sleap-nn
+            replaces with the selection metric.
+        checkpoint_mode: ``trainer_config.model_ckpt.mode``, ``min`` when unset.
     """
 
     scope: EmbeddingPositiveScope
@@ -733,6 +1025,9 @@ class EmbeddingSettings:
     restrict_same_video: bool
     trainer_devices: JsonValue
     trainer_device_indices: JsonValue
+    select_metric: JsonValue
+    checkpoint_monitor: JsonValue
+    checkpoint_mode: JsonValue
 
 
 def embedding_settings(document: dict[str, JsonValue]) -> EmbeddingSettings:
@@ -771,7 +1066,22 @@ def embedding_settings(document: dict[str, JsonValue]) -> EmbeddingSettings:
         trainer_device_indices=_select(
             document, ("trainer_config", "trainer_device_indices")
         ),
+        select_metric=_or_default(
+            _select(document, ("trainer_config", "eval", "select_metric")),
+            EMBEDDING_SELECT_METRIC,
+        ),
+        checkpoint_monitor=_or_default(
+            _select(document, ("trainer_config", "model_ckpt", "monitor")), "val/loss"
+        ),
+        checkpoint_mode=_or_default(
+            _select(document, ("trainer_config", "model_ckpt", "mode")), "min"
+        ),
     )
+
+
+def _or_default(value: JsonValue | None, default: str) -> JsonValue:
+    """*value*, or sleap-nn's *default* where the document leaves it unset."""
+    return default if value is None else value
 
 
 def sleap_device_overrides(device: str) -> dict[str, JsonValue]:

@@ -11,6 +11,7 @@ from mosaic.tracking.sleap.embedding_windows import (
     EmbeddingWindow,
     EntryWindows,
     WindowInstance,
+    keep_evenly_spaced_windows,
     plan_windows,
 )
 
@@ -180,3 +181,48 @@ def test_the_plan_does_not_depend_on_the_row_order() -> None:
     for window in plans[0].windows:
         keys = [(i.frame, i.track) for i in window.instances]
         assert keys == sorted(keys)
+
+
+def _numbered(count: int) -> EntryWindows:
+    """An entry with *count* windows, one qualifying frame each."""
+    pairs = _everywhere(range(0, count * 10, 10), ["a", "b"])
+    return _plan(pairs)
+
+
+def _indices(plan: EntryWindows) -> list[int]:
+    return [window.index for window in plan.windows]
+
+
+def test_the_kept_windows_are_spaced_evenly_by_window_index() -> None:
+    kept = keep_evenly_spaced_windows(_numbered(7), 3)
+
+    assert _indices(kept) == [0, 3, 6]
+    assert kept.entry_key == "cam1"
+
+
+def test_the_kept_windows_include_the_first_and_last() -> None:
+    kept = keep_evenly_spaced_windows(_numbered(180), 60)
+
+    assert len(kept.windows) == 60
+    assert _indices(kept)[0] == 0
+    assert _indices(kept)[-1] == 179
+    assert len(set(_indices(kept))) == 60
+
+
+def test_an_entry_with_no_more_windows_than_the_count_keeps_all() -> None:
+    plan = _numbered(4)
+
+    assert keep_evenly_spaced_windows(plan, 4) == plan
+    assert keep_evenly_spaced_windows(plan, 60) == plan
+
+
+def test_a_count_of_one_keeps_the_first_window() -> None:
+    assert _indices(keep_evenly_spaced_windows(_numbered(5), 1)) == [0]
+
+
+def test_spacing_follows_the_windows_present_not_the_index_range() -> None:
+    pairs = _everywhere([0, 10, 20, 900], ["a", "b"])
+
+    kept = keep_evenly_spaced_windows(_plan(pairs), 2)
+
+    assert _indices(kept) == [0, 90]

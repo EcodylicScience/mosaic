@@ -107,7 +107,7 @@ from mosaic_media.transcode import TranscodeError
 from mosaic.core.entry import Entry
 from mosaic.core.media.store_division import MediaRowKey, StoreWindow
 from mosaic.core.params import Declared
-from mosaic.core.pipeline._utils import ResolvedScope, hash_params
+from mosaic.core.pipeline._utils import ResolvedScope, hash_params, staging_path
 from mosaic.core.params import Params
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.run_commands import mosaic_run_command
@@ -896,7 +896,7 @@ def write_joined_export(
         raise TranscodeError(message)
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+    partial = staging_path(dest)
     listing = dest.with_name(f"{dest.stem}.concat.txt")
     majority, odd = _outliers(facts)
     if not reencode and join_needs_reencode(facts):

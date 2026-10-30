@@ -18,7 +18,20 @@ individual in every video, or on labels that are not a `prepare-training-data` r
 `track_by="alias"`; `tracklet` on labels that are not a `prepare-embedding-data` run, or
 without `restrict_same_video`; fewer than two tracks; labels with no validation file;
 and more than one device. An embedding model fine-tunes only from an embedding base.
-`train-sleap` stays at 0.3, and no existing run id moves.
+
+**Typed `train-sleap` settings.** `train-sleap` gains `batch_size`, `backbone_size`,
+`pretrained_backbone`, `stem_stride`, `max_stride`, `optimizer`, `learning_rate`,
+`ensure_grayscale` and `cache_images`, each unset by default. Unset, a pose head writes
+the config it wrote before, and an embedding head writes a batch of 64, a tiny convnext
+or swint with its ImageNet weights at stem stride 4, AdamW at 1e-4, xavier
+initialization, evaluation every epoch and a checkpoint monitor on the selection metric.
+`backbone_size`, `stem_stride` and a true `pretrained_backbone` are refused with `unet`,
+and a convnext or swint `max_stride` other than 16 times the stem stride is refused, as
+is `ensure_grayscale` with `pretrained_backbone` on a pose head, which sleap-nn trains
+on RGB. `stem_stride` sets the stem's stride only, so ImageNet weights load at any
+stride. On an embedding head the objective's sampler sets the training batch, and
+`batch_size` sets the validation batch. The fields enter the run id, so every
+`train-sleap` run id moves while the op stays at 0.3.
 
 **`prepare-embedding-data` and `assign-identities`.** `prepare-embedding-data` cuts short
 training windows from a `sleap` tracker run into a training file and a validation file.
@@ -55,11 +68,37 @@ run allows each entry silence in proportion to its frames, and never less than
 **`track_by` column.** A `prepare-training-data` index row records `track_by`, blank on
 rows written before the column. A rerun of an older preparation fills it.
 
+**Written values.** A `sleap` index row's `model_type`, and the `model_type` in its
+variant's `params.json`, name every model of the run's set joined with `+`, such as
+`centroid+centered_instance`, where they named the first. A `train-sleap` model row's
+`n_epochs` counts the epochs the run trained, 0 when it logged none, where it recorded
+`max_epochs`. A SLEAP step writes each file under a staging name with `.partial` before
+its last suffix, `labels.slp` as `labels.partial.slp` where it was `labels.slp.partial`,
+and moves it into place when the step succeeds.
+
+**Validation windows.** `prepare-embedding-data` gains `val_windows_per_entry`, 60 by
+default: each validation entry keeps that many windows, evenly spaced. Unset keeps every
+window.
+
+**Checkpoint metric.** An embedding `train-sleap` run writes
+`trainer_config.model_ckpt.monitor` as `eval/val/<metric>` for the
+`trainer_config.eval.select_metric` in effect after `sleap_overrides`, `rank1` by
+default, with that metric's `mode`. An override whose monitor names another metric, or
+whose `mode` is wrong for it, is refused before the claim. sleap-nn stops early on the
+selection metric and keeps the monitor's best epoch.
+
+**Planned preparations.** `mosaic pipeline plan` reports a finished
+`prepare-training-data`, `prepare-embedding-data` or `convert-points` run as complete,
+where it reported no coverage for one.
+
+**Relative manifest path.** A dataset opened through a relative `-m` path writes
+root-relative index rows, where it wrote absolute ones.
+
 **Stale model directory.** `train-sleap` removes `run_root/model` before it trains, for
 every head. Under `overwrite` or a retry, sleap-nn used to write `model-1` beside the
 stale directory, and mosaic registered the stale one.
 
-**No existing run id moves.** The `sleap` run id, the tracks variant, the
+**No other run id moves.** The `sleap` run id, the tracks variant, the
 `prepare-training-data` run id and the feature run ids are byte identical. The new
 columns and the provenance recorded in a variant's `params.json` are not part of any
 identifier.

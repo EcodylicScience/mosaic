@@ -66,7 +66,8 @@ def test_an_unregistered_tracker_gets_no_root_rather_than_a_composed_one() -> No
     [
         "vid1.no-detections.json",
         "vid1.embeddings.npz",
-        "vid1.embeddings.npz.partial",
+        "vid1.analysis.partial.h5",
+        "vid1.embeddings.partial.npz",
     ],
 )
 def test_the_sleap_root_declares_its_marker_and_readback_as_outputs(

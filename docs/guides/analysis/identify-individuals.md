@@ -48,7 +48,9 @@ where at least `min_tracks_present` tracks have an instance. Trackers swap ident
 now and then. Short windows bound how far apart two crops of one track are taken as one
 animal. No track continues from one window into the next.
 `split_tracks_at_gap` cuts a track in two inside a window where its instances are
-further apart than that many frames.
+further apart than that many frames. Each validation entry keeps 60 evenly spaced
+windows (`val_windows_per_entry`), which shortens each validation pass. `null` keeps
+every window.
 
 The run refuses an entry whose predictions file is missing, and a preparation with
 fewer than two tracks in either file. The frames are embedded in its output. Removing

@@ -278,7 +278,9 @@ def test_the_result_is_published_atomically(
     def run(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
         # While the tool is writing, the destination must not exist yet.
         observed["target_absent_during_write"] = not target.exists()
-        observed["writes_elsewhere"] = argv[-1] != str(target)
+        observed["writes_the_staged_name"] = argv[-1] == str(
+            tmp_path / "out.partial.slp"
+        )
         _ = Path(argv[-1]).write_bytes(b"slp")
         return ("", "", 0)
 
@@ -286,7 +288,10 @@ def test_the_result_is_published_atomically(
     _stub_sleap(tmp_path, monkeypatch)
 
     written = write_slp(_set(tmp_path), target)
-    assert observed == {"target_absent_during_write": True, "writes_elsewhere": True}
+    assert observed == {
+        "target_absent_during_write": True,
+        "writes_the_staged_name": True,
+    }
     assert written.read_bytes() == b"slp"
 
 

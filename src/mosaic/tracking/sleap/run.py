@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
+from mosaic.core.pipeline._utils import staging_path
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
@@ -228,11 +229,12 @@ def publish_from_snippet(
 ) -> tuple[str, str]:
     """Run *snippet* in the SLEAP interpreter and publish the file it writes.
 
-    The snippet's argv is *inputs* followed by ``<out>.partial``, which it
-    writes. Once it exits cleanly having written it, *validate*, when given,
-    checks the file, and the file is moved onto *out* with ``os.replace``.
-    *out* is removed first, and a failed run leaves neither file. The staged
-    file sits beside *out*, so the move is a rename within one filesystem.
+    The snippet's argv is *inputs* followed by :func:`staging_path` of *out*,
+    which it writes. Once it exits cleanly having written it, *validate*, when
+    given, checks the file, and the file is moved onto *out* with
+    ``os.replace``. *out* is removed first, and a failed run leaves neither
+    file. The staged file sits beside *out*, so the move is a rename within one
+    filesystem.
 
     Args:
         invocation: The argv prefix that launches the SLEAP ``python``.
@@ -253,7 +255,7 @@ def publish_from_snippet(
         SleapError: The snippet exited non-zero.
         FileNotFoundError: It exited cleanly and wrote no file.
     """
-    partial = out.with_name(f"{out.name}.partial")
+    partial = staging_path(out)
     out.unlink(missing_ok=True)
     partial.unlink(missing_ok=True)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -765,9 +767,9 @@ def run_sleap_analysis_export(
     """Export a SLEAP ``.slp`` file to its analysis HDF5 form.
 
     The SLEAP interpreter loads the file with ``sleap_io.load_slp`` and writes
-    ``<output_h5>.partial`` with ``sleap_io.save_analysis_h5`` in the ``matlab``
-    layout, every frame of the file's one video included. The file is then
-    moved onto *output_h5* with ``os.replace``. Its per-dataset ``dims``
+    :func:`staging_path` of *output_h5* with ``sleap_io.save_analysis_h5`` in the
+    ``matlab`` layout, every frame of the file's one video included. The file is
+    then moved onto *output_h5* with ``os.replace``. Its per-dataset ``dims``
     attributes let the mosaic converter normalize the layout without any SLEAP
     dependency. *output_h5* is removed first, and a failed export leaves
     neither file.
@@ -879,7 +881,7 @@ def read_back_embeddings(
 ) -> Path:
     """Write the tracked instances of *predicted* and their vectors to *out*.
 
-    The SLEAP interpreter writes ``<out>.partial``, which is checked with
+    The SLEAP interpreter writes :func:`staging_path` of *out*, checked with
     :func:`~mosaic.core.track_library.sleap.read_appearance_readback` and then
     moved onto *out* with ``os.replace``. *out* is removed first. A failed
     readback leaves neither file.

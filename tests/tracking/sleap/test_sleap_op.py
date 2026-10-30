@@ -410,3 +410,33 @@ def test_the_unmatched_count_of_a_bridge_reaches_the_index_row(
     )
 
     assert _unmatched_cells(ds) == ["2"]
+
+
+def test_the_index_row_names_every_model_of_the_set_in_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = install_fake_sleap(monkeypatch)
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    models = write_sleap_model_set(tmp_path, "centroid", "centered_instance")
+
+    _ = dataset_runs.run_sleap(ds, SleapParams(model_paths=models))
+
+    index = pd.read_csv(
+        dataset_runs.sleap_index_path(ds), dtype=str, keep_default_na=False
+    )
+    assert list(index["model_type"]) == ["centroid+centered_instance"]
+
+
+def test_the_index_row_of_one_model_names_its_type_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = install_fake_sleap(monkeypatch)
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    models = write_sleap_model_set(tmp_path, "bottomup")
+
+    _ = dataset_runs.run_sleap(ds, SleapParams(model_paths=models))
+
+    index = pd.read_csv(
+        dataset_runs.sleap_index_path(ds), dtype=str, keep_default_na=False
+    )
+    assert list(index["model_type"]) == ["bottomup"]

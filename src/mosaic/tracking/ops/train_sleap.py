@@ -14,11 +14,12 @@ additionally write a tracks variant naming a table that does not exist.
 
 from __future__ import annotations
 
+import csv
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self
 
-from pydantic import Field, TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.entry_claim import phase_activity
@@ -69,13 +70,19 @@ from mosaic.tracking.sleap.probe import (
 )
 from mosaic.tracking.sleap.training import (
     DEFAULT_EMBEDDING_OBJECTIVE,
+    EMBEDDING_SELECT_METRIC,
+    EMBEDDING_SELECT_METRIC_MODES,
     PREPARED_EMBEDDING_OBJECTIVE,
     EmbeddingObjective,
     EmbeddingSettings,
     SleapBackbone,
+    SleapBackboneSize,
     SleapHead,
+    SleapOptimizer,
     SleapTrainConfig,
+    SleapTrainSettings,
     effective_train_config,
+    effective_train_settings,
     embedding_settings,
     loader_worker_keys_in,
     sleap_device_overrides,
@@ -128,6 +135,62 @@ _HEAD_DESCRIPTION = (
 _BACKBONE_DESCRIPTION = "The feature extractor architecture, independent of the head."
 
 _SEED_DESCRIPTION = "Seeds sleap-nn's initialization."
+
+_UNSET_NOTE = (
+    " Unset, a pose head keeps sleap-nn's default and an embedding head takes "
+    "the value that trained the four-mice embedding model"
+)
+
+_BATCH_SIZE_DESCRIPTION = (
+    "Samples per batch of the training and the validation loader. An "
+    "embedding head draws each training batch from the objective's sampler, "
+    "groups_per_batch times samples_per_group crops, so this sets its "
+    "validation batch." + _UNSET_NOTE + ", 64. At sleap-nn's default of 4 an "
+    "embedding run's validation pass is slow."
+)
+
+_BACKBONE_SIZE_DESCRIPTION = (
+    "The size of a convnext or swint backbone; swint has no large. Refused "
+    "with unet." + _UNSET_NOTE + ", tiny."
+)
+
+_PRETRAINED_BACKBONE_DESCRIPTION = (
+    "Whether a convnext or swint backbone starts from the ImageNet weights of "
+    "its size. Refused true with unet. base_model's weights replace them."
+    + _UNSET_NOTE
+    + ", true."
+)
+
+_STEM_STRIDE_DESCRIPTION = (
+    "The stride of a convnext or swint stem; its kernel stays at 4, so "
+    "ImageNet weights load at any stride. sleap-nn sets the backbone's "
+    "max_stride to 16 times it. A stride of 2 fills about "
+    "20 GB of GPU memory under an embedding head. Refused with unet."
+    + _UNSET_NOTE
+    + ", 4."
+)
+
+_MAX_STRIDE_DESCRIPTION = (
+    "The backbone's max_stride, at which an embedding head pools. On convnext "
+    "and swint it must be 16 times the stem stride, which sleap-nn sets anyway."
+    + _UNSET_NOTE
+    + ": 16 times the stem stride on convnext and swint, 16 on unet."
+)
+
+_OPTIMIZER_DESCRIPTION = "The optimizer." + _UNSET_NOTE + ", AdamW."
+
+_LEARNING_RATE_DESCRIPTION = "The optimizer's learning rate." + _UNSET_NOTE + ", 1e-4."
+
+_ENSURE_GRAYSCALE_DESCRIPTION = (
+    "Whether the images are converted to one channel." + _UNSET_NOTE + ", false: "
+    "color can tell animals apart. Set true for grayscale video. Refused true "
+    "with pretrained_backbone on a pose head, which sleap-nn trains on RGB."
+)
+
+_CACHE_IMAGES_DESCRIPTION = (
+    "Whether sleap-nn holds the decoded images in host memory, which is faster "
+    "and costs about 17 GB for 2,880 RGB 1080p frames." + _UNSET_NOTE + ", false."
+)
 
 _VALIDATION_FRACTION_DESCRIPTION = (
     "Fraction of labels held out for validation. It applies only when the labels "
@@ -213,6 +276,20 @@ _DOCUMENT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(dict[str, Json
 
 MODEL_DIRECTORY: Final = "model"
 """The directory under a run root that sleap-nn writes the model to."""
+_TRAINING_LOG: Final = "training_log.csv"
+
+
+def _epochs_trained(training_log: Path) -> int:
+    """Return the epochs that *training_log* holds, 0 when the run wrote none.
+
+    sleap-nn's CSV logger writes one row per finished epoch, so the count is
+    what the run trained, which is fewer than the cap when it stopped early.
+    """
+    if not training_log.is_file():
+        return 0
+    with training_log.open(newline="") as handle:
+        return sum(1 for _ in csv.DictReader(handle))
+
 
 _DECLARATION_KEY: Final = "data_config.identity.track_names_are_global"
 
@@ -231,28 +308,69 @@ def _training_document(
     """The document a run writes and the overrides it hands sleap-nn, in order.
 
     The overrides are *sleap_overrides*, then the device's assignments for keys
-    not already set, then the loader worker count.
+    not already set, then the loader worker count. An embedding document keeps
+    its checkpoint on the ``eval.select_metric`` that the overrides leave in
+    effect, the metric sleap-nn early-stops on.
+
+    Raises:
+        TrainSleapInvalid: Hydra would reject an override, or the embedding
+            objective names a positive scope that sleap-nn does not.
     """
-    config = sleap_train_config(
-        labels_path,
-        run_root,
-        head=params.head,
-        backbone=params.backbone,
-        max_epochs=params.max_epochs,
-        seed=params.seed,
-        validation_fraction=params.validation_fraction,
-        validation_labels=validation_labels_beside(labels_path),
-        base_weights=base_weights,
-        run_name=MODEL_DIRECTORY,
-        objective=embedding_objective(params.labels),
-    )
+
+    def document(select_metric: str) -> SleapTrainConfig:
+        return sleap_train_config(
+            labels_path,
+            run_root,
+            head=params.head,
+            backbone=params.backbone,
+            max_epochs=params.max_epochs,
+            seed=params.seed,
+            validation_fraction=params.validation_fraction,
+            validation_labels=validation_labels_beside(labels_path),
+            base_weights=base_weights,
+            run_name=MODEL_DIRECTORY,
+            objective=embedding_objective(params.labels),
+            settings=params.train_settings(),
+            select_metric=select_metric,
+        )
+
+    config = document(EMBEDDING_SELECT_METRIC)
     overrides: dict[str, JsonValue] = dict(params.sleap_overrides or {})
     for key, value in sleap_device_overrides(params.device).items():
         overrides.setdefault(key, value)
     # These keys are set with update, because the bag refuses them and no
     # override can name them.
     overrides.update(sleap_loader_overrides(params.num_workers))
+    settings = _effective_settings(params, config, overrides)
+    if settings is not None:
+        select = settings.select_metric
+        # An unknown metric keeps the default document, and
+        # _refuse_a_checkpoint_off_the_selection_metric refuses it.
+        if isinstance(select, str) and select in EMBEDDING_SELECT_METRIC_MODES:
+            config = document(select)
     return config, overrides
+
+
+def _effective_settings(
+    params: TrainSleapParams,
+    config: SleapTrainConfig,
+    overrides: dict[str, JsonValue],
+) -> EmbeddingSettings | None:
+    """The embedding settings of the document sleap-nn composes.
+
+    ``None`` for a pose head, whose overrides are still checked.
+
+    Raises:
+        TrainSleapInvalid: Hydra would reject an override, or the embedding
+            objective names a positive scope that sleap-nn does not.
+    """
+    try:
+        effective = effective_train_config(_DOCUMENT.validate_python(config), overrides)
+        if params.head != "embedding":
+            return None
+        return embedding_settings(effective)
+    except ValueError as exc:
+        raise TrainSleapInvalid(str(exc)) from exc
 
 
 def _refuse_untrainable_settings(
@@ -272,15 +390,12 @@ def _refuse_untrainable_settings(
     Raises:
         TrainSleapInvalid: Hydra would reject an override, or the embedding
             settings can never train: ``global_id`` without the declaration,
-            ``tracklet`` across videos, or more than one device.
+            ``tracklet`` across videos, more than one device, or a checkpoint
+            kept on a metric other than the one early stopping follows.
     """
-    try:
-        effective = effective_train_config(_DOCUMENT.validate_python(config), overrides)
-        if params.head != "embedding":
-            return None
-        settings = embedding_settings(effective)
-    except ValueError as exc:
-        raise TrainSleapInvalid(str(exc)) from exc
+    settings = _effective_settings(params, config, overrides)
+    if settings is None:
+        return None
     if settings.scope == "global_id" and not settings.track_names_are_global:
         msg = (
             f"An embedding run with positive scope 'global_id' needs "
@@ -298,7 +413,41 @@ def _refuse_untrainable_settings(
         )
         raise TrainSleapInvalid(msg)
     _refuse_more_than_one_device(params.device, settings)
+    _refuse_a_checkpoint_off_the_selection_metric(settings)
     return settings
+
+
+def _refuse_a_checkpoint_off_the_selection_metric(settings: EmbeddingSettings) -> None:
+    """Refuse a checkpoint monitor that differs from the selection metric.
+
+    sleap-nn early-stops an embedding run on ``eval.select_metric`` and keeps the
+    best epoch of any ``model_ckpt.monitor`` other than ``val/loss``, which
+    defers to the selection metric.
+    """
+    select = settings.select_metric
+    mode = (
+        EMBEDDING_SELECT_METRIC_MODES.get(select) if isinstance(select, str) else None
+    )
+    if mode is None:
+        accepted = ", ".join(EMBEDDING_SELECT_METRIC_MODES)
+        msg = (
+            f"trainer_config.eval.select_metric is {select!r}, and sleap-nn "
+            f"selects an embedding checkpoint on one of {accepted}."
+        )
+        raise TrainSleapInvalid(msg)
+    monitor = f"eval/val/{select}"
+    if settings.checkpoint_monitor == "val/loss" or (
+        settings.checkpoint_monitor == monitor and settings.checkpoint_mode == mode
+    ):
+        return
+    msg = (
+        "An embedding run early-stops on trainer_config.eval.select_metric and "
+        "keeps the best epoch of trainer_config.model_ckpt.monitor. The monitor "
+        f"is {settings.checkpoint_monitor!r} with mode "
+        f"{settings.checkpoint_mode!r}, and select_metric {select!r} needs "
+        f"{monitor!r} with mode {mode!r}."
+    )
+    raise TrainSleapInvalid(msg)
 
 
 def _refuse_more_than_one_device(device: str, settings: EmbeddingSettings) -> None:
@@ -418,6 +567,29 @@ class TrainSleapParams(Params):
     validation_fraction: Annotated[
         float, Declared(_VALIDATION_FRACTION_DESCRIPTION)
     ] = 0.1
+    batch_size: Annotated[
+        int | None, Field(ge=1, examples=[16, 64]), Declared(_BATCH_SIZE_DESCRIPTION)
+    ] = None
+    backbone_size: Annotated[
+        SleapBackboneSize | None, Declared(_BACKBONE_SIZE_DESCRIPTION)
+    ] = None
+    pretrained_backbone: Annotated[
+        bool | None, Declared(_PRETRAINED_BACKBONE_DESCRIPTION)
+    ] = None
+    stem_stride: Annotated[
+        int | None, Field(ge=1, examples=[2, 4]), Declared(_STEM_STRIDE_DESCRIPTION)
+    ] = None
+    max_stride: Annotated[
+        int | None, Field(ge=1, examples=[16, 64]), Declared(_MAX_STRIDE_DESCRIPTION)
+    ] = None
+    optimizer: Annotated[SleapOptimizer | None, Declared(_OPTIMIZER_DESCRIPTION)] = None
+    learning_rate: Annotated[
+        float | None, Field(gt=0), Declared(_LEARNING_RATE_DESCRIPTION)
+    ] = None
+    ensure_grayscale: Annotated[
+        bool | None, Declared(_ENSURE_GRAYSCALE_DESCRIPTION)
+    ] = None
+    cache_images: Annotated[bool | None, Declared(_CACHE_IMAGES_DESCRIPTION)] = None
     sleap_overrides: Annotated[
         dict[str, JsonValue] | None, Declared(_SLEAP_OVERRIDES_DESCRIPTION)
     ] = None
@@ -440,6 +612,26 @@ class TrainSleapParams(Params):
         Field(ge=0, examples=[4, 8]),
         Declared(_NUM_WORKERS_DESCRIPTION),
     ] = None
+
+    def train_settings(self) -> SleapTrainSettings:
+        """The backbone and training settings, as the document builder takes them."""
+        return SleapTrainSettings(
+            batch_size=self.batch_size,
+            backbone_size=self.backbone_size,
+            pretrained_backbone=self.pretrained_backbone,
+            stem_stride=self.stem_stride,
+            max_stride=self.max_stride,
+            optimizer=self.optimizer,
+            learning_rate=self.learning_rate,
+            ensure_grayscale=self.ensure_grayscale,
+            cache_images=self.cache_images,
+        )
+
+    @model_validator(mode="after")
+    def _settings_are_buildable(self) -> Self:
+        """Refuse, at submit time, a combination of settings sleap-nn refuses."""
+        _ = effective_train_settings(self.head, self.backbone, self.train_settings())
+        return self
 
     # A consumer that sets the device itself narrows the field out of the model it
     # exposes; the check then has nothing to check there, and still runs here.
@@ -675,8 +867,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
             # one row per epoch. The config that used to be recorded here is a
             # file that exists, so the index advertised a metrics path holding
             # no metrics, which a reader has to open to discover.
-            produced / "training_log.csv",
-            params.max_epochs,
+            produced / _TRAINING_LOG,
+            _epochs_trained(produced / _TRAINING_LOG),
             artifact_shape="directory",
             artifact_path=produced,
             model_type=resolved.model_type,

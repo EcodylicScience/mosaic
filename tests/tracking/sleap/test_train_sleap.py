@@ -54,7 +54,9 @@ from mosaic.tracking.sleap.training import (
     EmbeddingObjective,
     EmbeddingPositiveScope,
     SleapBackbone,
+    SleapBackboneSize,
     SleapHead,
+    SleapTrainSettings,
     sleap_device_overrides,
     sleap_train_config,
 )
@@ -422,15 +424,21 @@ def _embedding_document(
 
 
 @pytest.mark.parametrize(
-    ("backbone", "stride"), [("unet", 16), ("convnext", 32), ("swint", 32)]
+    ("backbone", "stride"), [("unet", 16), ("convnext", 64), ("swint", 64)]
 )
 def test_the_embedding_leaf_takes_its_stride_from_the_backbone(
     backbone: SleapBackbone, stride: int
 ) -> None:
-    """Each stride is the backbone's default ``max_stride``."""
+    """The leaf pools at the backbone's ``max_stride``.
+
+    A convnext or swint stride is 16 times the stem stride of 4.
+    """
     values = dotted_values(_embedding_document(backbone))
+    backbone_block = f"model_config.backbone_config.{backbone}"
     assert values[f"{_EMBEDDING_LEAF}.embedding_dim"] == 128
     assert values[f"{_EMBEDDING_LEAF}.output_stride"] == stride
+    assert values[f"{backbone_block}.max_stride"] == stride
+    assert values[f"{backbone_block}.output_stride"] == stride
 
 
 @pytest.mark.parametrize(
@@ -571,6 +579,356 @@ def test_an_override_of_an_objective_term_is_assigned_bare(
     assignments = _assignments(seen[0])
     assert f"{_OBJECTIVE}.loss.temperature=0.07" in assignments
     assert f"+{_EMBEDDING_LEAF}.pool=avg" in assignments
+
+
+# --- typed training settings ------------------------------------------------
+
+
+def _settings_document(
+    head: SleapHead, backbone: SleapBackbone, settings: SleapTrainSettings
+) -> dict[str, object]:
+    """The dotted values of a document written with *settings*."""
+    config = sleap_train_config(
+        Path("labels.slp"),
+        Path("/runs/r1"),
+        head=head,
+        backbone=backbone,
+        max_epochs=30,
+        seed=7,
+        validation_fraction=0.25,
+        validation_labels=None,
+        base_weights=None,
+        run_name="model",
+        settings=settings,
+    )
+    written: object = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
+    assert is_str_mapping(written)
+    return dotted_values(written)
+
+
+_EMBEDDING_TRIAL_VALUES: Final[dict[str, JsonValue]] = {
+    "trainer_config.train_data_loader.batch_size": 64,
+    "trainer_config.val_data_loader.batch_size": 64,
+    "model_config.backbone_config.convnext.model_type": "tiny",
+    "model_config.backbone_config.convnext.pre_trained_weights": (
+        "ConvNeXt_Tiny_Weights"
+    ),
+    "model_config.backbone_config.convnext.stem_patch_stride": 4,
+    "model_config.backbone_config.convnext.max_stride": 64,
+    "model_config.backbone_config.convnext.output_stride": 64,
+    f"{_EMBEDDING_LEAF}.output_stride": 64,
+    "trainer_config.optimizer_name": "AdamW",
+    "trainer_config.optimizer.lr": 1e-4,
+    "data_config.preprocessing.ensure_grayscale": False,
+    "data_config.data_pipeline_fw": "torch_dataset",
+    "model_config.init_weights": "xavier",
+    "trainer_config.eval.enabled": True,
+    "trainer_config.eval.frequency": 1,
+    "trainer_config.model_ckpt.monitor": "eval/val/rank1",
+    "trainer_config.model_ckpt.mode": "max",
+}
+"""The settings of the measured embedding training, at their document keys."""
+
+
+def test_an_embedding_document_writes_the_measured_settings() -> None:
+    """Left unset, every typed setting takes the measured training's value.
+
+    The checkpoint monitor names the metric that sleap-nn selects an embedding
+    checkpoint on, so the written document states what selected it.
+    """
+    values = _settings_document("embedding", "convnext", SleapTrainSettings())
+    assert {key: values.get(key) for key in _EMBEDDING_TRIAL_VALUES} == (
+        _EMBEDDING_TRIAL_VALUES
+    )
+
+
+def test_a_swint_embedding_document_strides_its_patches_at_the_stem_stride() -> None:
+    values = _settings_document("embedding", "swint", SleapTrainSettings())
+    block = "model_config.backbone_config.swint"
+    assert values[f"{block}.model_type"] == "tiny"
+    assert values[f"{block}.pre_trained_weights"] == "Swin_T_Weights"
+    assert values[f"{block}.stem_patch_stride"] == 4
+    assert values[f"{block}.max_stride"] == 64
+
+
+def test_a_unet_embedding_document_writes_no_convnext_setting() -> None:
+    """A UNet has no size, ImageNet weights or patch stem."""
+    values = _settings_document("embedding", "unet", SleapTrainSettings())
+    assert values["model_config.backbone_config.unet"] == {
+        "max_stride": 16,
+        "output_stride": 16,
+    }
+    assert values["trainer_config.train_data_loader.batch_size"] == 64
+
+
+def test_an_embedding_stem_stride_sets_the_stride_of_the_leaf() -> None:
+    """sleap-nn sets a convnext max_stride to 16 times its stem stride.
+
+    The stem keeps its ImageNet kernel, so the default weights still load.
+    """
+    values = _settings_document(
+        "embedding", "convnext", SleapTrainSettings(stem_stride=2)
+    )
+    block = "model_config.backbone_config.convnext"
+    assert values[f"{block}.pre_trained_weights"] == "ConvNeXt_Tiny_Weights"
+    assert values[f"{block}.stem_patch_stride"] == 2
+    assert values[f"{block}.max_stride"] == 32
+    assert values[f"{_EMBEDDING_LEAF}.output_stride"] == 32
+
+
+@pytest.mark.parametrize("head", ["centroid", "embedding"])
+@pytest.mark.parametrize("backbone", ["convnext", "swint"])
+@pytest.mark.parametrize("stem_stride", [None, 2, 4, 8])
+def test_no_document_writes_a_stem_kernel(
+    head: SleapHead, backbone: SleapBackbone, stem_stride: int | None
+) -> None:
+    """ImageNet weights load only into sleap-nn's default stem kernel of 4."""
+    values = _settings_document(
+        head,
+        backbone,
+        SleapTrainSettings(pretrained_backbone=True, stem_stride=stem_stride),
+    )
+    block = f"model_config.backbone_config.{backbone}"
+    assert f"{block}.stem_patch_kernel" not in values
+    assert f"{block}.patch_size" not in values
+
+
+def test_an_unset_embedding_setting_can_be_turned_off() -> None:
+    values = _settings_document(
+        "embedding",
+        "convnext",
+        SleapTrainSettings(
+            pretrained_backbone=False, ensure_grayscale=True, cache_images=True
+        ),
+    )
+    assert "model_config.backbone_config.convnext.pre_trained_weights" not in values
+    assert values["data_config.preprocessing.ensure_grayscale"] is True
+    assert values["data_config.data_pipeline_fw"] == "torch_dataset_cache_img_memory"
+
+
+@pytest.mark.parametrize(
+    ("backbone", "settings", "expected"),
+    [
+        (
+            "unet",
+            SleapTrainSettings(batch_size=16),
+            {
+                "trainer_config.train_data_loader.batch_size": 16,
+                "trainer_config.val_data_loader.batch_size": 16,
+            },
+        ),
+        (
+            "convnext",
+            SleapTrainSettings(backbone_size="base"),
+            {"model_config.backbone_config.convnext.model_type": "base"},
+        ),
+        (
+            "convnext",
+            SleapTrainSettings(pretrained_backbone=True),
+            {
+                "model_config.backbone_config.convnext.pre_trained_weights": (
+                    "ConvNeXt_Tiny_Weights"
+                )
+            },
+        ),
+        (
+            "convnext",
+            SleapTrainSettings(stem_stride=4),
+            {"model_config.backbone_config.convnext.stem_patch_stride": 4},
+        ),
+        (
+            "swint",
+            SleapTrainSettings(stem_stride=4),
+            {"model_config.backbone_config.swint.stem_patch_stride": 4},
+        ),
+        (
+            "unet",
+            SleapTrainSettings(max_stride=32),
+            {"model_config.backbone_config.unet.max_stride": 32},
+        ),
+        (
+            "unet",
+            SleapTrainSettings(optimizer="AdamW"),
+            {"trainer_config.optimizer_name": "AdamW"},
+        ),
+        (
+            "unet",
+            SleapTrainSettings(learning_rate=3e-4),
+            {"trainer_config.optimizer.lr": 3e-4},
+        ),
+        (
+            "unet",
+            SleapTrainSettings(ensure_grayscale=True),
+            {"data_config.preprocessing.ensure_grayscale": True},
+        ),
+        (
+            "unet",
+            SleapTrainSettings(cache_images=True),
+            {"data_config.data_pipeline_fw": "torch_dataset_cache_img_memory"},
+        ),
+    ],
+    ids=[
+        "batch_size",
+        "backbone_size",
+        "pretrained_backbone",
+        "stem_stride-convnext",
+        "stem_stride-swint",
+        "max_stride",
+        "optimizer",
+        "learning_rate",
+        "ensure_grayscale",
+        "cache_images",
+    ],
+)
+def test_a_pose_head_writes_each_setting_it_is_given(
+    backbone: SleapBackbone,
+    settings: SleapTrainSettings,
+    expected: dict[str, JsonValue],
+) -> None:
+    """A pose head writes a setting only when it is set, and none of the
+    embedding's evaluation or initialization keys."""
+    values = _settings_document("centroid", backbone, settings)
+    assert {key: values.get(key) for key in expected} == expected
+    assert "model_config.init_weights" not in values
+    assert "trainer_config.eval" not in values
+    assert "trainer_config.model_ckpt" not in values
+
+
+@pytest.mark.parametrize(
+    ("backbone", "size", "weights"),
+    [
+        ("convnext", "tiny", "ConvNeXt_Tiny_Weights"),
+        ("convnext", "small", "ConvNeXt_Small_Weights"),
+        ("convnext", "base", "ConvNeXt_Base_Weights"),
+        ("convnext", "large", "ConvNeXt_Large_Weights"),
+        ("swint", "tiny", "Swin_T_Weights"),
+        ("swint", "small", "Swin_S_Weights"),
+        ("swint", "base", "Swin_B_Weights"),
+    ],
+)
+def test_the_imagenet_weights_match_the_backbone_size(
+    backbone: SleapBackbone, size: SleapBackboneSize, weights: str
+) -> None:
+    values = _settings_document(
+        "centroid",
+        backbone,
+        SleapTrainSettings(backbone_size=size, pretrained_backbone=True),
+    )
+    block = f"model_config.backbone_config.{backbone}"
+    assert values[f"{block}.model_type"] == size
+    assert values[f"{block}.pre_trained_weights"] == weights
+
+
+@pytest.mark.parametrize(
+    ("head", "backbone", "fields", "named"),
+    [
+        ("centroid", "unet", {"backbone_size": "tiny"}, "backbone_size"),
+        ("embedding", "unet", {"backbone_size": "tiny"}, "backbone_size"),
+        ("centroid", "unet", {"pretrained_backbone": True}, "pretrained_backbone"),
+        ("centroid", "unet", {"stem_stride": 2}, "stem_stride"),
+        ("embedding", "unet", {"stem_stride": 2}, "stem_stride"),
+        ("centroid", "swint", {"backbone_size": "large"}, "backbone_size"),
+        ("centroid", "convnext", {"max_stride": 64}, "max_stride"),
+        ("embedding", "convnext", {"max_stride": 32}, "max_stride"),
+        ("embedding", "swint", {"stem_stride": 2, "max_stride": 64}, "max_stride"),
+        (
+            "centroid",
+            "convnext",
+            {"pretrained_backbone": True, "ensure_grayscale": True},
+            "pretrained_backbone.*ensure_grayscale",
+        ),
+        (
+            "centered_instance",
+            "swint",
+            {"pretrained_backbone": True, "ensure_grayscale": True},
+            "pretrained_backbone.*ensure_grayscale",
+        ),
+    ],
+)
+def test_a_setting_sleap_nn_refuses_is_refused_at_submit(
+    head: SleapHead, backbone: SleapBackbone, fields: dict[str, object], named: str
+) -> None:
+    """Each combination that sleap-nn refuses or replaces fails validation.
+
+    sleap-nn sets a convnext or swint max_stride to 16 times the stem stride,
+    so any other max_stride would be written and not trained. A pose head
+    with ImageNet weights trains on RGB whatever ensure_grayscale says.
+    """
+    with pytest.raises(ValidationError, match=named):
+        _ = TrainSleapParams.model_validate(
+            {"labels": "labels.slp", "head": head, "backbone": backbone, **fields}
+        )
+
+
+@pytest.mark.parametrize(
+    ("fields", "named"),
+    [
+        ({"batch_size": 0}, "batch_size"),
+        ({"stem_stride": 0}, "stem_stride"),
+        ({"max_stride": 0}, "max_stride"),
+        ({"learning_rate": 0.0}, "learning_rate"),
+        ({"optimizer": "SGD"}, "optimizer"),
+    ],
+)
+def test_an_out_of_range_setting_is_refused_at_submit(
+    fields: dict[str, object], named: str
+) -> None:
+    with pytest.raises(ValidationError, match=named):
+        _ = TrainSleapParams.model_validate({"labels": "labels.slp", **fields})
+
+
+def test_a_settings_combination_is_refused_by_the_document_builder() -> None:
+    with pytest.raises(ValueError, match="stem_stride"):
+        _ = _settings_document("centroid", "unet", SleapTrainSettings(stem_stride=2))
+
+
+def test_an_embedding_run_writes_the_measured_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    params = {**_embedding_params(labels), "backbone": "convnext"}
+    _ = run_op(ds, "train-sleap", params)
+    values = dotted_values(_written_config(seen[0]))
+    assert {key: values.get(key) for key in _EMBEDDING_TRIAL_VALUES} == (
+        _EMBEDDING_TRIAL_VALUES
+    )
+
+
+def test_a_set_field_reaches_the_written_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    params = {**_embedding_params(labels), "batch_size": 32, "learning_rate": 5e-5}
+    _ = run_op(ds, "train-sleap", params)
+    values = dotted_values(_written_config(seen[0]))
+    assert values["trainer_config.train_data_loader.batch_size"] == 32
+    assert values["trainer_config.optimizer.lr"] == 5e-5
+
+
+def test_an_override_of_a_written_setting_is_assigned_bare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sleap_overrides still apply last, over the written settings."""
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(
+        ds,
+        "train-sleap",
+        _embedding_params(labels, {"trainer_config.train_data_loader.batch_size": 8}),
+    )
+    assert "trainer_config.train_data_loader.batch_size=8" in _assignments(seen[0])
+
+
+def test_the_settings_enter_the_run_id(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False)
+    labels = tmp_path / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+    op = TrainSleapOp()
+
+    def run_id(**fields: object) -> str:
+        params = TrainSleapParams.model_validate({"labels": str(labels), **fields})
+        return op.plan_identity(ds, params, ds.resolve_scope(None)).run_id
+
+    assert run_id() != run_id(batch_size=8)
 
 
 # --- embedding refusals -----------------------------------------------------
@@ -896,6 +1254,73 @@ def test_an_embedding_run_on_more_than_one_device_is_refused(
     _assert_refused(
         ds, _embedding_params(labels, overrides, device), seen, "one device"
     )
+
+
+_SELECT_METRIC: Final = "++trainer_config.eval.select_metric"
+_MONITOR: Final = "trainer_config.model_ckpt.monitor"
+_MODE: Final = "trainer_config.model_ckpt.mode"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({_MONITOR: "eval/val/mAP"}, "'eval/val/rank1' with mode 'max'"),
+        ({_SELECT_METRIC: "mAP", _MONITOR: "eval/val/auc"}, "'eval/val/mAP'"),
+        ({_SELECT_METRIC: "eer", _MODE: "max"}, "'eval/val/eer' with mode 'min'"),
+        ({_SELECT_METRIC: "top5"}, "one of rank1, mAP, auc, knn_acc, eer"),
+    ],
+    ids=["monitor", "monitor-off-select-metric", "mode", "unknown-metric"],
+)
+def test_a_checkpoint_kept_off_the_selection_metric_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, JsonValue],
+    match: str,
+) -> None:
+    """sleap-nn early-stops on select_metric and keeps the monitor's best."""
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _assert_refused(ds, _embedding_params(labels, overrides), seen, match)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {_SELECT_METRIC: "mAP", _MONITOR: "eval/val/mAP"},
+        {_SELECT_METRIC: "eer", _MONITOR: "eval/val/eer", _MODE: "min"},
+        {_SELECT_METRIC: "auc", _MONITOR: "val/loss"},
+    ],
+    ids=["max", "min", "monitor-follows-select-metric"],
+)
+def test_a_checkpoint_kept_on_the_selection_metric_trains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, JsonValue]
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(ds, "train-sleap", _embedding_params(labels, overrides))
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    ("overrides", "monitor", "mode"),
+    [
+        (None, "eval/val/rank1", "max"),
+        ({_SELECT_METRIC: "mAP"}, "eval/val/mAP", "max"),
+        ({_SELECT_METRIC: "eer"}, "eval/val/eer", "min"),
+    ],
+    ids=["default", "max", "min"],
+)
+def test_the_written_checkpoint_monitor_follows_the_selection_metric(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, JsonValue] | None,
+    monitor: str,
+    mode: str,
+) -> None:
+    """A select_metric set through sleap_overrides also keeps the checkpoint."""
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(ds, "train-sleap", _embedding_params(labels, overrides))
+    values = dotted_values(_written_config(seen[0]))
+    assert values["trainer_config.model_ckpt.monitor"] == monitor
+    assert values["trainer_config.model_ckpt.mode"] == mode
 
 
 def test_an_embedding_run_on_one_cuda_index_trains(
@@ -1734,6 +2159,29 @@ def test_the_recorded_metrics_path_holds_metrics(
     _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
     row = trained_model_index(model_index_path(ds, "train-sleap")).read().iloc[0]
     assert str(row["metrics_path"]).endswith("training_log.csv")
+
+
+def test_the_recorded_epochs_are_those_the_training_log_holds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cap is a limit, and a run that stopped early trained fewer epochs."""
+    ds, labels, _ = _labels_and_fake_trainer(
+        tmp_path, monkeypatch, writes_training_log=True
+    )
+
+    _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 5})
+    row = trained_model_index(model_index_path(ds, "train-sleap")).read().iloc[0]
+    assert int(row["n_epochs"]) == 1, "one epoch logged under a cap of five"
+
+
+def test_a_run_that_logged_no_epoch_records_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, _ = _labels_and_fake_trainer(tmp_path, monkeypatch)
+
+    _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 5})
+    row = trained_model_index(model_index_path(ds, "train-sleap")).read().iloc[0]
+    assert int(row["n_epochs"]) == 0
 
 
 def test_a_run_that_logged_no_metrics_records_no_path(

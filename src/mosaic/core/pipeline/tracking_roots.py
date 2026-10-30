@@ -534,7 +534,8 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
                 "*.analysis.h5",
                 "*.no-detections.json",
                 "*.embeddings.npz",
-                "*.embeddings.npz.partial",
+                "*.analysis.partial.h5",
+                "*.embeddings.partial.npz",
             ),
             phase_outputs=(
                 TrackingPhase(

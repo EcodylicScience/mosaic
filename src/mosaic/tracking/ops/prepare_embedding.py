@@ -28,7 +28,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from mosaic.core.entry import Entry, make_entry_key, validate_entry_name
 from mosaic.core.params import Declared, Params
-from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline._utils import atomic_write, staging_path
 from mosaic.core.pipeline.entry_claim import phase_activity
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.file_digest import file_digest
@@ -50,7 +50,11 @@ from mosaic.core.pipeline.toolenv import subprocess_env
 from mosaic.core.track_library.sleap import read_appearance_readback
 from mosaic.tracking.common.entry_ref import EntryRef
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path
-from mosaic.tracking.sleap.embedding_windows import EntryWindows, plan_windows
+from mosaic.tracking.sleap.embedding_windows import (
+    EntryWindows,
+    keep_evenly_spaced_windows,
+    plan_windows,
+)
 from mosaic.tracking.sleap.labels import validation_labels_path
 from mosaic.tracking.sleap.run import (
     SleapError,
@@ -118,6 +122,12 @@ _MIN_TRACKS_PRESENT_DESCRIPTION = (
     "A frame qualifies when at least this many tracks have an instance in it."
 )
 
+_VAL_WINDOWS_PER_ENTRY_DESCRIPTION = (
+    "How many windows each validation entry keeps, evenly spaced in window "
+    "order, first and last included. An entry with fewer keeps all of them. "
+    "Unset keeps every window."
+)
+
 _SPLIT_TRACKS_AT_GAP_DESCRIPTION = (
     "A track with two consecutive instances inside one window further apart "
     "than this is cut between them into two tracks. Unset keeps each track whole "
@@ -129,8 +139,8 @@ class PrepareEmbeddingDataParams(Params):
     """Declares how training windows are cut from one sleap tracker run.
 
     Both entry lists are stored sorted. The order they are given in moves no
-    identifier. Frames are chosen by frame index alone, and nothing is drawn at
-    random.
+    identifier. Frames and validation windows are chosen by index alone, and
+    nothing is drawn at random.
     """
 
     sleap_run_id: Annotated[
@@ -156,6 +166,11 @@ class PrepareEmbeddingDataParams(Params):
         Field(ge=1),
         Declared(_SPLIT_TRACKS_AT_GAP_DESCRIPTION, unit="frames"),
     ] = None
+    val_windows_per_entry: Annotated[
+        int | None,
+        Field(ge=1),
+        Declared(_VAL_WINDOWS_PER_ENTRY_DESCRIPTION),
+    ] = 60
 
     @field_validator("train_entries", "val_entries")
     @classmethod
@@ -419,10 +434,6 @@ for _file in _request["files"]:
 """
 
 
-def _partial(path: Path) -> Path:
-    return path.with_name(f"{path.name}.partial")
-
-
 def _request_document(
     files: Sequence[EmbeddingLabelsFile], heartbeat_seconds: float
 ) -> str:
@@ -431,7 +442,7 @@ def _request_document(
         "heartbeat_seconds": heartbeat_seconds,
         "files": [
             {
-                "out": str(_partial(each.out)),
+                "out": str(staging_path(each.out)),
                 "sources": [
                     {
                         "predictions": str(source.predictions),
@@ -472,10 +483,11 @@ def write_embedding_labels(
 ) -> None:
     """Write each of *files* from its planned windows, in the SLEAP environment.
 
-    The SLEAP interpreter reads *request*, written here, and writes each file to
-    ``<out>.partial``. Once it exits cleanly, every staged file is moved onto its
-    ``out`` with ``os.replace``. *request* and the staged files are removed on
-    every path.
+    The SLEAP interpreter reads *request*, written here, and writes each file
+    beside its ``out`` under a staging name: ``labels.slp`` stages as
+    ``labels.partial.slp``. Once it exits cleanly, every staged file is moved
+    onto its ``out`` with ``os.replace``. *request* and the staged files are
+    removed on every path.
 
     Args:
         files: The labels files to write.
@@ -495,7 +507,7 @@ def write_embedding_labels(
             that a predictions file names is missing. The message names it.
         FileNotFoundError: It exited cleanly and staged no file.
     """
-    staged = [_partial(each.out) for each in files]
+    staged = [staging_path(each.out) for each in files]
     document = _request_document(files, heartbeat_seconds)
     atomic_write(request, lambda path: path.write_text(document, encoding="utf-8"))
     invocation = sleap_invocation(
@@ -838,6 +850,7 @@ class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
         empty_claimed_run_root(out)
         on_activity = phase_activity(ctx, out, marker, _PREPARE_IDLE_SECONDS)
 
+        validated = {ref.entry for ref in params.val_entries}
         readbacks = out / "readback"
         planned: dict[Entry, EmbeddingSource] = {}
         for entry, source in sources.items():
@@ -856,6 +869,10 @@ class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
                 min_tracks_present=params.min_tracks_present,
                 split_tracks_at_gap=params.split_tracks_at_gap,
             )
+            if entry in validated and params.val_windows_per_entry is not None:
+                windows = keep_evenly_spaced_windows(
+                    windows, params.val_windows_per_entry
+                )
             planned[entry] = EmbeddingSource(
                 predictions=source.predictions, windows=windows
             )

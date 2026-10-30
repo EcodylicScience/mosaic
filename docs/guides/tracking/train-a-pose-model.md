@@ -316,6 +316,11 @@ as one individual:
 | `global_id` | Crops with the same track name in any video | A `prepare-training-data` run with `track_by="alias"`, and the declaration below |
 | `aug_view` | Two augmented views of one crop | Any labels |
 
+Measured at sleap-nn's earlier defaults with a stem stride of 4, a loader batch of 64, 8
+groups of 8 crops per training batch and a crop size of 320, the `aug_view` scope took
+19.7 GB on a 20 GB GPU against 13.3 GB for `tracklet`, and on four similar mice it
+retrieved no better than `tracklet`.
+
 Labels from `prepare-embedding-data` train with the `tracklet` scope, and all other
 labels with `global_id`. A scope is set at the key
 `model_config.head_configs.embedding.embedding.objective.positives.scope`, in
@@ -346,6 +351,36 @@ The run refuses, before it starts, each of these:
   both sides and inflates the retrieval score. `prepare-embedding-data` writes the file.
 - A `device` that names more than one CUDA index, and a `trainer_config.trainer_devices`
   other than 1.
+
+Typed fields set the backbone and the training. Each is unset by default. Unset, a pose
+head keeps sleap-nn's default, and an embedding head takes the value that trained
+[the four-mice embedding model](../analysis/identify-individuals.md#how-well-it-separates):
+
+| Field | Sets | Embedding value |
+| --- | --- | --- |
+| `batch_size` | the batch of both data loaders. An embedding head draws each training batch from the objective's sampler, `groups_per_batch` times `samples_per_group` crops, so this sets its validation batch | 64 |
+| `backbone_size` | the convnext or swint size: `tiny`, `small`, `base` or `large` (swint has no `large`) | `tiny` |
+| `pretrained_backbone` | whether a convnext or swint backbone starts from the ImageNet weights of its size. sleap-nn downloads them at first use, also when the run fine-tunes from a base model, so set `false` on a node without network access | `true` |
+| `stem_stride` | the stride of a convnext or swint stem. Its kernel stays at 4, so the ImageNet weights load at any stride | 4 |
+| `max_stride` | the backbone's `max_stride`, where the embedding head pools | 16 times `stem_stride` on convnext and swint, 16 on unet |
+| `optimizer` | `Adam` or `AdamW` | `AdamW` |
+| `learning_rate` | the optimizer's learning rate | 1e-4 |
+| `ensure_grayscale` | whether the images are converted to one channel | `false`, because color can tell animals apart. Set `true` for grayscale video |
+| `cache_images` | whether sleap-nn holds the decoded images in memory | `false`. 2,880 RGB 1080p frames take about 17 GB |
+
+sleap-nn's own defaults suit no embedding run: a stem stride of 2 filled 20 GB of GPU
+memory, and the validation pass at a batch of 4 took more than 10 minutes for 20 steps
+that a batch of 64 ran in about 35 s. `backbone_size`, `stem_stride` and a true
+`pretrained_backbone` are refused with `unet`. sleap-nn sets a convnext or swint
+`max_stride` to 16 times the stem stride, so another value is refused. On a pose head
+sleap-nn trains ImageNet weights on RGB images, so `ensure_grayscale` with
+`pretrained_backbone` is refused. An embedding run also initializes with xavier,
+evaluates every epoch, and keeps the checkpoint with the best validation value of
+`trainer_config.eval.select_metric`, the metric sleap-nn stops early on: rank-1 by
+default, or the metric that `sleap_overrides` sets. The run writes
+`trainer_config.model_ckpt.monitor` as `eval/val/<metric>` with its `mode`, `min` for
+`eer` and `max` for the others. A `sleap_overrides` monitor or mode that disagrees with
+the selection metric is refused. `sleap_overrides` applies after the typed fields.
 
 sleap-nn sizes the crop from the labels. If it clips animals, set
 `data_config.preprocessing.crop_size` in `sleap_overrides`. In

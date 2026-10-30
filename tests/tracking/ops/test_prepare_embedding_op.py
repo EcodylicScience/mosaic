@@ -500,6 +500,28 @@ def test_the_writer_is_handed_the_planned_windows(world: World) -> None:
     assert train.sources[0].windows == _windows_of("s1")
 
 
+def test_validation_keeps_the_requested_windows_per_entry(world: World) -> None:
+    params = {**_params(world.sleap_run_id), "val_windows_per_entry": 1}
+
+    _ = run_op(world.ds, KIND, params)
+
+    train, val = world.writer.files
+    assert [len(source.windows.windows) for source in train.sources] == [2, 2]
+    (only,) = val.sources
+    assert [window.index for window in only.windows.windows] == [0]
+    (row,) = _rows(world.ds)
+    assert int(row["n_windows"]) == 5
+
+
+def test_validation_keeps_every_window_when_none_is_set(world: World) -> None:
+    params = {**_params(world.sleap_run_id), "val_windows_per_entry": None}
+
+    _ = run_op(world.ds, KIND, params)
+
+    _train, val = world.writer.files
+    assert [len(source.windows.windows) for source in val.sources] == [2]
+
+
 def test_the_videos_of_both_files_number_the_windows(world: World) -> None:
     run_id = _prepare(world)
 
@@ -775,8 +797,8 @@ def test_the_snippet_prints_while_it_embeds_frames(
     )
 
     beats = [line for line in lines if "embedding frames into" in line]
-    assert any("labels.slp.partial" in line for line in beats)
-    assert any("labels.val.slp.partial" in line for line in beats)
+    assert any("labels.partial.slp" in line for line in beats)
+    assert any("labels.val.partial.slp" in line for line in beats)
 
 
 def test_the_snippet_fails_on_a_missing_video_and_names_it(

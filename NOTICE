@@ -548,6 +548,17 @@ The default, timm/swin_large_patch4_window12_384.ms_in22k_ft_in1k, is MIT.
   Apache-2.0. https://github.com/facebookresearch/dinov2
   Loaded through torch.hub by the DINOv2 identity backbone.
 
+SLEAP embedding backbones, fetched by sleap-nn from torchvision.models at
+first use. train-sleap selects the ImageNet-1K weights of a convnext or
+swint backbone by default for an embedding head (ConvNeXt_Tiny_Weights
+and Swin_T_Weights, or the size that backbone_size names), and for a pose
+head when pretrained_backbone is true. pretrained_backbone=false opts
+out. torchvision's code is BSD-3-Clause. Its README states that "The
+pre-trained models provided in this library may have their own licenses
+or terms and conditions derived from the dataset used for training. It
+is your responsibility to determine whether you have permission to use
+the models for your use case." https://github.com/pytorch/vision
+
 
 IMPLEMENTED FROM PUBLISHED DESCRIPTIONS
 =======================================

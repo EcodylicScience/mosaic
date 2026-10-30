@@ -331,7 +331,14 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `prepare-embedding-data` cuts the training windows from an earlier `sleap` run, with
   `train_entries` and `val_entries` that share no recording. `train-sleap` with
   `head=embedding` refuses scopes and labels it cannot train, and `global_id` needs the
-  user's declaration that track names are global, which you do not set for them.
+  user's declaration that track names are global, which you do not set for them. Its
+  typed fields `batch_size`, `backbone_size`, `pretrained_backbone`, `stem_stride`,
+  `max_stride`, `optimizer`, `learning_rate`, `ensure_grayscale` and `cache_images`
+  default to the settings that trained the four-mice embedding model (batch 64, stem
+  stride 4, AdamW). Set them there rather than in `sleap_overrides`, and set
+  `ensure_grayscale=true` for grayscale video. On an embedding head `batch_size` sets
+  the validation batch; the training batch is the objective's `groups_per_batch` times
+  `samples_per_group` crops.
 - Lightning Pose cannot decode AV1. Give it a variant made with `"codec": "h264"`.
   `mosaic prerequisites --kind litpose` plans that variant and names it in `media`.
 - Frame extraction is `mosaic run --kind extract-frames`, or the function

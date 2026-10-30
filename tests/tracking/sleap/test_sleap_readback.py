@@ -72,7 +72,7 @@ def test_the_readback_takes_its_paths_in_argv(
 
     (cmd,) = commands
     assert cmd[:2] == ["/fake/bin/python", "-c"]
-    assert cmd[3:] == [str(predicted), str(tmp_path / "e1.embeddings.npz.partial")]
+    assert cmd[3:] == [str(predicted), str(tmp_path / "e1.embeddings.partial.npz")]
     assert str(tmp_path) not in cmd[2]
     assert published == out
 
@@ -167,7 +167,7 @@ def test_the_snippet_reads_every_tracked_instance_in_file_order(
         [0.0, 0.0, 0.0],
         [1.0, 0.0, -1.0],
     ]
-    assert not (tmp_path / "work" / "e1.embeddings.npz.partial").exists()
+    assert not (tmp_path / "work" / "e1.embeddings.partial.npz").exists()
 
 
 def test_the_snippet_writes_zero_columns_for_a_file_without_embeddings(

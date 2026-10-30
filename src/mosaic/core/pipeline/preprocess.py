@@ -51,7 +51,7 @@ from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
-from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
+from mosaic.core.pipeline._utils import ResolvedScope, atomic_write, staging_path
 from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.consumed_camera import (
     ConsumedMedia,
@@ -920,7 +920,7 @@ def _write_variant(
     """
     dest = media_variant_path(ds, run_id, plan.group, plan.sequence, plan.camera)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    partial = work_dir / f"{dest.stem}.partial{dest.suffix}"
+    partial = staging_path(work_dir / dest.name)
     final = plan.final
     expected = final.frames.count
     keep_partial = False

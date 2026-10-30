@@ -4,7 +4,8 @@ Window ``w`` covers frames ``w * window_frames`` to ``(w + 1) * window_frames - 
 A frame of a window qualifies when at least ``min_tracks_present`` tracks have an
 instance in it, and a window takes ``frames_per_window`` of its qualifying frames,
 evenly spaced, or all of them when it has fewer. A window with no qualifying frame
-is left out.
+is left out. :func:`keep_evenly_spaced_windows` then thins an entry's windows to a
+count, evenly spaced by position in window order, for an entry that needs fewer.
 
 Every instance of a chosen frame is kept under a window track name,
 ``{entry_key}/w{w:05d}/{track}``, which no other window shares. With
@@ -19,11 +20,18 @@ the plan does not depend on the order of the readback's rows.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from mosaic.core.track_library.sleap import AppearanceReadback
 
-__all__ = ["EmbeddingWindow", "EntryWindows", "WindowInstance", "plan_windows"]
+__all__ = [
+    "EmbeddingWindow",
+    "EntryWindows",
+    "WindowInstance",
+    "keep_evenly_spaced_windows",
+    "plan_windows",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,19 +135,39 @@ def plan_windows(
     return EntryWindows(entry_key=entry_key, windows=tuple(windows))
 
 
-def _evenly_spaced(frames: list[int], count: int) -> tuple[int, ...]:
-    """Take *count* of the ascending *frames*, the first and last among them.
+def keep_evenly_spaced_windows(plan: EntryWindows, count: int) -> EntryWindows:
+    """Thin an entry's windows to *count*, evenly spaced by position in window order.
+
+    The windows are ordered by ascending index. The first and the last are kept,
+    and the others are spaced evenly by position among the windows present, so a
+    gap in the indices does not shorten the result. An entry with *count* windows
+    or fewer is returned whole. Nothing is drawn at random.
+
+    Args:
+        plan: The entry's planned windows.
+        count: How many windows to keep, at least one.
+
+    Returns:
+        The kept windows, still by ascending index.
+    """
+    return EntryWindows(
+        entry_key=plan.entry_key, windows=_evenly_spaced(plan.windows, count)
+    )
+
+
+def _evenly_spaced[T](items: Sequence[T], count: int) -> tuple[T, ...]:
+    """Take *count* of the ascending *items*, the first and last among them.
 
     Position ``i`` of ``count`` is ``i * (n - 1) // (count - 1)``. When there are
-    more frames than *count*, each step exceeds one position and no frame is
-    taken twice.
+    more items than *count*, each step exceeds one position and no item is taken
+    twice.
     """
-    n = len(frames)
+    n = len(items)
     if n <= count:
-        return tuple(frames)
+        return tuple(items)
     if count == 1:
-        return (frames[0],)
-    return tuple(frames[i * (n - 1) // (count - 1)] for i in range(count))
+        return (items[0],)
+    return tuple(items[i * (n - 1) // (count - 1)] for i in range(count))
 
 
 def _window_track_names(

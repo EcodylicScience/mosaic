@@ -68,7 +68,7 @@ from mosaic.core.media.imgstore_io import fps_from_duration, is_imgstore
 from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.store_rate import store_rate_mismatch
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
-from mosaic.core.pipeline._utils import ResolvedScope, hash_params
+from mosaic.core.pipeline._utils import ResolvedScope, hash_params, staging_path
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 from mosaic.core.pipeline.transcode import (
     TRANSCODE_KIND_DIRECTORY,
@@ -673,7 +673,7 @@ def copy_export(
             presents two frames at one timestamp, skips a frame period or
             measures at another rate, or the first chunk does not declare a rate.
     """
-    partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+    partial = staging_path(dest)
     listing = dest.with_name(f"{dest.stem}.concat.txt")
     write_concat_listing(chunks, listing)
     try:
@@ -798,9 +798,7 @@ def write_export(
     reader = open_frame_reader(
         store, facts=series_facts_or_none(row), target="raw", window=window
     )
-    # The partial keeps the .mp4 suffix: the writer picks its output format from
-    # the extension, and a bare ".partial" leaves it with nothing to go on.
-    partial = dest.with_name(f"{dest.stem}.partial{dest.suffix}")
+    partial = staging_path(dest)
     written = 0
     try:
         total = reader.frame_count

@@ -214,6 +214,35 @@ def test_run_feature_writes_relative_paths(tmp_path: Path) -> None:
         assert ds.resolve_path(stored).exists()
 
 
+# --- a dataset opened through a relative manifest path ------------------------
+
+
+def test_a_relative_manifest_path_writes_root_relative_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest named relative to the working directory still anchors the root."""
+    _ = make_dataset(tmp_path / "ds", name="relative")
+    monkeypatch.chdir(tmp_path)
+    ds = Dataset(manifest_path=Path("ds") / "dataset.yaml").load()
+
+    out = ds.get_root("tracks") / "s.parquet"
+    pd.DataFrame({"frame": [0], "id": [0]}).to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="",
+        sequence="s",
+        out_path=out,
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=1,
+    )
+
+    assert ds.base_dir.is_absolute()
+    stored = pd.read_csv(tracks_index_path(ds))["abs_path"].tolist()
+    assert stored == [str(Path("tracks") / "s.parquet")]
+
+
 # --- the manifest across a load and a save -----------------------------------
 
 

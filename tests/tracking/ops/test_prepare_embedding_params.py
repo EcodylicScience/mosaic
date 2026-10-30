@@ -30,6 +30,7 @@ def test_the_defaults_are_the_declared_ones() -> None:
     assert params.frames_per_window == 16
     assert params.min_tracks_present == 2
     assert params.split_tracks_at_gap is None
+    assert params.val_windows_per_entry == 60
 
 
 def test_both_lists_are_stored_sorted() -> None:
@@ -85,8 +86,24 @@ def test_fewer_than_two_tracks_present_is_refused(value: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "field", ["window_frames", "frames_per_window", "split_tracks_at_gap"]
+    "field",
+    [
+        "window_frames",
+        "frames_per_window",
+        "split_tracks_at_gap",
+        "val_windows_per_entry",
+    ],
 )
 def test_a_count_below_one_is_refused(field: str) -> None:
     with pytest.raises(ValidationError, match=field):
         _ = _params([("", "a")], [("", "b")], **{field: 0})
+
+
+def test_the_validation_windows_per_entry_enter_the_identity() -> None:
+    default = _params([("", "a")], [("", "b")])
+    fewer = _params([("", "a")], [("", "b")], val_windows_per_entry=30)
+    every = _params([("", "a")], [("", "b")], val_windows_per_entry=None)
+
+    dumps = [each.identity_dump() for each in (default, fewer, every)]
+    assert all(dump != dumps[0] for dump in dumps[1:])
+    assert dumps[1] != dumps[2]
