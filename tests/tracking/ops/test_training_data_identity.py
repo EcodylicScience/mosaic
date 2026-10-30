@@ -154,6 +154,10 @@ beside.
 PARAMS_ONLY: dict[str, str] = {
     "convert-labels": "a labels variant names its recipe, not its source files",
     "convert-tracks": "a tracks variant names its recipe, not its source files",
+    "prepare-embedding-data": (
+        "a preparation names its tracker run, and its row records the "
+        "predictions files it read"
+    ),
 }
 """One-shot ops whose identity is their params alone, and why.
 

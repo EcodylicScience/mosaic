@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.core.pipeline import index_csv as index_csv_module
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
@@ -18,7 +19,7 @@ from mosaic.core.pipeline.index_csv import (
     row_file_exists,
 )
 from mosaic.core.scope import Scope
-from tests.helpers import make_dataset
+from tests.helpers import index_locked_out, make_dataset
 
 
 @dataclass(frozen=True, slots=True)
@@ -934,6 +935,107 @@ class TestDropRuns:
         text = (tmp_path / "index.csv").read_text()
         assert ",0.10-0123456789," in text
         assert ",0.10," in text and ",0123456789," in text
+
+
+class TestUpdateCells:
+    """Rewriting named cells of one run's rows, as one locked read-modify-write."""
+
+    def _two_runs(self, tmp_path: Path) -> IndexCSV[SampleRow]:
+        idx = IndexCSV(tmp_path / "index.csv", SampleRow)
+        idx.append(
+            [
+                _sample_row(tmp_path, run_id="r1", name="a", value=1),
+                _sample_row(tmp_path, run_id="r2", name="b", value=2),
+            ]
+        )
+        return idx
+
+    def test_it_rewrites_the_cells_of_one_run_only(self, tmp_path: Path) -> None:
+        idx = self._two_runs(tmp_path)
+        before = idx.read().set_index("run_id")
+
+        matched = idx.update_cells("r1", {"status": "finished"})
+
+        after = idx.read().set_index("run_id")
+        assert matched == 1
+        assert after.loc["r1", "status"] == "finished"
+        assert after.loc["r1", "name"] == "a", "a cell not named is kept"
+        assert after.loc["r2"].to_dict() == before.loc["r2"].to_dict()
+
+    def test_the_rows_of_other_runs_stay_byte_identical(self, tmp_path: Path) -> None:
+        idx = self._two_runs(tmp_path)
+        lines_before = idx.path.read_text().splitlines()
+
+        _ = idx.update_cells("r1", {"status": "finished"})
+
+        lines_after = idx.path.read_text().splitlines()
+        assert lines_after[0] == lines_before[0]
+        assert lines_after[2] == lines_before[2]
+        assert lines_after[1] != lines_before[1]
+
+    def test_an_unknown_column_is_refused_and_nothing_is_written(
+        self, tmp_path: Path
+    ) -> None:
+        idx = self._two_runs(tmp_path)
+        before = idx.path.read_bytes()
+
+        with pytest.raises(ValueError, match="no_such_column"):
+            _ = idx.update_cells("r1", {"no_such_column": "x"})
+
+        assert idx.path.read_bytes() == before
+
+    def test_an_index_without_run_ids_is_refused_by_name(self, tmp_path: Path) -> None:
+        idx: IndexCSV[PathlessRow] = IndexCSV(tmp_path / "sequences.csv", PathlessRow)
+        idx.append([PathlessRow(sequence="a")])
+
+        with pytest.raises(TypeError, match="not a run index row type"):
+            _ = idx.update_cells("r1", {"composition": "x"})
+
+    def test_an_unknown_run_or_an_absent_index_matches_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        idx = self._two_runs(tmp_path)
+        before = idx.path.read_bytes()
+
+        assert idx.update_cells("nosuchrun", {"status": "x"}) == 0
+        assert idx.path.read_bytes() == before
+
+        absent = IndexCSV(tmp_path / "absent.csv", SampleRow)
+        assert absent.update_cells("r1", {"status": "x"}) == 0
+        assert not absent.path.exists(), "no lock, no empty index"
+
+    def test_it_writes_under_the_index_lock(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        idx = self._two_runs(tmp_path)
+        held: list[bool] = []
+        real_write = index_csv_module.atomic_write
+
+        def probing_write(path: Path, writer: Callable[[Path], None]) -> None:
+            held.append(index_locked_out(idx.path))
+            real_write(path, writer)
+
+        monkeypatch.setattr(index_csv_module, "atomic_write", probing_write)
+
+        _ = idx.update_cells("r1", {"status": "finished"})
+
+        assert held == [True], "another process was locked out during the rewrite"
+
+    def test_a_cell_keeps_the_spelling_of_its_string_siblings(
+        self, tmp_path: Path
+    ) -> None:
+        idx = IndexCSV(tmp_path / "index.csv", SampleRow)
+        idx.append(
+            [
+                _sample_row(tmp_path, run_id="r1", name="0123"),
+                _sample_row(tmp_path, run_id="r2", name="0.10"),
+            ]
+        )
+
+        _ = idx.update_cells("r1", {"status": "x"})
+
+        text = idx.path.read_text()
+        assert ",0123," in text and ",0.10," in text
 
 
 # --- the file of a finished row ---------------------------------------------

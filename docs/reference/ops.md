@@ -3,7 +3,7 @@
 
 # Ops
 
-26 ops are registered. An op is the unit `mosaic run --kind <kind>`
+27 ops are registered. An op is the unit `mosaic run --kind <kind>`
 executes: a tracker, a model training or inference run, a frame extraction, or
 a media operation. Features transform tables that already exist; ops are what
 produce them and what reaches outside the process.
@@ -92,6 +92,29 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 | `model_path` | `string` | _required_ |  | A trained Lightning Pose model directory (config.yaml plus a checkpoint under tb_logs/). |
 | `litpose_overrides` | `object` \| `None` | `null` |  | Hydra config overrides applied at inference time. |
 | `precision` | `string` | `"fp32"` |  | The forward-pass precision: fp32, fp16, or bf16. |
+
+#### `prepare-embedding-data`
+
+Version `0.1` &middot; `mosaic.tracking.ops.prepare_embedding.PrepareEmbeddingDataOp`
+
+Cut SLEAP training windows for an embedding model from a sleap tracker run.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sleap_run_id` | `string` | _required_ | min length `1` | The run id of the sleap tracker run to cut windows from. |
+| `train_entries` | list of `EntryRef` | _required_ | min items `1` | The entries written to labels.slp. |
+| `val_entries` | list of `EntryRef` | _required_ | min items `1` | The entries written to labels.val.slp. No entry shares a recording with train_entries, so validation measures another recording. |
+| `window_frames` | `integer` | `300` | >= `1` | The length of one window. [frames] |
+| `frames_per_window` | `integer` | `16` | >= `1` | How many frames are taken from a window, evenly spaced over its qualifying frames. A window with fewer qualifying frames gives all of them. |
+| `min_tracks_present` | `integer` | `2` | >= `2` | A frame qualifies when at least this many tracks have an instance in it. |
+| `split_tracks_at_gap` | `integer` \| `None` | `null` |  | A track with two consecutive instances inside one window further apart than this is cut between them into two tracks. Unset keeps each track whole within a window. [frames] |
+
+??? note "`EntryRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `group` | `string` | `""` |  | The entry's group; empty for a dataset with none. |
+    | `sequence` | `string` | _required_ | min length `1` | The entry's sequence. |
 
 #### `prepare-training-data`
 
@@ -685,12 +708,12 @@ Train a SLEAP model, registering the directory it produces.
 | --- | --- | --- | --- | --- |
 | `labels` | `string` | _required_ |  | The .slp file to train on. |
 | `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. Both the backbone and the head start from these weights. The base must be a training of the same head. |
-| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification, so they need labels that carry it: a .slp whose instances have no track trains one of them against no classes at all, which succeeds and produces a model that learned nothing. |
+| `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` \| `"embedding"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification, so they need labels that carry it: a .slp whose instances have no track trains one of them against no classes at all, which succeeds and produces a model that learned nothing. An embedding model maps each detection's crop to an appearance vector, predicts no pose, and runs only as the last model of a sleap op model list. |
 | `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  | The feature extractor architecture, independent of the head. |
 | `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
 | `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation. It applies only when the labels have no validation file beside them, such as the labels.val.slp that prepare-training-data writes beside labels.slp. |
-| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. |
+| `sleap_overrides` | `object` \| `None` | `null` |  | Hydra key=value overrides applied over the generated config, for anything sleap-nn exposes with no field here. A key the generated config does not carry is appended for you, so it needs no + prefix; a key written with an explicit + or ~ is passed through as written. A key set here wins over base_model and device where they would set the same key. The data-loader worker count is refused here: set num_workers, which leaves the run identity alone. An embedding run sizes its crops from the labels, and data_config.preprocessing.crop_size sets the size. sleap-nn raises trainer_config.train_steps_per_epoch to trainer_config.min_train_steps_per_epoch without a message, so a shorter epoch sets both. |
 | `device` | `string` | `"auto"` |  | Which accelerator trains the model. auto leaves the choice to sleap-nn; cpu, gpu and mps each name a family; a comma-separated list of CUDA indices such as 0 or 0,1 names devices within the gpu family. A GPU index counts within the GPUs the run may use: under a queue worker pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. |
 | `idle_timeout` | `number` | `1800` |  | How long the training subprocess may go without output before it is killed. A generous default, because an epoch on a large set is slow and a watchdog must not mistake slow for dead. [s] |
 | `max_runtime` | `number` \| `None` | `null` |  | Absolute wall-clock ceiling for the training run. Unset leaves the ceiling to whatever queue submitted the run, and idle_timeout still applies. [s] |

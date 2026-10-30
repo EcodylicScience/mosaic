@@ -65,9 +65,22 @@ def test_every_running_line_is_the_summary_of_the_argv_run(
         else:
             labels = tmp_path / "in.slp"
             _ = labels.write_bytes(b"slp")
+            config = sleap_training.sleap_train_config(
+                labels,
+                tmp_path / "run",
+                head="centered_instance",
+                backbone="unet",
+                max_epochs=1,
+                seed=42,
+                validation_fraction=0.1,
+                validation_labels=None,
+                base_weights=None,
+                run_name="model",
+            )
             _ = sleap_training.train_sleap(
                 labels,
                 tmp_path / "run",
+                config=config,
                 sleap_bin=tmp_path / "sleap-nn",
             )
 

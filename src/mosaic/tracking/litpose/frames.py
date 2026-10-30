@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Final
@@ -44,6 +43,7 @@ from mosaic.core.pipeline.toolenv import (
 )
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.wording import counted
+from mosaic.tracking.common.release import release_numbers
 from mosaic.tracking.frame_predictions.adapter import (
     AdapterResult,
     FrameImage,
@@ -83,9 +83,6 @@ _SNIPPET_IDLE_SECONDS: Final = 900.0
 
 _TOO_OLD_EXIT: Final = 3
 """The exit status of the prediction snippet's version guard."""
-
-_RELEASE: Final = re.compile(r"\d+(?:\.\d+)*")
-"""The leading release numbers of a version, such as ``2.3.1`` of ``2.3.1.post1``."""
 
 # Run by the Lightning Pose interpreter. It does not read argv, and prints the
 # installed release.
@@ -179,14 +176,6 @@ class LitposeFrameAnswer(StrictModel):
     results: list[LitposeFrameResult]
 
 
-def _release(version: str) -> tuple[int, ...]:
-    """Return the leading release numbers of *version*, empty when it has none."""
-    found = _RELEASE.match(version)
-    if found is None:
-        return ()
-    return tuple(int(part) for part in found.group(0).split("."))
-
-
 def require_predict_frame(version: str) -> None:
     """Refuse a Lightning Pose release older than :data:`LITPOSE_PREDICT_FRAME_MIN`.
 
@@ -197,7 +186,7 @@ def require_predict_frame(version: str) -> None:
         PredictFramesUnavailable: *version* is an older release, or names no
             release. The message names both versions.
     """
-    if _release(version) >= _release(LITPOSE_PREDICT_FRAME_MIN):
+    if release_numbers(version) >= release_numbers(LITPOSE_PREDICT_FRAME_MIN):
         return
     message = (
         f"The Lightning Pose environment has Lightning Pose {version!r}, and "

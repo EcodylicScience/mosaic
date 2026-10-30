@@ -105,6 +105,18 @@ def test_a_finished_run_records_what_it_was_trained_on(tmp_path: Path) -> None:
     assert document["params"]["dataset_dir"] == str(data_dir)
 
 
+def test_a_run_that_names_no_tool_version_records_none(tmp_path: Path) -> None:
+    """The document of a training op that passes no version keeps its keys."""
+    ds = make_dataset(tmp_path / "ds", name="prov")
+    data_dir = ds.get_root("models") / "prepare-training-data" / "p-1"
+    data_dir.mkdir(parents=True)
+
+    run_root = _finalize(ds, data_dir)
+
+    document = json.loads((run_root / TRAINING_PROVENANCE_FILENAME).read_text())
+    assert sorted(document) == ["base", "data", "kind", "params", "run_id"]
+
+
 def test_data_outside_the_dataset_stays_absolute(tmp_path: Path) -> None:
     """External data is provenance of somewhere else, recorded as it was named."""
     ds = make_dataset(tmp_path / "ds", name="prov")

@@ -10,7 +10,7 @@ it is present, it runs, and it fails with a message about a missing package.
 Most of the argv carries over from the legacy CLI. What does not -- the
 subcommand, the video named by ``-i``, the device spelling and every tracking
 option -- is what the benchmark that motivated this never exercised, so those are
-pinned hardest here. ``_sleap_invocation`` and ``_run_sleap`` are stubbed, which
+pinned hardest here. ``sleap_invocation`` and ``_run_sleap`` are stubbed, which
 asserts *which script is asked for* without a SLEAP install to locate.
 """
 
@@ -68,7 +68,7 @@ def launched(monkeypatch: pytest.MonkeyPatch) -> Launched:
         Path(args[args.index("-o") + 1]).write_bytes(b"")
         return ("", "")
 
-    monkeypatch.setattr(sleap_run, "_sleap_invocation", fake_invocation)
+    monkeypatch.setattr(sleap_run, "sleap_invocation", fake_invocation)
     monkeypatch.setattr(sleap_run, "_run_sleap", fake_run)
     return seen
 

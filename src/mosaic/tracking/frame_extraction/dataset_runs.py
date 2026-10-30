@@ -33,11 +33,11 @@ from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
-    DeclaredModel,
     Params,
 )
 from mosaic.core.scope import Scope
 from mosaic.core.stored_paths import manifest_file_path
+from mosaic.tracking.common.entry_ref import EntryRef
 
 from .extraction import extract_frames as _extract_frames
 from .extraction import extract_frames_multi as _extract_frames_multi
@@ -91,10 +91,6 @@ _EXCLUDE_SPACING_DESCRIPTION = (
     "removed too, so 0 removes each excluded frame alone. Refused above 0 when "
     "exclude is unset."
 )
-
-_ENTRY_GROUP_DESCRIPTION = "The entry's group; empty for a dataset with none."
-
-_ENTRY_SEQUENCE_DESCRIPTION = "The entry's sequence."
 
 _ENTRY_INDICES_DESCRIPTION = (
     "Frame indices on the entry's media: 0 is its first frame, and an "
@@ -170,21 +166,14 @@ _PARALLEL_WORKERS_DESCRIPTION = (
 )
 
 
-class EntryFrames(DeclaredModel):
+class EntryFrames(EntryRef):
     """The frames of one entry, written by ``list`` or excluded by a sampling method."""
 
-    group: Annotated[str, Declared(_ENTRY_GROUP_DESCRIPTION)] = ""
-    sequence: Annotated[str, Field(min_length=1), Declared(_ENTRY_SEQUENCE_DESCRIPTION)]
     indices: Annotated[
         tuple[Annotated[int, Field(ge=0)], ...],
         Field(min_length=1),
         Declared(_ENTRY_INDICES_DESCRIPTION),
     ]
-
-    @property
-    def entry(self) -> Entry:
-        """The ``(group, sequence)`` pair this item names."""
-        return (self.group, self.sequence)
 
 
 def _validated_method(info: ValidationInfo) -> ExtractionMethod | None:

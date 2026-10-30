@@ -51,6 +51,7 @@ from mosaic.core.pipeline.graph import (
     run_pipeline,
     submit_request,
 )
+from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
 from mosaic.core.pipeline.run import run_feature
@@ -820,6 +821,68 @@ def test_an_unresolved_identity_cascades_to_everything_below_it(
     assert isinstance(infer.reason, IdentityUnresolved)
     assert infer.reason.step == "train"
     assert infer.spec.op_kind == "infer-pose", "what to run is still known"
+
+
+def _prepare_then_train_embedding(device: str = "auto") -> Recipe:
+    """A recipe that cuts embedding labels and trains on them."""
+    return Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "prepare",
+                    "type": "op",
+                    "kind": "prepare-embedding-data",
+                    "params": {
+                        "sleap_run_id": "sleap.1.6-abcdef0123",
+                        "train_entries": [{"sequence": "vid1"}],
+                        "val_entries": [{"sequence": "vid2"}],
+                    },
+                },
+                {
+                    "id": "train",
+                    "type": "op",
+                    "kind": "train-sleap",
+                    "params": {
+                        "labels": {"step": "prepare"},
+                        "head": "embedding",
+                        "device": device,
+                    },
+                },
+            ]
+        }
+    )
+
+
+def test_a_training_step_on_labels_not_written_yet_defers_its_label_checks(
+    tmp_path: Path,
+) -> None:
+    """The preparation's row and labels do not exist at plan time.
+
+    The checks that read them wait, and the step's identity is deferred, as it
+    is for any training step whose data is not on disk.
+    """
+    dataset = make_dataset(tmp_path / "ds")
+    write_media_index(dataset, ["vid1", "vid2"], uids={"vid1": "u1", "vid2": "u2"})
+
+    plan = plan_pipeline(dataset, _prepare_then_train_embedding())
+
+    assert plan.step("prepare").run_id is not None
+    train = plan.step("train")
+    assert train.run_id is None
+    assert isinstance(train.reason, IdentityUnresolved)
+    assert "not on disk yet" in train.reason.because
+
+
+def test_a_training_step_whose_settings_cannot_train_is_invalid_at_plan(
+    tmp_path: Path,
+) -> None:
+    """A refusal that reads no data is raised before anything is enqueued."""
+    dataset = make_dataset(tmp_path / "ds")
+    write_media_index(dataset, ["vid1", "vid2"], uids={"vid1": "u1", "vid2": "u2"})
+
+    with pytest.raises(ClassifiedError, match="one device") as refused:
+        _ = plan_pipeline(dataset, _prepare_then_train_embedding(device="0,1"))
+    assert refused.value.error_kind == "invalid"
 
 
 # --- the scope a graph is planned over ------------------------------------------

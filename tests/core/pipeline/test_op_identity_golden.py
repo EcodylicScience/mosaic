@@ -99,6 +99,10 @@ from mosaic.tracking.ops.prepare import (
     PrepareTrainingDataParams,
     prepare_training_data_run_id,
 )
+from mosaic.tracking.ops.prepare_embedding import (
+    PrepareEmbeddingDataParams,
+    prepare_embedding_data_run_id,
+)
 from mosaic.tracking.ops.score_predictions import (
     ScorePredictionsParams,
     score_predictions_run_id,
@@ -168,6 +172,18 @@ MEDIA_VARIANT = "preprocess.0.1-aaaaaaaaaa"
 ``media`` is ``HASH_EXCLUDE``, and an ``OpCase`` digest over ``identity_dump()``
 omits it. Each consumer folds it in where it mints, and the function cases below
 call those minters.
+"""
+
+
+_PREPARE_EMBEDDING_PARAMS = _op_params(
+    "prepare-embedding-data",
+    sleap_run_id="sleap.1.6-abcdef0123",
+    train_entries=[{"group": "g", "sequence": "s2"}, {"group": "g", "sequence": "s1"}],
+    val_entries=[{"group": "g", "sequence": "s3"}],
+)
+"""The prepare-embedding-data params of the digest case and the run-identifier case.
+
+The training entries are given out of order, and the params store them sorted.
 """
 
 
@@ -257,6 +273,18 @@ OP_CASES: tuple[OpCase, ...] = (
         ),
     ),
     OpCase(
+        case_id="train-sleap/embedding",
+        params=_op_params(
+            "train-sleap",
+            labels="prepare-embedding-data.0.1-0123456789",
+            head="embedding",
+            backbone="convnext",
+            max_epochs=10,
+            seed=7,
+            validation_fraction=0.2,
+        ),
+    ),
+    OpCase(
         case_id="train-litpose/project",
         params=_op_params(
             "train-litpose",
@@ -282,6 +310,7 @@ OP_CASES: tuple[OpCase, ...] = (
     ),
     # --- convert --------------------------------------------------------------
     OpCase(case_id="convert-points/cvat", params=_CONVERT_POINTS_PARAMS),
+    OpCase(case_id="prepare-embedding-data/default", params=_PREPARE_EMBEDDING_PARAMS),
     OpCase(
         case_id="resample-tracks/30fps",
         params=_op_params("resample-tracks", target_fps=30.0),
@@ -790,6 +819,11 @@ def _convert_points_run_id() -> str:
     )
 
 
+def _prepare_embedding_run_id() -> str:
+    assert isinstance(_PREPARE_EMBEDDING_PARAMS, PrepareEmbeddingDataParams)
+    return prepare_embedding_data_run_id(_PREPARE_EMBEDDING_PARAMS)
+
+
 def _infer_run_id() -> str:
     return infer_run_id(
         "infer-points",
@@ -1163,6 +1197,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
         _prepare_run_id_with_revisions_named
     ),
     "prepare-training-data/holdout": _prepare_run_id_with_a_holdout,
+    "prepare-embedding-data/run-id": _prepare_embedding_run_id,
     "preprocess/one-step": _preprocess_one_step,
     "preprocess/three-steps": _preprocess_three_steps,
     "preprocess/upstream": _preprocess_upstream,
@@ -1237,6 +1272,7 @@ def test_every_family_is_covered() -> None:
         "train-litpose",
         "convert-points",
         "prepare-training-data",
+        "prepare-embedding-data",
         "preprocess",
         "resample-tracks",
         "infer-pose",

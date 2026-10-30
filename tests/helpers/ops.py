@@ -30,6 +30,11 @@ _MINIMAL: dict[str, dict[str, object]] = {
         "model": ["train-pose.0.2-abcdef0123"],
         "frames_run_id": "kmeans-0123456789",
     },
+    "prepare-embedding-data": {
+        "sleap_run_id": "sleap.1.6-abcdef0123",
+        "train_entries": [{"sequence": "s1"}],
+        "val_entries": [{"sequence": "s2"}],
+    },
     "prepare-training-data": {"sets": [{"set_key": "set-a"}]},
     "preprocess": {
         "steps": [{"step": "crop", "x": 0, "y": 0, "width": 320, "height": 240}]

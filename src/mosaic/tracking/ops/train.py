@@ -279,6 +279,7 @@ def write_training_provenance(
     base_run_id: str,
     base_digest: str,
     base_origin: str,
+    tool_version: str = "",
 ) -> None:
     """Record what a training run was, beside what it produced.
 
@@ -291,8 +292,12 @@ def write_training_provenance(
     Best-effort for the same reason ``run_params.json`` is: the index row carries
     the load-bearing half, and failing to write a readable copy must not lose a
     run that has otherwise finished.
+
+    *tool_version* is the training tool's release, written as ``tool_version``
+    only when it is not empty, so the document of an op that passes none keeps
+    its keys.
     """
-    document = {
+    document: dict[str, object] = {
         "kind": kind,
         "run_id": run_id,
         "params": params.model_dump(mode="json"),
@@ -304,6 +309,8 @@ def write_training_provenance(
             "origin": base_origin,
         },
     }
+    if tool_version:
+        document["tool_version"] = tool_version
     try:
         _ = (run_root / TRAINING_PROVENANCE_FILENAME).write_text(
             json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -334,6 +341,7 @@ def finalize_training(
     data_path: Path | None = None,
     data_fingerprint: str = "",
     base_origin: str = "",
+    tool_version: str = "",
 ) -> None:
     """Register a finished training run in ``models/<kind>/index.csv``.
 
@@ -346,6 +354,9 @@ def finalize_training(
     **before** training started: a trainer may write caches beside its data, and
     a fingerprint taken afterwards would describe a directory the identifier was
     never minted over.
+
+    *tool_version* is the training tool's release, recorded in
+    ``training.json`` and in no identifier.
     """
     stored_data = ds.relative_to_root(data_path) if data_path is not None else ""
     write_training_provenance(
@@ -359,6 +370,7 @@ def finalize_training(
         base_run_id=base_run_id,
         base_digest=base_digest,
         base_origin=base_origin,
+        tool_version=tool_version,
     )
     idx = trained_model_index(model_index_path(ds, kind))
     idx.append(

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 PREPARED_DATA_KINDS: Final[frozenset[str]] = frozenset(
-    {"convert-points", "prepare-training-data"}
+    {"convert-points", "prepare-embedding-data", "prepare-training-data"}
 )
 """The ``models/<kind>/`` directories that hold training *data*, not a model.
 
@@ -54,7 +54,8 @@ PREPARED_ARTIFACT_COLUMNS: Final = ("artifact_path", "data_yaml")
 
 ``convert-points`` records ``data_yaml``. ``prepare-training-data`` records
 ``artifact_path``, because its artifact is a ``data.yaml``, a ``.slp`` file or a
-Lightning Pose project depending on the target.
+Lightning Pose project depending on the target. ``prepare-embedding-data``
+records ``artifact_path``, its ``labels.slp``.
 """
 
 

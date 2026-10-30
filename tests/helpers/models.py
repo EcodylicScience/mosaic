@@ -24,7 +24,12 @@ __all__ = [
     "rewrite_as_older_prepared_index",
 ]
 
-_NEWEST_PREPARED_COLUMNS: Final = ("held_out_sets", "n_held_out", "keypoint_schema")
+_NEWEST_PREPARED_COLUMNS: Final = (
+    "held_out_sets",
+    "n_held_out",
+    "keypoint_schema",
+    "track_by",
+)
 """The columns that the newest rows of a prepared-data index added."""
 
 

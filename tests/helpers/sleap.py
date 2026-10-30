@@ -17,18 +17,27 @@ reports them in reverse order, as sleap-io's grouping by image shape can
 reorder them. Like sleap-nn 0.2.0 and 0.3.1, it reports every image of the input
 as a frame, with no instances where it found none, and lists every image of the
 input as an image of its videos.
+
+:func:`write_appearance_readback` writes the ``.npz`` that the readback of
+tracked instances publishes, from records that a test gives it.
+:func:`write_stub_sleap_io` writes a stand-in ``sleap_io`` package whose
+``load_slp`` reads a file of :func:`write_stub_slp` and whose ``save_slp`` writes
+one that :func:`read_stub_labels` reads, so a test runs a snippet's source against
+labels it describes.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Final, TypedDict
 
 import numpy as np
 import pytest
 import yaml
+from pydantic import TypeAdapter
 
 from mosaic.core.annotations.model import AnnotationSet
 from mosaic.tracking.sleap.frames import (
@@ -397,3 +406,305 @@ def install_fake_sleap_frames(
     monkeypatch.setattr(sleap_frames, "run_sleap_track", installed.track)
     monkeypatch.setattr(sleap_frames, "read_sleap_predictions", installed.readback)
     return installed
+
+
+@dataclass(frozen=True, slots=True)
+class ReadbackRecord:
+    """One tracked instance of a readback ``.npz``.
+
+    Attributes:
+        frame_idx: The instance's frame.
+        track_name: The name of its track.
+        is_user: Whether it is a user instance rather than a predicted one.
+        vector: Its appearance vector, or ``None`` when it has none.
+    """
+
+    frame_idx: int
+    track_name: str
+    is_user: bool = False
+    vector: tuple[float, ...] | None = None
+
+
+def write_appearance_readback(
+    path: Path, records: Sequence[ReadbackRecord], *, dim: int
+) -> Path:
+    """Write *records* to *path* as the readback of tracked instances writes them.
+
+    A record without a vector has a row of *dim* zeros. A *dim* of 0 writes
+    ``vectors`` of shape ``(n, 0)``, as a predictions file without embeddings
+    does.
+
+    Returns:
+        *path*.
+    """
+    vectors = np.zeros((len(records), dim), dtype=np.float32)
+    for row, record in enumerate(records):
+        if record.vector is not None:
+            vectors[row] = record.vector
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        np.savez(
+            handle,
+            frame_idx=np.asarray([r.frame_idx for r in records], dtype=np.int64),
+            track_name=np.asarray([r.track_name for r in records], dtype=np.str_),
+            is_user=np.asarray([r.is_user for r in records], dtype=np.bool_),
+            has_vector=np.asarray(
+                [r.vector is not None for r in records], dtype=np.bool_
+            ),
+            vectors=vectors,
+        )
+    return path
+
+
+@dataclass(frozen=True, slots=True)
+class StubInstance:
+    """One instance of a labeled frame in a file of :func:`write_stub_slp`.
+
+    Attributes:
+        track: The name of its track, or ``None`` for an instance without one.
+        predicted: Whether it is a predicted instance rather than a user one.
+        embedding: Its identity embedding, or ``None`` when it has none.
+        x: The x coordinate of each of its points, which tells apart the
+            instances of one slot. Every y coordinate is zero.
+    """
+
+    track: str | None
+    predicted: bool = True
+    embedding: tuple[float, ...] | None = None
+    x: float = 0.0
+
+
+StubFrame = tuple[int, Sequence[StubInstance]]
+"""One labeled frame of a stub file: its frame index and its instances, in order."""
+
+STUB_NODES: Final = ("head", "tail")
+"""The skeleton of every stub file. Each instance has one point per node."""
+
+
+def write_stub_slp(
+    path: Path, frames: Sequence[StubFrame], *, video: str = "video.mp4"
+) -> Path:
+    """Write the labeled *frames* where the stub ``sleap_io.load_slp`` reads them.
+
+    The file names one video, *video*, which holds every frame.
+
+    Returns:
+        *path*.
+    """
+    document = {
+        "video": video,
+        "frames": [
+            {
+                "frame_idx": frame_idx,
+                "instances": [
+                    {
+                        "track": instance.track,
+                        "predicted": instance.predicted,
+                        "x": instance.x,
+                        "embedding": (
+                            None
+                            if instance.embedding is None
+                            else list(instance.embedding)
+                        ),
+                    }
+                    for instance in instances
+                ],
+            }
+            for frame_idx, instances in frames
+        ],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
+class StubSavedInstance(TypedDict):
+    """One instance of a file that the stub ``sleap_io.save_slp`` wrote."""
+
+    track: str | None
+    predicted: bool
+    x: float
+
+
+class StubSavedFrame(TypedDict):
+    """One labeled frame of a saved stub file, its video given by position."""
+
+    video: int
+    frame_idx: int
+    instances: list[StubSavedInstance]
+
+
+class StubSavedLabels(TypedDict):
+    """A file that the stub ``sleap_io.save_slp`` wrote.
+
+    Attributes:
+        embed: The ``embed`` argument of the save.
+        videos: The file name of each video, in order.
+        tracks: The name of each track, in order.
+        frames: The labeled frames, in order.
+    """
+
+    embed: bool
+    videos: list[str]
+    tracks: list[str]
+    frames: list[StubSavedFrame]
+
+
+_SAVED_LABELS: Final = TypeAdapter(StubSavedLabels)
+
+
+def read_stub_labels(path: Path) -> StubSavedLabels:
+    """Read the file that the stub ``sleap_io.save_slp`` wrote at *path*."""
+    return _SAVED_LABELS.validate_json(path.read_bytes())
+
+
+_STUB_SLEAP_IO: Final = """
+import json
+import time
+
+import numpy as np
+
+
+class Track:
+    def __init__(self, name):
+        self.name = name
+
+
+class Embedding:
+    def __init__(self, vector):
+        self.vector = np.asarray(vector, dtype=np.float32)
+
+
+class Skeleton:
+    def __init__(self, nodes):
+        self.nodes = list(nodes)
+
+
+class Video:
+    def __init__(self, filename):
+        self.filename = filename
+
+    @classmethod
+    def from_filename(cls, filename, keep_open=True):
+        return cls(filename)
+
+
+class Instance:
+    def __init__(self, points, skeleton, track=None, identity_embedding=None):
+        self.points = np.asarray(points, dtype=np.float64)
+        self.skeleton = skeleton
+        self.track = track
+        self.identity_embedding = identity_embedding
+
+    @classmethod
+    def from_numpy(cls, points_data, skeleton, track=None):
+        return cls(points_data, skeleton, track=track)
+
+    def numpy(self):
+        return self.points
+
+
+class PredictedInstance(Instance):
+    pass
+
+
+class LabeledFrame:
+    def __init__(self, video, frame_idx, instances):
+        self.video = video
+        self.frame_idx = frame_idx
+        self.instances = instances
+
+
+class Labels:
+    def __init__(self, labeled_frames, videos=None, skeletons=None, tracks=None):
+        self.labeled_frames = labeled_frames
+        self.videos = list(videos or [])
+        self.skeletons = list(skeletons or [])
+        self.tracks = list(tracks or [])
+
+
+def _instance(record, skeleton, tracks):
+    track = None
+    if record["track"] is not None:
+        track = tracks.setdefault(record["track"], Track(record["track"]))
+    embedding = None
+    if record["embedding"] is not None:
+        embedding = Embedding(record["embedding"])
+    kind = PredictedInstance if record["predicted"] else Instance
+    points = np.zeros((len(skeleton.nodes), 2))
+    points[:, 0] = record["x"]
+    return kind(points, skeleton, track=track, identity_embedding=embedding)
+
+
+def load_slp(filename):
+    with open(filename, encoding="utf-8") as handle:
+        document = json.load(handle)
+    video = Video(document["video"])
+    skeleton = Skeleton(NODES)
+    tracks = {}
+    frames = [
+        LabeledFrame(
+            video,
+            frame["frame_idx"],
+            [_instance(record, skeleton, tracks) for record in frame["instances"]],
+        )
+        for frame in document["frames"]
+    ]
+    return Labels(frames, [video], [skeleton], list(tracks.values()))
+
+
+def save_slp(labels, filename, embed=False):
+    time.sleep(SAVE_SECONDS)
+    positions = {id(video): position for position, video in enumerate(labels.videos)}
+    document = {
+        "embed": embed,
+        "videos": [video.filename for video in labels.videos],
+        "tracks": [track.name for track in labels.tracks],
+        "frames": [
+            {
+                "video": positions[id(frame.video)],
+                "frame_idx": frame.frame_idx,
+                "instances": [
+                    {
+                        "track": None if each.track is None else each.track.name,
+                        "predicted": isinstance(each, PredictedInstance),
+                        "x": float(each.points[0, 0]),
+                    }
+                    for each in frame.instances
+                ],
+            }
+            for frame in labels.labeled_frames
+        ],
+    }
+    with open(filename, "w", encoding="utf-8") as handle:
+        json.dump(document, handle)
+"""
+"""The stand-in ``sleap_io``: the classes, ``load_slp`` and ``save_slp`` a snippet uses.
+
+``PredictedInstance`` subclasses ``Instance``, as in sleap-io. ``save_slp`` writes
+what :func:`read_stub_labels` reads, after sleeping ``SAVE_SECONDS``. ``NODES``
+is :data:`STUB_NODES`.
+"""
+
+
+def write_stub_sleap_io(directory: Path, *, save_seconds: float = 0.0) -> Path:
+    """Write a stand-in ``sleap_io`` package under *directory*.
+
+    Its ``load_slp`` reads a file of :func:`write_stub_slp`. Put *directory* on
+    a snippet's module search path, for instance as the ``imports`` of
+    :func:`~tests.helpers.decode_probe.install_fake_tool_python`.
+
+    Args:
+        directory: Where the package is written.
+        save_seconds: How long each ``save_slp`` sleeps before it writes, as a
+            save that embeds frames takes.
+
+    Returns:
+        *directory*.
+    """
+    package = directory / "sleap_io"
+    package.mkdir(parents=True, exist_ok=True)
+    header = f"NODES = {STUB_NODES!r}\nSAVE_SECONDS = {save_seconds!r}\n"
+    source = header + _STUB_SLEAP_IO
+    _ = (package / "__init__.py").write_text(source, encoding="utf-8")
+    return directory

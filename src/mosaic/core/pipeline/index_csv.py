@@ -702,6 +702,52 @@ class IndexCSV(Generic[RowT]):
             atomic_write(self.path, lambda p: df.to_csv(p, index=False))
             return matched
 
+    def update_cells(self, run_id: str, values: Mapping[str, str]) -> int:
+        """Set the named cells of every row of *run_id*, preserving all else.
+
+        The cell edit for a column that a run's identity does not cover, such as
+        provenance recorded after the row was written. Like :meth:`remap_run_id` it
+        rewrites cells in place, so ``started_at`` and ``finished_at`` survive, and
+        it is one locked read-modify-write for the same reason: an append landing
+        between the read and the rewrite would be lost.
+
+        The frame is brought to the current schema first when this index has an
+        ``adopt`` hook, so a column added since the file was written is a blank
+        cell to fill and not a missing one.
+
+        Args:
+            run_id: The run whose rows are rewritten.
+            values: Column name to the new cell.
+
+        Returns:
+            The number of rows rewritten. The file is written only when at least
+            one matches.
+
+        Raises:
+            ValueError: A name in *values* is not a column of the index.
+        """
+        self._assert_run_index()
+        if not self.path.exists():
+            return 0
+        with index_lock(self.path):
+            df = self._read_frame()
+            if df.empty:
+                return 0
+            if self.adopt is not None:
+                df = self.adopt(df)
+            unknown = sorted(set(values) - {str(column) for column in df.columns})
+            if unknown:
+                msg = f"{self.path} has no column {', '.join(unknown)}"
+                raise ValueError(msg)
+            mask = df["run_id"] == run_id
+            matched = int(mask.sum())
+            if matched == 0:
+                return 0
+            for column, cell in values.items():
+                df.loc[mask, column] = cell
+            atomic_write(self.path, lambda p: df.to_csv(p, index=False))
+            return matched
+
 
 def index_records(frame: pd.DataFrame) -> list[dict[str, str]]:
     """A frame's rows as plain string dicts.

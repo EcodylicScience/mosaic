@@ -1,6 +1,6 @@
 """Unit tests for the env-aware SLEAP CLI invocation resolution.
 
-Covers :func:`mosaic.tracking.sleap.run._sleap_invocation` (how a SLEAP console
+Covers :func:`mosaic.tracking.sleap.run.sleap_invocation` (how a SLEAP console
 script is launched: in a conda env, via a sibling of an explicit binary, or
 beside ``sleap-convert`` on ``$PATH``) and the ``_run_sleap`` wiring, without
 invoking the real SLEAP.
@@ -16,7 +16,7 @@ from mosaic.tracking.sleap.run import (
     SLEAP_ENV,
     SleapNotFoundError,
     _run_sleap,
-    _sleap_invocation,
+    sleap_invocation,
 )
 from tests.helpers import FAKE_CONDA, fake_path_lookup, isolate_tool_location
 
@@ -44,7 +44,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_param_conda_env_wins():
-    assert _sleap_invocation("sleap-nn", sleap_conda_env="sleap") == [
+    assert sleap_invocation("sleap-nn", sleap_conda_env="sleap") == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
@@ -57,13 +57,13 @@ def test_param_conda_env_wins():
 def test_param_bin_resolves_the_named_script_as_a_sibling():
     # MOSAIC_SLEAP_BIN may point at any one console script; the requested script
     # is resolved in the same directory.
-    assert _sleap_invocation("sleap-nn", sleap_bin="/x/bin/sleap-convert") == [
+    assert sleap_invocation("sleap-nn", sleap_bin="/x/bin/sleap-convert") == [
         "/x/bin/sleap-nn"
     ]
 
 
 def test_param_conda_beats_param_bin():
-    got = _sleap_invocation(
+    got = sleap_invocation(
         "sleap-nn", sleap_conda_env="sleap", sleap_bin="/x/sleap-convert"
     )
     assert got[0] == "/p/bin/conda"
@@ -71,7 +71,7 @@ def test_param_conda_beats_param_bin():
 
 def test_env_conda(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_SLEAP_CONDA_ENV", "envc")
-    assert _sleap_invocation("sleap-nn") == [
+    assert sleap_invocation("sleap-nn") == [
         "/p/bin/conda",
         "run",
         "--no-capture-output",
@@ -83,20 +83,20 @@ def test_env_conda(monkeypatch: pytest.MonkeyPatch):
 
 def test_param_beats_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_SLEAP_CONDA_ENV", "envc")
-    assert _sleap_invocation("sleap-nn", sleap_bin="/x/bin/sleap-convert") == [
+    assert sleap_invocation("sleap-nn", sleap_bin="/x/bin/sleap-convert") == [
         "/x/bin/sleap-nn"
     ]
 
 
 def test_env_bin_resolves_sibling(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MOSAIC_SLEAP_BIN", "/y/bin/sleap-convert")
-    assert _sleap_invocation("sleap-nn") == ["/y/bin/sleap-nn"]
+    assert sleap_invocation("sleap-nn") == ["/y/bin/sleap-nn"]
 
 
 def test_default_path_lookup_runs_every_script_beside_sleap_convert():
-    assert _sleap_invocation("sleap-nn") == ["/p/sleap-nn"]
-    assert _sleap_invocation("sleap-convert") == ["/p/sleap-convert"]
-    assert _sleap_invocation("python") == ["/p/python"]
+    assert sleap_invocation("sleap-nn") == ["/p/sleap-nn"]
+    assert sleap_invocation("sleap-convert") == ["/p/sleap-convert"]
+    assert sleap_invocation("python") == ["/p/python"]
 
 
 # --- error paths ---
@@ -105,7 +105,7 @@ def test_default_path_lookup_runs_every_script_beside_sleap_convert():
 def test_default_missing_raises(monkeypatch: pytest.MonkeyPatch):
     fake_path_lookup(monkeypatch, {})
     with pytest.raises(SleapNotFoundError):
-        _sleap_invocation("sleap-nn")
+        sleap_invocation("sleap-nn")
 
 
 def test_sleap_nn_alone_on_path_is_not_a_sleap_install(
@@ -114,19 +114,19 @@ def test_sleap_nn_alone_on_path_is_not_a_sleap_install(
     """A bare ``pip install sleap-nn`` has no ``sleap-convert`` to export with."""
     fake_path_lookup(monkeypatch, {"sleap-nn": "/elsewhere/sleap-nn"})
     with pytest.raises(SleapNotFoundError):
-        _sleap_invocation("sleap-nn")
+        sleap_invocation("sleap-nn")
 
 
 def test_conda_missing_raises(monkeypatch: pytest.MonkeyPatch):
     fake_path_lookup(monkeypatch, {})
     with pytest.raises(SleapNotFoundError):
-        _sleap_invocation("sleap-nn", sleap_conda_env="sleap")
+        sleap_invocation("sleap-nn", sleap_conda_env="sleap")
 
 
 def test_conda_uses_conda_exe_fallback(monkeypatch: pytest.MonkeyPatch):
     fake_path_lookup(monkeypatch, {})
     monkeypatch.setenv("CONDA_EXE", "/opt/conda/bin/conda")
-    assert _sleap_invocation("sleap-nn", sleap_conda_env="sleap")[0] == (
+    assert sleap_invocation("sleap-nn", sleap_conda_env="sleap")[0] == (
         "/opt/conda/bin/conda"
     )
 

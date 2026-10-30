@@ -301,6 +301,11 @@ class PreparedDatasetIndexRow(RunIndexRowBase):
     held_out_sets: str = ""
     n_held_out: int = 0
     keypoint_schema: str = ""
+    # How a sleap preparation named its tracks: ``alias``, or blank when unset, for
+    # another target, and on a row written before this column. A blank reads as
+    # "not alias". Provenance, never identity: ``track_by`` entered the run
+    # identifier already.
+    track_by: str = ""
 
 
 _PREPARED_DATASET_INDEX_COLUMNS: Final = tuple(
@@ -971,6 +976,7 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
 
         index = prepared_dataset_index(model_index_path(ds, self.kind))
         if not overwrite and _already_prepared(ds, index, run_id, params.target):
+            _fill_track_by(index, run_id, params)
             ctx.cache_hit()
             return run_id
 
@@ -1210,6 +1216,7 @@ def _register(
                 held_out_sets=consumed_sets_cell(holdout.sets),
                 n_held_out=n_held_out,
                 keypoint_schema=_schema_cell(params, predicts),
+                track_by=_track_by_cell(params),
                 abs_path=Path(ds.relative_to_root(out)),
             )
         ]
@@ -1310,6 +1317,32 @@ def _write_for_tool(
         merged(), out / "project", train_prob=params.split[0], copy_images=True
     )
     return project, n_by_split
+
+
+def _track_by_cell(params: PrepareTrainingDataParams) -> str:
+    """The ``track_by`` cell of a preparation: set for ``sleap`` only."""
+    if params.target != "sleap" or params.track_by is None:
+        return ""
+    return str(params.track_by)
+
+
+def _fill_track_by(
+    index: IndexCSV[PreparedDatasetIndexRow],
+    run_id: str,
+    params: PrepareTrainingDataParams,
+) -> None:
+    """Record ``track_by`` on a reused run whose row predates the column.
+
+    The current params name the same run, because the run identifier hashes
+    ``track_by``. A cell already recorded is left as it is.
+    """
+    cell = _track_by_cell(params)
+    if not cell:
+        return
+    rows = index.read(run_id=run_id)
+    if "track_by" in rows.columns and str(rows.iloc[-1]["track_by"]):
+        return
+    _ = index.update_cells(run_id, {"track_by": cell})
 
 
 def _already_prepared(

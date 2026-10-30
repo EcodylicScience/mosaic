@@ -12,35 +12,63 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Final, get_args
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.models import model_index_path, model_run_root
-from mosaic.core.pipeline.ops import OPS, run_op
+from mosaic.core.pipeline.ops import OPS, IdentityDeferred, run_op
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 from mosaic.tracking import register_ops
 from mosaic.tracking.ops._common import fingerprint_dataset
 from mosaic.tracking.ops.train import TRAINING_PROVENANCE_FILENAME, train_run_id
 from mosaic.tracking.ops.trained_models import trained_model_index
-from mosaic.tracking.ops.train_sleap import TrainSleapParams, fingerprint_sleap_labels
+from mosaic.tracking.ops.train_sleap import (
+    MODEL_DIRECTORY,
+    TrainSleapInvalid,
+    TrainSleapOp,
+    TrainSleapParams,
+    embedding_objective,
+    fingerprint_sleap_labels,
+)
 from mosaic.tracking.sleap import probe as probe_module
 from mosaic.tracking.sleap.probe import (
     SleapProbeResponse,
+    require_embedding_labels,
     require_identity_labels,
     require_sleap_nn,
 )
-from mosaic.tracking.sleap.run import SleapNotFoundError
+from mosaic.tracking.sleap.run import SleapError, SleapNotFoundError
 from mosaic.tracking.sleap import training as training_module
-from mosaic.tracking.sleap.training import sleap_device_overrides, sleap_train_config
+from mosaic.tracking.sleap.training import (
+    DEFAULT_EMBEDDING_OBJECTIVE,
+    PREPARED_EMBEDDING_OBJECTIVE,
+    EmbeddingObjective,
+    EmbeddingPositiveScope,
+    SleapBackbone,
+    SleapHead,
+    sleap_device_overrides,
+    sleap_train_config,
+)
+from mosaic.tracking.sleap.version import PREPARE_EMBEDDING_DATA_KIND
 
-from tests.helpers import dotted_values, make_dataset, write_sleap_model
+from tests.helpers import (
+    dotted_values,
+    make_dataset,
+    read_string_golden,
+    regenerate_command,
+    updating_golden,
+    write_golden,
+    write_sleap_model,
+)
 
 register_ops()
 
@@ -66,6 +94,10 @@ def _fake_trainer(
         config_dir = Path(argv[argv.index("--config-dir") + 1])
         config = yaml.safe_load((config_dir / "config.yaml").read_text())
         produced = config_dir / config["trainer_config"]["run_name"]
+        if produced.exists():
+            # sleap-nn never writes into a model directory that exists. It
+            # numbers the new one beside it.
+            produced = produced.with_name(f"{produced.name}-1")
         _ = write_sleap_model(produced, head=head, merged=True)
         if writes_training_log:
             _ = (produced / "training_log.csv").write_text("epoch,train_loss\n0,1.0\n")
@@ -88,12 +120,13 @@ def _fake_probe(
     has_sleap_nn: bool = True,
     n_tracks: int = 2,
     labels_load_error: str = "",
+    sleap_nn_version: str = "0.3.5",
 ) -> list[list[str]]:
     """Stand in for the probe subprocess, writing the answer it would have."""
     seen: list[list[str]] = []
     found = {
         "has_sleap_nn": has_sleap_nn,
-        "sleap_nn_version": "0.3.1" if has_sleap_nn else "",
+        "sleap_nn_version": sleap_nn_version if has_sleap_nn else "",
         "sleap_nn_import_error": (
             "" if has_sleap_nn else "ModuleNotFoundError: No module named 'sleap_nn'"
         ),
@@ -229,6 +262,7 @@ def test_the_config_states_the_preprocessing_sleap_nn_reads_unmerged() -> None:
         ("bottomup", {"confmaps", "pafs"}),
         ("multi_class_bottomup", {"confmaps", "class_maps"}),
         ("multi_class_topdown", {"confmaps", "class_vectors"}),
+        ("embedding", {"embedding"}),
     ],
 )
 def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> None:
@@ -256,7 +290,658 @@ def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> 
     written = config["model_config"]["head_configs"]
     assert set(written) == {head}
     assert set(written[head]) == sections
-    assert all(value == {} for value in written[head].values())  # pyright: ignore[reportAttributeAccessIssue]
+    if head in _POSE_HEADS:
+        assert all(value == {} for value in written[head].values())  # pyright: ignore[reportAttributeAccessIssue]
+
+
+_POSE_CONFIGS_GOLDEN: Final = "sleap_pose_head_configs.json"
+"""Every pose head's ``config.yaml``, stored because no run id hashes it."""
+
+_POSE_HEADS: Final[tuple[SleapHead, ...]] = (
+    "single_instance",
+    "centroid",
+    "centered_instance",
+    "bottomup",
+    "multi_class_bottomup",
+    "multi_class_topdown",
+)
+
+
+def _pose_documents() -> dict[str, str]:
+    """The ``config.yaml`` text of every pose head and backbone, by case id.
+
+    Each pair is written twice: holding out a fraction, and with a validation
+    file and base weights.
+    """
+    documents: dict[str, str] = {}
+    for head in _POSE_HEADS:
+        for backbone in get_args(SleapBackbone):
+            for variant, validation, weights in (
+                ("fraction", None, None),
+                ("file", Path("labels.val.slp"), Path("/models/base/best.ckpt")),
+            ):
+                config = sleap_train_config(
+                    Path("labels.slp"),
+                    Path("/runs/r1"),
+                    head=head,
+                    backbone=backbone,
+                    max_epochs=30,
+                    seed=7,
+                    validation_fraction=0.25,
+                    validation_labels=validation,
+                    base_weights=weights,
+                    run_name="model",
+                )
+                documents[f"{head}/{backbone}/{variant}"] = yaml.safe_dump(
+                    config, sort_keys=False
+                )
+    return documents
+
+
+def _op_config_text(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The ``config.yaml`` that a default train-sleap run writes, paths masked."""
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
+    run_id = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+    config_dir = Path(seen[0][seen[0].index("--config-dir") + 1])
+    text = (config_dir / "config.yaml").read_text()
+    return text.replace(run_id, "<run_id>").replace(str(tmp_path), "<tmp>")
+
+
+def test_every_pose_head_document_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pose head's document is byte for byte the one stored in the golden file.
+
+    A train-sleap run id does not hash the document, so a changed document
+    would train a different model under an unchanged identifier.
+    """
+    documents = _pose_documents()
+    documents["op/centered_instance/unet/fraction"] = _op_config_text(
+        tmp_path, monkeypatch
+    )
+    if updating_golden():
+        write_golden(_POSE_CONFIGS_GOLDEN, documents)
+        return
+    golden = read_string_golden(_POSE_CONFIGS_GOLDEN)
+    assert documents == golden, regenerate_command(__name__)
+
+
+# --- the embedding head -------------------------------------------------------
+
+_EMBEDDING_LEAF: Final = "model_config.head_configs.embedding.embedding"
+
+_DEFAULT_OBJECTIVE_TERMS: Final[dict[str, JsonValue]] = {
+    "positives.scope": "global_id",
+    "positives.aug_views": 2,
+    "negatives.sources": ["same_frame", "in_batch"],
+    "negatives.exclude_same_track": True,
+    "negatives.restrict_same_video": False,
+    "loss.name": "supcon",
+    "loss.temperature": 0.1,
+    "sampler.kind": "pk",
+    "sampler.groups_per_batch": 8,
+    "sampler.samples_per_group": 16,
+    "use_projection": True,
+    "projection_dim": 128,
+}
+"""sleap-nn 0.3.5's default objective, term by term."""
+
+_PREPARED_OBJECTIVE_TERMS: Final[dict[str, JsonValue]] = {
+    **_DEFAULT_OBJECTIVE_TERMS,
+    "positives.scope": "tracklet",
+    "negatives.restrict_same_video": True,
+    "sampler.kind": "within_video",
+    "sampler.samples_per_group": 8,
+}
+"""The objective for labels that a prepare-embedding-data run cut."""
+
+
+def _embedding_document(
+    backbone: SleapBackbone = "unet",
+    objective: EmbeddingObjective = DEFAULT_EMBEDDING_OBJECTIVE,
+) -> Mapping[str, object]:
+    """The embedding head's document, read back from the YAML it is written as."""
+    config = sleap_train_config(
+        Path("labels.slp"),
+        Path("/runs/r1"),
+        head="embedding",
+        backbone=backbone,
+        max_epochs=30,
+        seed=7,
+        validation_fraction=0.25,
+        validation_labels=None,
+        base_weights=None,
+        run_name="model",
+        objective=objective,
+    )
+    written: object = yaml.safe_load(yaml.safe_dump(config, sort_keys=False))
+    assert is_str_mapping(written)
+    return written
+
+
+@pytest.mark.parametrize(
+    ("backbone", "stride"), [("unet", 16), ("convnext", 32), ("swint", 32)]
+)
+def test_the_embedding_leaf_takes_its_stride_from_the_backbone(
+    backbone: SleapBackbone, stride: int
+) -> None:
+    """Each stride is the backbone's default ``max_stride``."""
+    values = dotted_values(_embedding_document(backbone))
+    assert values[f"{_EMBEDDING_LEAF}.embedding_dim"] == 128
+    assert values[f"{_EMBEDDING_LEAF}.output_stride"] == stride
+
+
+@pytest.mark.parametrize(
+    ("objective", "terms"),
+    [
+        (DEFAULT_EMBEDDING_OBJECTIVE, _DEFAULT_OBJECTIVE_TERMS),
+        (PREPARED_EMBEDDING_OBJECTIVE, _PREPARED_OBJECTIVE_TERMS),
+    ],
+    ids=["default", "prepare-embedding-data"],
+)
+def test_the_embedding_leaf_writes_every_objective_term(
+    objective: EmbeddingObjective, terms: dict[str, JsonValue]
+) -> None:
+    """Every term is written, so the run id names the objective that trained."""
+    leaf = dotted_values(_embedding_document(objective=objective))
+    prefix = f"{_EMBEDDING_LEAF}.objective."
+    written = {
+        key.removeprefix(prefix): value
+        for key, value in leaf.items()
+        if key.startswith(prefix) and not is_str_mapping(value)
+    }
+    assert written == terms
+
+
+def test_the_embedding_document_declares_track_names_per_video() -> None:
+    """mosaic does not assert that a track name means one animal across videos."""
+    values = dotted_values(_embedding_document())
+    assert values["data_config.identity.track_names_are_global"] is False
+
+
+def test_the_embedding_document_augments_without_erasing_appearance() -> None:
+    """Small rotations and shifts, and no flips, erasing or intensity changes."""
+    values = dotted_values(_embedding_document())
+    geometric = "data_config.augmentation_config.geometric"
+    intensity = "data_config.augmentation_config.intensity"
+    assert values["data_config.use_augmentations_train"] is True
+    assert {
+        key: values[f"{geometric}.{key}"]
+        for key in (
+            "rotation_min",
+            "rotation_max",
+            "scale_min",
+            "scale_max",
+            "translate_width",
+            "translate_height",
+            "affine_p",
+            "erase_p",
+            "flip_p",
+        )
+    } == {
+        "rotation_min": -10.0,
+        "rotation_max": 10.0,
+        "scale_min": 1.0,
+        "scale_max": 1.0,
+        "translate_width": 0.05,
+        "translate_height": 0.05,
+        "affine_p": 1.0,
+        "erase_p": 0.0,
+        "flip_p": 0.0,
+    }
+    assert {
+        key: values[f"{intensity}.{key}"]
+        for key in ("contrast_p", "brightness_p", "gaussian_noise_p")
+    } == {"contrast_p": 0.0, "brightness_p": 0.0, "gaussian_noise_p": 0.0}
+
+
+def test_the_embedding_document_trains_on_one_device() -> None:
+    values = dotted_values(_embedding_document())
+    assert values["trainer_config.trainer_devices"] == 1
+
+
+def test_the_embedding_document_leaves_the_crop_size_to_sleap_nn() -> None:
+    """sleap-nn sizes the crop from the labels, and an override sets it."""
+    values = dotted_values(_embedding_document())
+    assert "data_config.preprocessing.crop_size" not in values
+
+
+@pytest.mark.parametrize(
+    ("labels", "objective"),
+    [
+        ("prepare-embedding-data.0.1-0123456789", PREPARED_EMBEDDING_OBJECTIVE),
+        ("prepare-training-data.0.3-0123456789", DEFAULT_EMBEDDING_OBJECTIVE),
+        ("/data/session.slp", DEFAULT_EMBEDDING_OBJECTIVE),
+    ],
+)
+def test_the_objective_follows_the_kind_of_the_labels(
+    labels: str, objective: EmbeddingObjective
+) -> None:
+    """Labels named by a prepare-embedding-data run id take its objective.
+
+    A path, which names no run, takes the default.
+    """
+    assert embedding_objective(labels) == objective
+
+
+def test_an_embedding_run_writes_the_default_objective_for_other_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Labels that no prepare-embedding-data run cut take sleap-nn's default."""
+    ds, labels, seen = _embedding_setup(
+        tmp_path, monkeypatch, _PREPARE_TRAINING_DATA, track_by="alias"
+    )
+    _ = run_op(ds, "train-sleap", _embedding_params(labels, {_DECLARATION: True}))
+    values = dotted_values(_written_config(seen[0]))
+    assert values[f"{_OBJECTIVE}.positives.scope"] == "global_id"
+    assert values[f"{_EMBEDDING_LEAF}.output_stride"] == 16
+
+
+def test_an_embedding_run_writes_the_prepared_objective_for_its_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(ds, "train-sleap", _embedding_params(labels))
+    values = dotted_values(_written_config(seen[0]))
+    assert values[f"{_OBJECTIVE}.positives.scope"] == "tracklet"
+    assert values[f"{_OBJECTIVE}.negatives.restrict_same_video"] is True
+
+
+def test_an_override_of_an_objective_term_is_assigned_bare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The document writes every term, and Hydra requires the bare form for it.
+
+    A leaf field that mosaic leaves to sleap-nn is appended.
+    """
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(
+        ds,
+        "train-sleap",
+        _embedding_params(
+            labels,
+            {
+                f"{_OBJECTIVE}.loss.temperature": 0.07,
+                f"{_EMBEDDING_LEAF}.pool": "avg",
+            },
+        ),
+    )
+    assignments = _assignments(seen[0])
+    assert f"{_OBJECTIVE}.loss.temperature=0.07" in assignments
+    assert f"+{_EMBEDDING_LEAF}.pool=avg" in assignments
+
+
+# --- embedding refusals -----------------------------------------------------
+
+_OBJECTIVE: Final = f"{_EMBEDDING_LEAF}.objective"
+_DECLARATION: Final = "data_config.identity.track_names_are_global"
+_PREPARE_TRAINING_DATA: Final = "prepare-training-data"
+
+
+def _preparation(
+    ds: Dataset, kind: str, *, track_by: str = "", validation: bool = True
+) -> str:
+    """Record a *kind* run that wrote ``labels.slp``, and return its run id.
+
+    The row holds the cells that train-sleap reads: where the labels are and,
+    for a ``prepare-training-data`` run, how its tracks were named.
+    """
+    run_id = f"{kind}.0.1-0123456789"
+    root = model_run_root(ds, kind, run_id)
+    root.mkdir(parents=True)
+    labels = root / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+    if validation:
+        _ = (root / "labels.val.slp").write_bytes(b"validation slp")
+    _ = model_index_path(ds, kind).write_text(
+        "run_id,artifact_path,track_by\n"
+        f"{run_id},{ds.relative_to_root(labels)},{track_by}\n"
+    )
+    return run_id
+
+
+def _embedding_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str = PREPARE_EMBEDDING_DATA_KIND,
+    *,
+    track_by: str = "",
+    validation: bool = True,
+) -> tuple[Dataset, str, list[list[str]]]:
+    """A dataset holding a *kind* preparation, and a faked embedding trainer.
+
+    Returns:
+        The dataset, the preparation's run id, and the trainer's argv list.
+    """
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch, head="embedding")
+    run_id = _preparation(ds, kind, track_by=track_by, validation=validation)
+    return ds, run_id, seen
+
+
+def _embedding_params(
+    labels: str, overrides: dict[str, JsonValue] | None = None, device: str = "auto"
+) -> dict[str, object]:
+    return {
+        "labels": labels,
+        "max_epochs": 1,
+        "head": "embedding",
+        "sleap_overrides": overrides,
+        "device": device,
+    }
+
+
+def _assert_refused(
+    ds: Dataset,
+    params: dict[str, object],
+    seen: list[list[str]],
+    match: str,
+    *,
+    by_plan: bool = True,
+) -> None:
+    """Assert that the run refuses *params* before any claim, and the plan too.
+
+    A refusal leaves no run root and never reaches the trainer. *by_plan* says
+    whether the refusal needs no probe, which ``plan_identity`` raises as well.
+    """
+    with pytest.raises(ValueError, match=match):
+        _ = run_op(ds, "train-sleap", dict(params))
+    assert seen == [], "the trainer must not run"
+    kind_root = model_index_path(ds, "train-sleap").parent
+    assert not kind_root.exists() or not any(kind_root.iterdir())
+    if by_plan:
+        with pytest.raises(TrainSleapInvalid, match=match):
+            _ = TrainSleapOp().plan_identity(
+                ds, TrainSleapParams.model_validate(params), ds.resolve_scope(None)
+            )
+
+
+def test_an_older_sleap_nn_is_refused_for_an_embedding_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = _fake_probe(monkeypatch, sleap_nn_version="0.3.4")
+    _assert_refused(
+        ds, _embedding_params(labels), seen, r"'0\.3\.4'.*0\.3\.5", by_plan=False
+    )
+
+
+def test_a_pose_run_takes_no_release_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
+    _ = _fake_probe(monkeypatch, sleap_nn_version="0.3.1")
+    _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+    assert len(seen) == 1
+
+
+def test_global_id_without_the_declaration_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(
+        tmp_path, monkeypatch, _PREPARE_TRAINING_DATA, track_by="alias"
+    )
+    _assert_refused(
+        ds,
+        _embedding_params(labels),
+        seen,
+        f"{_DECLARATION}.*one individual in every video",
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {f"{_OBJECTIVE}.positives.scope": "global_id"},
+        {f"++{_OBJECTIVE}.positives.scope": "global_id"},
+        {f"+{_OBJECTIVE}.positives": {"scope": "global_id"}},
+        {f"{_OBJECTIVE}.positives": {"scope": "global_id"}},
+        {_OBJECTIVE: {"positives": {"scope": "global_id"}}},
+        {f"~{_OBJECTIVE}.positives.scope": None},
+        {f"~{_OBJECTIVE}.positives": None},
+    ],
+    ids=["leaf", "++leaf", "+parent", "parent", "objective", "~leaf", "~parent"],
+)
+def test_every_spelling_of_global_id_needs_the_declaration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, JsonValue]
+) -> None:
+    """The check reads the document after the overrides, however they reach it.
+
+    A deleted scope takes sleap-nn's default, ``global_id``.
+    """
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _assert_refused(ds, _embedding_params(labels, overrides), seen, _DECLARATION)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {f"~{_DECLARATION}": None},
+        {"~data_config.identity": None},
+        {"data_config.identity": {"track_names_are_global": False}},
+    ],
+    ids=["~leaf", "~parent", "parent"],
+)
+def test_a_withdrawn_declaration_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, JsonValue]
+) -> None:
+    ds, labels, seen = _embedding_setup(
+        tmp_path, monkeypatch, _PREPARE_TRAINING_DATA, track_by="alias"
+    )
+    _assert_refused(ds, _embedding_params(labels, overrides), seen, _DECLARATION)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {_DECLARATION: True},
+        {f"++{_DECLARATION}": True},
+        {"data_config.identity": {"track_names_are_global": True}},
+        {"+data_config.identity": {"track_names_are_global": True}},
+    ],
+    ids=["leaf", "++leaf", "parent", "+parent"],
+)
+def test_global_id_trains_with_the_declaration_and_an_alias_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, JsonValue]
+) -> None:
+    ds, labels, seen = _embedding_setup(
+        tmp_path, monkeypatch, _PREPARE_TRAINING_DATA, track_by="alias"
+    )
+    _ = run_op(ds, "train-sleap", _embedding_params(labels, overrides))
+    assert len(seen) == 1
+
+
+def test_global_id_on_a_preparation_not_named_by_alias_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run reads a blank ``track_by`` cell as "not alias".
+
+    The plan cannot: a recipe that runs an older preparation again fills the
+    cell before training starts. It defers the step under *require_data*, and
+    without it leaves the check to the run.
+    """
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch, _PREPARE_TRAINING_DATA)
+    params = _embedding_params(labels, {_DECLARATION: True})
+    _assert_refused(ds, params, seen, 'track_by="alias"', by_plan=False)
+    validated = TrainSleapParams.model_validate(params)
+    with pytest.raises(IdentityDeferred, match="track_by"):
+        _ = TrainSleapOp().plan_identity(ds, validated, ds.resolve_scope(None))
+    planned = TrainSleapOp().plan_identity(
+        ds, validated, ds.resolve_scope(None), require_data=False
+    )
+    assert planned.run_id
+
+
+def test_global_id_on_a_labels_path_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mosaic cannot read how the tracks of a ``.slp`` were named."""
+    ds, _, seen = _embedding_setup(tmp_path, monkeypatch)
+    labels = _labels_with_validation(tmp_path)
+    _assert_refused(
+        ds,
+        _embedding_params(str(labels), {_DECLARATION: True}),
+        seen,
+        'track_by="alias"',
+    )
+
+
+def test_tracklet_on_labels_no_embedding_preparation_cut_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(
+        tmp_path, monkeypatch, _PREPARE_TRAINING_DATA, track_by="alias"
+    )
+    overrides: dict[str, JsonValue] = {
+        f"{_OBJECTIVE}.positives.scope": "tracklet",
+        f"{_OBJECTIVE}.negatives.restrict_same_video": True,
+    }
+    _assert_refused(
+        ds,
+        _embedding_params(labels, overrides),
+        seen,
+        "one SLEAP video per image size",
+    )
+
+
+def test_tracklet_across_videos_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    overrides: dict[str, JsonValue] = {
+        f"{_OBJECTIVE}.negatives.restrict_same_video": False
+    }
+    _assert_refused(ds, _embedding_params(labels, overrides), seen, "another window")
+
+
+def test_tracklet_trains_on_an_embedding_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(ds, "train-sleap", _embedding_params(labels))
+    assert len(seen) == 1
+
+
+def test_aug_view_trains_on_labels_without_tracks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two views of one crop need neither track names nor a second track."""
+    ds, _, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = _fake_probe(monkeypatch, n_tracks=0)
+    labels = _labels_with_validation(tmp_path)
+    overrides: dict[str, JsonValue] = {f"{_OBJECTIVE}.positives.scope": "aug_view"}
+    _ = run_op(ds, "train-sleap", _embedding_params(str(labels), overrides))
+    assert len(seen) == 1
+
+
+def test_one_track_is_refused_for_a_contrastive_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = _fake_probe(monkeypatch, n_tracks=1)
+    _assert_refused(ds, _embedding_params(labels), seen, "1 track", by_plan=False)
+
+
+@pytest.mark.parametrize(
+    ("scope", "n_tracks"), [("global_id", 0), ("tracklet", 1), ("global_id", 1)]
+)
+def test_the_track_count_check(scope: EmbeddingPositiveScope, n_tracks: int) -> None:
+    probe = SleapProbeResponse(has_sleap_nn=True, n_tracks=n_tracks)
+    with pytest.raises(ValueError, match=f"{n_tracks} track.*two individuals"):
+        require_embedding_labels(
+            probe, scope=scope, labels_kind=PREPARE_EMBEDDING_DATA_KIND
+        )
+
+
+def test_aug_view_needs_no_tracks() -> None:
+    probe = SleapProbeResponse(has_sleap_nn=True, n_tracks=0)
+    require_embedding_labels(probe, scope="aug_view", labels_kind="")
+
+
+def test_an_embedding_run_without_a_validation_file_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A random split puts frames of one track on both sides."""
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch, validation=False)
+    _assert_refused(ds, _embedding_params(labels), seen, "labels.val.slp")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "device"),
+    [
+        (None, "0,1"),
+        ({"++trainer_config.trainer_device_indices": [0, 1]}, "auto"),
+        ({"trainer_config.trainer_devices": 2}, "auto"),
+        ({"trainer_config.trainer_devices": "auto"}, "auto"),
+    ],
+    ids=["device", "indices", "devices", "devices-auto"],
+)
+def test_an_embedding_run_on_more_than_one_device_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, JsonValue] | None,
+    device: str,
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _assert_refused(
+        ds, _embedding_params(labels, overrides, device), seen, "one device"
+    )
+
+
+def test_an_embedding_run_on_one_cuda_index_trains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _ = run_op(ds, "train-sleap", _embedding_params(labels, device="1"))
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"+trainer_config.seed": 1},
+        {"~trainer_config.profiler": None},
+        {"~trainer_config.seed": 3},
+        {"~trainer_config.trainer_devices": None},
+    ],
+    ids=["+present", "~absent", "~other-value", "~devices"],
+)
+def test_an_override_that_hydra_rejects_is_refused_before_the_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, JsonValue]
+) -> None:
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    _assert_refused(ds, _embedding_params(labels, overrides), seen, "Override")
+
+
+def test_a_pose_run_refuses_an_override_that_hydra_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
+    params: dict[str, object] = {
+        "labels": str(labels),
+        "max_epochs": 1,
+        "sleap_overrides": {"+trainer_config.seed": 1},
+    }
+    _assert_refused(ds, params, seen, r"\+trainer_config\.seed")
+
+
+def test_a_finished_run_records_the_sleap_nn_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provenance in ``training.json``, which no identifier reads."""
+    ds, labels, _ = _labels_and_fake_trainer(tmp_path, monkeypatch)
+    _ = _fake_probe(monkeypatch, sleap_nn_version="0.3.7")
+
+    run_id = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+
+    document: object = json.loads(
+        (
+            model_run_root(ds, "train-sleap", run_id) / TRAINING_PROVENANCE_FILENAME
+        ).read_text()
+    )
+    assert is_str_mapping(document)
+    assert document["tool_version"] == "0.3.7"
 
 
 # --- the op -----------------------------------------------------------------
@@ -380,6 +1065,64 @@ def test_a_finished_run_is_reused_unless_overwrite_says_otherwise(
 
     assert run_op(ds, "train-sleap", dict(params), overwrite=True) == first
     assert len(seen) == 2, "overwrite must reach the gate"
+
+
+def _registered_model_directory(ds: Dataset, run_id: str) -> Path:
+    """The directory that the run's index row registers as its artifact."""
+    index = trained_model_index(model_index_path(ds, "train-sleap")).read()
+    (artifact_path,) = index.loc[index["run_id"] == run_id, "artifact_path"]
+    return ds.resolve_path(str(artifact_path))
+
+
+def test_overwrite_trains_into_a_fresh_model_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The directory a run registers holds that run's model, not the last one's.
+
+    sleap-nn writes ``model-1`` beside a ``model`` that exists, and the row
+    would then register the old directory.
+    """
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch)
+    params = {"labels": str(labels), "max_epochs": 1}
+    run_id = run_op(ds, "train-sleap", dict(params))
+    model = _registered_model_directory(ds, run_id)
+    _ = (model / "from-the-first-run.txt").write_text("stale")
+
+    assert run_op(ds, "train-sleap", dict(params), overwrite=True) == run_id
+
+    assert len(seen) == 2
+    assert _registered_model_directory(ds, run_id) == model
+    assert not (model / "from-the-first-run.txt").exists()
+    assert not (model.parent / "model-1").exists()
+    assert (model / "best.ckpt").exists()
+
+
+def test_a_retry_after_a_failed_run_trains_into_a_fresh_model_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that died after writing part of its model leaves nothing behind."""
+    ds, labels, _ = _labels_and_fake_trainer(tmp_path, monkeypatch)
+
+    def dies_midway(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
+        config_dir = Path(argv[argv.index("--config-dir") + 1])
+        partial = config_dir / MODEL_DIRECTORY
+        partial.mkdir()
+        _ = (partial / "partial.ckpt").write_text("half")
+        return ("", "out of memory", 1)
+
+    monkeypatch.setattr(training_module, "run_supervised", dies_midway)
+    params = {"labels": str(labels), "max_epochs": 1}
+    with pytest.raises(SleapError):
+        _ = run_op(ds, "train-sleap", dict(params))
+
+    seen = _fake_trainer(monkeypatch)
+    run_id = run_op(ds, "train-sleap", dict(params))
+
+    assert len(seen) == 1
+    model = _registered_model_directory(ds, run_id)
+    assert (model / "best.ckpt").exists()
+    assert not (model / "partial.ckpt").exists()
+    assert not (model.parent / "model-1").exists()
 
 
 def test_a_killed_trainer_is_recorded_as_cancelled(
@@ -531,6 +1274,35 @@ def test_an_explicit_hydra_form_is_passed_through(
     assert "++trainer_config.profiler=simple" not in _assignments(argv)
 
 
+@pytest.mark.parametrize(
+    ("value", "spelled"),
+    [
+        (None, "null"),
+        (True, "true"),
+        (0.5, "0.5"),
+        ("simple", "simple"),
+        ("/data/a.slp", "/data/a.slp"),
+        ("two words", "'two words'"),
+        ("0.5", "'0.5'"),
+        ("null", "'null'"),
+        ("it's", "'it\\'s'"),
+        ("${run}", "'\\${run}'"),
+        (["a b", 1, None], "['a b',1,null]"),
+        ({"scope": "global_id", "max_gap": None}, "{scope:global_id,max_gap:null}"),
+    ],
+)
+def test_an_override_value_is_spelled_in_hydra_grammar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: JsonValue, spelled: str
+) -> None:
+    """Hydra parses each spelling back to *value*; a Python repr it does not."""
+    argv = _run_and_capture(
+        tmp_path,
+        monkeypatch,
+        {"sleap_overrides": {"+trainer_config.profiler": value}},
+    )
+    assert f"+trainer_config.profiler={spelled}" in _assignments(argv)
+
+
 def test_every_injected_override_composes_against_the_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -584,7 +1356,9 @@ def test_a_base_model_initializes_the_backbone_and_the_head(
         ds, "train-sleap", {"labels": str(labels), "max_epochs": 1, "base_model": base}
     )
 
-    checkpoint = str(model_run_root(ds, "train-sleap", base) / "model" / "best.ckpt")
+    checkpoint = str(
+        model_run_root(ds, "train-sleap", base) / MODEL_DIRECTORY / "best.ckpt"
+    )
     model_config = _written_section(seen[0], "model_config")
     assert model_config["pretrained_backbone_weights"] == checkpoint
     assert model_config["pretrained_head_weights"] == checkpoint
@@ -646,6 +1420,47 @@ def test_a_base_of_another_head_is_refused_before_the_run_root_is_made(
     assert list(trained_model_index(index_path).read()["run_id"]) == [base]
 
 
+def test_an_embedding_run_fine_tunes_from_an_embedding_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An embedding base is a training of the embedding head, so it matches."""
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    base = run_op(ds, "train-sleap", _embedding_params(labels))
+    seen.clear()
+
+    run_id = run_op(
+        ds, "train-sleap", {**_embedding_params(labels), "base_model": base}
+    )
+
+    assert run_id != base
+    assert len(seen) == 1
+    checkpoint = str(
+        model_run_root(ds, "train-sleap", base) / MODEL_DIRECTORY / "best.ckpt"
+    )
+    model_config = _written_section(seen[0], "model_config")
+    assert model_config["pretrained_backbone_weights"] == checkpoint
+    assert model_config["pretrained_head_weights"] == checkpoint
+
+
+def test_an_embedding_run_refuses_a_centroid_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an embedding model initializes the embedding head."""
+    ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
+    base = write_sleap_model(tmp_path / "centroid", head="centroid", merged=True)
+
+    with pytest.raises(ValueError, match="is a centroid model.*embedding run"):
+        _ = run_op(
+            ds,
+            "train-sleap",
+            {**_embedding_params(labels), "base_model": str(base)},
+        )
+
+    assert seen == [], "the trainer must not run"
+    kind_root = model_index_path(ds, "train-sleap").parent
+    assert not kind_root.exists() or not any(kind_root.iterdir())
+
+
 @pytest.mark.parametrize("head", ["centroid", "centered_instance", "bottomup"])
 def test_an_embedding_base_is_refused_before_the_run_root_is_made(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: str
@@ -695,7 +1510,9 @@ def test_an_override_of_the_pretrained_head_weights_beats_the_base_model(
 
     assignments = _assignments(seen[0])
     assert "model_config.pretrained_head_weights=/models/other/best.ckpt" in assignments
-    checkpoint = str(model_run_root(ds, "train-sleap", base) / "model" / "best.ckpt")
+    checkpoint = str(
+        model_run_root(ds, "train-sleap", base) / MODEL_DIRECTORY / "best.ckpt"
+    )
     model_config = _written_section(seen[0], "model_config")
     assert model_config["pretrained_backbone_weights"] == checkpoint
 

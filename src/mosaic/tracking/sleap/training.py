@@ -29,10 +29,13 @@ Requires:
 
 from __future__ import annotations
 
+import copy
 import logging
+import re
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, NotRequired, TypedDict
+from typing import Final, Literal, NotRequired, TypedDict, get_args
 
 import yaml
 
@@ -45,10 +48,17 @@ from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_EMBEDDING_OBJECTIVE",
+    "PREPARED_EMBEDDING_OBJECTIVE",
     "SLEAP_LOADER_WORKER_KEYS",
+    "EmbeddingObjective",
+    "EmbeddingPositiveScope",
+    "EmbeddingSettings",
     "SleapBackbone",
     "SleapHead",
     "SleapTrainConfig",
+    "effective_train_config",
+    "embedding_settings",
     "loader_worker_keys_in",
     "sleap_device_overrides",
     "sleap_loader_overrides",
@@ -73,12 +83,14 @@ SleapHead = Literal[
     "bottomup",
     "multi_class_bottomup",
     "multi_class_topdown",
+    "embedding",
 ]
 """Which task the network is trained for.
 
 ``centroid`` and ``centered_instance`` are the two halves of a top-down model and
 are trained separately; the pair is what inference is later handed, in that
-order. The ``multi_class_`` heads add identity classification.
+order. The ``multi_class_`` heads add identity classification. ``embedding`` maps
+each detection's crop to an appearance vector and predicts no pose.
 """
 
 SleapBackbone = Literal["unet", "convnext", "swint"]
@@ -92,6 +104,7 @@ _HEAD_SECTIONS: Final[Mapping[SleapHead, tuple[str, ...]]] = {
     "bottomup": ("confmaps", "pafs"),
     "multi_class_bottomup": ("confmaps", "class_maps"),
     "multi_class_topdown": ("confmaps", "class_vectors"),
+    "embedding": ("embedding",),
 }
 """The output sections each head owns, which must be present for sleap-nn to fill.
 
@@ -111,9 +124,138 @@ what mosaic asks of it.
 """
 
 
+_EMBEDDING_DIM: Final = 128
+"""The length of an appearance vector, sleap-nn's default."""
+
+_EMBEDDING_OUTPUT_STRIDE: Final[Mapping[SleapBackbone, int]] = {
+    "unet": 16,
+    "convnext": 32,
+    "swint": 32,
+}
+"""The stride of the embedding head's input, each backbone's default ``max_stride``."""
+
+EmbeddingPositiveScope = Literal["global_id", "tracklet", "aug_view"]
+"""What makes two crops one identity: one track name across the labels, one
+track within a video, or two augmented views of one crop."""
+
+EmbeddingNegativeSource = Literal["same_frame", "in_batch"]
+"""Where the crops of other identities come from."""
+
+EmbeddingLoss = Literal["supcon"]
+"""The contrastive loss."""
+
+EmbeddingSampler = Literal["pk", "within_video"]
+"""How a batch is drawn: groups of identities across the labels, or within one
+video."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingObjective:
+    """The contrastive objective of an embedding head, every term of it.
+
+    The document states every term rather than leaving any to sleap-nn, so a
+    run id names the objective that trained even when a later sleap-nn release
+    changes a default.
+    """
+
+    positive_scope: EmbeddingPositiveScope
+    aug_views: int
+    negative_sources: tuple[EmbeddingNegativeSource, ...]
+    exclude_same_track: bool
+    restrict_same_video: bool
+    loss: EmbeddingLoss
+    temperature: float
+    sampler: EmbeddingSampler
+    groups_per_batch: int
+    samples_per_group: int
+    use_projection: bool
+    projection_dim: int
+
+    def document(self) -> dict[str, JsonValue]:
+        """The ``objective`` block of the head leaf, in sleap-nn's layout."""
+        return {
+            "positives": {"scope": self.positive_scope, "aug_views": self.aug_views},
+            "negatives": {
+                "sources": list(self.negative_sources),
+                "exclude_same_track": self.exclude_same_track,
+                "restrict_same_video": self.restrict_same_video,
+            },
+            "loss": {"name": self.loss, "temperature": self.temperature},
+            "sampler": {
+                "kind": self.sampler,
+                "groups_per_batch": self.groups_per_batch,
+                "samples_per_group": self.samples_per_group,
+            },
+            "use_projection": self.use_projection,
+            "projection_dim": self.projection_dim,
+        }
+
+
+DEFAULT_EMBEDDING_OBJECTIVE: Final = EmbeddingObjective(
+    positive_scope="global_id",
+    aug_views=2,
+    negative_sources=("same_frame", "in_batch"),
+    exclude_same_track=True,
+    restrict_same_video=False,
+    loss="supcon",
+    temperature=0.1,
+    sampler="pk",
+    groups_per_batch=8,
+    samples_per_group=16,
+    use_projection=True,
+    projection_dim=128,
+)
+"""sleap-nn 0.3.5's default objective, for every labels reference other than a
+``prepare-embedding-data`` run id."""
+
+PREPARED_EMBEDDING_OBJECTIVE: Final = EmbeddingObjective(
+    positive_scope="tracklet",
+    aug_views=2,
+    negative_sources=("same_frame", "in_batch"),
+    exclude_same_track=True,
+    restrict_same_video=True,
+    loss="supcon",
+    temperature=0.1,
+    sampler="within_video",
+    groups_per_batch=8,
+    samples_per_group=8,
+    use_projection=True,
+    projection_dim=128,
+)
+"""The objective for labels that a ``prepare-embedding-data`` run cut.
+
+Their tracks are a tracker's tracks, one video each, so positives are the crops
+of one track and negatives come from the same video.
+"""
+
+_EMBEDDING_AUGMENTATION: Final[dict[str, JsonValue]] = {
+    "geometric": {
+        "rotation_min": -10.0,
+        "rotation_max": 10.0,
+        "scale_min": 1.0,
+        "scale_max": 1.0,
+        "translate_width": 0.05,
+        "translate_height": 0.05,
+        "affine_p": 1.0,
+        "erase_p": 0.0,
+        "flip_p": 0.0,
+    },
+    "intensity": {"contrast_p": 0.0, "brightness_p": 0.0, "gaussian_noise_p": 0.0},
+}
+"""Augmentation that keeps appearance cues: small rotations and shifts only.
+
+A flip, an erased patch or an intensity change can remove the mark that tells
+two animals apart. The values are a starting point that no comparison chose.
+"""
+
+
 class _PreprocessingConfig(TypedDict):
     ensure_rgb: bool
     ensure_grayscale: bool
+
+
+class _IdentityConfig(TypedDict):
+    track_names_are_global: bool
 
 
 class _DataConfig(TypedDict):
@@ -123,6 +265,10 @@ class _DataConfig(TypedDict):
     validation_fraction: NotRequired[float]
     provider: str
     preprocessing: _PreprocessingConfig
+    # Written for the embedding head only.
+    identity: NotRequired[_IdentityConfig]
+    use_augmentations_train: NotRequired[bool]
+    augmentation_config: NotRequired[dict[str, JsonValue]]
 
 
 class _ModelConfig(TypedDict):
@@ -139,6 +285,8 @@ class _TrainerConfig(TypedDict):
     save_ckpt: bool
     ckpt_dir: str
     run_name: str
+    # Written for the embedding head only.
+    trainer_devices: NotRequired[int]
 
 
 class SleapTrainConfig(TypedDict):
@@ -166,6 +314,7 @@ def sleap_train_config(
     validation_labels: Path | None,
     base_weights: Path | None,
     run_name: str,
+    objective: EmbeddingObjective = DEFAULT_EMBEDDING_OBJECTIVE,
 ) -> SleapTrainConfig:
     """The training configuration, as the mapping that is written to YAML.
 
@@ -176,6 +325,15 @@ def sleap_train_config(
     ``model_config.pretrained_backbone_weights`` and
     ``model_config.pretrained_head_weights``, sleap-nn's fine-tune mapping. The
     run starts from the base's weights at epoch zero.
+
+    The ``embedding`` head's leaf holds the vector length, the backbone's
+    output stride and every term of *objective*. No other head reads
+    *objective*, and its default suits only labels that no
+    ``prepare-embedding-data`` run cut, so a caller building an embedding
+    document chooses it with
+    :func:`mosaic.tracking.ops.train_sleap.embedding_objective`. That head's
+    document also declares track names per video, augments, and trains on one
+    device.
     """
     data_config: _DataConfig = {
         "train_labels_path": [str(labels_path)],
@@ -206,27 +364,47 @@ def sleap_train_config(
     if base_weights is not None:
         model_config["pretrained_backbone_weights"] = str(base_weights)
         model_config["pretrained_head_weights"] = str(base_weights)
+    trainer_config: _TrainerConfig = {
+        "max_epochs": max_epochs,
+        "seed": seed,
+        "save_ckpt": True,
+        "ckpt_dir": str(run_root),
+        "run_name": run_name,
+    }
+    if head == "embedding":
+        model_config["head_configs"][head]["embedding"] = {
+            "embedding_dim": _EMBEDDING_DIM,
+            "output_stride": _EMBEDDING_OUTPUT_STRIDE[backbone],
+            "objective": objective.document(),
+        }
+        identity: _IdentityConfig = {"track_names_are_global": False}
+        data_config["identity"] = identity
+        data_config["use_augmentations_train"] = True
+        data_config["augmentation_config"] = copy.deepcopy(_EMBEDDING_AUGMENTATION)
+        trainer_config["trainer_devices"] = 1
     return {
         "data_config": data_config,
         "model_config": model_config,
-        "trainer_config": {
-            "max_epochs": max_epochs,
-            "seed": seed,
-            "save_ckpt": True,
-            "ckpt_dir": str(run_root),
-            "run_name": run_name,
-        },
+        "trainer_config": trainer_config,
     }
 
 
-_HYDRA_PREFIXES: Final = ("+", "~")
-"""Override forms that already say what to do with the key they name.
+type _HydraForm = Literal["", "+", "++", "~"]
 
-Hydra spells appending ``+key=value``, forcing an append ``++key=value`` and
-deleting ``~key``. A caller who wrote one of these has answered the question
-:func:`_hydra_assignment` is there to answer, so the spelling is passed through
-untouched.
-"""
+
+def _hydra_key(key: str) -> tuple[_HydraForm, str]:
+    """Split an override key into its Hydra form and the dotted path it names.
+
+    Hydra spells appending ``+key=value``, forcing an append ``++key=value`` and
+    deleting ``~key``. A bare key has the empty form.
+    """
+    if key.startswith("++"):
+        return "++", key[2:]
+    if key.startswith("+"):
+        return "+", key[1:]
+    if key.startswith("~"):
+        return "~", key[1:]
+    return "", key
 
 
 def _declared_keys(node: Mapping[str, object], prefix: str = "") -> frozenset[str]:
@@ -245,22 +423,355 @@ def _declared_keys(node: Mapping[str, object], prefix: str = "") -> frozenset[st
     return frozenset(keys)
 
 
-def _hydra_assignment(declared: frozenset[str], key: str, value: JsonValue) -> str:
-    """One Hydra argument, appended when the document does not carry *key*.
+def _rendered_key(declared: frozenset[str], key: str) -> tuple[_HydraForm, str]:
+    """The Hydra form in which *key* reaches sleap-nn, and the dotted path it names.
 
     ``sleap_train_config`` writes a deliberately minimal document, so most of
     what sleap-nn exposes has no key in it -- and Hydra refuses a bare
     assignment to a key the config it composed does not already hold, with
     ``Could not override '<key>'``. Every override therefore has to know whether
     mosaic happened to write its key, which is not a thing a caller can be
-    expected to know. So the question is answered here, against the document
-    that was just written.
+    expected to know. So a bare key that *declared* lacks is spelled with ``+``.
+    A caller who wrote a Hydra form has answered the question, and the form is
+    kept.
     """
-    if key.startswith(_HYDRA_PREFIXES):
-        # A deletion carries no value; anything else keeps the caller's form.
-        return key if key.startswith("~") and value is None else f"{key}={value}"
-    prefix = "" if key in declared else "+"
-    return f"{prefix}{key}={value}"
+    form, path = _hydra_key(key)
+    if not form and key not in declared:
+        return "+", path
+    return form, path
+
+
+def _hydra_assignment(declared: frozenset[str], key: str, value: JsonValue) -> str:
+    """One Hydra argument, with its key in :func:`_rendered_key`'s form.
+
+    A deletion whose value is ``None`` carries no value.
+    """
+    form, path = _rendered_key(declared, key)
+    if form == "~" and value is None:
+        return f"~{path}"
+    return f"{form}{path}={_hydra_value(value)}"
+
+
+_BARE_STRING: Final = re.compile(r"[A-Za-z_/][A-Za-z0-9_\-./]*")
+"""A string that Hydra's override grammar reads unquoted as that same string."""
+
+_BARE_MAPPING_KEY: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_\-]*")
+"""A mapping key that Hydra's override grammar reads as that same string."""
+
+_HYDRA_WORDS: Final = frozenset({"true", "false", "null", "inf", "nan"})
+"""Words that Hydra reads unquoted, in any case, as a boolean, null or float."""
+
+_QUOTED_ESCAPES: Final = re.compile(r"(\\*)(\$\{|'|$)")
+"""What a single-quoted Hydra string escapes, with the backslashes before it.
+
+A quote ends the string and ``${`` starts an interpolation, so each takes a
+backslash. A run of backslashes before either, or at the end, is doubled.
+"""
+
+
+def _hydra_value(value: JsonValue) -> str:
+    """*value* in Hydra's override grammar, which parses back to the same value.
+
+    Raises:
+        ValueError: A mapping key that the grammar cannot spell as a string.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return repr(value)
+    if isinstance(value, str):
+        return _hydra_string(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_hydra_value(item) for item in value) + "]"
+    items = [
+        f"{_hydra_mapping_key(name)}:{_hydra_value(item)}"
+        for name, item in value.items()
+    ]
+    return "{" + ",".join(items) + "}"
+
+
+def _hydra_string(text: str) -> str:
+    if _BARE_STRING.fullmatch(text) and text.lower() not in _HYDRA_WORDS:
+        return text
+    escaped = _QUOTED_ESCAPES.sub(
+        lambda match: match[1] * 2 + (f"\\{match[2]}" if match[2] else ""), text
+    )
+    return f"'{escaped}'"
+
+
+def _hydra_mapping_key(name: str) -> str:
+    if _BARE_MAPPING_KEY.fullmatch(name) and name.lower() not in _HYDRA_WORDS:
+        return name
+    msg = (
+        f"Hydra's override grammar cannot spell the mapping key {name!r}. Set "
+        "the keys below it one at a time instead."
+    )
+    raise ValueError(msg)
+
+
+_DEVICE_COUNT_PATH: Final = ("trainer_config", "trainer_devices")
+"""Where sleap-nn reads how many devices to train on. Absent, it trains on all."""
+
+
+def effective_train_config(
+    document: Mapping[str, JsonValue], overrides: Mapping[str, JsonValue]
+) -> dict[str, JsonValue]:
+    """Apply *overrides* to *document* the way Hydra 1.3 composes them for sleap-nn.
+
+    Each override applies in order, in the form :func:`_rendered_key` gives it,
+    as Hydra's ``_apply_overrides_to_config`` calls ``OmegaConf.update(cfg,
+    key, value, merge=True)`` on a config in struct mode. A mapping value
+    merges into a mapping at its dotted path and keeps the sibling keys there.
+    Any other value replaces the value at the path. A ``+`` or ``++`` key
+    creates the mappings above its path, replacing a value that is not a
+    mapping. A ``~`` key deletes the path.
+
+    Every override that Hydra rejects is refused here instead, so it is refused
+    before a run is claimed. Struct mode refuses a bare key whose path, or any
+    key its mapping value would add, the running document does not hold. A
+    path through a list is refused, although Hydra reads a numeric name there
+    as a list index. The device-count refusal covers deletion only: the device
+    check reads the returned document, where a null or a replaced
+    ``trainer_config`` also leaves the count unset.
+
+    Args:
+        document: The generated training document. It is not modified.
+        overrides: Hydra assignments by key, in the order sleap-nn receives
+            them. A ``~`` key's value is ``None`` for a plain deletion, or the
+            value that the deletion requires the path to hold.
+
+    Returns:
+        A new document, sharing no mutable value with *document* or
+        *overrides*.
+
+    Raises:
+        ValueError: A ``~`` key deletes ``trainer_config.trainer_devices`` or a
+            mapping that contains it, which leaves sleap-nn to train on every
+            visible device. A ``~`` key names a path that is absent or null, or
+            carries a value other than the one at the path. A ``+`` key names a
+            path that holds a value other than null, and its own value is
+            neither a mapping nor a list. A bare key names a path, or its
+            mapping value a key, that the document no longer holds. A mapping
+            meets a list, in either order. A path runs through a list. A
+            mapping key is one that Hydra's override grammar cannot spell.
+    """
+    declared = _declared_keys(document)
+    effective = copy.deepcopy(dict(document))
+    for key, value in overrides.items():
+        form, path = _rendered_key(declared, key)
+        _ = _hydra_value(value)  # refuses a mapping key Hydra cannot spell
+        names = tuple(path.split("."))
+        present = _select(effective, names)
+        if form == "~":
+            _refuse_deletion(key, names, value, present)
+            _delete_path(effective, names)
+            continue
+        if form == "+" and present is not None and not isinstance(value, dict | list):
+            msg = (
+                f"Override {key!r} reaches Hydra as '+{path}', which appends "
+                f"{path!r}. The training document already sets it to "
+                f"{present!r}, and Hydra refuses the append. Write '++{path}' "
+                "to replace the value."
+            )
+            raise ValueError(msg)
+        _merge_at(effective, names, value, key, struct=not form)
+    return effective
+
+
+def _refuse_deletion(
+    key: str, names: tuple[str, ...], value: JsonValue, present: JsonValue | None
+) -> None:
+    """Raise when Hydra would refuse the deletion *key* of the value *present*."""
+    if _DEVICE_COUNT_PATH[: len(names)] == names:
+        msg = (
+            f"Override {key!r} deletes trainer_config.trainer_devices, "
+            "and sleap-nn then trains on every visible device. "
+            "Set trainer_config.trainer_devices to 1 instead."
+        )
+        raise ValueError(msg)
+    if present is None:
+        msg = (
+            f"Override {key!r} deletes a path that the training document does "
+            "not set, and Hydra refuses it."
+        )
+        raise ValueError(msg)
+    if value is not None and value != present:
+        msg = (
+            f"Override {key!r} deletes a path that holds {present!r} rather "
+            f"than {value!r}, and Hydra refuses it."
+        )
+        raise ValueError(msg)
+
+
+def _select(document: dict[str, JsonValue], names: tuple[str, ...]) -> JsonValue | None:
+    """The value at *names*, or ``None`` when the path is absent, as ``OmegaConf.select``."""
+    node: JsonValue = document
+    for name in names:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(name)
+    return node
+
+
+def _delete_path(document: dict[str, JsonValue], names: tuple[str, ...]) -> None:
+    """Delete the key at *names*, which :func:`_refuse_deletion` found present."""
+    parent = _select(document, names[:-1])
+    assert isinstance(parent, dict)
+    del parent[names[-1]]
+
+
+def _merge_at(
+    document: dict[str, JsonValue],
+    names: tuple[str, ...],
+    value: JsonValue,
+    key: str,
+    *,
+    struct: bool,
+) -> None:
+    """Merge or set *value* at *names* in *document*.
+
+    With *struct*, as for Hydra's bare form, every name on the path is already
+    there. Without it, as ``OmegaConf.update`` does with ``force_add`` for
+    ``+`` and ``++``, an empty mapping replaces each value above the path that
+    is absent or not a mapping.
+    """
+    parent = document
+    for depth, name in enumerate(names[:-1]):
+        child = parent.get(name)
+        if not isinstance(child, dict):
+            above = ".".join(names[: depth + 1])
+            if isinstance(child, list):
+                msg = (
+                    f"Override {key!r} names a path through the list at "
+                    f"{above!r}, which mosaic does not follow. Override the "
+                    "whole list instead."
+                )
+                raise ValueError(msg)
+            if struct:
+                raise _struct_refusal(key, above)
+            child = {}
+            parent[name] = child
+        parent = child
+    if struct and names[-1] not in parent:
+        raise _struct_refusal(key, ".".join(names))
+    parent[names[-1]] = _merged(
+        parent.get(names[-1]), value, key, ".".join(names), struct=struct
+    )
+
+
+def _merged(
+    present: JsonValue, value: JsonValue, key: str, path: str, *, struct: bool
+) -> JsonValue:
+    """*value* merged over *present*, as ``OmegaConf.merge`` merges a node.
+
+    A mapping merges into a mapping, key by key. Any other value replaces
+    *present*, except that Hydra refuses to merge a mapping into a list or a
+    list into a mapping. With *struct*, a mapping adds no key.
+    """
+    if isinstance(value, dict) and isinstance(present, dict):
+        for name, item in value.items():
+            where = f"{path}.{name}"
+            if struct and name not in present:
+                raise _struct_refusal(key, where)
+            present[name] = _merged(present.get(name), item, key, where, struct=struct)
+        return present
+    if (isinstance(value, dict) and isinstance(present, list)) or (
+        isinstance(value, list) and isinstance(present, dict)
+    ):
+        msg = (
+            f"Override {key!r} merges {value!r} into {present!r} at {path!r}, "
+            "and Hydra refuses to merge a mapping into a list or a list into a "
+            f"mapping. Delete it first with '~{path}'."
+        )
+        raise ValueError(msg)
+    return copy.deepcopy(value)
+
+
+def _struct_refusal(key: str, path: str) -> ValueError:
+    """Hydra's refusal of a bare key that would add *path* to its config."""
+    msg = (
+        f"Override {key!r} sets {path!r}, which the training document does not "
+        "hold once the overrides before it apply, and Hydra refuses a bare key "
+        f"that adds one. Write '++{key}' to add it."
+    )
+    return ValueError(msg)
+
+
+_EMBEDDING_OBJECTIVE_PATH: Final = (
+    "model_config",
+    "head_configs",
+    "embedding",
+    "embedding",
+    "objective",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingSettings:
+    """What an effective embedding document asks of its labels and devices.
+
+    A key that the document deletes, leaves null or never sets takes sleap-nn's
+    default.
+
+    Attributes:
+        scope: ``objective.positives.scope``, ``global_id`` by default.
+        track_names_are_global: Whether
+            ``data_config.identity.track_names_are_global`` is true. False by
+            default.
+        restrict_same_video: Whether ``objective.negatives.restrict_same_video``
+            is true. False by default.
+        trainer_devices: ``trainer_config.trainer_devices`` as the document
+            holds it, ``None`` when unset, which trains on every device.
+        trainer_device_indices: ``trainer_config.trainer_device_indices`` as
+            the document holds it, ``None`` when unset.
+    """
+
+    scope: EmbeddingPositiveScope
+    track_names_are_global: bool
+    restrict_same_video: bool
+    trainer_devices: JsonValue
+    trainer_device_indices: JsonValue
+
+
+def embedding_settings(document: dict[str, JsonValue]) -> EmbeddingSettings:
+    """Read the settings that an embedding run checks from an effective document.
+
+    Args:
+        document: A document that :func:`effective_train_config` returned.
+
+    Raises:
+        ValueError: The positive scope is not one that sleap-nn names.
+    """
+    objective = _EMBEDDING_OBJECTIVE_PATH
+    match _select(document, (*objective, "positives", "scope")):
+        case None:
+            scope = DEFAULT_EMBEDDING_OBJECTIVE.positive_scope
+        case "global_id" | "tracklet" | "aug_view" as named:
+            scope = named
+        case other:
+            accepted = ", ".join(get_args(EmbeddingPositiveScope))
+            msg = (
+                f"The embedding objective's positive scope is {other!r}, and "
+                f"sleap-nn accepts one of {accepted}."
+            )
+            raise ValueError(msg)
+    restrict = _select(document, (*objective, "negatives", "restrict_same_video"))
+    declared = _select(document, ("data_config", "identity", "track_names_are_global"))
+    return EmbeddingSettings(
+        scope=scope,
+        track_names_are_global=declared is True,
+        restrict_same_video=(
+            DEFAULT_EMBEDDING_OBJECTIVE.restrict_same_video
+            if restrict is None
+            else restrict is True
+        ),
+        trainer_devices=_select(document, _DEVICE_COUNT_PATH),
+        trainer_device_indices=_select(
+            document, ("trainer_config", "trainer_device_indices")
+        ),
+    )
 
 
 def sleap_device_overrides(device: str) -> dict[str, JsonValue]:
@@ -341,9 +852,8 @@ def loader_worker_keys_in(overrides: Mapping[str, JsonValue]) -> list[str]:
     ``+trainer_config.train_data_loader.num_workers`` would still reach the
     worker count through a hashed parameter.
     """
-    prefixes = "".join(_HYDRA_PREFIXES)
     return sorted(
-        key for key in overrides if key.lstrip(prefixes) in SLEAP_LOADER_WORKER_KEYS
+        key for key in overrides if _hydra_key(key)[1] in SLEAP_LOADER_WORKER_KEYS
     )
 
 
@@ -351,14 +861,7 @@ def train_sleap(
     labels_path: str | Path,
     run_root: str | Path,
     *,
-    head: SleapHead = "centered_instance",
-    backbone: SleapBackbone = "unet",
-    max_epochs: int = 200,
-    seed: int = 42,
-    validation_fraction: float = 0.1,
-    validation_labels: str | Path | None = None,
-    base_weights: Path | None = None,
-    run_name: str = "model",
+    config: SleapTrainConfig,
     overrides: Mapping[str, JsonValue] | None = None,
     sleap_conda_env: str | None = None,
     sleap_bin: str | Path | None = None,
@@ -371,24 +874,16 @@ def train_sleap(
     """Train a SLEAP model and return the directory it produced.
 
     Args:
-        labels_path: A ``.slp`` to train on.
+        labels_path: The ``.slp`` that *config* trains on.
         run_root: Where the model directory is written. The configuration is
             written here too, so a finished run carries the exact inputs it ran
             with beside its weights.
-        head: Which task to train. See :data:`SleapHead`.
-        backbone: Which feature extractor. See :data:`SleapBackbone`.
-        max_epochs: Training length.
-        seed: Seeds sleap-nn's own initialization.
-        validation_fraction: Held out from *labels_path* when no separate
-            validation file is given.
-        validation_labels: A ``.slp`` that sleap-nn validates on, in place of
-            the *validation_fraction* held out of *labels_path*.
-        base_weights: A checkpoint that initializes both the backbone and the
-            head. The config names it under both pretrained keys. An override
-            naming either key is assigned bare and replaces it.
-        run_name: The directory name under *run_root*.
+        config: The document from :func:`sleap_train_config`, written as
+            ``config.yaml``. Its ``trainer_config.run_name`` names the model
+            directory under *run_root*.
         overrides: Hydra assignments applied on top, for anything sleap-nn
-            exposes that this signature does not.
+            exposes that the document does not set. A key the document holds
+            is assigned bare, and any other key is appended.
         sleap_conda_env: Run in this conda env, overriding the environment.
         sleap_bin: A SLEAP console script naming the install, overriding the
             environment.
@@ -420,20 +915,6 @@ def train_sleap(
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
 
-    config = sleap_train_config(
-        labels_path,
-        run_root,
-        head=head,
-        backbone=backbone,
-        max_epochs=max_epochs,
-        seed=seed,
-        validation_fraction=validation_fraction,
-        validation_labels=(
-            None if validation_labels is None else Path(validation_labels)
-        ),
-        base_weights=base_weights,
-        run_name=run_name,
-    )
     config_path = run_root / "config.yaml"
     _ = config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     declared = _declared_keys(config)
@@ -468,7 +949,7 @@ def train_sleap(
     if returncode != 0:
         raise SleapError(cmd, returncode, stdout, stderr)
 
-    produced = run_root / run_name
+    produced = run_root / config["trainer_config"]["run_name"]
     if not produced.is_dir():
         raise FileNotFoundError(
             f"sleap-nn train exited cleanly but wrote no model directory at {produced}"

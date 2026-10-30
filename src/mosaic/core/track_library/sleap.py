@@ -30,15 +30,22 @@ something SLEAP had reported -- and the heading in particular came from a
 principal-component fit whose sign is arbitrary. They belong to the
 ``speed-angvel`` and ``heading`` features, where the method is chosen, recorded
 in a run identifier, and visible to whoever reads the numbers.
+
+The readback of tracked instances (:class:`AppearanceReadback`) is the ``.npz``
+that a snippet in the SLEAP environment writes from a predictions ``.slp``: one
+record per instance with a track, and its appearance vector where it has one.
+:func:`read_appearance_readback` reads it with numpy alone.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
 from mosaic.core.params import Declared
@@ -257,3 +264,99 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
             else pd.DataFrame(columns=["frame", "time", "id", "group", "sequence"])
         )
         return out
+
+
+@dataclass(frozen=True, slots=True)
+class AppearanceReadback:
+    """The tracked instances of a SLEAP predictions file, in file order.
+
+    Row ``i`` of every array describes one instance that has a track: labeled
+    frames in stored order, and each frame's instances in stored order.
+
+    Attributes:
+        frame_idx: Each instance's frame index, ``(n,)``.
+        track_name: The name of each instance's track, ``(n,)``.
+        is_user: Whether each instance is a user instance, ``(n,)``.
+        has_vector: Whether each instance has an appearance vector, ``(n,)``.
+        vectors: ``(n, D)``, zeros where ``has_vector`` is false. A file
+            without embeddings has a ``D`` of 0, and ``has_vector`` is false on
+            every row.
+
+    Raises:
+        ValueError: The arrays' lengths differ, ``vectors`` is not
+            two-dimensional, or a row claims a vector that has no columns.
+    """
+
+    frame_idx: npt.NDArray[np.int64]
+    track_name: npt.NDArray[np.str_]
+    is_user: npt.NDArray[np.bool_]
+    has_vector: npt.NDArray[np.bool_]
+    vectors: npt.NDArray[np.float32]
+
+    def __post_init__(self) -> None:
+        n = self.frame_idx.shape[0]
+        columns = (
+            ("frame_idx", self.frame_idx.shape),
+            ("track_name", self.track_name.shape),
+            ("is_user", self.is_user.shape),
+            ("has_vector", self.has_vector.shape),
+        )
+        for name, shape in columns:
+            if shape != (n,):
+                msg = f"{name} has shape {shape}, not ({n},)"
+                raise ValueError(msg)
+        if self.vectors.ndim != 2 or self.vectors.shape[0] != n:
+            msg = f"vectors has shape {self.vectors.shape}, not ({n}, D)"
+            raise ValueError(msg)
+        if self.vectors.shape[1] == 0 and bool(self.has_vector.any()):
+            msg = "has_vector is true on a row, but vectors has no columns"
+            raise ValueError(msg)
+
+
+_READBACK_KINDS: Final = {
+    "frame_idx": np.dtype(np.int64),
+    "is_user": np.dtype(np.bool_),
+    "has_vector": np.dtype(np.bool_),
+    "vectors": np.dtype(np.float32),
+}
+"""The dtype of each readback array but ``track_name``, whose width varies."""
+
+
+def read_appearance_readback(path: Path) -> AppearanceReadback:
+    """Read the readback ``.npz`` of tracked instances at *path*.
+
+    Args:
+        path: A file written by the readback snippet.
+
+    Returns:
+        Its records.
+
+    Raises:
+        ValueError: An array is missing, has another dtype, or its length
+            disagrees with the others. The message names the array and *path*.
+    """
+    with np.load(path, allow_pickle=False) as npz:
+        arrays = {name: npz[name] for name in npz.files}
+    for name in ("frame_idx", "track_name", "is_user", "has_vector", "vectors"):
+        if name not in arrays:
+            msg = f"the readback {path} has no {name} array"
+            raise ValueError(msg)
+    for name, dtype in _READBACK_KINDS.items():
+        if arrays[name].dtype != dtype:
+            msg = f"{name} of the readback {path} is {arrays[name].dtype}, not {dtype}"
+            raise ValueError(msg)
+    if arrays["track_name"].dtype.kind != "U":
+        found = arrays["track_name"].dtype
+        msg = f"track_name of the readback {path} is {found}, not str"
+        raise ValueError(msg)
+    try:
+        return AppearanceReadback(
+            frame_idx=arrays["frame_idx"].astype(np.int64, copy=False),
+            track_name=arrays["track_name"].astype(np.str_, copy=False),
+            is_user=arrays["is_user"].astype(np.bool_, copy=False),
+            has_vector=arrays["has_vector"].astype(np.bool_, copy=False),
+            vectors=arrays["vectors"].astype(np.float32, copy=False),
+        )
+    except ValueError as exc:
+        msg = f"the readback {path} is malformed: {exc}"
+        raise ValueError(msg) from exc

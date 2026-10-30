@@ -43,6 +43,7 @@ from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.label_series_index import write_series_revision
 from mosaic.core.pipeline.inventory import inventory
+from mosaic.core.pipeline.graph import IdentityUnresolved, Recipe, plan_pipeline
 from mosaic.core.pipeline.models import (
     SPLIT_RECORD_FILENAME,
     model_index_path,
@@ -737,6 +738,114 @@ def test_a_sleap_preparation_by_alias_hands_each_object_its_alias_as_its_track(
         for frame in handed.frames
     ]
     assert tracks and all(found == ["intruder", "resident"] for found in tracks)
+
+
+def _recorded_track_by(library: Dataset, run_id: str) -> str:
+    rows = index_records(
+        pd.read_csv(model_index_path(library, KIND), dtype=str, keep_default_na=False)
+    )
+    (row,) = [row for row in rows if row["run_id"] == run_id]
+    return row["track_by"]
+
+
+def test_a_sleap_preparation_records_how_it_named_its_tracks(
+    full_state: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = record_slp_writes(monkeypatch)
+
+    by_alias = run_op(
+        full_state, KIND, {**FULL, "target": "sleap", "track_by": "alias"}
+    )
+    plain = run_op(full_state, KIND, {**FULL, "target": "sleap"})
+    other_target = run_op(full_state, KIND, FULL)
+
+    assert _recorded_track_by(full_state, by_alias) == "alias"
+    assert _recorded_track_by(full_state, plain) == ""
+    assert _recorded_track_by(full_state, other_target) == ""
+
+
+def test_an_index_without_the_track_by_column_reads_blank_once_adopted(
+    full_state: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = record_slp_writes(monkeypatch)
+    earlier = run_op(full_state, KIND, {**FULL, "target": "sleap", "track_by": "alias"})
+    rewrite_as_older_prepared_index(full_state)
+
+    _ = run_op(full_state, KIND, {**FULL, "target": "sleap"})
+
+    assert _recorded_track_by(full_state, earlier) == ""
+
+
+def test_a_reused_preparation_fills_the_blank_track_by_cell(
+    full_state: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = record_slp_writes(monkeypatch)
+    params = {**FULL, "target": "sleap", "track_by": "alias"}
+    first = run_op(full_state, KIND, params)
+    written = len(calls)
+    rewrite_as_older_prepared_index(full_state)
+
+    assert run_op(full_state, KIND, params) == first
+
+    assert len(calls) == written, "the preparation was reused, not written again"
+    assert _recorded_track_by(full_state, first) == "alias"
+
+
+def test_a_recipe_over_an_older_preparation_defers_the_global_id_check(
+    full_state: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan cannot read the blank cell that the preparation's run fills.
+
+    The train step is deferred rather than refused as trained on a
+    preparation that did not name its tracks by alias.
+    """
+    _ = record_slp_writes(monkeypatch)
+    params = {**FULL, "target": "sleap", "track_by": "alias"}
+    _ = run_op(full_state, KIND, params)
+    rewrite_as_older_prepared_index(full_state)
+    recipe = Recipe.model_validate(
+        {
+            "steps": [
+                {"id": "prepare", "type": "op", "kind": KIND, "params": params},
+                {
+                    "id": "train",
+                    "type": "op",
+                    "kind": "train-sleap",
+                    "params": {
+                        "labels": {"step": "prepare"},
+                        "head": "embedding",
+                        "sleap_overrides": {
+                            "data_config.identity.track_names_are_global": True
+                        },
+                    },
+                },
+            ]
+        }
+    )
+
+    plan = plan_pipeline(full_state, recipe)
+
+    train = plan.step("train")
+    assert train.run_id is None
+    assert isinstance(train.reason, IdentityUnresolved)
+    assert "track_by" in train.reason.because
+
+
+def test_a_reused_preparation_leaves_other_rows_and_a_recorded_cell_alone(
+    full_state: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = record_slp_writes(monkeypatch)
+    by_alias = {**FULL, "target": "sleap", "track_by": "alias"}
+    plain = {**FULL, "target": "sleap"}
+    first = run_op(full_state, KIND, by_alias)
+    second = run_op(full_state, KIND, plain)
+    path = model_index_path(full_state, KIND)
+    before = path.read_bytes()
+
+    assert run_op(full_state, KIND, by_alias) == first
+    assert run_op(full_state, KIND, plain) == second
+
+    assert path.read_bytes() == before, "a recorded or unset cell is not rewritten"
 
 
 def test_a_state_holding_two_poses_needs_one_named(full_state: Dataset) -> None:
@@ -2386,9 +2495,12 @@ def test_a_hold_out_is_recorded_with_its_revisions_and_its_frames(
 
 @pytest.mark.parametrize("target", ["yolo-pose", "sleap", "litpose"])
 def test_a_pose_target_records_the_narrowed_pose(
-    world: tuple[Dataset, Dataset, Dataset], target: str
+    world: tuple[Dataset, Dataset, Dataset],
+    target: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _mice, _rats, library = world
+    _ = record_slp_writes(monkeypatch)
 
     row = _row_of(library, _prepare(library, target=target))
 

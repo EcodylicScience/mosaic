@@ -52,6 +52,7 @@ LAZY_PACKAGES = (
 PRODUCER_MODULES = (
     *TRACKER_SUBPACKAGES,
     "mosaic.tracking.ops.train",
+    "mosaic.tracking.ops.prepare_embedding",
     "mosaic.tracking.ops.predict_frames",
     "mosaic.tracking.ops.score_predictions",
     "mosaic.tracking.model_refs",

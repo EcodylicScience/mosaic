@@ -45,9 +45,10 @@ What lives where:
   ``predict-images`` request. ``sleap`` also stands in for the SLEAP
   environment's probe, for the input writer, ``sleap-nn track`` and the
   readback of a SLEAP frame adapter, and for the labels writer of a sleap
-  preparation. ``litpose`` also stands in for the Lightning Pose interpreter
-  that runs the version probe and the prediction snippet of a Lightning Pose
-  frame adapter.
+  preparation. It also writes the readback ``.npz`` of tracked instances and a
+  stand-in ``sleap_io`` package that a snippet's source runs against.
+  ``litpose`` also stands in for the Lightning Pose interpreter that runs the
+  version probe and the prediction snippet of a Lightning Pose frame adapter.
 - ``decode_probe`` contains a fake ``python`` for a tool environment, which stands
   in for the interpreter that runs the codec check's decode probe.
 - ``runner_programs`` imports a runner program under its bare name for one test,
@@ -370,16 +371,25 @@ from tests.helpers.litpose import (
     write_litpose_model,
 )
 from tests.helpers.sleap import (
+    STUB_NODES,
     FakeSleap,
     FakeSleapFrames,
+    ReadbackRecord,
     SleapInput,
     SleapTrackCall,
     SlpWrite,
+    StubFrame,
+    StubInstance,
+    StubSavedLabels,
     install_fake_sleap,
     install_fake_sleap_frames,
+    read_stub_labels,
     record_slp_writes,
     sleap_instance,
+    write_appearance_readback,
     write_sleap_model,
+    write_stub_sleap_io,
+    write_stub_slp,
 )
 from tests.helpers.trex import FakeTrex, install_fake_trex, write_pv_header
 from tests.helpers.ultralytics import (
@@ -460,11 +470,13 @@ __all__ = [
     "REPO_ROOT",
     "RUNNER_LINE_SECONDS",
     "ReachedImport",
+    "ReadbackRecord",
     "RecordingStarter",
     "RunnerJournal",
     "SELF_REFERENCE",
     "SEPARATED_TOOLS",
     "SOURCE_ROOT",
+    "STUB_NODES",
     "CALMS21_NAMES",
     "CiJob",
     "ScopedFeature",
@@ -473,6 +485,9 @@ __all__ = [
     "SleapInput",
     "SleapTrackCall",
     "SlpWrite",
+    "StubFrame",
+    "StubInstance",
+    "StubSavedLabels",
     "TESTS_ROOT",
     "ULTRALYTICS_KEYPOINTS",
     "ULTRALYTICS_PROTOCOL",
@@ -607,6 +622,7 @@ __all__ = [
     "record_slp_writes",
     "read_golden",
     "read_string_golden",
+    "read_stub_labels",
     "record_variant_recipe",
     "regenerate_command",
     "register_sleap_model",
@@ -648,6 +664,7 @@ __all__ = [
     "tree_snapshot",
     "ultralytics_probe_response",
     "write_data_yaml",
+    "write_appearance_readback",
     "write_calms21_npy",
     "write_dlc_csv",
     "write_sparse_labels",
@@ -667,6 +684,8 @@ __all__ = [
     "write_pv_header",
     "write_sleap_analysis_h5",
     "write_sleap_model",
+    "write_stub_sleap_io",
+    "write_stub_slp",
     "write_templates",
     "write_trex_npz",
     "write_ultralytics_predictions",

@@ -2,7 +2,9 @@
 
 This module wraps two console scripts: ``sleap-nn track``, for headless batch
 pose inference + tracking of animal videos, and ``sleap-convert``, for the
-analysis HDF5 export that mosaic bridges into standardized tracks.
+analysis HDF5 export that mosaic bridges into standardized tracks. A snippet run
+by the SLEAP interpreter reads the tracked instances of a predictions file and
+their appearance vectors back (:func:`read_back_embeddings`).
 
 **Inference is sleap-nn's own CLI, not a wrapper around it.** The ``sleap``
 distribution ships two inference scripts of its own, ``sleap-track`` and
@@ -35,6 +37,7 @@ Requires:
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +52,7 @@ from mosaic.core.pipeline.toolenv import (
     subprocess_env,
     tool_invocation,
 )
+from mosaic.core.track_library.sleap import read_appearance_readback
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +152,7 @@ class SleapConvertResult:
 # ---------------------------------------------------------------------------
 
 
-def _sleap_invocation(
+def sleap_invocation(
     script: str,
     *,
     sleap_conda_env: str | None = None,
@@ -198,7 +202,7 @@ def _run_sleap(
 ) -> tuple[str, str]:
     """Execute a SLEAP console script with *args* and return (stdout, stderr).
 
-    *invocation* is the argv prefix from :func:`_sleap_invocation`. *cancel_check*,
+    *invocation* is the argv prefix from :func:`sleap_invocation`. *cancel_check*,
     when supplied, is polled while SLEAP runs; if it fires, the whole process
     group is killed and
     :class:`mosaic.core.pipeline.subprocess_util.ProcessCancelled` propagates.
@@ -417,7 +421,7 @@ def run_sleap_track(
     args.extend(_flatten_extra(extra_settings))
 
     stdout, stderr = _run_sleap(
-        _sleap_invocation(
+        sleap_invocation(
             _SLEAP_TRACK_SCRIPT, sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
         ),
         args,
@@ -481,7 +485,7 @@ def run_sleap_convert(
 
     args = [str(slp_path), "--format", "analysis", "-o", str(output_h5)]
     stdout, stderr = _run_sleap(
-        _sleap_invocation(
+        sleap_invocation(
             _SLEAP_CONVERT, sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
         ),
         args,
@@ -504,3 +508,127 @@ def run_sleap_convert(
         produced = candidates[0]
 
     return SleapConvertResult(analysis_h5_path=produced, stdout=stdout, stderr=stderr)
+
+
+_EMBEDDINGS_READBACK_IDLE_SECONDS: Final = 900.0
+"""How long the readback may print nothing. It prints after loading the file."""
+
+# Run by the SLEAP interpreter. Its only inputs are argv: the predictions .slp and
+# where to write the .npz. One record per instance with a track, in file order. An
+# instance's appearance vector is its identity embedding, and a file without any
+# writes vectors with no columns. The file is opened by handle, because savez
+# handed a path without the .npz suffix appends one.
+_EMBEDDINGS_READBACK_SNIPPET: str = """
+import sys
+
+import numpy as np
+import sleap_io
+
+_predicted, _out = sys.argv[1], sys.argv[2]
+_labels = sleap_io.load_slp(_predicted)
+print(f"loaded {len(_labels.labeled_frames)} labeled frames", flush=True)
+
+_frames, _names, _users, _found = [], [], [], []
+for _frame in _labels.labeled_frames:
+    for _instance in _frame.instances:
+        if _instance.track is None:
+            continue
+        _embedding = getattr(_instance, "identity_embedding", None)
+        _frames.append(int(_frame.frame_idx))
+        _names.append(str(_instance.track.name))
+        _users.append(not isinstance(_instance, sleap_io.PredictedInstance))
+        _found.append(
+            None
+            if _embedding is None
+            else np.asarray(_embedding.vector, dtype=np.float32).reshape(-1)
+        )
+
+_lengths = sorted({_vector.shape[0] for _vector in _found if _vector is not None})
+if len(_lengths) > 1:
+    sys.exit(f"appearance vectors of {_lengths} lengths in {_predicted}")
+_has_vector = [_vector is not None for _vector in _found]
+_vectors = np.zeros((len(_found), _lengths[0] if _lengths else 0), dtype=np.float32)
+for _row, _vector in enumerate(_found):
+    if _vector is not None:
+        _vectors[_row] = _vector
+
+with open(_out, "wb") as _handle:
+    np.savez(
+        _handle,
+        frame_idx=np.asarray(_frames, dtype=np.int64),
+        track_name=np.asarray(_names, dtype=np.str_),
+        is_user=np.asarray(_users, dtype=np.bool_),
+        has_vector=np.asarray(_has_vector, dtype=np.bool_),
+        vectors=_vectors,
+    )
+print(f"read {len(_frames)} tracked instances, {sum(_has_vector)} with a vector")
+"""
+
+
+def read_back_embeddings(
+    predicted: Path,
+    out: Path,
+    *,
+    sleap_conda_env: str | None = None,
+    sleap_bin: Path | str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    on_activity: Callable[[str], None] | None = None,
+) -> Path:
+    """Write the tracked instances of *predicted* and their vectors to *out*.
+
+    The SLEAP interpreter writes ``<out>.partial``, which is checked with
+    :func:`~mosaic.core.track_library.sleap.read_appearance_readback` and then
+    moved onto *out* with ``os.replace``. *out* is removed first, so a failed
+    readback leaves neither file.
+
+    Args:
+        predicted: A predictions ``.slp``.
+        out: Where the ``.npz`` is published, ``<entry_key>.embeddings.npz``.
+        sleap_conda_env: Run SLEAP inside this conda env (overrides
+            ``MOSAIC_SLEAP_CONDA_ENV``).
+        sleap_bin: Path to a SLEAP console script (overrides
+            ``MOSAIC_SLEAP_BIN``).
+        cancel_check: Polled while the snippet runs.
+        on_activity: Called with each line of either output stream.
+
+    Returns:
+        *out*.
+
+    Raises:
+        SleapNotFoundError: No SLEAP install could be located.
+        SleapError: The snippet exited non-zero.
+        FileNotFoundError: It exited cleanly and wrote no file.
+        ValueError: The file it wrote is not a readback.
+    """
+    partial = out.with_name(f"{out.name}.partial")
+    out.unlink(missing_ok=True)
+    partial.unlink(missing_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    invocation = sleap_invocation(
+        "python", sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
+    )
+    cmd = [
+        *invocation,
+        "-c",
+        _EMBEDDINGS_READBACK_SNIPPET,
+        str(predicted),
+        str(partial),
+    ]
+    logger.info("Running: %s", command_summary(cmd, SleapError.head))
+    try:
+        stdout, stderr, returncode = run_supervised(
+            cmd,
+            env=subprocess_env(),
+            cancel_check=cancel_check,
+            idle_timeout=_EMBEDDINGS_READBACK_IDLE_SECONDS,
+            on_activity=on_activity,
+        )
+        if returncode != 0:
+            raise SleapError(cmd, returncode, stdout, stderr)
+        if not partial.is_file():
+            raise missing_output_error("SLEAP", partial, stdout, stderr)
+        _ = read_appearance_readback(partial)
+        os.replace(partial, out)
+    finally:
+        partial.unlink(missing_ok=True)
+    return out

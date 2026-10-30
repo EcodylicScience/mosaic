@@ -168,23 +168,32 @@ def resolve_training_data(ds: Dataset, reference: str) -> Path:
     candidate = Path(ds.resolve_path(reference))
     if candidate.exists():
         return candidate
+    row = prepared_data_row(ds, reference)
+    stored = prepared_artifact_cell(row) if row is not None else ""
+    return Path(ds.resolve_path(stored)) if stored else candidate
+
+
+def prepared_data_row(ds: Dataset, reference: str) -> dict[str, str] | None:
+    """The index row of the preparation run that *reference* names, as strings.
+
+    ``None`` when *reference* is not the run id of a preparation kind, or its
+    index holds no row of it. The last row of the run wins.
+    """
     parsed = parse_op_run_id(reference)
     if parsed is None or parsed.kind not in PREPARED_DATA_KINDS:
-        return candidate
+        return None
     index_path = model_index_path(ds, parsed.kind)
     if not index_path.exists():
-        return candidate
+        return None
     import pandas as pd
 
     frame = pd.read_csv(index_path, dtype="string", keep_default_na=False)
     if "run_id" not in frame.columns:
-        return candidate
+        return None
     match = frame[frame["run_id"] == reference]
     if match.empty:
-        return candidate
-    row = {str(name): str(value) for name, value in match.iloc[-1].items()}
-    stored = prepared_artifact_cell(row)
-    return Path(ds.resolve_path(stored)) if stored else candidate
+        return None
+    return {str(name): str(value) for name, value in match.iloc[-1].items()}
 
 
 def fingerprint_yolo_dataset(data_yaml: Path) -> str:

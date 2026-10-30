@@ -36,6 +36,7 @@ import logging
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
@@ -52,11 +53,15 @@ from mosaic.tracking.sleap.run import (
     SleapNotFoundError,
 )
 
+if TYPE_CHECKING:
+    from mosaic.tracking.sleap.training import EmbeddingPositiveScope
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "SleapProbeResponse",
     "probe_sleap",
+    "require_embedding_labels",
     "require_identity_labels",
     "require_sleap_nn",
 ]
@@ -255,3 +260,30 @@ def require_identity_labels(
             "give labels whose instances are tracked, or train a head that "
             "does not classify identity."
         )
+
+
+def require_embedding_labels(
+    probe: SleapProbeResponse, *, scope: EmbeddingPositiveScope, labels_kind: str
+) -> None:
+    """Refuse labels with too few tracks for a contrastive embedding *scope*.
+
+    ``global_id`` and ``tracklet`` draw their negatives from other tracks, so
+    the labels need two individuals. ``aug_view`` pairs two views of one crop
+    and needs no track.
+
+    Args:
+        probe: The probe of the labels.
+        scope: The positive scope of the effective training document.
+        labels_kind: The op kind of the run that wrote the labels, empty for a
+            labels path. It names the labels in the message.
+    """
+    if scope == "aug_view" or probe.n_tracks >= 2:
+        return
+    named = f"The {labels_kind} labels" if labels_kind else "The labels"
+    noun = "track" if probe.n_tracks == 1 else "tracks"
+    msg = (
+        f"{named} hold {probe.n_tracks} {noun}, and an embedding run with "
+        f"positive scope {scope!r} draws contrastive negatives from other "
+        "tracks, which needs two individuals."
+    )
+    raise ValueError(msg)
