@@ -1,17 +1,25 @@
 """The registered ``sleap`` op.
 
 Its resource class, its run id against ``run_sleap`` called directly, the
-throughput knobs kept out of that run id, and model identity by content and order.
+throughput knobs kept out of that run id, model identity by content and order, and
+the refusal of an embedding model.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
 from mosaic.core.pipeline.ops import OPS, describe_op, run_op
 from mosaic.core.scope import Scope
 
-from tests.helpers import scope_over, stub_media_dataset, write_sleap_model
+from tests.helpers import (
+    install_fake_sleap,
+    scope_over,
+    stub_media_dataset,
+    write_sleap_model,
+)
 
 
 def test_sleap_registered_as_gpu_convert_op():
@@ -98,6 +106,36 @@ def test_sleap_model_order_is_significant(tmp_path):
     forward = resolve_model_set(None, [str(d1), str(d2)], "sleap").model_id
     reverse = resolve_model_set(None, [str(d2), str(d1)], "sleap").model_id
     assert forward != reverse
+
+
+@pytest.mark.parametrize("paired", [False, True], ids=["alone", "in-a-pair"])
+def test_sleap_refuses_an_embedding_model_before_minting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, paired: bool
+) -> None:
+    """sleap-nn track raises on an embedding model, so the run is never named.
+
+    The refusal leaves no run root, no tracks variant and no run index.
+    """
+    from mosaic.tracking.sleap.dataset_runs import sleap_index_path
+
+    fake = install_fake_sleap(monkeypatch)
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    reid = write_sleap_model(tmp_path / "reid", b"reid", head="embedding", merged=True)
+    centroid = write_sleap_model(
+        tmp_path / "centroid", b"centroid", head="centroid", merged=True
+    )
+    models = [str(centroid), str(reid)] if paired else [str(reid)]
+
+    with pytest.raises(
+        ValueError, match="embedding .re-identification. model"
+    ) as caught:
+        _ = run_op(ds, "sleap", {"model_paths": models})
+
+    assert repr(str(reid)) in str(caught.value), "names the embedding model"
+    assert fake.tracked == []
+    assert not sleap_index_path(ds).exists()
+    assert list(ds.get_root("tracks").rglob("params.json")) == []
+    assert list(ds.base_dir.rglob("run_params.json")) == []
 
 
 def test_sleap_unresolvable_model_raises(tmp_path):

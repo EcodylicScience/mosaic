@@ -121,16 +121,13 @@ def load_crop_frames(
     color images as RGB ``(H, W, 3)`` (OpenCV's default BGR is converted),
     grayscale as ``(H, W, 1)``.
 
-    Resolution order for the crop root:
-
-    1. ``crop_root`` argument (explicit override, recommended).
-    2. ``df._source_dir`` if set by the pipeline runner.
-    3. Empty list if neither is available.
+    The sequence directory is found under ``crop_root`` alone. When
+    ``crop_root`` is unset or names no such directory, the list is empty.
 
     Args:
         entry_key: Canonical ``"safe_group__safe_sequence"`` identifier.
         df: DataFrame from the input stream. May carry raw ``group`` /
-            ``sequence`` columns and a ``_source_dir`` attribute.
+            ``sequence`` columns.
         crop_root: EgocentricCrop output root containing
             ``<group>__<sequence>/`` subdirs.
         channels: 1 = grayscale, 3 = RGB.
@@ -141,28 +138,8 @@ def load_crop_frames(
     """
     frames: list[np.ndarray] = []
 
-    seq_dir: Path | None = None
-
-    if crop_root is not None:
-        root_path = Path(crop_root)
-        if (
-            df is not None
-            and not df.empty
-            and "group" in df.columns
-            and "sequence" in df.columns
-        ):
-            group = str(df["group"].iloc[0])
-            sequence = str(df["sequence"].iloc[0])
-            seq_dir = root_path / f"{group}__{sequence}"
-        else:
-            seq_dir = root_path / entry_key
-
-    if seq_dir is None or not seq_dir.is_dir():
-        source_dir = getattr(df, "_source_dir", None)
-        if source_dir is not None and Path(source_dir).is_dir():
-            seq_dir = Path(source_dir)
-
-    if seq_dir is None or not seq_dir.is_dir():
+    seq_dir = _resolve_sequence_dir(entry_key, df, crop_root)
+    if seq_dir is None:
         return frames
 
     for frames_subdir in sorted(seq_dir.glob("frames_id*")):
@@ -323,10 +300,6 @@ def _resolve_sequence_dir(
             candidate = root_path / entry_key
         if candidate.is_dir():
             return candidate
-
-    source_dir = getattr(df, "_source_dir", None)
-    if source_dir is not None and Path(source_dir).is_dir():
-        return Path(source_dir)
     return None
 
 

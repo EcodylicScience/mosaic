@@ -369,11 +369,12 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
 - A step given a fitted `model` (`arhmm`, `kpms`, `vame`, the identity models,
   `lightning-action`) applies it to each entry alone, so its scope is not in its run id
-  and a wider request is the same run. `evaluate-labels` takes several inputs over
-  disjoint entries and scores them as one, and the plan refuses inputs asked for the
-  same entry. `extract-templates`, `extract-labeled-templates`, `fit-label-map` and a
-  `pair-posedistance-pca` without a `model` still hash the entries they cover, so scope
-  them to the training groups once.
+  and a wider request is the same run. The identity models only load it: their tables
+  copy their input, and no step applies an identity model or corrects tracks with one
+  yet. `evaluate-labels` takes several inputs over disjoint entries and scores them as
+  one, and the plan refuses inputs asked for the same entry. `extract-templates`,
+  `extract-labeled-templates`, `fit-label-map` and a `pair-posedistance-pca` without a
+  `model` still hash the entries they cover, so scope them to the training groups once.
 - `mosaic pipeline verify --manifest <manifest> --recipe <recipe>` (with the
   `--step-scope` you ran) fits each fitting step of a finished recipe again in a scratch
   directory and compares it with the stored run. It exits 1 on a difference and when it

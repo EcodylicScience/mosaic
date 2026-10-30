@@ -32,6 +32,7 @@ import pandas as pd
 import yaml
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.user_paths import user_path
@@ -59,6 +60,7 @@ __all__ = [
     "ResolvedModel",
     "Role",
     "RoleSpec",
+    "SLEAP_EMBEDDING_HEAD",
     "model_id_for_ref",
     "model_id_for_ref_set",
     "model_kind_for",
@@ -171,6 +173,10 @@ class ModelKindSpec:
             them null, and a scan cannot tell the configured one from the
             candidates. This is provenance recorded on a row, not identity, so an
             unreadable config gives an empty answer rather than raising.
+        head_configs_path: The keys from the config's root to the mapping that
+            lists one entry per head, null but the head the model was trained
+            with. A config that has the mapping is read from it alone. Empty for
+            a kind whose config has no such mapping.
         label: How the kind is named in an error a human reads.
     """
 
@@ -180,6 +186,7 @@ class ModelKindSpec:
     payload_prefix: str | None = None
     config_names: tuple[str, ...] = ()
     model_types: tuple[str, ...] = ()
+    head_configs_path: tuple[str, ...] = ()
     label: str = "model"
 
 
@@ -188,13 +195,22 @@ class ModelKindSpec:
 # which sleap-nn still runs inference on.
 _SLEAP_CHECKPOINTS: Final[tuple[str, ...]] = ("best.ckpt", "best_model.h5")
 
+SLEAP_EMBEDDING_HEAD: Final = "embedding"
+"""The model type of a sleap-nn re-identification model, which predicts no pose.
+
+Recognised among the SLEAP model types so that a model that cannot track is
+named, and the SLEAP training and inference paths refuse it.
+"""
+
 # Longest-first, so a ``multi_class_topdown`` config is not misread as
-# ``centered_instance``.
+# ``centered_instance``. ``embedding`` is sleap-nn's re-identification model,
+# recognised so that what cannot track is named and refused.
 _SLEAP_HEADS: Final[tuple[str, ...]] = (
-    "multi_class_topdown",
     "multi_class_bottomup",
+    "multi_class_topdown",
     "centered_instance",
     "single_instance",
+    SLEAP_EMBEDDING_HEAD,
     "centroid",
     "bottomup",
 )
@@ -214,6 +230,7 @@ _SLEAP_SPEC: Final = ModelKindSpec(
     payload_prefix="sleap",
     config_names=("training_config.yaml", "training_config.json"),
     model_types=_SLEAP_HEADS,
+    head_configs_path=("model_config", "head_configs"),
     label="SLEAP model",
 )
 
@@ -448,6 +465,36 @@ def _selected_tokens(node: object, into: set[str]) -> None:
         into.add(node)
 
 
+def _configured_head(document: object, spec: ModelKindSpec) -> str | None:
+    """The model type that *document*'s head mapping configures, if it has one.
+
+    The mapping at :attr:`ModelKindSpec.head_configs_path` is where the framework
+    declares the head, so it decides alone: its one non-null entry, when *spec*
+    recognises it, and ``""`` otherwise -- an unrecognised head, none, or several.
+    The rest of the document is not consulted. Its scalar values name heads that
+    were not trained: a skeleton node or an anchor part named ``centroid`` read a
+    bottom-up model as a centroid model.
+
+    Returns:
+        The configured model type, ``""`` for a mapping that names none *spec*
+        recognises, or ``None`` when *spec* declares no path or *document* has no
+        mapping there, and the selected tokens are read instead.
+    """
+    if not spec.head_configs_path:
+        return None
+    node = document
+    for key in spec.head_configs_path:
+        if not is_str_mapping(node):
+            return None
+        node = node.get(key)
+    if not is_str_mapping(node):
+        return None
+    configured = [head for head, value in node.items() if value is not None]
+    if len(configured) == 1 and configured[0] in spec.model_types:
+        return configured[0]
+    return ""
+
+
 def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
     """Best-effort ``model_type`` token from the config, for provenance.
 
@@ -457,6 +504,11 @@ def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
     of them null and one configured. Every SLEAP model was then recorded as
     whichever token came first in :data:`ModelKindSpec.model_types`, regardless
     of what was trained.
+
+    A kind that declares :attr:`ModelKindSpec.head_configs_path` is read from
+    that mapping wherever the config has one (:func:`_configured_head`). What the
+    whole document selects is read otherwise, for every other kind and for a
+    config without the mapping.
 
     YAML covers JSON, so one parse serves both ``config_names`` spellings. This
     is provenance recorded on a row, not identity, so an unreadable or
@@ -475,11 +527,15 @@ def _read_model_type(directory: Path, spec: ModelKindSpec) -> str:
             text = config.read_text()
         except OSError:
             return ""
-        selected: set[str] = set()
         try:
-            _selected_tokens(yaml.safe_load(text), selected)
+            document: object = yaml.safe_load(text)
         except yaml.YAMLError:
-            selected = set()
+            document = None
+        configured = _configured_head(document, spec)
+        if configured is not None:
+            return configured
+        selected: set[str] = set()
+        _selected_tokens(document, selected)
         for token in spec.model_types:
             if token in selected:
                 return token

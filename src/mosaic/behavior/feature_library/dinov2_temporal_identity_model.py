@@ -4,8 +4,9 @@ Sibling of
 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
 that uses a frozen DINOv2 backbone with a small trainable temporal
 head (GRU / Perceiver / pool, selectable via Params) and an ArcFace loss
-to learn identity-discriminative clip embeddings. Identity is decided at
-inference by cosine k-NN against per-identity prototypes.
+to learn identity-discriminative clip embeddings. The exported network decides
+identity by cosine k-NN against per-identity prototypes; this feature decides
+none.
 
 The pluggable temporal head is the "what did my colleague mean by 'DINOv2
 + GRU'?" answer in code: train all three on the same data and compare.
@@ -13,8 +14,8 @@ The pluggable temporal head is the "what did my colleague mean by 'DINOv2
 Choosing between this and ``global-identity-embedding``: this one trains a
 small head on **clips**, so it can learn identity cues that only appear over
 time (gait, posture dynamics) and needs a training cycle. That one trains
-nothing and embeds **single frames**, so it is a zero-shot baseline that
-returns an answer in one pass. Run the cheap one first.
+nothing and embeds **single frames**, so it is a training-free baseline fitted
+in one pass. Run the cheap one first.
 
 Closest published reference: RoVF (Rogers et al., IJCV 2025), which uses
 a Perceiver recurrent head on DINOv2 frame embeddings for animal re-ID.
@@ -50,6 +51,7 @@ from mosaic.optional_dependency import Prerequisite
 
 from ._identity_model_descriptions import (
     CHANNELS_DESCRIPTION,
+    CROP_IMAGES_CAUSES,
     CROP_ROOT_DESCRIPTION,
     GROUP_AS_IDENTITY_DESCRIPTION,
     IDENTITIES_DESCRIPTION,
@@ -144,21 +146,27 @@ _MAX_CLIPS_PER_IDENTITY_DESCRIPTION = "The cap on training clips kept per identi
 class GlobalIdentityDinoV2Temporal:
     """Train a DINOv2 + temporal identity model from individual sequences.
 
-    Takes EgocentricCrop output as input. Each identity is a mapping of
-    name -> single-individual sequences. Builds clips of ``clip_len``
-    consecutive frames per sequence, embeds each frame with a frozen
-    DINOv2 backbone, aggregates frame embeddings with the chosen temporal
-    head, and trains the head + ArcFace classifier. Predictions at
-    inference are cosine k-NN against per-identity prototype embeddings.
+    Takes EgocentricCrop output as input, cut with ``output_mode`` ``"frames"``
+    or ``"both"``, and reads the crop images from ``crop_root``. Each identity
+    is a mapping of name -> single-individual sequences. Builds clips of
+    ``clip_len`` consecutive frames per sequence, embeds each frame with a
+    frozen DINOv2 backbone, aggregates frame embeddings with the chosen
+    temporal head, and trains the head + ArcFace classifier. The exported
+    network predicts by cosine k-NN against per-identity prototype
+    embeddings. The run's per-entry output is its input, unchanged: this
+    feature predicts no identity.
 
     Example::
 
         ego_result = dataset.run_feature(
-            EgocentricCrop(params={"crop_size": (224, 224)})
+            EgocentricCrop(params={"crop_size": (224, 224), "output_mode": "frames"})
+        )
+        crop_root = (
+            dataset.get_root("features") / ego_result.feature / ego_result.run_id
         )
 
         identity_model = GlobalIdentityDinoV2Temporal(
-            Inputs((Result(feature="egocentric-crop"),)),
+            Inputs((ego_result,)),
             params={
                 "identities": {
                     "mouse_A": ["cage1/day1_mouseA_alone"],
@@ -166,6 +174,7 @@ class GlobalIdentityDinoV2Temporal:
                     "mouse_C": ["cage1/day2_mouseC_alone"],
                     "mouse_D": ["cage1/day1_mouseD_alone"],
                 },
+                "crop_root": str(crop_root),
                 "temporal_head": "gru",
                 "clip_len": 8,
                 "image_size": (224, 224),
@@ -184,7 +193,7 @@ class GlobalIdentityDinoV2Temporal:
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
     # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
-    # run given a model, which applies it.
+    # run given a model, which loads it and fits nothing.
     fits = True
     # The backbone runs on the best device under `device="auto"`, CUDA first.
     resource_class = "gpu"
@@ -278,7 +287,7 @@ class GlobalIdentityDinoV2Temporal:
             "dinov2_temporal_identity"
         )
 
-        # Path to EgocentricCrop output root.
+        # The EgocentricCrop run's directory. Fitting needs it.
         crop_root: Annotated[str | None, Declared(CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
@@ -288,7 +297,7 @@ class GlobalIdentityDinoV2Temporal:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        # A run given a model applies it and learns nothing: a held-out group may be
+        # A run given a model loads it and learns nothing: a held-out group may be
         # in its scope, and the scope is not part of what the run is.
         self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
@@ -411,9 +420,10 @@ class GlobalIdentityDinoV2Temporal:
 
         if not clips_list:
             msg = (
-                "[dinov2-temporal] No clips collected. Check sequence keys, "
-                "crop output, and that each sequence has at least clip_len "
-                "consecutive frames per identity directory."
+                f"[dinov2-temporal] No clips collected from "
+                f"crop_root={p.crop_root!r}. A clip needs at least "
+                f"clip_len={p.clip_len} consecutive frames in one frames_id* "
+                f"directory. {CROP_IMAGES_CAUSES}"
             )
             raise RuntimeError(msg)
 
@@ -457,7 +467,7 @@ class GlobalIdentityDinoV2Temporal:
         self._network._identity_names = identity_names  # pyright: ignore[reportPrivateUsage]
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Passthrough -- identity predictions are consumed downstream."""
+        """Passthrough -- the fitted model is the output, and nothing applies it yet."""
         return df
 
     def save_state(self, run_root: Path) -> None:

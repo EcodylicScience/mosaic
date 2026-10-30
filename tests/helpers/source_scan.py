@@ -7,7 +7,9 @@ neighboring question about calls, and a negative assertion about a call belongs
 beside the positive one: a body that calls neither of two functions passes an
 "it does not call the wrong one" test without doing the work. :func:`imports_in`
 and :func:`imports_of` answer the question about imports, for the guards over
-which modules a file imports.
+which modules a file imports. :func:`imports_reaching` resolves each import to
+the modules it reaches, and also counts ``import_module`` and ``__import__``
+calls and literal module names, for the layering guards.
 
 A read counts only off the names that hold the object in the scanned region.
 ``np.load``, ``joblib.load`` and ``json.load`` are attribute reads named
@@ -32,11 +34,13 @@ Five spellings count as a read, because a field is wired by any of them:
 from __future__ import annotations
 
 import ast
-from collections.abc import Collection, Iterable
+import re
+from collections.abc import Collection, Iterable, Iterator
 from dataclasses import dataclass
+from importlib.util import resolve_name
 from pathlib import Path
 from types import ModuleType
-from typing import Literal
+from typing import Final, Literal
 
 
 def source_tree(path: Path) -> ast.Module:
@@ -121,6 +125,172 @@ def imports_of(path: Path, *, scope: ImportScope, relative: bool) -> list[Import
     return imports_in(source_tree(path), scope=scope, relative=relative)
 
 
+DYNAMIC_IMPORTS: Final = frozenset({"import_module", "__import__"})
+"""The functions whose call with a literal module name counts as an import."""
+
+_MODULE_LITERAL: Final = re.compile(r"[A-Za-z_]\w*(\.[A-Za-z_]\w*)*(:\w+)?")
+"""A string naming a module, with the ``:<attribute>`` a ``lazy_export`` source
+may end in."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReachedImport:
+    """One name a file imports, by a statement, a call or a literal module name.
+
+    Attributes:
+        line: The line of the statement, the call or the literal.
+        scope: The functions, classes and ``if`` branches it sits in, outermost
+            first.
+        statement: The import as written, narrowed to this one name.
+        reaches: The absolute modules it may import. ``from a import b`` reaches
+            ``a`` and ``a.b``, since ``b`` may be a submodule.
+    """
+
+    line: int
+    scope: tuple[str, ...]
+    statement: str
+    reaches: tuple[str, ...]
+
+    def into(self, package: str) -> str | None:
+        """The first module of :attr:`reaches` inside *package*, or ``None``.
+
+        The dot counts, so ``mosaic.trackings`` is not inside ``mosaic.tracking``.
+        """
+        return next(
+            (
+                module
+                for module in self.reaches
+                if module == package or module.startswith(f"{package}.")
+            ),
+            None,
+        )
+
+
+def _scoped(
+    nodes: Iterable[ast.AST], scope: tuple[str, ...]
+) -> Iterator[tuple[ast.AST, tuple[str, ...]]]:
+    """Yields every node of *nodes* and beneath them, with the scope it sits in.
+
+    A function or a class adds its name. An ``if`` adds its test to its body and
+    the negated test to its ``else`` branch. A node comes before its children.
+    """
+    for node in nodes:
+        yield node, scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield from _scoped(ast.iter_child_nodes(node), (*scope, node.name))
+        elif isinstance(node, ast.If):
+            test = ast.unparse(node.test)
+            yield from _scoped((node.test,), scope)
+            yield from _scoped(node.body, (*scope, f"if {test}"))
+            yield from _scoped(node.orelse, (*scope, f"if not {test}"))
+        else:
+            yield from _scoped(ast.iter_child_nodes(node), scope)
+
+
+def _argument(call: ast.Call, position: int, keyword: str) -> ast.expr | None:
+    """The argument *call* passes at *position* or as *keyword*."""
+    if len(call.args) > position:
+        return call.args[position]
+    return next((kw.value for kw in call.keywords if kw.arg == keyword), None)
+
+
+def _called(call: ast.Call, package: str) -> tuple[str, ...]:
+    """The modules a call of ``import_module`` or ``__import__`` reaches.
+
+    Empty unless the call names its module with a literal. ``import_module``
+    resolves a relative name against its ``package`` argument, given as a
+    literal or as ``__package__``. ``__import__`` also reaches each literal name
+    of its ``fromlist``.
+    """
+    called = _trailing_name(call.func)
+    if called not in DYNAMIC_IMPORTS:
+        return ()
+    name = _constant_string(_argument(call, 0, "name"))
+    if not name:
+        return ()
+    if called == "import_module":
+        if not name.startswith("."):
+            return (name,)
+        anchor = _argument(call, 1, "package")
+        if isinstance(anchor, ast.Name) and anchor.id == "__package__":
+            return (resolve_name(name, package),)
+        anchor_name = _constant_string(anchor)
+        return (resolve_name(name, anchor_name),) if anchor_name else ()
+    fromlist = _argument(call, 3, "fromlist")
+    if not isinstance(fromlist, (ast.List, ast.Tuple)):
+        return (name,)
+    submodules = [_constant_string(element) for element in fromlist.elts]
+    return (name, *(f"{name}.{sub}" for sub in submodules if sub))
+
+
+def imports_reaching(
+    tree: ast.Module, package: str, *, literal_packages: Collection[str] = ()
+) -> list[ReachedImport]:
+    """Returns every name that *tree* imports, resolved, in the order of lines.
+
+    Reads every scope, as :func:`imports_in` does with ``scope="anywhere"``,
+    and reports each name of a statement, so ``from a import b, c`` is two. A
+    relative import resolves against *package*, the package of the scanned
+    file. A call of ``import_module`` or ``__import__`` that names its module
+    with a literal counts as the import it performs. A module name built at run
+    time is out of reach of any static scan.
+
+    A string whose whole value names a module inside one of *literal_packages*
+    counts too, with any ``:<attribute>`` suffix dropped. That is the spelling
+    of a ``lazy_export`` table and of a tuple of modules imported in a loop,
+    both of which name their modules as literals.
+
+    Args:
+        tree: The parsed source.
+        package: The absolute package of the scanned file: its directory for an
+            ``__init__.py`` and for a module alike.
+        literal_packages: The packages a string literal is matched against.
+    """
+    found: list[ReachedImport] = []
+    consumed: set[int] = set()
+    for node, scope in _scoped(tree.body, ()):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                statement = f"import {alias.name}" + (
+                    f" as {alias.asname}" if alias.asname else ""
+                )
+                found.append(
+                    ReachedImport(node.lineno, scope, statement, (alias.name,))
+                )
+        elif isinstance(node, ast.ImportFrom):
+            written = "." * node.level + (node.module or "")
+            module = resolve_name(written, package)
+            for alias in node.names:
+                statement = f"from {written} import {alias.name}" + (
+                    f" as {alias.asname}" if alias.asname else ""
+                )
+                reaches = (
+                    (module,)
+                    if alias.name == "*"
+                    else (module, f"{module}.{alias.name}")
+                )
+                found.append(ReachedImport(node.lineno, scope, statement, reaches))
+        elif isinstance(node, ast.Call) and (reaches := _called(node, package)):
+            consumed.update(id(child) for child in ast.walk(node))
+            found.append(ReachedImport(node.lineno, scope, ast.unparse(node), reaches))
+        elif (
+            literal_packages
+            and id(node) not in consumed
+            and isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _MODULE_LITERAL.fullmatch(node.value)
+        ):
+            module = node.value.partition(":")[0]
+            if any(
+                module == named or module.startswith(f"{named}.")
+                for named in literal_packages
+            ):
+                found.append(
+                    ReachedImport(node.lineno, scope, repr(node.value), (module,))
+                )
+    return sorted(found, key=lambda imported: imported.line)
+
+
 def module_tree(module: ModuleType) -> ast.Module:
     """Parses the whole of *module*, for a scan with no function to narrow to."""
     return source_tree(Path(module.__file__ or ""))
@@ -203,7 +373,7 @@ def _trailing_name(node: ast.expr) -> str:
     return ""
 
 
-def _constant_string(node: ast.expr) -> str:
+def _constant_string(node: ast.expr | None) -> str:
     """Returns the value of a string literal, or empty for anything else."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value

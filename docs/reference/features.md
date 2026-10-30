@@ -1104,8 +1104,8 @@ Train a DINOv2 + temporal identity model from individual sequences.
 | `batch_size` | `integer` | `32` | >= `1` | The training batch size. |
 | `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` | The fraction of clips set aside for validation. 0 disables the split. |
 | `max_clips_per_identity` | `integer` | `500` | >= `1` | The cap on training clips kept per identity. |
-| `weights_name` | `string` | `"dinov2_temporal_identity"` |  | The filename stem for the exported checkpoint, written as <weights_name>.pth. |
-| `crop_root` | `string` \| `None` | `null` |  | Override for the directory EgocentricCrop output is read from. When it names no readable directory, the directory the loaded input came from is used instead. |
+| `weights_name` | `string` | `"dinov2_temporal_identity"` |  | The filename stem for the exported checkpoint, written as {weights_name}.pth. |
+| `crop_root` | `string` \| `None` | `null` |  | The directory of the EgocentricCrop run to read, features/{storage}/{run_id}/, or the output_root that run was given. Fitting reads each sequence's crops from {group}__{sequence}/frames_id{id}/frame_{frame}.png under it, so the crops must be made with output_mode frames or both and frame_format png. Nothing else locates them: unset, fitting finds no crops and raises. |
 
 ??? note "`DinoV2TemporalIdentityArtifact`"
 
@@ -1131,7 +1131,7 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
 Version `0.1` &middot; `mosaic.behavior.feature_library.identity_embedding_model.GlobalIdentityEmbedding`
 
-Train an identity model from frozen backbone embeddings + k-NN.
+Fit an identity model from frozen backbone embeddings + k-NN.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
@@ -1143,8 +1143,8 @@ Train an identity model from frozen backbone embeddings + k-NN.
 | `channels` | `integer` | `3` |  | How many channels the crop image is read from disk with. 1 reads grayscale and is replicated to 3 channels before the backbone reads it. Any other value reads 3-channel RGB. |
 | `batch_size` | `integer` | `32` | >= `1` | The embedding batch size. |
 | `max_images_per_identity` | `integer` | `2000` | >= `1` | The cap on training crops kept per identity. |
-| `weights_name` | `string` | `"identity_embedding"` |  | The filename stem for the exported checkpoint, written as <weights_name>.pth. |
-| `crop_root` | `string` \| `None` | `null` |  | Override for the directory EgocentricCrop output is read from. When it names no readable directory, the directory the loaded input came from is used instead. |
+| `weights_name` | `string` | `"identity_embedding"` |  | The filename stem for the exported checkpoint, written as {weights_name}.pth. |
+| `crop_root` | `string` \| `None` | `null` |  | The directory of the EgocentricCrop run to read, features/{storage}/{run_id}/, or the output_root that run was given. Fitting reads each sequence's crops from {group}__{sequence}/frames_id{id}/frame_{frame}.png under it, so the crops must be made with output_mode frames or both and frame_format png. Nothing else locates them: unset, fitting finds no crops and raises. |
 
 ??? note "`EmbeddingIdentityArtifact`"
 
@@ -1187,7 +1187,7 @@ Train a visual identity model from individual animal sequences.
 | `val_split` | `number` | `0.2` | >= `0.0`, < `1.0` | The fraction of collected images held out for validation. 0 disables the split, training on every image. |
 | `max_images_per_identity` | `integer` | `2000` | >= `1` | The most images used per identity. Balances classes by capping how many crops from any one identity enter training. |
 | `weights_name` | `string` | `"identity_classifier"` |  | The stem of the exported .pth checkpoint filename. |
-| `crop_root` | `string` \| `None` | `null` |  | Unset, the EgocentricCrop output root is resolved from the input Result. Set, crops are read from this path first, falling back to that resolution when the derived directory does not exist. |
+| `crop_root` | `string` \| `None` | `null` |  | The directory of the EgocentricCrop run to read, features/{storage}/{run_id}/, or the output_root that run was given. Fitting reads each sequence's crops from {group}__{sequence}/frames_id{id}/frame_{frame}.png under it, so the crops must be made with output_mode frames or both and frame_format png. Nothing else locates them: unset, fitting finds no crops and raises. |
 
 ??? note "`ClassifierIdentityArtifact`"
 

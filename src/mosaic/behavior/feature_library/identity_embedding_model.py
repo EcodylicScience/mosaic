@@ -3,13 +3,15 @@
 Sibling of
 :class:`~mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
 that uses any timm-resolvable image backbone as a frozen embedding
-extractor and predicts identities by cosine-similarity k-NN against
-per-identity prototypes computed at fit time. Nothing is trained, so there is
-no per-animal training cycle -- ``fit()`` only computes prototypes.
+extractor and keeps one prototype per identity, the mean of its training
+crops' embeddings. The exported network scores a crop by cosine-similarity
+k-NN against those prototypes; this feature scores nothing. Nothing is
+trained, so there is no per-animal training cycle -- ``fit()`` only computes
+prototypes.
 
 Choosing between this and ``global-identity-dinov2-temporal``: this one trains
-nothing and embeds **single frames**, so it is a zero-shot baseline that
-returns an answer in one pass. That one trains a small head on **clips**, so it
+nothing and embeds **single frames**, so it is a training-free baseline
+fitted in one pass. That one trains a small head on **clips**, so it
 can learn identity cues that only appear over time (gait, posture dynamics) and
 needs a training cycle. Run the cheap one first.
 
@@ -48,6 +50,7 @@ from mosaic.optional_dependency import Prerequisite
 
 from ._identity_model_descriptions import (
     CHANNELS_DESCRIPTION,
+    CROP_IMAGES_CAUSES,
     CROP_ROOT_DESCRIPTION,
     GROUP_AS_IDENTITY_DESCRIPTION,
     IDENTITIES_DESCRIPTION,
@@ -118,21 +121,27 @@ _MAX_IMAGES_PER_IDENTITY_DESCRIPTION = "The cap on training crops kept per ident
 @final
 @register_feature
 class GlobalIdentityEmbedding:
-    """Train an identity model from frozen backbone embeddings + k-NN.
+    """Fit an identity model from frozen backbone embeddings + k-NN.
 
-    Takes EgocentricCrop output as input. Each identity is specified as a
-    mapping of identity names to lists of sequences containing that
-    individual alone. Computes a prototype embedding per identity from the
-    training crops and predicts at inference by cosine k-NN against those
-    prototypes.
+    Takes EgocentricCrop output as input, cut with ``output_mode`` ``"frames"``
+    or ``"both"``, and reads the crop images from ``crop_root``. Each identity
+    is specified as a mapping of identity names to lists of sequences
+    containing that individual alone. Computes a prototype embedding per
+    identity from the training crops and exports them. The run's per-entry
+    output is its input, unchanged: this feature predicts no identity.
 
     Example::
 
-        ego_result = dataset.run_feature(EgocentricCrop())
+        ego_result = dataset.run_feature(
+            EgocentricCrop(params={"output_mode": "frames"})
+        )
+        crop_root = (
+            dataset.get_root("features") / ego_result.feature / ego_result.run_id
+        )
 
         # The default backbone: MIT-licensed, commercially usable.
         identity_model = GlobalIdentityEmbedding(
-            Inputs((Result(feature="egocentric-crop"),)),
+            Inputs((ego_result,)),
             params={
                 "identities": {
                     "mouse_A": ["cage1/day1_mouseA_alone"],
@@ -140,6 +149,7 @@ class GlobalIdentityEmbedding:
                     "mouse_C": ["cage1/day2_mouseC_alone"],
                     "mouse_D": ["cage1/day1_mouseD_alone"],
                 },
+                "crop_root": str(crop_root),
             },
         )
         result = dataset.run_feature(identity_model)
@@ -147,9 +157,10 @@ class GlobalIdentityEmbedding:
         # Wildlife-pretrained weights instead: markedly stronger for animal
         # re-identification, and CC-BY-NC-4.0, so not for commercial use.
         academic = GlobalIdentityEmbedding(
-            Inputs((Result(feature="egocentric-crop"),)),
+            Inputs((ego_result,)),
             params={
                 "identities": {...},
+                "crop_root": str(crop_root),
                 "model_name": "BVRA/MegaDescriptor-L-384",
             },
         )
@@ -161,7 +172,7 @@ class GlobalIdentityEmbedding:
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
     # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
-    # run given a model, which applies it.
+    # run given a model, which loads it and fits nothing.
     fits = True
     # The backbone runs on the best device under `device="auto"`, CUDA first.
     resource_class = "gpu"
@@ -236,7 +247,7 @@ class GlobalIdentityEmbedding:
             "identity_embedding"
         )
 
-        # Path to EgocentricCrop output root.
+        # The EgocentricCrop run's directory. Fitting needs it.
         crop_root: Annotated[str | None, Declared(CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
@@ -246,7 +257,7 @@ class GlobalIdentityEmbedding:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        # A run given a model applies it and learns nothing: a held-out group may be
+        # A run given a model loads it and learns nothing: a held-out group may be
         # in its scope, and the scope is not part of what the run is.
         self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
@@ -371,8 +382,8 @@ class GlobalIdentityEmbedding:
 
         if not images_list:
             msg = (
-                "[identity-embedding] No images collected. Check sequence keys "
-                "and crop output."
+                f"[identity-embedding] No images collected from "
+                f"crop_root={p.crop_root!r}. {CROP_IMAGES_CAUSES}"
             )
             raise RuntimeError(msg)
 
@@ -414,7 +425,7 @@ class GlobalIdentityEmbedding:
         self._network._identity_names = identity_names  # pyright: ignore[reportPrivateUsage]
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Passthrough -- identity predictions are consumed downstream."""
+        """Passthrough -- the fitted model is the output, and nothing applies it yet."""
         return df
 
     def save_state(self, run_root: Path) -> None:

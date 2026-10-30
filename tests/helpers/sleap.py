@@ -24,9 +24,11 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 import pytest
+import yaml
 
 from mosaic.core.annotations.model import AnnotationSet
 from mosaic.tracking.sleap.frames import (
@@ -81,8 +83,32 @@ def install_fake_sleap(
     return installed
 
 
+_MERGED_HEADS: Final = (
+    "single_instance",
+    "centroid",
+    "centered_instance",
+    "bottomup",
+    "multi_class_bottomup",
+    "multi_class_topdown",
+    "bottomup_segmentation",
+    "centered_instance_segmentation",
+    "semantic_segmentation",
+    "embedding",
+    "bbox_centernet",
+    "bbox_ssd",
+)
+"""Every head that sleap-nn 0.3.5 lists under ``model_config.head_configs``, in order."""
+
+_MERGED_NODES: Final = ("head", "centroid", "tail")
+"""The skeleton of a merged config. Its middle node shares a head's name."""
+
+
 def write_sleap_model(
-    directory: Path, weights: bytes = b"weights", *, head: str = ""
+    directory: Path,
+    weights: bytes = b"weights",
+    *,
+    head: str = "",
+    merged: bool = False,
 ) -> Path:
     """Write a SLEAP model directory at *directory*, and return it.
 
@@ -91,14 +117,61 @@ def write_sleap_model(
     given, a ``training_config.yaml`` selecting it under ``head_configs`` is written
     beside the checkpoint, as SLEAP's trainer leaves one. The config is provenance,
     read for the model type, and a model does not need one.
+
+    With *merged*, the config is the merged one that ``sleap-nn train`` saves:
+    ``model_config.head_configs`` lists every head of :data:`_MERGED_HEADS`, null
+    but *head*, and ``data_config.skeletons`` names the nodes of
+    :data:`_MERGED_NODES`. The section of *head* names those nodes and anchors on
+    the ``centroid`` node, so the document's scalar values name a head that was not
+    trained. A merged config without *head* configures no head.
     """
     directory.mkdir(parents=True, exist_ok=True)
     _ = (directory / "best.ckpt").write_bytes(weights)
-    if head:
+    if merged:
+        config = yaml.safe_dump(_merged_training_config(head), sort_keys=False)
+        _ = (directory / "training_config.yaml").write_text(config)
+    elif head:
         _ = (directory / "training_config.yaml").write_text(
             f"head_configs:\n  {head}: {{}}\n"
         )
     return directory
+
+
+def _merged_training_config(head: str) -> dict[str, object]:
+    """Return the merged training config of a sleap-nn model of *head*."""
+    nodes = list(_MERGED_NODES)
+    confmaps: dict[str, object] = {
+        "part_names": nodes,
+        "anchor_part": "centroid",
+        "sigma": 5.0,
+        "output_stride": 2,
+    }
+    section = "embedding" if head == "embedding" else "confmaps"
+    heads = {
+        name: {section: confmaps} if name == head else None for name in _MERGED_HEADS
+    }
+    skeleton = {
+        "nodes": [{"name": node} for node in nodes],
+        "edges": [
+            {"source": {"name": source}, "destination": {"name": target}}
+            for source, target in zip(nodes, nodes[1:])
+        ],
+        "symmetries": [],
+        "name": "skeleton",
+    }
+    return {
+        "data_config": {"skeletons": [skeleton]},
+        "model_config": {
+            "backbone_config": {
+                "unet": {"filters": 32},
+                "convnext": None,
+                "swint": None,
+            },
+            "head_configs": heads,
+        },
+        "trainer_config": {"max_epochs": 1},
+        "sleap_nn_version": "0.3.5",
+    }
 
 
 SlpWrite = tuple[Path, AnnotationSet, object]

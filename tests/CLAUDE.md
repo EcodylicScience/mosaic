@@ -76,6 +76,11 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_tools_import.py`: a script under `tools/` that fails to import.
 - `test_agent_layering.py`: a module under `core`, `behavior` or `tracking` that
   imports `mosaic.agent`.
+- `test_behavior_tracking_layering.py`: a module under `behavior` that imports
+  `mosaic.tracking`, or one under `tracking` that imports `mosaic.behavior`, by any
+  statement, relative import, literal `import_module` or `__import__` call, or
+  string naming a module of the other package, other than the deprecated alias in
+  `behavior/__init__.py`; or that alias gone while its exemption remains.
 - `test_agent_never_writes_splits.py`: a module under `mosaic.agent` whose syntax tree
   stores an attribute or item named `splits`, calls `set_splits`, `remove_splits`,
   `mutate_manifest`, `write_manifest` or `save`, or updates `splits` through

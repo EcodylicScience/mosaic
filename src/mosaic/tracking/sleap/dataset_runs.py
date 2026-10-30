@@ -74,6 +74,7 @@ from mosaic.tracking.common.mint import mint_tracker_run, tracker_run_root
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import DecodeProbe, resolve_tool_input
 from mosaic.tracking.model_refs import (
+    SLEAP_EMBEDDING_HEAD,
     model_kind_for,
     observed_model_source,
     resolve_model_set,
@@ -242,6 +243,34 @@ def bridge_analysis_h5_to_tracks(
     )
 
 
+# --- Model checks ---------------------------------------------------------
+
+
+def _refuse_embedding_models(refs: Sequence[str], model_types: Sequence[str]) -> None:
+    """Refuse a model set that holds an embedding model.
+
+    An embedding model maps the crop of each detection to a vector, which
+    re-identifies individuals and locates no keypoint. ``sleap-nn track`` raises
+    on one, so the run is refused before it is named rather than minted and then
+    failed on every entry.
+
+    Raises:
+        ValueError: A model of *refs* is an embedding model. The message names
+            the first, and the models that the run takes instead.
+    """
+    for ref, model_type in zip(refs, model_types, strict=True):
+        if model_type != SLEAP_EMBEDDING_HEAD:
+            continue
+        msg = (
+            f"{ref!r} is an embedding (re-identification) model, which embeds "
+            "detections and cannot track them or predict their poses. "
+            "sleap-nn track runs a single_instance, bottomup or "
+            "multi_class_bottomup model, or a top-down pair: a centroid model "
+            "and then its centered_instance or multi_class_topdown model."
+        )
+        raise ValueError(msg)
+
+
 # --- Public entry point ---------------------------------------------------
 
 
@@ -300,6 +329,9 @@ def run_sleap(
     resolved_models = resolve_model_set(
         ds, refs, model_kind_for(SLEAP_KIND, SLEAP_MODEL, refs)
     )
+    # An embedding model resolves, and ``sleap-nn track`` raises on it. It is
+    # refused before the mint, as an unresolvable reference is.
+    _refuse_embedding_models(refs, resolved_models.model_types)
 
     settings = sleap_settings(params, model_id=resolved_models.model_id)
     scope_entries = scope.op_entries if scope is not None else None

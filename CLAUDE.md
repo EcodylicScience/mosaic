@@ -121,7 +121,8 @@ an unmarked slow test goes green on push.
 `core` is the foundation: the data model, schemas, the pipeline engine and media I/O.
 `behavior` and `tracking` import `core` and do not import each other. They exchange data
 only through files on disk. The deprecated `behavior.tracking` alias in
-`behavior/__init__.py` is the one exception. No test checks this rule.
+`behavior/__init__.py` is the one exception
+(`tests/meta/test_behavior_tracking_layering.py`).
 
 `mosaic.agent` is an adapter beside `mosaic.cli`. It may import `core`, `behavior` and
 `tracking`, and no module under those three imports it

@@ -52,6 +52,9 @@ def _fake_trainer(
 ):
     """Stand in for ``sleap-nn train``, writing the directory it would have.
 
+    The directory holds the merged config that sleap-nn saves, which names every
+    head it knows and configures *head*.
+
     *writes_training_log* says whether the run got far enough to log an epoch.
     A real run that did not leaves no ``training_log.csv``, which is the state
     the empty ``metrics_path`` cell records.
@@ -63,7 +66,7 @@ def _fake_trainer(
         config_dir = Path(argv[argv.index("--config-dir") + 1])
         config = yaml.safe_load((config_dir / "config.yaml").read_text())
         produced = config_dir / config["trainer_config"]["run_name"]
-        _ = write_sleap_model(produced, head=head)
+        _ = write_sleap_model(produced, head=head, merged=True)
         if writes_training_log:
             _ = (produced / "training_log.csv").write_text("epoch,train_loss\n0,1.0\n")
         return ("done", "", 0)
@@ -407,10 +410,12 @@ def test_a_killed_trainer_is_recorded_as_cancelled(
 def test_it_runs_the_train_subcommand_of_sleap_nn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """sleap-nn 0.3.3 removed ``sleap-nn-train``; ``sleap-nn train`` takes its flags.
+    """``sleap-nn train`` replaces the ``sleap-nn-train`` script, and takes its flags.
 
-    The subcommand is present in 0.3.1 as well, so running it does not drop the
-    older environments.
+    ``sleap-nn-train`` was a script of the ``sleap`` distribution, which sleap
+    1.6.5 removed. sleap-nn's own ``sleap-nn`` script takes ``train
+    --config-dir`` and ``--config-name`` from sleap-nn 0.3.1, so running it does
+    not drop the older environments.
     """
     argv = _run_and_capture(tmp_path, monkeypatch, {"head": "centroid"})
     assert Path(argv[0]).name == "sleap-nn"
@@ -639,6 +644,35 @@ def test_a_base_of_another_head_is_refused_before_the_run_root_is_made(
     )
     assert run_roots == [base]
     assert list(trained_model_index(index_path).read()["run_id"]) == [base]
+
+
+@pytest.mark.parametrize("head", ["centroid", "centered_instance", "bottomup"])
+def test_an_embedding_base_is_refused_before_the_run_root_is_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, head: str
+) -> None:
+    """An embedding model's head is no head that train-sleap trains.
+
+    Its directory holds the merged config that sleap-nn saves, which names every
+    other head too. The refusal leaves no run root and no trainer call.
+    """
+    ds, labels, seen = _labels_and_fake_trainer(tmp_path, monkeypatch, head=head)
+    base = write_sleap_model(tmp_path / "reid", head="embedding", merged=True)
+
+    with pytest.raises(ValueError, match=f"is an embedding model.*{head} run"):
+        _ = run_op(
+            ds,
+            "train-sleap",
+            {
+                "labels": str(labels),
+                "max_epochs": 1,
+                "head": head,
+                "base_model": str(base),
+            },
+        )
+
+    assert seen == [], "the trainer must not run"
+    kind_root = model_index_path(ds, "train-sleap").parent
+    assert not kind_root.exists() or not any(kind_root.iterdir())
 
 
 def test_an_override_of_the_pretrained_head_weights_beats_the_base_model(

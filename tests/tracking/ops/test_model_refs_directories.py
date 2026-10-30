@@ -271,6 +271,52 @@ def test_a_sleap_model_needs_no_config(tmp_path: Path) -> None:
     assert len(resolved.significant_files) == 1
 
 
+# --- the model type of a merged config --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "head",
+    [
+        "single_instance",
+        "centroid",
+        "centered_instance",
+        "bottomup",
+        "multi_class_bottomup",
+        "multi_class_topdown",
+        "embedding",
+    ],
+)
+def test_a_merged_sleap_config_reads_as_the_head_it_configures(
+    tmp_path: Path, head: str
+) -> None:
+    """sleap-nn saves a config that lists every head, null but the one trained."""
+    model = write_sleap_model(tmp_path / head, head.encode(), head=head, merged=True)
+
+    assert resolve_model_set(None, [str(model)], "sleap").model_types == (head,)
+
+
+def test_a_bottomup_model_with_a_centroid_node_reads_as_bottomup(
+    tmp_path: Path,
+) -> None:
+    """A node named like a head is a value of the config, and names no head."""
+    model = write_sleap_model(tmp_path / "bottomup", head="bottomup", merged=True)
+    assert "name: centroid" in (model / "training_config.yaml").read_text()
+
+    assert resolve_model_set(None, [str(model)], "sleap").model_type == "bottomup"
+
+
+@pytest.mark.parametrize(
+    "head", ["", "bbox_centernet"], ids=["no-head", "unrecognised-head"]
+)
+def test_a_merged_sleap_config_without_a_known_head_names_none(
+    tmp_path: Path, head: str
+) -> None:
+    """The heads mapping decides alone, so no other head is guessed from the rest."""
+    model = write_sleap_model(tmp_path / "model", head=head, merged=True)
+
+    assert resolve_model_set(None, [str(model)], "sleap").model_type == ""
+
+
 def test_the_preferred_checkpoint_wins_over_a_later_sibling(tmp_path: Path) -> None:
     """Lightning Pose writes both ``best`` and ``last``; identity takes ``best``."""
     model = tmp_path / "lp"

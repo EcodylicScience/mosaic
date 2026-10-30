@@ -107,7 +107,9 @@ entries of its input's fold table. Their identity holds no scope, so widening on
 test groups is the same run: the stored fit is applied to the new entries and nothing fits
 again. For the two networks, the blend and `tune-threshold`, the first request has to
 cover the training entries, and is refused otherwise. The same holds for `arhmm`, `kpms`,
-`vame`, the identity models and `pair-posedistance-pca` when given a `model`. The template
+`vame`, the identity models and `pair-posedistance-pca` when given a `model`. The identity
+models only load their model: their tables copy their input, and nothing applies an
+identity model yet. The template
 steps, `fit-label-map` and any of these without a `model` are still asked for the whole of
 their scope, so scope them to the training groups once and apply what they fitted from a
 second step.

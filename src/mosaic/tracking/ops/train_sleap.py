@@ -324,11 +324,13 @@ class TrainSleapOp(Op[TrainSleapParams]):
         require_sleap_nn(probe)
         require_identity_labels(probe, params.head, labels_path)
         # A base whose config does not read reports an empty model_type, which
-        # names no head to compare.
+        # names no head to compare. An embedding base is refused here as well,
+        # because ``head`` cannot name an embedding model.
         if base_head and base_head != params.head:
+            article = "an" if base_head.startswith(("a", "e", "i", "o", "u")) else "a"
             msg = (
-                f"base_model {params.base_model!r} is a {base_head} model. A "
-                f"{params.head} run fine-tunes only from a {params.head} model."
+                f"base_model {params.base_model!r} is {article} {base_head} model. "
+                f"A {params.head} run fine-tunes only from a {params.head} model."
             )
             raise ValueError(msg)
 

@@ -287,9 +287,11 @@ from tests.helpers.pyproject_requirements import (
 )
 from tests.helpers.source_scan import (
     ImportedName,
+    ReachedImport,
     functions_named,
     imports_in,
     imports_of,
+    imports_reaching,
     module_tree,
     names_called_by,
     names_read,
@@ -457,6 +459,7 @@ __all__ = [
     "PlainFeature",
     "REPO_ROOT",
     "RUNNER_LINE_SECONDS",
+    "ReachedImport",
     "RecordingStarter",
     "RunnerJournal",
     "SELF_REFERENCE",
@@ -522,6 +525,7 @@ __all__ = [
     "import_runner_program",
     "imports_in",
     "imports_of",
+    "imports_reaching",
     "healthy_probe",
     "clean_facts_cells",
     "clip_facts",

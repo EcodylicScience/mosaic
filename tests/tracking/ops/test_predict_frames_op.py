@@ -94,6 +94,7 @@ from tests.helpers import (
     ultralytics_probe_response,
     write_frames_run,
     write_litpose_model,
+    write_sleap_model,
 )
 
 register_ops()
@@ -1355,6 +1356,35 @@ def test_a_lone_top_down_head_is_refused_before_any_claim(
     assert f"{SLEAP_RUN!r} is a {head} model" in message
     assert "takes a top-down model as a pair" in message
     assert _claims(ds) == []
+    assert fake_sleap.tracked == []
+
+
+@pytest.mark.parametrize(
+    "model",
+    [(SLEAP_RUN,), (CENTROID_RUN, SLEAP_RUN)],
+    ids=["alone", "in-a-pair"],
+)
+def test_an_embedding_model_is_refused_before_any_claim(
+    ds: Dataset, fake_sleap: FakeSleapFrames, model: tuple[str, ...]
+) -> None:
+    """An embedding model embeds detections, and predicts no pose to write.
+
+    Its directory holds the merged config that sleap-nn saves, which also names
+    every head that was not trained.
+    """
+    _ = _register_sleap(ds, CENTROID_RUN, head="centroid")
+    directory = _register_sleap(ds, SLEAP_RUN, head="embedding")
+    _ = write_sleap_model(directory, SLEAP_RUN.encode(), head="embedding", merged=True)
+
+    with pytest.raises(PredictFramesInvalid) as caught:
+        _ = _run(ds, model=model)
+
+    assert caught.value.error_kind == "invalid"
+    message = str(caught.value)
+    assert f"{SLEAP_RUN!r} is an embedding (re-identification) model" in message
+    assert "cannot predict poses" in message
+    assert _claims(ds) == []
+    assert fake_sleap.probed == []
     assert fake_sleap.tracked == []
 
 

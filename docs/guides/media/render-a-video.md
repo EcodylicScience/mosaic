@@ -42,8 +42,8 @@ ds.run_feature(Overlay(Inputs((xgb_result,)), params={"color_by": "predicted_lab
 ## Animal-centered crops
 
 `egocentric-crop` cuts one clip per individual, centered and rotated so the animal
-holds still and the world moves around it. These are what the identity models read, and
-they are useful on their own for inspecting a single animal.
+holds still and the world moves around it. They are useful on their own for inspecting a
+single animal, and as frames they are what the identity models fit from.
 
 ```python
 from mosaic.behavior.visualization_library import EgocentricCrop
@@ -52,9 +52,15 @@ ds.run_feature(EgocentricCrop(params={"crop_size": (256, 256), "rotate_to_headin
 ```
 
 `crop_size` is a field of view in pixels, not a resize target: a larger value takes in
-more of the surrounding scene. `rotate_to_heading` needs keypoints, and
-`heading_points` names the two that define the body axis; without keypoints the crop
-falls back to the body center and no rotation.
+more of the surrounding scene. With `rotate_to_heading`, the heading comes from
+`angle_col` when you name one, and otherwise from the two keypoints of
+`heading_points`. With neither, the crop is centered on the animal but not rotated.
+
+`output_mode` defaults to `"video"`, one `egocentric_id<id>.mp4` per individual and no
+images. The identity models read only PNG frames, written with `output_mode` `"frames"`
+or `"both"` and `frame_format` `"png"`.
+[Identify individuals by appearance](../analysis/identify-individuals.md#1-cut-the-crops)
+gives that setup.
 
 `interaction-crop-pipeline` does the same for a *pair*, framing both animals in one
 clip.

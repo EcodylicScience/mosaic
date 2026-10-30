@@ -93,6 +93,7 @@ from mosaic.tracking.litpose.frames import (
 )
 from mosaic.tracking.litpose.training import litpose_device_placement
 from mosaic.tracking.model_refs import (
+    SLEAP_EMBEDDING_HEAD,
     ResolvedModel,
     model_kind_for,
     refuse_unless_run_ids,
@@ -566,14 +567,29 @@ def _head_named(head: str) -> str:
 
 
 def _refuse_sleap_heads(refs: Sequence[str], heads: Sequence[str]) -> None:
-    """Refuse a lone half of a top-down model, and a pair that is not one in order.
+    """Refuse an embedding model, a lone half of a top-down model, and a bad pair.
+
+    An embedding model is refused first, alone or in a pair. A pair is bad when it
+    is not a top-down model in order.
 
     Raises:
-        PredictFramesInvalid: One model is a centroid, centered_instance or
-            multi_class_topdown model, or two models are not a centroid model
-            followed by a centered_instance or multi_class_topdown model. The
-            message names the heads found, in order.
+        PredictFramesInvalid: A model is an embedding model, one model is a
+            centroid, centered_instance or multi_class_topdown model, or two
+            models are not a centroid model followed by a centered_instance or
+            multi_class_topdown model. The message names the embedding model, or
+            the heads found, in order.
     """
+    for ref, head in zip(refs, heads, strict=True):
+        if head != SLEAP_EMBEDDING_HEAD:
+            continue
+        message = (
+            f"{ref!r} is an embedding (re-identification) model, which embeds "
+            f"detections and cannot predict poses. {_KIND} runs a SLEAP "
+            "single_instance, bottomup or multi_class_bottomup model, or a "
+            "top-down pair: a centroid run and then its centered_instance or "
+            "multi_class_topdown run."
+        )
+        raise PredictFramesInvalid(message)
     if len(refs) == 1:
         head = heads[0]
         if head not in _TOP_DOWN_HEADS:

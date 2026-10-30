@@ -7,11 +7,17 @@ process importing the library would load the adapter's dependencies.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
 
-from tests.helpers import SOURCE_ROOT, imports_of, inside_a_virtualenv
+from tests.helpers import (
+    SOURCE_ROOT,
+    imports_reaching,
+    inside_a_virtualenv,
+    source_tree,
+)
 
 LIBRARY_PACKAGES = ("core", "behavior", "tracking")
 """The packages under ``src/mosaic`` that may not import ``mosaic.agent``."""
@@ -19,22 +25,25 @@ LIBRARY_PACKAGES = ("core", "behavior", "tracking")
 AGENT = "mosaic.agent"
 
 
-def _absolute(module: str, path: Path) -> str:
-    """Return the absolute module that *module*, as written in *path*, names."""
-    if not module.startswith("."):
-        return module
-    level = len(module) - len(module.lstrip("."))
-    package = ("mosaic", *path.relative_to(SOURCE_ROOT).parent.parts)
-    base = package[: len(package) - level + 1]
-    rest = module[level:]
-    return ".".join((*base, rest) if rest else base)
+def _package(path: Path) -> str:
+    """The package of the file at *path*, which a relative import resolves against."""
+    return ".".join(("mosaic", *path.relative_to(SOURCE_ROOT).parent.parts))
 
 
-def _names_agent(module: str, name: str | None) -> bool:
-    """Whether importing *name* from *module* reaches ``mosaic.agent``."""
-    if module == AGENT or module.startswith(f"{AGENT}."):
-        return True
-    return module == "mosaic" and name == "agent"
+def _agent_imports(tree: ast.Module, path: Path) -> list[int]:
+    """The lines at which *tree*, the source of the file at *path*, reaches the agent.
+
+    The scan is :func:`~tests.helpers.source_scan.imports_reaching`, so a
+    relative import, a literal ``import_module`` or ``__import__`` call and a
+    string naming an agent module all count.
+    """
+    return [
+        imported.line
+        for imported in imports_reaching(
+            tree, _package(path), literal_packages=(AGENT,)
+        )
+        if imported.into(AGENT)
+    ]
 
 
 @pytest.mark.parametrize("package", LIBRARY_PACKAGES)
@@ -45,11 +54,10 @@ def test_no_library_module_imports_the_agent_package(package: str) -> None:
     the warnings-as-errors configuration of the suite.
     """
     offenders = [
-        f"{path.relative_to(SOURCE_ROOT)}:{imported.line}"
+        f"{path.relative_to(SOURCE_ROOT)}:{line}"
         for path in sorted((SOURCE_ROOT / package).rglob("*.py"))
         if not inside_a_virtualenv(path, SOURCE_ROOT)
-        for imported in imports_of(path, scope="anywhere", relative=True)
-        if _names_agent(_absolute(imported.module, path), imported.name)
+        for line in _agent_imports(source_tree(path), path)
     ]
 
     assert offenders == [], (
@@ -57,9 +65,22 @@ def test_no_library_module_imports_the_agent_package(package: str) -> None:
     )
 
 
-def test_the_scan_resolves_a_relative_import_to_the_agent_package() -> None:
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("from ...agent.mcp import spec", id="relative-module"),
+        pytest.param("from ... import agent", id="relative-name"),
+        pytest.param("import_module('mosaic.agent.mcp')", id="import-module"),
+        pytest.param('_MODULE_OF = {"X": "mosaic.agent.mcp:spec"}', id="literal"),
+    ],
+)
+def test_the_scan_finds_each_spelling_of_an_import_of_the_agent(source: str) -> None:
     path = SOURCE_ROOT / "core" / "pipeline" / "run.py"
 
-    assert _absolute("...agent.mcp", path) == "mosaic.agent.mcp"
-    assert _absolute("..", path) == "mosaic.core"
-    assert _names_agent(_absolute("...", path), "agent")
+    assert _agent_imports(ast.parse(source), path) == [1]
+
+
+def test_the_scan_passes_over_a_relative_import_inside_core() -> None:
+    path = SOURCE_ROOT / "core" / "pipeline" / "run.py"
+
+    assert _agent_imports(ast.parse("from .. import agent"), path) == []

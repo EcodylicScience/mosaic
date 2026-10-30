@@ -43,7 +43,7 @@ cache the same way, which is what lets them chain.
 | [Import behavior annotations](analysis/import-labels.md) | You have BORIS or CalMS21 annotations to bring in |
 | [Find behaviors without labels](analysis/discover-behaviors.md) | Embedding, clustering and state models |
 | [Train a behavior classifier](analysis/train-a-classifier.md) | You have labels and want predictions on the rest |
-| [Identify individuals by appearance](analysis/identify-individuals.md) | Recovering identity from how an animal looks |
+| [Identify individuals by appearance](analysis/identify-individuals.md) | Fitting a model of how each known animal looks, from egocentric crops |
 | [Write your own feature](analysis/write-your-own-feature.md) | The library does not have the quantity you need |
 
 ## Pipelines

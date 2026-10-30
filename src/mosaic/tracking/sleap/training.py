@@ -18,11 +18,13 @@ model whether or not mosaic has a field for it.
 
 Requires:
     ``sleap-nn``, from a SLEAP install, run as ``sleap-nn train`` with the
-    ``--config-dir`` / ``--config-name`` flags. sleap-nn 0.3.3 removed the
-    separate ``sleap-nn-train`` script that mosaic used to run; the subcommand
-    takes the same flags and is present in 0.3.1 as well. Tracking runs the same
-    ``sleap-nn``, so the environment variables that point mosaic at SLEAP serve
-    training too -- see :data:`mosaic.tracking.sleap.run.SLEAP_ENV`.
+    ``--config-dir`` / ``--config-name`` flags. sleap-nn has shipped only the
+    ``sleap-nn`` script since 0.0.2. The ``sleap-nn-train`` script that mosaic
+    used to run belonged to the ``sleap`` distribution (1.5.1 to 1.6.4), and
+    sleap 1.6.5 removed it. The subcommand takes the same flags and works from
+    sleap-nn 0.3.1, so running it drops no older environment. Tracking runs
+    the same ``sleap-nn``, so the environment variables that point mosaic at
+    SLEAP serve training too -- see :data:`mosaic.tracking.sleap.run.SLEAP_ENV`.
 """
 
 from __future__ import annotations

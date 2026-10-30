@@ -10,9 +10,12 @@ per-frame annotation.
 
 Choosing among the three identity features: this one *trains* a head and wants
 enough crops per animal to fit one. ``global-identity-embedding`` trains nothing
-and answers in a single pass over the same backbone family, which makes it the
-right first attempt. ``global-identity-dinov2-temporal`` reads clips rather than
-single frames, so it can use cues that only exist over time.
+and fits its prototypes in a single pass over the same backbone family, which
+makes it the right first attempt. ``global-identity-dinov2-temporal`` reads
+clips rather than single frames, so it can use cues that only exist over time.
+
+None of the three applies its fit: each stores a model under its run and passes
+its input through, and nothing in mosaic applies those models yet.
 
 Mosaic distributes no model weights. Whatever ``model_name`` names is fetched at
 run time under its own license -- see
@@ -46,7 +49,11 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 from mosaic.optional_dependency import Prerequisite
 
-from ._identity_model_descriptions import LEARNING_RATE_DESCRIPTION
+from ._identity_model_descriptions import (
+    CROP_IMAGES_CAUSES,
+    CROP_ROOT_DESCRIPTION,
+    LEARNING_RATE_DESCRIPTION,
+)
 from .named_model import named_model_file
 from .registry import register_feature
 
@@ -142,12 +149,6 @@ _CLASSIFIER_WEIGHTS_NAME_DESCRIPTION = (
     "The stem of the exported .pth checkpoint filename."
 )
 
-_CLASSIFIER_CROP_ROOT_DESCRIPTION = (
-    "Unset, the EgocentricCrop output root is resolved from the input "
-    "Result. Set, crops are read from this path first, falling back to "
-    "that resolution when the derived directory does not exist."
-)
-
 # --- Feature class ---
 
 
@@ -156,17 +157,25 @@ _CLASSIFIER_CROP_ROOT_DESCRIPTION = (
 class GlobalIdentityModel:
     """Train a visual identity model from individual animal sequences.
 
-    Takes EgocentricCrop output as input. Each identity is specified as a
-    mapping of identity names to lists of sequences containing that
-    individual alone. Trains a classification head over a pretrained image
-    backbone and exports the fitted weights.
+    Takes EgocentricCrop output as input, cut with ``output_mode`` ``"frames"``
+    or ``"both"``, and reads the crop images from ``crop_root``. Each identity
+    is specified as a mapping of identity names to lists of sequences
+    containing that individual alone. Trains a classification head over a
+    pretrained image backbone and exports the fitted weights. The run's
+    per-entry output is its input, unchanged: this feature predicts no
+    identity.
 
     Example::
 
-        ego_result = dataset.run_feature(ego_crop)
+        ego_result = dataset.run_feature(
+            EgocentricCrop(params={"output_mode": "frames"})
+        )
+        crop_root = (
+            dataset.get_root("features") / ego_result.feature / ego_result.run_id
+        )
 
         identity_model = GlobalIdentityModel(
-            Inputs((Result(feature="egocentric-crop"),)),
+            Inputs((ego_result,)),
             params={
                 "identities": {
                     "mouse_A": ["cage1/day1_mouseA_alone", "cage1/day3_mouseA_alone"],
@@ -174,6 +183,7 @@ class GlobalIdentityModel:
                     "mouse_C": ["cage1/day2_mouseC_alone"],
                     "mouse_D": ["cage1/day1_mouseD_alone"],
                 },
+                "crop_root": str(crop_root),
             },
         )
         result = dataset.run_feature(identity_model)
@@ -185,7 +195,7 @@ class GlobalIdentityModel:
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
     # Learns from its inputs. ``__init__`` clears this and ``scope_dependent`` for a
-    # run given a model, which applies it.
+    # run given a model, which loads it and fits nothing.
     fits = True
     # The backbone runs on the best device under `device="auto"`, CUDA first.
     resource_class = "gpu"
@@ -267,11 +277,9 @@ class GlobalIdentityModel:
             "identity_classifier"
         )
 
-        # Path to EgocentricCrop output root (contains group__sequence/ subdirs).
-        # If None, the feature tries to resolve it from the input Result.
-        crop_root: Annotated[
-            str | None, Declared(_CLASSIFIER_CROP_ROOT_DESCRIPTION)
-        ] = None
+        # The EgocentricCrop run's directory (contains group__sequence/ subdirs).
+        # Fitting needs it: nothing resolves it from the input Result.
+        crop_root: Annotated[str | None, Declared(CROP_ROOT_DESCRIPTION)] = None
 
     def __init__(
         self,
@@ -280,7 +288,7 @@ class GlobalIdentityModel:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        # A run given a model applies it and learns nothing: a held-out group may be
+        # A run given a model loads it and learns nothing: a held-out group may be
         # in its scope, and the scope is not part of what the run is.
         self.scope_dependent = self.params.model is None
         self.fits = self.params.model is None
@@ -404,8 +412,8 @@ class GlobalIdentityModel:
 
         if not images_list:
             msg = (
-                "[identity-model] No images collected. Check sequence keys "
-                "and crop output."
+                f"[identity-model] No images collected from "
+                f"crop_root={p.crop_root!r}. {CROP_IMAGES_CAUSES}"
             )
             raise RuntimeError(msg)
 
@@ -449,7 +457,7 @@ class GlobalIdentityModel:
         )
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Passthrough -- identity predictions are consumed downstream."""
+        """Passthrough -- the fitted model is the output, and nothing applies it yet."""
         return df
 
     def save_state(self, run_root: Path) -> None:
