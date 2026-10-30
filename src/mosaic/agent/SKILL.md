@@ -146,10 +146,10 @@ A dataset is a directory with `dataset.yaml` and named roots
 
 - The user's files go in `media_raw/`, `tracks_raw/` or `labels_raw/`, or stay where
   they are as a declared source. Mosaic writes everything else.
-- Do not write into `tracks/`, `labels/`, `features/`, `models/`, `media/`,
-  `frame_predictions/`, `selections/` or `_tracking/`. Produce outputs through
-  `run_feature`, `mosaic run` and the ops, which keep the indexes and run ids
-  consistent.
+- Do not write into `tracks/` (including `tracks/<variant>/appearance/`), `labels/`,
+  `features/`, `models/`, `media/`, `frame_predictions/`, `selections/` or `_tracking/`.
+  Produce outputs through `run_feature`, `mosaic run` and the ops, which keep the
+  indexes and run ids consistent.
 - Do not hand-edit an `index.csv`, delete a `*.lock` file, or edit `.mosaic/`. Keep
   `.mosaic/claims/`, the only record of which entries are known to fail.
 - Change `dataset.yaml` with `mosaic sources`, `mosaic tags`, `mosaic notes` and
@@ -321,6 +321,16 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   tracked by passing its run id as `media` (`--set media=<run_id>`). Its tracks are
   published in the source video's pixels and frames. Do not add crop offsets. A frame
   window cannot be combined with `media`.
+- A `sleap` model list that ends in an embedding model (a `train-sleap` run with
+  `head=embedding`) is an embedding run. It tracks by appearance and writes an appearance
+  table, `tracks/<variant>/appearance/<entry>.parquet`, beside each tracks table. Set
+  `features=embeddings`, `scoring_method=cosine_sim` and `candidates_method=local_queues`
+  yourself, since the run refuses other values. It needs sleap-nn 0.3.5 or later and
+  stays silent for minutes while it embeds. Raise `idle_timeout` on a slow GPU.
+  `prepare-embedding-data` cuts the training windows from an earlier `sleap` run, with
+  `train_entries` and `val_entries` that share no recording. `train-sleap` with
+  `head=embedding` refuses scopes and labels it cannot train, and `global_id` needs the
+  user's declaration that track names are global, which you do not set for them.
 - Lightning Pose cannot decode AV1. Give it a variant made with `"codec": "h264"`.
   `mosaic prerequisites --kind litpose` plans that variant and names it in `media`.
 - Frame extraction is `mosaic run --kind extract-frames`, or the function
@@ -369,12 +379,19 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
 - A step given a fitted `model` (`arhmm`, `kpms`, `vame`, the identity models,
   `lightning-action`) applies it to each entry alone, so its scope is not in its run id
-  and a wider request is the same run. The identity models only load it: their tables
-  copy their input, and no step applies an identity model or corrects tracks with one
-  yet. `evaluate-labels` takes several inputs over disjoint entries and scores them as
-  one, and the plan refuses inputs asked for the same entry. `extract-templates`,
+  and a wider request is the same run. The crop identity models only load it: their
+  tables copy their input, and no step applies one or corrects tracks with one.
+  `assign-identities` instead applies an appearance model to tracks. `evaluate-labels`
+  takes several inputs over disjoint entries and scores them as one, and the plan
+  refuses inputs asked for the same entry. `extract-templates`,
   `extract-labeled-templates`, `fit-label-map` and a `pair-posedistance-pca` without a
   `model` still hash the entries they cover, so scope them to the training groups once.
+- `assign-identities` relabels a `sleap` embedding run's variant with named individuals,
+  taken from reference tracks the user names (at least two identities). The new variant
+  and its source both contain every entry. Every later step names the new variant
+  with `tracks_run_id` (`--tracks-run-id`), or it stops. Name an individual across
+  entries by the `identity` column. A negative `id` marks an unassigned tracklet.
+  It is numbered within its entry and means nothing across entries.
 - `mosaic pipeline verify --manifest <manifest> --recipe <recipe>` (with the
   `--step-scope` you ran) fits each fitting step of a finished recipe again in a scratch
   directory and compares it with the stored run. It exits 1 on a difference and when it

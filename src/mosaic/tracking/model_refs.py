@@ -592,7 +592,7 @@ def embedding_dim(resolved: ResolvedModel) -> int:
             model.
     """
     if SLEAP_EMBEDDING_HEAD not in resolved.model_types:
-        msg = "The model set has no embedding model, so it has no embedding_dim."
+        msg = "The model set has no embedding model and therefore no embedding_dim."
         raise ValueError(msg)
     artifact = resolved.artifacts[resolved.model_types.index(SLEAP_EMBEDDING_HEAD)]
     text = _config_text(artifact.root, _SLEAP_SPEC)

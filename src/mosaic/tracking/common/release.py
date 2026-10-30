@@ -1,6 +1,6 @@
 """Reading the release numbers of a tool's version string.
 
-A leaf module that imports only the standard library, so a tracker's version
+A leaf module that imports only the standard library. A tracker's version
 module can use it at module scope without importing the tracker.
 """
 

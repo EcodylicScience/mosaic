@@ -159,7 +159,7 @@ def test_the_registered_path_column_is_the_one_holding_a_path(tmp_path: Path) ->
 
 
 def test_the_appearance_cell_is_the_trailing_column() -> None:
-    """The cell joins the end of the header, so an older index only lacks a tail."""
+    """The cell joins the end of the header, and an older index lacks only a tail."""
     assert TRACKS_INDEX_COLUMNS[-1] == "appearance_abs_path"
     fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
     assert fields["appearance_abs_path"].default == ""
@@ -250,7 +250,7 @@ def test_an_index_without_the_appearance_column_reads_and_writes_blank(
 def test_reindex_registers_no_appearance_table_and_keeps_the_cell(
     tmp_path: Path,
 ) -> None:
-    """``appearance/`` holds no tracks table, so reindex drops and adds no row."""
+    """Reindex adds and drops no row for ``appearance/``, a directory of no table."""
     ds = _dataset(tmp_path)
     add_tracks_variant(ds, "convert-x.0.1-aaaaaaaaaa", "a", "b", appearance_dim=4)
     before = read_tracks_index(ds)

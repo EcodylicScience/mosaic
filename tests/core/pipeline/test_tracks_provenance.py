@@ -664,6 +664,31 @@ def test_drop_entries_removes_the_row_and_optionally_the_table(
     assert tables["keep"].exists()
 
 
+def test_drop_entries_deletes_the_rows_appearance_table(tmp_path: Path) -> None:
+    from mosaic.core.pipeline.tracks_index import write_tracks_row
+
+    ds = _dataset(tmp_path)
+    table = _track_parquet(ds, "seq_a")
+    appearance = ds.get_root("tracks") / "appearance" / "seq_a.parquet"
+    appearance.parent.mkdir(parents=True)
+    _ = appearance.write_bytes(b"x")
+    write_tracks_row(
+        ds,
+        run_id="sleap.1.6-aaaaaaaaaa",
+        group="",
+        sequence="seq_a",
+        out_path=table,
+        producer="sleap",
+        std_format="trex_v1",
+        n_rows=40,
+        appearance_path=appearance,
+    )
+
+    assert ds.drop_entries(scope=Scope(entries=[("", "seq_a")]), delete_files=True) == 1
+    assert not table.exists()
+    assert not appearance.exists()
+
+
 def test_drop_entries_keeps_the_table_by_default(tmp_path: Path) -> None:
     """An orphaned table is recoverable; a deleted one is not."""
     ds = _dataset(tmp_path)

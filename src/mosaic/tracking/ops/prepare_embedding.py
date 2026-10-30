@@ -57,7 +57,7 @@ from mosaic.tracking.sleap.run import (
     read_back_embeddings,
     sleap_invocation,
 )
-from mosaic.tracking.sleap.version import SLEAP_KIND
+from mosaic.tracking.sleap.version import PREPARE_EMBEDDING_DATA_KIND, SLEAP_KIND
 
 from ._common import claim_run_root, empty_claimed_run_root, ensure_models_root
 
@@ -70,7 +70,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "PREPARE_EMBEDDING_KIND",
     "EmbeddingDataIndexRow",
     "EmbeddingLabelsFile",
     "EmbeddingSource",
@@ -84,7 +83,6 @@ __all__ = [
     "write_embedding_labels",
 ]
 
-PREPARE_EMBEDDING_KIND: Final = "prepare-embedding-data"
 PREPARE_EMBEDDING_VERSION: Final = "0.1"
 
 _PREPARE_IDLE_SECONDS: Final = 900.0
@@ -130,7 +128,7 @@ _SPLIT_TRACKS_AT_GAP_DESCRIPTION = (
 class PrepareEmbeddingDataParams(Params):
     """Declares how training windows are cut from one sleap tracker run.
 
-    Both entry lists are stored sorted, so the order they are given in moves no
+    Both entry lists are stored sorted. The order they are given in moves no
     identifier. Frames are chosen by frame index alone, and nothing is drawn at
     random.
     """
@@ -271,7 +269,7 @@ def prepare_embedding_data_run_id(params: PrepareEmbeddingDataParams) -> str:
     the files read, and the train-sleap identity digests the labels written.
     """
     return op_run_id(
-        PREPARE_EMBEDDING_KIND,
+        PREPARE_EMBEDDING_DATA_KIND,
         PREPARE_EMBEDDING_VERSION,
         {"params": params.identity_dump()},
     )
@@ -311,12 +309,12 @@ class EmbeddingLabelsFile:
 # planned windows, and how often to print while a file's frames are embedded.
 # Per (frame, track), a user instance is kept over a predicted one, and the last
 # predicted instance over an earlier one, the rule of the analysis export.
-# sleap-nn trains only on user instances, so each kept instance is written as
-# one. Each window becomes its own Video over the source file, and embed=True
+# Each kept instance is written as a user instance, the only kind that sleap-nn
+# trains on. Each window becomes its own Video over the source file, and embed=True
 # copies its frames into the labels file. A window's video opens a reader for
 # each frame it reads and closes it again, since a reader kept open would leave
-# one open per window. The save decodes and encodes every frame, and a thread
-# prints while it runs, so the supervisor sees the snippet alive.
+# one open per window. The save decodes and encodes every frame. A thread prints
+# while it runs, and the supervisor counts each line as activity.
 _WRITE_LABELS_SNIPPET: str = """
 import json
 import os
@@ -565,13 +563,15 @@ def _source_entries(
     parsed = parse_op_run_id(run_id)
     if parsed is None or parsed.kind != SLEAP_KIND:
         msg = (
-            f"[{PREPARE_EMBEDDING_KIND}] sleap_run_id {run_id!r} is not the run id "
+            f"[{PREPARE_EMBEDDING_DATA_KIND}] sleap_run_id {run_id!r} is not the run id "
             f"of a {SLEAP_KIND} run"
         )
         raise PrepareEmbeddingDataInvalid(msg)
     rows = _sleap_run_rows(ds, run_id)
     if not rows:
-        msg = f"[{PREPARE_EMBEDDING_KIND}] no {SLEAP_KIND} run {run_id!r} is indexed"
+        msg = (
+            f"[{PREPARE_EMBEDDING_DATA_KIND}] no {SLEAP_KIND} run {run_id!r} is indexed"
+        )
         raise PrepareEmbeddingDataNotFound(msg)
     finished = finished_rows(rows, run_id, ("group", "sequence"))
 
@@ -581,21 +581,21 @@ def _source_entries(
         row = finished.get(ref.entry)
         if row is None:
             msg = (
-                f"[{PREPARE_EMBEDDING_KIND}] {SLEAP_KIND} run {run_id!r} has no "
+                f"[{PREPARE_EMBEDDING_DATA_KIND}] {SLEAP_KIND} run {run_id!r} has no "
                 f"finished row for entry {key!r}"
             )
             raise PrepareEmbeddingDataNotFound(msg)
         stored = row.get("slp_path", "")
         if not stored:
             msg = (
-                f"[{PREPARE_EMBEDDING_KIND}] entry {key!r} of {SLEAP_KIND} run "
-                f"{run_id!r} has no detections, so there is nothing to cut windows from"
+                f"[{PREPARE_EMBEDDING_DATA_KIND}] entry {key!r} of {SLEAP_KIND} run "
+                f"{run_id!r} has no detections to cut windows from"
             )
             raise PrepareEmbeddingDataNotFound(msg)
         predictions = Path(ds.resolve_path(stored))
         if not predictions.is_file():
             msg = (
-                f"[{PREPARE_EMBEDDING_KIND}] the predictions of entry {key!r} in "
+                f"[{PREPARE_EMBEDDING_DATA_KIND}] the predictions of entry {key!r} in "
                 f"{SLEAP_KIND} run {run_id!r} are gone: {predictions}"
             )
             raise PrepareEmbeddingDataNotFound(msg)
@@ -621,7 +621,7 @@ def _refuse_shared_recordings(ds: Dataset, params: PrepareEmbeddingDataParams) -
         train_entry = trained.get(recording)
         if train_entry is not None:
             msg = (
-                f"[{PREPARE_EMBEDDING_KIND}] train entry "
+                f"[{PREPARE_EMBEDDING_DATA_KIND}] train entry "
                 f"{make_entry_key(*train_entry)!r} and validation entry "
                 f"{make_entry_key(*ref.entry)!r} belong to recording "
                 f"{recording_name(recording)!r}. Validation measures another "
@@ -734,7 +734,7 @@ def _reusable_predictions(
 def _reuse_message(run_id: str, sleap_run_id: str, changed: Sequence[Entry]) -> str:
     named = ", ".join(repr(make_entry_key(*entry)) for entry in changed)
     return (
-        f"[{PREPARE_EMBEDDING_KIND}] reusing {run_id}, but the predictions of "
+        f"[{PREPARE_EMBEDDING_DATA_KIND}] reusing {run_id}, but the predictions of "
         f"{named} in {SLEAP_KIND} run {sleap_run_id!r} changed after it was "
         f"prepared. Run again with overwrite to prepare again."
     )
@@ -779,12 +779,12 @@ class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
     """Cut SLEAP training windows for an embedding model from a sleap tracker run.
 
     Without ``overwrite``, a finished preparation whose two labels files are
-    still there is reused. The labels embed their frames, so a swept tracker
+    still there is reused. The labels embed their frames. A swept tracker
     output leaves the preparation valid, and a predictions file that changed
     since is named in a warning.
     """
 
-    kind = PREPARE_EMBEDDING_KIND
+    kind = PREPARE_EMBEDDING_DATA_KIND
     category = "convert"
     domain = "tracking"
     version = PREPARE_EMBEDDING_VERSION

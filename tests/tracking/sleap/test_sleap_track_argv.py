@@ -437,7 +437,7 @@ def test_predict_sends_the_models_in_order(tmp_path: Path, launched: Launched) -
 def test_predict_sends_the_batch_size_only_when_it_is_not_the_default(
     tmp_path: Path, launched: Launched
 ) -> None:
-    """``-b`` also sets the embedder's crop batch, so the default leaves it off."""
+    """The default batch size sends no ``-b``, which sets the embedder's batch too."""
     run_sleap_predict(tmp_path / "v.mp4", tmp_path / "out.slp", model_paths=["m"])
     assert "-b" not in launched.args
     assert "--batch_size" not in launched.args

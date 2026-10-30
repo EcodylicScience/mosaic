@@ -2,7 +2,8 @@
 
 This module wraps the SLEAP command-line interface, enabling mosaic to run
 ``sleap-nn track`` inference + tracking headlessly against a pre-trained SLEAP
-model and bridge the results into standardized tracks.
+model, or ``sleap-nn predict`` appearance tracking when the last model is an
+embedding model, and bridge the results into standardized tracks.
 
 Requires:
     The ``sleap-nn`` / ``sleap-convert`` console scripts of a SLEAP 1.6 install

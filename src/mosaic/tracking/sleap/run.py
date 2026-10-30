@@ -1,8 +1,10 @@
 """Run SLEAP from the command line for inference + identity tracking.
 
-This module wraps two console scripts: ``sleap-nn track``, for headless batch
-pose inference + tracking of animal videos, and ``sleap-convert``, for the
-analysis HDF5 export that mosaic bridges into standardized tracks. A snippet run
+This module wraps two console scripts: ``sleap-nn``, for headless batch pose
+inference + tracking of animal videos, and ``sleap-convert``, for the analysis
+HDF5 export that mosaic bridges into standardized tracks. Inference runs
+``sleap-nn track``, or ``sleap-nn predict`` when the last model is an embedding
+model, which tracks by appearance and saves each detection's vector. A snippet run
 by the SLEAP interpreter reads the tracked instances of a predictions file and
 their appearance vectors back (:func:`read_back_embeddings`).
 
@@ -75,7 +77,7 @@ SLEAP_DEFAULT_BATCH_SIZE: Final = 4
 _SLEAP_CONVERT: str = "sleap-convert"
 
 SleapCandidatesMethod = Literal["fixed_window", "local_queues"]
-"""Where ``sleap-nn track`` draws match candidates from: every instance of the
+"""Where the SLEAP tracker draws match candidates from: every instance of the
 last few frames, or the last few instances of each track."""
 
 SleapFeatures = Literal["keypoints", "centroids", "bboxes", "image", "embeddings"]
@@ -86,10 +88,10 @@ taken only by a run whose last model is one.
 """
 
 SleapScoringMethod = Literal["oks", "cosine_sim", "iou", "euclidean_dist"]
-"""How ``sleap-nn track`` scores the association between those features."""
+"""How the SLEAP tracker scores the association between those features."""
 
 SleapMatchingMethod = Literal["hungarian", "greedy"]
-"""How ``sleap-nn track`` assigns detections to tracks from those scores."""
+"""How the SLEAP tracker assigns detections to tracks from those scores."""
 
 # The device families sleap-nn names as they are. A CUDA index is the other
 # spelling mosaic accepts, and is translated.
@@ -266,7 +268,7 @@ def _run_sleap(
 
 
 def sleap_track_device_args(device: str | None) -> list[str]:
-    """The ``-d`` argument that puts ``sleap-nn track`` on *device*.
+    """The ``-d`` argument that puts ``sleap-nn track`` or ``predict`` on *device*.
 
     sleap-nn takes one torch device string, where the rest of mosaic spells a
     device as a family name or a bare CUDA index. Sent through as it is, ``"0"``
@@ -297,7 +299,7 @@ def sleap_track_device_args(device: str | None) -> list[str]:
     families = ", ".join(sorted(_DEVICE_FAMILIES))
     msg = (
         f"unusable device {device!r}: give 'auto', one of {families}, a CUDA "
-        "index such as '0', or 'cuda:<index>'. sleap-nn track runs on one "
+        "index such as '0', or 'cuda:<index>'. sleap-nn runs inference on one "
         "device, so a list of them is refused."
     )
     raise ValueError(msg)
@@ -529,10 +531,12 @@ def run_sleap_predict(
     are the detection models. The run tracks by the cosine similarity of the
     appearance vectors, matches against the last instances of each track, and
     saves the vectors into the predictions ``.slp``. Every one of those options
-    is sent, so no sleap-nn default can move under an unchanged run id. The batch
+    is sent. A sleap-nn release that changes a default then changes no output
+    under an unchanged run id. The batch
     size is sent as ``-b`` only when it differs from
     :data:`SLEAP_DEFAULT_BATCH_SIZE`. ``-b`` also sets the embedding stage's crop
-    batch, which is 64 without it, so the default leaves the embedder at 64.
+    batch, which is 64 without it. The default batch size leaves the embedder
+    at 64.
 
     Args:
         video_path: Input video file, passed as ``-i``.
@@ -776,7 +780,7 @@ def read_back_embeddings(
 
     The SLEAP interpreter writes ``<out>.partial``, which is checked with
     :func:`~mosaic.core.track_library.sleap.read_appearance_readback` and then
-    moved onto *out* with ``os.replace``. *out* is removed first, so a failed
+    moved onto *out* with ``os.replace``. *out* is removed first. A failed
     readback leaves neither file.
 
     Args:

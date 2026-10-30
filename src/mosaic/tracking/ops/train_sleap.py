@@ -145,7 +145,7 @@ _SLEAP_OVERRIDES_DESCRIPTION = (
     "which leaves the run identity alone. An embedding run sizes its crops "
     "from the labels, and data_config.preprocessing.crop_size sets the size. "
     "sleap-nn raises trainer_config.train_steps_per_epoch to "
-    "trainer_config.min_train_steps_per_epoch without a message, so a shorter "
+    "trainer_config.min_train_steps_per_epoch without a message. A shorter "
     "epoch sets both."
 )
 
@@ -186,8 +186,8 @@ def embedding_objective(labels: str) -> EmbeddingObjective:
 
     Labels named by a ``prepare-embedding-data`` run id take that preparation's
     objective. Any other run id, a path, and a pre-version id take sleap-nn's
-    default. The labels reference enters the run id, so the run id names the
-    objective that trained.
+    default. The run id names the objective that trained, because the labels
+    reference enters it.
     """
     if _labels_kind(labels) == PREPARE_EMBEDDING_DATA_KIND:
         return PREPARED_EMBEDDING_OBJECTIVE
@@ -249,7 +249,8 @@ def _training_document(
     overrides: dict[str, JsonValue] = dict(params.sleap_overrides or {})
     for key, value in sleap_device_overrides(params.device).items():
         overrides.setdefault(key, value)
-    # The bag refuses these keys, so there is nothing here to defer to.
+    # These keys are set with update, because the bag refuses them and no
+    # override can name them.
     overrides.update(sleap_loader_overrides(params.num_workers))
     return config, overrides
 
@@ -360,6 +361,16 @@ def _refuse_untrainable_labels(
         track_by = "" if row is None else row.get("track_by", "")
         if planning and kind == PREPARE_KIND and not track_by:
             track_by_deferred = True
+        elif row is not None and not track_by:
+            msg = (
+                "An embedding run with positive scope 'global_id' needs labels "
+                'from a prepare-training-data run with track_by="alias", and '
+                f"{params.labels} records no track_by. It was prepared without "
+                "it, or before the index recorded the column. Running "
+                "prepare-training-data again with the same params records "
+                'track_by="alias" on a run that set it.'
+            )
+            raise TrainSleapInvalid(msg)
         elif track_by != "alias":
             msg = (
                 "An embedding run with positive scope 'global_id' needs labels "
@@ -372,8 +383,8 @@ def _refuse_untrainable_labels(
         msg = (
             "An embedding run with positive scope 'tracklet' needs labels from "
             "a prepare-embedding-data run. A mosaic annotation preparation "
-            "merges recordings into one SLEAP video per image size, so its "
-            "tracks are not per-video tracks."
+            "merges recordings into one SLEAP video per image size. Its tracks "
+            "are not per-video tracks."
         )
         raise TrainSleapInvalid(msg)
     if validation_labels_beside(labels_path) is None:
@@ -499,8 +510,8 @@ class TrainSleapOp(Op[TrainSleapParams]):
         :func:`~mosaic.tracking.ops.train.planned_train_identity`. It defers
         the same way on a preparation whose ``track_by`` cell is still blank.
 
-        The document is built before the run id exists, so the kind's model
-        root stands in for the run root and the base reference for its weights.
+        The document is built before the run id exists. The kind's model root
+        stands in for the run root, and the base reference for its weights.
         No check reads a path.
         """
         labels_path = resolve_training_data(ds, params.labels)
@@ -585,7 +596,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
         # After the reuse gate and before the root is claimed. A cache hit pays
         # for no cold import, and a refusal is a message rather than a claim
         # left behind on a run that was never going to start. The probe reports
-        # and the refusals below are mosaic's, so all are decided here without
+        # and the refusals below are mosaic's. All are decided here without
         # importing anything the SLEAP environment owns.
         run_root = model_run_root(ds, self.kind, run_id)
         config, overrides = _training_document(

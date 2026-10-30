@@ -265,7 +265,9 @@ def test_the_config_states_the_preprocessing_sleap_nn_reads_unmerged() -> None:
         ("embedding", {"embedding"}),
     ],
 )
-def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> None:
+def test_every_head_names_its_output_sections(
+    head: SleapHead, sections: set[str]
+) -> None:
     """An empty head block is not a defaulted one, and sleap-nn cannot start from it.
 
     sleap-nn merges this config over its own structured one, where each section
@@ -278,7 +280,7 @@ def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> 
     config = sleap_train_config(
         Path("session.slp"),
         Path("/runs/r1"),
-        head=head,  # pyright: ignore[reportArgumentType]
+        head=head,
         backbone="unet",
         max_epochs=1,
         seed=1,
@@ -291,7 +293,7 @@ def test_every_head_names_its_output_sections(head: str, sections: set[str]) -> 
     assert set(written) == {head}
     assert set(written[head]) == sections
     if head in _POSE_HEADS:
-        assert all(value == {} for value in written[head].values())  # pyright: ignore[reportAttributeAccessIssue]
+        assert all(value == {} for value in written[head].values())
 
 
 _POSE_CONFIGS_GOLDEN: Final = "sleap_pose_head_configs.json"
@@ -352,7 +354,7 @@ def test_every_pose_head_document_is_unchanged(
 ) -> None:
     """A pose head's document is byte for byte the one stored in the golden file.
 
-    A train-sleap run id does not hash the document, so a changed document
+    A train-sleap run id does not hash the document. A changed document
     would train a different model under an unchanged identifier.
     """
     documents = _pose_documents()
@@ -442,7 +444,7 @@ def test_the_embedding_leaf_takes_its_stride_from_the_backbone(
 def test_the_embedding_leaf_writes_every_objective_term(
     objective: EmbeddingObjective, terms: dict[str, JsonValue]
 ) -> None:
-    """Every term is written, so the run id names the objective that trained."""
+    """The run id names the objective that trained, because every term is written."""
     leaf = dotted_values(_embedding_document(objective=objective))
     prefix = f"{_EMBEDDING_LEAF}.objective."
     written = {
@@ -759,11 +761,18 @@ def test_global_id_on_a_preparation_not_named_by_alias_is_refused(
 
     The plan cannot: a recipe that runs an older preparation again fills the
     cell before training starts. It defers the step under *require_data*, and
-    without it leaves the check to the run.
+    without it leaves the check to the run. The refusal names both readings of
+    the blank cell and the run that fills it.
     """
     ds, labels, seen = _embedding_setup(tmp_path, monkeypatch, _PREPARE_TRAINING_DATA)
     params = _embedding_params(labels, {_DECLARATION: True})
-    _assert_refused(ds, params, seen, 'track_by="alias"', by_plan=False)
+    _assert_refused(
+        ds,
+        params,
+        seen,
+        r"records no track_by.*before.*recorded.*again with the same params",
+        by_plan=False,
+    )
     validated = TrainSleapParams.model_validate(params)
     with pytest.raises(IdentityDeferred, match="track_by"):
         _ = TrainSleapOp().plan_identity(ds, validated, ds.resolve_scope(None))
@@ -1423,7 +1432,7 @@ def test_a_base_of_another_head_is_refused_before_the_run_root_is_made(
 def test_an_embedding_run_fine_tunes_from_an_embedding_base(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An embedding base is a training of the embedding head, so it matches."""
+    """An embedding base matches, because it is a training of the embedding head."""
     ds, labels, seen = _embedding_setup(tmp_path, monkeypatch)
     base = run_op(ds, "train-sleap", _embedding_params(labels))
     seen.clear()

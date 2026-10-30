@@ -27,7 +27,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
-from mosaic.tracking.sleap.dataset_runs import run_sleap, sleap_settings
+from mosaic.tracking.sleap.dataset_runs import (
+    run_sleap,
+    sleap_nn_command,
+    sleap_settings,
+)
 from mosaic.tracking.sleap.params import SLEAP_MODEL, SleapParams
 from mosaic.tracking.sleap.version import SLEAP_KIND, SLEAP_VERSION
 
@@ -54,7 +58,7 @@ class SleapOp(Op[SleapParams]):
     Params = SleapParams
 
     def target(self, params: SleapParams, scope: ResolvedScope) -> str:
-        return "sleap-nn track"
+        return sleap_nn_command(params)
 
     def plan_identity(
         self,

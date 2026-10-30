@@ -93,7 +93,8 @@ _MAX_TRACKS_DESCRIPTION = (
 _PEAK_THRESHOLD_DESCRIPTION = "The minimum confidence for a detected peak."
 
 _SLEAP_EXTRA_SETTINGS_DESCRIPTION = (
-    "Additional sleap-nn track options, sent as --key value pairs. A boolean "
+    "Additional sleap-nn track options, or sleap-nn predict options on an "
+    "embedding run, sent as --key value pairs. A boolean "
     "value becomes a bare --key flag when true and is omitted when false, and a "
     "None value is skipped."
 )
@@ -122,8 +123,8 @@ class SleapParams(TrackerOpParams, MediaInputParams):
     # centered-instance). Part of the run_id identity -- via a content digest of
     # the weights, never the paths themselves.
     model_paths: Annotated[list[str], Declared(_MODEL_PATHS_DESCRIPTION)]
-    # tracking (part of the run_id identity). Named for the sleap-nn track
-    # options they are sent as; the defaults are sleap-nn track's own (no
+    # tracking (part of the run_id identity). Named for the sleap-nn options
+    # they are sent as; the defaults are sleap-nn track's own (no
     # optical flow, fixed-window candidates, keypoint OKS, hungarian matching, a
     # five-frame window).
     tracking: Annotated[bool, Declared(_TRACKING_DESCRIPTION)] = True

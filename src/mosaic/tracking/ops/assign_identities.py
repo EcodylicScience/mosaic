@@ -5,10 +5,10 @@ prototype per identity from named reference tracks, and writes a variant whose
 tracklets take the identity whose prototype they resemble. The arithmetic lives
 in :mod:`mosaic.core.pipeline.appearance_assignment`.
 
-The params name the source variant, so the identity is a function of the params
-alone and is minted without reading the dataset. The source is an ``upstream``
+The params name the source variant. The identity is therefore a function of the
+params alone and is minted without reading the dataset. The source is an ``upstream``
 term of both identifiers, as for ``resample-tracks``. The op reads tables and
-opens no video, so its rows are written with ``records_media=False``.
+opens no video. Its rows are written with ``records_media=False``.
 
 The relabeled table keeps every source row. ``id`` is the assigned identity's
 position among the sorted identity names, or a distinct negative id from -2 down
@@ -175,7 +175,7 @@ def _reference_order(ref: IdentityReference) -> tuple[str, str, str, bool, int]:
 class AssignIdentitiesParams(Params):
     """Declares the source variant, the references and the assignment thresholds.
 
-    The references are stored sorted, so the order they are given in moves no
+    The references are stored sorted. The order they are given in moves no
     identifier.
     """
 
@@ -196,8 +196,8 @@ class AssignIdentitiesParams(Params):
     ) -> list[IdentityReference]:
         """Sort the references, and refuse one given twice or one track named twice.
 
-        A reference with an unset id names every track of its entry, so a track of
-        that entry named for another identity is named twice.
+        A reference with an unset id names every track of its entry. A track of
+        that entry named for another identity is then named twice.
         """
         ordered = sorted(value, key=_reference_order)
         named: dict[tuple[Entry, int | None], str] = {}

@@ -661,7 +661,7 @@ def _sleap_run_id_settings(media: str = "") -> str:
 def _sleap_run_id_settings_embedding() -> str:
     """The identifier that ``sleap_settings`` mints for an embedding model set.
 
-    An embedding run passes the same keys with its tracker values, so this pins
+    An embedding run passes the same keys with its tracker values. This pins
     those values as :func:`_sleap_run_id_settings` pins the key set.
     """
     from mosaic.tracking.sleap.dataset_runs import sleap_run_id, sleap_settings

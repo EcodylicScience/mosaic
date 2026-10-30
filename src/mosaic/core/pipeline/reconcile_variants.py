@@ -15,11 +15,11 @@ having changed -- a pure re-address. A digest that moves under the *current* sch
 is a recorded recipe not reproducing its own identifier, which is declined rather
 than guessed at.
 
-No current producer passes the ``upstream`` term (the reserved seam for a chained
-or derived producer), so a variant's identity has no reconciled upstream and these
-reconcilers declare none. When a derived producer lands, its sidecar must record
-its upstream and this module must read it -- until then, reconstructing the payload
-without one is correct for every variant on disk.
+``resample-tracks``, ``assign-arenas`` and ``assign-identities`` pass the
+``upstream`` term, the source variant, and their sidecars do not record it. The
+recompute here omits the term. The digest of such a variant then moves under the
+current scheme, and the variant is reported and not moved. These reconcilers
+declare no upstream.
 """
 
 from __future__ import annotations
@@ -127,9 +127,9 @@ def _classify_variant(
     """Classify a variant by comparing recorded and recomputed digests.
 
     The digest is machinery-governed; the version is a visible bump. A moved digest
-    is honest only when the scheme moved (the machinery changed) -- there is no
-    upstream to explain it otherwise, since no variant carries an ``upstream``
-    term today -- so a digest that moved under the current scheme is declined.
+    is a re-address only when the scheme moved, because the recompute reads no
+    ``upstream`` term that could explain it otherwise. A digest that moved under
+    the current scheme is declined.
     """
     old = parse_op_run_id(recorded_run_id)
     new = parse_op_run_id(new_run_id)

@@ -451,7 +451,7 @@ def test_a_vector_without_a_placed_row_is_refused_before_any_write(
 def test_a_publication_interrupted_after_the_appearance_write_records_no_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The appearance table is written first, so a row never names a missing one."""
+    """A row never names a missing appearance table, which is written first."""
     ds = make_dataset(tmp_path)
 
     def interrupted(df: pd.DataFrame, path: Path) -> int:

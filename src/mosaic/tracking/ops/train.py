@@ -294,7 +294,7 @@ def write_training_provenance(
     run that has otherwise finished.
 
     *tool_version* is the training tool's release, written as ``tool_version``
-    only when it is not empty, so the document of an op that passes none keeps
+    only when it is not empty. The document of an op that passes none keeps
     its keys.
     """
     document: dict[str, object] = {

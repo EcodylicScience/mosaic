@@ -158,6 +158,9 @@ src/mosaic/
   core/                         Dataset, manifest, schema, Params, Scope, converters
   core/pipeline/                run_feature, indexes, locks, inventory, ops, placement
   core/pipeline/graph/          a pipeline as a JSON recipe: validate, plan, run a step
+  core/pipeline/appearance.py   the appearance table beside a tracks table
+  core/pipeline/appearance_assignment.py
+                                prototypes, tracklets and assignment (numpy)
   core/media/                   frame read/decode/encode; preprocess media steps
   core/track_quality.py         the criteria that flag track rows and frames
   behavior/feature_library/     registered features; sandboxed kpms and VAME runners

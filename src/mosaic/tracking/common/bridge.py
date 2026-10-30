@@ -246,8 +246,8 @@ def publish_tracks_table(
         appearance: The entry's appearance table, keyed by *df*'s ``(frame,
             id)`` on the same axes as *df*, or ``None``. It is placed by
             *axis* like *df*, checked against the placed table, and written
-            before the tracks table, so a row never names a missing appearance
-            table. The row records its path.
+            before the tracks table. A row then never names a missing
+            appearance table. The row records its path.
 
     Returns:
         Counts of the published table, and every column dropped from it.

@@ -69,6 +69,9 @@ training then succeeds and produces a model that learned none. Annotations reach
 mosaic as COCO carry identity in each annotation's `track_id`; CVAT point exports
 carry none, so a set built from one trains the other four heads only.
 
+The `embedding` head trains a model that tells animals apart by how they look. See
+[Train an embedding model](#train-an-embedding-model).
+
 ## 4. Use it
 
 Either run the model directly over scoped videos, which bridges into `tracks/` like a
@@ -293,6 +296,68 @@ Prints the prepared dataset behind the model, the pose that dataset was narrowed
 and each annotation revision behind it, with whatever was recorded when the revision
 was saved. If a dataset it drew from has since been archived, the answer says which
 revisions are no longer on disk.
+
+## Train an embedding model
+
+`head: "embedding"` trains a network that maps the crop of each detection to an
+appearance vector. It predicts no pose and runs only as the last model of a `sleap`
+model list, after the detection models.
+[Identify individuals by appearance](../analysis/identify-individuals.md) shows the whole
+path. It needs sleap-nn 0.3.5 or later. An embedding model fine-tunes only from an
+embedding base, and an embedding base fits no other head.
+
+The objective of the training is contrastive: crops of one individual are pulled
+together, and crops of different individuals are pushed apart. The scope names what counts
+as one individual:
+
+| Scope | Crops of the same individual are | Labels it needs |
+| --- | --- | --- |
+| `tracklet` | Crops of one track in one window | A `prepare-embedding-data` run |
+| `global_id` | Crops with the same track name in any video | A `prepare-training-data` run with `track_by="alias"`, and the declaration below |
+| `aug_view` | Two augmented views of one crop | Any labels |
+
+Labels from `prepare-embedding-data` train with the `tracklet` scope, and all other
+labels with `global_id`. A scope is set at the key
+`model_config.head_configs.embedding.embedding.objective.positives.scope`, in
+`sleap_overrides`.
+
+`global_id` rests on a claim that only you can make: each track name is one individual in
+every video. The meaning of an alias differs between datasets. mosaic asks you to say it:
+
+```json
+{"head": "embedding", "labels": "prepare-training-data.0.3-<digest>",
+ "sleap_overrides": {"data_config.identity.track_names_are_global": true}}
+```
+
+The run refuses, before it starts, each of these:
+
+- `global_id` without that declaration.
+- `global_id` on labels other than a `prepare-training-data` run with `track_by="alias"`.
+  A path to a `.slp` is refused, because mosaic cannot read how its tracks were named. A
+  preparation made before `track_by` was recorded fills it when you run it again.
+- `tracklet` on labels other than a `prepare-embedding-data` run. A mosaic annotation
+  preparation merges recordings into one SLEAP video per image size. Its tracks are not
+  per-video tracks.
+- `tracklet` with `negatives.restrict_same_video` other than `true`, which would draw the
+  same animal from another window as a negative.
+- `global_id` or `tracklet` on labels with fewer than two tracks.
+- Labels with no validation file beside them. The run validates on `labels.val.slp` and
+  takes no `validation_fraction` split, because a random split puts frames of one track on
+  both sides and inflates the retrieval score. `prepare-embedding-data` writes the file.
+- A `device` that names more than one CUDA index, and a `trainer_config.trainer_devices`
+  other than 1.
+
+sleap-nn sizes the crop from the labels. If it clips animals, set
+`data_config.preprocessing.crop_size` in `sleap_overrides`. In
+[a measured run on four mice](../analysis/identify-individuals.md#how-well-it-separates),
+the automatic 256 pixel crop clipped 12 of 15,360 instances, and 288 pixels contained
+all of them. A shorter epoch needs both `trainer_config.train_steps_per_epoch` and
+`trainer_config.min_train_steps_per_epoch`, because sleap-nn raises the first to the
+second without a message.
+
+The run trains with light augmentation: rotation of up to 10 degrees and a 5% shift, and
+no flips, erasing or intensity changes. Those would remove appearance cues that the
+model learns. These are the values of that run, and a starting point.
 
 ## Augmentation is opt-in
 

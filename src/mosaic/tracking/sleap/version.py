@@ -61,7 +61,8 @@ entry points cannot drift into naming one run two ways.
 SLEAP_NN_EMBEDDING_MIN: Final = "0.3.5"
 """The oldest sleap-nn release that trains and predicts with an embedding model.
 
-0.3.4 shipped the model type, and 0.3.5 is the release the embedding trial ran.
+0.3.4 shipped the model type, and 0.3.5 is the oldest release measured with an
+embedding model.
 The installed release is provenance and enters no identifier.
 """
 
@@ -69,7 +70,7 @@ The installed release is provenance and enters no identifier.
 def require_sleap_nn_at_least(probe: SleapProbeResponse, minimum: str) -> None:
     """Refuse a sleap-nn release older than *minimum*.
 
-    Compares the leading release numbers, so a pre-release of *minimum* such as
+    Compares the leading release numbers. A pre-release of *minimum* such as
     ``0.3.5rc1`` is accepted.
 
     Args:

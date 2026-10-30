@@ -2,7 +2,7 @@
 
 Every case uses synthetic vectors. A tracklet takes its best identity when the
 score and margin pass both thresholds and no co-present tracklet of the entry
-already holds that identity. Orders are fixed by sorted keys, so shuffled rows
+already holds that identity. Sorted keys fix every order, and shuffled rows
 give the same result.
 """
 
@@ -65,7 +65,7 @@ class TestPrototypes:
         np.testing.assert_allclose(result.matrix[1], _unit(1.0, 1.0), rtol=1e-6)
 
     def test_a_prototype_does_not_depend_on_the_reference_row_order(self) -> None:
-        # 1 + 1e-17 rounds to 1, so an unsorted x sum is 0 in some orders and
+        # 1 + 1e-17 rounds to 1. An unsorted x sum is then 0 in some orders and
         # 1e-17 in others, and float32 holds 1e-17.
         rows = np.array([[1.0, 0.0], [1e-17, 1.0], [-1.0, 0.0]])
         results = [

@@ -4,7 +4,7 @@ A prototype is the normalized mean of an identity's normalized reference vectors
 A source track splits into tracklets at gaps longer than ``max_gap`` frames, and
 each tracklet is scored by its mean cosine to every prototype. :func:`assign`
 gives each tracklet its best identity unless a threshold fails or a co-present
-tracklet already holds that identity. Sorted keys fix every order, so the result
+tracklet already holds that identity. Sorted keys fix every order, and the result
 does not depend on row order. The module uses numpy alone.
 """
 
@@ -103,8 +103,8 @@ def prototypes(vectors_by_identity: Mapping[str, FloatMatrix]) -> Prototypes:
 
     Each vector is normalized, the identity's mean is taken in float64 and the
     mean is normalized. The rows are summed in lexicographic order of their
-    values, so the prototype does not depend on the reference row order and a
-    caller need not sort the rows by ``(group, sequence, frame, id)``.
+    values. The prototype then does not depend on the reference row order, and
+    a caller need not sort the rows by ``(group, sequence, frame, id)``.
 
     Args:
         vectors_by_identity: Each identity's reference vectors, ``(n, D)``.

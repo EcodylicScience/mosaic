@@ -332,11 +332,11 @@ TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
 )
 """Path-bearing columns beyond ``abs_path``.
 
-Named here because both of ``Dataset``'s path-rewriting passes read raw CSVs and
-have no row class to ask. A new path column on :class:`TracksIndexRow` belongs in
-this tuple, or it silently stops being portable -- which is what happened to
-``source_abs_path`` itself until now. ``consumed_source_roots`` is deliberately
-absent: it holds root *keys*, which are machine-independent already.
+Named here because ``Dataset``'s two path-rewriting passes and the tracks
+reconciler read raw CSVs and have no row class to ask. A path column of
+:class:`TracksIndexRow` missing from this tuple keeps its old path after a
+reindex, a relocation or a re-address. ``consumed_source_roots`` is absent
+because it holds root keys, which no machine move changes.
 """
 
 _ROOT_SEPARATOR: Final = ","

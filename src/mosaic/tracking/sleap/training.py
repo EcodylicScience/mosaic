@@ -153,8 +153,8 @@ video."""
 class EmbeddingObjective:
     """The contrastive objective of an embedding head, every term of it.
 
-    The document states every term rather than leaving any to sleap-nn, so a
-    run id names the objective that trained even when a later sleap-nn release
+    The document states every term rather than leaving any to sleap-nn. A
+    run id then names the objective that trained even when a later sleap-nn release
     changes a default.
     """
 
@@ -224,8 +224,8 @@ PREPARED_EMBEDDING_OBJECTIVE: Final = EmbeddingObjective(
 )
 """The objective for labels that a ``prepare-embedding-data`` run cut.
 
-Their tracks are a tracker's tracks, one video each, so positives are the crops
-of one track and negatives come from the same video.
+Their tracks are a tracker's tracks, one video each. Positives are the crops of
+one track, and negatives come from the same video.
 """
 
 _EMBEDDING_AUGMENTATION: Final[dict[str, JsonValue]] = {
@@ -329,7 +329,7 @@ def sleap_train_config(
     The ``embedding`` head's leaf holds the vector length, the backbone's
     output stride and every term of *objective*. No other head reads
     *objective*, and its default suits only labels that no
-    ``prepare-embedding-data`` run cut, so a caller building an embedding
+    ``prepare-embedding-data`` run cut. A caller building an embedding
     document chooses it with
     :func:`mosaic.tracking.ops.train_sleap.embedding_objective`. That head's
     document also declares track names per video, augments, and trains on one
@@ -464,8 +464,8 @@ _HYDRA_WORDS: Final = frozenset({"true", "false", "null", "inf", "nan"})
 _QUOTED_ESCAPES: Final = re.compile(r"(\\*)(\$\{|'|$)")
 """What a single-quoted Hydra string escapes, with the backslashes before it.
 
-A quote ends the string and ``${`` starts an interpolation, so each takes a
-backslash. A run of backslashes before either, or at the end, is doubled.
+Each takes a backslash, because a quote ends the string and ``${`` starts an
+interpolation. A run of backslashes before either, or at the end, is doubled.
 """
 
 
@@ -528,8 +528,8 @@ def effective_train_config(
     creates the mappings above its path, replacing a value that is not a
     mapping. A ``~`` key deletes the path.
 
-    Every override that Hydra rejects is refused here instead, so it is refused
-    before a run is claimed. Struct mode refuses a bare key whose path, or any
+    Every override that Hydra rejects is refused here, before a run is
+    claimed. Struct mode refuses a bare key whose path, or any
     key its mapping value would add, the running document does not hold. A
     path through a list is refused, although Hydra reads a numeric name there
     as a list index. The device-count refusal covers deletion only: the device

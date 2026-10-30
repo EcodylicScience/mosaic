@@ -8,6 +8,62 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: appearance re-identification with SLEAP embedding models
+
+**`train-sleap` trains an embedding model.** `head` gains `embedding`, a network that
+maps the crop of each detection to an appearance vector. It needs sleap-nn 0.3.5 or
+later and trains on one device. Before the claim, the run refuses the scopes and labels
+that cannot train: `global_id` without the declaration that each track name is one
+individual in every video, or on labels that are not a `prepare-training-data` run with
+`track_by="alias"`; `tracklet` on labels that are not a `prepare-embedding-data` run, or
+without `restrict_same_video`; fewer than two tracks; labels with no validation file;
+and more than one device. An embedding model fine-tunes only from an embedding base.
+`train-sleap` stays at 0.3, and no existing run id moves.
+
+**`prepare-embedding-data` and `assign-identities`.** `prepare-embedding-data` cuts short
+training windows from a `sleap` tracker run into a training file and a validation file.
+The two lists share no recording, and the sequences of a divided recording are one
+recording. `assign-identities` builds one prototype per named identity from reference
+tracks and writes a tracks variant whose `identity` column names the same individual in
+every video. An assigned tracklet's `id` is its identity's position among
+the sorted names, and an unassigned tracklet takes a negative `id` numbered within its
+entry. A downstream step names the relabeled variant with `tracks_run_id`, because the
+source and the relabeled variant both contain every entry. Each relabeled row records its
+source's `first_frame`, and its `consumed_composition` folds into the source's cell a
+digest of the entry's tracks and appearance tables and of every reference entry's
+composition, first frame and tables. A direct run writes a table again when any of them
+changes. A recipe step treats a variant that covers its scope as done, so it recomputes
+only with `overwrite`.
+The variant is minted through `chained_variant_payload`, as `resample-tracks` and
+`assign-arenas` mint theirs.
+
+**Appearance tables.** A `sleap` model list that ends in an embedding model tracks by
+appearance with `features="embeddings"`, `scoring_method="cosine_sim"` and
+`candidates_method="local_queues"`, and writes `tracks/<variant>/appearance/<entry>.parquet`
+beside each tracks table. The tracks index gains the trailing column
+`appearance_abs_path`, after `first_frame`, blank on a row without a table and on every
+older row. The appearance table is placed on the recording's frame axis with its tracks
+table, and is published again with it when the sequence's first frame moves.
+`mosaic reindex` and relocation rewrite it, and a coordinate change keeps the vectors
+(`emb_` columns). The sleap index gains the column `n_vectors_unmatched`, the count of
+vectors dropped for detections without a tracks row. The column is blank on older rows
+and on runs without an embedding model, and is kept from the recorded row when a rerun
+reuses the table. An entry with no detections publishes empty tables. An embedding
+run allows each entry silence in proportion to its frames, and never less than
+`idle_timeout`.
+
+**`track_by` column.** A `prepare-training-data` index row records `track_by`, blank on
+rows written before the column. A rerun of an older preparation fills it.
+
+**Stale model directory.** `train-sleap` removes `run_root/model` before it trains, for
+every head. Under `overwrite` or a retry, sleap-nn used to write `model-1` beside the
+stale directory, and mosaic registered the stale one.
+
+**No existing run id moves.** The `sleap` run id, the tracks variant, the
+`prepare-training-data` run id and the feature run ids are byte identical. The new
+columns and the provenance recorded in a variant's `params.json` are not part of any
+identifier.
+
 ## Unreleased: two tracks variants of one entry through the graph
 
 **No identifier moves.**

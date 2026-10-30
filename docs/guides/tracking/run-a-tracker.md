@@ -54,7 +54,7 @@ for. The four differ, because the tools do:
 | Tracker | Parameter | Reaches the tool as |
 | --- | --- | --- |
 | `trex` | `convert_extra_settings`, `track_extra_settings` | entries in TRex's settings, one dictionary per phase |
-| `sleap` | `sleap_extra_settings` | `--key value` arguments appended to `sleap-nn track` |
+| `sleap` | `sleap_extra_settings` | `--key value` arguments appended to `sleap-nn track`, or to `sleap-nn predict` on an embedding run |
 | `litpose` | `litpose_overrides` | Hydra `key=value` overrides on the model's own config |
 | `ultralytics` | `tracker_overrides` | fields of the tracker backend's config table |
 
@@ -63,6 +63,50 @@ Python API rather than a console verb, so an override edits the model's Hydra
 configuration and its keys are config paths rather than flags.
 
 Whatever a passthrough carries is part of the `run_id` like any other parameter.
+
+## Track by appearance
+
+A `sleap` model list whose last model is an embedding model (see
+[Train an embedding model](train-a-pose-model.md#train-an-embedding-model)) makes an
+embedding run. sleap-nn then tracks by how each detection looks and saves a vector for it.
+The models before the embedding model detect: one single-instance or bottom-up model, or
+a centroid model followed by a centered-instance model. It needs sleap-nn 0.3.5 or later.
+
+```bash
+mosaic track sleap -m dataset.yaml \
+    --set 'model_paths=["<detection model run id>", "<embedding model run id>"]' \
+    --set features=embeddings --set scoring_method=cosine_sim \
+    --set candidates_method=local_queues
+```
+
+Set the three settings yourself. These are the settings appearance tracking was measured
+with, and the run refuses any other values. It also refuses an
+embedding model that is not last, `tracking=false`, `use_flow=true`,
+`convert_to_tracks=false` and a `multi_class_` model, whose identity classes the
+appearance tracker would override. `features=embeddings` without an embedding model is
+refused too.
+
+sleap-nn's `--link_tracklets` goes through the passthrough:
+`--set 'sleap_extra_settings={"link_tracklets": true}'`. On the recordings of
+[a measured run on four mice](../analysis/identify-individuals.md#how-well-it-separates)
+it changed no track.
+
+**An embedding run is silent while it embeds.** sleap-nn prints a progress bar while it
+detects and nothing while it embeds, which took about 20 minutes for a 54,000-frame
+entry. The run therefore allows each entry `max(idle_timeout, 0.05 s x frames)` of
+silence, and a slower GPU needs a larger `idle_timeout`. `batch_size` left at its default
+detects four frames at a time and embeds 64 crops at a time, and any other value sets
+both.
+
+Beside each tracks table the run publishes an appearance table,
+`tracks/<variant>/appearance/<group>__<sequence>.parquet`. It has one row for each
+tracked detection, keyed by the tracks table's `frame` and `id`, with the vector in
+float columns `emb_0`, `emb_1` and on. The tracks index records its path in
+`appearance_abs_path`. Read one with `read_appearance(ds, variant, entry)` from
+`mosaic.core.pipeline.appearance`, which returns `None` for an entry without a table.
+An entry in which sleap-nn finds no detection gets an empty tracks table and an empty
+appearance table. [Identify individuals by appearance](../analysis/identify-individuals.md)
+uses the tables to name the animals.
 
 ## From Python
 

@@ -257,9 +257,9 @@ print(f"sleap_io read frame 0 with shape {frame.shape}")
 )
 """SLEAP's decode probe, which reads frame 0 with ``sleap_io.load_video``.
 
-``sleap-nn track`` reads video through sleap-io, and sleap-io reads through OpenCV
-whenever OpenCV is importable. When OpenCV cannot decode the codec, sleap-io
-raises, and the probe exits 1 with its message.
+``sleap-nn track`` and ``predict`` read video through sleap-io, which reads
+through OpenCV whenever OpenCV is importable. When OpenCV cannot decode the
+codec, sleap-io raises, and the probe exits 1 with its message.
 """
 
 _LITPOSE_DECODE_PROBE: Final = _importing(
@@ -508,7 +508,7 @@ TRACKING_ROOTS: Final[dict[str, TrackingRoot]] = {
         # from. Leaving it would strand a stale export from a superseded `.slp`
         # that the existence-gated export then declines to regenerate. The
         # no-detections marker stands in for the `.slp` of an entry without a
-        # detection, so a new prediction clears it too. The readback `.npz` of
+        # detection, and a new prediction clears it too. The readback `.npz` of
         # an embedding run is ensured like the export and owned by no phase.
         TrackingRoot(
             key="sleap",

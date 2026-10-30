@@ -25,6 +25,12 @@ tracks/
 ├── convert-trex_npz.0.2-6bb5efbf05/     hash of the conversion recipe
 │   ├── day1__trial01.parquet
 │   └── day1__trial07.parquet
+├── sleap.1.6-d490e1bd63/                a tracker run with an embedding model
+│   ├── day1__trial01.parquet
+│   ├── day1__trial07.parquet
+│   └── appearance/                      one vector per tracked detection
+│       ├── day1__trial01.parquet
+│       └── day1__trial07.parquet
 └── index.csv
 
 features/
@@ -134,7 +140,8 @@ Directory assignments:
   [arena layouts](#arenas).
 - **Derived files**, computed by mosaic and recomputable — `media/` transcode
   derivatives, `media/frames/` extracted PNGs for annotation, `media/preprocess/`
-  media variants, `tracks/` standardized parquet, `labels/` converted labels,
+  media variants, `tracks/` standardized parquet (with `tracks/<variant>/appearance/`,
+  the vectors of a run that embeds detections), `labels/` converted labels,
   `frame_predictions/` model predictions on extracted frames and their scores,
   `selections/` frame lists chosen from tracks, `features/`, `models/`.
 - **Temporary files** — `_tracking/` raw tracker output before conversion, reclaimed

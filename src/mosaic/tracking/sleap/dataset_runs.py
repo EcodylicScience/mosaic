@@ -401,9 +401,9 @@ def _reusable_table(
     out_path = tracks_table_path(ds, variant, make_entry_key(group, sequence))
     if overwrite or not out_path.exists():
         return None
-    # Reuse only what reads. An unreadable table -- torn by a kill before the
-    # writes here became atomic, or by an external tool -- falls through and is
-    # republished, rather than being adopted as a valid empty result.
+    # Reuse only what reads. A table torn by a kill during a non-atomic write,
+    # or by an external tool, is republished instead of adopted as an empty
+    # result.
     reusable = reusable_tracks_table(
         out_path, recorded_first_frame=recorded_first_frame, axis=axis
     )
@@ -499,6 +499,19 @@ _EMBEDDING_DETECTION_HEADS: Final = frozenset(
     {("single_instance",), ("bottomup",), ("centroid", "centered_instance")}
 )
 """The model types, in run order, that an embedding model may follow."""
+
+
+def sleap_nn_command(params: SleapParams) -> str:
+    """Name the sleap-nn command a run with *params* runs, as its attempt records it.
+
+    Provenance, never identity. ``features="embeddings"`` is the setting that
+    every embedding run needs and that only an embedding run is allowed
+    (:func:`_embedding_run_shape`), so it names the command before the models
+    are resolved.
+    """
+    if params.features == "embeddings":
+        return "sleap-nn predict"
+    return "sleap-nn track"
 
 
 def _embedding_run_shape(
@@ -646,7 +659,7 @@ def _entry_idle_limit(
 ) -> float:
     """Return how long one entry's SLEAP calls may run without output.
 
-    sleap-nn prints nothing while it embeds, so an embedding run allows
+    sleap-nn prints nothing while it embeds. An embedding run therefore allows
     :data:`EMBEDDING_IDLE_SECONDS_PER_FRAME` per frame when that exceeds
     ``params.idle_timeout``. The frames are the analyzed range under
     ``analysis_range``, and otherwise the entry's
@@ -783,7 +796,7 @@ def run_sleap(
         print("[run_sleap] No media entries match the given scope.", file=sys.stderr)
         return minted.run_id
 
-    # sleap-nn track takes a frame selection as one "start-end" token.
+    # sleap-nn track and predict take a frame selection as one "start-end" token.
     analysis_range = params.analysis_range
     frames_arg = f"{analysis_range[0]}-{analysis_range[1]}" if analysis_range else None
     # One probe for the run, in the environment that the run places SLEAP in. A
@@ -1044,7 +1057,7 @@ def run_sleap(
     return run_tracker(
         ds,
         kind=SLEAP_KIND,
-        target="sleap-nn track",
+        target=sleap_nn_command(params),
         minted=minted,
         work_items=work_items,
         index=sleap_index(sleap_index_path(ds)),

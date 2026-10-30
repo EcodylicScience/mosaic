@@ -40,6 +40,19 @@ hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
   (`common/bridge.py`) with the entry's `EntryAxis` and its `frames_read`. A bridge
   failure goes through `publish_or_record`, and the caller still writes the index row.
 
+## The SLEAP embedding run
+
+- A `sleap` model list whose last model is an embedding model is an embedding run
+  (`_embedding_run_shape` in `sleap/dataset_runs.py`). It runs `sleap-nn predict`,
+  reads the vectors back, and publishes an appearance table beside each tracks table
+  through `publish_tracks_table`. The contract is `core/pipeline/appearance.py`, and
+  `assign-identities` (`ops/assign_identities.py`) is its consumer.
+- `sleap/version.py` declares the sleap-nn release floor (`SLEAP_NN_EMBEDDING_MIN`,
+  `require_sleap_nn_at_least`). train-sleap and the embedding run check it with the
+  probe. The version is provenance. No identifier reads it.
+- `prepare-embedding-data` (`ops/prepare_embedding.py`) cuts training windows from a
+  `sleap` run. Its labels are the only ones that train the `tracklet` scope.
+
 ## Model references and libraries
 
 - Every tracker, `infer-*` and `base_model` call site resolves through `resolve_model`

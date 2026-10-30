@@ -1,9 +1,9 @@
 """The appearance modules of ``core`` import neither ``behavior`` nor ``tracking``.
 
 ``core`` is the foundation of both packages. ``test_behavior_tracking_layering``
-checks ``behavior`` against ``tracking`` only, so this test covers the other two
+checks ``behavior`` against ``tracking`` only. This test covers the other two
 edges for the modules that define the appearance contract. The scan reads each
-file's syntax tree, so an import inside a function counts.
+file's syntax tree, and an import inside a function counts.
 """
 
 from __future__ import annotations

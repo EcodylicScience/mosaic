@@ -131,7 +131,7 @@ def _evenly_spaced(frames: list[int], count: int) -> tuple[int, ...]:
     """Take *count* of the ascending *frames*, the first and last among them.
 
     Position ``i`` of ``count`` is ``i * (n - 1) // (count - 1)``. When there are
-    more frames than *count*, each step exceeds one position, so no frame is
+    more frames than *count*, each step exceeds one position and no frame is
     taken twice.
     """
     n = len(frames)

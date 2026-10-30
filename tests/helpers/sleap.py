@@ -25,8 +25,8 @@ input as an image of its videos.
 tracked instances publishes, from records that a test gives it.
 :func:`write_stub_sleap_io` writes a stand-in ``sleap_io`` package whose
 ``load_slp`` reads a file of :func:`write_stub_slp` and whose ``save_slp`` writes
-one that :func:`read_stub_labels` reads, so a test runs a snippet's source against
-labels it describes.
+one that :func:`read_stub_labels` reads. A test then runs a snippet's source
+against labels it describes.
 """
 
 from __future__ import annotations
@@ -237,7 +237,7 @@ def write_sleap_model_set(directory: Path, *heads: str) -> list[str]:
     """Write one merged model per head under *directory*, and return their paths.
 
     Each model has its own weights and the merged config of its head, in the
-    order of *heads*, so the list is a sleap op's ``model_paths``.
+    order of *heads*. The list is a sleap op's ``model_paths``.
     """
     return [
         str(

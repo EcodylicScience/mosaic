@@ -258,7 +258,7 @@ def test_an_entry_whose_predictions_are_gone_is_not_found(world: World) -> None:
 def test_a_file_of_fewer_than_two_tracks_is_refused_after_the_writer(
     world: World,
 ) -> None:
-    """The validation entry holds one track, so no frame of it qualifies."""
+    """No frame of a validation entry that holds one track qualifies."""
     world.readback.tracks = {"s3": ("a",)}
 
     with pytest.raises(ClassifiedError, match="labels.val.slp") as caught:

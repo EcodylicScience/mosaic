@@ -175,6 +175,7 @@ from .pipeline._utils import (
     now_iso as _now_iso,
 )
 from .pipeline.placement import place_converted
+from .pipeline.appearance import recorded_appearance_path
 from .pipeline.scan_claim import ScanClaim
 from .pipeline.artifact_kinds import ArtifactKind
 from .pipeline.index_stamp import IndexStamp
@@ -3699,8 +3700,9 @@ class Dataset:
                 would mean every row of the index. A camera-addressed selector
                 narrows to the ``(group, sequence)`` pairs it names, since a
                 tracks row is keyed without a camera.
-            delete_files: Also unlink each row's parquet. Off by default -- an
-                orphaned table is recoverable, a deleted one is not.
+            delete_files: Also unlink each row's parquet and its appearance
+                table. Off by default -- an orphaned table is recoverable, a
+                deleted one is not.
             run_id: Drop only this variant's rows for those entries. ``None``,
                 the default, drops every variant -- which is what a rename
                 cleanup wants, and what this did when an entry could only have
@@ -3741,6 +3743,9 @@ class Dataset:
                         continue
                     target = self.resolve_path(str(row["abs_path"]))
                     target.unlink(missing_ok=True)
+                    appearance = recorded_appearance_path(self, row)
+                    if appearance is not None:
+                        appearance.unlink(missing_ok=True)
             kept = frame[keep_mask]
             atomic_write(path, lambda p: kept.to_csv(p, index=False))
             return len(frame) - len(kept)

@@ -669,17 +669,17 @@ class IndexCSV(Generic[RowT]):
         """Restamp every row of *old_run_id* to *new_run_id*, preserving all else.
 
         The index half of re-addressing a run whose identity *function* moved while
-        its inputs did not: the run's directory is renamed on disk, and this
-        restamps the rows that named it -- ``run_id`` to the new value, and each
-        cell of the *path_columns* that the header has through *path_rewrite*, to
+        its inputs did not. The run's directory is renamed on disk, and this
+        restamps the rows that named it. ``run_id`` takes the new value, and each
+        of the *path_columns* that the header has passes through *path_rewrite* to
         point into the renamed directory. A blank cell reaches *path_rewrite* as
         ``""``.
 
-        A cell rewrite rather than a drop-and-append, deliberately: ``started_at``
-        and ``finished_at`` are ``init=False`` on :class:`RunIndexRowBase`, so a
-        rebuilt row would reset them. Restamping two cells and writing every other
-        one back byte-identical is the only way to move a run's identity without
-        losing when it ran.
+        The rows are rewritten in place instead of dropped and appended, because
+        ``started_at`` and ``finished_at`` are ``init=False`` on
+        :class:`RunIndexRowBase` and a rebuilt row resets them. Restamping those
+        cells and writing every other one back byte-identical moves a run's
+        identity and keeps when it ran.
 
         One locked read-modify-write, one atomic write, for the reason every
         DELETE-shaped method here takes the lock: a concurrent append landing
@@ -719,8 +719,8 @@ class IndexCSV(Generic[RowT]):
         between the read and the rewrite would be lost.
 
         The frame is brought to the current schema first when this index has an
-        ``adopt`` hook, so a column added since the file was written is a blank
-        cell to fill and not a missing one.
+        ``adopt`` hook. A column added since the file was written is then a blank
+        cell to fill.
 
         Args:
             run_id: The run whose rows are rewritten.

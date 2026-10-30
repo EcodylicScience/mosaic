@@ -545,7 +545,7 @@ def test_reconcile_registers_no_appearance_table_as_a_variant(
 def test_an_assign_identities_variant_is_reported_and_not_moved(
     scenario_dataset: Dataset,
 ) -> None:
-    """The sidecar records no upstream, so the recompute is declined."""
+    """The sidecar records no upstream, and the recompute without it is declined."""
     ds = scenario_dataset
     source = _make_tracks_variant(ds, appearance_dim=4)
     params = {

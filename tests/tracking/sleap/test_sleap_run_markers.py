@@ -583,6 +583,39 @@ def test_a_run_without_an_embedding_model_writes_no_appearance(
     )
 
 
+@pytest.mark.parametrize("via_op", [True, False], ids=["op", "run_sleap"])
+@pytest.mark.parametrize(
+    ("embedding", "target"),
+    [(True, "sleap-nn predict"), (False, "sleap-nn track")],
+    ids=["embedding", "pose"],
+)
+def test_the_attempt_records_the_sleap_nn_command_it_runs(
+    ds: Dataset,
+    tmp_path: Path,
+    model: Path,
+    sleap: FakeSleap,
+    *,
+    embedding: bool,
+    target: str,
+    via_op: bool,
+) -> None:
+    from mosaic.core.pipeline.ops import run_op
+    from mosaic.tracking import register_ops
+
+    params = (
+        _embedding_params(tmp_path)
+        if embedding
+        else SleapParams(model_paths=[str(model)])
+    )
+    if via_op:
+        register_ops()
+        _ = run_op(ds, "sleap", params)
+    else:
+        _ = dr.run_sleap(ds, params)
+
+    assert latest_snapshot(ds)["target"] == target
+
+
 # --- an entry with no detections ---------------------------------------------
 
 
