@@ -291,11 +291,12 @@ _COLUMNS_DESCRIPTION = (
 
 _HEAD_DESCRIPTION = (
     "The network. A built-in head is tcn (dilated convolutions), gru (a "
-    "bidirectional GRU), mlp (each frame by itself) or transformer (attention "
-    "within blocks of frames). A recipe names an installed head too: an entry "
-    "point of the group mosaic.sequence_heads whose name is the head's name. A "
-    "head registered in Python with register_head exists only in the process "
-    "that registered it."
+    "bidirectional GRU), mlp (each frame by itself), transformer (attention "
+    "within blocks of frames) or unet (convolutions at halving time "
+    "resolutions). A recipe names an installed head too: an entry point of the "
+    "group mosaic.sequence_heads whose name is the head's name. A head "
+    "registered in Python with register_head exists only in the process that "
+    "registered it."
 )
 
 _HEAD_CONFIG_DESCRIPTION = (
@@ -309,7 +310,11 @@ _HEAD_CONFIG_DESCRIPTION = (
     "divisor of hidden), window (64), kernel_size (5, odd) and dropout (0.1): "
     "each frame attends to its block of window frames and the blocks on either "
     "side, and reads kernel_size // 2 + (layers + 1) * window - 1 frames on each "
-    "side, 321 by default. Options that the chosen head does not have are refused."
+    "side, 321 by default. unet takes hidden (64), depth (4), kernel_size (5, "
+    "odd) and dropout (0.3): each of depth levels convolves twice and halves the "
+    "frames, and it reads at most (4 * (kernel_size // 2) + 1) * (2**depth - 1) "
+    "frames on each side, 135 by default. Options that the chosen head does not "
+    "have are refused."
 )
 
 _HEAD_REVISION_DESCRIPTION = (

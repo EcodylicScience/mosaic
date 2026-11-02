@@ -283,10 +283,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   request is the same run, which applies the stored fit to the new entries. The first
   request must hold the training entries and is refused otherwise.
   `sequence-classifier` (`[deep-learning]`, GPU worker) is the same kind of step with a
-  registered network as `head` (`tcn`, `gru`, `mlp` or `transformer`, options in
-  `head_config`). A `transformer` attends within blocks of `window` frames and their
+  registered network as `head` (`tcn`, `gru`, `mlp`, `transformer` or `unet`, options
+  in `head_config`). A `transformer` attends within blocks of `window` frames and their
   neighbors, so a long series predicts in one pass, and it reads
-  `kernel_size // 2 + (layers + 1) * window - 1` frames on each side.
+  `kernel_size // 2 + (layers + 1) * window - 1` frames on each side. A `unet` halves
+  the frames at each of `depth` levels and reads at most
+  `(4 * (kernel_size // 2) + 1) * (2 ** depth - 1)` frames on each side.
   `head_config` `stages` above 1 adds refinement stages, each a default `tcn` on the
   logits before it with a loss of its own, and `label_smoothing` smooths the targets. It
   takes `cv_folds`, `cv_seed` and `cv_group_by` as `xgboost` does, with the same

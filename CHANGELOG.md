@@ -52,6 +52,15 @@ The step's `temporal_reach` is `kernel_size // 2 + (layers + 1) * window - 1` fr
 by default, plus 63 per refinement stage. It takes `stages` as every head does. No run
 id moves.
 
+**`sequence-classifier` gains a `unet` head.** Its options are `hidden` (64), `depth`
+(4), `kernel_size` (5, odd) and `dropout` (0.3). Each level convolves twice with batch
+norm and halves the frames by a max pool, and each level on the way back up doubles
+them by nearest-neighbor upsampling, joins the skip of its level and convolves twice.
+A series is padded to a multiple of `2 ** depth` frames by repeating its last frame.
+The step's `temporal_reach` is the bound
+`(4 * (kernel_size // 2) + 1) * (2 ** depth - 1)` frames, 135 by default, plus 63 per
+refinement stage. No run id moves.
+
 ## Unreleased: per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names

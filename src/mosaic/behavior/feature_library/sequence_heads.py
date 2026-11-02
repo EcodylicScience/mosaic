@@ -10,14 +10,14 @@ A model may refine the head's logits in further stages: each stage is a ``tcn`` 
 defaults that reads the softmax of the logits before it, and the model predicts with
 the last. Every head takes ``stages``.
 
-``tcn``, ``gru``, ``mlp`` and ``transformer`` are built in. A head of your own is
-named by ``head`` in the step's params, and a recipe names an installed head: a package
-that declares an entry point in the ``mosaic.sequence_heads`` group, whose name is the
-head's name and whose object is a :class:`HeadSpec`. :func:`get_head` loads that entry
-point when the head is first named, in any process that has the package, so the command
-line and a queue worker find it. A head registered with :func:`register_head` exists
-only in the process that registered it, and a notebook's head is not visible to another
-process.
+``tcn``, ``gru``, ``mlp``, ``transformer`` and ``unet`` are built in. A head of your
+own is named by ``head`` in the step's params, and a recipe names an installed head: a
+package that declares an entry point in the ``mosaic.sequence_heads`` group, whose name
+is the head's name and whose object is a :class:`HeadSpec`. :func:`get_head` loads
+that entry point when the head is first named, in any process that has the package, so
+the command line and a queue worker find it. A head registered with
+:func:`register_head` exists only in the process that registered it, and a notebook's
+head is not visible to another process.
 
 This module imports no torch. Each ``build`` function imports it when it is called,
 and defines its ``nn.Module`` there.
@@ -48,6 +48,7 @@ __all__ = [
     "MlpConfig",
     "TcnConfig",
     "TransformerConfig",
+    "UnetConfig",
     "assemble_network",
     "get_head",
     "head_names",
@@ -375,6 +376,36 @@ class TransformerConfig(HeadConfig):
         return self
 
 
+class UnetConfig(HeadConfig):
+    """Convolutions at halving time resolutions, joined back up by skip connections."""
+
+    hidden: Annotated[int, Field(ge=1), Declared("Channels of every convolution.")] = 64
+    depth: Annotated[
+        int,
+        Field(ge=1),
+        Declared(
+            "Levels. Each level convolves twice, then halves the frames by a max "
+            "pool, and the series is padded to a multiple of 2**depth frames by "
+            "repeating its last frame."
+        ),
+    ] = 4
+    kernel_size: Annotated[
+        int,
+        Field(ge=1),
+        Declared("Width of every convolution, odd so that it is centered."),
+    ] = 5
+    dropout: Annotated[
+        float,
+        Field(ge=0.0, lt=1.0),
+        Declared("Dropout after the two convolutions of each level."),
+    ] = 0.3
+
+    @field_validator("kernel_size")
+    @classmethod
+    def _kernel_is_centered(cls, value: int) -> int:
+        return _require_odd_kernel(value)
+
+
 def _build_tcn(config: TcnConfig, n_features: int, n_classes: int) -> nn.Module:
     import torch.nn as nn
     import torch.nn.functional as functional
@@ -567,6 +598,65 @@ def _build_transformer(
     return Transformer()
 
 
+def _build_unet(config: UnetConfig, n_features: int, n_classes: int) -> nn.Module:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as functional
+    from torch import Tensor
+
+    multiple = 2**config.depth
+
+    def convolutions(n_in: int) -> nn.Sequential:
+        """Two centered convolutions, each with batch norm and ReLU, then dropout."""
+        layers: list[nn.Module] = []
+        for width in (n_in, config.hidden):
+            layers += [
+                nn.Conv1d(
+                    width,
+                    config.hidden,
+                    config.kernel_size,
+                    padding=config.kernel_size // 2,
+                ),
+                nn.BatchNorm1d(config.hidden),
+                nn.ReLU(),
+            ]
+        layers.append(nn.Dropout(config.dropout))
+        return nn.Sequential(*layers)
+
+    class Unet(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.encoder = nn.ModuleList(
+                convolutions(n_features if level == 0 else config.hidden)
+                for level in range(config.depth)
+            )
+            # From the deepest level up, each reading the upsampled tensor beside
+            # the skip of its level.
+            self.decoder = nn.ModuleList(
+                convolutions(2 * config.hidden) for _ in range(config.depth)
+            )
+            self.out = nn.Conv1d(config.hidden, n_classes, 1)
+
+        def forward(self, x: Tensor) -> Tensor:
+            length = x.shape[1]
+            padded = -length % multiple
+            if padded:
+                x = torch.cat([x, x[:, -1:].expand(-1, padded, -1)], dim=1)
+            h = x.transpose(1, 2)
+            skips: list[Tensor] = []
+            for level in self.encoder:
+                h = level(h)
+                skips.append(h)
+                h = functional.max_pool1d(h, 2)
+            for level, skip in zip(self.decoder, reversed(skips), strict=True):
+                h = functional.interpolate(h, scale_factor=2, mode="nearest")
+                h = level(torch.cat([h, skip], dim=1))
+            out: Tensor = self.out(h)
+            return out[:, :, :length].transpose(1, 2)
+
+    return Unet()
+
+
 def _tcn_reach(config: TcnConfig) -> int:
     """Frames on each side that a TCN reads: its receptive field less the frame itself.
 
@@ -587,6 +677,21 @@ def _transformer_reach(config: TransformerConfig) -> int:
     convolution adds ``kernel_size // 2``.
     """
     return config.kernel_size // 2 + (config.layers + 1) * config.window - 1
+
+
+def _unet_reach(config: UnetConfig) -> int:
+    """Frames on each side that a U-Net reads, at most.
+
+    At level ``l`` a frame of the tensor stands for ``2**l`` frames of the
+    series. The two encoder and the two decoder convolutions of the level each
+    read ``kernel_size // 2`` of its frames on each side, ``4 * r * 2**l`` frames
+    of the series with ``r = kernel_size // 2``, and the pool and the upsampling
+    that leave and enter it ``2**l``. Summed over the levels from ``0`` to
+    ``depth - 1`` this is ``(4 * r + 1) * (2**depth - 1)``. A frame reads that far
+    only on the side its place among the pooled pairs allows, so the farthest
+    frame read falls short by less than ``2**depth``.
+    """
+    return (4 * (config.kernel_size // 2) + 1) * (2**config.depth - 1)
 
 
 def _unbounded_reach(config: HeadConfig) -> None:
@@ -636,6 +741,18 @@ _ = register_head(
             "convolution that gives position."
         ),
         reach=_transformer_reach,
+    )
+)
+_ = register_head(
+    HeadSpec(
+        name="unet",
+        config=UnetConfig,
+        build=_build_unet,
+        description=(
+            "Convolutions at halving time resolutions, joined back up by skip "
+            "connections."
+        ),
+        reach=_unet_reach,
     )
 )
 

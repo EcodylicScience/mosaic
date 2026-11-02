@@ -40,6 +40,7 @@ from mosaic.behavior.feature_library.sequence_heads import (
     HeadSpec,
     TcnConfig,
     TransformerConfig,
+    UnetConfig,
     assemble_network,
     register_head,
 )
@@ -87,6 +88,8 @@ HEADS_SMALL: dict[str, dict[str, object]] = {
         "window": 8,
         "kernel_size": 3,
     },
+    # Padded to a multiple of 8 frames, so a series of FRAMES frames is padded.
+    "unet": {"hidden": 8, "depth": 3, "kernel_size": 3},
 }
 
 
@@ -434,7 +437,7 @@ def test_a_fit_gives_the_network_the_agents_script_gives(head: str) -> None:
 # --- Determinism ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("head", ["gru", "transformer"])
+@pytest.mark.parametrize("head", ["gru", "transformer", "unet"])
 def test_two_fits_of_one_seed_are_equal_and_two_seeds_differ(
     tmp_path: Path, head: str
 ) -> None:
@@ -562,7 +565,7 @@ def test_an_apply_runs_at_the_threads_the_step_names_and_restores_them(
     assert torch.get_num_threads() == before
 
 
-@pytest.mark.parametrize("head", ["gru", "transformer"])
+@pytest.mark.parametrize("head", ["gru", "transformer", "unet"])
 def test_apply_returns_a_row_for_every_row_in_order_with_the_identity(
     tmp_path: Path, head: str
 ) -> None:
@@ -692,6 +695,45 @@ def test_a_transformer_predicts_a_long_series_in_one_pass() -> None:
     probabilities = predict_probabilities(network, frames, device="cpu")
 
     assert probabilities.shape == (20_000, 3)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-5)
+
+
+def test_a_unet_pads_a_series_by_repeating_its_last_frame() -> None:
+    seed_torch(0, device="cpu")
+    config = UnetConfig(hidden=8, depth=3, kernel_size=3)
+    network = assemble_network(
+        "unet", config, input_dropout=0.1, n_features=4, n_classes=3
+    ).eval()
+    frames = torch.as_tensor(
+        np.random.default_rng(8).normal(size=(1, 13, 4)).astype(np.float32)
+    )
+    # 13 frames pad to 16, and the series spelled out to 16 needs no padding.
+    repeated = torch.cat([frames, frames[:, -1:].expand(-1, 3, -1)], dim=1)
+
+    with torch.no_grad():
+        padded = network(frames)
+        spelled_out = network(repeated)[:, :13]
+
+    torch.testing.assert_close(padded, spelled_out, atol=0.0, rtol=0.0)
+
+
+def test_a_unet_trains_on_one_crop_of_one_frame_and_predicts_any_length() -> None:
+    seed_torch(0, device="cpu")
+    config = UnetConfig(hidden=8, depth=3, kernel_size=3)
+    network = assemble_network(
+        "unet", config, input_dropout=0.1, n_features=4, n_classes=3
+    )
+    rng = np.random.default_rng(7)
+
+    # A crop of one frame is padded to 8, and the deepest level that normalizes a
+    # batch still holds two frames of it.
+    for length in (1, 5, 8, 13):
+        crop = torch.as_tensor(rng.normal(size=(1, length, 4)).astype(np.float32))
+        assert network.train()(crop).shape == (1, length, 3)
+    frames = rng.normal(size=(FRAMES + 3, 4)).astype(np.float32)
+    probabilities = predict_probabilities(network.eval(), frames, device="cpu")
+
+    assert probabilities.shape == (FRAMES + 3, 3)
     np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-5)
 
 

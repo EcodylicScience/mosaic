@@ -29,6 +29,7 @@ from mosaic.behavior.feature_library.sequence_heads import (
     MlpConfig,
     TcnConfig,
     TransformerConfig,
+    UnetConfig,
     get_head,
     head_names,
     head_source_digest,
@@ -72,16 +73,18 @@ def _toy() -> HeadSpec[ToyConfig]:
 
 
 def test_the_built_in_heads_are_registered_with_their_options() -> None:
-    assert head_names() == ["gru", "mlp", "tcn", "transformer"]
+    assert head_names() == ["gru", "mlp", "tcn", "transformer", "unet"]
     assert get_head("tcn").config is TcnConfig
     assert get_head("gru").config is GruConfig
     assert get_head("mlp").config is MlpConfig
     assert get_head("transformer").config is TransformerConfig
+    assert get_head("unet").config is UnetConfig
 
 
 def test_an_unknown_head_is_refused_with_the_registered_names() -> None:
     with pytest.raises(
-        ValueError, match=r"'lstm'.*Registered or installed: gru, mlp, tcn, transformer"
+        ValueError,
+        match=r"'lstm'.*Registered or installed: gru, mlp, tcn, transformer, unet",
     ):
         get_head("lstm")
 
@@ -204,10 +207,10 @@ def test_the_names_of_installed_heads_are_listed_without_loading_them(
     _CountingEntryPoint.loads = 0
     _ = _install(monkeypatch, _entry_point("toy", "TOY", _CountingEntryPoint))
 
-    assert head_names() == ["gru", "mlp", "tcn", "toy", "transformer"]
+    assert head_names() == ["gru", "mlp", "tcn", "toy", "transformer", "unet"]
     with pytest.raises(
         ValueError,
-        match=r"'lstm'.*Registered or installed: gru, mlp, tcn, toy, transformer",
+        match=r"'lstm'.*Registered or installed: gru, mlp, tcn, toy, transformer, unet",
     ):
         get_head("lstm")
     assert _CountingEntryPoint.loads == 0
@@ -392,6 +395,13 @@ def test_the_defaults_of_the_built_in_heads_are_the_reference_networks() -> None
         "kernel_size": 5,
         "dropout": 0.1,
     }
+    assert UnetConfig().model_dump() == {
+        "stages": 1,
+        "hidden": 64,
+        "depth": 4,
+        "kernel_size": 5,
+        "dropout": 0.3,
+    }
 
 
 def test_every_head_takes_stages_and_a_network_has_one_or_more() -> None:
@@ -411,6 +421,8 @@ def test_an_even_kernel_is_refused() -> None:
         TcnConfig(kernel_size=4)
     with pytest.raises(ValidationError, match="kernel_size 4 is even"):
         TransformerConfig(kernel_size=4)
+    with pytest.raises(ValidationError, match="kernel_size 4 is even"):
+        UnetConfig(kernel_size=4)
 
 
 def test_the_attention_heads_of_a_transformer_divide_its_width() -> None:
@@ -441,6 +453,8 @@ def test_the_options_of_a_head_are_frozen() -> None:
         ("transformer", TransformerConfig(), 2 + 5 * 64 - 1),
         ("transformer", TransformerConfig(window=2, layers=2, kernel_size=1), 5),
         ("transformer", TransformerConfig(window=2, layers=2, stages=2), 2 + 5 + 63),
+        ("unet", UnetConfig(), 9 * 15),
+        ("unet", UnetConfig(depth=2, kernel_size=3, stages=2), 5 * 3 + 63),
     ],
 )
 def test_each_refinement_stage_adds_the_reach_of_a_default_tcn(
@@ -548,7 +562,7 @@ def test_an_option_of_another_head_is_refused_and_so_are_options_of_a_wrong_head
 
 def test_an_unregistered_head_is_refused_with_the_registered_names() -> None:
     with pytest.raises(
-        ValueError, match="Registered or installed: gru, mlp, tcn, transformer"
+        ValueError, match="Registered or installed: gru, mlp, tcn, transformer, unet"
     ):
         _params(head="lstm")
 
@@ -575,6 +589,7 @@ def test_the_dump_of_a_run_reads_back_to_the_same_params() -> None:
         {"label_smoothing": 0.1},
         {"head_config": {"stages": 2}},
         {"head": "transformer"},
+        {"head": "unet"},
     ],
 )
 def test_a_setting_that_changes_the_model_changes_the_run_identity(

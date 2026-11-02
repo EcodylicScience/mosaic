@@ -20,6 +20,7 @@ from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.sequence_heads import (
     TcnConfig,
     TransformerConfig,
+    UnetConfig,
     assemble_network,
     get_head,
     network_reach,
@@ -332,3 +333,49 @@ def test_a_transformer_reaches_as_far_as_its_network_reach(
     assert reach is not None
     assert reach < length // 2
     assert measured == reach
+
+
+@pytest.mark.identity
+@pytest.mark.parametrize(
+    "config",
+    [
+        UnetConfig(hidden=8, depth=2, kernel_size=3),
+        UnetConfig(hidden=8, depth=3, kernel_size=1),
+        UnetConfig(hidden=8),
+        UnetConfig(hidden=8, depth=2, kernel_size=3, stages=2),
+    ],
+)
+def test_a_unet_reaches_no_further_than_its_network_reach(config: UnetConfig) -> None:
+    _ = pytest.importorskip("torch")
+    import torch
+
+    from mosaic.behavior.feature_library.sequence_training import seed_torch
+
+    seed_torch(0, device="cpu")
+    network = assemble_network(
+        "unet", config, input_dropout=0.1, n_features=1, n_classes=3
+    ).eval()
+    # Not a multiple of 2**depth, so the last frame is repeated into the padding.
+    length = 301
+    series = torch.as_tensor(
+        np.random.default_rng(4).normal(size=length).astype(np.float32)
+    )
+
+    def logits(values: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            return network(values[None, :, None])[0]
+
+    # Where a frame falls among the pooled pairs of each level sets how far it
+    # reaches, so the frame moved takes every position of the series.
+    before = logits(series)
+    measured = 0
+    for at in range(length):
+        moved = series.clone()
+        moved[at] += BUMP
+        changed = torch.nonzero((logits(moved) - before).abs().amax(dim=-1) > 0)
+        measured = max(measured, int((changed - at).abs().max()))
+
+    reach = network_reach("unet", config)
+    assert reach is not None
+    assert reach < length // 2
+    assert reach - 2**config.depth <= measured <= reach
