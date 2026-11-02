@@ -71,6 +71,96 @@ def test_several_names_expand_to_their_product_the_first_varying_slowest() -> No
     assert recipe.step("s_y_1").params == {"note": "y-1"}
 
 
+def test_zipped_names_expand_in_lockstep() -> None:
+    recipe = read_recipe(
+        {
+            "steps": [
+                _speed(
+                    id="s_{b}",
+                    zip={"b": ["attack", "mount"], "t": [0.3, 0.6]},
+                    params={"note": "{b}-{t}", "threshold": "{t}"},
+                )
+            ]
+        }
+    )
+
+    assert recipe.ids == ("s_attack", "s_mount")
+    assert [step.params for step in recipe.steps] == [
+        {"note": "attack-0.3", "threshold": 0.3},
+        {"note": "mount-0.6", "threshold": 0.6},
+    ]
+
+
+def test_a_zip_beside_a_repeat_runs_inside_the_product() -> None:
+    recipe = read_recipe(
+        {
+            "steps": [
+                _speed(
+                    id="s_{seed}_{b}",
+                    repeat={"seed": [1, 2]},
+                    zip={"b": ["x", "y"], "t": [10, 20]},
+                    params={"note": "{b}{t}"},
+                )
+            ]
+        }
+    )
+
+    assert recipe.ids == ("s_1_x", "s_1_y", "s_2_x", "s_2_y")
+    assert [step.params["note"] for step in recipe.steps] == ["x10", "y20"] * 2
+
+
+def test_an_input_item_zips_and_sees_the_values_of_its_step() -> None:
+    recipe = read_recipe(
+        {
+            "steps": [
+                _speed(id="a_{b}", zip={"b": [1, 2], "t": ["p", "q"]}),
+                {
+                    "id": "joined",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": [
+                        {"step": "a_{b}", "zip": {"b": [1, 2], "t": ["p", "q"]}}
+                    ],
+                },
+            ]
+        }
+    )
+
+    joined = recipe.step("joined")
+    assert isinstance(joined, FeatureStepSpec)
+    assert joined.inputs == [StepRef(step="a_1"), StepRef(step="a_2")]
+    assert "zip" not in json.dumps(canonical_recipe(recipe))
+
+
+def test_a_zip_is_named_as_the_steps_written_out() -> None:
+    zipped = read_recipe(
+        {
+            "steps": [
+                _speed(id="s_{a}", zip={"a": [1, 2], "b": [3, 4]}, params={"k": "{b}"})
+            ]
+        }
+    )
+    spelled = read_recipe(
+        {
+            "steps": [
+                _speed(id="s_1", params={"k": 3}),
+                _speed(id="s_2", params={"k": 4}),
+            ]
+        }
+    )
+
+    assert recipe_digest(zipped) == recipe_digest(spelled)
+
+
+def test_a_zipped_id_must_name_one_of_its_names() -> None:
+    with pytest.raises(RecipeInvalid) as raised:
+        _ = read_recipe({"steps": [_speed(id="s", zip={"a": [1, 2], "b": [3, 4]})]})
+
+    (problem,) = raised.value.problems
+    assert problem.where == "zip"
+    assert "must name" in problem.message
+
+
 def test_a_list_item_expands_in_place_and_sees_the_outer_values() -> None:
     recipe = read_recipe(
         {
@@ -181,6 +271,24 @@ def test_a_recipe_without_repeat_is_returned_as_it_is() -> None:
             _speed(id="s", inputs=[{"step": "a", "repeat": {"k": []}}]),
             "inputs[0].repeat",
             "non-empty list",
+        ),
+        (
+            _speed(id="s{a}", zip={"a": [1, 2], "b": [1]}),
+            "zip",
+            "lists of the same length",
+        ),
+        (_speed(id="s{a}", zip={"a": []}), "zip", "non-empty list"),
+        (_speed(id="s{a}", zip=["a"]), "zip", "maps each name"),
+        (_speed(id="s{a}", zip={"a-1": [1]}), "zip", "not an identifier"),
+        (
+            _speed(id="s{a}", repeat={"a": [1]}, zip={"a": [2]}),
+            "zip",
+            "already repeated",
+        ),
+        (
+            _speed(id="s", inputs=[{"step": "a{v}", "zip": {"v": [1, 2], "w": [1]}}]),
+            "inputs[0].zip",
+            "lists of the same length",
         ),
     ],
 )

@@ -32,7 +32,7 @@ from mosaic.core.narrowing import is_str_mapping
 
 from ..error_kind import ClassifiedError, ErrorKind
 from .digest import canonical_recipe
-from .expand import REPEAT_KEY, RepeatInvalid, expand_repeats
+from .expand import REPEAT_KEY, ZIP_KEY, RepeatInvalid, expand_repeats
 from .model import GraphModel, Recipe
 
 __all__ = [
@@ -167,8 +167,8 @@ def _apply(steps: list[JsonValue], op: PatchOp) -> None:
                 f"the new step's id {declared!r} is not {op.step!r}; remove the "
                 f"step and add the new one to rename it"
             )
-        if REPEAT_KEY in replacement:
-            raise _Fault("a replacing step is one step and takes no repeat")
+        if REPEAT_KEY in replacement or ZIP_KEY in replacement:
+            raise _Fault("a replacing step is one step and takes no repeat or zip")
         steps[position] = _expanded(replacement)[0]
         return
     _set_param(steps[position], op)

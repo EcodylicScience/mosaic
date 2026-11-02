@@ -554,9 +554,11 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Write a step repeated over seeds, behaviors or folds once with `repeat`:
   `{"id": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}, ..., "params": {"random_state":
   "{seed}"}}` is three steps, and `{"step": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}}`
-  in `inputs` is three inputs. Save a long recipe with `patch_recipe` (no `ops`), then pass
-  `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with `dataset`),
-  `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
+  in `inputs` is three inputs. Names that move together, such as a behavior and its
+  threshold, go in `zip` (equal-length lists, taken in lockstep) instead of `repeat`,
+  which expands to every combination. Save a long recipe with `patch_recipe` (no
+  `ops`), then pass `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with
+  `dataset`), `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
   (`add_step`, `remove_step`, `set_param`, `replace_step`), each returning a new digest.
   When the server has recipe roots, keep the recipe in a JSON file inside one instead,
   edit the file, and pass `{"path": "<file>"}` as `recipe`: one `submit_pipeline` call

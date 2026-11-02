@@ -76,6 +76,13 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**`zip` beside `repeat`.** A recipe step or input item binds names in lockstep with
+`zip`, as `"zip": {"behavior": ["attack", "mount"], "threshold": [0.3, 0.6]}`, which is
+two steps where `repeat` would make four. The lists must have the same length, the id
+names at least one zipped name, and beside a `repeat` the zip is one more axis of the
+product. The expanded recipe, its digest and every run id are those of the steps written
+out in full, so no existing recipe changes.
+
 **`train-sleap` trains an embedding model.** `head` gains `embedding`, a network that
 maps the crop of each detection to an appearance vector. It needs sleap-nn 0.3.5 or
 later and trains on one device. Before the claim, the run refuses the scopes and labels

@@ -462,10 +462,10 @@ RecipeDocument = Annotated[
             "kind, params}. An input is 'tracks' or {step: <id>}. A step or an "
             "input with repeat, as {id: 'xgb_s{seed}', repeat: {seed: [1, 2]}}, "
             "stands for one copy per value with {seed} replaced; '{seed}' alone "
-            "takes the value. Or name a recipe the dataset saved (patch_recipe "
-            "and submit_pipeline save one): {digest: <digest>} or {saved: <name>}. "
-            "Or a JSON file inside the server's recipe_roots: {path: <file>}, "
-            "read when called."
+            "takes the value. zip binds equal-length lists in lockstep. Or name "
+            "a recipe the dataset saved (patch_recipe and submit_pipeline save "
+            "one): {digest: <digest>} or {saved: <name>}. Or a JSON file inside "
+            "the server's recipe_roots: {path: <file>}, read when called."
         ),
         examples=[RECIPE_EXAMPLE],
     ),

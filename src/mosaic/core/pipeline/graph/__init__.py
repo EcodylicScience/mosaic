@@ -310,6 +310,7 @@ if TYPE_CHECKING:
     from .expand import (
         MAX_EXPANDED_ITEMS as MAX_EXPANDED_ITEMS,
         REPEAT_KEY as REPEAT_KEY,
+        ZIP_KEY as ZIP_KEY,
         RepeatInvalid as RepeatInvalid,
         expand_repeats as expand_repeats,
     )
@@ -603,6 +604,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "record_step_ended": ".step",
     "MAX_EXPANDED_ITEMS": ".expand",
     "REPEAT_KEY": ".expand",
+    "ZIP_KEY": ".expand",
     "RepeatInvalid": ".expand",
     "expand_repeats": ".expand",
     "AddStep": ".patch",
@@ -760,6 +762,7 @@ __all__ = [
     "TRANSCODE_LANE",
     "UNKNOWN_COLUMNS",
     "WAIT_POLL_SECONDS",
+    "ZIP_KEY",
     "AddStep",
     "ArtifactView",
     "AttachReport",

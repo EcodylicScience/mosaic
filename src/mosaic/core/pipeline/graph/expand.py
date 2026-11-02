@@ -12,17 +12,23 @@ input, ``{"step": "xgb_s{seed}", "repeat": {"seed": [1, 2, 3]}}``.
 
 The rules:
 
-- ``repeat`` is read on a step and on an item of a step's ``inputs``, nowhere
-  else, so a param that happens to be named ``repeat`` is left as written.
+- ``repeat`` and ``zip`` are read on a step and on an item of a step's
+  ``inputs``, nowhere else, so a param that happens to be named ``repeat`` is
+  left as written.
 - A ``repeat`` maps names to non-empty lists of values. Several names expand to
   their cartesian product, the first name varying slowest, and the items take
   the place of the one that declared them, in that order.
+- A ``zip``, written beside ``repeat`` or alone, binds its names in lockstep: the
+  lists must have the same length, and the n-th value of each is taken
+  together, as in ``"zip": {"behavior": ["attack", "mount"], "threshold":
+  [0.3, 0.6]}``, which is two steps. Beside a ``repeat`` it is one more axis of
+  the product, varying fastest.
 - ``{name}`` is replaced in every string of the item, keys excepted. A string
   that is ``{name}`` alone becomes the value itself, typed as written, and a
   value inside a longer string must be a string, a number or a boolean. Braces
   around any other word are left as they are. An id is always text.
-- A step's id names every one of its repeat's names, so each expanded step has
-  an id of its own.
+- A step's id names every one of its repeat's names, and at least one of its
+  zip's, so each expanded step has an id of its own.
 - An input of a repeated step may repeat again, over other names, and sees the
   step's values.
 - A recipe expands to at most :data:`MAX_EXPANDED_ITEMS` steps and inputs.
@@ -39,16 +45,30 @@ from __future__ import annotations
 import copy
 import itertools
 import json
+import math
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from typing import Final
 
 from mosaic.core.narrowing import is_object_list, is_str_mapping
 
-__all__ = ["MAX_EXPANDED_ITEMS", "REPEAT_KEY", "RepeatInvalid", "expand_repeats"]
+__all__ = [
+    "MAX_EXPANDED_ITEMS",
+    "REPEAT_KEY",
+    "ZIP_KEY",
+    "RepeatInvalid",
+    "expand_repeats",
+]
 
 REPEAT_KEY: Final = "repeat"
 """The key of a step or an input that stands for several."""
+
+ZIP_KEY: Final = "zip"
+"""The key that binds names in lockstep, beside or instead of :data:`REPEAT_KEY`."""
+
+_EXPANDING_KEYS: Final = (REPEAT_KEY, ZIP_KEY)
+"""The keys a step or an input expands by, and that expansion removes."""
 
 MAX_EXPANDED_ITEMS: Final = 10_000
 """The most steps and inputs, together, that a recipe's repeats expand to."""
@@ -140,27 +160,33 @@ def _repeats(step: object) -> bool:
     if not is_str_mapping(step):
         return False
     inputs = step.get("inputs")
-    return REPEAT_KEY in step or (
+    return _expands(step) or (
         is_object_list(inputs)
-        and any(is_str_mapping(item) and REPEAT_KEY in item for item in inputs)
+        and any(is_str_mapping(item) and _expands(item) for item in inputs)
     )
+
+
+def _expands(item: Mapping[str, object]) -> bool:
+    """Whether *item* carries ``repeat`` or ``zip``."""
+    return any(key in item for key in _EXPANDING_KEYS)
+
+
+def _without_expanding_keys(item: Mapping[str, object]) -> dict[str, object]:
+    """*item* as it reads once expanded."""
+    return {key: value for key, value in item.items() if key not in _EXPANDING_KEYS}
 
 
 def _expand_step(step: object, budget: _Budget) -> list[object]:
     """The steps that one declared step stands for."""
     if not is_str_mapping(step) or not _repeats(step):
         return [step]
-    if REPEAT_KEY not in step:
+    if not _expands(step):
         return [_bound_step(step, {}, budget)]
-    names, values = _axes(step[REPEAT_KEY], {}, REPEAT_KEY)
-    body = {key: value for key, value in step.items() if key != REPEAT_KEY}
-    _check_id(body.get("id"), names)
-    combinations = _product_size(values)
-    budget.spend(combinations, REPEAT_KEY)
-    return [
-        _bound_step(body, dict(zip(names, chosen, strict=True)), budget)
-        for chosen in itertools.product(*values)
-    ]
+    axes = _axes(step, {}, "")
+    body = _without_expanding_keys(step)
+    _check_id(body.get("id"), axes)
+    budget.spend(axes.size, axes.where)
+    return [_bound_step(body, bindings, budget) for bindings in axes.bindings()]
 
 
 def _bound_step(
@@ -181,68 +207,144 @@ def _bound_step(
 def _expand_inputs(
     inputs: list[object], bindings: Mapping[str, object], budget: _Budget
 ) -> list[object]:
-    """A step's inputs with each ``repeat`` item expanded in its place."""
+    """A step's inputs with each ``repeat`` or ``zip`` item expanded in its place."""
     expanded: list[object] = []
     for position, item in enumerate(inputs):
         where = f"inputs[{position}]"
-        if not (is_str_mapping(item) and REPEAT_KEY in item):
+        if not (is_str_mapping(item) and _expands(item)):
             expanded.append(_substitute_value(item, bindings, where))
             continue
-        names, values = _axes(item[REPEAT_KEY], bindings, f"{where}.{REPEAT_KEY}")
-        body = {key: value for key, value in item.items() if key != REPEAT_KEY}
-        budget.spend(_product_size(values), f"{where}.{REPEAT_KEY}")
+        axes = _axes(item, bindings, f"{where}.")
+        budget.spend(axes.size, axes.where)
+        body = _without_expanding_keys(item)
         expanded.extend(
-            _substitute_value(
-                body, {**bindings, **dict(zip(names, chosen, strict=True))}, where
-            )
-            for chosen in itertools.product(*values)
+            _substitute_value(body, {**bindings, **chosen}, where)
+            for chosen in axes.bindings()
         )
     return expanded
 
 
+@dataclass(frozen=True)
+class _Axes:
+    """What one ``repeat`` and ``zip`` bind: independent axes of value tuples.
+
+    A ``repeat`` name is an axis of its own and a ``zip`` is one axis for all its
+    names, so the items are the product of the axes.
+    """
+
+    names: tuple[str, ...]
+    """Every bound name, in the order the axes list their values."""
+
+    axes: tuple[tuple[tuple[object, ...], ...], ...]
+    where: str
+    """The place of the first of ``repeat`` and ``zip`` the item carries."""
+
+    zipped: tuple[str, ...] = ()
+    """The names bound in lockstep."""
+
+    zip_where: str = ZIP_KEY
+    """The place of the ``zip``."""
+
+    @property
+    def size(self) -> int:
+        """How many items the axes make."""
+        return math.prod(len(axis) for axis in self.axes)
+
+    def bindings(self) -> Iterator[dict[str, object]]:
+        """Each item's name to value, the first axis varying slowest."""
+        for combination in itertools.product(*self.axes):
+            values = tuple(itertools.chain.from_iterable(combination))
+            yield dict(zip(self.names, values, strict=True))
+
+
 def _axes(
-    declared: object, bindings: Mapping[str, object], where: str
-) -> tuple[list[str], list[list[object]]]:
-    """The names of a ``repeat`` and the values each takes, outer values substituted."""
+    item: Mapping[str, object], bindings: Mapping[str, object], prefix: str
+) -> _Axes:
+    """The axes of the ``repeat`` and ``zip`` of *item*, outer values substituted.
+
+    *prefix* leads the place of a fault: ``""`` on a step, ``inputs[i].`` on an
+    input.
+    """
+    names: list[str] = []
+    axes: list[tuple[tuple[object, ...], ...]] = []
+    zipped: list[str] = []
+    for key in _EXPANDING_KEYS:
+        if key not in item:
+            continue
+        where = f"{prefix}{key}"
+        columns = _columns(key, item[key], bindings, names, where)
+        names.extend(name for name, _ in columns)
+        if key == ZIP_KEY:
+            lengths = {len(values) for _, values in columns}
+            if len(lengths) > 1:
+                raise _Fault(
+                    where,
+                    f"zip takes lists of the same length, not "
+                    f"{', '.join(str(len(values)) for _, values in columns)}",
+                )
+            zipped = [name for name, _ in columns]
+            axes.append(tuple(zip(*(values for _, values in columns), strict=True)))
+        else:
+            axes.extend(tuple((value,) for value in values) for _, values in columns)
+    first = next(key for key in _EXPANDING_KEYS if key in item)
+    return _Axes(
+        tuple(names),
+        tuple(axes),
+        f"{prefix}{first}",
+        tuple(zipped),
+        f"{prefix}{ZIP_KEY}",
+    )
+
+
+def _columns(
+    key: str,
+    declared: object,
+    bindings: Mapping[str, object],
+    taken: list[str],
+    where: str,
+) -> list[tuple[str, list[object]]]:
+    """The names of a ``repeat`` or ``zip`` and the values each takes."""
     if not is_str_mapping(declared) or not declared:
         raise _Fault(
-            where, 'repeat maps each name to a list of values, as {"seed": [1, 2]}'
+            where, f'{key} maps each name to a list of values, as {{"seed": [1, 2]}}'
         )
-    names: list[str] = []
-    values: list[list[object]] = []
+    columns: list[tuple[str, list[object]]] = []
     for name, options in declared.items():
         if not _NAME.fullmatch(name):
-            raise _Fault(where, f"repeat name {name!r} is not an identifier")
-        if name in bindings:
-            raise _Fault(where, f"repeat name {name!r} is already repeated by its step")
+            raise _Fault(where, f"{key} name {name!r} is not an identifier")
+        if name in bindings or name in taken:
+            raise _Fault(where, f"{key} name {name!r} is already repeated by its step")
         if not is_object_list(options) or not options:
-            raise _Fault(where, f"repeat {name!r} takes a non-empty list of values")
-        names.append(name)
-        values.append(
-            [_substitute_value(option, bindings, where) for option in options]
+            raise _Fault(where, f"{key} {name!r} takes a non-empty list of values")
+        columns.append(
+            (name, [_substitute_value(option, bindings, where) for option in options])
         )
-    return names, values
+    return columns
 
 
-def _product_size(values: list[list[object]]) -> int:
-    """How many combinations the lists of *values* make."""
-    size = 1
-    for options in values:
-        size *= len(options)
-    return size
+def _check_id(declared: object, axes: _Axes) -> None:
+    """Refuse a repeated step whose id would be the same for two of its items.
 
-
-def _check_id(declared: object, names: list[str]) -> None:
-    """Refuse a repeated step whose id would be the same for two of its items."""
+    The id names every ``repeat`` name and at least one ``zip`` name.
+    """
     if not isinstance(declared, str):
         raise _Fault("id", "a repeated step needs an id naming each repeat name")
     used = set(_PLACEHOLDER.findall(declared))
-    missing = [name for name in names if name not in used]
+    missing = [
+        name for name in axes.names if name not in used and name not in axes.zipped
+    ]
     if missing:
         named = ", ".join(f"{{{name}}}" for name in missing)
         raise _Fault(
-            REPEAT_KEY,
+            axes.where,
             f"the id {declared!r} must name {named}, so each repeated step has "
+            f"an id of its own",
+        )
+    if axes.zipped and not used.intersection(axes.zipped):
+        named = " or ".join(f"{{{name}}}" for name in axes.zipped)
+        raise _Fault(
+            axes.zip_where,
+            f"the id {declared!r} must name {named}, so each zipped step has "
             f"an id of its own",
         )
 

@@ -141,9 +141,15 @@ This recipe has seven steps: `speed`, `templates_s1` to `templates_s3` and
 - A step's id names each of its names, so every copy has an id of its own.
 - Several names expand to every combination, the first name varying slowest:
   `"repeat": {"behavior": ["attack", "mount"], "seed": [1, 2]}` is four steps.
+- Names that must move together, such as a behavior and its threshold, go in `zip`,
+  which binds them in lockstep. The lists must have the same length, and the n-th
+  value of each is taken together:
+  `"zip": {"behavior": ["attack", "mount"], "threshold": [0.3, 0.6]}` is two steps. The
+  id names at least one of the zipped names. Beside a `repeat`, a `zip` is one more
+  axis of the product, varying fastest.
 - An item of `inputs` repeats the same way. An ensemble reads every seed with one input,
   `{"step": "clf_s{seed}", "repeat": {"seed": [1, 2, 3]}}`, and inside a repeated step
-  it sees that step's values. `repeat` is read on a step and an input only.
+  it sees that step's values. `repeat` and `zip` are read on a step and an input only.
 
 The recipe is expanded when it is read. Its digest, its saved copy and every run id are
 those of the steps written out in full, so writing a step out by hand later changes
