@@ -408,7 +408,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `--step-scope` you ran) fits each fitting step of a finished recipe again in a scratch
   directory and compares it with the stored run. It exits 1 on a difference and when it
   compared nothing, and it writes nothing to the dataset. Features that train a network
-  match exactly on CPU at one thread count and otherwise within `--atol`. Propose it to
+  match exactly on CPU at one thread count and otherwise within `--atol`. `--step <id>`
+  (repeatable) verifies only the steps named, and `--n-threads` (1 by default) bounds the
+  threads of every BLAS and OpenMP library while a step is fitted. Propose it to
   the user to check a result reproduces, and run it only when they ask.
 - `mosaic inventory` reports what exists, with coverage and a status such as
   `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report

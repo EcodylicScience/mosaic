@@ -13,8 +13,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import TypeAdapter
 
 from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import Plan, Recipe, plan_pipeline, run_pipeline
 from mosaic.core.pipeline.verify import (
     ScratchRefused,
@@ -81,6 +83,72 @@ def test_a_recipe_fitted_again_matches_what_it_stored(study: Dataset) -> None:
     assert (score.role, score.status) == ("evaluation", "ok")
     assert score.reason == "scored the predictions of the new fit"
     assert report.verified == 3
+
+
+def test_only_the_named_steps_are_fitted_again(study: Dataset) -> None:
+    report = verify_plan(study, _plan(study), steps=["clf"])
+
+    assert report.ok
+    assert report.verified == 1
+    assert _verdict(report, "clf").status == "ok"
+    for step in ("labeled", "score"):
+        skipped = _verdict(report, step)
+        assert skipped.status == "skipped"
+        assert skipped.reason == "it is not among the steps named"
+
+
+def test_a_named_evaluation_scores_the_stored_predictions(study: Dataset) -> None:
+    report = verify_plan(study, _plan(study), steps=["score"])
+
+    score = _verdict(report, "score")
+    assert (score.status, score.reason) == ("ok", "scored the stored predictions")
+    assert _verdict(report, "clf").status == "skipped"
+
+
+def test_a_named_step_the_recipe_lacks_is_refused(study: Dataset) -> None:
+    with pytest.raises(ValueError, match="nope"):
+        _ = verify_plan(study, _plan(study), steps=["clf", "nope"])
+
+
+_THREADPOOLS = TypeAdapter(list[dict[str, JsonValue]])
+
+
+def _thread_counts() -> list[tuple[str, int]]:
+    """Each loaded BLAS or OpenMP library with the threads it may use now."""
+    import threadpoolctl
+
+    controller = threadpoolctl.ThreadpoolController()
+    info = _THREADPOOLS.validate_python(controller.info())
+    return [
+        (str(lib["filepath"]), lib["num_threads"])
+        for lib in info
+        if isinstance(lib["num_threads"], int)
+    ]
+
+
+def test_each_step_is_fitted_with_its_threadpools_bounded_to_n_threads(
+    study: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.core.pipeline import verify
+
+    before = _thread_counts()
+    if not before:
+        pytest.skip("no threadpool library is loaded")
+    seen: list[int] = []
+    original = verify._verify_fit  # pyright: ignore[reportPrivateUsage]
+
+    def spy(*args: object, **kwargs: object) -> StepVerdict:
+        seen.append(max(count for _, count in _thread_counts()))
+        return original(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(verify, "_verify_fit", spy)
+
+    report = verify_plan(study, _plan(study), n_threads=1)
+
+    assert report.ok
+    assert seen
+    assert set(seen) == {1}
+    assert _thread_counts() == before
 
 
 def test_a_step_that_fits_nothing_is_skipped_with_the_reason(study: Dataset) -> None:

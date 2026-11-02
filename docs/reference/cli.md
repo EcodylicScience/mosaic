@@ -1162,6 +1162,9 @@ evaluation of its predictions inherits it. To verify a run that was fitted
 at another thread count or on a GPU, raise --atol and read the argmax
 agreement. The dataset is opened read-only and nothing is written under it.
 
+--step (repeatable) verifies only the steps named and skips the rest. An
+evaluation named without the fit it scores reads the stored predictions.
+
 **Usage**:
 
 ```console
@@ -1177,7 +1180,8 @@ $ mosaic pipeline verify [OPTIONS]
 * `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--atol <float range>`: How far a tolerant feature's new fit may sit from the stored one, per value. Only a feature that trains a network is tolerant (it has an n_threads param, or a device other than cpu). Every other feature must match exactly.  [default: 1e-05; x>=0]
 * `--scratch <path>`: Where the new fits go, outside the dataset. It must be absent or empty, and is kept afterwards. Without it a temporary directory is used and removed.
-* `--n-threads <int range>`: The thread count a feature with an n_threads param is fitted with. It is outside the run id.  [default: 1; x>=1]
+* `--n-threads <int range>`: The thread count a feature with an n_threads param is fitted with, and the most threads any BLAS or OpenMP library uses while a step is fitted. It is outside the run id.  [default: 1; x>=1]
+* `--step <str>`: A step id to verify (repeatable). Every other step is skipped. Unset verifies every step that can be.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

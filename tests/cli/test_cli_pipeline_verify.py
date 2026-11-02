@@ -95,6 +95,36 @@ def test_a_matching_recipe_exits_zero_and_reports_every_step(
     assert by_step["score"]["role"] == "evaluation"
 
 
+def test_step_limits_the_verification_to_the_steps_named(
+    study: Dataset, recipe_file: str
+) -> None:
+    result = _verify(study, recipe_file, "--step", "clf", "--json")
+
+    assert result.exit_code == 0, result.stderr
+    by_step = {
+        step["step"]: step["status"] for step in json.loads(result.stdout)["steps"]
+    }
+    assert by_step["clf"] == "ok"
+    assert by_step["labeled"] == by_step["score"] == "skipped"
+
+
+def test_step_may_be_repeated(study: Dataset, recipe_file: str) -> None:
+    result = _verify(study, recipe_file, "--step", "clf", "--step", "score", "--json")
+
+    assert result.exit_code == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["verified"] == 2
+
+
+def test_a_step_the_recipe_lacks_exits_one_and_names_it(
+    study: Dataset, recipe_file: str
+) -> None:
+    result = _verify(study, recipe_file, "--step", "nope")
+
+    assert result.exit_code == 1
+    assert "nope" in result.stderr
+
+
 def test_a_changed_output_exits_one_and_the_text_report_names_the_entry(
     study: Dataset, recipe_file: str
 ) -> None:

@@ -76,6 +76,12 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**`pipeline verify` bounds threads and takes `--step`.** Each step is fitted and applied
+with every BLAS and OpenMP threadpool limited to `--n-threads` (1 by default), where the
+libraries used their own count before. `--step <id>`, repeatable, verifies only the steps
+named and reports the rest as skipped. A step the recipe lacks is refused. No run id
+changes.
+
 **A plan cautions about a large `xgboost` fit on the CPU.** `plan_recipe` and `mosaic
 pipeline plan` caution on an `xgboost` step whose `device` is `cpu` and that is asked for
 more than 50 entries, when the host can import `torch` and shows a GPU

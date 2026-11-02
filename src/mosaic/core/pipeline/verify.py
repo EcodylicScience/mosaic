@@ -43,7 +43,14 @@ import json
 import math
 import shutil
 import tempfile
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Generator,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -1078,6 +1085,7 @@ def verify_plan(
     atol: float = DEFAULT_ATOL,
     n_threads: int = 1,
     scratch: Path | None = None,
+    steps: Collection[str] | None = None,
 ) -> VerifyReport:
     """Fit each fitting step of *plan* again and compare it with its stored run.
 
@@ -1089,10 +1097,14 @@ def verify_plan(
             the thread count or the device. Every other feature must match
             exactly.
         n_threads: The thread count a feature with an ``n_threads`` param is fitted
-            with. It is outside the run id, so this changes nothing the stored run
-            is named by.
+            with, and the most threads any BLAS or OpenMP library may use while a
+            step is fitted and applied. It is outside the run id, so this changes
+            nothing the stored run is named by.
         scratch: Where the new fits go. ``None`` takes a temporary directory that
             is removed afterwards.
+        steps: The ids of the steps to verify. Every other step is skipped. An
+            evaluation named without the fit it scores reads the stored
+            predictions. ``None`` verifies every step that can be.
 
     Returns:
         One verdict per step. A step that cannot be verified is ``skipped`` with the
@@ -1100,7 +1112,16 @@ def verify_plan(
 
     Raises:
         ScratchRefused: *scratch* is inside the dataset or holds other files.
+        ValueError: *steps* names a step that *plan* lacks.
     """
+    from threadpoolctl import threadpool_limits
+
+    named = None if steps is None else set(steps)
+    if named is not None:
+        unknown = sorted(named - {planned.step_id for planned in plan.steps})
+        if unknown:
+            msg = f"the plan has no step {', '.join(map(repr, unknown))}"
+            raise ValueError(msg)
     verdicts: list[StepVerdict] = []
     unfinished = 0
     applied: dict[tuple[str, str], _Applied] = {}
@@ -1113,6 +1134,13 @@ def verify_plan(
                 verdicts.append(
                     skipped.model_copy(
                         update={"reason": "an op step is not fitted here"}
+                    )
+                )
+                continue
+            if named is not None and planned.step_id not in named:
+                verdicts.append(
+                    skipped.model_copy(
+                        update={"reason": "it is not among the steps named"}
                     )
                 )
                 continue
@@ -1135,17 +1163,18 @@ def verify_plan(
             work = root / planned.step_id
             check = _verify_scores if evaluation and not planned.fits else _verify_fit
             try:
-                verdicts.append(
-                    check(
-                        ds,
-                        planned,
-                        plan,
-                        work,
-                        atol=atol,
-                        n_threads=n_threads,
-                        applied=applied,
+                with threadpool_limits(limits=n_threads):
+                    verdicts.append(
+                        check(
+                            ds,
+                            planned,
+                            plan,
+                            work,
+                            atol=atol,
+                            n_threads=n_threads,
+                            applied=applied,
+                        )
                     )
-                )
             except Exception as exc:  # noqa: BLE001 - the verdict names what broke
                 verdicts.append(
                     StepVerdict(

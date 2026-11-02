@@ -424,14 +424,25 @@ ScratchOption = Annotated[
         ),
     ),
 ]
+VerifyStepOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--step",
+        help=(
+            "A step id to verify (repeatable). Every other step is skipped. Unset "
+            "verifies every step that can be."
+        ),
+    ),
+]
 VerifyThreadsOption = Annotated[
     int,
     typer.Option(
         "--n-threads",
         min=1,
         help=(
-            "The thread count a feature with an n_threads param is fitted with. "
-            "It is outside the run id."
+            "The thread count a feature with an n_threads param is fitted with, "
+            "and the most threads any BLAS or OpenMP library uses while a step is "
+            "fitted. It is outside the run id."
         ),
     ),
 ]
@@ -446,6 +457,7 @@ def verify_command(
     atol: AtolOption = 1e-5,
     scratch: ScratchOption = None,
     n_threads: VerifyThreadsOption = 1,
+    step: VerifyStepOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Fit a finished recipe's fitting steps again and compare them with the stored runs.
@@ -473,6 +485,9 @@ def verify_command(
     evaluation of its predictions inherits it. To verify a run that was fitted
     at another thread count or on a GPU, raise --atol and read the argmax
     agreement. The dataset is opened read-only and nothing is written under it.
+
+    --step (repeatable) verifies only the steps named and skips the rest. An
+    evaluation named without the fit it scores reads the stored predictions.
     """
     from mosaic.core.pipeline.graph import RecipeRefused, plan_pipeline
     from mosaic.core.pipeline.verify import ScratchRefused, verify_plan
@@ -498,9 +513,9 @@ def verify_command(
     try:
         with stdout_to_stderr():
             report = verify_plan(
-                ds, plan, atol=atol, n_threads=n_threads, scratch=scratch
+                ds, plan, atol=atol, n_threads=n_threads, scratch=scratch, steps=step
             )
-    except ScratchRefused as refusal:
+    except (ScratchRefused, ValueError) as refusal:
         fail(str(refusal))
     if as_json:
         emit_json(report.model_dump(mode="json"))
