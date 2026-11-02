@@ -227,7 +227,7 @@ SUBMITTED_STEP_SAMPLE: Final = 3
 """The steps to compute that a ``submit_pipeline`` result lists, in topological order.
 
 Its result stays under 1,000 characters whatever the recipe's size, and
-``get_request_status`` with ``brief`` lists the rest.
+``get_request_status`` without ``brief`` lists every step.
 """
 
 MAX_ASSUMED_GROUPS: Final = 16
@@ -1617,7 +1617,7 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "Resolve a recipe against a dataset without running it: each step's "
             "run id, status, coverage, entries asked, lane and why it waits, the "
             "problems that refuse it, the cautions to show the user, and the plan "
-            "fingerprint that submit_pipeline requires. Show the user the plan "
+            "fingerprint that submit_pipeline takes. Show the user the plan "
             "and its cautions before submitting. With cleanup 'superseded' it also "
             "lists the saved recipes that retire can reclaim runs from. A plan of "
             "about 40 steps or more is refused as too large: page it with limit "
@@ -1633,9 +1633,10 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         name="submit_pipeline",
         title="Submit a pipeline",
         description=(
-            "Submit a planned recipe and start running it in the background. "
-            "Requires the fingerprint of a current plan_recipe result, planned "
-            "with the same cleanup and retire. Returns the request id. Wait for "
+            "Submit a recipe and start running it in the background. Pass the "
+            "fingerprint of a reviewed plan_recipe result, planned with the same "
+            "cleanup and retire, to refuse a changed plan; without it the recipe "
+            "is planned here. A cleanup needs it. Returns the request id. Wait for "
             "the request with get_request_status and wait_seconds. "
             "When the work is costly or a choice is the user's, a client that can "
             "ask the user asks. Otherwise the call is refused with reason "

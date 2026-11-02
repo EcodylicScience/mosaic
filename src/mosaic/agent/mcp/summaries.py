@@ -320,7 +320,8 @@ def _plan(plan: PlanPage) -> str:
         f"{_names(steps)}.{paging}{done}{narrowing}{deferred}{problems}{cautions}"
         f"{unended}"
         f"{cleanup} "
-        f"Its fingerprint is {plan.fingerprint}, which submit_pipeline requires. "
+        f"Its fingerprint is {plan.fingerprint}: pass it to submit_pipeline to "
+        "refuse the submission if the plan changes. "
         f"Show the user the plan and its cautions before submitting. {_STRUCTURED}"
     )
 
@@ -343,8 +344,9 @@ def _submitted(submitted: SubmittedPipeline) -> str:
         f"Submitted request {submitted.request_id} with {total} step(s), "
         f"{computed} to compute, running in the background.{duplicates}"
         f"{cleanup} Wait for it with get_request_status and wait_seconds, which "
-        "returns when a step or the request ends, and brief lists the steps "
-        "first_steps leaves out. Do not watch the driver's process. Its log, "
+        "returns when a step or the request ends. get_request_status without "
+        "brief lists every step, and with brief the ones that need attention. "
+        "Do not watch the driver's process. Its log, "
         "driver_log, explains a failure."
     )
 

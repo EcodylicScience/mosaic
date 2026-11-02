@@ -177,6 +177,7 @@ def test_the_summary_of_a_page_points_at_the_next_one(
     summary = summarize(first)
 
     assert f"{PAGE} of its {STEPS} step(s)" in summary
+    assert "requires" not in summary
     assert first.next_cursor is not None
     assert "call again with cursor" in summary
 
@@ -199,7 +200,7 @@ def test_a_submission_of_many_steps_answers_in_under_a_thousand_characters(
         f"heading{index}" for index in range(SUBMITTED_STEP_SAMPLE)
     ]
     assert submitted.truncated
-    assert "get_request_status" in summarize(submitted)
+    assert "get_request_status without brief" in summarize(submitted)
 
 
 def test_a_submission_of_few_steps_lists_them_all(

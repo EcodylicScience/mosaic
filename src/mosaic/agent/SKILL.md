@@ -541,7 +541,7 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   then plans it in the same call, and still refuses with `confirmation_required` when a
   condition applies. A cleanup always needs the reviewed plan's fingerprint. The result
   counts the steps by status and lists the first three to compute (`first_steps`);
-  `get_request_status` with `brief` lists the rest.
+  `get_request_status` without `brief` lists every step.
 - A plan of about 40 steps or more is over the read limit. Plan it with `limit` (about
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;

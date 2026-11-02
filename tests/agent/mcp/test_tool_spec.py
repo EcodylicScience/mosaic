@@ -456,3 +456,11 @@ def test_entries_accept_a_groups_selector() -> None:
         _ = PlanRecipeInput.model_validate(
             {"dataset": "d", "recipe": {}, "entries": {"groups": []}}
         )
+
+
+def test_the_plan_and_submit_descriptions_leave_the_fingerprint_optional() -> None:
+    for name in ("plan_recipe", "submit_pipeline"):
+        description = tool_spec(name).description
+
+        assert "requires" not in description.lower(), name
+        assert "fingerprint" in description, name

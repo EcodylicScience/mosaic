@@ -26,7 +26,7 @@ cleanup without it is refused with `cleanup_needs_plan`.
 **A compact `submit_pipeline` result.** `SubmittedPipeline.steps` is replaced by
 `counts`, the steps by plan status, `first_steps`, the first three steps to compute,
 and `truncated`, whether more are to compute. A result stays under 1,000 characters
-whatever the recipe's size, and `get_request_status` with `brief` lists the rest.
+whatever the recipe's size, and `get_request_status` without `brief` lists every step.
 
 **`--recipe` takes a file path.** The `mosaic pipeline` verbs read a `--recipe` value
 that names an existing file, and does not open with `{`, `[` or `@`, as that file. The
