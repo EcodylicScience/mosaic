@@ -30,7 +30,7 @@ from .index import (
     feature_index_path,
     missing_outputs_error,
 )
-from .loading import load_entry_data
+from .loading import PairRowsMissing, load_entry_data
 from .track_universe import current_run_id, is_track_shaped
 from .tracks_index import (
     FrameExtents,
@@ -1021,14 +1021,28 @@ def _load_neighbor(
     entry_key: str | None,
     filter_factory: FilterFactory | None,
     cross_join: bool = False,
+    expands_individuals: bool = False,
 ) -> pd.DataFrame | None:
-    """Load a neighbor segment with its own filters applied."""
+    """Load a neighbor segment with its own filters applied.
+
+    A neighbor whose input 0 holds no pair rows to widen onto
+    (:class:`~mosaic.core.pipeline.loading.PairRowsMissing`) gives no context,
+    as an empty neighbor does.
+    """
     if file_specs is None:
         return None
     filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = ()
     if filter_factory is not None and entry_key is not None:
         filters = filter_factory(entry_key)
-    return load_entry_data(file_specs, filters=filters, cross_join=cross_join)
+    try:
+        return load_entry_data(
+            file_specs,
+            filters=filters,
+            cross_join=cross_join,
+            expands_individuals=expands_individuals,
+        )
+    except PairRowsMissing:
+        return None
 
 
 def _frame_window(
@@ -1060,6 +1074,15 @@ def _frame_window(
     return None if window.empty else window
 
 
+def skip_pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
+    """An ``on_pairs_missing`` that skips the entry, for a read beside the apply loop.
+
+    A fit's input stream and a verification read the entries that the apply
+    loop reads, and the apply loop records the lost entry.
+    """
+    del entry_key, exc
+
+
 @overload
 def iter_manifest(
     manifest: Manifest,
@@ -1069,6 +1092,8 @@ def iter_manifest(
     progress_label: str = "",
     progress_interval: int = 10,
     cross_join: bool = False,
+    expands_individuals: bool = False,
+    on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame]]: ...
 
 
@@ -1081,6 +1106,8 @@ def iter_manifest(
     progress_label: str = "",
     progress_interval: int = 10,
     cross_join: bool = False,
+    expands_individuals: bool = False,
+    on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame, CoreSelector]]: ...
 
 
@@ -1092,6 +1119,8 @@ def iter_manifest(
     progress_label: str = "",
     progress_interval: int = 10,
     cross_join: bool = False,
+    expands_individuals: bool = False,
+    on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, CoreSelector]]:
     """Iterate manifest entries, yielding data per sequence.
 
@@ -1107,6 +1136,10 @@ def iter_manifest(
 
     *cross_join* passes the frame-only-merge escape down to the loader, for the one
     feature that declares it (``loading.CROSS_JOIN_FEATURES``).
+    *expands_individuals* passes the widening of individual inputs onto pair
+    rows down to the loader, for both the entry and its neighbors
+    (``loading.expands_individuals``). An entry whose input 0 then holds no pair
+    rows is handed to *on_pairs_missing* and skipped, and raises without it.
     """
     n_entries = len(manifest)
     for i, (entry_key, entry) in enumerate(manifest.items()):
@@ -1116,7 +1149,18 @@ def iter_manifest(
             filters = filter_factory(entry_key)
 
         # Load current segment
-        df = load_entry_data(entry.file_specs, filters=filters, cross_join=cross_join)
+        try:
+            df = load_entry_data(
+                entry.file_specs,
+                filters=filters,
+                cross_join=cross_join,
+                expands_individuals=expands_individuals,
+            )
+        except PairRowsMissing as exc:
+            if on_pairs_missing is None:
+                raise
+            on_pairs_missing(entry_key, exc)
+            continue
         if df is None:
             continue
 
@@ -1141,6 +1185,7 @@ def iter_manifest(
                         entry.prev_file_specs,
                         entry.prev_entry_key,
                         filter_factory,
+                        expands_individuals=expands_individuals,
                     ),
                     overlap_frames,
                     keep_tail=True,
@@ -1150,6 +1195,7 @@ def iter_manifest(
                         entry.next_file_specs,
                         entry.next_entry_key,
                         filter_factory,
+                        expands_individuals=expands_individuals,
                     ),
                     overlap_frames,
                     keep_tail=False,

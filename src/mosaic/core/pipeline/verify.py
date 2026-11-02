@@ -60,12 +60,18 @@ from mosaic.user_paths import user_path
 
 from ._utils import FeatureMeta, ResolvedScope
 from .index import feature_index, feature_index_path, feature_run_root
-from .loading import CROSS_JOIN_FEATURES, resolve_sequence_identity, stacks_inputs
+from .loading import (
+    CROSS_JOIN_FEATURES,
+    expands_individuals,
+    resolve_sequence_identity,
+    stacks_inputs,
+)
 from .manifest import (
     FilterFactory,
     Manifest,
     build_manifest,
     iter_manifest,
+    skip_pairs_missing,
     verify_overlap_supported,
 )
 from .run import (
@@ -562,6 +568,7 @@ class _Rebuilt:
     stream: InputStream
     filter_factory: FilterFactory | None
     cross_join: bool
+    widens_individuals: bool
     artifact_paths: dict[str, Path]
     dependency_lookups: dict[str, dict[tuple[str, str], Path]]
     run_id: str
@@ -633,6 +640,7 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
         ds, resolved, _resolve_pair_filter(feature.params), frame_start, frame_end
     )
     cross_join = feature.name in CROSS_JOIN_FEATURES
+    widens_individuals = expands_individuals(feature)
     bind = getattr(feature, "bind_dataset", None)
     if callable(bind):
         _ = bind(ds)
@@ -643,9 +651,12 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
         feature=feature,
         manifest=manifest,
         resolved=resolved,
-        stream=fit_input_stream(feature, manifest, filter_factory, cross_join),
+        stream=fit_input_stream(
+            feature, manifest, filter_factory, cross_join, widens_individuals
+        ),
         filter_factory=filter_factory,
         cross_join=cross_join,
+        widens_individuals=widens_individuals,
         artifact_paths=artifact_paths,
         dependency_lookups=dependency_lookups,
         run_id=run_id,
@@ -685,6 +696,8 @@ def _entries_of(rebuilt: _Rebuilt) -> Iterator[tuple[tuple[str, str], pd.DataFra
         rebuilt.manifest,
         filter_factory=rebuilt.filter_factory,
         cross_join=rebuilt.cross_join,
+        expands_individuals=rebuilt.widens_individuals,
+        on_pairs_missing=skip_pairs_missing,
     ):
         yield resolve_sequence_identity(key, rebuilt.resolved.entry_map), frame
 
@@ -847,6 +860,8 @@ def _verify_fit(
                 filter_factory=rebuilt.filter_factory,
                 overlap_frames=overlap,
                 cross_join=rebuilt.cross_join,
+                expands_individuals=rebuilt.widens_individuals,
+                on_pairs_missing=skip_pairs_missing,
             )
         )
     else:

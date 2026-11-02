@@ -149,6 +149,14 @@ are in `graph/CLAUDE.md`.
   raises `MultiInputAlignmentError` from it. Individual-level against pair-level
   output with no shared identity column is refused. `CROSS_JOIN_FEATURES` is the
   closed escape (`tests/core/pipeline/test_multi_input_alignment.py`).
+- `expands_individuals` (`loading.py`) is the one gate for widening an
+  individual-level input onto the pair rows of a pair-level input 0, as
+  `<col>__id1` and `<col>__id2`: `emits` of `as-input` or `pair`, outside
+  `CROSS_JOIN_FEATURES`. `run_feature`, `verify.py`, `_load_neighbor` and the
+  declarations (`ConsumerDecl.expands_individuals`) all read it, and `merge_naming`
+  names the columns for the merge and for validation. An entry whose pair input holds
+  no rows raises `PairRowsMissing`, which the apply loop records as an `entry_error`
+  (`tests/core/pipeline/test_widening_join.py`). `load_values` does not widen.
 - Inputs otherwise cover the entries they all hold. A feature that declares
   `stacks_inputs = True` (`stacks_inputs` in `loading.py`, `evaluate-labels`) reads its
   inputs as runs over disjoint entries: `build_manifest(stack=True)` unions them, takes

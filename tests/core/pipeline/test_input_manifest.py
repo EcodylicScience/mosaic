@@ -787,3 +787,49 @@ def test_one_stacked_input_is_the_input_itself(tmp_path: Path):
 
     assert stacked_scope.entries == plain_scope.entries
     assert stacked == plain
+
+
+def _pairs_and_individuals_manifest(tmp_path: Path) -> dict[str, ManifestEntry]:
+    """Three contiguous sequences, each read as pair rows beside individual rows."""
+    manifest = _build_three_seq_manifest(tmp_path, n_ids=2)
+    pair_specs: dict[str, tuple[Path, ParquetLoadSpec]] = {}
+    for key, entry in manifest.items():
+        tracks = pd.read_parquet(entry.file_specs[0][0])
+        frames = sorted(int(frame) for frame in tracks["frame"].unique())
+        pairs = pd.DataFrame(
+            [
+                {"frame": frame, "id1": a, "id2": 1 - a, "perspective": a}
+                for frame in frames
+                for a in (0, 1)
+            ]
+        )
+        pair_path = tmp_path / f"{entry.sequence}.pairs.parquet"
+        pairs.to_parquet(pair_path)
+        pair_specs[key] = (pair_path, ParquetLoadSpec())
+    for key, entry in manifest.items():
+        entry.file_specs.insert(0, pair_specs[key])
+        if entry.prev_file_specs is not None and entry.prev_entry_key is not None:
+            entry.prev_file_specs.insert(0, pair_specs[entry.prev_entry_key])
+        if entry.next_file_specs is not None and entry.next_entry_key is not None:
+            entry.next_file_specs.insert(0, pair_specs[entry.next_entry_key])
+    return manifest
+
+
+def test_overlap_context_is_widened_onto_the_neighbors_pair_rows(
+    tmp_path: Path,
+) -> None:
+    """A neighbor is loaded under the entry's widening, so its rows join too."""
+    manifest = _pairs_and_individuals_manifest(tmp_path)
+
+    _key, df, selector = list(
+        iter_manifest(manifest, overlap_frames=3, expands_individuals=True)
+    )[1]
+
+    assert {"X__id1", "X__id2"} <= set(df.columns)
+    assert df["X__id1"].notna().all()
+    assert sorted(df.loc[df["frame"] < selector.first, "frame"].unique()) == [7, 8, 9]
+    assert sorted(df.loc[df["frame"] > selector.last, "frame"].unique()) == [
+        20,
+        21,
+        22,
+    ]

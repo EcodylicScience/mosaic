@@ -64,6 +64,8 @@ from .index_lock import index_lock
 from .inventory.params import RunParams, read_run_params
 from .loading import (
     CROSS_JOIN_FEATURES,
+    PairRowsMissing,
+    expands_individuals,
     stacks_inputs,
     build_nn_lookup,
     labels_for_rows,
@@ -77,6 +79,7 @@ from .manifest import (
     OverlapUnsupported,
     build_manifest,
     iter_manifest,
+    skip_pairs_missing,
     tracks_variants_for,
     verify_overlap_supported,
 )
@@ -413,18 +416,24 @@ def fit_input_stream(
     manifest: Manifest,
     filter_factory: FilterFactory | None,
     cross_join: bool,
+    widens_individuals: bool,
 ) -> InputStream:
     """The frames ``feature.fit`` reads: the ones its ``apply`` reads, checked alike.
 
     A fit reads the frames that apply reads, and an entry lacking a declared
     column fails the fit with the message apply's check gives. ``run_feature`` and
     ``mosaic pipeline verify`` (:mod:`~mosaic.core.pipeline.verify`) build the
-    stream here, so a verification fits on what the run fitted on.
+    stream here, so a verification fits on what the run fitted on. An entry
+    without pair rows to widen onto is skipped, and apply reports it.
     """
 
     def input_factory() -> Iterator[tuple[str, pd.DataFrame]]:
         for entry_key, frame in iter_manifest(
-            manifest, filter_factory=filter_factory, cross_join=cross_join
+            manifest,
+            filter_factory=filter_factory,
+            cross_join=cross_join,
+            expands_individuals=widens_individuals,
+            on_pairs_missing=skip_pairs_missing,
         ):
             check_input_columns(
                 feature,
@@ -1388,6 +1397,8 @@ def _run_feature_impl(
     """
     # The frame-only-merge escape, for the one feature that declares it.
     cross_join = feature.name in CROSS_JOIN_FEATURES
+    # Individual inputs widened onto the pair rows of input 0.
+    widens_individuals = expands_individuals(feature)
     # Frame range + mutual exclusivity with overlap
     frame_start, frame_end = resolve_frame_range(
         ds.meta_float("fps_default"),
@@ -1592,7 +1603,11 @@ def _run_feature_impl(
         ctx.check_cancel()
 
         ctx.phase("fit", f"{len(manifest)} entries")
-        feature.fit(fit_input_stream(feature, manifest, filter_factory, cross_join))
+        feature.fit(
+            fit_input_stream(
+                feature, manifest, filter_factory, cross_join, widens_individuals
+            )
+        )
         feature.save_state(run_root)
         # Item 5.3, and the placement is the item. Written here rather than
         # beside params.json because only this branch means a fit actually ran:
@@ -1972,6 +1987,11 @@ def _run_feature_impl(
                 )
             _drain_completed()
 
+    def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
+        """Record an entry with no pair rows to widen onto as lost."""
+        group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
+        _entry_failed(group, sequence, exc)
+
     def _process_entry(
         entry_key: str,
         df: pd.DataFrame,
@@ -2080,6 +2100,8 @@ def _run_feature_impl(
                 overlap_frames=apply_overlap,
                 progress_label=storage_feature_name,
                 cross_join=cross_join,
+                expands_individuals=widens_individuals,
+                on_pairs_missing=_pairs_missing,
             ):
                 _process_entry(entry_key, df, selector)
         else:
@@ -2088,6 +2110,8 @@ def _run_feature_impl(
                 filter_factory=filter_factory,
                 progress_label=storage_feature_name,
                 cross_join=cross_join,
+                expands_individuals=widens_individuals,
+                on_pairs_missing=_pairs_missing,
             ):
                 _process_entry(entry_key, df, None)
 
