@@ -81,6 +81,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "HELDOUT_SOURCE_ID",
+    "GroupScore",
     "HeldOutFiles",
     "MemberScore",
     "ModelScore",
@@ -227,6 +228,29 @@ class MovedRunId(StrictModel):
         return f"RUN IDS CHANGED: {self.step} {self.before} -> {self.after}"
 
 
+class GroupScore(StrictModel):
+    """One group's score, pooled from the counts of its entries.
+
+    The counts of every entry of the group are added and scored once, so a long
+    sequence weighs more than a short one and the score does not depend on how the
+    group is divided into sequences. It is not the mean of the entries' own scores,
+    which count a class an entry lacks as 0 when ``average_over`` names it.
+
+    Attributes:
+        n_entries: Entries of the group that were scored.
+        n_scored: Rows scored.
+        accuracy: The share of scored rows predicted correctly.
+        macro_f1: Mean F1 over the protocol's classes.
+        per_class_f1: The F1 of each class, by the class's name or number.
+    """
+
+    n_entries: int
+    n_scored: int
+    accuracy: float | None
+    macro_f1: float | None
+    per_class_f1: dict[str, float | None]
+
+
 class MemberScore(StrictModel):
     """One answer step's score on the held-out entries.
 
@@ -238,6 +262,8 @@ class MemberScore(StrictModel):
         accuracy: The share of scored rows predicted correctly.
         macro_f1: Mean F1 over the protocol's classes.
         per_class_f1: The F1 of each class, by the class's name or number.
+        per_group: The same scores for each group alone, by the group's name,
+            pooled from the counts of its entries.
     """
 
     step: str
@@ -247,6 +273,7 @@ class MemberScore(StrictModel):
     accuracy: float | None
     macro_f1: float | None
     per_class_f1: dict[str, float | None]
+    per_group: dict[str, GroupScore] = {}
 
 
 class ModelScore(StrictModel):
@@ -695,8 +722,51 @@ def _read_report(ds: Dataset, storage: str, run_id: str) -> EvaluationReport | N
     return None if raw is None else EvaluationReport.model_validate(raw)
 
 
+def _group_scores(
+    ds: Dataset, storage: str, run_id: str, report: EvaluationReport
+) -> dict[str, GroupScore]:
+    """The scores of each group, pooled from the counts of its entries' rows."""
+    import pandas as pd
+
+    from mosaic.core.evaluation import pool_entry_counts
+
+    from ..index import feature_index, feature_index_path
+
+    try:
+        indexed = feature_index(feature_index_path(ds, storage)).read(
+            run_id=run_id, filter_ext=".parquet"
+        )
+    except FileNotFoundError:
+        return {}
+    tables: dict[str, list[pd.DataFrame]] = {}
+    for group, path in zip(indexed["group"], indexed["abs_path"], strict=True):
+        tables.setdefault(str(group), []).append(
+            pd.read_parquet(ds.resolve_path(str(path)))
+        )
+    names = {row.label: row.name or str(row.label) for row in report.per_class}
+    scores: dict[str, GroupScore] = {}
+    for group in sorted(tables):
+        entries = pd.concat(tables[group], ignore_index=True)
+        pooled = pool_entry_counts(entries, average_over=report.average_over)
+        scores[group] = GroupScore(
+            n_entries=len(entries),
+            n_scored=pooled["n_samples"],
+            accuracy=_finite(pooled["accuracy"]),
+            macro_f1=_finite(pooled["macro_f1"]),
+            per_class_f1={
+                names.get(row["label"], str(row["label"])): _finite(row["f1"])
+                for row in pooled["per_class"]
+            },
+        )
+    return scores
+
+
 def _member(
-    step: str, evaluation: str, run_id: str, report: EvaluationReport
+    step: str,
+    evaluation: str,
+    run_id: str,
+    report: EvaluationReport,
+    per_group: dict[str, GroupScore],
 ) -> MemberScore:
     return MemberScore(
         step=step,
@@ -708,6 +778,7 @@ def _member(
         per_class_f1={
             row.name or str(row.label): _finite(row.f1) for row in report.per_class
         },
+        per_group=per_group,
     )
 
 
@@ -774,7 +845,37 @@ def _table(models: list[ModelScore]) -> str:
             )
             lines.append(row)
         lines.append("")
+        lines.extend(_group_lines(model, classes))
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _group_lines(model: ModelScore, classes: list[str]) -> list[str]:
+    """A block per group of a name's scores, pooled within the group.
+
+    Empty when the members scored one group only, whose scores are the name's.
+    """
+    groups = list(
+        dict.fromkeys(group for member in model.members for group in member.per_group)
+    )
+    if len(groups) < 2:
+        return []
+    lines = [f"[{model.name}] by group"]
+    header = f"{'group':<16}{'model step':<24}{'macro F1':>15}"
+    lines.append(
+        header + "".join(f"{label:>15}" for label in classes) + f"{'rows':>10}"
+    )
+    for group in groups:
+        for member in model.members:
+            score = member.per_group.get(group)
+            if score is None:
+                continue
+            row = f"{group:<16}{member.step:<24}{_cell(score.macro_f1, None):>15}"
+            row += "".join(
+                f"{_cell(score.per_class_f1.get(label), None):>15}" for label in classes
+            )
+            lines.append(row + f"{score.n_scored:>10}")
+    lines.append("")
+    return lines
 
 
 # --- the entry point -----------------------------------------------------------------
@@ -1030,7 +1131,13 @@ def score_heldout(
         if report is None:
             warnings.append(f"{identifier} did not finish ({planned.status}); no score")
             continue
-        by_answer[answer] = _member(answer, identifier, planned.run_id or "", report)
+        by_answer[answer] = _member(
+            answer,
+            identifier,
+            planned.run_id or "",
+            report,
+            _group_scores(ds, planned.storage_name, planned.run_id or "", report),
+        )
     models = [
         _model(name, [by_answer[step] for step in steps if step in by_answer])
         for name, steps in answers.models.items()

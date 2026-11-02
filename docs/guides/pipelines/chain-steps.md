@@ -228,7 +228,10 @@ then compares the run id of every step of the recipe before and after. If one mo
 that step would fit again on data it must not see, and the command exits 1 listing them
 under `RUN IDS CHANGED`, having run nothing. Otherwise it appends an `evaluate-labels`
 step for each answer, runs the recipe, and writes `test_scores.json` and `test_scores.txt`
-to `--out`.
+to `--out`. With more than one held-out group, each answer is also scored per group
+(`per_group` in the JSON, a "by group" block in the text). A group's score pools the
+counts of its entries, so a long sequence weighs more than a short one and a class absent
+from one sequence does not count as 0, as it would in the mean of the entries' scores.
 
 - The held-out file is declared as a source, so give the raw format's source options
   (`--src-format`, `--multi-sequences-per-file`, `--group-from`, `--patterns`,

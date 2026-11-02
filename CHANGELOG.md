@@ -76,6 +76,12 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**`pipeline score` scores each held-out group.** `test_scores.json` gives every member a
+`per_group` mapping of group to `n_entries`, `n_scored`, `accuracy`, `macro_f1` and
+`per_class_f1`, and `test_scores.txt` a "by group" block when there is more than one
+group. A group's score pools the counts of its entries, as the pooled score does, so no
+entry's own `macro_f1` is averaged. The scores already reported do not change.
+
 **`preview_output` names the report.** Its description says that one entry's rows hold no
 pooled scores and points to the run's report resource for an `evaluate-labels` run's
 pooled metrics.

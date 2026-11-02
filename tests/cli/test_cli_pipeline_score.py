@@ -138,9 +138,52 @@ def test_a_held_out_file_is_scored_on_a_copy_and_the_study_is_left_alone(
         assert 0.0 <= member["macro_f1"] <= 1.0
     assert model["macro_f1_sd"] is not None
     assert "mean ± sd" in report["table"]
+    # One group holds every entry, so its pooled counts are the report's.
+    for member in model["members"]:
+        assert set(member["per_group"]) == {"test"}
+        assert member["per_group"]["test"]["macro_f1"] == member["macro_f1"]
+        assert member["per_group"]["test"]["n_scored"] == member["n_scored"]
     assert json.loads((out / SCORES_JSON).read_text())["models"] == report["models"]
     assert "[final]" in (out / SCORES_TXT).read_text()
     assert not (study.base_dir / SCORES_JSON).exists()
+
+
+def test_every_held_out_group_is_scored_from_its_pooled_counts(
+    study: Dataset, tmp_path: Path
+) -> None:
+    folder = tmp_path / "held"
+    write_calms21_npy(
+        folder / "test1.npy", {"a": {"t1": 120, "t2": 40}}, seed=29, n_classes=2
+    )
+    write_calms21_npy(folder / "test2.npy", {"a": {"t3": 90}}, seed=31, n_classes=2)
+
+    result = _score(
+        study,
+        tmp_path,
+        "--heldout",
+        str(folder),
+        "--multi-sequences-per-file",
+        "--group-from",
+        "filename",
+        "--out",
+        str(tmp_path / "scored"),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    report = json.loads(result.stdout)
+    [model] = report["models"]
+    for member in model["members"]:
+        groups = member["per_group"]
+        assert set(groups) == {"test1", "test2"}
+        assert groups["test1"]["n_entries"] == 2
+        assert groups["test2"]["n_entries"] == 1
+        assert (
+            groups["test1"]["n_scored"] + groups["test2"]["n_scored"]
+            == (member["n_scored"])
+        )
+        assert set(groups["test1"]["per_class_f1"]) == set(member["per_class_f1"])
+    assert "by group" in report["table"]
+    assert "test1" in report["table"]
 
 
 def test_the_held_out_data_enters_the_copy_and_never_the_study(
