@@ -8,6 +8,15 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: sequence-classifier training options
+
+**`sequence-classifier` predicts on the training device.** `apply_device` is now `auto`,
+`cpu` or `cuda`, default `auto`: a network predicts on `device` where CUDA exists and on
+the CPU otherwise. It was `cpu` by default. A new run on a GPU host therefore predicts on
+the GPU, and its probabilities can differ in the low bits from a CPU prediction under one
+run id, since `apply_device` is not hashed. `cpu` restores the old behavior. An apply also
+runs at `n_threads` threads and restores the process's count afterward. No run id moves.
+
 ## Unreleased: per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names

@@ -159,12 +159,14 @@ from .sequence_heads import (
 from .sequence_training import (
     Sampler,
     TrainingRun,
+    apply_device_for,
     class_weights,
     deterministic_torch,
     network_state,
     predict_probabilities,
     seed_torch,
     sub_seed,
+    torch_threads,
     train_network,
 )
 
@@ -365,7 +367,8 @@ _DEVICE_DESCRIPTION = (
 )
 
 _APPLY_DEVICE_DESCRIPTION = (
-    "Where a fitted network predicts. A model fitted on a GPU applies on the CPU. "
+    "Where a fitted network predicts. auto predicts on the training device, and "
+    "falls back to the CPU on a host without CUDA. cpu and cuda force a device. "
     "It changes the time of an apply and not the model, so it is not part of the "
     "run id. Probabilities agree across devices to about 1e-5."
 )
@@ -511,8 +514,10 @@ class SequenceClassifier(FitReporting):
         )
         # HASH_EXCLUDE: where and how fast a fitted network predicts changes no model.
         apply_device: Annotated[
-            Literal["cpu", "cuda"], HASH_EXCLUDE, Declared(_APPLY_DEVICE_DESCRIPTION)
-        ] = "cpu"
+            Literal["auto", "cpu", "cuda"],
+            HASH_EXCLUDE,
+            Declared(_APPLY_DEVICE_DESCRIPTION),
+        ] = "auto"
         n_threads: Annotated[
             int, Field(ge=1), HASH_EXCLUDE, Declared(_N_THREADS_DESCRIPTION)
         ] = 1
@@ -612,6 +617,7 @@ class SequenceClassifier(FitReporting):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.fits = self.params.model is None
+        self._apply_device: Literal["cpu", "cuda"] | None = None
         self._reset()
 
     def _reset(self) -> None:
@@ -799,25 +805,30 @@ class SequenceClassifier(FitReporting):
         probs = np.full((len(df), len(bundle["classes"])), np.nan)
         order = df[COLUMNS.frame_col].to_numpy()
         features = df[columns].to_numpy(dtype=np.float64)
-        for index in np.unique(choice):
-            needed = choice == index
-            model = bundle["models"][int(index)]
-            mean = np.asarray(model["mean"], dtype=np.float64)
-            std = np.asarray(model["std"], dtype=np.float64)
-            frames = standardize(features, mean, std, bundle["clip"]).astype(np.float32)
-            scored = np.full_like(probs, np.nan)
-            network = self._network(int(index), bundle)
-            for positions in iter_series_positions(df):
-                if not needed[positions].any():
-                    continue
-                for start, stop in consecutive_runs(
-                    order[positions], np.ones(len(positions), dtype=bool)
-                ):
-                    stretch = positions[start:stop]
-                    scored[stretch] = predict_probabilities(
-                        network, frames[stretch], device=self.params.apply_device
-                    )
-            probs[needed] = scored[needed]
+        with torch_threads(self.params.n_threads):
+            for index in np.unique(choice):
+                needed = choice == index
+                model = bundle["models"][int(index)]
+                mean = np.asarray(model["mean"], dtype=np.float64)
+                std = np.asarray(model["std"], dtype=np.float64)
+                frames = standardize(features, mean, std, bundle["clip"]).astype(
+                    np.float32
+                )
+                scored = np.full_like(probs, np.nan)
+                network = self._network(int(index), bundle)
+                for positions in iter_series_positions(df):
+                    if not needed[positions].any():
+                        continue
+                    for start, stop in consecutive_runs(
+                        order[positions], np.ones(len(positions), dtype=bool)
+                    ):
+                        stretch = positions[start:stop]
+                        scored[stretch] = predict_probabilities(
+                            network,
+                            frames[stretch],
+                            device=self._resolved_apply_device(),
+                        )
+                probs[needed] = scored[needed]
         return assemble_prediction(
             df,
             probs,
@@ -1177,6 +1188,14 @@ class SequenceClassifier(FitReporting):
         fold = out_of_fold_choice(df, self._fold_of, self.name)
         return np.full(len(df), full if fold is None else fold, dtype=np.intp)
 
+    def _resolved_apply_device(self) -> Literal["cpu", "cuda"]:
+        """Return the device the networks predict on, resolved once per instance."""
+        if self._apply_device is None:
+            self._apply_device = apply_device_for(
+                self.params.apply_device, self.params.device
+            )
+        return self._apply_device
+
     def _network(self, index: int, bundle: SequenceClassifierBundle) -> nn.Module:
         """Return the network of model *index* in evaluation mode, built once."""
         cached = self._networks.get(index)
@@ -1194,6 +1213,6 @@ class SequenceClassifier(FitReporting):
         )
         weights = bundle["models"][index]["weights"]
         _ = network.load_state_dict({k: torch.as_tensor(v) for k, v in weights.items()})
-        network.to(self.params.apply_device).eval()
+        network.to(self._resolved_apply_device()).eval()
         self._networks[index] = network
         return network

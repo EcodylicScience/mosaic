@@ -35,12 +35,14 @@ if TYPE_CHECKING:
 __all__ = [
     "Sampler",
     "TrainingRun",
+    "apply_device_for",
     "class_weights",
     "deterministic_torch",
     "network_state",
     "predict_probabilities",
     "seed_torch",
     "sub_seed",
+    "torch_threads",
     "train_network",
 ]
 
@@ -162,6 +164,40 @@ class Sampler:
 
 
 @contextlib.contextmanager
+def torch_threads(n_threads: int) -> Generator[None]:
+    """Run a block with torch's CPU thread count set to *n_threads*, then restore it."""
+    import torch
+
+    previous = torch.get_num_threads()
+    torch.set_num_threads(n_threads)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(previous)
+
+
+def apply_device_for(
+    requested: Literal["auto", "cpu", "cuda"], device: Literal["cpu", "cuda"]
+) -> Literal["cpu", "cuda"]:
+    """Return the device a fitted network predicts on.
+
+    Args:
+        requested: The ``apply_device`` setting. ``cpu`` and ``cuda`` are returned
+            as given. ``auto`` follows *device* where CUDA exists and is ``cpu``
+            on a host without it.
+        device: The device the step trains on.
+    """
+    if requested != "auto":
+        return requested
+    if device == "cuda":
+        import torch
+
+        if torch.cuda.is_available():
+            return "cuda"
+    return "cpu"
+
+
+@contextlib.contextmanager
 def deterministic_torch(*, device: str, n_threads: int) -> Generator[None]:
     """Run a block under the settings that make a fit repeat, then restore them.
 
@@ -182,7 +218,6 @@ def deterministic_torch(*, device: str, n_threads: int) -> Generator[None]:
         torch.backends.cudnn.deterministic,
         torch.backends.cudnn.benchmark,
     )
-    previous_threads = torch.get_num_threads()
     set_workspace = False
     if device == "cuda":
         if torch.cuda.is_initialized() and "CUBLAS_WORKSPACE_CONFIG" not in os.environ:
@@ -198,9 +233,9 @@ def deterministic_torch(*, device: str, n_threads: int) -> Generator[None]:
     torch.use_deterministic_algorithms(True, warn_only=True)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    torch.set_num_threads(n_threads)
     try:
-        yield
+        with torch_threads(n_threads):
+            yield
     finally:
         torch.use_deterministic_algorithms(
             previous_algorithms, warn_only=previous_warn_only
@@ -208,7 +243,6 @@ def deterministic_torch(*, device: str, n_threads: int) -> Generator[None]:
         torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = (
             previous_cudnn
         )
-        torch.set_num_threads(previous_threads)
         if set_workspace:
             _ = os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
 

@@ -16,7 +16,7 @@ import logging
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import joblib
 import numpy as np
@@ -43,6 +43,7 @@ from mosaic.behavior.feature_library.sequence_heads import (
 from mosaic.behavior.feature_library.sequence_training import (
     Sampler,
     advance,
+    apply_device_for,
     backpropagate,
     class_weights,
     deterministic_torch,
@@ -456,6 +457,90 @@ def test_a_fit_leaves_the_torch_settings_as_it_found_them() -> None:
 
 
 # --- Applying ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("requested", "device", "cuda_available", "expected"),
+    [
+        ("auto", "cuda", True, "cuda"),
+        ("auto", "cuda", False, "cpu"),
+        ("auto", "cpu", True, "cpu"),
+        ("auto", "cpu", False, "cpu"),
+        ("cpu", "cuda", True, "cpu"),
+        ("cuda", "cpu", False, "cuda"),
+    ],
+)
+def test_the_apply_device_follows_the_training_device_where_cuda_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: Literal["auto", "cpu", "cuda"],
+    device: Literal["cpu", "cuda"],
+    cuda_available: bool,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+
+    assert apply_device_for(requested, device) == expected
+
+
+def _record_prediction(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int]]:
+    """Record the device and the thread count of each prediction pass."""
+    seen: list[tuple[str, int]] = []
+    predict = module.predict_probabilities
+
+    def recording(
+        network: nn.Module, frames: npt.NDArray[np.float32], *, device: str
+    ) -> npt.NDArray[np.float64]:
+        seen.append((device, torch.get_num_threads()))
+        return predict(network, frames, device=device)
+
+    monkeypatch.setattr(module, "predict_probabilities", recording)
+    return seen
+
+
+def test_a_model_fitted_on_the_cpu_applies_on_the_cpu_where_cuda_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, tables = _two_entries(tmp_path)
+    fitted = _fit(study, tables)
+    _ = _saved(fitted, tmp_path / "saved")
+    model = {"model": {"feature": "sequence-classifier"}, "default_class": 99}
+
+    def applied(**overrides: object) -> pd.DataFrame:
+        feature = SequenceClassifier(
+            SequenceClassifier.Inputs((Result(feature="temporal-stack"),)),
+            params={**model, **overrides},
+        )
+        assert feature.load_state(
+            tmp_path / "elsewhere",
+            {"model": tmp_path / "saved" / "sequence_classifier_model.joblib"},
+            {},
+        )
+        return feature.apply(tables[C])
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    seen = _record_prediction(monkeypatch)
+
+    automatic = applied(device="cuda")
+    forced = applied(apply_device="cpu")
+
+    assert {device for device, _ in seen} == {"cpu"}
+    pd.testing.assert_frame_equal(automatic, forced)
+
+
+def test_an_apply_runs_at_the_threads_the_step_names_and_restores_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, tables = _two_entries(tmp_path)
+    threads = 2 if torch.get_num_threads() == 3 else 3
+    feature = _fit(study, tables, n_threads=threads)
+    before = torch.get_num_threads()
+    seen = _record_prediction(monkeypatch)
+
+    _ = feature.apply(tables[C])
+
+    assert seen
+    assert {count for _, count in seen} == {threads}
+    assert torch.get_num_threads() == before
 
 
 def test_apply_returns_a_row_for_every_row_in_order_with_the_identity(

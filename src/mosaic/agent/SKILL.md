@@ -286,10 +286,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`). It takes
   `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head registered in
   Python with `register_head` is visible to that process only, not to the CLI or a queue
-  worker. `probability-ensemble` averages or blends the `prob_<class>` columns of
-  classifier runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the
-  members' out-of-fold probabilities and refuses a member fitted without `cv_folds`. It
-  writes the members' fold table when they all have the same one, so an average of
+  worker. A fitted network predicts on the training device (`apply_device` `auto`, on the
+  CPU without CUDA; `cpu` or `cuda` force one), at `n_threads` threads.
+  `probability-ensemble` averages or blends the `prob_<class>` columns of classifier
+  runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the members'
+  out-of-fold probabilities and refuses a member fitted without `cv_folds`. It writes
+  the members' fold table when they all have the same one, so an average of
   cross-validated runs can be a member of a blend. A list or `uniform` weights fit nothing,
   so those members need no fold table, and mixed members are averaged without one.
 - `hidra` runs HiDRA's pretrained mouse heads without labels (Linux; `hidra-predict` in

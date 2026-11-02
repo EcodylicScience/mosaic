@@ -218,11 +218,28 @@ def test_a_setting_that_changes_the_model_changes_the_run_identity(
     assert _params(**change).identity_dump() != _params().identity_dump()
 
 
-@pytest.mark.parametrize("change", [{"apply_device": "cuda"}, {"n_threads": 4}])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"apply_device": "auto"},
+        {"apply_device": "cpu"},
+        {"apply_device": "cuda"},
+        {"n_threads": 4},
+    ],
+)
 def test_a_throughput_setting_is_not_part_of_the_run_identity(
     change: dict[str, object],
 ) -> None:
     assert _params(**change).identity_dump() == _params().identity_dump()
+
+
+def test_the_apply_device_defaults_to_the_training_device() -> None:
+    assert _params().apply_device == "auto"
+
+
+def test_the_apply_device_is_one_of_auto_cpu_and_cuda() -> None:
+    with pytest.raises(ValidationError):
+        _ = _params(apply_device="gpu")
 
 
 def test_a_schedule_needs_a_step_to_climb_over() -> None:

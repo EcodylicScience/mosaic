@@ -557,10 +557,12 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   `start` and `stop`, and the network of a fold trains on the labeled runs of every entry
   less its blocks and `cv_gap_frames` frames around them.
 - **Device and repeatability.** `device` is `cuda` or `cpu` and is part of the run id,
-  because a GPU and a CPU need not give one model. A model fitted on a GPU applies on a
-  CPU (`apply_device`, not part of the run id). A CPU fit repeats at one thread count
-  (`n_threads`, 1 by default), and a GPU fit repeats on the same machine. The torch and
-  CUDA versions are recorded in the model's bundle.
+  because a GPU and a CPU need not give one model. `apply_device` is `auto` by default and
+  is not part of the run id: a network predicts on the training device, and on the CPU
+  on a host without CUDA. `cpu` and `cuda` force a device. A prediction on a GPU can
+  differ from the CPU's in the low bits. A CPU fit repeats at one thread count
+  (`n_threads`, 1 by default, which an apply also uses), and a GPU fit repeats on the
+  same machine. The torch and CUDA versions are recorded in the model's bundle.
 - **A head of your own.** Register one in Python with `register_head(HeadSpec(...))`,
   giving its name, the model of its options and a function that builds a torch module
   from the options, the number of input columns and the number of classes. Raise
