@@ -460,7 +460,8 @@ def test_entries_accept_a_groups_selector() -> None:
 
 def test_the_plan_and_submit_descriptions_leave_the_fingerprint_optional() -> None:
     for name in ("plan_recipe", "submit_pipeline"):
-        description = tool_spec(name).description
+        spec = tool_spec(name)
 
-        assert "requires" not in description.lower(), name
-        assert "fingerprint" in description, name
+        assert spec is not None
+        assert "requires" not in spec.description.lower(), name
+        assert "fingerprint" in spec.description, name
