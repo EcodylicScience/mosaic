@@ -205,6 +205,8 @@ def test_which_features_widen_individual_inputs(slug: str, widens: bool) -> None
     assert declared.consumes.expands_individuals is widens
     verdict = can_join([PAIRWISE, SPEED], declared.consumes)
     if slug == "interaction-crop-pipeline":
+        # It cross-joins on the frame instead, which can_join also allows.
+        assert verdict
         return
     assert bool(verdict) is widens
     if not widens:

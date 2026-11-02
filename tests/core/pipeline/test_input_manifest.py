@@ -833,3 +833,26 @@ def test_overlap_context_is_widened_onto_the_neighbors_pair_rows(
         21,
         22,
     ]
+
+
+def test_a_neighbor_without_pair_rows_gives_no_context(tmp_path: Path) -> None:
+    """The entry is reported, and its neighbor reads it as an absent neighbor."""
+    manifest = _pairs_and_individuals_manifest(tmp_path)
+    first = manifest["g1__s1"].file_specs[0][0]
+    pd.read_parquet(first).iloc[0:0].to_parquet(first)
+    missing: list[str] = []
+
+    loaded = list(
+        iter_manifest(
+            manifest,
+            overlap_frames=3,
+            expands_individuals=True,
+            on_pairs_missing=lambda key, _exc: missing.append(key),
+        )
+    )
+
+    assert missing == ["g1__s1"]
+    assert [key for key, _, _ in loaded] == ["g1__s2", "g1__s3"]
+    _key, df, selector = loaded[0]
+    assert not (df["frame"] < selector.first).any()
+    assert (df["frame"] > selector.last).any()

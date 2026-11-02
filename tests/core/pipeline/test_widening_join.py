@@ -129,6 +129,27 @@ class _Echo(_Stub):
         self.inputs: _Echo.Inputs = inputs
 
 
+class _FitsEcho(_Echo):
+    """An ``as-input`` consumer that fits by reading every entry of its stream."""
+
+    name = "test-fits-echo"
+
+    def __init__(self, inputs: _Echo.Inputs) -> None:
+        super().__init__(inputs)
+        self.fitted_entries: list[str] = []
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, dict[tuple[str, str], Path]],
+    ) -> bool:
+        return False
+
+    def fit(self, inputs: InputStream) -> None:
+        self.fitted_entries = [entry_key for entry_key, _ in inputs()]
+
+
 class _EchoPerIndividual(_Echo):
     name = "test-echo-individual"
     emits: EmitsLevel = "individual"
@@ -188,3 +209,16 @@ def test_an_entry_without_pair_rows_is_an_entry_error(tmp_path: Path) -> None:
     ]
     assert len(errors) == 1
     assert "PairRowsMissing" in errors[0]
+
+
+def test_a_fit_skips_an_entry_without_pair_rows_and_apply_reports_it(
+    tmp_path: Path,
+) -> None:
+    """The fit stream leaves the entry out instead of aborting the run."""
+    ds, pairs, individuals = _results(tmp_path, "s1", _EMPTY)
+    feature = _FitsEcho(_Echo.Inputs((pairs, individuals)))
+
+    result = run_feature(ds, feature)
+
+    assert feature.fitted_entries == [make_entry_key("g", "s1")]
+    assert result.failed_entries == (make_entry_key("g", _EMPTY),)
