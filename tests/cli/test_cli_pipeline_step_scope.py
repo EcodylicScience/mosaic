@@ -197,6 +197,32 @@ def test_a_malformed_step_scope_file_is_refused(
     assert "--step-scope" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "scopes", [{"templates": [1, 2]}, {"templates": {"x": 1}}], ids=["list", "keys"]
+)
+def test_an_error_in_a_step_scope_file_names_its_step(
+    split: Dataset, tmp_path: Path, scopes: object
+) -> None:
+    named = _scopes_file(tmp_path, scopes)
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(split.manifest_path),
+            "--step-scope",
+            named,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert f"{named} [templates]" in result.stderr
+
+
 def test_step_scope_with_request_is_refused(split: Dataset) -> None:
     result = runner.invoke(
         app,

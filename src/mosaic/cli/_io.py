@@ -488,7 +488,8 @@ def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
     A token is ``STEP=SCOPE``, where SCOPE is a JSON selector, inline or as
     ``@file.json``, or a bare ``@file.json`` holding a JSON object of ``STEP:
     SCOPE``. A token without a step, a step named twice across the tokens, or
-    a value that is not a selector fails, naming the token.
+    a value that is not a selector fails, naming the token, and for a file the
+    step as ``@file.json [STEP]``.
     """
     from mosaic.core.narrowing import is_str_mapping
 
@@ -499,7 +500,8 @@ def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
             if not is_str_mapping(mapping):
                 fail(f"--step-scope {token!r} must hold a JSON object of STEP: SCOPE.")
             pairs = [
-                (step_id, selector, token) for step_id, selector in mapping.items()
+                (step_id, selector, f"{token} [{step_id}]")
+                for step_id, selector in mapping.items()
             ]
         else:
             step_id, separator, value = token.partition("=")

@@ -225,6 +225,7 @@ def test_a_recipe_file_is_submitted_in_one_call_and_an_edit_after_does_not_chang
     [
         ("../outside.json", True, "outside_roots"),
         ("/etc/hosts", True, "outside_roots"),
+        ("link.json", True, "outside_roots"),
         ("split.json", False, "roots_not_configured"),
     ],
 )
@@ -239,6 +240,7 @@ def test_a_recipe_file_outside_the_recipe_roots_is_refused(
     _ = (recipes.parent / "outside.json").write_text(
         json.dumps(RECIPE), encoding="utf-8"
     )
+    (recipes / "link.json").symlink_to(recipes.parent / "outside.json")
     backend = (
         _rooted(split, starter, recipes)
         if roots
