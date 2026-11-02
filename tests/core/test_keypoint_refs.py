@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
+from mosaic.core.keypoint_refs import (
+    check_heading_pair,
+    check_keypoint_refs,
+    check_keypoints_distinct,
+    keypoint_index,
+    resolve_keypoint_refs,
+)
 from tests.helpers import modules_loaded_by
 
 
@@ -48,6 +56,32 @@ def test_a_reference_no_table_could_resolve_is_refused(
 def test_an_index_is_unbounded_without_names() -> None:
     check_keypoint_refs([0, 99], None, "t")
     check_keypoint_refs(["tail", 1], ["nose", "tail"], "t")
+
+
+def test_a_reference_is_one_keypoint_by_index_or_by_name() -> None:
+    names = ["nose", "tail"]
+    assert keypoint_index(1, names) == 1
+    assert keypoint_index("tail", names) == 1
+    assert keypoint_index(0, None) == 0
+
+
+def test_a_keypoint_named_twice_is_refused_whichever_form_names_it() -> None:
+    check_keypoints_distinct(None, None, "t")
+    check_keypoints_distinct([0, 1], None, "t")
+    message = "t: keypoints names a keypoint twice, [1, 1]."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        check_keypoints_distinct([1, 1], None, "t")
+    with pytest.raises(ValueError, match="names a keypoint twice"):
+        check_keypoints_distinct([0, "nose"], ["nose", "tail"], "t")
+
+
+def test_a_heading_of_one_keypoint_is_refused_whichever_form_names_it() -> None:
+    check_heading_pair((0, 1), None, "t")
+    message = "t: heading (1, 1) is a keypoint and itself, which points nowhere."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        check_heading_pair((1, 1), None, "t")
+    with pytest.raises(ValueError, match="itself"):
+        check_heading_pair(("tail", 1), ["nose", "tail"], "t")
 
 
 def test_the_leaf_loads_no_pose_columns_pandas_or_numpy() -> None:

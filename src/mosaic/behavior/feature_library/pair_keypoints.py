@@ -24,7 +24,13 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.individuals import id_arenas, individual_pairs
-from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
+from mosaic.core.keypoint_refs import (
+    check_heading_pair,
+    check_keypoint_refs,
+    check_keypoints_distinct,
+    keypoint_index,
+    resolve_keypoint_refs,
+)
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     POSE_X,
@@ -61,6 +67,7 @@ from .derivatives import (
     frame_axis,
     frame_rate,
     keypoint_columns,
+    keypoint_positions,
     savgol_derivatives,
 )
 from .helpers import BodyFrame, body_frame, ego_rotate, ensure_columns, point_distances
@@ -262,33 +269,21 @@ class PairKeypoints:
                     "is empty, so there is nothing to compute. Leave keypoints unset "
                     "for every keypoint."
                 )
-            self._check_repeats(names or [])
+            self._check_repeats(names)
             return self
 
-        def _check_repeats(self, names: list[str]) -> None:
+        def _check_repeats(self, names: list[str] | None) -> None:
             """Refuse a keypoint or a distance named twice, and a one-keypoint heading.
 
             Index and name are one keypoint wherever they agree, so ``0`` and
             the first name are compared as the same reference.
             """
 
-            def index(ref: int | str) -> int:
-                return names.index(ref) if isinstance(ref, str) else ref
-
-            selected = [index(ref) for ref in self.keypoints or []]
-            if len(set(selected)) != len(selected):
-                raise ValueError(
-                    f"{_NAME}: keypoints names a keypoint twice, {self.keypoints}."
-                )
-            neck, tail = self.heading
-            if index(neck) == index(tail):
-                raise ValueError(
-                    f"{_NAME}: heading {self.heading} is a keypoint and itself, "
-                    "which points nowhere."
-                )
+            check_keypoints_distinct(self.keypoints, names, _NAME)
+            check_heading_pair(self.heading, names, _NAME)
             seen: set[tuple[int, int]] = set()
             for a_ref, b_ref in self.inter_distances:
-                pair = (index(a_ref), index(b_ref))
+                pair = (keypoint_index(a_ref, names), keypoint_index(b_ref, names))
                 if pair in seen:
                     raise ValueError(
                         f"{_NAME}: inter-distance ({a_ref!r}, {b_ref!r}) is "
@@ -438,9 +433,7 @@ class PairKeypoints:
         }
         positions: dict[int, FloatArray] = {}
         for k in sorted(needed):
-            values = df[list(plan.columns[k])].to_numpy(dtype=np.float64)[order]
-            values[~np.isfinite(values)] = np.nan
-            positions[k] = values
+            positions[k] = keypoint_positions(df, plan.columns[k], order)
         kernel = SavgolKernel.build(p.window, p.polyorder, 1, 1.0 / fps)
         velocities: dict[int, FloatArray] = {}
         for k in plan.selected:

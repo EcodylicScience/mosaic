@@ -56,6 +56,7 @@ __all__ = [
     "frame_axis",
     "frame_rate",
     "keypoint_columns",
+    "keypoint_positions",
     "row_norm",
     "savgol_derivatives",
 ]
@@ -67,7 +68,7 @@ type IntArray = npt.NDArray[np.int64]
 KEYPOINT_NAMES_DESCRIPTION = (
     "A name for each keypoint, in the table's keypoint order. Used in the output "
     "column names, and accepted wherever a parameter refers to a keypoint. Its "
-    "length must equal the table's keypoint count. Unset, keypoint k is labelled "
+    "length must equal the table's keypoint count. Unset, keypoint k is labeled "
     "kp{k} and is referred to by its index."
 )
 
@@ -98,7 +99,7 @@ def check_savgol_window(window: int, polyorder: int, who: str) -> None:
     if window % 2 == 0:
         raise ValueError(
             f"{who}: window={window} must be odd, so that each "
-            "window is centred on the frame it estimates."
+            "window is centered on the frame it estimates."
         )
     if window <= polyorder:
         raise ValueError(
@@ -215,6 +216,25 @@ def keypoint_columns(
         else tuple(f"kp{k}" for k in range(n_keypoints))
     )
     return KeypointColumns(columns=tuple(columns), labels=labels)
+
+
+def keypoint_positions(
+    df: pd.DataFrame, columns: tuple[str, ...], order: IntArray
+) -> FloatArray:
+    """Read one keypoint's coordinates in frame-axis row order.
+
+    Args:
+        df: The tracks table.
+        columns: The keypoint's coordinate columns, a pair or a triplet.
+        order: The row permutation of the table's frame axis.
+
+    Returns:
+        A new ``(n_rows, len(columns))`` float64 array with every non-finite
+        value set to NaN.
+    """
+    values = df[list(columns)].to_numpy(dtype=np.float64)[order]
+    values[~np.isfinite(values)] = np.nan
+    return values
 
 
 @dataclass(frozen=True)
@@ -380,13 +400,13 @@ class SavgolKernel:
     """The Savitzky-Golay coefficients for one derivative, computed once per table.
 
     Attributes:
-        centre: Dotted with a window to estimate the derivative at its centre.
+        center: Dotted with a window to estimate the derivative at its center.
         lead: One row per position among a run's first ``window // 2`` rows,
             dotted with the run's first ``window`` rows.
         trail: The same for its last ``window // 2`` rows and last window.
     """
 
-    centre: FloatArray
+    center: FloatArray
     lead: FloatArray
     trail: FloatArray
 
@@ -406,7 +426,7 @@ class SavgolKernel:
             )
 
         return cls(
-            centre=at(None),
+            center=at(None),
             lead=np.stack([at(j) for j in range(half)]),
             trail=np.stack([at(window - half + j) for j in range(half)]),
         )
@@ -472,13 +492,13 @@ def _savgol_on_runs(
     """``savgol_filter(mode="interp")`` applied to each run of valid rows.
 
     A run is filtered on its own, so no window reaches across a gap. The
-    interior of a run is the centred filter; the first and last ``window // 2``
+    interior of a run is the centered filter; the first and last ``window // 2``
     rows of it are evaluated on the polynomial fitted to its first or last
     ``window`` rows, which is what ``mode="interp"`` does at an array's ends. A
     run shorter than the window has none to fit and stays NaN, as does every
     invalid row.
 
-    Vectorised over runs, since a poorly tracked keypoint can break into tens of
+    Vectorized over runs, since a poorly tracked keypoint can break into tens of
     thousands of them, and one filter call per run would cost far more than the
     arithmetic does.
 
@@ -486,7 +506,7 @@ def _savgol_on_runs(
         One ``(n_rows, n_axes)`` array per kernel, in the kernels' order.
     """
     n, n_axes = positions.shape
-    window = kernels[0].centre.size
+    window = kernels[0].center.size
     half = window // 2
     starts, ends = _runs(valid)
     keep = ends - starts >= window
@@ -496,7 +516,7 @@ def _savgol_on_runs(
     # Zero rather than NaN outside the runs: every window kept below lies wholly
     # inside one run, so the zeros never reach a result, while a NaN would make
     # the result depend on whether the arithmetic multiplies it by a zero
-    # coefficient (the centre coefficient of a first derivative is zero).
+    # coefficient (the center coefficient of a first derivative is zero).
     filled = np.where(valid[:, None], positions, 0.0)
     outside = np.flatnonzero(~_cover(starts + half, ends - half, n))
     offsets = np.arange(window)
@@ -507,7 +527,7 @@ def _savgol_on_runs(
     tail_rows = (ends - half)[:, None] + edge
     outputs: list[FloatArray] = []
     for kernel in kernels:
-        out = correlate1d(filled, kernel.centre, axis=0, mode="constant", cval=0.0)
+        out = correlate1d(filled, kernel.center, axis=0, mode="constant", cval=0.0)
         out[outside] = np.nan
         out[head_rows] = np.einsum("jw,rwd->rjd", kernel.lead, head)
         out[tail_rows] = np.einsum("jw,rwd->rjd", kernel.trail, tail)

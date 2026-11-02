@@ -4,7 +4,7 @@ Every ``W_{column}_f{index}`` value is compared bit for bit with a reference tha
 repeats the feature's dtype sequence: float32 scales, one ``pywt.cwt`` call per
 series, the power cast to float32 before the float32 ``tiny`` is added and the log
 taken, then the clamp. A float64 reference of ``log(abs(coeffs) ** 2 + tiny)``
-differs from the feature by up to 2.6e-4 relative, so it cannot stand in.
+differs from the feature in the low bits, so it cannot stand in.
 """
 
 from __future__ import annotations

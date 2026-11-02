@@ -42,6 +42,7 @@ from .wavelet import (
     WaveletParams,
     constant_fps,
     log_power,
+    wavelet_attrs,
     wavelet_band,
     wavelet_columns,
     wavelet_input_columns,
@@ -206,10 +207,5 @@ class PairWavelet:
         sort_keys += ["perspective", order_col]
         out = out.sort_values(sort_keys).reset_index(drop=True)
 
-        out.attrs["frequencies_hz"] = band.frequencies.tolist()
-        out.attrs["scales"] = band.scales.tolist()
-        out.attrs["wavelet"] = str(p.wavelet)
-        out.attrs["fps"] = float(fps)
-        out.attrs["pc_cols"] = [c for c in in_cols if c.startswith(p.pc_prefix)]
-        out.attrs["input_columns"] = list(map(str, in_cols))
+        out.attrs.update(wavelet_attrs(band, p, fps, in_cols))
         return out

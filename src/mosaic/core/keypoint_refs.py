@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-__all__ = ["check_keypoint_refs", "resolve_keypoint_refs"]
+__all__ = [
+    "check_heading_pair",
+    "check_keypoint_refs",
+    "check_keypoints_distinct",
+    "keypoint_index",
+    "resolve_keypoint_refs",
+]
 
 
 def resolve_keypoint_refs(
@@ -91,3 +97,58 @@ def check_keypoint_refs(
     else:
         named = [ref for ref in refs if isinstance(ref, str)]
         _ = resolve_keypoint_refs(named, None, 0, who=who)
+
+
+def keypoint_index(ref: int | str, names: Sequence[str] | None) -> int:
+    """Return the index a keypoint reference stands for.
+
+    Index and name are one keypoint wherever they agree, so ``0`` and the first
+    name are the same reference. The reference must already have passed
+    :func:`check_keypoint_refs`.
+
+    Args:
+        ref: A keypoint index or name.
+        names: The keypoint names, or ``None`` when the keypoints are unnamed.
+
+    Returns:
+        The keypoint's index.
+    """
+    return (names or []).index(ref) if isinstance(ref, str) else ref
+
+
+def check_keypoints_distinct(
+    keypoints: Sequence[int | str] | None, names: Sequence[str] | None, who: str
+) -> None:
+    """Refuse a keypoint list that names one keypoint twice.
+
+    Args:
+        keypoints: Keypoint indices or names, or ``None`` when unset.
+        names: The keypoint names, or ``None`` when the keypoints are unnamed.
+        who: The feature name that opens the error message.
+
+    Raises:
+        ValueError: If two entries are the same keypoint, by index or by name.
+    """
+    indices = [keypoint_index(ref, names) for ref in keypoints or []]
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"{who}: keypoints names a keypoint twice, {keypoints}.")
+
+
+def check_heading_pair(
+    heading: tuple[int | str, int | str], names: Sequence[str] | None, who: str
+) -> None:
+    """Refuse a heading pair that is one keypoint twice.
+
+    Args:
+        heading: The (neck, tail base) pair, by index or by name.
+        names: The keypoint names, or ``None`` when the keypoints are unnamed.
+        who: The feature name that opens the error message.
+
+    Raises:
+        ValueError: If both entries are the same keypoint, by index or by name.
+    """
+    neck, tail = heading
+    if keypoint_index(neck, names) == keypoint_index(tail, names):
+        raise ValueError(
+            f"{who}: heading {heading} is a keypoint and itself, which points nowhere."
+        )

@@ -40,6 +40,7 @@ __all__ = [
     "WaveletParams",
     "constant_fps",
     "log_power",
+    "wavelet_attrs",
     "wavelet_band",
     "wavelet_columns",
     "wavelet_input_columns",
@@ -120,6 +121,30 @@ def wavelet_band(
     frequencies.setflags(write=False)
     scales_f32.setflags(write=False)
     return WaveletBand(frequencies=frequencies, scales=scales_f32)
+
+
+def wavelet_attrs(
+    band: WaveletBand, params: WaveletParams, fps: float, in_cols: list[str]
+) -> dict[str, object]:
+    """The attributes a wavelet feature attaches to its output frame.
+
+    Args:
+        band: The frequencies and scales of the transform.
+        params: The feature's wavelet params.
+        fps: The frame rate the band was built at.
+        in_cols: The input columns, in the order transformed.
+
+    Returns:
+        The band, wavelet, frame rate and input columns, keyed by name.
+    """
+    return {
+        "frequencies_hz": band.frequencies.tolist(),
+        "scales": band.scales.tolist(),
+        "wavelet": str(params.wavelet),
+        "fps": float(fps),
+        "pc_cols": [c for c in in_cols if c.startswith(params.pc_prefix)],
+        "input_columns": list(map(str, in_cols)),
+    }
 
 
 def log_power(

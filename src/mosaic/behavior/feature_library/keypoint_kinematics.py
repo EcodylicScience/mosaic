@@ -41,7 +41,13 @@ from mosaic.core.pipeline.types import (
     InputStream,
     TrackInputs,
 )
-from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
+from mosaic.core.keypoint_refs import (
+    check_heading_pair,
+    check_keypoint_refs,
+    check_keypoints_distinct,
+    keypoint_index,
+    resolve_keypoint_refs,
+)
 
 from .derivatives import (
     FPS_DESCRIPTION,
@@ -57,6 +63,7 @@ from .derivatives import (
     frame_axis,
     frame_rate,
     keypoint_columns,
+    keypoint_positions,
     row_norm,
     savgol_derivatives,
 )
@@ -69,6 +76,7 @@ _NAME = "keypoint-kinematics"
 
 _KEYPOINTS_DESCRIPTION = (
     "The keypoints to report speed and acceleration for, by index or by name. "
+    "With heading set, they also get the four own-frame columns. "
     "An index is a keypoint's position in the table's keypoint order, which is "
     "its column number when the keypoints are numbered from 0 without a gap. "
     "Unset, every keypoint the table carries. An empty list reports none, for a "
@@ -89,9 +97,10 @@ _DISTANCES_DESCRIPTION = (
 
 _NORMALIZE_BY_DESCRIPTION = (
     "A keypoint pair whose median separation over each individual's rows in the "
-    "sequence divides every distance, speed, vertical velocity and acceleration, "
-    "making them independent of body size. Unset, they stay in the table's units. "
-    "An individual on which the pair is never seen reports NaN throughout."
+    "sequence divides every distance, speed, vertical velocity, acceleration, "
+    "own-frame velocity and own-frame position, making them independent of body "
+    "size. Unset, they stay in the table's units. An individual on which the pair "
+    "is never seen reports NaN throughout."
 )
 
 _HEADING_DESCRIPTION = (
@@ -279,7 +288,7 @@ class KeypointKinematics:
                     "so none of its columns would be written. Leave keypoints unset "
                     "for every keypoint, or name the ones to place in the body frame."
                 )
-            self._check_repeats(names or [])
+            self._check_repeats(names)
             return self
 
         @override
@@ -294,7 +303,7 @@ class KeypointKinematics:
                 del dumped["heading"]
             return dumped
 
-        def _check_repeats(self, names: list[str]) -> None:
+        def _check_repeats(self, names: list[str] | None) -> None:
             """Refuse a keypoint, or a pair, that is named twice or paired with itself.
 
             Index and name are one keypoint wherever they agree, so ``0`` and
@@ -302,17 +311,12 @@ class KeypointKinematics:
             depends on the table.
             """
 
-            def index(ref: int | str) -> int:
-                return names.index(ref) if isinstance(ref, str) else ref
-
-            selected = [index(ref) for ref in self.keypoints or []]
-            if len(set(selected)) != len(selected):
-                raise ValueError(
-                    f"{_NAME}: keypoints names a keypoint twice, {self.keypoints}."
-                )
+            check_keypoints_distinct(self.keypoints, names, _NAME)
             seen: set[frozenset[int]] = set()
             for a_ref, b_ref in self.distances:
-                pair = frozenset((index(a_ref), index(b_ref)))
+                pair = frozenset(
+                    (keypoint_index(a_ref, names), keypoint_index(b_ref, names))
+                )
                 if len(pair) == 1:
                     raise ValueError(
                         f"{_NAME}: distance ({a_ref!r}, {b_ref!r}) is between a "
@@ -326,18 +330,13 @@ class KeypointKinematics:
                 seen.add(pair)
             if self.normalize_by is not None:
                 a_ref, b_ref = self.normalize_by
-                if index(a_ref) == index(b_ref):
+                if keypoint_index(a_ref, names) == keypoint_index(b_ref, names):
                     raise ValueError(
                         f"{_NAME}: normalize_by {self.normalize_by} is a keypoint "
                         "and itself, whose length is zero."
                     )
             if self.heading is not None:
-                a_ref, b_ref = self.heading
-                if index(a_ref) == index(b_ref):
-                    raise ValueError(
-                        f"{_NAME}: heading {self.heading} is a keypoint and itself, "
-                        "which points nowhere."
-                    )
+                check_heading_pair(self.heading, names, _NAME)
 
     def __init__(
         self,
@@ -387,7 +386,7 @@ class KeypointKinematics:
                 "Measuring them in the plane would mix 2D and 3D speeds in one output."
             ),
             no_keypoints_hint=(
-                "The speed of a body centre is what 'speed-angvel' measures."
+                "The speed of a body center is what 'speed-angvel' measures."
             ),
         )
         n_keypoints = len(keypoints.columns)
@@ -436,11 +435,7 @@ class KeypointKinematics:
         order = axis.order
 
         def positions(k: int) -> FloatArray:
-            values = df[list(plan.keypoints.columns[k])].to_numpy(dtype=np.float64)[
-                order
-            ]
-            values[~np.isfinite(values)] = np.nan
-            return values
+            return keypoint_positions(df, plan.keypoints.columns[k], order)
 
         # One divisor per row: the individual's median segment length, or 1.
         scale = np.ones(order.size)

@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import ClassVar, final
 
 import numpy as np
-import numpy.typing as npt
 import pandas as pd
 
 from mosaic.core.pipeline.column_contract import (
@@ -37,19 +36,18 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types.feature import RelatesLevel
 
-from .derivatives import frame_axis
+from .derivatives import IntArray, frame_axis
 from .helpers import ensure_columns
 from .registry import register_feature
 from .wavelet import (
     WaveletParams,
     constant_fps,
     log_power,
+    wavelet_attrs,
     wavelet_band,
     wavelet_columns,
     wavelet_input_columns,
 )
-
-type IntArray = npt.NDArray[np.int64]
 
 _NAME = "individual-wavelet"
 _WHO = f"[{_NAME}]"
@@ -212,12 +210,7 @@ class IndividualWavelet:
         identity = df[keep].iloc[order].reset_index(drop=True)
         out = pd.concat([spectra, identity], axis=1)
 
-        out.attrs["frequencies_hz"] = band.frequencies.tolist()
-        out.attrs["scales"] = band.scales.tolist()
-        out.attrs["wavelet"] = str(p.wavelet)
-        out.attrs["fps"] = float(fps)
-        out.attrs["pc_cols"] = [c for c in in_cols if c.startswith(p.pc_prefix)]
-        out.attrs["input_columns"] = list(map(str, in_cols))
+        out.attrs.update(wavelet_attrs(band, p, fps, in_cols))
         return out
 
 
