@@ -135,6 +135,22 @@ def test_removing_a_step_and_its_reader_leaves_the_rest() -> None:
             {"op": "replace_step", "step": "templates", "document": {"id": "other"}},
             "is not 'templates'",
         ),
+        (
+            {
+                "op": "replace_step",
+                "step": "templates",
+                "document": {"repeat": {"n": [1, 2]}},
+            },
+            "takes no repeat or zip",
+        ),
+        (
+            {
+                "op": "replace_step",
+                "step": "templates",
+                "document": {"zip": {"n": [1, 2], "m": [3, 4]}},
+            },
+            "takes no repeat or zip",
+        ),
     ],
 )
 def test_an_edit_that_cannot_apply_names_its_position(
