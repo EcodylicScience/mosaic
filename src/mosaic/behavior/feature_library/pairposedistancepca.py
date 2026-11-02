@@ -40,7 +40,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import clean_tracks_grouped, ensure_columns
+from .helpers import clean_tracks_grouped, ensure_columns, point_distances
 from .registry import register_feature
 from .types import INTERPOLATION_CONFIG_DESCRIPTION, InterpolationConfig
 
@@ -419,7 +419,7 @@ class PairPoseDistancePCA:
 
     def _prep_pairs(
         self, df: pd.DataFrame
-    ) -> tuple[pd.DataFrame, list[tuple[str, int, int]]]:
+    ) -> tuple[pd.DataFrame, list[tuple[str, int, int]], np.ndarray, np.ndarray]:
         x_cols, y_cols = self.params.pose.keypoint_columns()
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
@@ -450,18 +450,24 @@ class PairPoseDistancePCA:
 
         if self._tri_i is None or self._tri_j is None or self._feat_len is None:
             self._tri_i, self._tri_j, self._feat_len = self._vector_layout()
-        return df_small, pairs
+        return df_small, pairs, self._tri_i, self._tri_j
 
-    def _build_pair_feat(self, row_a: np.ndarray, row_b: np.ndarray) -> np.ndarray:
+    def _build_pair_feat(
+        self,
+        row_a: np.ndarray,
+        row_b: np.ndarray,
+        tri_i: np.ndarray,
+        tri_j: np.ndarray,
+    ) -> np.ndarray:
         parts: list[np.ndarray] = []
         pts_a = self._pose_to_points(row_a)
         pts_b = self._pose_to_points(row_b)
         if self.params.include_intra_A:
-            parts.append(self._intra_lower_tri(pts_a))
+            parts.append(self.intra_lower_tri(pts_a, tri_i, tri_j))
         if self.params.include_intra_B:
-            parts.append(self._intra_lower_tri(pts_b))
+            parts.append(self.intra_lower_tri(pts_b, tri_i, tri_j))
         if self.params.include_inter:
-            parts.append(self._inter_all(pts_a, pts_b))
+            parts.append(self.inter_all(pts_a, pts_b))
         return (
             np.concatenate(parts, axis=0) if parts else np.empty((0,), dtype=np.float32)
         )
@@ -473,7 +479,7 @@ class PairPoseDistancePCA:
         pose_cols = x_cols + y_cols
         order_col = resolve_order_col(df)
 
-        df_small, pairs = self._prep_pairs(df)
+        df_small, pairs, tri_i, tri_j = self._prep_pairs(df)
         bs = self.params.batch_size
         dup = self.params.duplicate_perspective
         has_frames = C.frame_col in df.columns
@@ -494,7 +500,8 @@ class PairPoseDistancePCA:
                 vals_a = chunk[[c + "_A" for c in pose_cols]].to_numpy(dtype=float)
                 vals_b = chunk[[c + "_B" for c in pose_cols]].to_numpy(dtype=float)
                 feat_rows = [
-                    self._build_pair_feat(a, b) for a, b in zip(vals_a, vals_b)
+                    self._build_pair_feat(a, b, tri_i, tri_j)
+                    for a, b in zip(vals_a, vals_b)
                 ]
                 feat_mat = np.vstack(feat_rows).astype(np.float32, copy=False)
 
@@ -506,7 +513,8 @@ class PairPoseDistancePCA:
 
                 if dup:
                     feat_rows2 = [
-                        self._build_pair_feat(b, a) for a, b in zip(vals_a, vals_b)
+                        self._build_pair_feat(b, a, tri_i, tri_j)
+                        for a, b in zip(vals_a, vals_b)
                     ]
                     feat_dup = np.vstack(feat_rows2).astype(np.float32, copy=False)
                     n_dup = feat_dup.shape[0]
@@ -532,11 +540,32 @@ class PairPoseDistancePCA:
         ys = row_vals[N:]
         return np.stack([xs, ys], axis=1)
 
-    def _intra_lower_tri(self, pts: np.ndarray) -> np.ndarray:
-        dif = pts[self._tri_i] - pts[self._tri_j]
-        return np.sqrt((dif**2).sum(axis=1))
+    @staticmethod
+    def intra_lower_tri(
+        pts: np.ndarray, tri_i: np.ndarray, tri_j: np.ndarray
+    ) -> np.ndarray:
+        """Return the distances between one animal's keypoints at the given pairs.
 
-    def _inter_all(self, pts_a: np.ndarray, pts_b: np.ndarray) -> np.ndarray:
-        dif = pts_a[:, None, :] - pts_b[None, :, :]
-        d = np.sqrt((dif**2).sum(axis=2))
-        return d.ravel()
+        Args:
+            pts: ``(n_keypoints, 2)`` keypoint coordinates.
+            tri_i: Row indices of the keypoint pairs, from ``np.tril_indices``.
+            tri_j: Column indices of the keypoint pairs.
+
+        Returns:
+            The distance of each pair, in the order of the indices.
+        """
+        return point_distances(pts[tri_i], pts[tri_j])
+
+    @staticmethod
+    def inter_all(pts_a: np.ndarray, pts_b: np.ndarray) -> np.ndarray:
+        """Return the distance from every keypoint of A to every keypoint of B.
+
+        Args:
+            pts_a: ``(n_keypoints, 2)`` coordinates of the first animal.
+            pts_b: ``(n_keypoints, 2)`` coordinates of the second animal.
+
+        Returns:
+            The ``n_keypoints * n_keypoints`` distances in row-major order, A's
+            keypoint varying slowest.
+        """
+        return point_distances(pts_a[:, None, :], pts_b[None, :, :]).ravel()

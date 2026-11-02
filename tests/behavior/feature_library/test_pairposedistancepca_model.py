@@ -239,3 +239,29 @@ def test_the_report_is_not_part_of_the_run_identity() -> None:
             ResolvedScope(entries={("g", "a")}),
         )[0]
     )
+
+
+POINTS_A = np.array([[0.0, 0.0], [3.0, 4.0], [-1.5, 2.0], [6.0, -2.5]])
+POINTS_B = np.array([[1.0, 1.0], [0.0, 5.0], [2.5, -3.0], [-4.0, 0.5]])
+
+
+def test_the_inter_distances_are_every_pair_in_row_major_order() -> None:
+    got = PairPoseDistancePCA.inter_all(POINTS_A, POINTS_B)
+
+    expected = [float(np.hypot(*(a - b))) for a in POINTS_A for b in POINTS_B]
+    assert got.shape == (POINTS_A.shape[0] * POINTS_B.shape[0],)
+    assert got.tolist() == pytest.approx(expected, rel=1e-12)
+
+
+def test_the_intra_distances_are_the_lower_triangle_in_row_major_order() -> None:
+    n = POINTS_A.shape[0]
+    tri_i, tri_j = np.tril_indices(n, k=-1)
+
+    got = PairPoseDistancePCA.intra_lower_tri(POINTS_A, tri_i, tri_j)
+
+    expected = [
+        float(np.hypot(*(POINTS_A[i] - POINTS_A[j])))
+        for i in range(n)
+        for j in range(i)
+    ]
+    assert got.tolist() == pytest.approx(expected, rel=1e-12)

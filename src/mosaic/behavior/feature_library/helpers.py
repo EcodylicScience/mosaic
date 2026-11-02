@@ -743,6 +743,20 @@ def row_quantile(ordered: np.ndarray, count: np.ndarray, q: float) -> np.ndarray
     return np.where(count > 0, value, np.nan)
 
 
+def point_distances(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Return the Euclidean distance between corresponding points.
+
+    Args:
+        a: Points with the coordinate axis last.
+        b: Points with the coordinate axis last, broadcastable against *a*.
+
+    Returns:
+        The distances, with the broadcast shape of *a* and *b* less the
+        coordinate axis.
+    """
+    return np.sqrt(((a - b) ** 2).sum(axis=-1))
+
+
 def pairwise_median_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Return, for each row, the median distance between its keypoints.
 
