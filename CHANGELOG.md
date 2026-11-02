@@ -28,6 +28,10 @@ cleanup without it is refused with `cleanup_needs_plan`.
 and `truncated`, whether more are to compute. A result stays under 1,000 characters
 whatever the recipe's size, and `get_request_status` with `brief` lists the rest.
 
+**`--recipe` takes a file path.** The `mosaic pipeline` verbs read a `--recipe` value
+that names an existing file, and does not open with `{`, `[` or `@`, as that file. The
+`@file.json`, `@-` and inline JSON forms are unchanged.
+
 ## Unreleased: individual results joined onto pair rows
 
 **A pair consumer reads per-individual inputs.** A feature whose `emits` is `as-input`

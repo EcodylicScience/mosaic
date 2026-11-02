@@ -51,6 +51,7 @@ from mosaic.cli._io import (
     exit_refused,
     fail,
     fail_classified,
+    json_file_arg,
     load_json_arg,
     log,
     parse_step_scopes,
@@ -92,7 +93,10 @@ RecipeOption = Annotated[
     typer.Option(
         "--recipe",
         "-r",
-        help="Recipe as @file.json, @- for stdin, or an inline JSON object.",
+        help=(
+            "Recipe as a path to a JSON file, @file.json, @- for stdin, or an "
+            "inline JSON object."
+        ),
     ),
 ]
 ManifestOption = Annotated[
@@ -170,12 +174,27 @@ and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
 """
 
 
+def recipe_document(argument: str) -> object:
+    """Return the JSON document that the ``--recipe`` argument names.
+
+    An argument that does not open as JSON or ``@`` and names a file is that
+    file, read as ``@file.json`` is. Any other is read by :func:`load_json_arg`.
+    """
+    from mosaic.user_paths import user_path
+
+    if not argument.startswith(("{", "[", "@")):
+        path = user_path(argument)
+        if path.is_file():
+            return json_file_arg(path)
+    return load_json_arg(argument)
+
+
 def recipe_argument(argument: str, *, as_json: bool) -> "Recipe":
     """Parse the ``--recipe`` argument, failing cleanly on a bad document."""
     from mosaic.core.pipeline.graph import RecipeInvalid, read_recipe
 
     try:
-        return read_recipe(load_json_arg(argument))
+        return read_recipe(recipe_document(argument))
     except RecipeInvalid as exc:
         fail_classified(exc, as_json=as_json)
 
@@ -215,7 +234,7 @@ def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     """Check a recipe against the registries. Opens no dataset."""
     from mosaic.core.pipeline.graph import validation_report
 
-    report = validation_report(load_json_arg(recipe))
+    report = validation_report(recipe_document(recipe))
     if as_json:
         emit_json(report.model_dump(mode="json"))
         if not report.valid:

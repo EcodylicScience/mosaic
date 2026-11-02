@@ -1093,7 +1093,7 @@ $ mosaic pipeline validate [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1121,7 +1121,7 @@ $ mosaic pipeline plan [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
@@ -1170,7 +1170,7 @@ $ mosaic pipeline verify [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
@@ -1193,7 +1193,7 @@ $ mosaic pipeline show [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1225,7 +1225,7 @@ $ mosaic pipeline submit [OPTIONS]
 
 **Options**:
 
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
@@ -1371,7 +1371,7 @@ $ mosaic pipeline score [OPTIONS]
 **Options**:
 
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
-* `-r, --recipe <str>`: Recipe as @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
 * `--heldout <str>`: The held-out data: a file or a directory to add as a tracks and a labels source of the copy, or a group already in the dataset whose role is test or sealed, which needs nothing added.  [required]
 * `--answers <str>`: The steps to score, as a JSON file or inline JSON: {"models": {"<name>": ["<step id>", ...]}}. One name with several steps is reported as mean and standard deviation.  [required]
 * `--out <path>`: Where the copy of the dataset goes, and the scores are written (test_scores.json and test_scores.txt). Refused when it exists, unless --reuse.  [required]
