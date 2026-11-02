@@ -13,7 +13,7 @@ import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.outputs import PatchedRecipe, StepSuggestions
-from mosaic.agent.mcp.spec import SubmittedPipeline, call_tool
+from mosaic.agent.mcp.spec import MAX_PATCH_OPS, SubmittedPipeline, call_tool
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
@@ -304,6 +304,31 @@ def test_a_patch_that_does_not_parse_saves_nothing(
 
     assert refused.kind == "invalid"
     assert not (split.base_dir / ".mosaic" / "pipelines").exists()
+
+
+def _set_params(count: int) -> list[dict[str, object]]:
+    return [
+        {"op": "set_param", "step": "templates_4", "path": "n_templates", "value": n}
+        for n in range(count)
+    ]
+
+
+def test_a_patch_of_more_than_the_most_edits_is_refused_and_saves_nothing(
+    backend: LocalBackend, split: Dataset
+) -> None:
+    refused = _call(
+        backend,
+        "patch_recipe",
+        ErrorEnvelope,
+        dataset=_uuid(split),
+        base=RECIPE,
+        ops=_set_params(MAX_PATCH_OPS + 1),
+    )
+
+    assert MAX_PATCH_OPS == 64
+    assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+    assert not (split.base_dir / ".mosaic" / "pipelines").exists()
+    assert _saved(backend, split, ops=_set_params(MAX_PATCH_OPS)).valid
 
 
 def test_a_reference_needs_a_dataset_and_a_saved_recipe(
