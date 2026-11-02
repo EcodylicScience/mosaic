@@ -10,7 +10,7 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: sequence-classifier training options
 
-**`sequence-classifier` predicts on the training device.** `apply_device` is now `auto`,
+**`sequence-classifier` predicts on its `device`.** `apply_device` is now `auto`,
 `cpu` or `cuda`, default `auto`: a network predicts on `device` where CUDA exists and on
 the CPU otherwise. It was `cpu` by default. A new run on a GPU host therefore predicts on
 the GPU, and its probabilities can differ in the low bits from a CPU prediction under one

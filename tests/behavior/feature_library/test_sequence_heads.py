@@ -299,7 +299,9 @@ def test_a_fresh_interpreter_finds_a_head_that_a_distribution_installs(
     script = """
         import sys
 
-        import mosaic.behavior  # noqa: F401
+        import importlib
+
+        importlib.import_module("mosaic.behavior")
         from mosaic.behavior.feature_library.sequence_classifier import (
             SequenceClassifier,
         )

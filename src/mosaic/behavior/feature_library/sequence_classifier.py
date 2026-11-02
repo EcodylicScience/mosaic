@@ -388,8 +388,8 @@ _DEVICE_DESCRIPTION = (
 )
 
 _APPLY_DEVICE_DESCRIPTION = (
-    "Where a fitted network predicts. auto predicts on the training device, and "
-    "falls back to the CPU on a host without CUDA. cpu and cuda force a device. "
+    "Where a fitted network predicts. auto predicts on device when CUDA is "
+    "available there and on the CPU otherwise. cpu and cuda force a device. "
     "It changes the time of an apply and not the model, so it is not part of the "
     "run id. Probabilities agree across devices to about 1e-5."
 )

@@ -4,8 +4,7 @@ A network trains on random crops of the runs of consecutive labeled frames, and
 predicts a whole series in one pass. The batches come from a numpy generator, so
 which frames a batch holds does not depend on the device. The network's own
 randomness (its initial weights and its dropout) comes from torch's generator,
-which :func:`deterministic_torch` seeds and the training function reseeds for each
-model.
+which :func:`seed_torch` seeds for each model.
 
 The order of the random draws is part of what a run id names. Changing it, the loop
 or the standardizer changes the numbers a seed gives, and bumps the version of the

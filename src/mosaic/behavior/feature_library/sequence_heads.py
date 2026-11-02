@@ -2,9 +2,10 @@
 
 A head is a :class:`HeadSpec`: a name, the model of its options and a function that
 builds a torch module. The module reads a batch of windows ``(B, T, F)`` of float32
-frames and returns logits ``(B, T, C)``. It does not mix the items of a batch and
-keeps no state between calls, because the classifier predicts a whole series in one
-pass and trains on a batch of crops.
+frames and returns logits ``(B, T, C)``. In evaluation mode it does not mix the items
+of a batch and keeps no state between calls, because the classifier predicts a whole
+series in one pass. In training, a batch norm layer takes the statistics of the batch
+and updates its running statistics.
 
 A model may refine the head's logits in further stages: each stage is a ``tcn`` at its
 defaults that reads the softmax of the logits before it, and the model predicts with

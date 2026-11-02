@@ -611,8 +611,8 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   into one fold as it does for `xgboost`.
 - **Device and repeatability.** `device` is `cuda` or `cpu` and is part of the run id,
   because a GPU and a CPU need not give one model. `apply_device` is `auto` by default and
-  is not part of the run id: a network predicts on the training device, and on the CPU
-  on a host without CUDA. `cpu` and `cuda` force a device. A prediction on a GPU can
+  is not part of the run id: `auto` predicts on `device` when CUDA is available there
+  and on the CPU otherwise. `cpu` and `cuda` force a device. A prediction on a GPU can
   differ from the CPU's in the low bits. A CPU fit repeats at one thread count
   (`n_threads`, 1 by default, which an apply also uses), and a GPU fit repeats on the
   same machine. The torch and CUDA versions are recorded in the model's bundle.
