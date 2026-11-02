@@ -187,6 +187,11 @@ CASES: tuple[Case, ...] = (
         params={"n_freq": 20},
     ),
     Case(
+        case_id="keypoint-kinematics/heading",
+        feature="keypoint-kinematics",
+        params={"heading": [3, 6]},
+    ),
+    Case(
         case_id="frame-aggregate/column-speed",
         feature="frame-aggregate",
         params={"column": "SPEED"},

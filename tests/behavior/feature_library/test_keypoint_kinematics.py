@@ -23,6 +23,7 @@ from scipy.signal import savgol_filter
 from mosaic.behavior.feature_library.keypoint_kinematics import KeypointKinematics
 from mosaic.core.dataset import Dataset, new_dataset_manifest
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.column_contract import Prefix
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
@@ -576,3 +577,196 @@ def test_run_feature_measures_a_pixel_table(tmp_path: Path) -> None:
     out = _run_output(dataset, KeypointKinematics(params={"fps": FPS}))
     np.testing.assert_allclose(out["speed__kp0"], 50.0, rtol=1e-5)
     assert "vz__kp0" not in out.columns
+
+
+# --- The animal's own frame ---
+
+_OWN_FRAME = ("vx__", "vy__", "ego_x__", "ego_y__")
+
+
+def _own_frame_columns(out: pd.DataFrame) -> list[str]:
+    return [c for c in out.columns if c.startswith(_OWN_FRAME)]
+
+
+def _values(out: pd.DataFrame, column: str) -> FloatArray:
+    return out[column].to_numpy(dtype=np.float64)
+
+
+def _walking_animal(angle: float, speed: float, n: int = 60) -> pd.DataFrame:
+    """Neck, tail base and a flank keypoint, walking straight along the heading.
+
+    The heading points along *angle*. The body is 0.4 long, centered on its
+    path, and the flank keypoint sits 0.1 to the left of the body center.
+    """
+    t = np.arange(n) / FPS
+    along = np.array([np.cos(angle), np.sin(angle)])
+    left = np.array([-np.sin(angle), np.cos(angle)])
+    center = 2.0 + speed * t[:, None] * along
+    return _table([center + 0.2 * along, center - 0.2 * along, center + 0.1 * left])
+
+
+@pytest.mark.parametrize("angle", [0.0, 0.7, 2.5, -2.0])
+def test_walking_along_the_heading_is_forward_velocity_in_the_own_frame(
+    angle: float,
+) -> None:
+    out = _apply(_walking_animal(angle, 0.5), fps=FPS, heading=(0, 1))
+    for k in range(3):
+        np.testing.assert_allclose(out[f"vx__kp{k}"], 0.5, rtol=1e-5)
+        np.testing.assert_allclose(out[f"vy__kp{k}"], 0.0, atol=1e-5)
+    np.testing.assert_allclose(out["ego_x__kp0"], 0.2, rtol=1e-5)
+    np.testing.assert_allclose(out["ego_x__kp1"], -0.2, rtol=1e-5)
+    np.testing.assert_allclose(out["ego_y__kp0"], 0.0, atol=1e-5)
+    np.testing.assert_allclose(out["ego_x__kp2"], 0.0, atol=1e-5)
+    np.testing.assert_allclose(out["ego_y__kp2"], 0.1, rtol=1e-5)
+
+
+def test_a_rotated_scene_has_the_same_own_frame_columns() -> None:
+    walk = _walk(120, 2, seed=11)
+    offsets = [np.array([0.3, 0.1]), np.array([-0.2, 0.25])]
+    keypoints = [walk, walk + offsets[0], walk + offsets[1]]
+    angle = 1.1
+    rotation = np.array(
+        [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+    )
+    turned = [points @ rotation.T for points in keypoints]
+    params: dict[str, object] = {"fps": FPS, "heading": (0, 1)}
+    out = _apply(_table(keypoints), **params)
+    out_turned = _apply(_table(turned), **params)
+    columns = _own_frame_columns(out)
+    np.testing.assert_allclose(out_turned[columns], out[columns], rtol=1e-4, atol=1e-4)
+
+
+def test_own_frame_speed_is_the_world_speed() -> None:
+    keypoints = [_walk(200, 2, seed=s) for s in (1, 2, 3)]
+    out = _apply(_table(keypoints), fps=FPS, heading=(0, 1))
+    for k in range(3):
+        own = np.hypot(_values(out, f"vx__kp{k}"), _values(out, f"vy__kp{k}"))
+        world = _values(out, f"speed__kp{k}")
+        finite = np.isfinite(own) & np.isfinite(world)
+        assert finite.sum() > 150
+        np.testing.assert_allclose(own[finite], world[finite], rtol=1e-4)
+
+
+def test_normalizing_divides_the_own_frame_columns_and_two_sizes_agree() -> None:
+    walk = _walk(200, 2, seed=12)
+    keypoints = [walk, walk + [0.2, 0.0], walk + [0.05, 0.1]]
+    params: dict[str, object] = {"fps": FPS, "heading": (0, 1)}
+    raw = _apply(_table(keypoints), **params)
+    small = _apply(_table(keypoints), normalize_by=(0, 1), **params)
+    large = _apply(
+        _table([3 * points for points in keypoints]), normalize_by=(0, 1), **params
+    )
+    columns = _own_frame_columns(raw)
+    assert len(columns) == 12
+    np.testing.assert_allclose(small[columns], large[columns], rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(small[columns], raw[columns] / 0.2, rtol=1e-4)
+
+
+def test_a_row_without_a_body_frame_is_nan_in_the_own_frame_columns() -> None:
+    keypoints = [_walk(60, 2, seed=s) for s in (4, 5, 6)]
+    keypoints[0][20] = np.nan  # the neck is missing
+    keypoints[1][40] = keypoints[0][40]  # neck and tail base coincide
+    out = _apply(_table(keypoints), fps=FPS, heading=(0, 1))
+    own = out[_own_frame_columns(out)].to_numpy(dtype=np.float64)
+    for row in (20, 40):
+        assert np.isnan(own[row]).all()
+        assert np.isfinite(_values(out, "speed__kp2")[row])
+    assert np.isfinite(_values(out, "speed__kp0")[40])
+    others = out.drop(index=[20, 40])
+    assert others[[f"ego_y__kp{k}" for k in range(3)]].notna().all().all()
+
+
+def test_a_helix_in_its_own_frame() -> None:
+    """The heading pair lies in the plane: the rotation is about Z."""
+    t = np.arange(2000) / FPS
+    r, w, c = 0.3, 2 * np.pi * 0.25, 0.05
+    helix = np.column_stack([r * np.cos(w * t), r * np.sin(w * t), c * t])
+    table = _table([helix, helix - [0.1, 0.05, 0.0]])
+    plain = _apply(table, fps=FPS)
+    own = _apply(table, fps=FPS, heading=(0, 1))
+    np.testing.assert_array_equal(own["vz__kp0"], plain["vz__kp0"])
+    np.testing.assert_allclose(
+        np.hypot(own["vx__kp0"], own["vy__kp0"]), r * w, rtol=1e-3
+    )
+    assert not [c for c in own.columns if c.startswith("ego_z__")]
+    upright = _table([helix, helix - [0.0, 0.0, 0.1]])
+    standing = _apply(upright, fps=FPS, heading=(0, 1))
+    assert standing[_own_frame_columns(standing)].isna().all().all()
+    assert standing["speed__kp0"].notna().all()
+
+
+def test_the_heading_writes_one_column_per_keypoint_in_order() -> None:
+    keypoints = [_walk(40, 2, seed=s) for s in (7, 8, 9)]
+    names = ["neck", "tail_base", "paw"]
+    out = _apply(
+        _table(keypoints),
+        fps=FPS,
+        keypoint_names=names,
+        keypoints=["paw", "neck"],
+        heading=("neck", 1),
+        distances=[(0, 2)],
+    )
+    assert [c for c in out.columns if "__" in c] == [
+        "speed__paw",
+        "speed__neck",
+        "accel__paw",
+        "accel__neck",
+        "vx__paw",
+        "vx__neck",
+        "vy__paw",
+        "vy__neck",
+        "ego_x__paw",
+        "ego_x__neck",
+        "ego_y__paw",
+        "ego_y__neck",
+        "dist__neck__paw",
+    ]
+    plain = _apply(_table(keypoints), fps=FPS)
+    assert not _own_frame_columns(plain)
+
+
+def test_each_own_frame_prefix_is_declared_on_the_heading_param() -> None:
+    declared = {
+        (conditional.column.prefix, conditional.when_param)
+        for conditional in KeypointKinematics.provides.conditional
+        if isinstance(conditional.column, Prefix)
+    }
+    for prefix in _OWN_FRAME:
+        assert (prefix, "heading") in declared
+
+
+def test_an_unset_heading_leaves_the_identity() -> None:
+    params = KeypointKinematics.Params
+    assert "heading" not in params().identity_dump()
+    assert "heading" not in params(heading=None).identity_dump()
+    assert params(heading=(3, 6)).identity_dump()["heading"] == (3, 6)
+
+
+@pytest.mark.parametrize(
+    ("params", "match"),
+    [
+        ({"heading": (1, 1)}, "heading .* a keypoint and itself"),
+        ({"heading": (-1, 2)}, "negative"),
+        (
+            {"keypoint_names": ["nose", "neck"], "heading": ("nose", "tail")},
+            "no keypoint named",
+        ),
+        ({"keypoint_names": ["a", "b"], "heading": ("b", 1)}, "itself"),
+        (
+            {"keypoints": [], "distances": [(0, 1)], "heading": (0, 1)},
+            "heading .* keypoints=\\[\\]",
+        ),
+    ],
+)
+def test_a_heading_no_table_could_satisfy_is_refused_at_construction(
+    params: dict[str, object], match: str
+) -> None:
+    with pytest.raises(ValidationError, match=match):
+        _ = KeypointKinematics(params=params)
+
+
+def test_a_heading_past_the_tables_keypoints_is_refused_at_apply() -> None:
+    feature = KeypointKinematics(params={"fps": FPS, "heading": (0, 2)})
+    table = _table([_walk(30, 2), _walk(30, 2, seed=1)])
+    with pytest.raises(ValueError, match="outside the table's 2 keypoints"):
+        _ = feature.apply(table)

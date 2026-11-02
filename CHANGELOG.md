@@ -8,6 +8,18 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: per-keypoint body-frame features and individual wavelets
+
+**`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names
+a (neck, tail base) pair. Set, each reported keypoint gains `vx__{kp}` and `vy__{kp}`,
+its velocity along the heading and along the heading's left-hand normal, and
+`ego_x__{kp}` and `ego_y__{kp}`, its position from the midpoint of neck and tail base
+along the same axes. On a 3D table the heading is projected on the XY plane and
+`vz__{kp}` is unchanged. The four columns are NaN where either heading keypoint is
+missing or the two coincide in the plane. Unset, `heading` stays out of the identity, so
+`keypoint-kinematics/default` keeps `0.1-4bfb0ea209`. The run-id golden adds
+`keypoint-kinematics/heading`.
+
 ## Unreleased: one-call submission from an agent
 
 **A recipe file as a recipe argument.** The MCP server's recipe arguments also take

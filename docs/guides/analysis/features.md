@@ -40,8 +40,9 @@ parameter, generated from the registry. Grouped by the question they answer:
 
 **Individual.** `speed-angvel` (speed and angular velocity),
 `heading` (body orientation from keypoints, under a method you name),
-`keypoint-kinematics` (smoothed speed and acceleration of every keypoint, and distances
-between keypoints), `trajectory-smooth`, `body-scale`, `body-length` (length along a
+`keypoint-kinematics` (smoothed speed and acceleration of every keypoint, distances
+between keypoints, and with `heading` each keypoint's velocity and position in the
+animal's own frame), `trajectory-smooth`, `body-scale`, `body-length` (length along a
 chain of keypoints, or one a tracker measured), `scale-to-cm`, `scale-to-bl` (lengths in
 body lengths, for comparing animals of different sizes), `track-subsample`.
 

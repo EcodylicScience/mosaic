@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -28,8 +29,10 @@ if TYPE_CHECKING:
     from pandas._typing import Scalar
 
 __all__ = [
+    "BodyFrame",
     "apply_exclude_cols",
     "block_rows",
+    "body_frame",
     "check_memory_headroom",
     "chosen_payload_columns",
     "clean_animal_track",
@@ -605,6 +608,47 @@ def ego_rotate(
     dx_ego = dx * ct + dy * st
     dy_ego = -dx * st + dy * ct
     return dx_ego, dy_ego
+
+
+@dataclass(frozen=True)
+class BodyFrame:
+    """An individual's body frame on each row, set by its neck and tail base.
+
+    Attributes:
+        heading: The angle in radians of the tail-to-neck vector in the XY
+            plane, NaN on a row where the frame is undefined.
+        center_x: The X of the midpoint of neck and tail base, NaN where the
+            frame is undefined.
+        center_y: The Y of that midpoint, NaN where the frame is undefined.
+    """
+
+    heading: npt.NDArray[np.float64]
+    center_x: npt.NDArray[np.float64]
+    center_y: npt.NDArray[np.float64]
+
+
+def body_frame(
+    neck: npt.NDArray[np.float64], tail: npt.NDArray[np.float64]
+) -> BodyFrame:
+    """The body frame on each row, from ``(n_rows, n_axes)`` positions.
+
+    With :func:`ego_rotate`, the frame maps a world vector to its component
+    along the heading and its component along the heading's left-hand normal.
+    On a 3D table the heading is the tail-to-neck vector projected on the XY
+    plane, so the rotation is about the vertical Z axis.
+
+    The frame is undefined on a row where either keypoint has a coordinate that
+    is not finite, or where the two coincide in the XY plane.
+    """
+    forward = neck[:, :2] - tail[:, :2]
+    length = np.hypot(forward[:, 0], forward[:, 1])
+    present = np.isfinite(neck).all(axis=1) & np.isfinite(tail).all(axis=1)
+    undefined = ~present | ~(length > 0)
+    heading = np.arctan2(forward[:, 1], forward[:, 0])
+    center = (neck[:, :2] + tail[:, :2]) / 2
+    heading[undefined] = np.nan
+    center[undefined] = np.nan
+    return BodyFrame(heading=heading, center_x=center[:, 0], center_y=center[:, 1])
 
 
 # --- Row-wise statistics over an individual's keypoints ---

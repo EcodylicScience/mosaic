@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, ClassVar, Self, final
+from typing import Annotated, ClassVar, Self, final, override
 
 import numpy as np
 import numpy.typing as npt
@@ -60,7 +60,7 @@ from .derivatives import (
     row_norm,
     savgol_derivatives,
 )
-from .helpers import ensure_columns, meta_columns
+from .helpers import body_frame, ego_rotate, ensure_columns, meta_columns
 from .registry import register_feature
 
 __all__ = ["KeypointKinematics"]
@@ -94,6 +94,20 @@ _NORMALIZE_BY_DESCRIPTION = (
     "An individual on which the pair is never seen reports NaN throughout."
 )
 
+_HEADING_DESCRIPTION = (
+    "A keypoint pair (neck, tail base), by index or by name, that sets each "
+    "row's body frame: the heading points from tail base to neck, and the body "
+    "center is their midpoint. Set, every reported keypoint also gets vx__{kp} "
+    "and vy__{kp}, its velocity along the heading and along the heading's "
+    "left-hand normal, and ego_x__{kp} and ego_y__{kp}, its position from the "
+    "body center along the same two axes. Positive y is 90 degrees "
+    "counterclockwise from the heading in a y-up frame. On a 3D table the heading "
+    "is projected on the XY plane and the rotation is about Z; vz__{kp} stays "
+    "the vertical velocity. The four columns are NaN on a row where either "
+    "keypoint of the pair is missing or the two coincide in the plane. Unset, "
+    "none of them is written."
+)
+
 
 @dataclass(frozen=True)
 class _Plan:
@@ -105,12 +119,14 @@ class _Plan:
         selected: The keypoints whose speed and acceleration are reported.
         distances: The keypoint pairs whose separation is reported.
         normalize_by: The pair whose median separation divides every length.
+        heading: The (neck, tail base) pair that sets the body frame.
     """
 
     keypoints: KeypointColumns
     selected: tuple[int, ...]
     distances: tuple[tuple[int, int], ...]
     normalize_by: tuple[int, int] | None
+    heading: tuple[int, int] | None
 
 
 @final
@@ -128,7 +144,22 @@ class KeypointKinematics:
     - ``vz__{kp}`` -- on a 3D table only, the signed velocity along +Z, which
       is up in a table whose Z axis is vertical, so a rising keypoint is positive.
 
-    and for each requested pair, ``dist__{a}__{b}``, the Euclidean distance
+    With ``heading`` set to a (neck, tail base) pair, also, for each keypoint:
+
+    - ``vx__{kp}`` and ``vy__{kp}`` -- the velocity along the animal's heading
+      and along its left-hand normal, in the table's units per second.
+    - ``ego_x__{kp}`` and ``ego_y__{kp}`` -- the position from the body center,
+      the midpoint of neck and tail base, along the same two axes.
+
+    The heading points from tail base to neck on the row's unsmoothed positions,
+    and positive y is 90 degrees counterclockwise from it in a y-up frame. The
+    velocities are the world velocities rotated into that frame. On a 3D table
+    the heading is projected on the XY plane, the rotation is about Z,
+    ``vz__{kp}`` is unchanged and no ``ego_z__`` column is written. The four
+    columns are NaN on a row where either heading keypoint is missing or the two
+    coincide in the plane, an animal pointing straight up included.
+
+    For each requested pair, ``dist__{a}__{b}``, the Euclidean distance
     between two keypoints on that row. ``{kp}`` is the keypoint's name when
     ``keypoint_names`` is given, else ``kp{k}`` with ``k`` its position in the
     table's keypoint order. Every measure is ``float32``.
@@ -145,10 +176,11 @@ class KeypointKinematics:
     method, the gap handling with ``window``, and which rows are NaN.
 
     **Normalization.** With ``normalize_by``, every distance, speed, vertical
-    velocity and acceleration is divided by the median length of that keypoint
-    segment over the individual's rows in the sequence, which makes them
-    comparable across body sizes. A distance is then in segment lengths, a speed
-    in segment lengths per second, an acceleration per second squared.
+    velocity, acceleration and own-frame column is divided by the median length
+    of that keypoint segment over the individual's rows in the sequence, which
+    makes them comparable across body sizes. A distance is then in segment
+    lengths, a speed in segment lengths per second, an acceleration per second
+    squared.
 
     One row per ``(frame, id)`` is required, so a table holding one row per
     camera is refused. Field documentation is on
@@ -175,6 +207,10 @@ class KeypointKinematics:
             Conditional(Prefix("speed__")),
             Conditional(Prefix("accel__")),
             Conditional(Prefix("vz__"), when_present=Prefix("poseZ")),
+            Conditional(Prefix("vx__"), when_param="heading"),
+            Conditional(Prefix("vy__"), when_param="heading"),
+            Conditional(Prefix("ego_x__"), when_param="heading"),
+            Conditional(Prefix("ego_y__"), when_param="heading"),
             Conditional(Prefix("dist__"), when_param="distances"),
             *META_COLUMNS_KEPT,
         ),
@@ -207,6 +243,9 @@ class KeypointKinematics:
         normalize_by: Annotated[
             tuple[int | str, int | str] | None, Declared(_NORMALIZE_BY_DESCRIPTION)
         ] = None
+        heading: Annotated[
+            tuple[int | str, int | str] | None, Declared(_HEADING_DESCRIPTION)
+        ] = None
 
         @model_validator(mode="after")
         def _check(self) -> Self:
@@ -225,6 +264,7 @@ class KeypointKinematics:
                 *(self.keypoints or []),
                 *(ref for pair in self.distances for ref in pair),
                 *(self.normalize_by or ()),
+                *(self.heading or ()),
             ]
             negative = [ref for ref in refs if isinstance(ref, int) and ref < 0]
             if negative:
@@ -245,8 +285,26 @@ class KeypointKinematics:
                     "empty, so there is nothing to compute. Leave keypoints unset "
                     "for every keypoint."
                 )
+            if self.keypoints == [] and self.heading is not None:
+                raise ValueError(
+                    f"{_NAME}: heading is set but keypoints=[] reports no keypoint, "
+                    "so none of its columns would be written. Leave keypoints unset "
+                    "for every keypoint, or name the ones to place in the body frame."
+                )
             self._check_repeats(names or [])
             return self
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, with ``heading`` left out while it is unset.
+
+            A run without a heading has the identity it had before the field
+            existed.
+            """
+            dumped = super().identity_dump()
+            if self.heading is None:
+                del dumped["heading"]
+            return dumped
 
         def _check_repeats(self, names: list[str]) -> None:
             """Refuse a keypoint, or a pair, that is named twice or paired with itself.
@@ -284,6 +342,13 @@ class KeypointKinematics:
                     raise ValueError(
                         f"{_NAME}: normalize_by {self.normalize_by} is a keypoint "
                         "and itself, whose length is zero."
+                    )
+            if self.heading is not None:
+                a_ref, b_ref = self.heading
+                if index(a_ref) == index(b_ref):
+                    raise ValueError(
+                        f"{_NAME}: heading {self.heading} is a keypoint and itself, "
+                        "which points nowhere."
                     )
 
     def __init__(
@@ -359,11 +424,16 @@ class KeypointKinematics:
         if p.normalize_by is not None:
             a, b = resolve(list(p.normalize_by), "normalize_by")
             normalize_by = (a, b)
+        heading: tuple[int, int] | None = None
+        if p.heading is not None:
+            neck, tail = resolve(list(p.heading), "heading")
+            heading = (neck, tail)
         return _Plan(
             keypoints=keypoints,
             selected=tuple(selected),
             distances=tuple(distances),
             normalize_by=normalize_by,
+            heading=heading,
         )
 
     def _measure(
@@ -404,9 +474,18 @@ class KeypointKinematics:
         speed: dict[str, FloatArray] = {}
         accel: dict[str, FloatArray] = {}
         vertical: dict[str, FloatArray] = {}
+        own: dict[str, dict[str, FloatArray]] = {
+            prefix: {} for prefix in ("vx", "vy", "ego_x", "ego_y")
+        }
+        frame = (
+            None
+            if plan.heading is None
+            else body_frame(positions(plan.heading[0]), positions(plan.heading[1]))
+        )
         for k in plan.selected:
+            observed = positions(k)
             (velocity, acceleration), absent = savgol_derivatives(
-                positions(k), layout, p.window, kernels
+                observed, layout, p.window, kernels
             )
             label = labels[k]
             speed[f"speed__{label}"] = (
@@ -419,6 +498,22 @@ class KeypointKinematics:
                 vertical[f"vz__{label}"] = (
                     np.where(absent, np.nan, velocity[:, 2]) / scale
                 )
+            if frame is not None:
+                vx, vy = ego_rotate(velocity[:, 0], velocity[:, 1], frame.heading)
+                ego_x, ego_y = ego_rotate(
+                    observed[:, 0] - frame.center_x,
+                    observed[:, 1] - frame.center_y,
+                    frame.heading,
+                )
+                for prefix, values in (
+                    ("vx", vx),
+                    ("vy", vy),
+                    ("ego_x", ego_x),
+                    ("ego_y", ego_y),
+                ):
+                    own[prefix][f"{prefix}__{label}"] = (
+                        np.where(absent, np.nan, values) / scale
+                    )
         dist = {
             f"dist__{labels[a]}__{labels[b]}": row_norm(positions(a) - positions(b))
             / scale
@@ -426,5 +521,14 @@ class KeypointKinematics:
         }
         return {
             name: values.astype(np.float32)
-            for name, values in {**speed, **accel, **vertical, **dist}.items()
+            for name, values in {
+                **speed,
+                **accel,
+                **vertical,
+                **own["vx"],
+                **own["vy"],
+                **own["ego_x"],
+                **own["ego_y"],
+                **dist,
+            }.items()
         }

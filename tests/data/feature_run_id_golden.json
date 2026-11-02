@@ -42,6 +42,7 @@
   "id-tag-columns/no-labels-variant": "0.1-0ed02bfded",
   "interaction-crop-pipeline/default": "0.3-33c0805241",
   "keypoint-kinematics/default": "0.1-4bfb0ea209",
+  "keypoint-kinematics/heading": "0.1-a09845edd5",
   "label-statistics/default": "0.1-fdec8babe5",
   "lightning-action/templates": "0.6-c854cd6953",
   "local-order-metrics/params-shells": "0.1-51839a5ea7",
