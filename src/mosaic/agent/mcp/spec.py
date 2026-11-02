@@ -26,7 +26,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 from mosaic.core.arenas import ArenaLayout
 from mosaic.core.json_value import JsonValue
@@ -886,6 +892,13 @@ class ListActivityInput(ToolInput):
             "attempt with its outcome."
         ),
     )
+    since: AwareDatetime | None = Field(
+        default=None,
+        description=(
+            "A page's as_of: list only the requests made, or the attempts "
+            "started or ended, since that read."
+        ),
+    )
     limit: PageSize = DEFAULT_PAGE_SIZE
     cursor: _RecordId | None = Field(default=None, description=_CURSOR_DESCRIPTION)
 
@@ -1284,12 +1297,15 @@ class ActivityPage(StrictModel):
         requests: The requests, under the ``requests`` view.
         runs: The attempts, under the ``runs`` view.
         next_cursor: The cursor of the next page, ``None`` on the last.
+        as_of: When the read began, the ``since`` of a later read that lists
+            only what changed after this one.
     """
 
     view: ActivityView
     requests: tuple[RequestSummaryWire, ...] = ()
     runs: tuple[RunSummary, ...] = ()
     next_cursor: str | None
+    as_of: AwareDatetime
 
 
 class AttemptDiagnosis(StrictModel):
@@ -1673,12 +1689,13 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="List activity",
         description=(
             "List a dataset's pipeline requests with their verdicts, or every "
-            "attempt with its outcome, newest first." + _PAGING
+            "attempt with its outcome, newest first. since, a page's as_of, "
+            "lists only what changed after that read." + _PAGING
         ),
         input_model=ListActivityInput,
         output=ActivityPage,
         annotations=READ,
-        narrowing=("limit",),
+        narrowing=("since", "limit"),
     ),
     ToolSpec(
         name="diagnose_failures",

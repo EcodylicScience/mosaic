@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import builtins
+import datetime
 import errno
+import os
 import json
 import threading
 import time
@@ -672,3 +674,44 @@ def test_a_removal_without_a_retirement_writes_the_line_an_older_mosaic_wrote(
     assert all("retired" not in event for event in removing)
     records = runlog.read_removal_records(run_log_dir(tmp_path), "C1")
     assert {record["retired"] for record in records} == {""}
+
+
+def test_runs_changed_since_an_instant_are_those_that_began_or_ended_after_it(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="a")
+        log.finished()
+    with _log(tmp_path, "E2") as log:
+        log.started(kind="feature", target="b")
+    with _log(tmp_path, "E4") as log:
+        log.started(kind="feature", target="d")
+    since = datetime.datetime.now(datetime.UTC)
+    with _log(tmp_path, "E2") as log:
+        log.finished()
+    with _log(tmp_path, "E3") as log:
+        log.started(kind="feature", target="c")
+    with _log(tmp_path, "E4") as log:
+        log.heartbeat(1, 2)
+
+    changed = list_runs(run_log_dir(tmp_path), changed_since=since)
+    paged = list_runs(run_log_dir(tmp_path), changed_since=since, limit=1)
+
+    assert [snap["execution_id"] for snap in changed["items"]] == ["E3", "E2"]
+    assert [snap["execution_id"] for snap in paged["items"]] == ["E3"]
+    assert paged["next_after"] == "E3"
+
+
+def test_a_log_whose_mtime_reads_just_before_the_instant_is_still_read(
+    tmp_path: Path,
+) -> None:
+    """A coarse or skewed file clock is not trusted to the second; the stamps decide."""
+    since = datetime.datetime.now(datetime.UTC)
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="a")
+    early = since.timestamp() - 1
+    os.utime(run_log_path(tmp_path, "E1"), (early, early))
+
+    changed = list_runs(run_log_dir(tmp_path), changed_since=since)
+
+    assert [snap["execution_id"] for snap in changed["items"]] == ["E1"]

@@ -1004,7 +1004,7 @@ def _request_holds(
     the runs it found already done and the runs it bound there. A written run
     that a feature attempt outside every request also names is not retired.
     """
-    from ..markers import parse_instant
+    from mosaic.runlog import parse_instant
     from .digest import recipe_digest
     from .request import load_recipe_for_request
     from .retirement import exclusively_written, retired_digest_of, written_runs
@@ -1269,7 +1269,7 @@ def _coverage_reason(
 
 def _age_hours(record: AnyRecord, moment: datetime.datetime) -> float | None:
     """Hours since *record* finished, or since it started when it did not."""
-    from ..markers import parse_instant
+    from mosaic.runlog import parse_instant
 
     stamp = parse_instant(record.finished_at or record.started_at)
     if stamp is None:
@@ -1485,7 +1485,7 @@ def _entries_of(record: AnyRecord) -> set[Entry]:
 
 def _timestamp(stamp: str) -> float:
     """*stamp* as seconds since the epoch, 0 when it does not parse."""
-    from ..markers import parse_instant
+    from mosaic.runlog import parse_instant
 
     moment = parse_instant(stamp) if stamp else None
     return moment.timestamp() if moment is not None else 0.0

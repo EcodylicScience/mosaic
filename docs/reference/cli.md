@@ -21,6 +21,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `prerequisites`: Print the runs that an op needs before it...
 * `status`: Show the status of one run attempt by...
 * `cancel`: Request cancellation of a running attempt...
+* `wait`: Wait until pipeline requests end, and...
 * `release`: Release the run roots claimed by an...
 * `track`: Run an integrated tracker over scoped...
 * `describe`: Describe a dataset: its manifest, counts,...
@@ -152,6 +153,35 @@ $ mosaic cancel [OPTIONS]
 * `--execution-id <str>`: Attempt ULID to cancel.
 * `--request <str>`: Pipeline request to cancel: SIGTERM to its driver, or to its running steps without one, and its unstarted steps recorded cancelled. Not for a request whose steps a queue dispatches.
 * `--assume-exited`: Record as cancelled an attempt on another host whose run-log declares no heartbeat, asserting that its process has exited. Refused for one whose heartbeat is current.
+* `--json`: Emit the result as JSON on stdout.
+* `--help`: Show this message and exit.
+
+## `mosaic wait`
+
+Wait until pipeline requests end, and print each one's verdict.
+
+A request ends when its verdict is `finished`, `partial`, `failed`,
+`cancelled` or `orphaned`. The command exits 0 when every request that
+ended is `finished`, 1 when one is not, 124 when `--timeout` ran out first
+and 2 when an id names no request or an unreadable one. Run it as a
+background job to be woken once, when the requests end, instead of
+polling.
+
+**Usage**:
+
+```console
+$ mosaic wait [OPTIONS] {request_ids}...
+```
+
+**Arguments**:
+
+* `request_ids...`: The pipeline requests to wait for.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--until <any|all>`: 'all' waits for every request to end, 'any' for the first.  [default: all]
+* `--timeout <float range>`: The most seconds to wait. Unset waits on.  [x>=0]
 * `--json`: Emit the result as JSON on stdout.
 * `--help`: Show this message and exit.
 

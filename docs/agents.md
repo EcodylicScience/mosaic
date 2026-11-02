@@ -153,7 +153,7 @@ that does not read, is left out and reported on the server's standard error.
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
-| `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
+| `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts, or only those that changed `since` an earlier read. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
@@ -173,7 +173,22 @@ otherwise when the time is up, so the agent needs no polling loop and no look at
 driver's process. With `brief` it lists only the steps that are running or did not
 finish cleanly, and counts the others (`omitted_finished`, `omitted_pending`).
 `mosaic pipeline status --request <id> --wait-seconds 45 --brief` does the same from a
-shell. The driver log, `.mosaic/drivers/<id>.log` in the dataset, holds the output of
+shell.
+
+For a longer wait, an agent that can run a background shell job runs
+`mosaic wait <request id> --manifest dataset.yaml --timeout 3600 --json` as one, one
+job per request, with `--timeout` a little past the time the work should take. The
+command reads the request again until it ends, for hours if need be, prints its
+verdict and exits: 0 for `finished`, 1 for `partial`, `failed`, `cancelled` or
+`orphaned`, 124 when the timeout ran out, and 2 for an unknown or unreadable request.
+A request whose driver failed to start stays `running` and never ends a wait, so on
+124 the agent reads the request's status and, when no step has started, its driver
+log once. Each job wakes the agent once, when its request ends, and costs nothing
+while it waits. Several ids wait for all of them, and `--until any` for the first. A
+woken agent reads `list_activity` with `since` set to the `as_of` of its last read,
+and gets only the requests made and the attempts started or ended after that read.
+
+The driver log, `.mosaic/drivers/<id>.log` in the dataset, holds the output of
 the driver and its steps. It explains a failure and does not report progress.
 
 `get_request_status` also reports `poll_after_seconds`, how long to wait before reading

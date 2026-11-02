@@ -47,6 +47,7 @@ from mosaic.cli.sequences import sequences_command
 from mosaic.cli.status import status_command
 from mosaic.cli.tracking import tracking_app
 from mosaic.cli.track import track_command
+from mosaic.cli.wait import wait_command
 
 app = typer.Typer(
     name="mosaic",
@@ -61,6 +62,7 @@ _ = app.command(name="prerequisites")(prerequisites_command)
 _ = app.command(name="status")(status_command)
 app.add_typer(runs_app, name="runs")
 _ = app.command(name="cancel")(cancel_command)
+_ = app.command(name="wait")(wait_command)
 _ = app.command(name="release")(release_command)
 _ = app.command(name="track")(track_command)
 

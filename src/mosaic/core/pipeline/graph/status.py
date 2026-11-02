@@ -36,6 +36,7 @@ from mosaic.runlog import (
     ProgressEventRecord,
     attempt_outcome,
     error_summary,
+    parse_instant,
     read_entry_errors,
     read_removal_records,
     read_run,
@@ -45,7 +46,6 @@ from mosaic.runlog import (
 
 from ..error_envelope import ErrorEnvelope, error_envelope
 from ..refusal import Refusal, RefusalReason
-from ..markers import parse_instant
 from .driver_lease import lease_is_live, live_step_process, read_driver_lease
 from .liveness import snapshot_liveness, step_liveness
 from .model import GraphModel

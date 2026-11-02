@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
 import pytest
@@ -170,3 +171,57 @@ def test_a_damaged_request_file_on_the_page_is_reported_by_name(
         "request_id": "01Z",
         "path": str(damaged),
     }
+
+
+def test_requests_changed_since_an_instant_were_made_or_moved_a_step_after_it(
+    tmp_path: Path,
+) -> None:
+    for request_id in ("01A", "01B"):
+        _save(tmp_path, request_id, "speed")
+    _finish(tmp_path, "01A-speed")
+    with JsonlRunLog(run_log_path(tmp_path, "01B-speed"), "01B-speed") as log:
+        log.started(kind="feature", target="speed")
+    since = datetime.datetime.now(datetime.UTC)
+    with JsonlRunLog(run_log_path(tmp_path, "01B-speed"), "01B-speed") as log:
+        log.finished()
+    save_request(
+        tmp_path,
+        Request(
+            request_id="01C",
+            recipe_digest="d" * 64,
+            created_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            step_executions={"speed": "01C-speed"},
+        ),
+    )
+
+    changed = list_requests(tmp_path, changed_since=since)
+    paged = list_requests(tmp_path, changed_since=since, limit=1)
+
+    assert [item.request_id for item in changed.items] == ["01C", "01B"]
+    assert [item.request_id for item in paged.items] == ["01C"]
+    assert paged.next_after == "01C"
+
+
+def test_an_unreadable_request_is_listed_as_changed_where_its_page_reaches_it(
+    tmp_path: Path,
+) -> None:
+    damaged = request_path(tmp_path, "00Z")
+    damaged.parent.mkdir(parents=True)
+    _ = damaged.write_text('{"bad": 1}')
+    since = datetime.datetime.now(datetime.UTC)
+    save_request(
+        tmp_path,
+        Request(
+            request_id="01C",
+            recipe_digest="d" * 64,
+            created_at=datetime.datetime.now(datetime.UTC).isoformat(),
+            step_executions={"speed": "01C-speed"},
+        ),
+    )
+
+    first = list_requests(tmp_path, changed_since=since, limit=1)
+
+    assert [item.request_id for item in first.items] == ["01C"]
+    assert first.next_after == "01C"
+    with pytest.raises(RequestUnreadable):
+        _ = list_requests(tmp_path, changed_since=since)

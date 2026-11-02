@@ -255,6 +255,12 @@ if TYPE_CHECKING:
         plan_fingerprint as plan_fingerprint,
         plan_wire as plan_wire,
     )
+    from .request_wait import (
+        RequestWaitWire as RequestWaitWire,
+        WaitOutcome as WaitOutcome,
+        WaitUntil as WaitUntil,
+        wait_for_requests as wait_for_requests,
+    )
     from .retirement import (
         RetireNeedsCleanup as RetireNeedsCleanup,
         RetireOpenRecipe as RetireOpenRecipe,
@@ -568,6 +574,10 @@ _MODULE_OF: Final[dict[str, str]] = {
     "RequestStatusWire": ".status",
     "RequestSummaryWire": ".status",
     "RequestVerdict": ".status",
+    "RequestWaitWire": ".request_wait",
+    "WaitOutcome": ".request_wait",
+    "WaitUntil": ".request_wait",
+    "wait_for_requests": ".request_wait",
     "RunStatusWire": ".status",
     "StepStatusWire": ".status",
     "recorded_error": ".status",
@@ -845,6 +855,7 @@ __all__ = [
     "RequestSummaryWire",
     "RequestUnreadable",
     "RequestVerdict",
+    "RequestWaitWire",
     "ResolvedStep",
     "RetirableRecipeWire",
     "RetireNeedsCleanup",
@@ -882,6 +893,8 @@ __all__ = [
     "UnmetStatus",
     "ValidationReport",
     "Verdict",
+    "WaitOutcome",
+    "WaitUntil",
     "WaitingOnResource",
     "WaitingOnResourceWire",
     "ancestors_of",
@@ -1008,4 +1021,5 @@ __all__ = [
     "take_driver_lease",
     "topological_order",
     "validation_report",
+    "wait_for_requests",
 ]

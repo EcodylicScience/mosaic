@@ -70,7 +70,13 @@ from typing import Final, Literal, TypeVar, final
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from mosaic.runlog import TERMINAL_STATUSES, now_iso, read_run, run_log_dir
+from mosaic.runlog import (
+    TERMINAL_STATUSES,
+    now_iso,
+    parse_instant,
+    read_run,
+    run_log_dir,
+)
 
 __all__ = [
     "BOOT_TIME_TOLERANCE_SECONDS",
@@ -95,7 +101,6 @@ __all__ = [
     "inflight_marker_path",
     "inflight_state",
     "new_inflight",
-    "parse_instant",
     "phase_fields",
     "phase_marker_path",
     "process_running",
@@ -512,20 +517,6 @@ def refresh_inflight(
     )
     write_inflight(work_dir, refreshed)
     return refreshed
-
-
-def parse_instant(stamp: str) -> datetime.datetime | None:
-    """Return the ISO-8601 instant *stamp*, read as UTC when it names no zone.
-
-    A stamp that does not parse returns ``None``.
-    """
-    try:
-        moment = datetime.datetime.fromisoformat(stamp)
-    except ValueError:
-        return None
-    if moment.tzinfo is None:
-        return moment.replace(tzinfo=datetime.timezone.utc)
-    return moment
 
 
 def inflight_state(

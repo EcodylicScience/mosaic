@@ -79,6 +79,7 @@ from tests.helpers import (
     exited_pid,
     make_dataset,
     speed_recipe,
+    speed_recipe_stepping,
     store_dataset,
     track_table,
     video_store_maker,
@@ -1335,6 +1336,38 @@ def test_a_preview_of_another_kind_is_invalid(
     )
 
     assert refused.kind == "invalid"
+
+
+def test_activity_since_a_page_lists_only_what_changed_after_it(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    uuid = _uuid(dataset)
+    done = submit_request(dataset, speed_recipe()).request
+    with JsonlRunLog(
+        run_log_path(dataset.base_dir, done.execution_of("speed")),
+        done.execution_of("speed"),
+    ) as log:
+        log.started(kind="feature", target="speed")
+        log.finished()
+    first = _call(backend, "list_activity", ActivityPage, dataset=uuid)
+    later = submit_request(dataset, speed_recipe_stepping(9)).request
+
+    requests = _call(
+        backend, "list_activity", ActivityPage, dataset=uuid, since=first.as_of
+    )
+    runs = _call(
+        backend,
+        "list_activity",
+        ActivityPage,
+        dataset=uuid,
+        view="runs",
+        since=first.as_of,
+    )
+
+    assert [item.request_id for item in first.requests] == [done.request_id]
+    assert [item.request_id for item in requests.requests] == [later.request_id]
+    assert runs.runs == ()
+    assert requests.as_of >= first.as_of
 
 
 def test_a_damaged_request_file_is_reported_by_every_tool_that_reads_it(

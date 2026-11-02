@@ -65,6 +65,7 @@ __all__ = [
     "ERROR_MESSAGE_LIMIT",
     "LIVENESS_INTERVAL_SECONDS",
     "LIVENESS_STALE_INTERVALS",
+    "MTIME_TOLERANCE_SECONDS",
     "AttemptLiveness",
     "AttemptOutcome",
     "EntryErrorPage",
@@ -79,10 +80,12 @@ __all__ = [
     "RunLogSnapshot",
     "TERMINAL_STATUSES",
     "attempt_outcome",
+    "changed_at_or_after",
     "error_summary",
     "list_runs",
     "new_execution_id",
     "now_iso",
+    "parse_instant",
     "read_entry_error_keys",
     "read_entry_errors",
     "read_removal_records",
@@ -94,6 +97,7 @@ __all__ = [
     "reduce_run_log",
     "run_log_dir",
     "run_log_path",
+    "written_since",
 ]
 
 
@@ -361,6 +365,20 @@ def attempt_outcome(status: str, entries_failed: int) -> AttemptOutcome:
 def now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def parse_instant(stamp: str) -> datetime.datetime | None:
+    """Return the ISO-8601 instant *stamp*, read as UTC when it names no zone.
+
+    A stamp that does not parse returns ``None``.
+    """
+    try:
+        moment = datetime.datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=datetime.timezone.utc)
+    return moment
 
 
 # Crockford base32 (excludes I, L, O, U to avoid ambiguity) -- the ULID alphabet.
@@ -1158,6 +1176,7 @@ def list_runs(
     kind: str | None = None,
     status: str | None = None,
     target: str | None = None,
+    changed_since: datetime.datetime | None = None,
 ) -> RunLogPage:
     """Read one page of attempt snapshots, newest first.
 
@@ -1176,6 +1195,9 @@ def list_runs(
         kind: Keep only attempts of this ``kind``.
         status: Keep only attempts with this ``status``.
         target: Keep only attempts with this ``target``.
+        changed_since: Keep only attempts that changed at or after this
+            instant (:func:`changed_at_or_after`). A log last written before it is
+            not read.
 
     Returns:
         The page, and the ``after`` of the next page while unread logs remain.
@@ -1188,12 +1210,20 @@ def list_runs(
     names = _run_log_names(Path(run_dir))
     if after is not None:
         names = [name for name in names if name < after]
+    if changed_since is not None:
+        names = [
+            name
+            for name in names
+            if written_since(Path(run_dir) / f"{name}.jsonl", changed_since)
+        ]
     items: list[RunLogSnapshot] = []
     for position, name in enumerate(names):
         if limit is not None and len(items) >= limit:
             return {"items": items, "next_after": names[position - 1]}
         snap = reduce_run_log(Path(run_dir) / f"{name}.jsonl")
         if snap is None:
+            continue
+        if changed_since is not None and not changed_at_or_after(snap, changed_since):
             continue
         if kind is not None and snap["kind"] != kind:
             continue
@@ -1203,6 +1233,41 @@ def list_runs(
             continue
         items.append(snap)
     return {"items": items, "next_after": None}
+
+
+MTIME_TOLERANCE_SECONDS: Final = 5.0
+"""How far before an instant a file's modification time may read and still count.
+
+A coarse file clock, or a file server whose clock runs behind, can stamp a write
+made after the instant a little before it. The event stamps then decide.
+"""
+
+
+def written_since(path: Path, instant: datetime.datetime) -> bool:
+    """Whether the file at *path* may have been written at or after *instant*.
+
+    The modification time may read up to :data:`MTIME_TOLERANCE_SECONDS` before
+    *instant*. An absent file was not written. A log written from a host whose
+    clock runs further behind may still be passed over.
+    """
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        return False
+    return modified >= instant.timestamp() - MTIME_TOLERANCE_SECONDS
+
+
+def changed_at_or_after(snap: RunLogSnapshot, instant: datetime.datetime) -> bool:
+    """Whether the attempt of *snap* was created, started or ended at or after *instant*.
+
+    Progress, heartbeats and ``alive`` events are not changes. A blank or
+    unparseable timestamp is not a change.
+    """
+    for stamp in (snap["created_at"], snap["started_at"], snap["finished_at"]):
+        when = parse_instant(stamp) if stamp else None
+        if when is not None and when >= instant:
+            return True
+    return False
 
 
 def _run_log_names(run_dir: Path) -> list[str]:

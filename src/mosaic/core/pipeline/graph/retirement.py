@@ -36,10 +36,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Final
 
 from mosaic.core.scope import Scope
-from mosaic.runlog import list_runs, run_log_dir
+from mosaic.runlog import list_runs, parse_instant, run_log_dir
 
 from ..error_kind import ClassifiedError, ErrorKind
-from ..markers import parse_instant
 from .digest import DIGEST_LENGTH, recipe_digest
 from .rollup import request_rollup
 from .saved import find_saved_recipe

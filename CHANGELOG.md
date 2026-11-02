@@ -16,6 +16,19 @@ in `entries`. When the page would exceed 4,500 characters, every summary is cut 
 word to one length, so a listing of the whole catalog stays under 5,000 characters.
 `names` with `detail: "summary"` still returns the index rows. No identifier moves.
 
+**`mosaic wait`.** `mosaic wait <request ids> --until any|all [--timeout S] [--json]`
+reads each request until any or all of them end, past the 45-second cap of one status
+read, and prints each one's verdict. `orphaned` ends a wait and stays out of
+`runlog.TERMINAL_STATUSES`. It exits 0 when every ended request is `finished`, 1 when
+one is not, 124 on a timeout and 2 for an unknown or unreadable request. It opens the
+dataset read-only.
+
+**`list_activity` since a read.** Each page reports `as_of`, when its read began, and
+`since` lists only the requests created and the attempts created, started or ended at
+or after it. `list_runs` and `list_requests` take it as `changed_since`.
+`parse_instant` moved from `core/pipeline/markers.py` to `mosaic.runlog`. No
+identifier moves.
+
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
 **`train-sleap` trains an embedding model.** `head` gains `embedding`, a network that

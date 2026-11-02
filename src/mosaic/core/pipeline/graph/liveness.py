@@ -32,13 +32,13 @@ from mosaic.runlog import (
     TERMINAL_STATUSES,
     AttemptLiveness,
     RunLogSnapshot,
+    parse_instant,
 )
 
 from ..markers import (
     boots_differ,
     current_boot_id,
     current_pid_namespace,
-    parse_instant,
     process_running_since,
 )
 

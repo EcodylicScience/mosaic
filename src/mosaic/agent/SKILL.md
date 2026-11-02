@@ -581,6 +581,16 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   after a few waits, read `driver_log` once, because a driver that failed to start
   leaves the request `running`. For a request that reads `orphaned`, propose
   `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
+- For a wait of minutes or hours, when you can run a background shell job, run
+  `mosaic wait <request id> --manifest <manifest> --timeout 3600 --json` in the
+  background, one job per request, instead of polling. Set `--timeout` a little past
+  the time the work should take. Each job exits once, when its request ends, and
+  wakes you with its verdict: exit 0 for `finished`, 1 for any other verdict, 124
+  when the timeout runs out. A request whose driver failed to start stays `running`,
+  so on 124 read `get_request_status`, and when no step has started, read
+  `driver_log` once, then wait again or report. `--until any` with several ids ends
+  at the first. Then read `list_activity` with `since` set to the `as_of` of your
+  last read, which lists only the requests and attempts that changed after it.
 - A failed step ends only the branch below it. The steps below it are recorded
   failed with error type `ParentFailed`, whose `parent` names the failed step. The
   other steps still run. Answer the failed step. An ended request is not run again.

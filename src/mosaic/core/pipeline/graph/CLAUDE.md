@@ -213,6 +213,10 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   state is returned at once, and `brief` lists the running, failed, cancelled and
   partial steps and the ones that ended in the wait, and counts the rest
   (`test_pipeline_status_wait.py`, which injects `sleep` and `monotonic`).
+- `wait_for_requests` (`request_wait.py`, `mosaic wait`) reads several requests
+  through that wait, a share of `MAX_WAIT_SECONDS` each per round, until any or all
+  read other than `running`. `orphaned` ends it without joining `TERMINAL_STATUSES`
+  (`test_request_wait.py`, which injects `sleep` and `monotonic`).
 - `liveness.py` is the one rule for whether an attempt's process may still run
   (`alive`, `unknown`, `dead`, `ended`): an earlier boot of this host, then a local
   pid, then ten declared intervals of silence. A job's `started` event declares the
@@ -281,9 +285,12 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - `list_requests` (`store.py`) and `list_runs` (`mosaic.runlog`) sort file names, which
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).
+  `changed_since` keeps the records created, started or ended at or after an
+  instant (`changed_at_or_after`). It skips a run-log last written before the
+  instant, and `list_requests` then reads every request file.
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py`, `retirement.py`,
-  `saved.py`, `expand.py` and `patch.py` (which `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the feature library
+  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py`, `request_wait.py`,
+  `retirement.py`, `saved.py`, `expand.py` and `patch.py` (which `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the feature library
   (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
   registry and the inventory, which do.
 

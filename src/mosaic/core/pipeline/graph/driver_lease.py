@@ -40,13 +40,13 @@ from mosaic.runlog import (
     LIVENESS_STALE_INTERVALS,
     AttemptLiveness,
     now_iso,
+    parse_instant,
 )
 
 from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
 from ..markers import (
     create_exclusive,
-    parse_instant,
     process_running,
     process_running_since,
 )

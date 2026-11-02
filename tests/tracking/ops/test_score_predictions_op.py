@@ -50,7 +50,6 @@ from mosaic.core.pipeline.inventory.model import PredictionScoreRef
 from mosaic.core.pipeline.markers import (
     INFLIGHT_MARKER_NAME,
     new_inflight,
-    parse_instant,
     read_inflight,
     write_inflight,
 )
@@ -61,7 +60,7 @@ from mosaic.core.pipeline.op_identity import (
     parse_op_run_id,
 )
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, op_resource_class, run_op
-from mosaic.runlog import RunLogSnapshot, read_run, run_log_dir
+from mosaic.runlog import RunLogSnapshot, parse_instant, read_run, run_log_dir
 from mosaic.tracking import register_ops
 from mosaic.tracking.frame_predictions.errors import (
     PredictionRunNotFound,

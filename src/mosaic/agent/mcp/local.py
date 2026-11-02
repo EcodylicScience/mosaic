@@ -25,6 +25,7 @@ import logging
 import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -1101,18 +1102,28 @@ class LocalBackend:
 
         held = self._dataset(args.dataset)
         base = held.dataset.base_dir
+        as_of = datetime.now(UTC)
         if args.view == "requests":
-            requests = list_requests(base, limit=args.limit, after=args.cursor)
+            requests = list_requests(
+                base, limit=args.limit, after=args.cursor, changed_since=args.since
+            )
             return ActivityPage(
                 view=args.view,
                 requests=requests.items,
                 next_cursor=requests.next_after,
+                as_of=as_of,
             )
-        runs = list_runs(run_log_dir(base), limit=args.limit, after=args.cursor)
+        runs = list_runs(
+            run_log_dir(base),
+            limit=args.limit,
+            after=args.cursor,
+            changed_since=args.since,
+        )
         return ActivityPage(
             view=args.view,
             runs=tuple(_run_summary(snapshot) for snapshot in runs["items"]),
             next_cursor=runs["next_after"],
+            as_of=as_of,
         )
 
     def _diagnose_failures(self, args: DiagnoseFailuresInput) -> FailureDiagnosis:

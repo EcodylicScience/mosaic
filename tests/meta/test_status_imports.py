@@ -37,6 +37,7 @@ STATUS_IMPORTS = (
     "import mosaic.core.pipeline.graph.status",
     "from mosaic.core.pipeline.graph import request_status_wire, run_status_wire",
     "from mosaic.core.pipeline.graph import RequestStatusWire, RunStatusWire",
+    "from mosaic.core.pipeline.graph import RequestWaitWire, wait_for_requests",
     "import mosaic.core.pipeline.graph.store",
     "from mosaic.core.pipeline.graph import list_requests, RequestPageWire",
     "import mosaic.core.pipeline.graph.entry_errors",

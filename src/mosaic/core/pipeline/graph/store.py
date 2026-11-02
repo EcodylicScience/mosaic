@@ -19,11 +19,20 @@ unloaded (``tests/meta/test_status_imports.py``).
 
 from __future__ import annotations
 
+import datetime
 import json
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
+
+from mosaic.runlog import (
+    changed_at_or_after,
+    parse_instant,
+    reduce_run_log,
+    run_log_dir,
+    written_since,
+)
 
 from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
@@ -181,7 +190,11 @@ def load_request(base_dir: Path | str, request_id: str) -> Request:
 
 
 def list_requests(
-    base_dir: Path | str, *, limit: int | None = None, after: str | None = None
+    base_dir: Path | str,
+    *,
+    limit: int | None = None,
+    after: str | None = None,
+    changed_since: datetime.datetime | None = None,
 ) -> RequestPageWire:
     """List one page of a dataset's pipeline requests, newest first.
 
@@ -196,6 +209,11 @@ def list_requests(
         limit: The most requests to return, at least 1. ``None`` returns all.
         after: The ``next_after`` of the previous page. The page starts at the first
             request id that sorts before it.
+        changed_since: Keep only the requests created at or after this instant,
+            or one of whose step attempts was created, started or ended then
+            (:func:`~mosaic.runlog.changed_at_or_after`). Every request file is
+            read, and the run-logs written since. A file that does not read as
+            a request is kept, and raises where the page reaches it.
 
     Returns:
         The page, and the ``after`` of the next page while unread requests remain.
@@ -210,6 +228,10 @@ def list_requests(
     names = request_ids(base_dir)
     if after is not None:
         names = [name for name in names if name < after]
+    if changed_since is not None:
+        names = [
+            name for name in names if _changed_since(base_dir, name, changed_since)
+        ]
     page = names if limit is None else names[:limit]
     return RequestPageWire(
         items=tuple(
@@ -217,6 +239,32 @@ def list_requests(
         ),
         next_after=page[-1] if len(page) < len(names) else None,
     )
+
+
+def _changed_since(
+    base_dir: Path | str, request_id: str, instant: datetime.datetime
+) -> bool:
+    """Whether a request was created, or one of its attempts changed, at or after *instant*.
+
+    An unreadable request file counts as changed, so the page that reaches it
+    reports it as an unfiltered listing does.
+    """
+    try:
+        request = load_request(base_dir, request_id)
+    except RequestUnreadable:
+        return True
+    created = parse_instant(request.created_at) if request.created_at else None
+    if created is not None and created >= instant:
+        return True
+    logs = run_log_dir(base_dir)
+    for execution_id in request.step_executions.values():
+        path = logs / f"{execution_id}.jsonl"
+        if not written_since(path, instant):
+            continue
+        snap = reduce_run_log(path)
+        if snap is not None and changed_at_or_after(snap, instant):
+            return True
+    return False
 
 
 def open_requests_matching(

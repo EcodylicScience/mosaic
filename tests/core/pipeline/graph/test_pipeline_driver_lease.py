@@ -29,7 +29,7 @@ from mosaic.core.pipeline.graph import (
     take_driver_lease,
 )
 from mosaic.core.pipeline.graph import driver_lease as driver_lease_module
-from mosaic.core.pipeline.markers import parse_instant
+from mosaic.runlog import parse_instant
 from tests.helpers import exited_pid, wait_for, write_driver_lease
 
 

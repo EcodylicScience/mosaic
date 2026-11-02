@@ -319,6 +319,7 @@ CLI_READS: dict[str, CliArguments] = {
     "sweep-tracking --dry-run": lambda _: ["sweep-tracking"],
     "tags list": lambda _: ["tags", "list"],
     "upgrade-tracks --dry-run": lambda _: ["upgrade-tracks"],
+    "wait": lambda f: ["wait", f.request_id, "--timeout", "0"],
 }
 """Each read verb's arguments, without ``--manifest`` and ``--json``."""
 
