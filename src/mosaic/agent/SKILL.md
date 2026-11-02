@@ -283,11 +283,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   request is the same run, which applies the stored fit to the new entries. The first
   request must hold the training entries and is refused otherwise.
   `sequence-classifier` (`[deep-learning]`, GPU worker) is the same kind of step with a
-  registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`). It takes
-  `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head registered in
-  Python with `register_head` is visible to that process only, not to the CLI or a queue
-  worker. A fitted network predicts on the training device (`apply_device` `auto`, on the
-  CPU without CUDA; `cpu` or `cuda` force one), at `n_threads` threads.
+  registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`).
+  `head_config` `stages` above 1 adds refinement stages, each a default `tcn` on the
+  logits before it with a loss of its own, and `label_smoothing` smooths the targets. It
+  takes `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head
+  registered in Python with `register_head` is visible to that process only, not to the
+  CLI or a queue worker. A fitted network predicts on the training device
+  (`apply_device` `auto`, on the CPU without CUDA; `cpu` or `cuda` force one), at
+  `n_threads` threads.
   `probability-ensemble` averages or blends the `prob_<class>` columns of classifier
   runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the members'
   out-of-fold probabilities and refuses a member fitted without `cv_folds`. It writes

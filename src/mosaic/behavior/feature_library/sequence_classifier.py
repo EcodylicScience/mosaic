@@ -155,6 +155,7 @@ from .sequence_heads import (
     get_head,
     head_names,
     head_source_digest,
+    network_reach,
 )
 from .sequence_training import (
     Sampler,
@@ -295,11 +296,13 @@ _HEAD_DESCRIPTION = (
 )
 
 _HEAD_CONFIG_DESCRIPTION = (
-    "The options of the chosen head. Unset, the head's defaults. tcn takes "
-    "hidden (128), blocks (6), kernel_size (3, odd) and dropout (0.3). gru "
-    "takes hidden (128), layers (2), bidirectional (true) and dropout (0.3). "
-    "mlp takes hidden (128), layers (2) and dropout (0.3). Options that the "
-    "chosen head does not have are refused."
+    "The options of the chosen head. Unset, the head's defaults. Every head "
+    "takes stages (1): each stage after the head is a default tcn that refines "
+    "the logits before it, trains on a loss of its own and adds 63 frames of "
+    "reach on each side. tcn takes hidden (128), blocks (6), kernel_size (3, "
+    "odd) and dropout (0.3). gru takes hidden (128), layers (2), bidirectional "
+    "(true) and dropout (0.3). mlp takes hidden (128), layers (2) and dropout "
+    "(0.3). Options that the chosen head does not have are refused."
 )
 
 _HEAD_REVISION_DESCRIPTION = (
@@ -319,6 +322,12 @@ _CLASS_WEIGHT_DESCRIPTION = (
     "How the loss weighs a class. balanced weights it by the inverse of its "
     "frequency, sqrt by the square root of that, none equally. Each is scaled to "
     "a mean of 1 over the classes of the training runs."
+)
+
+_LABEL_SMOOTHING_DESCRIPTION = (
+    "The share of each training target spread evenly over the classes, which "
+    "keeps the network from growing too sure of a label. 0 trains on the labels "
+    "as they are."
 )
 
 _CROP_LENGTH_DESCRIPTION = (
@@ -417,13 +426,14 @@ class SequenceClassifier(FitReporting):
 
     @staticmethod
     def temporal_reach(params: SequenceClassifier.Params) -> int | None:
-        """Frames on each side that the head reads of its input, the step's own reach.
+        """Frames on each side that the network reads of its input, the step's own reach.
 
-        ``None`` for a head whose reach no option bounds (a GRU), or one that is not
-        registered in the process that asks.
+        The head's reach and that of its refinement stages. ``None`` for a head
+        whose reach no option bounds (a GRU), or one that is not registered in the
+        process that asks.
         """
         try:
-            return get_head(params.head).temporal_reach(params.head_options())
+            return network_reach(params.head, params.head_options())
         except ValueError:
             return None
 
@@ -478,6 +488,9 @@ class SequenceClassifier(FitReporting):
         class_weight: Annotated[
             Literal["sqrt", "balanced", "none"], Declared(_CLASS_WEIGHT_DESCRIPTION)
         ] = "sqrt"
+        label_smoothing: Annotated[
+            float, Field(ge=0.0, lt=1.0), Declared(_LABEL_SMOOTHING_DESCRIPTION)
+        ] = 0.0
         crop_length: Annotated[
             int, Field(ge=2), Declared(_CROP_LENGTH_DESCRIPTION, unit="frames")
         ] = 1024
@@ -584,13 +597,21 @@ class SequenceClassifier(FitReporting):
 
         @override
         def identity_dump(self) -> dict[str, object]:
-            """The hashed params, with the block settings left out under ``cv_unit="sequence"``.
+            """The hashed params, less the settings at the defaults that predate them.
 
             A run that cross-validates by sequence, or not at all, has the identity it
             had before the block settings existed. ``check_cross_validation`` leaves
-            them at their defaults then, so leaving them out loses nothing.
+            them at their defaults then, so leaving them out loses nothing. A run of
+            one stage without label smoothing has the identity it had before either
+            setting existed.
             """
-            return drop_block_settings(super().identity_dump(), self.cv_unit)
+            dumped = drop_block_settings(super().identity_dump(), self.cv_unit)
+            if self.label_smoothing == 0.0:
+                del dumped["label_smoothing"]
+            options = self.head_options()
+            if options.stages == 1:
+                dumped["head_config"] = options.model_dump(exclude={"stages"})
+            return dumped
 
         def head_options(self) -> HeadConfig:
             """Return the options of the chosen head: those given, else its defaults.
@@ -1138,6 +1159,7 @@ class SequenceClassifier(FitReporting):
             seed=seed,
             device=p.device,
             check=self._check_cancel,
+            label_smoothing=p.label_smoothing,
         )
         return {
             "fold": fold,

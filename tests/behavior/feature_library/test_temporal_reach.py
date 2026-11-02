@@ -19,7 +19,9 @@ from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.sequence_heads import (
     TcnConfig,
+    assemble_network,
     get_head,
+    network_reach,
 )
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
@@ -258,3 +260,24 @@ def test_a_pair_keypoint_velocity_reaches_its_declared_bound_across_a_gap() -> N
 
     assert measured == 2 * w - 1
     assert measured == feature.temporal_reach(feature.params)
+
+
+@pytest.mark.identity
+def test_a_two_stage_tcn_reaches_as_far_as_its_network_reach() -> None:
+    torch = pytest.importorskip("torch")
+    config = TcnConfig(hidden=8, blocks=2, stages=2)
+    _ = torch.manual_seed(0)
+    network = assemble_network(
+        "tcn", config, input_dropout=0.1, n_features=1, n_classes=3
+    ).eval()
+    frames = _payload()
+
+    def apply(table: pd.DataFrame) -> pd.DataFrame:
+        values = torch.as_tensor(table["f0"].to_numpy(dtype=np.float32))[None, :, None]
+        with torch.no_grad():
+            logits = network(values)[0].numpy()
+        return pd.DataFrame(logits)
+
+    measured = _farthest_change(apply, frames, "f0")
+
+    assert measured == network_reach("tcn", config) == 3 + 63

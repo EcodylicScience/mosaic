@@ -22,7 +22,7 @@ import json
 import os
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal, Protocol
+from typing import TYPE_CHECKING, Final, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -30,10 +30,11 @@ from .classifier_common import balanced_class_weights
 
 if TYPE_CHECKING:
     import numpy.typing as npt
-    from torch import nn
+    from torch import Tensor, nn
 
 __all__ = [
     "Sampler",
+    "StagedNetwork",
     "TrainingRun",
     "apply_device_for",
     "class_weights",
@@ -269,6 +270,13 @@ def advance(optimizer: _Optimizer) -> None:
     optimizer.step()
 
 
+@runtime_checkable
+class StagedNetwork(Protocol):
+    """A network that returns the logits of each of its stages, the last one predicting."""
+
+    def stage_logits(self, x: Tensor) -> list[Tensor]: ...
+
+
 def seed_torch(seed: int, *, device: str) -> None:
     """Seed torch's generators for the CPU and, on ``cuda``, for every GPU."""
     import torch
@@ -293,14 +301,17 @@ def train_network(
     seed: int,
     device: str,
     check: Callable[[], None],
+    label_smoothing: float = 0.0,
 ) -> None:
     """Train *network* in place on random crops of *frames*.
 
     The loop is AdamW under a one-cycle schedule, cross-entropy weighted by
-    *weights*, gradients clipped to *grad_clip*, and the weights of the last step
-    kept. The generator of the batches is seeded with *seed*. Torch's generator is
-    seeded by the caller before it builds the network, so that the initial weights
-    and the dropout draw from one stream, in that order.
+    *weights* and smoothed by *label_smoothing*, gradients clipped to
+    *grad_clip*, and the weights of the last step kept. Each stage of the network
+    has a loss of its own, and the loop trains on their mean. The generator of
+    the batches is seeded with *seed*. Torch's generator is seeded by the caller
+    before it builds the network, so that the initial weights and the dropout draw
+    from one stream, in that order.
 
     Args:
         network: The module, still in its initial state, on the CPU.
@@ -316,10 +327,20 @@ def train_network(
         seed: Seeds the batches.
         device: Where to train.
         check: Called every :data:`CHECK_EVERY` steps, and raises to stop.
+        label_smoothing: The share of each target spread evenly over the classes.
+
+    Raises:
+        TypeError: *network* has no ``stage_logits``.
     """
     import torch
     import torch.nn.functional as functional
 
+    if not isinstance(network, StagedNetwork):
+        msg = (
+            f"{type(network).__name__} has no stage_logits. Build the network "
+            "with assemble_network"
+        )
+        raise TypeError(msg)
     rng = np.random.default_rng(seed)
     network.to(device)
     optimizer = torch.optim.AdamW(
@@ -340,11 +361,16 @@ def train_network(
         starts, length = sampler.draw(rng, probabilities)
         batch = torch.stack([frame_tensor[s : s + length] for s in starts.tolist()])
         target = torch.stack([class_tensor[s : s + length] for s in starts.tolist()])
-        loss = functional.cross_entropy(
-            network(batch).reshape(-1, n_classes),
-            target.reshape(-1),
-            weight=class_weight,
-        )
+        losses = [
+            functional.cross_entropy(
+                logits.reshape(-1, n_classes),
+                target.reshape(-1),
+                weight=class_weight,
+                label_smoothing=label_smoothing,
+            )
+            for logits in network.stage_logits(batch)
+        ]
+        loss = losses[0] if len(losses) == 1 else torch.stack(losses).mean()
         optimizer.zero_grad(set_to_none=True)
         backpropagate(loss)
         _ = torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)

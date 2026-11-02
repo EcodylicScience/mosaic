@@ -6,6 +6,10 @@ frames and returns logits ``(B, T, C)``. It does not mix the items of a batch an
 keeps no state between calls, because the classifier predicts a whole series in one
 pass and trains on a batch of crops.
 
+A model may refine the head's logits in further stages: each stage is a ``tcn`` at its
+defaults that reads the softmax of the logits before it, and the model predicts with
+the last. Every head takes ``stages``.
+
 ``tcn``, ``gru`` and ``mlp`` are built in. A head of your own is registered in
 Python with :func:`register_head`, in the process that runs the step, and is
 named by ``head`` in the step's params. A head registered in a notebook is not
@@ -41,6 +45,7 @@ __all__ = [
     "get_head",
     "head_names",
     "head_source_digest",
+    "network_reach",
     "register_head",
 ]
 
@@ -49,6 +54,17 @@ class HeadConfig(DeclaredModel):
     """The options of a head. A head subclasses this and declares its fields."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    stages: Annotated[
+        int,
+        Field(ge=1),
+        Declared(
+            "Stages of the network. Each stage after the head is a tcn at its "
+            "defaults that reads the softmax of the logits before it, adding 63 "
+            "frames of reach on each side. Every stage trains on a loss of its own, "
+            "and the last one predicts."
+        ),
+    ] = 1
 
 
 class _Spec(Protocol):
@@ -369,6 +385,18 @@ _ = register_head(
 )
 
 
+def network_reach(head: str, config: HeadConfig) -> int | None:
+    """Return the frames on each side that the network of *head* at *config* reads.
+
+    The head's reach plus that of a default ``tcn`` for each refinement stage, and
+    ``None`` when the head's reach is unbounded or unknown.
+    """
+    reach = get_head(head).temporal_reach(config)
+    if reach is None:
+        return None
+    return reach + (config.stages - 1) * _tcn_reach(TcnConfig())
+
+
 def assemble_network(
     head: str,
     config: HeadConfig,
@@ -377,25 +405,39 @@ def assemble_network(
     n_features: int,
     n_classes: int,
 ) -> nn.Module:
-    """Return the module of a model: input dropout, then the head.
+    """Return the module of a model: input dropout, the head, then its refinement stages.
 
-    The head is built after the dropout layer, which holds no parameters, so a
-    run of the network draws its initial weights in the order the head's own
-    layers are constructed.
+    The head is built after the dropout layer, which holds no parameters, and
+    before the refinement stages, so a run of the network draws the head's
+    initial weights in the order its own layers are constructed. With one stage
+    the refinements are empty and the parameters are the head's alone.
+
+    The module's ``stage_logits`` returns the logits of every stage in order, and
+    its ``forward`` the last of them.
     """
+    import torch
     import torch.nn as nn
     from torch import Tensor
 
     inner = get_head(head).make(config, n_features, n_classes)
+    refinements = [
+        _build_tcn(TcnConfig(), n_classes, n_classes) for _ in range(config.stages - 1)
+    ]
 
     class Network(nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.input_dropout = nn.Dropout(input_dropout)
             self.head = inner
+            self.refinements = nn.ModuleList(refinements)
+
+        def stage_logits(self, x: Tensor) -> list[Tensor]:
+            logits: list[Tensor] = [self.head(self.input_dropout(x))]
+            for stage in self.refinements:
+                logits.append(stage(torch.softmax(logits[-1], dim=-1)))
+            return logits
 
         def forward(self, x: Tensor) -> Tensor:
-            out: Tensor = self.head(self.input_dropout(x))
-            return out
+            return self.stage_logits(x)[-1]
 
     return Network()

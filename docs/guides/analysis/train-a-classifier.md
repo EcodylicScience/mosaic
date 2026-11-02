@@ -533,6 +533,11 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   `hidden`, `layers`, `bidirectional` and `dropout` for `gru`, and `hidden`, `layers` and
   `dropout` for `mlp`. An option the head does not have is refused. A `tcn` reads
   `(kernel_size - 1) * (2 ** blocks - 1) + 1` frames around each frame, 127 by default.
+- **Refinement stages.** Every head takes `stages` in `head_config`, 1 by default. Each
+  stage after the head is a `tcn` at its defaults that reads the softmax of the logits
+  before it, and the last stage predicts. Each stage trains on a loss of its own, and the
+  loop takes their mean. A stage adds 63 frames of reach on each side, and a model of
+  several stages takes longer to train and to apply.
 - **Name the columns.** `columns` lists the payload columns the network reads. A narrow set
   can beat a wide one (on CalMS21, 37 columns beat 562 to 999 by 0.04 of cross-validated
   macro F1), so compare sets by cross-validation. Unset, every payload column of the inputs
@@ -543,7 +548,8 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   and a run shorter than `min_run` does not train. The loop is AdamW under a one-cycle
   schedule (`learning_rate`, `weight_decay`) for `steps` batches, with square-root class
   weights (`class_weight`), and the weights of the last step are kept. There is no
-  validation split.
+  validation split. `label_smoothing` spreads that share of each target evenly over the
+  classes, 0 by default; 0.1 is a common choice when labels at bout edges disagree.
 - **A series is predicted whole.** The two perspectives of a pair table are two series, a
   series is cut where its frames are not consecutive, and a row of no series takes
   `default_class`. Frames are standardized by the training frames' mean and standard

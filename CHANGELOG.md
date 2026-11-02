@@ -17,6 +17,14 @@ the GPU, and its probabilities can differ in the low bits from a CPU prediction 
 run id, since `apply_device` is not hashed. `cpu` restores the old behavior. An apply also
 runs at `n_threads` threads and restores the process's count afterward. No run id moves.
 
+**`sequence-classifier` takes label smoothing and refinement stages.** `label_smoothing`
+(default 0) smooths the cross-entropy targets. Every head's options gain `stages`
+(default 1): each stage after the head is a default `tcn` that refines the logits before
+it, every stage trains on a loss of its own, and the step's `temporal_reach` adds 63
+frames per stage. A model's bundle records `stages` in `head_config`, and a bundle
+without it loads as one stage. At the defaults neither setting enters the run id, and a
+fit computes the network it did before. No run id moves.
+
 ## Unreleased: per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names

@@ -1756,11 +1756,12 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
 | `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the training entries are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers is left out of training. Required with templates. |
 | `columns` | list of `string` \| `None` | `null` |  | The payload columns the network reads, in this order. Unset, every numeric payload column of the inputs. A narrow set can beat a wide one, so compare sets by cross-validated score. |
 | `head` | `string` | `"gru"` |  | The network. A built-in head is tcn (dilated convolutions), gru (a bidirectional GRU) or mlp (each frame by itself). A head registered in Python with register_head in the process that runs the step is named here too. |
-| `head_config` | `HeadConfig` \| `None` | `null` |  | The options of the chosen head. Unset, the head's defaults. tcn takes hidden (128), blocks (6), kernel_size (3, odd) and dropout (0.3). gru takes hidden (128), layers (2), bidirectional (true) and dropout (0.3). mlp takes hidden (128), layers (2) and dropout (0.3). Options that the chosen head does not have are refused. |
+| `head_config` | `HeadConfig` \| `None` | `null` |  | The options of the chosen head. Unset, the head's defaults. Every head takes stages (1): each stage after the head is a default tcn that refines the logits before it, trains on a loss of its own and adds 63 frames of reach on each side. tcn takes hidden (128), blocks (6), kernel_size (3, odd) and dropout (0.3). gru takes hidden (128), layers (2), bidirectional (true) and dropout (0.3). mlp takes hidden (128), layers (2) and dropout (0.3). Options that the chosen head does not have are refused. |
 | `head_revision` | `integer` | `0` | >= `0` | A number that the author of a head registered in Python raises when its code changes, so that a changed head is a new run. A built-in head ignores it, because the version of the step names its code. |
 | `input_dropout` | `number` | `0.1` | >= `0.0`, < `1.0` | Dropout applied to the input frames while training. |
 | `clip` | `number` | `10.0` | > `0.0` | Standardized values are limited to this many standard deviations on both sides, so that an outlier frame does not dominate a batch. |
 | `class_weight` | `"sqrt"` \| `"balanced"` \| `"none"` | `"sqrt"` |  | How the loss weighs a class. balanced weights it by the inverse of its frequency, sqrt by the square root of that, none equally. Each is scaled to a mean of 1 over the classes of the training runs. |
+| `label_smoothing` | `number` | `0.0` | >= `0.0`, < `1.0` | The share of each training target spread evenly over the classes, which keeps the network from growing too sure of a label. 0 trains on the labels as they are. |
 | `crop_length` | `integer` | `1024` | >= `2` | The longest crop of a run in a training batch. A batch is cut to its shortest crop. [frames] |
 | `batch_size` | `integer` | `16` | >= `1` | The crops in a training batch. |
 | `steps` | `integer` | `2500` | >= `1` | How long each model trains, counted in batches. [steps] |
@@ -1792,7 +1793,9 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
 
 ??? note "`HeadConfig`"
 
-    No parameters.
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `stages` | `integer` | `1` | >= `1` | Stages of the network. Each stage after the head is a tcn at its defaults that reads the softmax of the logits before it, adding 63 frames of reach on each side. Every stage trains on a loss of its own, and the last one predicts. |
 
 ??? note "`JoblibLoadSpec`"
 

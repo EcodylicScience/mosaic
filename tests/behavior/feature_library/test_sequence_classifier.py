@@ -42,6 +42,7 @@ from mosaic.behavior.feature_library.sequence_heads import (
 )
 from mosaic.behavior.feature_library.sequence_training import (
     Sampler,
+    StagedNetwork,
     advance,
     apply_device_for,
     backpropagate,
@@ -219,6 +220,7 @@ def _record_training_runs(monkeypatch: pytest.MonkeyPatch) -> list[list[int]]:
         seed: int,
         device: str,
         check: Callable[[], None],
+        label_smoothing: float = 0.0,
     ) -> None:
         recorded.append(sorted(sampler.lengths.tolist()))
         original(
@@ -235,6 +237,7 @@ def _record_training_runs(monkeypatch: pytest.MonkeyPatch) -> list[list[int]]:
             seed=seed,
             device=device,
             check=check,
+            label_smoothing=label_smoothing,
         )
 
     monkeypatch.setattr(module, "train_network", spy)
@@ -655,6 +658,149 @@ def test_a_frame_that_a_series_holds_twice_is_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="appears in more than one row"):
         feature.apply(df)
+
+
+# --- Label smoothing and refinement stages ---------------------------------------
+
+
+def _weights(bundle: SequenceClassifierBundle) -> dict[str, npt.NDArray[np.float32]]:
+    return bundle["models"][-1]["weights"]
+
+
+def test_label_smoothing_trains_other_weights_from_one_seed(tmp_path: Path) -> None:
+    study, tables = _two_entries(tmp_path)
+
+    plain = _weights(_saved(_fit(study, tables, "plain"), tmp_path / "plain"))
+    smoothed = _weights(
+        _saved(
+            _fit(study, tables, "smoothed", label_smoothing=0.1), tmp_path / "smoothed"
+        )
+    )
+
+    assert plain.keys() == smoothed.keys()
+    assert any(
+        not np.array_equal(weights, smoothed[name])
+        for name, weights in plain.items()
+        if weights.dtype.kind == "f"
+    )
+
+
+def _staged_fit(
+    stages: int, monkeypatch: pytest.MonkeyPatch
+) -> tuple[nn.Module, list[int]]:
+    """Train a small TCN of *stages* stages, and record the batch of every loss term."""
+    recorded: list[int] = []
+    original = functional.cross_entropy
+
+    def spy(
+        logits: torch.Tensor,
+        target: torch.Tensor,
+        weight: torch.Tensor | None = None,
+        label_smoothing: float = 0.0,
+    ) -> torch.Tensor:
+        recorded.append(int(logits.shape[0]))
+        return original(logits, target, weight=weight, label_smoothing=label_smoothing)
+
+    rng = np.random.default_rng(4)
+    lengths = np.array([50, 40], dtype=np.intp)
+    frames = rng.normal(size=(int(lengths.sum()), 4)).astype(np.float32)
+    labels = rng.integers(0, 3, size=int(lengths.sum())).astype(np.intp)
+    with deterministic_torch(device="cpu", n_threads=1):
+        seed_torch(2, device="cpu")
+        network = assemble_network(
+            "tcn",
+            TcnConfig(hidden=8, blocks=2, stages=stages),
+            input_dropout=0.1,
+            n_features=4,
+            n_classes=3,
+        )
+        monkeypatch.setattr(functional, "cross_entropy", spy)
+        train_network(
+            network,
+            frames,
+            labels,
+            Sampler.of(lengths, 20, 4),
+            np.ones(3),
+            steps=12,
+            learning_rate=0.02,
+            weight_decay=1e-3,
+            pct_start=0.1,
+            grad_clip=1.0,
+            seed=2,
+            device="cpu",
+            check=lambda: None,
+        )
+    return network, recorded
+
+
+def test_every_stage_of_a_network_trains_on_a_loss_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network, losses = _staged_fit(2, monkeypatch)
+
+    # Two loss terms per step, one for each stage, over the frames of one batch.
+    assert len(losses) == 2 * 12
+    assert losses[0::2] == losses[1::2]
+    assert isinstance(network, StagedNetwork)
+    stages = network.stage_logits(torch.zeros(1, 30, 4))
+    assert [tuple(logits.shape) for logits in stages] == [(1, 30, 3), (1, 30, 3)]
+    for name, parameter in network.named_parameters():
+        assert parameter.grad is not None, name
+        assert bool(parameter.grad.abs().sum() > 0), name
+    assert any(
+        name.startswith("refinements.0.") for name, _ in network.named_parameters()
+    )
+
+
+def test_a_network_of_one_stage_keeps_the_parameters_of_its_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network, losses = _staged_fit(1, monkeypatch)
+
+    assert len(losses) == 12
+    assert all(key.startswith("head.") for key in network.state_dict())
+
+
+def test_a_two_stage_model_applies_the_same_after_it_is_saved_and_loaded(
+    tmp_path: Path,
+) -> None:
+    study, tables = _two_entries(tmp_path)
+    fitted = _fit(study, tables, head="tcn", head_config={"blocks": 2, "stages": 2})
+    before = fitted.apply(tables[C])
+    bundle = _saved(fitted, tmp_path / "saved")
+
+    reloaded = SequenceClassifier(
+        SequenceClassifier.Inputs((Result(feature="temporal-stack"),)),
+        params={"model": {"feature": "sequence-classifier"}, "default_class": 99},
+    )
+    assert reloaded.load_state(
+        tmp_path / "elsewhere",
+        {"model": tmp_path / "saved" / "sequence_classifier_model.joblib"},
+        {},
+    )
+
+    assert bundle["head_config"]["stages"] == 2
+    assert any(name.startswith("refinements.") for name in _weights(bundle))
+    pd.testing.assert_frame_equal(reloaded.apply(tables[C]), before)
+
+
+def test_a_bundle_without_stages_loads_as_one_stage(tmp_path: Path) -> None:
+    study, tables = _two_entries(tmp_path)
+    fitted = _fit(study, tables, head="tcn")
+    before = fitted.apply(tables[C])
+    bundle = _saved(fitted, tmp_path / "saved")
+    del bundle["head_config"]["stages"]
+    path = tmp_path / "old" / "sequence_classifier_model.joblib"
+    path.parent.mkdir()
+    _ = joblib.dump(bundle, path)
+
+    reloaded = SequenceClassifier(
+        SequenceClassifier.Inputs((Result(feature="temporal-stack"),)),
+        params={"model": {"feature": "sequence-classifier"}, "default_class": 99},
+    )
+    assert reloaded.load_state(tmp_path / "elsewhere", {"model": path}, {})
+
+    pd.testing.assert_frame_equal(reloaded.apply(tables[C]), before)
 
 
 # --- Saving and loading -----------------------------------------------------------
@@ -1405,4 +1551,26 @@ def test_a_model_warns_when_the_code_of_its_head_changed(
 
     assert (
         "the code of head 'linear' changed since this model was fitted" in caplog.text
+    )
+
+
+def test_a_head_registered_in_python_takes_refinement_stages(
+    tmp_path: Path, head_registry: None
+) -> None:
+    _ = register_head(
+        HeadSpec(
+            name="linear",
+            config=_LinearConfig,
+            build=_linear_build,
+            description="One linear layer per frame.",
+        )
+    )
+    study, tables = _two_entries(tmp_path)
+
+    feature = _fit(study, tables, head="linear", head_config={"stages": 2})
+
+    assert len(feature.apply(tables[C])) == len(tables[C])
+    assert any(
+        name.startswith("refinements.0.")
+        for name in _weights(_saved(feature, tmp_path / "saved"))
     )

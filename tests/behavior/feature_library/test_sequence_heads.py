@@ -24,6 +24,7 @@ from mosaic.behavior.feature_library.sequence_heads import (
     get_head,
     head_names,
     head_source_digest,
+    network_reach,
     register_head,
 )
 from mosaic.behavior.feature_library.sequence_training import (
@@ -112,17 +113,26 @@ def test_the_digest_of_a_head_follows_its_code(head_registry: None) -> None:
 
 def test_the_defaults_of_the_built_in_heads_are_the_reference_networks() -> None:
     assert TcnConfig().model_dump() == {
+        "stages": 1,
         "hidden": 128,
         "blocks": 6,
         "kernel_size": 3,
         "dropout": 0.3,
     }
     assert GruConfig().model_dump() == {
+        "stages": 1,
         "hidden": 128,
         "layers": 2,
         "bidirectional": True,
         "dropout": 0.3,
     }
+
+
+def test_every_head_takes_stages_and_a_network_has_one_or_more() -> None:
+    assert ToyConfig().stages == 1
+    assert ToyConfig(stages=3).stages == 3
+    with pytest.raises(ValidationError, match="stages"):
+        MlpConfig(stages=0)
 
 
 def test_an_option_a_head_does_not_have_is_refused() -> None:
@@ -140,6 +150,32 @@ def test_the_options_of_a_head_are_frozen() -> None:
 
     with pytest.raises(ValidationError):
         setattr(config, "hidden", 4)
+
+
+# --- The reach of a network ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("head", "config", "reach"),
+    [
+        ("tcn", TcnConfig(), 63),
+        ("tcn", TcnConfig(blocks=2, stages=2), 3 + 63),
+        ("mlp", MlpConfig(stages=3), 2 * 63),
+        ("gru", GruConfig(stages=2), None),
+    ],
+)
+def test_each_refinement_stage_adds_the_reach_of_a_default_tcn(
+    head: str, config: HeadConfig, reach: int | None
+) -> None:
+    assert network_reach(head, config) == reach
+
+
+def test_a_classifier_reaches_as_far_as_its_network(head_registry: None) -> None:
+    params = _params(head="tcn", head_config={"blocks": 2, "stages": 3})
+    _ = register_head(_toy())
+
+    assert SequenceClassifier.temporal_reach(params) == 3 + 2 * 63
+    assert SequenceClassifier.temporal_reach(_params(head="toy")) is None
 
 
 # --- The parameters -------------------------------------------------------------
@@ -174,7 +210,25 @@ def test_omitted_options_and_spelled_out_defaults_are_one_identity() -> None:
     spelled = _params(head="tcn", head_config=TcnConfig().model_dump())
 
     assert omitted.identity_dump() == spelled.identity_dump()
-    assert omitted.identity_dump()["head_config"] == TcnConfig().model_dump()
+    assert omitted.identity_dump()["head_config"] == {
+        "hidden": 128,
+        "blocks": 6,
+        "kernel_size": 3,
+        "dropout": 0.3,
+    }
+
+
+def test_one_stage_and_no_label_smoothing_are_the_identity_without_them() -> None:
+    omitted = _params(head="tcn")
+    spelled = _params(head="tcn", head_config={"stages": 1}, label_smoothing=0.0)
+
+    assert spelled.identity_dump() == omitted.identity_dump()
+    assert "label_smoothing" not in omitted.identity_dump()
+
+
+def test_a_label_smoothing_of_one_is_refused() -> None:
+    with pytest.raises(ValidationError, match="label_smoothing"):
+        _ = _params(label_smoothing=1.0)
 
 
 def test_an_option_of_another_head_is_refused_and_so_are_options_of_a_wrong_head() -> (
@@ -210,6 +264,8 @@ def test_the_dump_of_a_run_reads_back_to_the_same_params() -> None:
         {"class_weight": "balanced"},
         {"random_state": 7},
         {"columns": ["a", "b"]},
+        {"label_smoothing": 0.1},
+        {"head_config": {"stages": 2}},
     ],
 )
 def test_a_setting_that_changes_the_model_changes_the_run_identity(
