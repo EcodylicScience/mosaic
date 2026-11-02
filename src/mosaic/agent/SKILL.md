@@ -288,9 +288,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   logits before it with a loss of its own, and `label_smoothing` smooths the targets. It
   takes `cv_folds`, `cv_seed` and `cv_group_by` as `xgboost` does, with the same
   folds. A head registered in Python with `register_head` is visible to that process
-  only, not to the CLI or a queue worker. A fitted network predicts on the training
-  device (`apply_device` `auto`, on the CPU without CUDA; `cpu` or `cuda` force one),
-  at `n_threads` threads.
+  only, not to the CLI or a queue worker. A package that declares an entry point in the
+  `mosaic.sequence_heads` group (its name the head's name, its object a `HeadSpec`)
+  gives `head` an installed head that every process with the package finds. A fitted
+  network predicts on the training device (`apply_device` `auto`, on the CPU without
+  CUDA; `cpu` or `cuda` force one), at `n_threads` threads.
   `probability-ensemble` averages or blends the `prob_<class>` columns of classifier
   runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the members'
   out-of-fold probabilities and refuses a member fitted without `cv_folds`. It writes

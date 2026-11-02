@@ -7,15 +7,22 @@ default job. The networks and the fit are in ``test_sequence_classifier.py``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+import subprocess
+import sys
+import textwrap
+from importlib.metadata import EntryPoint
+from typing import TYPE_CHECKING, ClassVar, override
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 from pydantic import ValidationError
 
+from mosaic.behavior.feature_library import sequence_heads
 from mosaic.behavior.feature_library.sequence_classifier import SequenceClassifier
 from mosaic.behavior.feature_library.sequence_heads import (
+    HEADS,
     GruConfig,
     HeadConfig,
     HeadSpec,
@@ -71,7 +78,9 @@ def test_the_built_in_heads_are_registered_with_their_options() -> None:
 
 
 def test_an_unknown_head_is_refused_with_the_registered_names() -> None:
-    with pytest.raises(ValueError, match=r"'lstm'.*Registered: gru, mlp, tcn"):
+    with pytest.raises(
+        ValueError, match=r"'lstm'.*Registered or installed: gru, mlp, tcn"
+    ):
         get_head("lstm")
 
 
@@ -106,6 +115,251 @@ def test_the_digest_of_a_head_follows_its_code(head_registry: None) -> None:
     assert first.source_digest() != changed.source_digest()
     assert head_source_digest("toy") == first.source_digest()
     assert len(first.source_digest()) == 64
+
+
+# --- Heads from an installed entry point -----------------------------------------
+
+TOY = _toy()
+NOT_A_HEAD = "a string"
+MISNAMED = HeadSpec(
+    name="other", config=ToyConfig, build=_toy_build, description="A toy head."
+)
+
+
+class _CountingEntryPoint(EntryPoint):
+    """An entry point that counts its loads."""
+
+    loads: ClassVar[int] = 0
+
+    @override
+    def load(self) -> object:
+        type(self).loads += 1
+        return super().load()
+
+
+class _FailingEntryPoint(EntryPoint):
+    """An entry point whose load raises."""
+
+    @override
+    def load(self) -> object:
+        msg = "the head module is broken"
+        raise ImportError(msg)
+
+
+def _entry_point(
+    name: str, attribute: str, kind: type[EntryPoint] = EntryPoint
+) -> EntryPoint:
+    return kind(
+        name=name,
+        value=f"{__name__}:{attribute}",
+        group=sequence_heads.ENTRY_POINT_GROUP,
+    )
+
+
+def _install(
+    monkeypatch: pytest.MonkeyPatch, *installed: EntryPoint
+) -> list[tuple[str, str | None]]:
+    """Make *installed* the entry points of the group, and record the lookups."""
+    lookups: list[tuple[str, str | None]] = []
+
+    def lookup(*, group: str, name: str | None = None) -> tuple[EntryPoint, ...]:
+        lookups.append((group, name))
+        return tuple(found for found in installed if name is None or found.name == name)
+
+    monkeypatch.setattr(sequence_heads, "entry_points", lookup)
+    return lookups
+
+
+def test_an_installed_head_is_loaded_registered_and_loaded_once(
+    head_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingEntryPoint.loads = 0
+    _ = _install(monkeypatch, _entry_point("toy", "TOY", _CountingEntryPoint))
+
+    params = _params(head="toy")
+
+    assert params.head_options() == ToyConfig()
+    assert get_head("toy") is TOY
+    assert HEADS["toy"] is TOY
+    assert _CountingEntryPoint.loads == 1
+    assert get_head("toy") is TOY
+    assert _CountingEntryPoint.loads == 1
+
+
+def test_a_registered_head_takes_precedence_over_an_entry_point_of_its_name(
+    head_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registered = register_head(_toy())
+    lookups = _install(monkeypatch, _entry_point("toy", "MISNAMED"))
+
+    assert get_head("toy") is registered
+    assert lookups == []
+
+
+def test_the_names_of_installed_heads_are_listed_without_loading_them(
+    head_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingEntryPoint.loads = 0
+    _ = _install(monkeypatch, _entry_point("toy", "TOY", _CountingEntryPoint))
+
+    assert head_names() == ["gru", "mlp", "tcn", "toy"]
+    with pytest.raises(
+        ValueError, match=r"'lstm'.*Registered or installed: gru, mlp, tcn, toy"
+    ):
+        get_head("lstm")
+    assert _CountingEntryPoint.loads == 0
+    assert "toy" not in HEADS
+
+
+@pytest.mark.parametrize(
+    ("installed", "message"),
+    [
+        (
+            [_entry_point("toy", "TOY", _FailingEntryPoint)],
+            r"entry point 'toy'.*distribution.*could not be loaded.*"
+            r"ImportError: the head module is broken",
+        ),
+        (
+            [_entry_point("toy", "NOT_A_HEAD")],
+            r"entry point 'toy'.*distribution.*is a str, not a HeadSpec",
+        ),
+        (
+            [_entry_point("toy", "MISNAMED")],
+            r"entry point 'toy'.*distribution.*names its head 'other'",
+        ),
+        (
+            [_entry_point("toy", "TOY"), _entry_point("toy", "TOY")],
+            r"2 entry points are named 'toy'.*distribution",
+        ),
+    ],
+    ids=["load-raises", "not-a-spec", "mismatched-name", "two-of-one-name"],
+)
+def test_a_bad_entry_point_is_refused_and_registers_nothing(
+    head_registry: None,
+    monkeypatch: pytest.MonkeyPatch,
+    installed: list[EntryPoint],
+    message: str,
+) -> None:
+    _ = _install(monkeypatch, *installed)
+
+    with pytest.raises(ValueError, match=message):
+        _ = _params(head="toy")
+    assert "toy" not in HEADS
+
+
+def _child(
+    tmp_path: Path, entry_points_txt: str, module_source: str, script: str
+) -> subprocess.CompletedProcess[str]:
+    """Run *script* in a fresh interpreter that sees a distribution ``x``."""
+    dist_info = tmp_path / "x.dist-info"
+    dist_info.mkdir()
+    _ = (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: x\nVersion: 1.0\n", encoding="utf-8"
+    )
+    _ = (dist_info / "entry_points.txt").write_text(entry_points_txt, encoding="utf-8")
+    _ = (tmp_path / "x_heads.py").write_text(
+        textwrap.dedent(module_source), encoding="utf-8"
+    )
+    inherited = os.environ.get("PYTHONPATH")
+    path = os.pathsep.join([str(tmp_path), inherited] if inherited else [str(tmp_path)])
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": path},
+    )
+
+
+_HEAD_MODULE = """
+from mosaic.behavior.feature_library.sequence_heads import HeadConfig, HeadSpec
+
+
+class XConfig(HeadConfig):
+    width: int = 4
+
+
+def build(config, n_features, n_classes):
+    raise NotImplementedError
+
+
+SPEC = HeadSpec(name="x-head", config=XConfig, build=build, description="An x head.")
+MISNAMED = HeadSpec(name="y", config=XConfig, build=build, description="Not x.")
+"""
+
+
+def test_a_fresh_interpreter_finds_a_head_that_a_distribution_installs(
+    tmp_path: Path,
+) -> None:
+    script = """
+        import sys
+
+        import mosaic.behavior  # noqa: F401
+        from mosaic.behavior.feature_library.sequence_classifier import (
+            SequenceClassifier,
+        )
+
+        assert "x_heads" not in sys.modules, "an entry point loaded on import"
+        params = SequenceClassifier.Params.from_overrides(
+            {
+                "templates": {"feature": "extract-labeled-templates"},
+                "labels": {"kind": "behavior"},
+                "default_class": 0,
+                "head": "x-head",
+                "head_config": {"width": 8},
+            }
+        )
+        assert type(params.head_config).__name__ == "XConfig"
+        assert params.head_config.width == 8
+        assert "x_heads" in sys.modules
+        assert "torch" not in sys.modules
+        print("OK")
+    """
+
+    proc = _child(
+        tmp_path,
+        "[mosaic.sequence_heads]\nx-head = x_heads:SPEC\n",
+        _HEAD_MODULE,
+        script,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout
+
+
+def test_a_refusal_names_the_distribution_of_the_entry_point(tmp_path: Path) -> None:
+    script = """
+        from mosaic.behavior.feature_library.sequence_heads import get_head
+
+        try:
+            get_head("x-head")
+        except ValueError as error:
+            print(error)
+    """
+
+    proc = _child(
+        tmp_path,
+        "[mosaic.sequence_heads]\nx-head = x_heads:MISNAMED\n",
+        _HEAD_MODULE,
+        script,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "entry point 'x-head' of distribution 'x'" in proc.stdout
+
+
+def test_an_installed_head_enters_the_run_identity_like_a_registered_one(
+    head_registry: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    by_python = register_head(_toy())
+    expected = _params(head="toy", head_revision=2).identity_dump()
+    del HEADS[by_python.name]
+    _ = _install(monkeypatch, _entry_point("toy", "TOY"))
+
+    installed = _params(head="toy", head_revision=2).identity_dump()
+
+    assert installed == expected
+    assert installed["head"] == "toy"
+    assert installed["head_revision"] == 2
 
 
 # --- The options of a head ------------------------------------------------------
@@ -268,7 +522,7 @@ def test_an_option_of_another_head_is_refused_and_so_are_options_of_a_wrong_head
 
 
 def test_an_unregistered_head_is_refused_with_the_registered_names() -> None:
-    with pytest.raises(ValueError, match="Registered: gru, mlp, tcn"):
+    with pytest.raises(ValueError, match="Registered or installed: gru, mlp, tcn"):
         _params(head="lstm")
 
 

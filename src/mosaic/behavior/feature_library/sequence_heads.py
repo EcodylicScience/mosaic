@@ -10,10 +10,13 @@ A model may refine the head's logits in further stages: each stage is a ``tcn`` 
 defaults that reads the softmax of the logits before it, and the model predicts with
 the last. Every head takes ``stages``.
 
-``tcn``, ``gru`` and ``mlp`` are built in. A head of your own is registered in
-Python with :func:`register_head`, in the process that runs the step, and is
-named by ``head`` in the step's params. A head registered in a notebook is not
-visible to the command line or to a queue worker, which start their own process.
+``tcn``, ``gru`` and ``mlp`` are built in. A head of your own is named by ``head`` in
+the step's params, and a recipe names an installed head: a package that declares an
+entry point in the ``mosaic.sequence_heads`` group, whose name is the head's name and
+whose object is a :class:`HeadSpec`. :func:`get_head` loads that entry point when the
+head is first named, in any process that has the package, so the command line and a
+queue worker find it. A head registered with :func:`register_head` exists only in the
+process that registered it, and a notebook's head is not visible to another process.
 
 This module imports no torch. Each ``build`` function imports it when it is called,
 and defines its ``nn.Module`` there.
@@ -25,6 +28,7 @@ import hashlib
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from importlib.metadata import EntryPoint, entry_points
 from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Protocol
 
 from pydantic import ConfigDict, Field, field_validator
@@ -35,6 +39,7 @@ if TYPE_CHECKING:
     from torch import nn
 
 __all__ = [
+    "ENTRY_POINT_GROUP",
     "HEADS",
     "GruConfig",
     "HeadConfig",
@@ -137,6 +142,9 @@ class HeadSpec[C: HeadConfig]:
         return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
+ENTRY_POINT_GROUP: Final = "mosaic.sequence_heads"
+"""The entry-point group of installed heads: a name, and a :class:`HeadSpec` as its object."""
+
 HEADS: Final[dict[str, _Spec]] = {}
 """The registered heads by name."""
 
@@ -155,23 +163,79 @@ def register_head[C: HeadConfig](spec: HeadSpec[C]) -> HeadSpec[C]:
 
 
 def head_names() -> list[str]:
-    """Return the names of the registered heads, sorted."""
-    return sorted(HEADS)
+    """Return the names of the registered heads and of the installed entry points, sorted.
+
+    An entry point is listed by its name and is not loaded.
+    """
+    installed = {found.name for found in entry_points(group=ENTRY_POINT_GROUP)}
+    return sorted(HEADS.keys() | installed)
+
+
+def _origin(found: EntryPoint) -> str:
+    """Return the entry point and its distribution, as a refusal names them."""
+    distribution = "an unknown distribution"
+    if found.dist is not None:
+        distribution = f"distribution {found.dist.name!r}"
+    return f"entry point {found.name!r} of {distribution}"
+
+
+def _load_installed(name: str) -> _Spec | None:
+    """Load, check and register the entry point named *name*, ``None`` when none is.
+
+    Raises:
+        ValueError: The entry point cannot be loaded, is not a :class:`HeadSpec`,
+            carries another name than its entry point's, or has a twin of its name.
+    """
+    found = entry_points(group=ENTRY_POINT_GROUP, name=name)
+    if not found:
+        return None
+    if len(found) > 1:
+        origins = ", ".join(_origin(each) for each in found)
+        msg = f"{len(found)} entry points are named {name!r} in {ENTRY_POINT_GROUP}: {origins}"
+        raise ValueError(msg)
+    (installed,) = found
+    try:
+        loaded = installed.load()
+    except Exception as error:
+        msg = (
+            f"{_origin(installed)} could not be loaded: {type(error).__name__}: {error}"
+        )
+        raise ValueError(msg) from error
+    if not isinstance(loaded, HeadSpec):
+        msg = f"{_origin(installed)} is a {type(loaded).__name__}, not a HeadSpec"
+        raise ValueError(msg)
+    if loaded.name != name:
+        msg = (
+            f"{_origin(installed)} names its head {loaded.name!r}, and an entry "
+            "point carries the name of its head"
+        )
+        raise ValueError(msg)
+    HEADS[name] = loaded
+    return HEADS[name]
 
 
 def get_head(name: str) -> _Spec:
-    """Return the head registered as *name*.
+    """Return the head named *name*: a registered one, else an installed entry point's.
+
+    A registered or built-in head takes precedence over an entry point of its
+    name. The entry point of the group ``mosaic.sequence_heads`` with that name is
+    loaded on the first lookup and registered.
 
     Raises:
-        ValueError: No head has that name. The message lists those that do.
+        ValueError: No head has that name, with the registered and installed names
+            listed. Or the entry point of that name cannot be loaded, is not a
+            :class:`HeadSpec`, carries another name, or has a twin of its name.
     """
-    try:
-        return HEADS[name]
-    except KeyError:
-        msg = (
-            f"no head is registered as {name!r}. Registered: {', '.join(head_names())}"
-        )
-        raise ValueError(msg) from None
+    registered = HEADS.get(name)
+    if registered is not None:
+        return registered
+    loaded = _load_installed(name)
+    if loaded is not None:
+        return loaded
+    msg = (
+        f"no head is named {name!r}. Registered or installed: {', '.join(head_names())}"
+    )
+    raise ValueError(msg)
 
 
 def head_source_digest(name: str) -> str:

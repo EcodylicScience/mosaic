@@ -33,6 +33,16 @@ the folds are those dealt before. It needs `cv_folds` and `cv_unit` `sequence`, 
 `cv_folds.parquet` keeps its columns. Unset, it does not enter the run id. No run id
 moves.
 
+**`sequence-classifier` takes a head from an installed package.** An entry point in the
+`mosaic.sequence_heads` group names a head: its name is the value of `head`, and its
+object is a `HeadSpec`. `get_head` loads it on the first lookup and registers it, so the
+command line and a queue worker find a head that a recipe names. A registered or built-in
+head of that name takes precedence. An entry point that fails to load, is not a `HeadSpec`,
+carries another name or shares its name with a second one is refused with a `ValueError`
+naming it and its distribution. `head_names()` lists installed names without loading them.
+An installed head is hashed by its name, options and `head_revision`, as a head registered
+in Python is. No run id moves.
+
 ## Unreleased: per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names

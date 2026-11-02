@@ -291,9 +291,10 @@ _COLUMNS_DESCRIPTION = (
 
 _HEAD_DESCRIPTION = (
     "The network. A built-in head is tcn (dilated convolutions), gru (a "
-    "bidirectional GRU) or mlp (each frame by itself). A head registered in "
-    "Python with register_head in the process that runs the step is named "
-    "here too."
+    "bidirectional GRU) or mlp (each frame by itself). A recipe names an "
+    "installed head too: an entry point of the group mosaic.sequence_heads "
+    "whose name is the head's name. A head registered in Python with "
+    "register_head exists only in the process that registered it."
 )
 
 _HEAD_CONFIG_DESCRIPTION = (

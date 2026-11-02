@@ -603,6 +603,21 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   `head_revision` when its code changes, so that the change is a new run. A head registered
   in Python exists only in that process. The command line and a queue's workers start their
   own, and cannot name it.
+- **An installed head.** A package that declares an entry point in the
+  `mosaic.sequence_heads` group gives every process that has it a head. The entry point's
+  name is the head's name, and its object is the `HeadSpec`:
+
+  ```toml
+  [project.entry-points."mosaic.sequence_heads"]
+  my-head = "my_package.heads:MY_HEAD"
+  ```
+
+  A recipe then sets `"head": "my-head"`, and the command line and a queue's workers load
+  the entry point when the head is first named. The spec's name must equal the entry point's,
+  and a registered or built-in head of that name takes precedence. A head that fails to load,
+  is not a `HeadSpec`, has another name or shares its name with a second entry point is
+  refused, naming the entry point and its package. Raise `head_revision` when the head's code
+  changes.
 
 ## Average and blend classifiers
 
