@@ -68,6 +68,54 @@ python scripts/gen_docs_reference.py --write
 Regenerating under any other Typer rewrites the page's metavars and CI rejects
 it.
 
+The rules for the environment itself:
+
+Install from conda before pip. Conda-forge's `av` and `py-opencv` then satisfy pip's
+requirements, and pip installs neither wheel. A `uv venv` cannot take conda packages.
+`ffmpeg` and `ffprobe` must be on `PATH`. Every CI job runs Python 3.12.
+
+**One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
+different point on every run. Two `cv2` wheels (`opencv-python` beside
+`opencv-python-headless`) collide on every platform, and `tests/conftest.py` refuses to
+start with them. The `av` wheel beside a `cv2` wheel collides on macOS whichever `cv2`
+flavor is installed, and a dependency edit cannot fix it. Use conda on macOS. On Linux,
+CI's wheels against an apt `ffmpeg` work. The Ultralytics environments declare headless
+OpenCV and override the GUI wheel away, and
+`tests/tracking/ultralytics_track/test_ultralytics_preflight.py` checks their locks.
+
+A `[tool.uv.sources]` path to a `mosaic-media` checkout breaks `pip install -e .`, because
+pip does not read that table.
+## Dependency invariants
+
+- A bare `pip install -e .` is a complete analysis install.
+- `deep-learning` (`torch`, `timm`) serves mosaic's PyTorch code, the heatmap localizer
+  and the identity models. The `feral` and `lightning-action` packages also require
+  PyTorch.
+- `all` is `mosaic-behavior[deep-learning,faiss]` and resolves only non-AGPL
+  distributions. It leaves out `lightning-action` (its DALI requirement installs only
+  with CUDA), `movement` (heavy and single-purpose) and `feral` (its exact pins
+  downgrade mosaic's floors).
+- `lightning-action` stays uncapped. Every release requires the DALI sdist that builds
+  only with CUDA. A version cap leaves the extra on an older release with the same
+  requirement. The `lightning-action` CI job therefore installs the package with
+  `--no-deps`, beside the requirements its import needs.
+- Retired extras stay retired, without aliases
+  (`tests/meta/test_optional_dependency_messages.py`).
+- `feral>=1.0,<2`: mosaic imports FERAL symbols outside its `__all__`, and the `feral`
+  CI job fails on a release that moves one.
+- `imgstore` is in the `test` dependency group, because only the suite writes stores.
+- `mcp` (`mcp>=2.3,<3`) is outside `all`. The `test` CI job installs `.[mcp]`, and
+  the extra stays out of the `test` group, which the feral job installs over FERAL's
+  pins. `mosaic.agent.mcp.server` calls `MCP_SDK.load()` before importing
+  `_binding`, the one module that imports the SDK.
+- Ultralytics, POLO, keypoint-MoSeq and VAME run only as separate programs in
+  environments the user builds. No extra or dependency group declares them. The
+  [behavior](src/mosaic/behavior/CLAUDE.md) and [tracking](src/mosaic/tracking/CLAUDE.md)
+  guides give the runners and the separation test. keypoint-MoSeq's non-commercial
+  license cannot combine with the AGPL. Do not bundle it into a packaged installer.
+- Model weights come from their hubs or from the user. [NOTICE](NOTICE) states their
+  terms.
+
 ## Running the tests
 
 A bare `pytest` runs every test not marked `slow`, in parallel over one worker per
@@ -130,6 +178,76 @@ file and line.
 `tests/meta/test_repository_references.py` fails on a reference to a test module,
 or a link into the repository on GitHub, whose target does not exist. A move or a
 rename therefore rewrites its references in the same change.
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs seven jobs on a push to
+`main` and on pull requests. The six test jobs install the `test` dependency group.
+
+- `test`: `-m "not slow and not tracker and not identity and not feral and not
+  lightning_action and not hidra"`.
+- `identity`, `feral`: every test of that marker, in a `deep-learning` or `feral`
+  environment.
+- `lightning-action`: every `lightning_action` test, which fits the real package on CPU.
+- `hidra`: every `hidra` test, against `hidra-predict` in its own environment with CPU
+  torch and the cached weights. It installs HiDRA from git unpinned, and also runs
+  weekly on its own, so an upstream change surfaces without a push here.
+- `tracking`: every `tracker` test against built Ultralytics and POLO environments.
+- `lint`: `ruff check` and `ruff format --check` over `src`, `tests` and `tools`.
+
+[`.github/workflows/slow.yml`](.github/workflows/slow.yml) runs the other slow tests
+weekly and on dispatch, against a built VAME environment. Each test runs in exactly one
+job (`tests/meta/test_pytest_config.py` reads both workflows). A change that breaks only
+an unmarked slow test goes green on push.
+
+## Package map
+
+```
+src/mosaic/
+  cli/                          every `mosaic` verb (Typer)
+  agent/                        the guide for users' agents; `agent/mcp/` the MCP tools
+  runlog.py                     append-only JSONL run-log; stdlib-only leaf
+  lazy_exports.py               the body of a package `__getattr__`; stdlib-only leaf
+  core/                         Dataset, manifest, schema, Params, Scope, converters
+  core/pipeline/                run_feature, indexes, locks, inventory, ops, placement
+  core/pipeline/graph/          a pipeline as a JSON recipe: validate, plan, run a step
+  core/pipeline/appearance.py   the appearance table beside a tracks table
+  core/pipeline/appearance_assignment.py
+                                prototypes, tracklets and assignment (numpy)
+  core/media/                   frame read/decode/encode; preprocess media steps
+  core/track_quality.py         the criteria that flag track rows and frames
+  behavior/feature_library/     registered features; sandboxed kpms and VAME runners
+  behavior/label_library/       label converters (BORIS, CalMS21)
+  behavior/model_library/       identity networks
+  behavior/visualization_library/  overlay renderer and the media features
+  tracking/ops/                 the @register_op layer behind `mosaic run --kind`
+  tracking/common/              the run loop shared by every tracker
+  tracking/{trex,sleap,litpose,ultralytics_track}/  one package per tracker
+  tracking/external/            the Ultralytics and POLO environments and runner
+  tracking/pose_training/       annotation prep and pose-model training
+  tracking/frame_extraction/    frame sampling (`extract_frames`) and `select-frames`
+  tracking/frame_predictions/   predictions on extracted frames, and their scores
+```
+
+## Agent skills and hooks
+
+`.claude/skills/` has the skills for work on this repository: `mosaic-worktree`,
+`mosaic-testing`, `extending-mosaic` and `mosaic-release`. A skill that a session loads
+from another open repository applies only to that repository.
+
+`.claude/settings.json` runs these PreToolUse hooks from `.claude/skills/tools/`:
+
+- `mosaic-suite-hook.py` denies a full test suite on this machine.
+- `mosaic-worktree-hook.py` makes a python or pytest run in a worktree import that
+  worktree's `src/`. It also applies the shared `chores-hook.py` rewrite, because
+  two hooks that rewrite one call do not combine.
+- `mosaic-commit-hook.py` refuses a commit with a ruff finding, a stale
+  `docs/reference/` page, or an added line naming something private to this machine.
+- The shared `heavy-hook.py` and `remote-leak-hook.py`.
+
+Their tests run with `python3 -B -m unittest mosaic_hook_tests` from
+`.claude/skills/tools/`. The repository is public: a task machine's names and paths
+stay in `.claude/settings.local.json` and on that machine.
 
 ## Code and Review Expectations
 

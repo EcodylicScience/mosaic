@@ -2,8 +2,7 @@
 
 This directory owns the dataset (its roots, manifest and scans), the track converters
 and schemas, the parameter vocabulary, and media I/O. The guide in `core/pipeline/`
-covers that package. Layering, entry-name validation and the `Params` hashing rule are
-in the root guide.
+covers that package. Layering and the `Params` hashing rule are in the root guide.
 
 ## Imports
 
@@ -25,6 +24,33 @@ in the root guide.
   `video_io`, `imgstore_io` or a step module into the function that reads frames
   (`tests/meta/test_media_lazy_exports.py`).
   Frame sampling for annotation is in `tracking/frame_extraction/`.
+
+## Upward imports
+
+`core` imports upward only inside functions, at the sites below. Any other upward
+import is a layering break.
+
+- `core/__init__.py` `__getattr__` re-exports `register_feature` on first access, which
+  keeps `core` and `behavior` out of an import cycle.
+- `label_converter.ensure_label_converters_registered()` imports
+  `behavior.label_library` to fill `LABEL_CONVERTERS`.
+- `core/pipeline/graph/resolve.py` reads `FEATURES` (`tests/meta/test_graph_imports.py`)
+  and calls `mosaic.tracking.register_ops` to fill `OPS`.
+- `core/pipeline/reconcile_features.py` `_feature_class` looks a feature class up by
+  name in `FEATURES`.
+- `core/pipeline/run.py` imports a feature's module by its `__module__` to rebuild the
+  feature in a worker process.
+
+`tracking` adds its runs to `core`'s views through `register_inventory_contributor`
+(`tests/core/pipeline/inventory/test_inventory_contributors.py`) and
+`register_reconcilable_index`. `mosaic.tracking.register_ops` registers both, and
+importing `mosaic.tracking` registers neither.
+
+## Entry names
+
+- **An entry name is one path component.** `validate_entry_name` (`core/entry.py`)
+  refuses `/`, `\` and NUL at write boundaries and on no read path
+  (`tests/core/pipeline/test_tracks_index.py`).
 
 ## Dataset roots
 

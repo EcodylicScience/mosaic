@@ -22,53 +22,12 @@ conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"
 ```
 
-Install from conda before pip. Conda-forge's `av` and `py-opencv` then satisfy pip's
-requirements, and pip installs neither wheel. A `uv venv` cannot take conda packages.
-`ffmpeg` and `ffprobe` must be on `PATH`. Every CI job runs Python 3.12.
+Install from conda before pip. `ffmpeg` and `ffprobe` must be on `PATH`. Every CI job
+runs Python 3.12.
 
 **One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
-different point on every run. Two `cv2` wheels (`opencv-python` beside
-`opencv-python-headless`) collide on every platform, and `tests/conftest.py` refuses to
-start with them. The `av` wheel beside a `cv2` wheel collides on macOS whichever `cv2`
-flavor is installed, and a dependency edit cannot fix it. Use conda on macOS. On Linux,
-CI's wheels against an apt `ffmpeg` work. The Ultralytics environments declare headless
-OpenCV and override the GUI wheel away, and
-`tests/tracking/ultralytics_track/test_ultralytics_preflight.py` checks their locks.
-
-To work against an unreleased `mosaic-media`, install it editable over the released
-wheel ([CONTRIBUTING.md](CONTRIBUTING.md#environment-notes)). A `[tool.uv.sources]`
-path breaks `pip install -e .`, because pip does not read that table.
-
-## Dependency invariants
-
-- A bare `pip install -e .` is a complete analysis install.
-- `deep-learning` (`torch`, `timm`) serves mosaic's PyTorch code, the heatmap localizer
-  and the identity models. The `feral` and `lightning-action` packages also require
-  PyTorch.
-- `all` is `mosaic-behavior[deep-learning,faiss]` and resolves only non-AGPL
-  distributions. It leaves out `lightning-action` (its DALI requirement installs only
-  with CUDA), `movement` (heavy and single-purpose) and `feral` (its exact pins
-  downgrade mosaic's floors).
-- `lightning-action` stays uncapped. Every release requires the DALI sdist that builds
-  only with CUDA. A version cap leaves the extra on an older release with the same
-  requirement. The `lightning-action` CI job therefore installs the package with
-  `--no-deps`, beside the requirements its import needs.
-- Retired extras stay retired, without aliases
-  (`tests/meta/test_optional_dependency_messages.py`).
-- `feral>=1.0,<2`: mosaic imports FERAL symbols outside its `__all__`, and the `feral`
-  CI job fails on a release that moves one.
-- `imgstore` is in the `test` dependency group, because only the suite writes stores.
-- `mcp` (`mcp>=2.3,<3`) is outside `all`. The `test` CI job installs `.[mcp]`, and
-  the extra stays out of the `test` group, which the feral job installs over FERAL's
-  pins. `mosaic.agent.mcp.server` calls `MCP_SDK.load()` before importing
-  `_binding`, the one module that imports the SDK.
-- Ultralytics, POLO, keypoint-MoSeq and VAME run only as separate programs in
-  environments the user builds. No extra or dependency group declares them. The
-  [behavior](src/mosaic/behavior/CLAUDE.md) and [tracking](src/mosaic/tracking/CLAUDE.md)
-  guides give the runners and the separation test. keypoint-MoSeq's non-commercial
-  license cannot combine with the AGPL. Do not bundle it into a packaged installer.
-- Model weights come from their hubs or from the user. [NOTICE](NOTICE) states their
-  terms.
+different point on every run. [CONTRIBUTING.md](CONTRIBUTING.md#environment-notes) gives
+the combinations that collide and what to install on each platform.
 
 ## Commands and definition of done
 
@@ -95,27 +54,6 @@ python scripts/gen_docs_reference.py --write
   with a per-file baseline, and the second on the task machine through `mosaic-suite`
   (the `mosaic-testing` skill). A hook refuses a full suite on this machine.
 
-## CI
-
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs seven jobs on a push to
-`main` and on pull requests. The six test jobs install the `test` dependency group.
-
-- `test`: `-m "not slow and not tracker and not identity and not feral and not
-  lightning_action and not hidra"`.
-- `identity`, `feral`: every test of that marker, in a `deep-learning` or `feral`
-  environment.
-- `lightning-action`: every `lightning_action` test, which fits the real package on CPU.
-- `hidra`: every `hidra` test, against `hidra-predict` in its own environment with CPU
-  torch and the cached weights. It installs HiDRA from git unpinned, and also runs
-  weekly on its own, so an upstream change surfaces without a push here.
-- `tracking`: every `tracker` test against built Ultralytics and POLO environments.
-- `lint`: `ruff check` and `ruff format --check` over `src`, `tests` and `tools`.
-
-[`.github/workflows/slow.yml`](.github/workflows/slow.yml) runs the other slow tests
-weekly and on dispatch, against a built VAME environment. Each test runs in exactly one
-job (`tests/meta/test_pytest_config.py` reads both workflows). A change that breaks only
-an unmarked slow test goes green on push.
-
 ## Layering
 
 `core` is the foundation: the data model, schemas, the pipeline engine and media I/O.
@@ -128,53 +66,9 @@ only through files on disk. The deprecated `behavior.tracking` alias in
 `tracking`, and no module under those three imports it
 (`tests/meta/test_agent_layering.py`).
 
-`core` imports upward only inside functions, at the sites below. Any other upward
+`core` imports upward only inside functions, at the sites listed in
+[src/mosaic/core/CLAUDE.md](src/mosaic/core/CLAUDE.md#upward-imports). Any other upward
 import is a layering break.
-
-- `core/__init__.py` `__getattr__` re-exports `register_feature` on first access, which
-  keeps `core` and `behavior` out of an import cycle.
-- `label_converter.ensure_label_converters_registered()` imports
-  `behavior.label_library` to fill `LABEL_CONVERTERS`.
-- `core/pipeline/graph/resolve.py` reads `FEATURES` (`tests/meta/test_graph_imports.py`)
-  and calls `mosaic.tracking.register_ops` to fill `OPS`.
-- `core/pipeline/reconcile_features.py` `_feature_class` looks a feature class up by
-  name in `FEATURES`.
-- `core/pipeline/run.py` imports a feature's module by its `__module__` to rebuild the
-  feature in a worker process.
-
-`tracking` adds its runs to `core`'s views through `register_inventory_contributor`
-(`tests/core/pipeline/inventory/test_inventory_contributors.py`) and
-`register_reconcilable_index`. `mosaic.tracking.register_ops` registers both, and
-importing `mosaic.tracking` registers neither.
-
-## Package map
-
-```
-src/mosaic/
-  cli/                          every `mosaic` verb (Typer)
-  agent/                        the guide for users' agents; `agent/mcp/` the MCP tools
-  runlog.py                     append-only JSONL run-log; stdlib-only leaf
-  lazy_exports.py               the body of a package `__getattr__`; stdlib-only leaf
-  core/                         Dataset, manifest, schema, Params, Scope, converters
-  core/pipeline/                run_feature, indexes, locks, inventory, ops, placement
-  core/pipeline/graph/          a pipeline as a JSON recipe: validate, plan, run a step
-  core/pipeline/appearance.py   the appearance table beside a tracks table
-  core/pipeline/appearance_assignment.py
-                                prototypes, tracklets and assignment (numpy)
-  core/media/                   frame read/decode/encode; preprocess media steps
-  core/track_quality.py         the criteria that flag track rows and frames
-  behavior/feature_library/     registered features; sandboxed kpms and VAME runners
-  behavior/label_library/       label converters (BORIS, CalMS21)
-  behavior/model_library/       identity networks
-  behavior/visualization_library/  overlay renderer and the media features
-  tracking/ops/                 the @register_op layer behind `mosaic run --kind`
-  tracking/common/              the run loop shared by every tracker
-  tracking/{trex,sleap,litpose,ultralytics_track}/  one package per tracker
-  tracking/external/            the Ultralytics and POLO environments and runner
-  tracking/pose_training/       annotation prep and pose-model training
-  tracking/frame_extraction/    frame sampling (`extract_frames`) and `select-frames`
-  tracking/frame_predictions/   predictions on extracted frames, and their scores
-```
 
 ## Registries
 
@@ -205,68 +99,35 @@ every registered step (`tests/core/media/preprocess/test_media_steps.py`).
   `dict[str, Any]` across a feature boundary. Use a Pydantic model or a dataclass.
 - **Determinism.** The same params and inputs give the same `run_id` and outputs. Seed
   every random state and keep results independent of filesystem order.
-- **An entry name is one path component.** `validate_entry_name` (`core/entry.py`)
-  refuses `/`, `\` and NUL at write boundaries and on no read path
-  (`tests/core/pipeline/test_tracks_index.py`).
-- **A media variant is consumed by name and published in source space.**
-  `publish_tracks_table` (`tracking/common/bridge.py`) maps a table through
-  `to_source_space` (`core/pipeline/placement.py`,
-  `tests/core/media/preprocess/test_placement_map_back.py`).
-- **A tool is handed only a file it decodes.** `refuse_undecodable_codec`
-  (`tracking/common/tool_input.py`) applies the tool's `ToolDecoder`
-  (`core/pipeline/tracking_roots.py`, `tests/tracking/common/test_decoder_probe.py`).
 - **A run reports its losses.** A failed entry emits an `entry_error` run-log event and
   is listed in `Result.failed_entries`, and the CLI then reports `"status": "partial"`.
   Losing every entry raises `AllEntriesFailed` (`core/pipeline/run.py`,
   `tests/core/pipeline/test_partial_entry_failure.py`).
-- **A run reports its coverage in its run-log.** `RunLogSnapshot` (`runlog.py`) folds
-  `entries_written`, `cache_hit` and `tracks_variant`. Emit them before the terminal
-  event (`tests/core/pipeline/test_job_contract.py`).
 - **`runlog.TERMINAL_STATUSES` is `finished`, `failed`, `cancelled`.** Do not add
   `partial`, a refusal or `orphaned`. `alive` and `phase` are events, not statuses.
   Three repositories read the set, and mosaic-api's sweeper reaps it
   (`tests/core/pipeline/graph/test_pipeline_partial_failure.py`).
-- **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
-  (`tests/core/pipeline/test_unpinned_result_rule.py`).
-- **A lock the filesystem refuses raises `IndexLockUnsupported`**
-  (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write. The lock
-  serializes writers on one mount only
-  (`tests/core/pipeline/test_index_lock_capability.py`).
 - **A read writes nothing.** A read-only verb or a dry run opens its dataset with
   `load_dataset(..., read_only=True)` (`cli/_context.py`), and a dry run takes no
   lock (`index_lock_unless_dry_run`). A new read joins the cases of
   `tests/cli/test_cli_read_only.py`.
-- **Name a model by its run id.** Across datasets, link the library with `libraries:`
-  instead of a path into another dataset's `models/`. The reference string enters the
-  inference identity (`resolve_model` in `tracking/model_refs.py`,
-  `tests/core/test_library_links.py`).
-- **A revision's content is hashed, and its number is not**
-  (`tests/tracking/ops/test_prepare_training_data.py`).
 
 ## Docstrings
 
 Google style. A public object is documented only by its docstring, because the site has
 no rendered API reference.
 
-## Agent skills and hooks
+## Where the rest lives
 
-`.claude/skills/` has the skills for work on this repository: `mosaic-worktree`,
-`mosaic-testing`, `extending-mosaic` and `mosaic-release`. A skill that a session loads
-from another open repository applies only to that repository.
-
-`.claude/settings.json` runs these PreToolUse hooks from `.claude/skills/tools/`:
-
-- `mosaic-suite-hook.py` denies a full test suite on this machine.
-- `mosaic-worktree-hook.py` makes a python or pytest run in a worktree import that
-  worktree's `src/`. It also applies the shared `chores-hook.py` rewrite, because
-  two hooks that rewrite one call do not combine.
-- `mosaic-commit-hook.py` refuses a commit with a ruff finding, a stale
-  `docs/reference/` page, or an added line naming something private to this machine.
-- The shared `heavy-hook.py` and `remote-leak-hook.py`.
-
-Their tests run with `python3 -B -m unittest mosaic_hook_tests` from
-`.claude/skills/tools/`. The repository is public: a task machine's names and paths
-stay in `.claude/settings.local.json` and on that machine.
+| When you are | Read |
+| --- | --- |
+| Changing a dependency, an extra or `pyproject.toml` | [Dependency invariants](CONTRIBUTING.md#dependency-invariants) |
+| Changing CI, or a test's marker or job | [CI](CONTRIBUTING.md#ci) |
+| Looking for the module that owns something | [Package map](CONTRIBUTING.md#package-map) |
+| Changing a repository skill or hook | [Agent skills and hooks](CONTRIBUTING.md#agent-skills-and-hooks) |
+| Changing `runlog.py`, a lock or an unpinned `Result` | [core.pipeline guide](src/mosaic/core/pipeline/CLAUDE.md#cross-package-rules) |
+| Changing entry names or a `core` upward import | [core guide](src/mosaic/core/CLAUDE.md) |
+| Publishing a variant's tracks, handing a tool a file, naming a model, or hashing a revision | [tracking guide](src/mosaic/tracking/CLAUDE.md#cross-package-rules) |
 
 ## Area guides
 

@@ -84,8 +84,8 @@ work in before you start. This skill lists what a change must also touch.
 - Register in `core/media/preprocess/registry.py`, and add the spec to the
   `MediaStepSpec` union in `core/media/preprocess/specs.py`
   (`tests/core/media/preprocess/test_media_steps.py`).
-- A variant is consumed by name and published in source space (`CLAUDE.md`,
-  "Cross-cutting invariants").
+- A variant is consumed by name and published in source space
+  (`src/mosaic/tracking/CLAUDE.md`, "Cross-package rules").
 
 ## Tracker
 
@@ -95,7 +95,7 @@ work in before you start. This skill lists what a change must also touch.
 - Guard: `tests/tracking/common/test_tracker_conformance.py`, which names the missing
   piece of a half-wired tracker.
 - A tool that runs in a separate environment stays a separate program
-  (`CLAUDE.md`, "Dependency invariants").
+  (`CONTRIBUTING.md`, "Dependency invariants").
 
 ## CLI verb
 

@@ -292,7 +292,7 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - Only `resolve.py` imports `FEATURES`, and only inside functions. Parsing, ordering,
   lane decisions and status views do not pay the feature-library import
   (`tests/meta/test_graph_imports.py`). Its import of `mosaic.tracking` is listed under
-  [Layering](../../../../../CLAUDE.md#layering).
+  [Upward imports](../../CLAUDE.md#upward-imports).
 - `can_connect` and `can_join` (`compatibility.py`) answer from `declaration_catalog()`
   with no dataset. `can_join` refuses a join of mismatched entity granularity unless the
   consumer cross-joins (`alignment_verdict`, `CROSS_JOIN_FEATURES`).

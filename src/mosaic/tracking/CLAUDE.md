@@ -3,8 +3,22 @@
 This directory owns the integrated trackers, model inference and training ops, frame
 extraction, and mosaic's side of the external Ultralytics and POLO environments.
 
-The cross-cutting rules (a model is named by run id, only a revision's content is
-hashed, codec refusal, source-space publication) are in the root `CLAUDE.md`.
+## Cross-package rules
+
+- **A media variant is consumed by name and published in source space.**
+  `publish_tracks_table` (`tracking/common/bridge.py`) maps a table through
+  `to_source_space` (`core/pipeline/placement.py`,
+  `tests/core/media/preprocess/test_placement_map_back.py`).
+- **A tool is handed only a file it decodes.** `refuse_undecodable_codec`
+  (`tracking/common/tool_input.py`) applies the tool's `ToolDecoder`
+  (`core/pipeline/tracking_roots.py`, `tests/tracking/common/test_decoder_probe.py`).
+- **Name a model by its run id.** Across datasets, link the library with `libraries:`
+  instead of a path into another dataset's `models/`. The reference string enters the
+  inference identity (`resolve_model` in `tracking/model_refs.py`,
+  `tests/core/test_library_links.py`).
+- **A revision's content is hashed, and its number is not**
+  (`tests/tracking/ops/test_prepare_training_data.py`).
+
 
 ## Imports and registration
 

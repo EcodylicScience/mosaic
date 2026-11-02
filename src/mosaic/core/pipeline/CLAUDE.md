@@ -3,10 +3,22 @@
 This package owns feature execution, data loading, output writing, dependency
 resolution and the typed indexes of a dataset. Features own computation only.
 
-Rules that span packages are in the root `CLAUDE.md`: layering and the upward imports,
-the one parquet writer, `run_feature` as the only path to feature outputs, the run-log
-contract, lock refusal, source-space publication and codec refusal. Rules for the
-pipeline graph are in `graph/CLAUDE.md`.
+Layering, the one parquet writer and `run_feature` as the only path to feature outputs
+are in the root `CLAUDE.md`. The upward imports are in `core/CLAUDE.md`. Source-space
+publication and codec refusal are in `tracking/CLAUDE.md`. Rules for the pipeline graph
+are in `graph/CLAUDE.md`.
+
+## Cross-package rules
+
+- **A run reports its coverage in its run-log.** `RunLogSnapshot` (`runlog.py`) folds
+  `entries_written`, `cache_hit` and `tracks_variant`. Emit them before the terminal
+  event (`tests/core/pipeline/test_job_contract.py`).
+- **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
+  (`tests/core/pipeline/test_unpinned_result_rule.py`).
+- **A lock the filesystem refuses raises `IndexLockUnsupported`**
+  (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write. The lock
+  serializes writers on one mount only
+  (`tests/core/pipeline/test_index_lock_capability.py`).
 
 ## Public types and imports
 
