@@ -207,6 +207,37 @@ def test_each_condition_refuses_until_confirmed(
     assert starter.started == [confirmed.request_id]
 
 
+def test_a_submission_without_a_fingerprint_plans_inline_and_still_asks(
+    backend: LocalBackend, dataset: Dataset, starter: RecordingStarter
+) -> None:
+    arguments: dict[str, object] = {
+        "dataset": _uuid(dataset),
+        "recipe": SPEED_RECIPE,
+        "entries": ENTRIES,
+        "allow_partial": True,
+    }
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+        entries=ENTRIES,
+    )
+
+    refused = _call(backend, "submit_pipeline", ErrorEnvelope, **arguments)
+
+    assert _conditions(refused) == {"allow_partial"}
+    assert (starter.started, _requests(dataset)) == ([], [])
+
+    confirmed = _call(
+        backend, "submit_pipeline", SubmittedPipeline, **arguments, confirm=True
+    )
+
+    assert confirmed.plan_fingerprint == plan.fingerprint
+    assert starter.started == [confirmed.request_id]
+
+
 def _scoring_recipe() -> dict[str, JsonValue]:
     """Labeled templates, a classifier fitted on them, and a score of its output."""
     return {
@@ -657,16 +688,20 @@ def _cleanup_plan(backend: LocalBackend, dataset: Dataset) -> PlanWire:
 
 
 def _submit_cleanup(
-    backend: LocalBackend, dataset: Dataset, fingerprint: str, **arguments: object
+    backend: LocalBackend,
+    dataset: Dataset,
+    fingerprint: str | None,
+    **arguments: object,
 ) -> SubmittedPipeline | ErrorEnvelope:
+    reviewed = {} if fingerprint is None else {"plan_fingerprint": fingerprint}
     answered = call_tool(
         backend,
         "submit_pipeline",
         {
             "dataset": _uuid(dataset),
             "recipe": SPEED_STEP_2,
-            "plan_fingerprint": fingerprint,
             "cleanup": "superseded",
+            **reviewed,
             **arguments,
         },
     )
@@ -714,6 +749,19 @@ def test_submit_with_cleanup_needs_the_cleanup_fingerprint(
 
     assert isinstance(refused, ErrorEnvelope)
     assert refused.kind == "conflict"
+    assert (starter.started, _requests(dataset)) == ([], [])
+
+
+def test_submit_with_cleanup_and_no_fingerprint_is_refused(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    _ = run_speed(dataset, 1)
+    backend = _cleaning(dataset, starter, allowed=True)
+
+    refused = _submit_cleanup(backend, dataset, None, confirm=True)
+
+    assert isinstance(refused, ErrorEnvelope)
+    assert (refused.kind, refused.reason) == ("invalid", "cleanup_needs_plan")
     assert (starter.started, _requests(dataset)) == ([], [])
 
 

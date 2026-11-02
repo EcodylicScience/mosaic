@@ -139,20 +139,22 @@ def test_a_parallelism_limit_that_does_not_fit_is_invalid(
         _ = read_server_config(config)
 
 
-def test_the_dataset_and_source_roots_are_resolved_and_the_datasets_served(
+def test_the_dataset_source_and_recipe_roots_are_resolved_and_the_datasets_served(
     tmp_path: Path,
 ) -> None:
     config = tmp_path / "conf" / "server.yaml"
     config.parent.mkdir()
     found = make_dataset(tmp_path / "made" / "one", name="one")
     _ = config.write_text(
-        "dataset_roots: [../made]\nsource_roots: [../raw]\n", encoding="utf-8"
+        "dataset_roots: [../made]\nsource_roots: [../raw]\nrecipe_roots: [../recipes]\n",
+        encoding="utf-8",
     )
 
     read = read_server_config(config)
 
     assert read.dataset_roots == [(tmp_path / "made").resolve()]
     assert read.source_roots == [(tmp_path / "raw").resolve()]
+    assert read.recipe_roots == [(tmp_path / "recipes").resolve()]
     assert [path.resolve() for path in served_manifests([], read)] == [
         found.manifest_path.resolve()
     ]

@@ -536,7 +536,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
   more than 100 entries) and wait for their approval, then pass its fingerprint to
-  `submit_pipeline`.
+  `submit_pipeline`. Once the user approved a series of runs of a recipe, such as a
+  sweep of one param, submit each change without `plan_fingerprint`: `submit_pipeline`
+  then plans it in the same call, and still refuses with `confirmation_required` when a
+  condition applies. A cleanup always needs the reviewed plan's fingerprint.
 - A plan of about 40 steps or more is over the read limit. Plan it with `limit` (about
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;
@@ -553,6 +556,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with `dataset`),
   `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
   (`add_step`, `remove_step`, `set_param`, `replace_step`), each returning a new digest.
+  When the server has recipe roots, keep the recipe in a JSON file inside one instead,
+  edit the file, and pass `{"path": "<file>"}` as `recipe`: one `submit_pipeline` call
+  then runs an edited experiment. A refusal with `roots_not_configured` means the
+  server has none, so use the digest form.
 - To reclaim the runs of an earlier recipe that wrote to storages this one no longer
   names, call `plan_recipe` with `cleanup: "superseded"` and read `retirable`: name,
   digest, request ids and run count; `retirable` lists the eight newest, and

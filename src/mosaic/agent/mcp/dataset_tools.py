@@ -43,6 +43,7 @@ ROOTS_NOT_CONFIGURED: Final = "roots_not_configured"
 _ROOTS_HELP: Final = {
     "dataset_roots": "create a dataset",
     "source_roots": "declare a source",
+    "recipe_roots": "read a recipe file",
 }
 
 

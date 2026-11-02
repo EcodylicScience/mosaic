@@ -133,6 +133,7 @@ allow_process_mode: false   # let a submission ask for process workers
 min_free_memory_fraction: 0.10   # the share of host memory a parallel run keeps free
 dataset_roots: []      # where manage_dataset may create datasets; those below are served
 source_roots: []       # where manage_dataset may declare sources of raw files
+recipe_roots: []       # where a recipe named {"path": ...} is read from
 ```
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
@@ -152,16 +153,18 @@ that does not read, is left out and reported on the server's standard error.
 | `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, or sets the dataset's tags, inside the roots you allow. Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
-| `submit_pipeline` | Submits a planned recipe and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
+| `submit_pipeline` | Plans a recipe, or checks it against a reviewed plan's fingerprint, submits it and starts it in the background. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts, or only those that changed `since` an earlier read. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
 | `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
 
 Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
-`patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission must name the
-fingerprint of a plan made against the dataset as it is now. The agent therefore plans
-against the current dataset before it submits. Ask it to show you the plan. A submitted
+`patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission
+that names a plan's fingerprint is refused when the plan has changed since. Without one,
+`submit_pipeline` plans the recipe itself, and still asks you to confirm each condition
+below. A cleanup always needs the fingerprint of the plan you reviewed. Ask the agent to
+show you the plan of a new recipe before it submits. A submitted
 request runs in a background process that outlives the server and the client. Follow it
 with `mosaic pipeline status`, cancel it with `cancel_request` or
 `mosaic cancel --request`, and resume a request that reads `orphaned` with
@@ -215,7 +218,12 @@ different groups.
 A long recipe is sent once. The agent writes a step repeated over seeds or classes once,
 with `repeat` ([Repeat a step](guides/pipelines/chain-steps.md#repeat-a-step)), saves the
 recipe with `patch_recipe`, and from then on passes `{"digest": "<digest>"}` (or
-`{"saved": "<name>"}`) as the recipe and changes it with `patch_recipe` edits.
+`{"saved": "<name>"}`) as the recipe and changes it with `patch_recipe` edits. With
+`recipe_roots` in the server's configuration, the agent can instead keep the recipe in a
+JSON file inside a recipe root, edit it there, and pass `{"path": "<file>"}`, a path
+relative to the first root. Each call reads the file, and a submission saves what it read
+under its digest, so a later edit changes nothing that was submitted. Without the roots,
+the path form is refused with `roots_not_configured`.
 Conversion is a recipe step too: `convert-tracks` and `convert-labels` convert the raw
 files a scan recorded.
 

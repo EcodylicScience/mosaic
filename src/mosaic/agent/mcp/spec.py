@@ -455,7 +455,9 @@ RecipeDocument = Annotated[
             "input with repeat, as {id: 'xgb_s{seed}', repeat: {seed: [1, 2]}}, "
             "stands for one copy per value with {seed} replaced; '{seed}' alone "
             "takes the value. Or name a recipe the dataset saved (patch_recipe "
-            "and submit_pipeline save one): {digest: <digest>} or {saved: <name>}."
+            "and submit_pipeline save one): {digest: <digest>} or {saved: <name>}. "
+            "Or a JSON file inside the server's recipe_roots: {path: <file>}, "
+            "read when called."
         ),
         examples=[RECIPE_EXAMPLE],
     ),
@@ -777,11 +779,13 @@ class SubmitPipelineInput(ToolInput):
 
     dataset: DatasetId
     recipe: RecipeDocument
-    plan_fingerprint: str = Field(
+    plan_fingerprint: str | None = Field(
+        default=None,
         description=(
-            "The fingerprint of the plan_recipe result that the user reviewed. A "
-            "plan that has changed since refuses the submission."
-        )
+            "The fingerprint of a reviewed plan_recipe result, which refuses the "
+            "submission if the plan changed. Omitted: planned here. A cleanup "
+            "needs it."
+        ),
     )
     entries: Entries = None
     step_entries: StepEntries = None

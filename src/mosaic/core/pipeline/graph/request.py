@@ -171,7 +171,8 @@ class CleanupNeedsPlan(ClassifiedError):
         super().__init__(
             "a cleanup removes the superseded runs of a reviewed plan, so it "
             "needs that plan's fingerprint: plan the recipe with the cleanup, "
-            "review it, and submit with --expect-plan <fingerprint>"
+            "review it, and submit with its fingerprint (--expect-plan, or "
+            "plan_fingerprint on the MCP server)"
         )
 
     def error_reason(self) -> str:

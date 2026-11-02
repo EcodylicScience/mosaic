@@ -24,6 +24,8 @@ from mosaic.core.pipeline.parallelism import (
 from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from mosaic.core.pipeline.error_kind import ClassifiedError
     from mosaic.core.pipeline.refusal import Refusal
     from mosaic.core.scope import Scope
@@ -279,9 +281,10 @@ def exit_refused(
 def load_json_arg(value: str | None) -> object | None:
     """Resolve a ``--params``/``--inputs``-style argument to a JSON value.
 
-    Accepts ``@path.json`` (read a file), ``@-`` (read stdin), or an inline
-    JSON string. Returns ``None`` when *value* is ``None``. JSON / file errors
-    exit cleanly via :func:`fail`.
+    Accepts ``@path.json`` (read a file through
+    :func:`~mosaic.core.pipeline.graph.read_json_file`), ``@-`` (read stdin), or
+    an inline JSON string. Returns ``None`` when *value* is ``None``. JSON / file
+    errors exit cleanly via :func:`fail`.
     """
     if value is None:
         return None
@@ -292,11 +295,7 @@ def load_json_arg(value: str | None) -> object | None:
         # No shell expands the tilde in `@~/params.json` -- expansion applies to
         # the start of a word, and here the word starts with `@` -- so this form
         # only works if it is expanded here.
-        path = user_path(value[1:])
-        if not path.exists():
-            fail(f"JSON file not found: {path}")
-        raw = path.read_text()
-        source = str(path)
+        return json_file_arg(user_path(value[1:]))
     else:
         raw = value
         source = "inline JSON"
@@ -304,6 +303,16 @@ def load_json_arg(value: str | None) -> object | None:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         fail(f"Invalid JSON ({source}): {exc}")
+
+
+def json_file_arg(path: Path) -> object:
+    """Return the JSON document in the file *path*, exiting cleanly when it does not read."""
+    from mosaic.core.pipeline.graph import JsonFileUnreadable, read_json_file
+
+    try:
+        return read_json_file(path)
+    except JsonFileUnreadable as exc:
+        fail(str(exc))
 
 
 def with_command_line_scope(refusal: str, remedy: str) -> str:

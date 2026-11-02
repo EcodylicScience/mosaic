@@ -168,6 +168,113 @@ def test_a_patched_recipe_is_submitted_by_its_digest(
     assert starter.started == [submitted.request_id]
 
 
+@pytest.fixture
+def recipes(tmp_path: Path) -> Path:
+    """A recipe root holding ``split.json``, the recipe :data:`RECIPE`."""
+    root = tmp_path / "recipes"
+    root.mkdir()
+    _ = (root / "split.json").write_text(json.dumps(RECIPE), encoding="utf-8")
+    return root
+
+
+def _rooted(split: Dataset, starter: RecordingStarter, recipes: Path) -> LocalBackend:
+    return LocalBackend(
+        [split.manifest_path],
+        warm=False,
+        start_driver=starter,
+        recipe_roots=[recipes],
+    )
+
+
+def test_a_recipe_file_is_submitted_in_one_call_and_an_edit_after_does_not_change_it(
+    split: Dataset, starter: RecordingStarter, recipes: Path
+) -> None:
+    backend = _rooted(split, starter, recipes)
+    arguments: dict[str, object] = {
+        "dataset": _uuid(split),
+        "recipe": {"path": "split.json"},
+        "step_entries": {"templates_4": TRAIN, "templates_6": TRAIN},
+    }
+    sent = _call(backend, "plan_recipe", PlanWire, **{**arguments, "recipe": RECIPE})
+
+    submitted = _call(backend, "submit_pipeline", SubmittedPipeline, **arguments)
+    edited = {
+        "schema_version": 1,
+        "name": "split",
+        "steps": [{"id": "speed", "type": "feature", "feature": "speed-angvel"}],
+    }
+    _ = (recipes / "split.json").write_text(json.dumps(edited), encoding="utf-8")
+    replanned = _call(backend, "plan_recipe", PlanWire, **arguments)
+
+    assert submitted.recipe_digest == sent.recipe_digest
+    assert submitted.plan_fingerprint == sent.fingerprint
+    assert starter.started == [submitted.request_id]
+    assert replanned.recipe_digest != submitted.recipe_digest
+    request = load_request(split.base_dir, submitted.request_id)
+    assert request.recipe_digest == submitted.recipe_digest
+    saved = json.loads(recipe_path(split.base_dir, submitted.recipe_digest).read_text())
+    assert [step["id"] for step in saved["steps"]] == [
+        "speed",
+        "templates_4",
+        "templates_6",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "roots", "reason"),
+    [
+        ("../outside.json", True, "outside_roots"),
+        ("/etc/hosts", True, "outside_roots"),
+        ("split.json", False, "roots_not_configured"),
+    ],
+)
+def test_a_recipe_file_outside_the_recipe_roots_is_refused(
+    split: Dataset,
+    starter: RecordingStarter,
+    recipes: Path,
+    path: str,
+    roots: bool,
+    reason: str,
+) -> None:
+    _ = (recipes.parent / "outside.json").write_text(
+        json.dumps(RECIPE), encoding="utf-8"
+    )
+    backend = (
+        _rooted(split, starter, recipes)
+        if roots
+        else LocalBackend([split.manifest_path], warm=False, start_driver=starter)
+    )
+
+    refused = _call(backend, "validate_recipe", ErrorEnvelope, recipe={"path": path})
+
+    assert refused.reason == reason
+    assert starter.started == []
+
+
+@pytest.mark.parametrize(
+    ("content", "reason"),
+    [(None, "json_file_unreadable"), ("{not json", "json_file_unreadable")],
+)
+def test_a_recipe_file_that_does_not_read_is_invalid(
+    split: Dataset,
+    starter: RecordingStarter,
+    recipes: Path,
+    content: str | None,
+    reason: str,
+) -> None:
+    if content is not None:
+        _ = (recipes / "broken.json").write_text(content, encoding="utf-8")
+
+    refused = _call(
+        _rooted(split, starter, recipes),
+        "validate_recipe",
+        ErrorEnvelope,
+        recipe={"path": "broken.json"},
+    )
+
+    assert (refused.kind, refused.reason) == ("invalid", reason)
+
+
 def test_a_patch_with_a_problem_is_saved_and_reports_it(
     backend: LocalBackend, split: Dataset
 ) -> None:

@@ -8,6 +8,21 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: one-call submission from an agent
+
+**A recipe file as a recipe argument.** The MCP server's recipe arguments also take
+`{"path": "<file>"}`, a JSON file inside the `recipe_roots` of the server's
+configuration, read at each call. A submission saves what it read under its digest, so
+a later edit of the file changes nothing submitted. A path outside the roots is refused
+with `outside_roots`, and a server without roots refuses the form with
+`roots_not_configured`. A file that is missing or not JSON is `json_file_unreadable`,
+which the CLI's `@file.json` arguments now raise through the same reader.
+
+**`plan_fingerprint` is optional on `submit_pipeline`.** Without it the submission is
+planned in the same call, and its confirmation conditions still refuse it until it is
+confirmed. With one, a changed plan still refuses the submission as a conflict. A
+cleanup without it is refused with `cleanup_needs_plan`.
+
 ## Unreleased: individual results joined onto pair rows
 
 **A pair consumer reads per-individual inputs.** A feature whose `emits` is `as-input`

@@ -204,8 +204,9 @@ def serve_command(
                 "A YAML file listing `datasets`, `discover` directories, "
                 "`allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, "
                 "the parallelism limits `max_workers`, `allow_process_mode` "
-                "and `min_free_memory_fraction`, and the `dataset_roots` and "
-                "`source_roots` that manage_dataset may write inside. "
+                "and `min_free_memory_fraction`, the `dataset_roots` and "
+                "`source_roots` that manage_dataset may write inside, and the "
+                "`recipe_roots` that a recipe file is read from. "
                 "Its relative paths are read from its directory."
             ),
         ),
@@ -367,6 +368,7 @@ def serve_command(
             parallel_limits=settings.parallel_limits,
             dataset_roots=settings.dataset_roots,
             source_roots=settings.source_roots,
+            recipe_roots=settings.recipe_roots,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))
@@ -428,6 +430,7 @@ def _serve_http(
             parallel_limits=settings.parallel_limits,
             dataset_roots=settings.dataset_roots,
             source_roots=settings.source_roots,
+            recipe_roots=settings.recipe_roots,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))

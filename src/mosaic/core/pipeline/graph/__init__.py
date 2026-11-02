@@ -178,6 +178,10 @@ if TYPE_CHECKING:
         preflight as preflight,
         refuse_mixed_schemas as refuse_mixed_schemas,
     )
+    from .recipe_file import (
+        JsonFileUnreadable as JsonFileUnreadable,
+        read_json_file as read_json_file,
+    )
     from .request import (
         DuplicateRequest as DuplicateRequest,
         PlanChanged as PlanChanged,
@@ -503,6 +507,8 @@ _MODULE_OF: Final[dict[str, str]] = {
     "coverage_against": ".plan",
     "is_stalled": ".plan",
     "plan_pipeline": ".plan",
+    "JsonFileUnreadable": ".recipe_file",
+    "read_json_file": ".recipe_file",
     "CoverageShortfall": ".step_preflight",
     "RecipeRefusedAtStep": ".step_preflight",
     "StepRefused": ".step_preflight",
@@ -810,6 +816,7 @@ __all__ = [
     "InputCandidate",
     "InputCandidates",
     "InsertReport",
+    "JsonFileUnreadable",
     "KeptReason",
     "LeaseKeeper",
     "LeaseLost",
@@ -970,6 +977,7 @@ __all__ = [
     "possible_connections",
     "preflight",
     "read_driver_lease",
+    "read_json_file",
     "read_recipe",
     "recipe_digest",
     "recipe_path",

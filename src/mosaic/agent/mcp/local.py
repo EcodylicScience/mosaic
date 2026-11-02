@@ -199,6 +199,7 @@ class LocalBackend:
         parallel_limits: ParallelLimits | None = None,
         dataset_roots: Sequence[Path] = (),
         source_roots: Sequence[Path] = (),
+        recipe_roots: Sequence[Path] = (),
     ) -> None:
         """Serve the datasets of *manifests*.
 
@@ -224,6 +225,8 @@ class LocalBackend:
                 one is served, and one created while serving is served at once.
             source_roots: The directories inside which ``manage_dataset`` may
                 declare a source, fixed by the operator.
+            recipe_roots: The directories inside which a recipe argument
+                ``{"path": ...}`` is read, fixed by the operator.
         """
         self._manifests: tuple[Path, ...] = tuple(manifests)
         self._allow_managed: bool = allow_managed
@@ -238,6 +241,9 @@ class LocalBackend:
         )
         self._source_roots: tuple[Path, ...] = tuple(
             root.resolve() for root in source_roots
+        )
+        self._recipe_roots: tuple[Path, ...] = tuple(
+            root.resolve() for root in recipe_roots
         )
         self._served: dict[str, _Served] | None = None
         self._looked_at: set[Path] = set()
@@ -630,10 +636,12 @@ class LocalBackend:
             validation_report,
         )
 
-        if recipe_reference(args.recipe) is None:
-            # Sent whole, it is reported and not refused when it does not parse.
-            return validation_report(args.recipe, self._declarations())
-        recipe = self._recipe(args.recipe, args.dataset)
+        document = self._recipe_document(args.recipe)
+        if recipe_reference(document) is None:
+            # Sent whole or read from a file, it is reported and not refused when
+            # it does not parse.
+            return validation_report(document, self._declarations())
+        recipe = self._recipe(document, args.dataset)
         return validation_report(canonical_recipe(recipe), self._declarations())
 
     def _suggest_steps(self, args: SuggestStepsInput) -> StepSuggestions:
@@ -714,11 +722,40 @@ class LocalBackend:
             steps_total=len(patched.steps),
         )
 
-    def _recipe(self, document: object, dataset: str | None) -> Recipe:
-        """Parse *document*, or read the saved recipe it names in *dataset*.
+    def _recipe_document(self, document: object) -> object:
+        """The JSON in the file that *document* names as ``{"path": ...}``, else *document*.
+
+        The file is read inside the recipe roots, once, so a later edit of it
+        changes nothing that the call planned or submitted.
 
         Raises:
-            ToolFailure: It names a saved recipe and no dataset is given.
+            ToolFailure: It names a file outside the recipe roots, or the server
+                has none.
+            JsonFileUnreadable: The file does not read as JSON.
+        """
+        from mosaic.core.pipeline.graph import read_json_file
+
+        from .dataset_tools import PathRefused, confined_path
+
+        named = _recipe_file(document)
+        if named is None:
+            return document
+        try:
+            path = confined_path(named, self._recipe_roots, "recipe_roots")
+        except PathRefused as refused:
+            raise ToolFailure(refused.envelope) from refused
+        return read_json_file(path)
+
+    def _recipe(self, document: object, dataset: str | None) -> Recipe:
+        """Parse *document*, or read the recipe file or saved recipe it names.
+
+        A file named ``{"path": ...}`` is read inside the recipe roots. A saved
+        recipe is read from *dataset*.
+
+        Raises:
+            ToolFailure: It names a file outside the recipe roots, or a saved
+                recipe and no dataset is given.
+            JsonFileUnreadable: The file it names does not read as JSON.
             RecipeInvalid: It does not parse.
             RecipeNotSaved: The dataset has no saved recipe it names.
             RecipeNameAmbiguous: It names several saved recipes by name.
@@ -729,6 +766,7 @@ class LocalBackend:
             resolve_saved_recipe,
         )
 
+        document = self._recipe_document(document)
         reference = recipe_reference(document)
         if reference is None:
             return read_recipe(document)
@@ -816,6 +854,7 @@ class LocalBackend:
     def _submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
         from mosaic.core.pipeline.graph import (
             GPU_TRAIN_LANE,
+            CleanupNeedsPlan,
             PlanChanged,
             plan_fingerprint,
             plan_with_cleanup,
@@ -828,6 +867,8 @@ class LocalBackend:
         dataset = self._changeable(held, "submit_pipeline")
         if args.cleanup == "superseded" and "feature-runs" not in self._allow_cleanup:
             raise ToolFailure(cleanup_not_allowed("submit_pipeline"))
+        if args.cleanup == "superseded" and args.plan_fingerprint is None:
+            raise CleanupNeedsPlan()
         cleanup = self._cleanup(args.cleanup)
         try:
             parallel = self._parallel_limits.settings_for(
@@ -852,7 +893,7 @@ class LocalBackend:
                 retire=args.retire,
             )
             found = plan_fingerprint(plan)
-            if found != args.plan_fingerprint:
+            if args.plan_fingerprint is not None and found != args.plan_fingerprint:
                 raise PlanChanged(expected=args.plan_fingerprint, found=found)
             findings = _submission_findings(dataset, recipe, plan, args, catalog)
             if findings and not args.confirm:
@@ -868,7 +909,11 @@ class LocalBackend:
                 owner=args.owner,
                 inventory=cache,
                 catalog=catalog,
-                expect_plan=args.plan_fingerprint,
+                # Without a reviewed fingerprint, the plan the findings were
+                # judged on, so a plan that moves before the write still refuses.
+                expect_plan=found
+                if args.plan_fingerprint is None
+                else args.plan_fingerprint,
                 refuse_duplicates=not args.confirm,
                 step_scopes=step_scopes,
                 cleanup=cleanup,
@@ -1554,6 +1599,16 @@ def _cursor_key(cursor: str) -> tuple[str, ...]:
     if len(parts) != len(parsed):
         raise ToolFailure(invalid_cursor(cursor))
     return tuple(parts)
+
+
+def _recipe_file(document: object) -> str | None:
+    """The file that a recipe argument ``{"path": ...}`` names, else ``None``."""
+    from mosaic.core.narrowing import is_str_mapping
+
+    if not is_str_mapping(document) or len(document) != 1:
+        return None
+    path = document.get("path")
+    return path if isinstance(path, str) else None
 
 
 def _scope(entries: list[tuple[str, str]] | ScopeSelector | None) -> Scope | None:
