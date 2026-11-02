@@ -605,6 +605,21 @@ CASES: tuple[Case, ...] = (
         scope=(("train", "s1"), ("train", "s2")),
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
     ),
+    Case(
+        case_id="sequence-classifier/transformer",
+        feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior"},
+            "default_class": 0,
+            "head": "transformer",
+            "head_config": {"window": 32},
+            "device": "cpu",
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
     # --- averaging and blending classifier runs ---
     #
     # Two runs of one classifier are the ensemble's inputs. Only weights "fit"

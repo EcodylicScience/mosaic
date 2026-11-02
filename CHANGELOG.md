@@ -43,6 +43,15 @@ naming it and its distribution. `head_names()` lists installed names without loa
 An installed head is hashed by its name, options and `head_revision`, as a head registered
 in Python is. No run id moves.
 
+**`sequence-classifier` gains a `transformer` head.** Its options are `hidden` (128),
+`layers` (4), `attention_heads` (4, a divisor of `hidden`), `window` (64), `kernel_size`
+(5, odd) and `dropout` (0.1). A convolution of `kernel_size` frames gives the layers
+position, and each frame attends to its block of `window` frames and the blocks on either
+side, so a series of any length predicts in one pass at a cost that grows with its length.
+The step's `temporal_reach` is `kernel_size // 2 + (layers + 1) * window - 1` frames, 321
+by default, plus 63 per refinement stage. It takes `stages` as every head does. No run
+id moves.
+
 ## Unreleased: per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names

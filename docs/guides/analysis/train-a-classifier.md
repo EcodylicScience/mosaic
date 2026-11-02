@@ -487,8 +487,9 @@ What differs from `xgboost`:
 
 `sequence-classifier` trains a neural network on frames in order and predicts each series
 whole. A head from a registry is the network: `tcn` (dilated convolutions, centered on
-each frame), `gru` (a bidirectional GRU) or `mlp` (each frame by itself). It needs the
-`[deep-learning]` extra and is offered to a GPU worker.
+each frame), `gru` (a bidirectional GRU), `mlp` (each frame by itself) or `transformer`
+(attention within blocks of frames). It needs the `[deep-learning]` extra and is offered
+to a GPU worker.
 
 Its defaults are those of the networks in the CalMS21 Task 1 agent runs, a published
 benchmark, where a bidirectional GRU and a dilated TCN on 37 per-frame columns scored
@@ -555,11 +556,21 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   entry that has labels. With `test_fraction` above 0, the sequences the sample sets
   aside are neither trained on nor dealt into a fold, and the full model scores them.
   Leave it at 0 to cross-validate every training sequence.
-- **Heads and their options.** `head` is `tcn`, `gru` or `mlp`, and `head_config` holds
-  the options of that head: `hidden`, `blocks`, `kernel_size` and `dropout` for `tcn`,
-  `hidden`, `layers`, `bidirectional` and `dropout` for `gru`, and `hidden`, `layers` and
-  `dropout` for `mlp`. An option the head does not have is refused. A `tcn` reads
-  `(kernel_size - 1) * (2 ** blocks - 1) + 1` frames around each frame, 127 by default.
+- **Heads and their options.** `head` is `tcn`, `gru`, `mlp` or `transformer`, and
+  `head_config` holds the options of that head: `hidden`, `blocks`, `kernel_size` and
+  `dropout` for `tcn`, `hidden`, `layers`, `bidirectional` and `dropout` for `gru`,
+  `hidden`, `layers` and `dropout` for `mlp`, and `hidden`, `layers`, `attention_heads`,
+  `window`, `kernel_size` and `dropout` for `transformer`. An option the head does not
+  have is refused. A `tcn` reads `(kernel_size - 1) * (2 ** blocks - 1) + 1` frames around
+  each frame, 127 by default.
+- **A transformer attends within blocks.** The series is cut into blocks of `window`
+  frames (64 by default), and each frame attends to its block and the blocks on either
+  side, so a long series costs time and memory in proportion to its length and predicts in
+  one pass. Each layer reaches one block further, and the network reads
+  `kernel_size // 2 + (layers + 1) * window - 1` frames on each side, 321 by default. A
+  convolution of `kernel_size` frames before the layers is its only sense of position,
+  since a predicted series is longer than the crops it trains on. `attention_heads`
+  divides `hidden`.
 - **Refinement stages.** Every head takes `stages` in `head_config`, 1 by default. Each
   stage after the head is a `tcn` at its defaults that reads the softmax of the logits
   before it, and the last stage predicts. Each stage trains on a loss of its own, and the

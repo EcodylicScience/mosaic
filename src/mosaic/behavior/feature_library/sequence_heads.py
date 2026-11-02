@@ -10,13 +10,14 @@ A model may refine the head's logits in further stages: each stage is a ``tcn`` 
 defaults that reads the softmax of the logits before it, and the model predicts with
 the last. Every head takes ``stages``.
 
-``tcn``, ``gru`` and ``mlp`` are built in. A head of your own is named by ``head`` in
-the step's params, and a recipe names an installed head: a package that declares an
-entry point in the ``mosaic.sequence_heads`` group, whose name is the head's name and
-whose object is a :class:`HeadSpec`. :func:`get_head` loads that entry point when the
-head is first named, in any process that has the package, so the command line and a
-queue worker find it. A head registered with :func:`register_head` exists only in the
-process that registered it, and a notebook's head is not visible to another process.
+``tcn``, ``gru``, ``mlp`` and ``transformer`` are built in. A head of your own is
+named by ``head`` in the step's params, and a recipe names an installed head: a package
+that declares an entry point in the ``mosaic.sequence_heads`` group, whose name is the
+head's name and whose object is a :class:`HeadSpec`. :func:`get_head` loads that entry
+point when the head is first named, in any process that has the package, so the command
+line and a queue worker find it. A head registered with :func:`register_head` exists
+only in the process that registered it, and a notebook's head is not visible to another
+process.
 
 This module imports no torch. Each ``build`` function imports it when it is called,
 and defines its ``nn.Module`` there.
@@ -29,9 +30,9 @@ import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Protocol
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Protocol, Self
 
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from mosaic.core.params import Declared, DeclaredModel
 
@@ -46,6 +47,7 @@ __all__ = [
     "HeadSpec",
     "MlpConfig",
     "TcnConfig",
+    "TransformerConfig",
     "assemble_network",
     "get_head",
     "head_names",
@@ -246,6 +248,14 @@ def head_source_digest(name: str) -> str:
 # --- The built-in heads ---
 
 
+def _require_odd_kernel(value: int) -> int:
+    """Return the width *value* of a convolution, refusing an even one."""
+    if value % 2 == 0:
+        msg = f"kernel_size {value} is even, and the head's convolution is centered"
+        raise ValueError(msg)
+    return value
+
+
 class TcnConfig(HeadConfig):
     """Dilated residual convolutions over time, the same at every frame."""
 
@@ -271,10 +281,7 @@ class TcnConfig(HeadConfig):
     @field_validator("kernel_size")
     @classmethod
     def _kernel_is_centered(cls, value: int) -> int:
-        if value % 2 == 0:
-            msg = f"kernel_size {value} is even, and a block's convolution is centered"
-            raise ValueError(msg)
-        return value
+        return _require_odd_kernel(value)
 
 
 class GruConfig(HeadConfig):
@@ -306,6 +313,66 @@ class MlpConfig(HeadConfig):
     dropout: Annotated[
         float, Field(ge=0.0, lt=1.0), Declared("Dropout after each hidden layer.")
     ] = 0.3
+
+
+class TransformerConfig(HeadConfig):
+    """Self-attention within blocks of frames, after a convolution giving position."""
+
+    hidden: Annotated[
+        int,
+        Field(ge=1),
+        Declared(
+            "Width of the attention and of each layer's output, split among the "
+            "attention heads."
+        ),
+    ] = 128
+    layers: Annotated[
+        int,
+        Field(ge=1),
+        Declared(
+            "Encoder layers. Each layer lets a block read the blocks on either side, "
+            "so the network reads layers blocks on each side of a frame's block."
+        ),
+    ] = 4
+    attention_heads: Annotated[
+        int, Field(ge=1), Declared("Attention heads of a layer, a divisor of hidden.")
+    ] = 4
+    window: Annotated[
+        int,
+        Field(ge=1),
+        Declared(
+            "Frames of a block. A frame attends to the frames of its block and of "
+            "the blocks on either side, so cost grows with the series, not its square."
+        ),
+    ] = 64
+    kernel_size: Annotated[
+        int,
+        Field(ge=1),
+        Declared(
+            "Width of the input convolution, odd so that it is centered. It is the "
+            "network's only sense of position."
+        ),
+    ] = 5
+    dropout: Annotated[
+        float,
+        Field(ge=0.0, lt=1.0),
+        Declared("Dropout of the attention weights and after each sublayer."),
+    ] = 0.1
+
+    @field_validator("kernel_size")
+    @classmethod
+    def _kernel_is_centered(cls, value: int) -> int:
+        return _require_odd_kernel(value)
+
+    @model_validator(mode="after")
+    def _heads_divide_the_width(self) -> Self:
+        if self.hidden % self.attention_heads:
+            msg = (
+                f"attention_heads {self.attention_heads} do not divide hidden "
+                f"{self.hidden}, and each head reads an equal share of the width"
+            )
+            raise ValueError(msg)
+        return self
 
 
 def _build_tcn(config: TcnConfig, n_features: int, n_classes: int) -> nn.Module:
@@ -401,6 +468,105 @@ def _build_mlp(config: MlpConfig, n_features: int, n_classes: int) -> nn.Module:
     return Mlp()
 
 
+def _build_transformer(
+    config: TransformerConfig, n_features: int, n_classes: int
+) -> nn.Module:
+    import math
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as functional
+    from torch import Tensor
+
+    window = config.window
+    heads = config.attention_heads
+    width = config.hidden // heads
+
+    def neighborhoods(blocks: Tensor) -> Tensor:
+        """Join each block of ``(B, N, W, ...)`` to its neighbors, zero past an end."""
+        shape = list(blocks.shape)
+        shape[1] = 1
+        edge = blocks.new_zeros(shape)
+        padded = torch.cat([edge, blocks, edge], dim=1)
+        return torch.cat([padded[:, :-2], padded[:, 1:-1], padded[:, 2:]], dim=2)
+
+    class BlockAttention(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.qkv = nn.Linear(config.hidden, 3 * config.hidden)
+            self.out = nn.Linear(config.hidden, config.hidden)
+            self.dropout = nn.Dropout(config.dropout)
+
+        def forward(self, x: Tensor, keys_valid: Tensor) -> Tensor:
+            batch, length, _ = x.shape
+            n_blocks = length // window
+            q, k, v = (
+                self.qkv(x).view(batch, n_blocks, window, 3, heads, width).unbind(3)
+            )
+            # (B, N, heads, W, width) queries against (B, N, heads, 3W, width) keys.
+            q = q.transpose(2, 3)
+            k = neighborhoods(k).transpose(2, 3)
+            v = neighborhoods(v).transpose(2, 3)
+            scores = q @ k.transpose(-1, -2) / math.sqrt(width)
+            scores = scores.masked_fill(~keys_valid, float("-inf"))
+            weights = self.dropout(torch.softmax(scores, dim=-1))
+            mixed: Tensor = (weights @ v).transpose(2, 3).reshape(batch, length, -1)
+            out: Tensor = self.out(mixed)
+            return out
+
+    class EncoderLayer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attention_norm = nn.LayerNorm(config.hidden)
+            self.attention = BlockAttention()
+            self.feedforward_norm = nn.LayerNorm(config.hidden)
+            self.feedforward = nn.Sequential(
+                nn.Linear(config.hidden, 4 * config.hidden),
+                nn.GELU(),
+                nn.Dropout(config.dropout),
+                nn.Linear(4 * config.hidden, config.hidden),
+            )
+            self.dropout = nn.Dropout(config.dropout)
+
+        def forward(self, x: Tensor, keys_valid: Tensor) -> Tensor:
+            attended = self.attention(self.attention_norm(x), keys_valid)
+            x = x + self.dropout(attended)
+            fed: Tensor = self.feedforward(self.feedforward_norm(x))
+            return x + self.dropout(fed)
+
+    class Transformer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inp = nn.Conv1d(
+                n_features,
+                config.hidden,
+                config.kernel_size,
+                padding=config.kernel_size // 2,
+            )
+            self.layers = nn.ModuleList(EncoderLayer() for _ in range(config.layers))
+            self.norm = nn.LayerNorm(config.hidden)
+            self.out = nn.Linear(config.hidden, n_classes)
+
+        def forward(self, x: Tensor) -> Tensor:
+            length = x.shape[1]
+            h: Tensor = self.inp(x.transpose(1, 2)).transpose(1, 2)
+            padded = -length % window
+            h = functional.pad(h, (0, 0, 0, padded))
+            n_blocks = h.shape[1] // window
+            valid = torch.arange(h.shape[1], device=h.device) < length
+            # Which keys each block reads, (1, N, 1, 1, 3W): the padded frames of the
+            # last block and the zero blocks beyond either end are masked out.
+            keys_valid = neighborhoods(valid.view(1, n_blocks, window)).view(
+                1, n_blocks, 1, 1, 3 * window
+            )
+            for layer in self.layers:
+                h = layer(h, keys_valid)
+            out: Tensor = self.out(self.norm(h[:, :length]))
+            return out
+
+    return Transformer()
+
+
 def _tcn_reach(config: TcnConfig) -> int:
     """Frames on each side that a TCN reads: its receptive field less the frame itself.
 
@@ -408,6 +574,19 @@ def _tcn_reach(config: TcnConfig) -> int:
     ``kernel_size // 2`` taps of that dilation, and the blocks stack.
     """
     return (config.kernel_size // 2) * (2**config.blocks - 1)
+
+
+def _transformer_reach(config: TransformerConfig) -> int:
+    """Frames on each side that a transformer reads.
+
+    A layer lets each block read the blocks on either side, so after ``layers``
+    layers a block has read the ``layers`` blocks on each side. A frame at the
+    first position of its block is then ``layers * window + window - 1`` frames
+    from the last frame of the farthest block ahead, and a frame at the last
+    position as far from the first frame of the farthest block behind. The input
+    convolution adds ``kernel_size // 2``.
+    """
+    return config.kernel_size // 2 + (config.layers + 1) * config.window - 1
 
 
 def _unbounded_reach(config: HeadConfig) -> None:
@@ -445,6 +624,18 @@ _ = register_head(
         build=_build_mlp,
         description="A feed-forward network on each frame, with no temporal context.",
         reach=_frame_reach,
+    )
+)
+_ = register_head(
+    HeadSpec(
+        name="transformer",
+        config=TransformerConfig,
+        build=_build_transformer,
+        description=(
+            "Self-attention within blocks of frames and their neighbors, after a "
+            "convolution that gives position."
+        ),
+        reach=_transformer_reach,
     )
 )
 

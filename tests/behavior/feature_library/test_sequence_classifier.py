@@ -39,6 +39,7 @@ from mosaic.behavior.feature_library.sequence_heads import (
     HeadConfig,
     HeadSpec,
     TcnConfig,
+    TransformerConfig,
     assemble_network,
     register_head,
 )
@@ -50,6 +51,7 @@ from mosaic.behavior.feature_library.sequence_training import (
     backpropagate,
     class_weights,
     deterministic_torch,
+    predict_probabilities,
     seed_torch,
     train_network,
 )
@@ -78,6 +80,13 @@ HEADS_SMALL: dict[str, dict[str, object]] = {
     "tcn": {"hidden": 8, "blocks": 2},
     "gru": {"hidden": 8, "layers": 1},
     "mlp": {"hidden": 8, "layers": 1},
+    "transformer": {
+        "hidden": 8,
+        "layers": 1,
+        "attention_heads": 2,
+        "window": 8,
+        "kernel_size": 3,
+    },
 }
 
 
@@ -425,12 +434,17 @@ def test_a_fit_gives_the_network_the_agents_script_gives(head: str) -> None:
 # --- Determinism ---------------------------------------------------------------
 
 
-def test_two_fits_of_one_seed_are_equal_and_two_seeds_differ(tmp_path: Path) -> None:
+@pytest.mark.parametrize("head", ["gru", "transformer"])
+def test_two_fits_of_one_seed_are_equal_and_two_seeds_differ(
+    tmp_path: Path, head: str
+) -> None:
     study, tables = _two_entries(tmp_path)
 
-    first = _saved(_fit(study, tables, "one"), tmp_path / "one")
-    again = _saved(_fit(study, tables, "two"), tmp_path / "two")
-    other = _saved(_fit(study, tables, "three", random_state=4), tmp_path / "three")
+    first = _saved(_fit(study, tables, "one", head=head), tmp_path / "one")
+    again = _saved(_fit(study, tables, "two", head=head), tmp_path / "two")
+    other = _saved(
+        _fit(study, tables, "three", head=head, random_state=4), tmp_path / "three"
+    )
 
     for name, weights in first["models"][-1]["weights"].items():
         np.testing.assert_array_equal(weights, again["models"][-1]["weights"][name])
@@ -548,11 +562,12 @@ def test_an_apply_runs_at_the_threads_the_step_names_and_restores_them(
     assert torch.get_num_threads() == before
 
 
+@pytest.mark.parametrize("head", ["gru", "transformer"])
 def test_apply_returns_a_row_for_every_row_in_order_with_the_identity(
-    tmp_path: Path,
+    tmp_path: Path, head: str
 ) -> None:
     study, tables = _two_entries(tmp_path)
-    feature = _fit(study, tables)
+    feature = _fit(study, tables, head=head)
     df = tables[C]
 
     result = feature.apply(df)
@@ -638,6 +653,46 @@ def test_an_mlp_scores_each_frame_by_itself(tmp_path: Path) -> None:
         before.loc[others, ["prob_0", "prob_1", "prob_2"]].to_numpy(),
         atol=1e-6,
     )
+
+
+def test_padding_the_last_block_of_a_transformer_changes_no_output() -> None:
+    frames = torch.as_tensor(
+        np.random.default_rng(5).normal(size=(30, 4)).astype(np.float32)
+    )[None]
+    outputs: list[torch.Tensor] = []
+    # The window enters no weight, so one seed builds one network at each window:
+    # one block of 30 frames, one of 32 with two padded, and two of 20 that read
+    # each other, ten of them padded. Every frame reads all 30 frames in each.
+    for window in (30, 32, 20):
+        seed_torch(0, device="cpu")
+        config = TransformerConfig(
+            hidden=8, layers=2, attention_heads=2, window=window, kernel_size=3
+        )
+        network = assemble_network(
+            "transformer", config, input_dropout=0.1, n_features=4, n_classes=3
+        ).eval()
+        with torch.no_grad():
+            outputs.append(network(frames))
+
+    torch.testing.assert_close(outputs[1], outputs[0], atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(outputs[2], outputs[0], atol=1e-6, rtol=1e-5)
+
+
+def test_a_transformer_predicts_a_long_series_in_one_pass() -> None:
+    seed_torch(0, device="cpu")
+    config = TransformerConfig(hidden=16, layers=2, attention_heads=2)
+    network = assemble_network(
+        "transformer", config, input_dropout=0.1, n_features=4, n_classes=3
+    ).eval()
+    frames = np.random.default_rng(6).normal(size=(20_000, 4)).astype(np.float32)
+
+    # Attention over the whole series would hold a 20,000 by 20,000 score matrix
+    # per attention head and layer, 1.6 GB in float32. Blocks of 64 frames that
+    # read their neighbors hold 192 scores per frame.
+    probabilities = predict_probabilities(network, frames, device="cpu")
+
+    assert probabilities.shape == (20_000, 3)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1.0, atol=1e-5)
 
 
 def test_a_row_of_no_series_takes_the_default_class(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.sequence_heads import (
     TcnConfig,
+    TransformerConfig,
     assemble_network,
     get_head,
     network_reach,
@@ -281,3 +282,53 @@ def test_a_two_stage_tcn_reaches_as_far_as_its_network_reach() -> None:
     measured = _farthest_change(apply, frames, "f0")
 
     assert measured == network_reach("tcn", config) == 3 + 63
+
+
+@pytest.mark.identity
+@pytest.mark.parametrize(
+    "config",
+    [
+        TransformerConfig(
+            hidden=8, layers=2, attention_heads=2, window=2, kernel_size=1
+        ),
+        TransformerConfig(
+            hidden=8, layers=2, attention_heads=2, window=4, kernel_size=3
+        ),
+        TransformerConfig(hidden=8, layers=1, attention_heads=2, window=5, stages=2),
+    ],
+)
+def test_a_transformer_reaches_as_far_as_its_network_reach(
+    config: TransformerConfig,
+) -> None:
+    _ = pytest.importorskip("torch")
+    import torch
+
+    from mosaic.behavior.feature_library.sequence_training import seed_torch
+
+    seed_torch(0, device="cpu")
+    network = assemble_network(
+        "transformer", config, input_dropout=0.1, n_features=1, n_classes=3
+    ).eval()
+    length = 200
+    series = torch.as_tensor(
+        np.random.default_rng(3).normal(size=length).astype(np.float32)
+    )
+
+    def logits(values: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            return network(values[None, :, None])[0]
+
+    # The block that a frame falls in sets how far it reaches, so the frame moved
+    # takes every position of the series.
+    before = logits(series)
+    measured = 0
+    for at in range(length):
+        moved = series.clone()
+        moved[at] += BUMP
+        changed = torch.nonzero((logits(moved) - before).abs().amax(dim=-1) > 0)
+        measured = max(measured, int((changed - at).abs().max()))
+
+    reach = network_reach("transformer", config)
+    assert reach is not None
+    assert reach < length // 2
+    assert measured == reach
