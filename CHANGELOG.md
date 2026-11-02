@@ -76,6 +76,10 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**`preview_output` names the report.** Its description says that one entry's rows hold no
+pooled scores and points to the run's report resource for an `evaluate-labels` run's
+pooled metrics.
+
 **Catalog reach of `sequence-classifier` by head.** The step-type detail gains
 `temporal_reach_by_option`, the reach of each registered head at its own defaults
 (`mlp` 0, `tcn` 63, `gru` unknown), beside `temporal_reach`, which stays that of the

@@ -248,6 +248,14 @@ def test_a_status_read_waits_and_shrinks_only_when_asked() -> None:
     assert "wait_seconds" in spec.description
 
 
+def test_a_preview_points_to_the_report_for_pooled_scores() -> None:
+    spec = tool_spec("preview_output")
+    assert spec is not None
+
+    assert "pooled" in spec.description
+    assert "/report" in spec.description
+
+
 def test_an_unknown_tool_is_not_found() -> None:
     refused = call_tool(LocalBackend([], warm=False), "delete_set", {})
 

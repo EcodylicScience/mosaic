@@ -573,7 +573,9 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   fingerprint to `submit_pipeline`. A retirement lasts for that call, so repeat it each
   time.
 - A run's report, such as `evaluate-labels`' scores, is the resource
-  `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`.
+  `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`. `preview_output`
+  shows one entry's rows and never the pooled metrics, so a client that does not read
+  resources must get them from that report.
 - A read returns at most 40,000 characters. A `result_too_large` error names the
   arguments that narrow the call. Narrow a preview with `columns` patterns
   (`W_*_f0`) and `max_columns`. `preview_output` also previews a labels variant

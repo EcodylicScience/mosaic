@@ -1738,7 +1738,10 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "count and frame extent, the first rows, and the path of the whole "
             "file. A wide table reads its identity and bookkeeping columns first "
             "and names the rest as omitted. A labels variant also counts each "
-            "class's events and the frames labeled."
+            "class's events and the frames labeled. One entry's rows hold no "
+            "pooled scores: read an evaluate-labels run's pooled metrics in its "
+            "report, at mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}"
+            "/report."
         ),
         input_model=PreviewOutputInput,
         output=ModelRef("mosaic.core.pipeline.preview", "ArtifactPreview"),
