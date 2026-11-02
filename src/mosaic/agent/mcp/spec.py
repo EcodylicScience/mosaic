@@ -85,6 +85,7 @@ __all__ = [
     "MAX_RETIRED_RECIPES",
     "MAX_SCHEMA_BYTES",
     "MAX_STEP_TYPE_DETAIL_CHARS",
+    "MAX_STEP_TYPE_LISTING_CHARS",
     "MAX_WAIT_SECONDS",
     "MERGED_TOOLS",
     "PLAN_MISSING_SAMPLE",
@@ -229,6 +230,13 @@ MAX_STEP_TYPE_DETAIL_CHARS: Final = 16_000
 
 Not enforced per call. A test measures every step type of the catalog, and the
 largest, ``vame``, takes about 15,700.
+"""
+
+MAX_STEP_TYPE_LISTING_CHARS: Final = 4_500
+"""The most characters of JSON that a ``describe_step_types`` search lists.
+
+A page's summaries are shortened to fit, so a listing of the whole catalog, with
+the rest of its result, stays under 5,000 characters.
 """
 
 LISTED_STATUS_NOT: Final[tuple[ArtifactStatus, ...]] = ("complete",)
@@ -578,7 +586,8 @@ class DescribeStepTypesInput(ToolInput):
     """The arguments of ``describe_step_types``: a search, or names to describe.
 
     ``names`` describes those step types and takes no search argument. A
-    search returns index rows, which ``detail`` cannot deepen.
+    search lists names and summaries by category, which ``detail`` cannot
+    deepen.
     """
 
     query: str = Field(
@@ -1504,10 +1513,12 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
         title="Describe step types",
         description=(
             "Find and describe the features and ops a recipe may run. A search "
-            "by words in their name, summary or category returns them best "
-            "match first, each with its lane, the columns it reads and writes, "
-            "what this installation lacks to run it and any license "
-            f"restriction. names (up to {MAX_DESCRIBED_STEP_TYPES}) returns each "
+            "by words in their name, summary or category lists them by "
+            "category, name to summary, best match first; a long page shortens "
+            "the summaries. names with detail 'summary' returns each one's lane, "
+            "the columns it reads and writes, what this installation lacks to "
+            "run it and any license restriction. names (up to "
+            f"{MAX_DESCRIBED_STEP_TYPES}) returns each "
             "one's params as a flat table: dotted paths for nested fields, "
             "type, default, constraints and meaning. A field marked reference "
             '\'result\' takes {"step": "<id>"} naming another step, with an '

@@ -6,11 +6,14 @@ registered catalog.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from mosaic.core.pipeline.graph import (
     CatalogIndexEntry,
     catalog_index,
+    catalog_listing,
     search_catalog,
 )
 
@@ -155,3 +158,43 @@ def test_the_registered_catalog_ranks_the_named_step_first(
     ranked = _names(list(catalog_index().entries), query)
 
     assert ranked[0] == first
+
+
+def test_a_listing_groups_names_by_category_and_keeps_summaries_that_fit() -> None:
+    entries = [
+        _entry("speed", summary="Speed per frame.", category="per-frame"),
+        _entry("kmeans", summary="Clusters templates.", category="global"),
+        _entry("heading", summary="Heading per frame.", category="per-frame"),
+        _entry("tracks", summary="The tracks.", category=""),
+    ]
+
+    listed = catalog_listing(entries, budget=1000)
+
+    assert listed == {
+        "per-frame": {"speed": "Speed per frame.", "heading": "Heading per frame."},
+        "global": {"kmeans": "Clusters templates."},
+        "": {"tracks": "The tracks."},
+    }
+
+
+def test_a_listing_over_its_budget_shortens_every_summary_at_a_word() -> None:
+    long = "Per-frame body heading derived from pose keypoints and smoothed."
+    entries = [_entry(f"step-{index}", summary=long) for index in range(10)]
+
+    listed = catalog_listing(entries, budget=600)
+    summaries = set(listed["per-frame"].values())
+
+    assert len(json.dumps(listed, separators=(",", ":"))) <= 600
+    assert len(summaries) == 1
+    (summary,) = summaries
+    assert summary.endswith("...")
+    assert long.startswith(summary.removesuffix("..."))
+    assert long[len(summary) - 3] == " "
+
+
+def test_a_listing_too_long_for_any_summary_lists_names_alone() -> None:
+    entries = [_entry(f"step-{index}", summary="Some words.") for index in range(10)]
+
+    listed = catalog_listing(entries, budget=50)
+
+    assert listed == {"per-frame": {entry.name: "" for entry in entries}}

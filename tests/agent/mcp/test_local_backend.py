@@ -50,9 +50,11 @@ from mosaic.core.pipeline.graph import (
     RequestStatusWire,
     Recipe,
     ValidationReport,
+    catalog_index,
     open_requests_matching,
     request_path,
     run_pipeline,
+    search_catalog,
     submit_request,
 )
 from mosaic.core.pipeline.inventory import InventoryWire
@@ -122,6 +124,11 @@ def _call[T](
     answered = call_tool(backend, tool, arguments)
     assert isinstance(answered, expected), answered
     return answered
+
+
+def _listed(found: StepTypes) -> list[str]:
+    """The step type names a search listed, category by category."""
+    return [name for names in found.listing.values() for name in names]
 
 
 def _refusal(backend: LocalBackend, tool: str, /, **arguments: object) -> ErrorEnvelope:
@@ -493,10 +500,12 @@ def test_step_types_are_searched_by_words_and_paged(backend: LocalBackend) -> No
         limit=MAX_PAGE_SIZE,
     )
 
-    assert "speed-angvel" in {entry.name for entry in found.entries}
-    assert len(ops.entries) == 3
-    assert ops.total == len(ops.entries) + len(more.entries)
-    assert {entry.type for entry in (*ops.entries, *more.entries)} == {"op"}
+    op_names = {entry.name for entry in catalog_index().entries if entry.type == "op"}
+
+    assert "speed-angvel" in _listed(found)
+    assert len(_listed(ops)) == 3
+    assert ops.total == len(_listed(ops)) + len(_listed(more))
+    assert {*_listed(ops), *_listed(more)} <= op_names
 
 
 def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) -> None:
@@ -512,14 +521,17 @@ def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) ->
             limit=1,
             cursor=cursor,
         )
-        paged.extend(entry.name for entry in page.entries)
+        paged.extend(_listed(page))
         cursor = page.next_cursor
         if cursor is None:
             break
 
-    assert whole.entries[0].name == "speed-angvel"
-    assert len(whole.entries) > 1
-    assert paged == [entry.name for entry in whole.entries]
+    ranked = search_catalog(catalog_index().entries, "speed")
+
+    assert _listed(whole)[0] == "speed-angvel"
+    assert len(_listed(whole)) > 1
+    assert paged == [match.entry.name for match in ranked]
+    assert sorted(paged) == sorted(_listed(whole))
 
 
 def test_named_step_types_are_described_as_param_tables(
@@ -565,14 +577,27 @@ def test_unknown_names_are_reported_beside_the_known(backend: LocalBackend) -> N
     assert found.total == 1
 
 
+def test_a_listing_of_every_step_type_stays_under_five_thousand_characters(
+    backend: LocalBackend,
+) -> None:
+    every = _call(backend, "describe_step_types", StepTypes, limit=MAX_PAGE_SIZE)
+    registered = {entry.name for entry in catalog_index().entries}
+
+    assert len(registered) > 80
+    assert every.next_cursor is None
+    assert set(_listed(every)) == registered
+    assert every.entries == ()
+    assert len(every.model_dump_json()) < 5000
+
+
 def test_every_step_type_detail_stays_under_its_budget(backend: LocalBackend) -> None:
     every = _call(backend, "describe_step_types", StepTypes, limit=100)
-    names = [entry.name for entry in every.entries]
+    names = _listed(every)
     while every.next_cursor is not None:
         every = _call(
             backend, "describe_step_types", StepTypes, cursor=every.next_cursor
         )
-        names.extend(entry.name for entry in every.entries)
+        names.extend(_listed(every))
 
     over = {
         name: size

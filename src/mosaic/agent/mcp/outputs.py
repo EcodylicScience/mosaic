@@ -26,9 +26,9 @@ __all__ = ["PatchedRecipe", "PlanPage", "StepSuggestions", "StepTypes"]
 class StepTypes(StrictModel):
     """Step types found by a search, or described by name.
 
-    A search returns one page of index rows, most relevant first, and a search
-    without words lists every step type by name. Names return one row or one
-    detail per known name, in the order asked.
+    A search lists one page of step types by category, most relevant first,
+    and a search without words lists them by name. Names return one index row
+    or one detail per known name, in the order asked.
 
     Attributes:
         schema_version: The recipe format this installation reads.
@@ -36,7 +36,11 @@ class StepTypes(StrictModel):
         detail: How much each step type carries: ``summary`` its index row,
             ``fields`` its params table too, ``schema`` its params JSON Schema
             too.
-        entries: Under ``summary``, the index rows.
+        listing: From a search, each category's step types on this page, name
+            to summary. A page whose summaries would exceed
+            ``MAX_STEP_TYPE_LISTING_CHARS`` shortens them all, to names alone at
+            the limit.
+        entries: Under ``summary`` with names, the index rows.
         details: Under ``fields`` and ``schema``, the step types in detail.
         unknown: The names asked for that no step type has.
         total: How many step types the search matches, or the names described.
@@ -47,6 +51,7 @@ class StepTypes(StrictModel):
     schema_version: int
     mosaic_version: str
     detail: StepTypeDetailLevel
+    listing: dict[str, dict[str, str]] = {}
     entries: tuple[CatalogIndexEntry, ...] = ()
     details: tuple[StepTypeDetail, ...] = ()
     unknown: tuple[str, ...] = ()

@@ -147,7 +147,7 @@ that does not read, is left out and reported on the server's standard error.
 | `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, counts and recordings |
 | `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to, filtered by group to list one divided recording's sequences |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
-| `describe_step_types` | The features and ops a recipe may run, found by words, and the ones named with their params as a table |
+| `describe_step_types` | The features and ops a recipe may run, listed by category or found by words, and the ones named with their params as a table |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
 | `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, or sets the dataset's tags, inside the roots you allow. Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document |
@@ -243,6 +243,7 @@ needs to choose its next call, and the server refuses a result above a budget.
 | Result | Bound |
 | --- | --- |
 | Any read tool | 40,000 characters |
+| `describe_step_types` search | Each step type by category, name to summary. A page of the whole catalog stays under 5,000 characters by shortening every summary |
 | `describe_step_types` with `names` | Up to 8 step types, each a params table of at most about 16,000 characters |
 | `preview_output` | 5 rows and 40 columns by default (`limit`, `max_columns`), the identity and bookkeeping columns first |
 | `get_inventory` listing | No params, and 5 missing entries per artifact. A `ref` returns one artifact with its params |

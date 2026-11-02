@@ -188,7 +188,8 @@ def _step_types(found: StepTypes) -> str:
     if found.next_cursor is None and found.unknown:
         named = [entry.name for entry in found.entries]
         return f"Listed {_names(named)}.{unknown} {_STRUCTURED}"
-    return _page(found.total, len(found.entries), found.next_cursor, "step type")
+    shown = len(found.entries) + sum(len(names) for names in found.listing.values())
+    return _page(found.total, shown, found.next_cursor, "step type")
 
 
 def _validation(report: ValidationReport) -> str:

@@ -518,8 +518,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 When your client offers mosaic's MCP tools (`mosaic agent serve`), use them for the
 work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 
-- Find step types with `describe_step_types` and a query, then call it with
-  `names=[...]` for the params of the ones you choose.
+- Find step types with `describe_step_types`, which lists them by category with a
+  summary each, or with a query. Then call it with `names=[...]` for the params of
+  the ones you choose, and `detail: "summary"` for the columns they read and write.
 - A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
   server allows it, `manage_dataset` creates a dataset (`create`, a `path` inside the
   server's dataset roots), declares raw files (`add_source` with `kind`, `path` inside

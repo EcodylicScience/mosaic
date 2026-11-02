@@ -8,6 +8,14 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: agent reads and waiting
+
+**A smaller `describe_step_types` search.** A search lists each step type of its
+page by category, name to summary, in `listing`, and no longer returns index rows
+in `entries`. When the page would exceed 4,500 characters, every summary is cut at a
+word to one length, so a listing of the whole catalog stays under 5,000 characters.
+`names` with `detail: "summary"` still returns the index rows. No identifier moves.
+
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
 **`train-sleap` trains an embedding model.** `head` gains `embedding`, a network that

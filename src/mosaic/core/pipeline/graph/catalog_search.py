@@ -5,12 +5,15 @@ hyphens and underscores alike, so ``speed_angvel``, ``speed angvel`` and
 ``Speed-Angvel`` name ``speed-angvel``. Every word of a query must occur in a
 step type's name, summary or category for it to match.
 
+:func:`catalog_listing` lists the matches by name within a character budget.
+
 The module imports nothing beyond the standard library at run time, so a search
 loads neither the feature library nor pandas.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -23,6 +26,11 @@ _SEPARATORS: Final = re.compile(r"[\s_-]+")
 
 _KEY_WIDTH: Final = 6
 """The digits of each number in a ranking key, so that keys compare as strings."""
+
+_MIN_SUMMARY_CHARS: Final = 16
+"""The shortest summary a listing keeps. Below it, a listing names the step types alone."""
+
+_ELLIPSIS: Final = "..."
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,3 +114,68 @@ def _match(entry: CatalogIndexEntry, words: Sequence[str]) -> CatalogMatch | Non
 def _key(entry: CatalogIndexEntry, numbers: tuple[int, ...]) -> tuple[str, ...]:
     """Return the ranking key of *entry*: *numbers* zero-padded, then its name."""
     return (*(f"{number:0{_KEY_WIDTH}d}" for number in numbers), entry.name)
+
+
+type CatalogListing = dict[str, dict[str, str]]
+"""Step type names by category, each with its summary, shortened or empty."""
+
+
+def catalog_listing(
+    entries: Iterable[CatalogIndexEntry], budget: int
+) -> CatalogListing:
+    """List *entries* by category, name to summary, within *budget* characters.
+
+    Categories are in the order of their first entry, and names in the order
+    given. When the compact JSON of the listing would exceed *budget*, every
+    summary is cut at a word to one common length, the longest that fits,
+    ending in ``...``. When no summary of at least ``_MIN_SUMMARY_CHARS`` fits,
+    the summaries are empty and the listing names the step types alone.
+
+    Args:
+        entries: The index rows to list, in the order to list them.
+        budget: The most characters of the listing's compact JSON.
+
+    Returns:
+        A mapping of category to a mapping of name to summary.
+    """
+    rows = tuple(entries)
+    full = _listing(rows, None)
+    if _length(full) <= budget:
+        return full
+    longest = max(len(entry.summary) for entry in rows)
+    for limit in range(longest - 1, _MIN_SUMMARY_CHARS - 1, -1):
+        shortened = _listing(rows, limit)
+        if _length(shortened) <= budget:
+            return shortened
+    return _listing(rows, 0)
+
+
+def _listing(rows: Sequence[CatalogIndexEntry], limit: int | None) -> CatalogListing:
+    """Group *rows* by category, each summary shortened to *limit* characters."""
+    listed: CatalogListing = {}
+    for entry in rows:
+        summary = entry.summary if limit is None else _shorten(entry.summary, limit)
+        listed.setdefault(entry.category, {})[entry.name] = summary
+    return listed
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Return *text* cut at a word to at most *limit* characters, ending in ``...``.
+
+    Text that fits is returned whole, and text with no word that fits as ``""``.
+    """
+    if len(text) <= limit:
+        return text
+    room = limit - len(_ELLIPSIS)
+    if room <= 0:
+        return ""
+    head = text[:room]
+    if text[room] != " ":
+        head = head.rpartition(" ")[0]
+    head = head.rstrip(" ,;:")
+    return f"{head}{_ELLIPSIS}" if head else ""
+
+
+def _length(listed: CatalogListing) -> int:
+    """Return the length of *listed* as compact JSON, as a wire model writes it."""
+    return len(json.dumps(listed, ensure_ascii=False, separators=(",", ":")))

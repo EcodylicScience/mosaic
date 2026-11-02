@@ -39,6 +39,7 @@ from .dataset_tools import missing_field
 from .spec import (
     LISTED_STATUS_NOT,
     LISTING_MISSING_SAMPLE,
+    MAX_STEP_TYPE_LISTING_CHARS,
     PLAN_MISSING_SAMPLE,
     PLAN_RETIRABLE_SAMPLE,
     PLAN_RETIRED_SAMPLE,
@@ -532,7 +533,7 @@ class LocalBackend:
     # -------------------------------------------------------------- catalog
 
     def _describe_step_types(self, args: DescribeStepTypesInput) -> StepTypes:
-        from mosaic.core.pipeline.graph import search_catalog
+        from mosaic.core.pipeline.graph import catalog_listing, search_catalog
 
         from .outputs import StepTypes
 
@@ -554,7 +555,9 @@ class LocalBackend:
             schema_version=index.schema_version,
             mosaic_version=index.mosaic_version,
             detail=level,
-            entries=tuple(match.entry for match in page),
+            listing=catalog_listing(
+                (match.entry for match in page), MAX_STEP_TYPE_LISTING_CHARS
+            ),
             total=len(matched),
             next_cursor=next_cursor,
         )
