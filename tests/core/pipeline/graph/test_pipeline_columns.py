@@ -890,3 +890,63 @@ def test_stacked_inputs_guarantee_only_what_each_input_guarantees() -> None:
 def test_one_stacked_input_merges_as_itself() -> None:
     only = ColumnSet(guaranteed=frozenset({"frame", "speed"}))
     assert merged_input([only], stack=True) == merged_input([only])
+
+
+def test_a_widening_merge_names_each_individual_column_twice() -> None:
+    """Validation predicts the ``__id1`` and ``__id2`` columns that the merge writes."""
+    pairs = ColumnSet(guaranteed=frozenset({"frame", "id1", "id2", "dist"}))
+    individuals = ColumnSet(
+        guaranteed=frozenset({"frame", "id", "speed"}),
+        possible=frozenset({"frame", "id", "speed", "fps"}),
+    )
+
+    widened = merged_input([pairs, individuals], widen=True)
+
+    assert widened.guaranteed == {
+        "frame",
+        "id1",
+        "id2",
+        "dist",
+        "speed__id1",
+        "speed__id2",
+    }
+    assert "fps" not in widened.possible
+    reversed_order = merged_input([individuals, pairs], widen=True)
+    assert "speed__id1" not in reversed_order.possible
+
+
+def _over_tracks(step_id: str, feature: str) -> dict[str, JsonValue]:
+    return {
+        "id": step_id,
+        "type": "feature",
+        "feature": feature,
+        "inputs": [TRACKS_INPUT],
+        "params": {},
+    }
+
+
+def _stack_of(first: str, second: str) -> Recipe:
+    """A ``temporal-stack`` over a pair-level and an individual-level step."""
+    steps: list[JsonValue] = [
+        _over_tracks("pairs", "pair-position"),
+        _over_tracks("speed", "speed-angvel"),
+        {
+            "id": "stack",
+            "type": "feature",
+            "feature": "temporal-stack",
+            "inputs": [{"step": first}, {"step": second}],
+            "params": {},
+        },
+    ]
+    return read_recipe({"steps": steps})
+
+
+def test_a_recipe_widens_an_individual_input_after_a_pair_input() -> None:
+    assert check_recipe(_stack_of("pairs", "speed")) == ()
+
+
+def test_a_recipe_with_the_individual_input_first_is_refused() -> None:
+    problems = check_recipe(_stack_of("speed", "pairs"))
+
+    assert [problem.step for problem in problems] == ["stack"]
+    assert "pair-level input first" in problems[0].message

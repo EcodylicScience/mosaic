@@ -302,7 +302,9 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   [Upward imports](../../CLAUDE.md#upward-imports).
 - `can_connect` and `can_join` (`compatibility.py`) answer from `declaration_catalog()`
   with no dataset. `can_join` refuses a join of mismatched entity granularity unless the
-  consumer cross-joins (`alignment_verdict`, `CROSS_JOIN_FEATURES`).
+  consumer cross-joins (`alignment_verdict`, `CROSS_JOIN_FEATURES`), or expands
+  individuals and reads a pair-level input 0 (`ConsumerDecl.expands_individuals`).
+  `merged_input(widen=...)` then names the widened columns as the merge does.
 - A feature declares `requires` and `provides` with the references of
   `core/pipeline/column_contract.py`. Validation checks them with no dataset
   (`columns.py`), the plan against the tracks parquet footers, and `run_feature` per

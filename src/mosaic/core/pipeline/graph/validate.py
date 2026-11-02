@@ -348,6 +348,7 @@ class _Walk:
                 for item in step.inputs
             ],
             stack=declared is not None and declared.consumes.stacks_inputs,
+            widen=declared is not None and declared.consumes.expands_individuals,
         )
 
     def level_behind(self, step_id: str) -> EntityLevel:
@@ -1429,8 +1430,9 @@ def _insert_refusal(
     if values is None:
         values = {**declared.param_defaults, **child.params}
     stack = declared.consumes.stacks_inputs
-    merged_now = merged_input(now, stack=stack)
-    merged_then = merged_input(then, stack=stack)
+    widen = declared.consumes.expands_individuals
+    merged_now = merged_input(now, stack=stack, widen=widen)
+    merged_then = merged_input(then, stack=stack, widen=widen)
     lost = [
         need.label
         for need in needs_of(declared.requires or (), values)
@@ -1501,7 +1503,8 @@ def input_candidates(
         values = {**declared.param_defaults, **target.params}
     current = [walk.input_columns(item) for item in target.inputs]
     stack = declared.consumes.stacks_inputs
-    merged_now = merged_input(current, stack=stack)
+    widen = declared.consumes.expands_individuals
+    merged_now = merged_input(current, stack=stack, widen=widen)
     still: list[tuple[NamedColumns, UnmetStatus]] = []
     for need in needs_of(declared.requires or (), values):
         status = need_status(need, merged_now)
@@ -1541,7 +1544,7 @@ def input_candidates(
     candidates: dict[str, InputCandidate] = {}
     for key, verdict in join_verdicts(declared.consumes, offered, existing).items():
         item, columns = supplied[key]
-        grown = merged_input([*current, columns], stack=stack)
+        grown = merged_input([*current, columns], stack=stack, widen=widen)
         allowed, reason = verdict.allowed, verdict.reason
         run = None if key == TRACKS_INPUT else walk.run_of(StepRef(step=key))
         same = None if run is None else reading.get(run)

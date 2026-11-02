@@ -45,7 +45,7 @@ from ..column_contract import (
     needs_of,
     resolve_names,
 )
-from ..loading import merge_naming
+from ..loading import merge_naming, widens
 from ..types.data_config import NON_PAYLOAD_COLS
 from .compatibility import (
     TRACKS_DECLARATION,
@@ -209,7 +209,9 @@ def _shared(sets: Iterable[frozenset[str]]) -> frozenset[str]:
     return _NO_NAMES if shared is None else shared
 
 
-def merged_input(inputs: Sequence[ColumnSet], *, stack: bool = False) -> ColumnSet:
+def merged_input(
+    inputs: Sequence[ColumnSet], *, stack: bool = False, widen: bool = False
+) -> ColumnSet:
     """The columns of a step's merged input, from the columns of each input.
 
     With *stack*, for a step that reads its inputs as one stack of disjoint
@@ -222,6 +224,11 @@ def merged_input(inputs: Sequence[ColumnSet], *, stack: bool = False) -> ColumnS
     colliding identity or bookkeeping column is dropped. Over the guaranteed sets
     the rule gives the columns of every merge. Over the possible sets it gives the
     columns that some merge may contain.
+
+    With *widen*, for a step that expands individuals, an individual-level
+    input after a pair-level input 0 is named as the widening merge names it,
+    each payload column as ``<column>__id1`` and ``<column>__id2``. The levels
+    are read from the guaranteed sets, and the possible sets follow them.
     """
     if not inputs:
         return ColumnSet()
@@ -239,8 +246,13 @@ def merged_input(inputs: Sequence[ColumnSet], *, stack: bool = False) -> ColumnS
     guaranteed = first.guaranteed
     possible = first.possible
     for position, incoming in enumerate(rest, start=1):
-        guaranteed = merge_naming(guaranteed, incoming.guaranteed, position).columns
-        possible = merge_naming(possible, incoming.possible, position).columns
+        widened = widen and widens(guaranteed, incoming.guaranteed)
+        guaranteed = merge_naming(
+            guaranteed, incoming.guaranteed, position, widen=widened
+        ).columns
+        possible = merge_naming(
+            possible, incoming.possible, position, widen=widened
+        ).columns
     return _column_set(
         guaranteed,
         possible,

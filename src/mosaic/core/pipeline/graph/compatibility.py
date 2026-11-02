@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from mosaic.core.json_value import JsonValue
 
 from ..column_contract import Provides, Requirement
-from ..loading import alignment_verdict
+from ..loading import alignment_verdict, widening_hint, widens
 from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
 
@@ -167,6 +167,11 @@ class ConsumerDecl:
             filter and groups afterwards, so its fan-out costs memory rather
             than correctness -- the one sanctioned escape from the alignment
             refusal, and closed rather than a per-feature flag.
+        expands_individuals: Whether it widens an individual-level input onto
+            the pair rows of a pair-level input 0, joining it once as ``id1``
+            and once as ``id2``
+            (:func:`~mosaic.core.pipeline.loading.expands_individuals`): a
+            feature whose ``emits`` is ``as-input`` or ``pair``.
         reads_media: Whether it opens video, which is what makes an ordering-only
             edge from a media writer worth declaring.
         stacks_inputs: Whether several inputs are runs over disjoint entries that
@@ -183,6 +188,7 @@ class ConsumerDecl:
     requires_track_shape: bool = False
     takes_no_inputs: bool = False
     cross_joins: bool = False
+    expands_individuals: bool = False
     reads_media: bool = False
     stacks_inputs: bool = False
 
@@ -412,6 +418,10 @@ def can_join(producers: Sequence[ProducerDecl], consumer: ConsumerDecl) -> Verdi
     every row of one with every row of the other -- a per-frame cartesian
     product that raises nothing and produces a plausible table.
 
+    A consumer that expands individuals takes an individual-level producer
+    after a pair-level producer 0, which the merge widens onto the pair rows
+    (:func:`~mosaic.core.pipeline.loading.widens`).
+
     Decided by ``alignment_verdict``, the same rule the merge itself enforces, so
     a chain checked here cannot be refused at run time for a reason this did not
     see. It is name-based, so no data and no dataset are read.
@@ -426,11 +436,18 @@ def can_join(producers: Sequence[ProducerDecl], consumer: ConsumerDecl) -> Verdi
         return _stack_verdict(producers, consumer)
     if consumer.cross_joins:
         return _ALLOWED
-    verdict = alignment_verdict([columns_for_level(p.level) for p in producers])
+    joined = producers
+    hint = ""
+    if consumer.expands_individuals:
+        pairs = columns_for_level(producers[0].level)
+        joined = [p for p in producers if not widens(pairs, columns_for_level(p.level))]
+        hint = widening_hint(p.level for p in producers)
+    verdict = alignment_verdict([columns_for_level(p.level) for p in joined])
     if verdict.compatible:
         return _ALLOWED
     named = ", ".join(f"{p.name} ({p.level})" for p in producers)
-    return Verdict(False, f"{consumer.name} cannot align {named}: {verdict.reason}")
+    reason = f"{consumer.name} cannot align {named}: {verdict.reason}{hint}"
+    return Verdict(False, reason)
 
 
 def _stack_verdict(

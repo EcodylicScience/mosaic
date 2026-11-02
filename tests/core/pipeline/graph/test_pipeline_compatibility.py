@@ -163,6 +163,54 @@ def test_the_cross_join_escape_is_honoured() -> None:
     assert can_join([SPEED, PAIRWISE], CROSS)
 
 
+WIDENING = ConsumerDecl(
+    name="xgboost",
+    kind="feature",
+    accepts_tracks=True,
+    accepts_features=True,
+    expands_individuals=True,
+)
+
+
+def test_a_widening_consumer_takes_individual_inputs_after_a_pair_input() -> None:
+    """Each individual input is joined onto the pair rows as ``id1`` and ``id2``."""
+    assert can_join([PAIRWISE, SPEED], WIDENING)
+    assert can_join([PAIRWISE, SPEED, COLLECTIVE], WIDENING)
+    assert not can_join([PAIRWISE, SPEED], JOINER)
+
+
+def test_a_widening_consumer_refuses_an_individual_input_first() -> None:
+    """Folding pair rows onto individuals needs a choice among partners."""
+    verdict = can_join([SPEED, PAIRWISE], WIDENING)
+    assert not verdict
+    assert "pair-level input first" in verdict.reason
+
+
+@pytest.mark.parametrize(
+    ("slug", "widens"),
+    [
+        ("overlay", False),
+        ("scale-to-cm", False),
+        ("frame-aggregate", False),
+        ("interaction-crop-pipeline", False),
+        ("xgboost", True),
+        ("sequence-classifier", True),
+        ("pair-wavelet", True),
+    ],
+)
+def test_which_features_widen_individual_inputs(slug: str, widens: bool) -> None:
+    """A consumer emitting ``as-input`` or ``pair`` widens; the others refuse."""
+    declared = declaration_catalog().get(slug)
+    assert declared is not None
+    assert declared.consumes.expands_individuals is widens
+    verdict = can_join([PAIRWISE, SPEED], declared.consumes)
+    if slug == "interaction-crop-pipeline":
+        return
+    assert bool(verdict) is widens
+    if not widens:
+        assert "pair every row" in verdict.reason
+
+
 STACKS = ConsumerDecl(
     name="evaluate-labels",
     kind="feature",
