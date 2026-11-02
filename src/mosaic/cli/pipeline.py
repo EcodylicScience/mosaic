@@ -177,16 +177,26 @@ and for mosaic-api. This command offers one flag and it is spelled ``--entry``.
 def recipe_document(argument: str) -> object:
     """Return the JSON document that the ``--recipe`` argument names.
 
-    An argument that does not open as JSON or ``@`` and names a file is that
-    file, read as ``@file.json`` is. Any other is read by :func:`load_json_arg`.
+    An argument that does not open with ``{``, ``[`` or ``@`` is the file it
+    names, read as ``@file.json`` is, and otherwise inline JSON. Any other is
+    read by :func:`load_json_arg`.
     """
     from mosaic.user_paths import user_path
 
-    if not argument.startswith(("{", "[", "@")):
-        path = user_path(argument)
-        if path.is_file():
-            return json_file_arg(path)
-    return load_json_arg(argument)
+    if argument.lstrip().startswith(("{", "[", "@")):
+        return load_json_arg(argument)
+    path = user_path(argument)
+    try:
+        named = path.is_file()
+    except OSError:
+        # A value too long to be a path, which only inline JSON can be.
+        named = False
+    if named:
+        return json_file_arg(path)
+    try:
+        return json.loads(argument)
+    except json.JSONDecodeError as exc:
+        fail(f"--recipe: no file named {argument!r}, and not inline JSON: {exc}")
 
 
 def recipe_argument(argument: str, *, as_json: bool) -> "Recipe":

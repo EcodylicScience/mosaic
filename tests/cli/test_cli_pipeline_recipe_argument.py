@@ -73,14 +73,30 @@ def test_validate_reads_a_bare_path(recipe_file: Path) -> None:
     assert report["valid"] is True
 
 
-def test_a_path_that_names_no_file_is_read_as_inline_json(tmp_path: Path) -> None:
-    result = runner.invoke(
-        app,
-        ["pipeline", "validate", "--recipe", str(tmp_path / "missing.json")],
-    )
+def test_a_value_that_names_no_file_and_is_not_json_says_both(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.json"
+
+    result = runner.invoke(app, ["pipeline", "validate", "--recipe", str(missing)])
 
     assert result.exit_code == 1
-    assert "Invalid JSON (inline JSON)" in result.stderr
+    assert f"no file named {str(missing)!r}, and not inline JSON" in result.stderr
+
+
+def test_long_inline_json_with_leading_whitespace_is_read_as_json() -> None:
+    padded = {**RECIPE, "name": "x" * 2_000}
+
+    report = invoke_json(
+        ["pipeline", "validate", "--recipe", "  " + json.dumps(padded), "--json"]
+    )
+
+    assert report["valid"] is True
+
+
+def test_a_value_too_long_to_be_a_path_is_read_as_inline_json() -> None:
+    result = runner.invoke(app, ["pipeline", "validate", "--recipe", "x" * 5_000])
+
+    assert result.exit_code == 1
+    assert "not inline JSON" in result.stderr
 
 
 def test_a_bare_path_that_is_not_json_names_the_file(tmp_path: Path) -> None:

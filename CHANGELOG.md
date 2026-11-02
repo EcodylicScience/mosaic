@@ -29,8 +29,9 @@ and `truncated`, whether more are to compute. A result stays under 1,000 charact
 whatever the recipe's size, and `get_request_status` without `brief` lists every step.
 
 **`--recipe` takes a file path.** The `mosaic pipeline` verbs read a `--recipe` value
-that names an existing file, and does not open with `{`, `[` or `@`, as that file. The
-`@file.json`, `@-` and inline JSON forms are unchanged.
+that names an existing file, and does not open with `{`, `[` or `@`, as that file. A
+value that names no file and is not JSON fails saying both. The `@file.json`, `@-` and
+inline JSON forms are unchanged.
 
 **A step scope file.** A bare `--step-scope @file.json` holds a JSON object of `STEP:
 SCOPE`, each scope checked as a `STEP=SCOPE` token's is. A step named twice across the
