@@ -134,6 +134,10 @@ class OrientationRelativeFeature:
         conditional=(Conditional(Prefix("dist_q"), when_param="quantiles"),),
     )
 
+    # ``scale`` names the body-scale run when there is one. Without a run, each
+    # row is scaled by the focal individual's own median keypoint distance.
+    optional_results: ClassVar[frozenset[str]] = frozenset({"scale"})
+
     # A table of positions joined with heading's ANGLE, as on mosaic_v1 tracks
     # that do not record it. The requirements name the columns read.
     class Inputs(Inputs[TrackInput | Result]):

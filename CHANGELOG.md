@@ -76,6 +76,12 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**`orientation-rel` runs without a body-scale run.** With `scale` unset and no
+`body-scale` run in the dataset, the run failed with `FileNotFoundError` on the missing
+index. It now scales each row by the focal individual's median keypoint distance in that
+frame, as the param's description says. A `scale` that names a run the dataset lacks still
+fails. The default, the params and every run id are unchanged.
+
 **`pipeline verify` bounds threads and takes `--step`.** Each step is fitted and applied
 with every BLAS and OpenMP threadpool limited to `--n-threads` (1 by default), where the
 libraries used their own count before. `--step <id>`, repeatable, verifies only the steps

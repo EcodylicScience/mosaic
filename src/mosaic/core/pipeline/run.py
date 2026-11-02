@@ -192,6 +192,17 @@ def _build_result_lookup(
     return lookup
 
 
+def _optional_results(feature: Feature) -> frozenset[str]:
+    """The ``Result`` params fields *feature* can do without.
+
+    Declared by the feature as ``optional_results``. Such a field that names no
+    run and whose feature has none to name gets no lookup instead of failing the
+    run. A field that names a run is required to resolve.
+    """
+    names: frozenset[str] = getattr(type(feature), "optional_results", frozenset())
+    return names
+
+
 def _resolve_dependencies(
     ds: Dataset, feature: Feature, labels_run_id: str | None = None
 ) -> tuple[dict[str, Path], dict[str, DependencyLookup]]:
@@ -246,9 +257,17 @@ def _resolve_dependencies(
                         f"feature but is typed as Result, not NNResult"
                     )
                     raise TypeError(msg)
-                dependency_lookups[field_name] = _build_result_lookup(
-                    ds, feature_name, _run_id
-                )
+                try:
+                    dependency_lookups[field_name] = _build_result_lookup(
+                        ds, feature_name, _run_id
+                    )
+                except (FileNotFoundError, ValueError):
+                    # A field the feature can do without, left unpinned because
+                    # the feature it names has not run: no lookup, and the
+                    # feature reads the field's absence.
+                    if _run_id is None and field_name in _optional_results(feature):
+                        continue
+                    raise
 
             case LabelsSource(kind=str(kind)):
                 if not kind:
