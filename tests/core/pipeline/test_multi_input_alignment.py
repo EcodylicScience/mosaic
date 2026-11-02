@@ -32,13 +32,19 @@ is no such caller in-tree yet; the seam is the point.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from mosaic.core.pipeline import alignment_verdict, entity_level_of
+from mosaic.core.pipeline.types import LoadSpec, ParquetLoadSpec
 from mosaic.core.pipeline.loading import (
     MultiInputAlignmentError,
+    PairRowsMissing,
     _merge_parquet_inputs,
+    load_entry_data,
+    merge_naming,
 )
 
 _INDIVIDUAL = ["frame", "time", "id", "group", "sequence", "speed"]
@@ -214,3 +220,167 @@ def test_a_collided_column_is_suffixed_with_the_input_that_declared_it() -> None
     assert merged is not None
     assert "v__2" in merged.columns
     assert list(merged["v__2"]) == [3.0, 3.0]
+
+
+# --- widening individual inputs onto pair rows ---------------------------------
+
+
+def _pairs(frames: list[int]) -> pd.DataFrame:
+    """Both perspectives of the pair of individuals 0 and 1, per frame."""
+    rows = [
+        {"frame": f, "id1": a, "id2": b, "perspective": p, "group": "g", "dist": 1.0}
+        for f in frames
+        for p, (a, b) in enumerate(((0, 1), (1, 0)))
+    ]
+    return pd.DataFrame(rows)
+
+
+def _individuals(cells: list[tuple[int, int]]) -> pd.DataFrame:
+    """One row per ``(frame, id)``, with ``speed`` naming the cell and bookkeeping."""
+    return pd.DataFrame(
+        {
+            "frame": [f for f, _ in cells],
+            "time": [f / 30 for f, _ in cells],
+            "id": [i for _, i in cells],
+            "group": "g",
+            "fps": 30.0,
+            "speed": [10.0 * f + i for f, i in cells],
+        }
+    )
+
+
+def test_a_widening_merge_gives_each_pair_row_both_individuals() -> None:
+    """Each pair row carries its focal's payload as ``__id1`` and the other's as ``__id2``."""
+    individuals = _individuals([(0, 0), (0, 1), (1, 0), (1, 1)])
+
+    merged = _merge_parquet_inputs(
+        iter([(0, _pairs([0, 1])), (1, individuals)]), expands_individuals=True
+    )
+
+    assert merged is not None
+    assert len(merged) == 4
+    assert set(merged.columns) == {
+        "frame",
+        "id1",
+        "id2",
+        "perspective",
+        "group",
+        "dist",
+        "speed__id1",
+        "speed__id2",
+    }
+    frames = merged["frame"].to_numpy()
+    for slot in ("id1", "id2"):
+        expected = 10.0 * frames + merged[slot].to_numpy()
+        assert list(merged[f"speed__{slot}"]) == list(expected)
+
+
+def test_a_pair_row_without_both_individuals_is_dropped() -> None:
+    """An inner join: frame 1 lacks individual 1, so both of its pair rows go."""
+    individuals = _individuals([(0, 0), (0, 1), (1, 0)])
+
+    merged = _merge_parquet_inputs(
+        iter([(0, _pairs([0, 1])), (1, individuals)]), expands_individuals=True
+    )
+
+    assert merged is not None
+    assert sorted(merged["frame"]) == [0, 0]
+
+
+def test_the_widening_merge_is_refused_without_the_flag() -> None:
+    with pytest.raises(MultiInputAlignmentError, match="pair every row"):
+        _ = _merge_parquet_inputs(
+            iter([(0, _pairs([0])), (1, _individuals([(0, 0), (0, 1)]))])
+        )
+
+
+def test_an_individual_input_ahead_of_the_pair_input_is_refused() -> None:
+    """The reverse direction needs a choice among partners, so it stays refused."""
+    with pytest.raises(MultiInputAlignmentError, match="pair-level input first"):
+        _ = _merge_parquet_inputs(
+            iter([(0, _individuals([(0, 0), (0, 1)])), (1, _pairs([0]))]),
+            expands_individuals=True,
+        )
+
+
+def test_a_repeated_individual_row_is_refused() -> None:
+    with pytest.raises(MultiInputAlignmentError, match="repeats"):
+        _ = _merge_parquet_inputs(
+            iter([(0, _pairs([0])), (1, _individuals([(0, 0), (0, 0), (0, 1)]))]),
+            expands_individuals=True,
+        )
+
+
+def test_the_widening_merge_joins_on_the_shared_order_column() -> None:
+    """With no shared ``frame``, the rows align on ``time``."""
+    pairs = _pairs([0, 1]).rename(columns={"frame": "time"})
+    individuals = _individuals([(0, 0), (0, 1), (1, 0), (1, 1)]).drop(columns=["time"])
+    individuals = individuals.rename(columns={"frame": "time"})
+
+    merged = _merge_parquet_inputs(
+        iter([(0, pairs), (1, individuals)]), expands_individuals=True
+    )
+
+    assert merged is not None
+    assert len(merged) == 4
+    assert "frame" not in merged.columns
+
+
+def test_a_collided_widened_name_is_numbered_by_its_input() -> None:
+    cells = [(0, 0), (0, 1)]
+
+    merged = _merge_parquet_inputs(
+        iter([(0, _pairs([0])), (1, _individuals(cells)), (2, _individuals(cells))]),
+        expands_individuals=True,
+    )
+
+    assert merged is not None
+    assert {"speed__id1", "speed__id2", "speed__2__id1", "speed__2__id2"} <= set(
+        merged.columns
+    )
+
+
+def test_a_global_input_still_broadcasts_under_the_flag() -> None:
+    per_frame = pd.DataFrame({"frame": [0, 1], "order": [0.5, 0.7]})
+
+    merged = _merge_parquet_inputs(
+        iter([(0, _pairs([0, 1])), (1, per_frame)]), expands_individuals=True
+    )
+
+    assert merged is not None
+    assert len(merged) == 4
+    assert "order" in merged.columns
+
+
+def _specs(tmp_path: Path, tables: list[pd.DataFrame]) -> list[tuple[Path, LoadSpec]]:
+    specs: list[tuple[Path, LoadSpec]] = []
+    for position, table in enumerate(tables):
+        path = tmp_path / f"{position}.parquet"
+        table.to_parquet(path)
+        specs.append((path, ParquetLoadSpec()))
+    return specs
+
+
+def test_the_widening_naming_rule_is_what_the_merge_does(tmp_path: Path) -> None:
+    cells = [(0, 0), (0, 1)]
+    tables = [_pairs([0]), _individuals(cells), _individuals(cells)]
+
+    merged = load_entry_data(_specs(tmp_path, tables), expands_individuals=True)
+    assert merged is not None
+
+    columns: frozenset[str] = frozenset(tables[0].columns)
+    for position, table in ((1, tables[1]), (2, tables[2])):
+        columns = merge_naming(
+            columns, list(table.columns), position, widen=True
+        ).columns
+    assert columns == set(merged.columns)
+
+
+def test_an_empty_pair_input_beside_individual_rows_is_refused(tmp_path: Path) -> None:
+    """Without it the entry would hand individual rows to a pair-level consumer."""
+    tables = [_pairs([0]).iloc[0:0], _individuals([(0, 0), (0, 1)])]
+
+    with pytest.raises(PairRowsMissing, match="input 0"):
+        _ = load_entry_data(_specs(tmp_path, tables), expands_individuals=True)
+
+    assert load_entry_data(_specs(tmp_path, tables)) is not None

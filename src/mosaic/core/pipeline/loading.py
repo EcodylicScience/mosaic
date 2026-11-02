@@ -7,7 +7,7 @@ pipeline infrastructure they depend on.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -17,6 +17,7 @@ import pandas as pd
 from ..helpers import load_labels_for_feature_frames
 from ..scope import Scope
 from ._loaders import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
+from .parquet_reader import read_parquet_column_names
 from .index import (
     feature_index,
     feature_index_path,
@@ -57,8 +58,39 @@ def stacks_inputs(feature: object) -> bool:
     return getattr(feature, "stacks_inputs", False) is True
 
 
+_WIDENING_EMITS: frozenset[str] = frozenset({"as-input", "pair"})
+
+
+def expands_individuals(feature: object) -> bool:
+    """Whether a feature (or feature class) widens individual inputs onto pair rows.
+
+    A feature whose ``emits`` is ``as-input`` or ``pair`` and whose input 0 is
+    pair-level reads each individual-level input joined twice onto the pair
+    rows, once as the focal ``id1`` and once as the other ``id2`` (see
+    :func:`merge_naming`). Its output stays keyed by the pair rows, so an
+    ``as-input`` feature still resolves to its first input's level. A feature
+    declared ``individual`` or ``unidentified`` keeps the alignment refusal,
+    and so does a feature in :data:`CROSS_JOIN_FEATURES`, whose frame-only
+    merge is a different join. ``run_feature``, ``mosaic pipeline verify`` and
+    the recipe declarations all read it here.
+    """
+    return (
+        getattr(feature, "emits", None) in _WIDENING_EMITS
+        and getattr(feature, "name", None) not in CROSS_JOIN_FEATURES
+    )
+
+
 class MultiInputAlignmentError(ValueError):
     """Two inputs cannot be aligned without inventing or dropping rows."""
+
+
+class PairRowsMissing(MultiInputAlignmentError):
+    """Input 0 of a widening merge holds no pair rows for an entry.
+
+    Dropping the empty input would leave the individual rows of a later input
+    as the entry's merged frame, under a consumer whose output is keyed by pair
+    rows. ``run_feature`` records the entry as an ``entry_error`` instead.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,20 +175,91 @@ class MergeNaming:
     Attributes:
         keys: The columns joined on, sorted.
         dropped: The incoming identity and bookkeeping columns that the merged
-            side already contains, dropped from the incoming input.
+            side already contains, dropped from the incoming input. For a
+            widening merge, every one of them except the order column and ``id``.
         renamed: Each incoming payload column that the merged side already
             contains, mapped to its numbered name ``<column>__<position>``.
         columns: Every column of the merged frame afterwards.
+        widened: For a widening merge, each incoming payload column mapped to
+            its names for the focal and the other individual,
+            ``<column>__id1`` and ``<column>__id2``. Empty otherwise.
     """
 
     keys: tuple[str, ...]
     dropped: tuple[str, ...]
     renamed: Mapping[str, str]
     columns: frozenset[str]
+    widened: Mapping[str, tuple[str, str]] = field(
+        default_factory=dict[str, tuple[str, str]]
+    )
+
+
+def widens(merged: Iterable[str], incoming: Iterable[str]) -> bool:
+    """Whether merging *incoming* into *merged* widens individual rows onto pair rows.
+
+    Only under :func:`expands_individuals`, which the caller asks first: the
+    merged side is pair-level and the incoming input is individual-level.
+    """
+    return (
+        entity_level_of(merged) == "pair" and entity_level_of(incoming) == "individual"
+    )
+
+
+def widening_hint(levels: Iterable[str]) -> str:
+    """The refusal's remedy for a widening consumer that reads its pair input late.
+
+    ``""`` unless *levels* mix individual and pair inputs, so the merge and
+    ``can_join`` append the same words to the same refusal.
+    """
+    present = set(levels)
+    if {"individual", "pair"} <= present:
+        return (
+            "; widening individual rows onto pair rows needs the pair-level input first"
+        )
+    return ""
+
+
+def _shared_order_column(left: frozenset[str], right: frozenset[str]) -> str | None:
+    """The order column both sides carry, preferred as ``resolve_order_col`` prefers."""
+    if COLUMNS.order_by == "frames":
+        preference = (COLUMNS.frame_col, COLUMNS.time_col)
+    else:
+        preference = (COLUMNS.time_col, COLUMNS.frame_col)
+    return next((name for name in preference if name in left and name in right), None)
+
+
+_PAIR_SLOTS: tuple[str, str] = ("id1", "id2")
+
+
+def _widened_naming(
+    left: frozenset[str], right: frozenset[str], position: int
+) -> MergeNaming:
+    """The naming of a widening merge: payload twice, identity and bookkeeping dropped."""
+    order = _shared_order_column(left, right)
+    payload = sorted(right - NON_PAYLOAD_COLS)
+    widened: dict[str, tuple[str, str]] = {}
+    for column in payload:
+        names = tuple(f"{column}__{slot}" for slot in _PAIR_SLOTS)
+        if any(name in left for name in names):
+            names = tuple(f"{column}__{position}__{slot}" for slot in _PAIR_SLOTS)
+        widened[column] = (names[0], names[1])
+    dropped = tuple(sorted((right & NON_PAYLOAD_COLS) - {order, COLUMNS.id_col}))
+    added = frozenset(name for names in widened.values() for name in names)
+    return MergeNaming(
+        keys=(order,) if order is not None else (),
+        dropped=dropped,
+        renamed={},
+        columns=left | added,
+        widened=widened,
+    )
 
 
 def merge_naming(
-    merged: Iterable[str], incoming: Iterable[str], position: int
+    merged: Iterable[str],
+    incoming: Iterable[str],
+    position: int,
+    *,
+    widen: bool = False,
 ) -> MergeNaming:
     """The column names after merging *incoming*, the input at *position*.
 
@@ -173,13 +276,24 @@ def merge_naming(
     downstream as a measurement and fitted as data. Only payload keeps the
     ``__<position>`` suffix.
 
+    A widening merge (*widen*, see :func:`widens`) joins an individual-level
+    input onto pair rows on the order column, once on ``id1`` and once on
+    ``id2``. Each of its payload columns appears twice, as ``<column>__id1``
+    for the focal and ``<column>__id2`` for the other, or as
+    ``<column>__<position>__id1`` and ``<column>__<position>__id2`` when the
+    merged side already holds one of those names. Its identity and bookkeeping
+    columns are dropped, and the pair side's stand.
+
     Args:
         merged: The columns merged so far.
         incoming: The next input's columns.
         position: The next input's declared position among the step's inputs.
+        widen: Whether the merge widens *incoming* onto pair rows.
     """
     left = frozenset(merged)
     right = frozenset(incoming)
+    if widen:
+        return _widened_naming(left, right, position)
     keys = alignment_keys([left, right])
     collided = sorted((right - keys) & left)
     dropped = tuple(column for column in collided if column in NON_PAYLOAD_COLS)
@@ -225,8 +339,35 @@ def _column_names(df: pd.DataFrame) -> list[str]:
     return [str(label) for label in labels]
 
 
+def _widen_onto_pairs(
+    merged: pd.DataFrame, individuals: pd.DataFrame, naming: MergeNaming, declared: int
+) -> pd.DataFrame:
+    """Join *individuals* onto the pair rows of *merged*, as ``id1`` and as ``id2``."""
+    if not naming.keys:
+        raise MultiInputAlignmentError(
+            f"cannot merge input {declared}: it shares no order column "
+            f"({COLUMNS.frame_col} or {COLUMNS.time_col}) with the pair rows"
+        )
+    order = naming.keys[0]
+    keyed = [order, COLUMNS.id_col]
+    if individuals.duplicated(keyed).any():
+        raise MultiInputAlignmentError(
+            f"cannot merge input {declared}: it repeats a ({order}, "
+            f"{COLUMNS.id_col}) row, so a pair row would match more than one"
+        )
+    side = individuals[[*keyed, *naming.widened]]
+    for slot_index, slot in enumerate(_PAIR_SLOTS):
+        names = {column: pair[slot_index] for column, pair in naming.widened.items()}
+        part = side.rename(columns={COLUMNS.id_col: slot, **names})
+        merged = merged.merge(part, how="inner", on=[order, slot])
+    return merged
+
+
 def _merge_parquet_inputs(
-    dfs: Iterable[tuple[int, pd.DataFrame]], *, cross_join: bool = False
+    dfs: Iterable[tuple[int, pd.DataFrame]],
+    *,
+    cross_join: bool = False,
+    expands_individuals: bool = False,
 ) -> pd.DataFrame | None:
     """Merge parquet inputs on the identity columns they share.
 
@@ -240,6 +381,10 @@ def _merge_parquet_inputs(
     the multiplicity check below, which allows a one-to-many join (a per-frame table
     against a per-frame-per-id one) while refusing many-to-many.
 
+    With *expands_individuals* (see :func:`expands_individuals`), an
+    individual-level input after pair rows is widened onto them instead of
+    refused.
+
     Collided columns are named by :func:`merge_naming`.
     """
     it = iter(dfs)
@@ -251,10 +396,15 @@ def _merge_parquet_inputs(
     for declared, df_next in it:
         merged_columns = _column_names(merged)
         next_columns = _column_names(df_next)
+        if expands_individuals and widens(merged_columns, next_columns):
+            naming = merge_naming(merged_columns, next_columns, declared, widen=True)
+            merged = _widen_onto_pairs(merged, df_next, naming, declared)
+            continue
         verdict = alignment_verdict([merged_columns, next_columns])
         if not verdict.compatible and not cross_join:
+            hint = widening_hint(verdict.levels) if expands_individuals else ""
             raise MultiInputAlignmentError(
-                f"cannot merge input {declared}: {verdict.reason}"
+                f"cannot merge input {declared}: {verdict.reason}{hint}"
             )
         naming = merge_naming(merged_columns, next_columns, declared)
         on_cols = list(naming.keys)
@@ -280,26 +430,56 @@ def _merge_parquet_inputs(
     return merged
 
 
+def _holds_pair_rows(path: Path, load_spec: LoadSpec) -> bool:
+    """Whether the parquet input at *path* is pair-level, read from its schema."""
+    if not isinstance(load_spec, ParquetLoadSpec):
+        return False
+    names = read_parquet_column_names(path)
+    return names is not None and entity_level_of(names) == "pair"
+
+
 def load_entry_data(
     file_specs: list[tuple[Path, LoadSpec]],
     filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = (),
     *,
     cross_join: bool = False,
+    expands_individuals: bool = False,
 ) -> pd.DataFrame | None:
     """Load and merge data for a single manifest entry.
 
     All manifest entries are parquet. Multiple inputs are merged via
     inner join on shared alignment columns. DataFrames are loaded
-    lazily and merged incrementally to minimize peak memory.
+    lazily and merged incrementally to minimize peak memory. An input that
+    loads no rows is left out of the merge.
+
+    Raises:
+        PairRowsMissing: Under *expands_individuals*, input 0 is pair-level and
+            holds no rows, and a later individual-level input does. Leaving
+            input 0 out would merge individual rows for a consumer keyed by
+            pair rows.
     """
 
     def _load_dfs() -> Iterator[tuple[int, pd.DataFrame]]:
+        pairs_missing = False
         for declared, (path, load_spec) in enumerate(file_specs):
             df = load_parquet_dataframe(path, load_spec)
-            if df is not None:
-                yield declared, df
+            if df is None:
+                pairs_missing = pairs_missing or (
+                    declared == 0
+                    and expands_individuals
+                    and _holds_pair_rows(path, load_spec)
+                )
+                continue
+            if pairs_missing and entity_level_of(_column_names(df)) == "individual":
+                raise PairRowsMissing(
+                    f"input 0 holds no pair rows for this entry, so the "
+                    f"individual rows of input {declared} have none to widen onto"
+                )
+            yield declared, df
 
-    merged = _merge_parquet_inputs(_load_dfs(), cross_join=cross_join)
+    merged = _merge_parquet_inputs(
+        _load_dfs(), cross_join=cross_join, expands_individuals=expands_individuals
+    )
     if merged is None or merged.empty:
         return None
     for fn in filters:
