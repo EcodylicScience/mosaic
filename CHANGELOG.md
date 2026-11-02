@@ -74,7 +74,7 @@ or after it. `list_runs` and `list_requests` take it as `changed_since`.
 `parse_instant` moved from `core/pipeline/markers.py` to `mosaic.runlog`. No
 identifier moves.
 
-## Unreleased: appearance re-identification with SLEAP embedding models
+## Unreleased: recipe, scoring and verification fixes
 
 **`pair-posedistance-pca` reports its explained variance.** A fit writes
 `explained_variance.json` beside `model.joblib`: the share of variance each component keeps,
@@ -122,6 +122,8 @@ two steps where `repeat` would make four. The lists must have the same length, t
 names at least one zipped name, and beside a `repeat` the zip is one more axis of the
 product. The expanded recipe, its digest and every run id are those of the steps written
 out in full, so no existing recipe changes.
+
+## Unreleased: appearance re-identification with SLEAP embedding models
 
 **`train-sleap` trains an embedding model.** `head` gains `embedding`, a network that
 maps the crop of each detection to an appearance vector. It needs sleap-nn 0.3.5 or
