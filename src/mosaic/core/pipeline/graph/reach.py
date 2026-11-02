@@ -32,7 +32,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final
+
+from mosaic.core.narrowing import is_str_mapping
 
 from .compatibility import Reach
 from .topo import edges
@@ -119,12 +121,9 @@ def class_reach_by_option(cls: type) -> dict[str, Reach]:
     except Exception:
         # A declaration that cannot be read in this process says nothing.
         return {}
-    if not isinstance(options, Mapping):
+    if not is_str_mapping(options):
         return {}
-    found = cast("Mapping[object, object]", options)
-    return {
-        str(name): _as_reach(value) for name, value in sorted(found.items(), key=str)
-    }
+    return {name: _as_reach(value) for name, value in sorted(options.items())}
 
 
 def recipe_reach(cls: type, params: Mapping[str, object]) -> Reach:

@@ -13,8 +13,10 @@ import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 from pydantic import BaseModel
 
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import Plan, Recipe, plan_pipeline, plan_wire
@@ -151,6 +153,18 @@ def test_the_catalog_reports_a_classifiers_reach_for_each_head() -> None:
 
 def test_a_step_type_with_one_reach_lists_none_by_option() -> None:
     assert step_type_detail("speed-angvel").temporal_reach_by_option == {}
+
+
+def test_the_text_detail_lists_reach_by_option_only_when_a_step_type_has_one() -> None:
+    runner = CliRunner()
+
+    plain = runner.invoke(app, ["pipeline", "catalog", "speed-angvel"])
+    classifier = runner.invoke(app, ["pipeline", "catalog", "sequence-classifier"])
+
+    assert plain.exit_code == classifier.exit_code == 0
+    assert "temporal_reach" in plain.stdout
+    assert "temporal_reach_by_option" not in plain.stdout
+    assert "temporal_reach_by_option" in classifier.stdout
 
 
 def test_a_detail_served_without_a_reach_reads_as_undeclared() -> None:

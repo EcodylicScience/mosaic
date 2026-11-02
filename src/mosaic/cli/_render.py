@@ -70,6 +70,8 @@ def render_step_type_detail(detail: StepTypeDetail) -> None:
     facts: dict[str, object] = {}
     for key in _STEP_TYPE_HEADER:
         value: object = getattr(detail, key)
+        if key == "temporal_reach_by_option" and not value:
+            continue
         if isinstance(value, tuple):
             items = cast("tuple[object, ...]", value)
             value = ", ".join(str(item) for item in items)
