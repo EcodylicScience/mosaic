@@ -50,6 +50,7 @@ _STEP_TYPE_HEADER = (
     "scope_dependent",
     "fits",
     "temporal_reach",
+    "temporal_reach_by_option",
     "parallelizable",
     "requires",
     "provides",

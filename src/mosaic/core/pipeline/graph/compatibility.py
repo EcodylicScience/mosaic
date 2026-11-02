@@ -275,6 +275,13 @@ class Declaration:
     zero. A reach that depends on params reads as it does with none set, and the
     planner reads each step's own params. Always ``undeclared`` for an op.
     """
+    temporal_reach_by_option: tuple[tuple[str, Reach], ...] = ()
+    """The reach for each choice of the option that decides it, when one does.
+
+    A sequence classifier reads the frames its network reads, so it lists each head
+    here and ``temporal_reach`` says only what the default head reads. Empty for a
+    feature whose reach no single option decides.
+    """
     unavailable: str | None = None
     """What this installation lacks to run the step, ``None`` when it lacks nothing.
 

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from .compatibility import Reach
 from .topo import edges
@@ -50,6 +50,7 @@ __all__ = [
     "Reach",
     "ReachFindings",
     "class_reach",
+    "class_reach_by_option",
     "feature_reach",
     "reach_findings",
     "recipe_reach",
@@ -95,19 +96,35 @@ def class_reach(cls: type) -> Reach:
 
     This is what the catalog reports. A reach that depends on params reads as it
     does for a step that sets none, and a plan reads the step's own params instead.
+    A params field with no default is left unset, as it is for a step that does
+    not write it (:func:`recipe_reach`).
     """
-    if not callable(getattr(cls, "temporal_reach", None)):
-        return _read(cls, None)
-    params_cls: object = getattr(cls, "Params", None)
-    build: object = getattr(params_cls, "from_overrides", None)
-    if not callable(build):
-        return UNKNOWN
+    return recipe_reach(cls, {})
+
+
+def class_reach_by_option(cls: type) -> dict[str, Reach]:
+    """The reach of a feature class for each choice of the option that decides it.
+
+    A feature whose reach follows one choice, such as the network of a sequence
+    classifier, declares ``temporal_reach_by_option``: a function of no arguments
+    that returns each choice with its reach at the choice's own defaults. The
+    catalog reports them, because ``temporal_reach`` alone can only say what the
+    default choice reads. Empty for a feature that declares none.
+    """
+    declared: object = getattr(cls, "temporal_reach_by_option", None)
+    if not callable(declared):
+        return {}
     try:
-        params: object = build(None)
+        options: object = declared()
     except Exception:
-        # A reach that depends on params, and params with no default to read it by.
-        return UNKNOWN
-    return _read(cls, params)
+        # A declaration that cannot be read in this process says nothing.
+        return {}
+    if not isinstance(options, Mapping):
+        return {}
+    found = cast("Mapping[object, object]", options)
+    return {
+        str(name): _as_reach(value) for name, value in sorted(found.items(), key=str)
+    }
 
 
 def recipe_reach(cls: type, params: Mapping[str, object]) -> Reach:

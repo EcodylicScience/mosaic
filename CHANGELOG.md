@@ -76,6 +76,13 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**Catalog reach of `sequence-classifier` by head.** The step-type detail gains
+`temporal_reach_by_option`, the reach of each registered head at its own defaults
+(`mlp` 0, `tcn` 63, `gru` unknown), beside `temporal_reach`, which stays that of the
+default head. A step type whose params model has a field without a default now reports
+its reach from the other fields instead of `unknown`. The plan reads each step's own
+params as before.
+
 **`zip` beside `repeat`.** A recipe step or input item binds names in lockstep with
 `zip`, as `"zip": {"behavior": ["attack", "mount"], "threshold": [0.3, 0.6]}`, which is
 two steps where `repeat` would make four. The lists must have the same length, the id

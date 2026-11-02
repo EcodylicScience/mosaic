@@ -153,6 +153,7 @@ from .sequence_heads import (
     HeadConfig,
     assemble_network,
     get_head,
+    head_names,
     head_source_digest,
 )
 from .sequence_training import (
@@ -422,6 +423,23 @@ class SequenceClassifier(FitReporting):
             return get_head(params.head).temporal_reach(params.head_options())
         except ValueError:
             return None
+
+    @staticmethod
+    def temporal_reach_by_option() -> dict[str, int | None]:
+        """The reach of each registered head at its own defaults.
+
+        What the catalog reports, because the step's reach is that of the head
+        its params choose and the default head is a GRU.
+        """
+        reaches: dict[str, int | None] = {}
+        for name in head_names():
+            head = get_head(name)
+            try:
+                reaches[name] = head.temporal_reach(head.config())
+            except ValueError:
+                # Options with a required field: no default config to read.
+                reaches[name] = None
+        return reaches
 
     class Inputs(Inputs[Result]):
         _require: ClassVar[InputRequire] = "nonempty"

@@ -69,7 +69,7 @@ from .compatibility import (
     resolve_emits,
 )
 from .lanes import lane_for
-from .reach import class_reach
+from .reach import class_reach, class_reach_by_option
 from .model import (
     TRACKS_INPUT,
     BoundRef,
@@ -497,6 +497,7 @@ def _feature_declaration(cls: type) -> Declaration:
         costly_fit=getattr(cls, "costly_fit", False) is True,
         fits=getattr(cls, "fits", False) is True,
         temporal_reach=class_reach(cls),
+        temporal_reach_by_option=tuple(class_reach_by_option(cls).items()),
         unavailable=unmet(_prerequisites_of(cls)),
     )
 
@@ -764,6 +765,7 @@ def step_type_detail(
         scope_dependent=scope_dependent,
         fits=declared.fits,
         temporal_reach=declared.temporal_reach,
+        temporal_reach_by_option=dict(declared.temporal_reach_by_option),
         params=() if schema is None else param_rows(schema, entry.reference_fields),
         params_schema=(
             compact_params_schema(schema)

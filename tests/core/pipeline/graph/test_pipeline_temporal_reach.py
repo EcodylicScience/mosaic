@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
@@ -137,6 +138,19 @@ def test_a_feature_that_declares_nothing_is_not_reported_as_zero() -> None:
     assert step_type_detail("pair-egocentric").temporal_reach == UNDECLARED
     assert step_type_detail("tracks").temporal_reach == UNDECLARED
     assert step_type_detail("convert-tracks").temporal_reach == UNDECLARED
+
+
+def test_the_catalog_reports_a_classifiers_reach_for_each_head() -> None:
+    detail = step_type_detail("sequence-classifier")
+
+    # The default head is a GRU, whose reach no option bounds.
+    assert detail.temporal_reach == UNKNOWN
+    by_option = detail.temporal_reach_by_option
+    assert (by_option["gru"], by_option["mlp"], by_option["tcn"]) == (UNKNOWN, 0, 63)
+
+
+def test_a_step_type_with_one_reach_lists_none_by_option() -> None:
+    assert step_type_detail("speed-angvel").temporal_reach_by_option == {}
 
 
 def test_a_detail_served_without_a_reach_reads_as_undeclared() -> None:
@@ -605,3 +619,18 @@ def test_the_catalog_reach_of_a_class_without_default_params_is_unknown() -> Non
     assert class_reach(Windowed) == UNKNOWN
     assert class_reach(Fixed) == 7
     assert class_reach(Silent) == UNDECLARED
+
+
+def test_the_catalog_reads_a_reach_through_a_params_field_with_no_default() -> None:
+    class Needy(BaseModel):
+        window: int = 4
+        target: int
+
+    class Windowed:
+        Params = Needy
+
+        @staticmethod
+        def temporal_reach(params: Needy) -> int:
+            return params.window
+
+    assert class_reach(Windowed) == 4

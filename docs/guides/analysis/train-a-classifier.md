@@ -284,7 +284,8 @@ training sequence has no score of that kind, and `cv_folds` refuses it. Set `cv_
   block's frames into the rows beside it. `cv_gap_frames` removes that margin from
   training. It should be at least as wide as the longest window above the classifier.
   The plan checks it: each step can declare `temporal_reach`, the frames on each side that
-  one of its output rows depends on (`mosaic pipeline catalog <name>` lists it), and the plan
+  one of its output rows depends on (`mosaic pipeline catalog <name>` lists it, and for
+  `sequence-classifier` the reach of each `head`), and the plan
   sums the declared reach along the steps above the classifier and refuses a gap that is
   shorter. A step that declares none, or whose reach no setting bounds (an interpolation
   over gaps of any length), makes the plan a caution instead. A `cv_gap_frames` above 0

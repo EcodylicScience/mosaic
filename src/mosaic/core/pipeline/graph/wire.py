@@ -348,6 +348,9 @@ class StepTypeDetail(CatalogIndexEntry):
             that depends on params, such as a window, reads as it does with none
             set. A classifier cross-validated by blocks needs ``cv_gap_frames`` at
             least the reach above it.
+        temporal_reach_by_option: For a step type whose reach follows one choice,
+            such as the network of a sequence classifier, the reach of each
+            choice at its own defaults, by the choice's name. Empty otherwise.
         params: One row per params field.
         params_schema: Its params model as JSON Schema without titles or class
             docstrings, given only when asked for. ``None`` otherwise.
@@ -358,6 +361,7 @@ class StepTypeDetail(CatalogIndexEntry):
     scope_dependent: bool
     fits: bool = False
     temporal_reach: Reach = "undeclared"
+    temporal_reach_by_option: dict[str, Reach] = {}
     params: tuple[ParamRow, ...] = ()
     params_schema: dict[str, JsonValue] | None = None
 
