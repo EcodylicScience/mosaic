@@ -3,7 +3,7 @@
 
 # Features
 
-57 features are registered. Each one runs as
+58 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -396,6 +396,22 @@ Detect pairwise interaction segments from trajectory data.
 | `px_scale` | `number` | `1.0` |  | Scale factor applied to shift_dist and max_dist, for videos recorded at a different pixel resolution. |
 | `use_pixel_coords` | `boolean` | `true` |  | Use pixel-coordinate columns for the distance calculation. With pose_head_index set, uses that pose keypoint. Otherwise uses x_pixels/y_pixels where present, falling back to X/Y. False always uses X/Y. |
 | `pose_head_index` | `integer` \| `None` | `null` |  | Pose keypoint index used as the position for the distance calculation, together with use_pixel_coords. Unset, x_pixels/y_pixels or X/Y is used instead. |
+
+### `pair-keypoints`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.pair_keypoints.PairKeypoints`
+
+Each partner keypoint's position and velocity in the focal's body frame.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | A name for each keypoint, in the table's keypoint order. Used in the output column names, and accepted wherever a parameter refers to a keypoint. Its length must equal the table's keypoint count. Unset, keypoint k is labelled kp{k} and is referred to by its index. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The partner keypoints to place in the focal's body frame, by index or by name. An index is a keypoint's position in the table's keypoint order, which is its column number when the keypoints are numbered from 0 without a gap. Unset, every keypoint the table carries. An empty list places none, for a run that wants only inter_distances. |
+| `heading` | tuple of (`integer` \| `string`, `integer` \| `string`) | _required_ | min items `2`, max items `2` | The focal's keypoint pair (neck, tail base), by index or by name, that sets each row's body frame: the heading points from tail base to neck, and the body center is their midpoint. Every partner_ column is measured along the heading (x) and along its left-hand normal (y); positive y is 90 degrees counterclockwise from the heading in a y-up frame. A row where either keypoint of the focal's pair is missing, or the two coincide, has no body frame, and its partner_ columns are NaN. |
+| `inter_distances` | list of (tuple of (`integer` \| `string`, `integer` \| `string`)) | _constructed_ |  | Keypoint pairs (a, b), by index or by name, whose separation is reported on every row as inter_dist__{a}__{b}: from the focal's keypoint a to the partner's keypoint b, on the unsmoothed positions. The order matters, so (a, b) and (b, a) are two distances, and (a, a) is the distance between the two animals' keypoint a. |
+| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is the reciprocal of the median time step per frame read off the time column, and a table whose time column cannot give one is refused. [fps] |
+| `window` | `integer` | `7` | >= `3` | The Savitzky-Golay window length: odd, and larger than polyorder. It is also the longest gap in a keypoint's track that is linearly interpolated before filtering. A longer gap ends the stretch the filter runs over. [frames] |
+| `polyorder` | `integer` | `2` | >= `1` | The order of the polynomial fitted in each window. At least 1, because only the velocity, the fit's first derivative, is taken. |
 
 ### `pair-posedistance-pca`
 

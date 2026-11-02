@@ -69,6 +69,7 @@ ARENA_AWARE = frozenset(
         "pair-egocentric",
         "pair-facing",
         "pair-interaction-filter",
+        "pair-keypoints",
         "pair-posedistance-pca",
         "pair-position",
         "pair-wavelet",

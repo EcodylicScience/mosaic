@@ -112,6 +112,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
         "min_run_frames": 5,
         "morphological_structure_size": 0,
     },
+    "pair-keypoints": {"heading": [0, 1], "inter_distances": [[0, 1]]},
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
     "probability-ensemble": {"default_class": 0},
     "scale-to-bl": {"length": 10.0},

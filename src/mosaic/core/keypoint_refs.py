@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-__all__ = ["resolve_keypoint_refs"]
+__all__ = ["check_keypoint_refs", "resolve_keypoint_refs"]
 
 
 def resolve_keypoint_refs(
@@ -62,3 +62,32 @@ def resolve_keypoint_refs(
             )
         resolved.append(index)
     return resolved
+
+
+def check_keypoint_refs(
+    refs: Sequence[int | str], names: Sequence[str] | None, who: str
+) -> None:
+    """Refuse keypoint references that no table could resolve.
+
+    Args:
+        refs: Keypoint indices or names, from every parameter that names one.
+        names: The keypoint names, or ``None`` when the keypoints are unnamed.
+            The table must carry one keypoint per name, so the names bound every
+            index as well.
+        who: The feature name that opens the error message.
+
+    Raises:
+        ValueError: If an index is negative, a name is unknown or given without
+            a name list, or an index lies past the last name.
+    """
+    negative = [ref for ref in refs if isinstance(ref, int) and ref < 0]
+    if negative:
+        raise ValueError(
+            f"{who}: keypoint indices {negative} are negative; a keypoint "
+            "is referred to by its position from 0, or by name."
+        )
+    if names is not None:
+        _ = resolve_keypoint_refs(refs, names, len(names), who=who)
+    else:
+        named = [ref for ref in refs if isinstance(ref, str)]
+        _ = resolve_keypoint_refs(named, None, 0, who=who)

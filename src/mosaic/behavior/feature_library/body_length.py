@@ -48,7 +48,7 @@ from mosaic.core.pipeline.types import (
     TrackInput,
 )
 from mosaic.core.params import Declared, Params
-from mosaic.core.keypoint_refs import resolve_keypoint_refs
+from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
 from mosaic.core.pose_columns import pose_column_pairs
 
 from .helpers import ensure_columns, finite_keypoints, one_row_per_frame_and_id
@@ -149,18 +149,7 @@ class BodyLength:
                     f"{_NAME}: keypoints={refs} names fewer than two keypoints, "
                     "and a length runs between at least two."
                 )
-            negative = [ref for ref in refs if isinstance(ref, int) and ref < 0]
-            if negative:
-                raise ValueError(
-                    f"{_NAME}: keypoint indices {negative} are negative; a keypoint "
-                    "is referred to by its position from 0, or by name."
-                )
-            names = self.keypoint_names
-            if names is not None:
-                _ = resolve_keypoint_refs(refs, names, len(names), who=_NAME)
-            else:
-                named = [ref for ref in refs if isinstance(ref, str)]
-                _ = resolve_keypoint_refs(named, None, 0, who=_NAME)
+            check_keypoint_refs(refs, self.keypoint_names, _NAME)
             return self
 
     def __init__(

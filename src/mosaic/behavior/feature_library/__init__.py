@@ -74,6 +74,7 @@ from . import (
     pair_egocentric,
     pair_facing,
     pair_interaction_filter,
+    pair_keypoints,
     pair_position,
     pair_wavelet,
     pairposedistancepca,
@@ -127,6 +128,7 @@ from .orientation_relative import OrientationRelativeFeature
 from .pair_egocentric import PairEgocentricFeatures
 from .pair_facing import PairFacing
 from .pair_interaction_filter import PairInteractionFilter
+from .pair_keypoints import PairKeypoints
 from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
@@ -220,6 +222,7 @@ __all__ = [
     "PairEgocentricFeatures",
     "PairFacing",
     "PairInteractionFilter",
+    "PairKeypoints",
     "PairPositionFeatures",
     "PairPoseDistancePCA",
     "ProbabilityEnsembleFeature",
@@ -279,6 +282,7 @@ __all__ = [
     "pair_egocentric",
     "pair_facing",
     "pair_interaction_filter",
+    "pair_keypoints",
     "pair_position",
     "pair_wavelet",
     "pairposedistancepca",

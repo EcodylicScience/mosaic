@@ -59,6 +59,8 @@
   "pair-egocentric/default": "0.1-926e064596",
   "pair-facing/default": "0.2-fc3a017269",
   "pair-interaction-filter/default": "0.2-0dd4b4ee95",
+  "pair-keypoints/heading": "0.1-1875422df6",
+  "pair-keypoints/inter-distances": "0.1-bdc199ac90",
   "pair-posedistance-pca/default": "0.3-c217c7a3fd",
   "pair-posedistance-pca/model-scope-a": "0.3-d3b9776931",
   "pair-posedistance-pca/model-scope-ab": "0.3-d3b9776931",

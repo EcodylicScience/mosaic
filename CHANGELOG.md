@@ -20,6 +20,15 @@ missing or the two coincide in the plane. Unset, `heading` stays out of the iden
 `keypoint-kinematics/default` keeps `0.1-4bfb0ea209`. The run-id golden adds
 `keypoint-kinematics/heading`.
 
+**`pair-keypoints` places the partner in the focal's frame.** A new pair feature writes,
+for each ordered pair and frame both animals share, `partner_x__{kp}` and
+`partner_y__{kp}`, each partner keypoint's position from the focal's body center along
+the focal's heading and its left-hand normal, and `partner_vx__{kp}` and
+`partner_vy__{kp}`, its velocity along the same axes, taken on the partner's own frames.
+`inter_distances` adds `inter_dist__{a}__{b}`, the distance from the focal's keypoint `a`
+to the partner's keypoint `b`. `heading` is required, and a 3D table is refused. The
+run-id golden adds `pair-keypoints/heading` and `pair-keypoints/inter-distances`.
+
 ## Unreleased: one-call submission from an agent
 
 **A recipe file as a recipe argument.** The MCP server's recipe arguments also take

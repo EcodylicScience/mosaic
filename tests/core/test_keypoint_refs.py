@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mosaic.core.keypoint_refs import resolve_keypoint_refs
+from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
 from tests.helpers import modules_loaded_by
 
 
@@ -27,6 +27,27 @@ def test_a_name_without_a_name_list_is_refused() -> None:
 def test_an_index_outside_the_table_is_refused(index: int) -> None:
     with pytest.raises(ValueError, match="outside"):
         _ = resolve_keypoint_refs([index], None, 3, who="t")
+
+
+@pytest.mark.parametrize(
+    ("refs", "names", "match"),
+    [
+        ([0, -2], None, "negative"),
+        (["nose"], None, "not given keypoint names"),
+        (["elbow"], ["nose", "tail"], "no keypoint named"),
+        ([2], ["nose", "tail"], "outside"),
+    ],
+)
+def test_a_reference_no_table_could_resolve_is_refused(
+    refs: list[int | str], names: list[str] | None, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        check_keypoint_refs(refs, names, "t")
+
+
+def test_an_index_is_unbounded_without_names() -> None:
+    check_keypoint_refs([0, 99], None, "t")
+    check_keypoint_refs(["tail", 1], ["nose", "tail"], "t")
 
 
 def test_the_leaf_loads_no_pose_columns_pandas_or_numpy() -> None:

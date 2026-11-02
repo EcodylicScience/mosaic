@@ -51,8 +51,10 @@ global fitters below key their output the way their input was keyed, so they sit
 whichever level you feed them.
 
 **Pair.** One row per ordered pair per frame: the `pair-*` family — `pair-position`,
-`pair-egocentric`, `pair-facing`, `pair-wavelet`, `pair-posedistance-pca`,
-`pair-interaction-filter` — plus `orientation-rel` and `approach-avoidance`.
+`pair-egocentric`, `pair-keypoints` (each partner keypoint's position and velocity in
+the focal's body frame, and chosen distances between the two animals' keypoints),
+`pair-facing`, `pair-wavelet`, `pair-posedistance-pca`, `pair-interaction-filter` — plus
+`orientation-rel` and `approach-avoidance`.
 
 **Neighbors and social forces.** `nearest-neighbor` and its `nn-delta-response` /
 `nn-delta-bins` chain, and `attention-target`. These describe an individual's

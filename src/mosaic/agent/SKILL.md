@@ -297,6 +297,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `keypoint_map`, `heads` and `pix_per_cm`, takes two to four mice per arena and one frame
   rate, and writes `prob_<action>__<lab>` and `call_<action>__<lab>` per ordered pair
   (https://ecodylicscience.github.io/mosaic/guides/analysis/hidra/).
+- Per-keypoint movement in the body frame comes from `keypoint-kinematics` with
+  `heading` for the animal itself, and from `pair-keypoints` for its partner, whose
+  keypoints and velocities it places in the focal's frame. `pair-egocentric` averages
+  the keypoints it selects into one center per animal.
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.

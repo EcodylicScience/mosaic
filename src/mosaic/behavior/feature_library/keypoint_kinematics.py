@@ -41,7 +41,7 @@ from mosaic.core.pipeline.types import (
     InputStream,
     TrackInputs,
 )
-from mosaic.core.keypoint_refs import resolve_keypoint_refs
+from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
 
 from .derivatives import (
     FPS_DESCRIPTION,
@@ -266,19 +266,7 @@ class KeypointKinematics:
                 *(self.normalize_by or ()),
                 *(self.heading or ()),
             ]
-            negative = [ref for ref in refs if isinstance(ref, int) and ref < 0]
-            if negative:
-                raise ValueError(
-                    f"{_NAME}: keypoint indices {negative} are negative; a keypoint "
-                    "is referred to by its position from 0, or by name."
-                )
-            if names is not None:
-                # The table must carry one keypoint per name, so the names
-                # bound every index as well.
-                _ = resolve_keypoint_refs(refs, names, len(names), who=_NAME)
-            else:
-                named = [ref for ref in refs if isinstance(ref, str)]
-                _ = resolve_keypoint_refs(named, None, 0, who=_NAME)
+            check_keypoint_refs(refs, names, _NAME)
             if self.keypoints == [] and not self.distances:
                 raise ValueError(
                     f"{_NAME}: keypoints=[] reports no keypoint and distances is "

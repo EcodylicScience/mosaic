@@ -24,6 +24,7 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.pair_egocentric import PairEgocentricFeatures
+from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_position import PairPositionFeatures
 from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistancePCA
 from mosaic.core.pipeline.types import InputStream
@@ -76,9 +77,14 @@ def _pair_posedistance_pca() -> pd.DataFrame:
     return feature.apply(tracks)
 
 
+def _pair_keypoints() -> pd.DataFrame:
+    return PairKeypoints(params={"heading": [0, 2]}).apply(_tracks())
+
+
 PRODUCERS = [
     pytest.param(_pair_position, id="pair-position"),
     pytest.param(_pair_egocentric, id="pair-egocentric"),
+    pytest.param(_pair_keypoints, id="pair-keypoints"),
     pytest.param(_pair_posedistance_pca, id="pair-posedistance-pca"),
 ]
 

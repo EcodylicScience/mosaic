@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.sequence_heads import (
     TcnConfig,
@@ -41,6 +42,58 @@ def _farthest_change(
     after = apply(moved).reset_index(drop=True).select_dtypes("number").to_numpy()
     changed = np.flatnonzero((np.abs(after - before) > 0).any(axis=1))
     return int(np.abs(changed - AT).max()) if len(changed) else 0
+
+
+def _farthest_pair_change(
+    apply: Callable[[pd.DataFrame], pd.DataFrame],
+    tracks: pd.DataFrame,
+    partner_id: int,
+    column: str,
+    at: int,
+) -> int:
+    """How far from frame *at* a pair output changes when the partner's input moves.
+
+    The input holds two individuals and the output one row per ordered pair, so
+    rows are matched on their key rather than by position.
+    """
+    moved = tracks.copy()
+    row = (moved["id"] == partner_id) & (moved["frame"] == at)
+    moved.loc[row, column] = moved.loc[row, column] + BUMP
+    key = ["frame", "id1", "id2", "perspective"]
+    joined = apply(tracks).merge(apply(moved), on=key, suffixes=("", "__moved"))
+    values = [c for c in joined.columns if c not in key and not c.endswith("__moved")]
+    numeric = [c for c in values if pd.api.types.is_numeric_dtype(joined[c])]
+    before = joined[numeric].to_numpy(dtype=float)
+    after = joined[[f"{c}__moved" for c in numeric]].to_numpy(dtype=float)
+    changed = (np.abs(after - before) > 0).any(axis=1)
+    frames = joined["frame"].to_numpy()[changed]
+    return int(np.abs(frames - at).max()) if frames.size else 0
+
+
+def _two_animals(first: int, partner_gap: range = range(0)) -> pd.DataFrame:
+    """Two random walkers with three keypoints from frame *first* to ``N - 1``.
+
+    The partner, id 1, is missing its third keypoint on the frames of *partner_gap*.
+    """
+    rng = np.random.default_rng(3)
+    frames = np.arange(first, N)
+    tables: list[pd.DataFrame] = []
+    for individual in (0, 1):
+        columns: dict[str, object] = {
+            "frame": frames,
+            "group": "g",
+            "sequence": "s",
+            "id": individual,
+        }
+        for k in range(3):
+            columns[f"poseX{k}"] = rng.normal(size=frames.size).cumsum()
+            columns[f"poseY{k}"] = rng.normal(size=frames.size).cumsum()
+        table = pd.DataFrame(columns)
+        if individual == 1:
+            gap = table["frame"].isin(list(partner_gap))
+            table.loc[gap, ["poseX2", "poseY2"]] = np.nan
+        tables.append(table)
+    return pd.concat(tables, ignore_index=True)
 
 
 def _payload() -> pd.DataFrame:
@@ -157,3 +210,26 @@ def test_a_tcn_reaches_half_its_receptive_field() -> None:
     field = (config.kernel_size - 1) * (2**config.blocks - 1) + 1
     assert field == 127
     assert get_head("tcn").temporal_reach(config) == (field - 1) // 2 == 63
+
+
+def test_a_pair_keypoint_velocity_reaches_half_a_window_on_a_dense_track() -> None:
+    w = 7
+    feature = PairKeypoints(params={"heading": [0, 1], "fps": 30.0, "window": w})
+
+    measured = _farthest_pair_change(feature.apply, _two_animals(0), 1, "poseX2", AT)
+
+    assert measured == w // 2
+    reach = feature.temporal_reach(feature.params)
+    assert reach is not None and measured <= reach
+
+
+def test_a_pair_keypoint_velocity_reaches_its_declared_bound_across_a_gap() -> None:
+    """An edge row fits a window that holds a gap bridged to the moved frame."""
+    w = 7
+    feature = PairKeypoints(params={"heading": [0, 1], "fps": 30.0, "window": w})
+    tracks = _two_animals(AT - (2 * w - 1), partner_gap=range(AT - w, AT))
+
+    measured = _farthest_pair_change(feature.apply, tracks, 1, "poseX2", AT)
+
+    assert measured == 2 * w - 1
+    assert measured == feature.temporal_reach(feature.params)

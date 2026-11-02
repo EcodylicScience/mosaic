@@ -192,6 +192,16 @@ CASES: tuple[Case, ...] = (
         params={"heading": [3, 6]},
     ),
     Case(
+        case_id="pair-keypoints/heading",
+        feature="pair-keypoints",
+        params={"heading": [3, 6]},
+    ),
+    Case(
+        case_id="pair-keypoints/inter-distances",
+        feature="pair-keypoints",
+        params={"heading": [3, 6], "inter_distances": [[0, 0], [3, 6]]},
+    ),
+    Case(
         case_id="frame-aggregate/column-speed",
         feature="frame-aggregate",
         params={"column": "SPEED"},
