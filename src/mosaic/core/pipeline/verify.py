@@ -107,6 +107,7 @@ __all__ = [
     "ScratchRefused",
     "StateDiff",
     "StepVerdict",
+    "UnknownStepsNamed",
     "VerifyReport",
     "verify_plan",
 ]
@@ -131,6 +132,19 @@ Status = Literal["ok", "differs", "error", "skipped"]
 
 class ScratchRefused(ValueError):
     """The scratch directory is not one verification may fill and clear."""
+
+
+class UnknownStepsNamed(ValueError):
+    """``steps`` names steps that the plan lacks.
+
+    Attributes:
+        steps: The ids that no step of the plan has, sorted.
+    """
+
+    def __init__(self, steps: Sequence[str]) -> None:
+        self.steps: tuple[str, ...] = tuple(sorted(steps))
+        named = ", ".join(map(repr, self.steps))
+        super().__init__(f"the plan has no step {named}")
 
 
 class EntryDiff(StrictModel):
@@ -1112,7 +1126,7 @@ def verify_plan(
 
     Raises:
         ScratchRefused: *scratch* is inside the dataset or holds other files.
-        ValueError: *steps* names a step that *plan* lacks.
+        UnknownStepsNamed: *steps* names a step that *plan* lacks.
     """
     from threadpoolctl import threadpool_limits
 
@@ -1120,8 +1134,7 @@ def verify_plan(
     if named is not None:
         unknown = sorted(named - {planned.step_id for planned in plan.steps})
         if unknown:
-            msg = f"the plan has no step {', '.join(map(repr, unknown))}"
-            raise ValueError(msg)
+            raise UnknownStepsNamed(unknown)
     verdicts: list[StepVerdict] = []
     unfinished = 0
     applied: dict[tuple[str, str], _Applied] = {}
@@ -1180,7 +1193,7 @@ def verify_plan(
                     StepVerdict(
                         step=planned.step_id,
                         runs=planned.runs,
-                        role="evaluation" if evaluation and not planned.fits else "fit",
+                        role="evaluation" if evaluation else "fit",
                         status="error",
                         reason=f"{type(exc).__name__}: {exc}",
                     )
@@ -1199,8 +1212,16 @@ def verify_plan(
 
 
 def _is_evaluation(planned: PlannedStep) -> bool:
-    """Whether the step's feature writes a report that scores another run."""
+    """Whether the step's feature writes a report that scores another run.
+
+    A feature that fits as a class, such as ``pair-posedistance-pca``, writes a
+    report of its own fit. Given a model it fits nothing, and is not an evaluation.
+    """
     from .graph.resolve import feature_class_for_slug
 
     cls = feature_class_for_slug(planned.runs)
-    return cls is not None and isinstance(getattr(cls, "report_file", None), str)
+    return (
+        cls is not None
+        and isinstance(getattr(cls, "report_file", None), str)
+        and getattr(cls, "fits", False) is not True
+    )

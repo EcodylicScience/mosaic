@@ -490,7 +490,11 @@ def verify_command(
     evaluation named without the fit it scores reads the stored predictions.
     """
     from mosaic.core.pipeline.graph import RecipeRefused, plan_pipeline
-    from mosaic.core.pipeline.verify import ScratchRefused, verify_plan
+    from mosaic.core.pipeline.verify import (
+        ScratchRefused,
+        UnknownStepsNamed,
+        verify_plan,
+    )
 
     ds = load_dataset(manifest, read_only=True)
     parsed = recipe_argument(recipe, as_json=as_json)
@@ -515,7 +519,7 @@ def verify_command(
             report = verify_plan(
                 ds, plan, atol=atol, n_threads=n_threads, scratch=scratch, steps=step
             )
-    except (ScratchRefused, ValueError) as refusal:
+    except (ScratchRefused, UnknownStepsNamed) as refusal:
         fail(str(refusal))
     if as_json:
         emit_json(report.model_dump(mode="json"))

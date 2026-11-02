@@ -18,9 +18,13 @@ from pydantic import TypeAdapter
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import Plan, Recipe, plan_pipeline, run_pipeline
+from mosaic.behavior.feature_library.evaluate_labels import EvaluateLabels
+from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
+from mosaic.core.pipeline.types import InputStream
 from mosaic.core.pipeline.verify import (
     ScratchRefused,
     StepVerdict,
+    UnknownStepsNamed,
     VerifyReport,
     verify_plan,
 )
@@ -105,11 +109,6 @@ def test_a_named_evaluation_scores_the_stored_predictions(study: Dataset) -> Non
     assert _verdict(report, "clf").status == "skipped"
 
 
-def test_a_named_step_the_recipe_lacks_is_refused(study: Dataset) -> None:
-    with pytest.raises(ValueError, match="nope"):
-        _ = verify_plan(study, _plan(study), steps=["clf", "nope"])
-
-
 _THREADPOOLS = TypeAdapter(list[dict[str, JsonValue]])
 
 
@@ -129,19 +128,17 @@ def _thread_counts() -> list[tuple[str, int]]:
 def test_each_step_is_fitted_with_its_threadpools_bounded_to_n_threads(
     study: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from mosaic.core.pipeline import verify
-
     before = _thread_counts()
     if not before:
         pytest.skip("no threadpool library is loaded")
     seen: list[int] = []
-    original = verify._verify_fit  # pyright: ignore[reportPrivateUsage]
+    original = XgboostFeature.fit
 
-    def spy(*args: object, **kwargs: object) -> StepVerdict:
+    def spy(self: XgboostFeature, inputs: InputStream) -> None:
         seen.append(max(count for _, count in _thread_counts()))
-        return original(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+        original(self, inputs)
 
-    monkeypatch.setattr(verify, "_verify_fit", spy)
+    monkeypatch.setattr(XgboostFeature, "fit", spy)
 
     report = verify_plan(study, _plan(study), n_threads=1)
 
@@ -149,6 +146,92 @@ def test_each_step_is_fitted_with_its_threadpools_bounded_to_n_threads(
     assert seen
     assert set(seen) == {1}
     assert _thread_counts() == before
+
+
+def _raising(_self: object, _inputs: InputStream) -> None:
+    raise RuntimeError("the fit broke")
+
+
+def test_a_fit_that_raises_is_an_error_of_the_fit_role(
+    study: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(XgboostFeature, "fit", _raising)
+
+    report = verify_plan(study, _plan(study), steps=["clf"])
+
+    clf = _verdict(report, "clf")
+    assert (clf.role, clf.status) == ("fit", "error")
+    assert clf.reason == "RuntimeError: the fit broke"
+    assert not report.ok
+
+
+def test_an_evaluation_that_raises_is_an_error_of_the_evaluation_role(
+    study: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(EvaluateLabels, "fit", _raising)
+
+    report = verify_plan(study, _plan(study), steps=["score"])
+
+    score = _verdict(report, "score")
+    assert (score.role, score.status) == ("evaluation", "error")
+    assert score.reason == "RuntimeError: the fit broke"
+
+
+PCA_STEPS: list[dict[str, JsonValue]] = [
+    {
+        "id": "tracks",
+        "type": "op",
+        "kind": "convert-tracks",
+        "params": {"source_format": "calms21_npy"},
+    },
+    {
+        "id": "pca-fit",
+        "type": "feature",
+        "feature": "pair-posedistance-pca",
+        "inputs": ["tracks"],
+        "tracks": {"step": "tracks"},
+        "params": {"n_components": 2},
+    },
+    {
+        "id": "pca",
+        "type": "feature",
+        "feature": "pair-posedistance-pca",
+        "inputs": ["tracks"],
+        "tracks": {"step": "tracks"},
+        "params": {
+            "n_components": 2,
+            "model": {"step": "pca-fit", "pattern": "model.joblib"},
+        },
+    },
+]
+
+
+def _pca_recipe() -> Recipe:
+    return Recipe.model_validate(
+        {"schema_version": 1, "name": "pca", "steps": PCA_STEPS}
+    )
+
+
+def test_a_pca_fit_is_verified_and_the_step_that_applies_it_fits_nothing(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(tmp_path / "pca", ENTRIES, seed=11, n_classes=2)
+    _ = run_pipeline(ds, _pca_recipe())
+    opened = open_dataset(ds.manifest_path, ensure_roots=False)
+
+    report = verify_plan(opened, plan_pipeline(opened, _pca_recipe()))
+
+    fit = _verdict(report, "pca-fit")
+    assert (fit.role, fit.status) == ("fit", "ok")
+    applied = _verdict(report, "pca")
+    assert (applied.status, applied.reason) == ("skipped", "it fits nothing")
+
+
+def test_a_named_step_the_recipe_lacks_is_refused_by_name(study: Dataset) -> None:
+    with pytest.raises(UnknownStepsNamed) as raised:
+        _ = verify_plan(study, _plan(study), steps=["nope", "nada"])
+
+    assert raised.value.steps == ("nada", "nope")
 
 
 def test_a_step_that_fits_nothing_is_skipped_with_the_reason(study: Dataset) -> None:
