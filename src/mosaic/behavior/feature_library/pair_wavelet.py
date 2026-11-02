@@ -41,7 +41,7 @@ from .helpers import ensure_columns, feature_columns
 from .registry import register_feature
 from .types import SamplingConfig
 
-import pywt  # pyright: ignore[reportUnknownVariableType]
+import pywt
 
 _F_MIN_DESCRIPTION = "Minimum frequency of the CWT frequency band."
 
@@ -216,7 +216,7 @@ class PairWavelet:
             # CWT power spectrogram per component
             power = np.empty((n_components, n_freq, n_time), dtype=np.float32)
             for comp in range(n_components):
-                coeffs, _ = pywt.cwt(  # pyright: ignore[reportUnknownMemberType]
+                coeffs, _ = pywt.cwt(
                     signal[:, comp],
                     self._scales,
                     self._wavelet_obj(),
@@ -323,12 +323,12 @@ class PairWavelet:
         n_freq = self.params.n_freq
         freqs = np.logspace(math.log2(f_min), math.log2(f_max), n_freq, base=2.0)
         w = self._wavelet_obj()
-        central_f: float = pywt.central_frequency(w)  # pyright: ignore[reportUnknownMemberType]
+        central_f: float = pywt.central_frequency(w)
         scales = float(fps) / (freqs * central_f)
         self._frequencies = freqs.astype(np.float32)
         self._scales = scales.astype(np.float32)
         self._central_f = float(central_f)
         self._cache_key = key
 
-    def _wavelet_obj(self) -> object:
-        return pywt.ContinuousWavelet(self.params.wavelet)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType, reportAttributeAccessIssue]
+    def _wavelet_obj(self) -> pywt.ContinuousWavelet:
+        return pywt.ContinuousWavelet(self.params.wavelet)
