@@ -151,13 +151,13 @@ def _build_result_lookup(
     Shared by the params-field and ``feature.inputs`` dependency-resolution
     paths in :func:`_resolve_dependencies`.
 
-    The ``run_id is None`` fallback below is unreachable from ``run_feature``:
-    :func:`~mosaic.core.pipeline.resolve.resolve_references` pins every
-    reference before the identifier is computed, so by the time this runs the
-    caller's reference carries a concrete run. It is kept because this function
-    is also reached from paths that mint no identity, and because resolving here
-    instead of raising would be the defect item 1.1 fixed -- silently reading a
-    run the identifier does not name.
+    A reference with ``run_id is None`` reaches the fallback below only when
+    :func:`~mosaic.core.pipeline.resolve.resolve_references` found no run to pin,
+    because the feature it names has not run. The lookup then raises
+    ``FileNotFoundError`` for a missing index, which :func:`_resolve_dependencies`
+    lets pass for a field the feature declares in ``optional_results``. Any other
+    reference is pinned before the identifier is computed, so the fallback never
+    reads a run the identifier does not name.
     """
     dep_index = feature_index(feature_index_path(ds, feature_name))
     if run_id is None:
