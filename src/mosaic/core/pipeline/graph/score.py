@@ -72,7 +72,9 @@ from .run import run_pipeline
 from .serialize import plan_fingerprint
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
+
+    import pandas as pd
 
     from mosaic.core.dataset import Dataset
     from mosaic.core.evaluation import EvaluationReport
@@ -93,6 +95,7 @@ __all__ = [
     "ScoreRefused",
     "ScoreResult",
     "md5_of_file",
+    "pooled_group_scores",
     "score_heldout",
 ]
 
@@ -235,6 +238,10 @@ class GroupScore(StrictModel):
     sequence weighs more than a short one and the score does not depend on how the
     group is divided into sequences. It is not the mean of the entries' own scores,
     which count a class an entry lacks as 0 when ``average_over`` names it.
+
+    The macro F1 averages over the classes of the run's report (its
+    ``average_over``: the protocol's, or every class with a labeled row anywhere
+    in the run). A class that the whole group lacks therefore scores 0 in it.
 
     Attributes:
         n_entries: Entries of the group that were scored.
@@ -722,13 +729,50 @@ def _read_report(ds: Dataset, storage: str, run_id: str) -> EvaluationReport | N
     return None if raw is None else EvaluationReport.model_validate(raw)
 
 
-def _group_scores(
-    ds: Dataset, storage: str, run_id: str, report: EvaluationReport
+def pooled_group_scores(
+    entries: Mapping[str, Sequence[pd.DataFrame]],
+    report: EvaluationReport,
 ) -> dict[str, GroupScore]:
-    """The scores of each group, pooled from the counts of its entries' rows."""
+    """The score of each group, pooled from the counts of its entries.
+
+    Args:
+        entries: Each group's entries, one row each, with the ``tp_<class>``,
+            ``fp_<class>`` and ``fn_<class>`` columns of an ``evaluate-labels``
+            run.
+        report: The run's report, which names the classes ``macro_f1`` averages
+            over and the classes' names.
+
+    Returns:
+        One :class:`GroupScore` per group, sorted by name. A class in
+        ``report.average_over`` that no entry of the group holds scores 0.
+    """
     import pandas as pd
 
     from mosaic.core.evaluation import pool_entry_counts
+
+    names = {row.label: row.name or str(row.label) for row in report.per_class}
+    scores: dict[str, GroupScore] = {}
+    for group in sorted(entries):
+        rows = pd.concat(entries[group], ignore_index=True)
+        pooled = pool_entry_counts(rows, average_over=report.average_over)
+        scores[group] = GroupScore(
+            n_entries=len(rows),
+            n_scored=pooled["n_samples"],
+            accuracy=_finite(pooled["accuracy"]),
+            macro_f1=_finite(pooled["macro_f1"]),
+            per_class_f1={
+                names.get(row["label"], str(row["label"])): _finite(row["f1"])
+                for row in pooled["per_class"]
+            },
+        )
+    return scores
+
+
+def _group_scores(
+    ds: Dataset, storage: str, run_id: str, report: EvaluationReport
+) -> dict[str, GroupScore]:
+    """The scores of each group of a finished evaluation run."""
+    import pandas as pd
 
     from ..index import feature_index, feature_index_path
 
@@ -743,22 +787,7 @@ def _group_scores(
         tables.setdefault(str(group), []).append(
             pd.read_parquet(ds.resolve_path(str(path)))
         )
-    names = {row.label: row.name or str(row.label) for row in report.per_class}
-    scores: dict[str, GroupScore] = {}
-    for group in sorted(tables):
-        entries = pd.concat(tables[group], ignore_index=True)
-        pooled = pool_entry_counts(entries, average_over=report.average_over)
-        scores[group] = GroupScore(
-            n_entries=len(entries),
-            n_scored=pooled["n_samples"],
-            accuracy=_finite(pooled["accuracy"]),
-            macro_f1=_finite(pooled["macro_f1"]),
-            per_class_f1={
-                names.get(row["label"], str(row["label"])): _finite(row["f1"])
-                for row in pooled["per_class"]
-            },
-        )
-    return scores
+    return pooled_group_scores(tables, report)
 
 
 def _member(

@@ -231,7 +231,9 @@ step for each answer, runs the recipe, and writes `test_scores.json` and `test_s
 to `--out`. With more than one held-out group, each answer is also scored per group
 (`per_group` in the JSON, a "by group" block in the text). A group's score pools the
 counts of its entries, so a long sequence weighs more than a short one and a class absent
-from one sequence does not count as 0, as it would in the mean of the entries' scores.
+from one sequence does not count as 0, as it would in the mean of the entries' scores. Its
+macro F1 averages over the same classes as the run's report, so a class that the whole
+group lacks scores 0 in it.
 
 - The held-out file is declared as a source, so give the raw format's source options
   (`--src-format`, `--multi-sequences-per-file`, `--group-from`, `--patterns`,
