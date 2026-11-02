@@ -105,8 +105,11 @@ individual per frame; a pair result has one row per *ordered* pair per frame. Th
 share only `frame`, so merging them would pair every individual with every pair and fit
 downstream on rows that never existed.
 
-mosaic refuses that merge and names both levels rather than performing it. Pick one
-level, or run two chains and compare them.
+mosaic refuses that merge and names both levels rather than performing it. A
+classifier, a global model or a pair feature reads per-individual results beside a
+pair result put first: each pair row gets the focal's columns as `<column>__id1` and
+the other's as `<column>__id2`. [Individual results on pair
+rows](../../concepts/features.md#individual-results-on-pair-rows) gives the rules.
 
 Two pair results join one-to-one only when both carry `perspective`, which is what
 separates the two orderings of a pair. [What identifies a pair

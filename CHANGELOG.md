@@ -8,6 +8,22 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: individual results joined onto pair rows
+
+**A pair consumer reads per-individual inputs.** A feature whose `emits` is `as-input`
+or `pair` takes an individual-level input after a pair-level input 0. The merge joins
+the individual input onto each pair row twice, on the order column and `id1`, then on
+the order column and `id2`, and names each measurement `<column>__id1` and
+`<column>__id2`. Recipe validation predicts the same names and accepts the inputs;
+`ConsumerDecl` gains `expands_individuals`. A pair row without both individuals in that
+frame is dropped, a repeated `(frame, id)` on the individual side is refused, and an
+entry whose pair input holds no rows beside individual rows is an `entry_error`
+(`PairRowsMissing`). Every other consumer, the reverse order and `load_values` keep the
+refusal.
+
+**What moved: nothing.** These inputs were refused before, so no run id, digest or
+stored output moves, and no line of `feature_run_id_golden.json` changes.
+
 ## Unreleased: agent reads and waiting
 
 **A smaller `describe_step_types` search.** A search lists each step type of its

@@ -268,8 +268,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   sample, and each entry's table is empty. A consumer reads the template step's inputs
   and takes the sample through `templates`. A labeled run records each entry's `split`
   in `template_provenance.parquet`.
-- Inputs combine at one entity level. Mosaic refuses to merge per-individual output
-  with per-pair output.
+- Inputs combine at one entity level, with one exception. A step whose feature emits
+  `as-input` or `pair` reads a per-individual input after a pair-level input 0, with
+  each column joined onto the pair rows as `<column>__id1` (the focal) and
+  `<column>__id2` (the other). Put the pair input first; the reverse order, and any
+  other consumer, is refused. Name the kept measurements in the consumer's `columns`
+  param, since the join doubles the individual table for every partner.
 - `arhmm` reads each individual, or each ordered pair and perspective of a pair table,
   as its own sequence, and writes `id1`, `id2`, `perspective`, `group` and `sequence`
   beside its states, so `fit-label-map` can score them (`prediction_column: syllable`).

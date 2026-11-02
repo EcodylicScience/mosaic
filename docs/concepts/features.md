@@ -31,8 +31,35 @@ A per-individual result has one row per individual per frame. A pair result has 
 per *ordered* pair per frame. They share only `frame`, so merging them would pair every
 individual with every pair and fit downstream on rows that never existed.
 
-mosaic refuses that merge and names both levels rather than performing it. Pick one
-level — usually the pair features — or run two chains and compare them.
+mosaic refuses that merge and names both levels rather than performing it, with one
+exception: a pair consumer can read per-individual results beside pair results.
+
+### Individual results on pair rows
+
+A feature whose `emits` is `as-input` or `pair` (`xgboost`, `sequence-classifier`,
+`temporal-stack`, `pair-wavelet`, the global models and the other pair features) reads
+an individual-level input after a pair-level input 0 by joining it onto the pair rows
+twice. Each pair row gets the focal's values and the other individual's values, on the
+row's frame, as `<column>__id1` and `<column>__id2`. `speed` from `speed-angvel` becomes
+`speed__id1` and `speed__id2` beside `pair-egocentric`'s columns. Nothing is written to
+disk for the join, and the output is keyed by the pair rows.
+
+- Put the pair input first. An individual-level input 0 ahead of a pair input is
+  refused, because folding pair rows onto individuals needs a choice among partners.
+- A pair row whose `id1` or `id2` has no row in the individual input at that frame is
+  dropped. An individual input that repeats a `(frame, id)` is refused.
+- Only the individual input's measurements are widened. Its `id`, `fps`, `label` and the
+  other identity and bookkeeping columns are dropped.
+- If two inputs would give one widened name, the later one is numbered by its position
+  among the inputs, as `<column>__2__id1`.
+- An entry whose pair input holds no rows fails as an entry error, and the run reports it
+  among its failed entries.
+- A feature declared `individual` or `unidentified` (`overlay`, `scale-to-cm`,
+  `frame-aggregate`) keeps the refusal.
+- The join holds the individual table's measurements twice for every partner of every
+  individual. A model that keeps every entry in memory, as `sequence-classifier` does,
+  pays that for each entry it trains on. Name the measurements to keep with the
+  consumer's `columns` param where it has one.
 
 ### What identifies a pair row
 
