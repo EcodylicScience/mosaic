@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -45,6 +46,7 @@ from .spec import (
     PLAN_RETIRABLE_SAMPLE,
     PLAN_RETIRED_SAMPLE,
     PLAN_SUPERSEDED_SAMPLE,
+    SUBMITTED_STEP_SAMPLE,
     ActivityPage,
     AttemptDiagnosis,
     CancelRequestInput,
@@ -928,11 +930,15 @@ class LocalBackend:
             detail = {**(envelope.detail or {}), "request_id": request.request_id}
             raise ToolFailure(envelope.model_copy(update={"detail": detail})) from error
         lanes = {planned.lane for planned in submitted.plan.steps}
+        to_compute = [
+            planned for planned in submitted.plan.steps if planned.status != "complete"
+        ]
         return SubmittedPipeline(
             request_id=request.request_id,
             recipe_digest=request.recipe_digest,
             plan_fingerprint=plan_fingerprint(submitted.plan),
-            steps=tuple(
+            counts=dict(Counter(planned.status for planned in submitted.plan.steps)),
+            first_steps=tuple(
                 SubmittedStep(
                     step=planned.step_id,
                     runs=planned.runs,
@@ -941,8 +947,9 @@ class LocalBackend:
                     run_id=planned.run_id,
                     status=planned.status,
                 )
-                for planned in submitted.plan.steps
+                for planned in to_compute[:SUBMITTED_STEP_SAMPLE]
             ),
+            truncated=len(to_compute) > SUBMITTED_STEP_SAMPLE,
             duplicates=submitted.duplicates,
             driver_pid=driver.pid,
             driver_log=str(driver.log_path),

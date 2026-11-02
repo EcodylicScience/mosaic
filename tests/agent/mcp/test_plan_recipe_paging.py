@@ -9,7 +9,12 @@ import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
 from mosaic.agent.mcp.outputs import PlanPage
-from mosaic.agent.mcp.spec import MAX_RESULT_CHARS, call_tool
+from mosaic.agent.mcp.spec import (
+    MAX_RESULT_CHARS,
+    SUBMITTED_STEP_SAMPLE,
+    SubmittedPipeline,
+    call_tool,
+)
 from mosaic.agent.mcp.summaries import summarize
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
@@ -174,3 +179,39 @@ def test_the_summary_of_a_page_points_at_the_next_one(
     assert f"{PAGE} of its {STEPS} step(s)" in summary
     assert first.next_cursor is not None
     assert "call again with cursor" in summary
+
+
+def test_a_submission_of_many_steps_answers_in_under_a_thousand_characters(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    uuid = dataset.manifest.uuid
+    assert uuid is not None
+
+    submitted = call_tool(
+        backend, "submit_pipeline", {"dataset": uuid, "recipe": _recipe()}
+    )
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert len(submitted.model_dump_json()) < 1_000
+    assert len(summarize(submitted)) < 1_000
+    assert submitted.counts == {"absent": STEPS}
+    assert [step.step for step in submitted.first_steps] == [
+        f"heading{index}" for index in range(SUBMITTED_STEP_SAMPLE)
+    ]
+    assert submitted.truncated
+    assert "get_request_status" in summarize(submitted)
+
+
+def test_a_submission_of_few_steps_lists_them_all(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    uuid = dataset.manifest.uuid
+    assert uuid is not None
+
+    submitted = call_tool(
+        backend, "submit_pipeline", {"dataset": uuid, "recipe": _recipe(2)}
+    )
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert [step.step for step in submitted.first_steps] == ["heading0", "heading1"]
+    assert not submitted.truncated

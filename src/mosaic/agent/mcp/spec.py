@@ -103,6 +103,7 @@ __all__ = [
     "RECIPE_EXAMPLE",
     "RESULT_TOO_LARGE",
     "SHARED_TOOL_LIMIT",
+    "SUBMITTED_STEP_SAMPLE",
     "TOOLS",
     "UNKNOWN_DATASET",
     "UNKNOWN_TOOL",
@@ -221,6 +222,13 @@ MAX_RETIRED_RECIPES: Final = 8
 
 MAX_PATCH_OPS: Final = 64
 """The most edits one ``patch_recipe`` call applies."""
+
+SUBMITTED_STEP_SAMPLE: Final = 3
+"""The steps to compute that a ``submit_pipeline`` result lists, in topological order.
+
+Its result stays under 1,000 characters whatever the recipe's size, and
+``get_request_status`` with ``brief`` lists the rest.
+"""
 
 MAX_ASSUMED_GROUPS: Final = 16
 """The most groups one ``plan_recipe`` call assumes added."""
@@ -1215,7 +1223,10 @@ class SubmittedPipeline(StrictModel):
         request_id: The request, which ``get_request_status`` takes.
         recipe_digest: The recipe the request names.
         plan_fingerprint: The fingerprint of the plan it was submitted under.
-        steps: Each step, in topological order.
+        counts: How many steps the plan gave each status.
+        first_steps: The first :data:`SUBMITTED_STEP_SAMPLE` steps to compute,
+            those not ``complete``, in topological order.
+        truncated: Whether more steps are to compute than ``first_steps`` lists.
         duplicates: The open requests of the same recipe over an overlapping
             scope.
         driver_pid: The process driving the request, for the user. A caller waits
@@ -1235,7 +1246,9 @@ class SubmittedPipeline(StrictModel):
     request_id: str
     recipe_digest: str
     plan_fingerprint: str
-    steps: tuple[SubmittedStep, ...]
+    counts: dict[ArtifactStatus, int]
+    first_steps: tuple[SubmittedStep, ...]
+    truncated: bool
     duplicates: tuple[str, ...]
     driver_pid: int
     driver_log: str

@@ -23,6 +23,11 @@ planned in the same call, and its confirmation conditions still refuse it until 
 confirmed. With one, a changed plan still refuses the submission as a conflict. A
 cleanup without it is refused with `cleanup_needs_plan`.
 
+**A compact `submit_pipeline` result.** `SubmittedPipeline.steps` is replaced by
+`counts`, the steps by plan status, `first_steps`, the first three steps to compute,
+and `truncated`, whether more are to compute. A result stays under 1,000 characters
+whatever the recipe's size, and `get_request_status` with `brief` lists the rest.
+
 ## Unreleased: individual results joined onto pair rows
 
 **A pair consumer reads per-individual inputs.** A feature whose `emits` is `as-input`

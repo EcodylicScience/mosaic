@@ -306,23 +306,23 @@ class _Oversized:
         return DatasetList(items=items, total=self.n, next_cursor=None)
 
     def submit_pipeline(self, args: SubmitPipelineInput) -> SubmittedPipeline:
-        steps = tuple(
-            SubmittedStep(
-                step=f"step_{index}",
-                runs="speed-angvel",
-                execution_id=f"{index:026d}",
-                lane="feature-compute",
-                run_id=None,
-                status="absent",
-            )
-            for index in range(self.n)
-        )
         return SubmittedPipeline(
             request_id="r",
             recipe_digest="d",
-            plan_fingerprint=args.plan_fingerprint,
-            steps=steps,
-            duplicates=(),
+            plan_fingerprint=args.plan_fingerprint or "f",
+            counts={"absent": 1},
+            first_steps=(
+                SubmittedStep(
+                    step="step_0",
+                    runs="speed-angvel",
+                    execution_id=f"{0:026d}",
+                    lane="feature-compute",
+                    run_id=None,
+                    status="absent",
+                ),
+            ),
+            truncated=False,
+            duplicates=tuple(f"{index:026d}" for index in range(self.n)),
             driver_pid=1,
             driver_log="log",
             poll_after_seconds=5,
@@ -347,7 +347,7 @@ def test_a_result_above_the_budget_is_refused_with_how_to_narrow_it() -> None:
 
 
 def test_a_write_tool_result_is_never_replaced_by_the_backstop() -> None:
-    backend = cast("ToolBackend", _Oversized(1000))
+    backend = cast("ToolBackend", _Oversized(2000))
 
     submitted = call_tool(
         backend,

@@ -759,7 +759,7 @@ def test_a_tracker_sweep_plans_and_submits_on_a_dataset_of_two_variants(
     )
 
     assert plan.problems == ()
-    assert [step.step for step in submitted.steps] == ["trex_10", "trex_20"]
+    assert [step.step for step in submitted.first_steps] == ["trex_10", "trex_20"]
     assert starter.started == [submitted.request_id]
 
 
@@ -804,7 +804,7 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
 
     assert submitted.driver_pid > 0
     assert submitted.poll_after_seconds == 10
-    assert [step.step for step in submitted.steps] == ["speed", "templates"]
+    assert [step.step for step in submitted.first_steps] == ["speed", "templates"]
     wait_for(
         lambda: (
             _call(
@@ -849,7 +849,7 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
     runs = _call(backend, "list_activity", ActivityPage, dataset=uuid, view="runs")
     assert [item.request_id for item in requests.requests] == [submitted.request_id]
     assert {run.execution_id for run in runs.runs} == {
-        step.execution_id for step in submitted.steps
+        step.execution_id for step in submitted.first_steps
     }
     diagnosis = _call(
         backend,

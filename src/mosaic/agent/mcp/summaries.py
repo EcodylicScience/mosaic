@@ -337,12 +337,15 @@ def _submitted(submitted: SubmittedPipeline) -> str:
         if submitted.cleanup_runs
         else ""
     )
+    total = sum(submitted.counts.values())
+    computed = total - submitted.counts.get("complete", 0)
     return (
-        f"Submitted request {submitted.request_id} with "
-        f"{len(submitted.steps)} step(s), running in the background.{duplicates}"
+        f"Submitted request {submitted.request_id} with {total} step(s), "
+        f"{computed} to compute, running in the background.{duplicates}"
         f"{cleanup} Wait for it with get_request_status and wait_seconds, which "
-        "returns when a step or the request ends. Do not watch the driver's "
-        "process. Its log, driver_log, explains a failure."
+        "returns when a step or the request ends, and brief lists the steps "
+        "first_steps leaves out. Do not watch the driver's process. Its log, "
+        "driver_log, explains a failure."
     )
 
 
