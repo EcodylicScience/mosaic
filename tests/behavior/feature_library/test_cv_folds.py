@@ -106,6 +106,67 @@ class TestFoldAssignment:
             cv_fold_assignment(ENTRIES, 24, seed=0)
 
 
+class TestTiedFoldAssignment:
+    @pytest.mark.parametrize("seed", [0, 1, 7])
+    @pytest.mark.parametrize("count, folds", [(23, 5), (6, 3), (9, 2), (4, 4)])
+    def test_every_entry_a_tie_by_itself_deals_as_without_ties(
+        self, seed: int, count: int, folds: int
+    ) -> None:
+        entries = ENTRIES[:count]
+        singletons = {entry: index for index, entry in enumerate(entries)}
+
+        assert cv_fold_assignment(entries, folds, seed, ties=singletons) == (
+            cv_fold_assignment(entries, folds, seed)
+        )
+
+    def test_an_entry_absent_from_the_ties_is_a_tie_by_itself(self) -> None:
+        assert cv_fold_assignment(ENTRIES, 5, 2, ties={}) == cv_fold_assignment(
+            ENTRIES, 5, 2
+        )
+
+    def test_entries_of_one_tie_share_a_fold(self) -> None:
+        ties = {entry: "big" for entry in ENTRIES[:6]} | {
+            entry: "small" for entry in ENTRIES[6:9]
+        }
+
+        folds = cv_fold_assignment(ENTRIES, 4, seed=0, ties=ties)
+
+        assert len({folds[entry] for entry in ENTRIES[:6]}) == 1
+        assert len({folds[entry] for entry in ENTRIES[6:9]}) == 1
+        assert set(folds) == set(ENTRIES)
+        assert set(folds.values()) == set(range(4))
+
+    def test_the_largest_tie_goes_first_and_each_to_the_emptiest_fold(self) -> None:
+        ties = {entry: "big" for entry in ENTRIES[:6]}
+
+        folds = cv_fold_assignment(ENTRIES, 4, seed=0, ties=ties)
+
+        sizes = sorted(list(folds.values()).count(fold) for fold in range(4))
+        assert sizes == [5, 6, 6, 6]
+        assert folds[ENTRIES[0]] == 0
+
+    def test_the_order_of_the_entries_and_of_the_ties_changes_nothing(self) -> None:
+        ties = {entry: index % 4 for index, entry in enumerate(ENTRIES[:12])}
+        reordered = dict(reversed(list(ties.items())))
+        shuffled = ENTRIES[7:] + ENTRIES[:7][::-1]
+
+        assert cv_fold_assignment(shuffled, 3, 5, ties=reordered) == (
+            cv_fold_assignment(ENTRIES, 3, 5, ties=ties)
+        )
+
+    def test_more_folds_than_ties_is_refused_with_both_counts(self) -> None:
+        ties = {entry: index % 3 for index, entry in enumerate(ENTRIES)}
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"cannot deal 23 train entries, tied by cv_group_by into 3 ties, "
+                r"into 4 folds. Lower the number of folds to at most 3"
+            ),
+        ):
+            cv_fold_assignment(ENTRIES, 4, seed=0, ties=ties)
+
+
 class TestOutOfFoldChoice:
     FOLDS = {("g", "a"): 0, ("g", "b"): 1, ("", "12"): 2}
 

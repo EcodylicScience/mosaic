@@ -250,9 +250,36 @@ What the score does not cover:
   held-out sequence's class totals set how many rows of the other folds are kept. No
   label of a held-out sequence enters the model that scores it.
 - A fold is a set of sequences, unless `cv_unit` is `block` (below). If several
-  sequences come from one animal or one recording, a fold that splits them leaks across
-  them, and mosaic does not know. Make that unit one sequence before you draw the
-  templates.
+  sequences come from one animal, one session or one recording, a fold that splits them
+  leaks across them. Name that link with `cv_group_by` (below).
+
+## Hold out the sequences of one animal together
+
+`cv_group_by` on `xgboost` or `sequence-classifier` maps an entry (`group:sequence`, or a
+bare sequence of the empty group) to a tie key or a list of them, such as an animal, a
+session or a recording:
+
+```json
+{"id": "classifier", "type": "feature", "feature": "xgboost",
+ "inputs": [{"step": "scaler"}],
+ "params": {"templates": {"step": "labeled"}, "default_class": 3, "cv_folds": 3,
+            "cv_group_by": {"train:s1": "mouse-a", "train:s2": ["mouse-a", "day-2"],
+                            "train:s3": "day-2"}}}
+```
+
+- Training entries that share a key fall into one fold, and so do entries linked
+  through a chain of shared keys: `s1`, `s2` and `s3` above share a fold. Only the
+  training entries link: a test entry that shares a key with two training entries does
+  not tie them. A training entry the mapping leaves out is a tie by itself.
+- Each tie goes whole to the fold with the fewest entries so far, the largest tie first,
+  so the folds can differ in size by more than one sequence. `cv_folds` is at most the
+  number of ties. `cv_folds.parquet` keeps its columns.
+- The mapping may list entries outside the training set, and the fit counts them in a
+  warning. In mosaic-api the animal and session of an entry are its sequence tags, and
+  the mapping passes them to the folds.
+- `cv_group_by` needs `cv_folds` and the sequence unit, and enters the run id. Two
+  spellings of one mapping (key order, value order, a string or a one-item list) are one
+  run.
 
 ## Cross-validate one training sequence by blocks
 
@@ -561,7 +588,8 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   model. `cv_folds.parquet` lists the fold of every entry and its labeled frames per class.
   With `cv_unit: block`, as for `xgboost` above, it holds one row per block with its
   `start` and `stop`, and the network of a fold trains on the labeled runs of every entry
-  less its blocks and `cv_gap_frames` frames around them.
+  less its blocks and `cv_gap_frames` frames around them. `cv_group_by` ties entries
+  into one fold as it does for `xgboost`.
 - **Device and repeatability.** `device` is `cuda` or `cpu` and is part of the run id,
   because a GPU and a CPU need not give one model. `apply_device` is `auto` by default and
   is not part of the run id: a network predicts on the training device, and on the CPU

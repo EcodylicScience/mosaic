@@ -11,9 +11,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
-from mosaic.core.pipeline.graph import Recipe, run_pipeline
+from mosaic.core.pipeline.graph import Recipe, plan_pipeline, run_pipeline
 from tests.helpers import (
     LA_WINDOW,
     guide_blocks,
@@ -47,7 +48,10 @@ def cross_validated(supervised: dict[str, Any]) -> dict[str, Any]:
     (block,) = [
         b
         for b in guide_blocks("json")
-        if '"xgboost"' in b and '"cv_folds"' in b and '"cv_unit"' not in b
+        if '"xgboost"' in b
+        and '"cv_folds"' in b
+        and '"cv_unit"' not in b
+        and '"cv_group_by"' not in b
     ]
     changed: dict[str, dict[str, Any]] = {
         step["id"]: step for step in json.loads(f"[{block}]")
@@ -95,6 +99,12 @@ def block_validated(cross_validated: dict[str, Any]) -> dict[str, Any]:
     """The cross-validated recipe with the classifier the block section gives."""
     steps = _guide_steps('"cv_unit": "block"')
     return _shrunk(_replaced(cross_validated, "block-validated", steps))
+
+
+@pytest.fixture(scope="module")
+def grouped(cross_validated: dict[str, Any]) -> dict[str, Any]:
+    """The cross-validated recipe with the classifier that ties entries into one fold."""
+    return _replaced(cross_validated, "grouped", _guide_steps('"cv_group_by"'))
 
 
 @pytest.fixture(scope="module")
@@ -155,6 +165,27 @@ def test_the_block_validated_classifier_trains_and_scores_as_written(
 
     assert set(step_states(run).values()) == {"ran"}
     assert "classifier" in step_states(run)
+
+
+def test_the_grouped_classifier_holds_the_tied_sequences_out_together(
+    tmp_path: Path, grouped: dict[str, Any], commands: list[str]
+) -> None:
+    ds = guide_dataset(tmp_path / "ds")
+    recipe = Recipe.model_validate(grouped)
+    scopes = step_scopes(commands[1])
+
+    run = run_pipeline(ds, recipe, step_scopes=scopes)
+
+    assert set(step_states(run).values()) == {"ran"}
+    root = (
+        ds.get_root("features")
+        / plan_pipeline(ds, recipe, step_scopes=scopes).step("classifier").storage_name
+        / run_ids(run)["classifier"]
+    )
+    folds = pd.read_parquet(root / "cv_folds.parquet")
+    fold_of = dict(zip(folds["sequence"], folds["fold"], strict=True))
+    assert fold_of["s1"] == fold_of["s2"] == fold_of["s3"]
+    assert len(set(fold_of.values())) == 3
 
 
 def test_the_tuned_thresholds_are_chosen_on_the_train_groups_and_applied_to_the_test_groups(

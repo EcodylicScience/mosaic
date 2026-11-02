@@ -114,6 +114,7 @@ from .classifier_common import (
     CvBlock,
     CvBlocksPerSequence,
     CvGapFrames,
+    CvGroupBy,
     CvSeed,
     CvUnit,
     DecisionThreshold,
@@ -128,7 +129,7 @@ from .classifier_common import (
     check_folds,
     deal_blocks,
     deal_folds,
-    drop_block_settings,
+    drop_unused_cv_settings,
     fold_map,
     fold_rows,
     fold_table,
@@ -521,6 +522,7 @@ class SequenceClassifier(FitReporting):
         cv_unit: CvUnit = "sequence"
         cv_blocks_per_sequence: CvBlocksPerSequence = None
         cv_gap_frames: CvGapFrames = 0
+        cv_group_by: CvGroupBy = None
         # Not HASH_EXCLUDE: a GPU and a CPU need not give one model.
         device: Annotated[Literal["cpu", "cuda"], Declared(_DEVICE_DESCRIPTION)] = (
             "cuda"
@@ -592,6 +594,7 @@ class SequenceClassifier(FitReporting):
                 cv_unit=self.cv_unit,
                 cv_blocks_per_sequence=self.cv_blocks_per_sequence,
                 cv_gap_frames=self.cv_gap_frames,
+                cv_group_by=self.cv_group_by,
             )
             return self
 
@@ -602,10 +605,12 @@ class SequenceClassifier(FitReporting):
             A run that cross-validates by sequence, or not at all, has the identity it
             had before the block settings existed. ``check_cross_validation`` leaves
             them at their defaults then, so leaving them out loses nothing. A run of
-            one stage without label smoothing has the identity it had before either
-            setting existed.
+            one stage without label smoothing or ``cv_group_by`` has the identity it
+            had before those settings existed.
             """
-            dumped = drop_block_settings(super().identity_dump(), self.cv_unit)
+            dumped = drop_unused_cv_settings(
+                super().identity_dump(), self.cv_unit, self.cv_group_by
+            )
             if self.label_smoothing == 0.0:
                 del dumped["label_smoothing"]
             options = self.head_options()
@@ -1020,7 +1025,7 @@ class SequenceClassifier(FitReporting):
             )
             return _FoldPlan(table, {}, blocks, training)
         fold_of = deal_folds(
-            self.name, self._train_entries or [], p.cv_folds, p.cv_seed
+            self.name, self._train_entries or [], p.cv_folds, p.cv_seed, p.cv_group_by
         )
         table = self._fold_table(fold_of, runs, classes)
         check_folds(self.name, p.cv_folds, table, classes, rows="labeled frames")

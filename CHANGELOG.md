@@ -25,6 +25,14 @@ frames per stage. A model's bundle records `stages` in `head_config`, and a bund
 without it loads as one stage. At the defaults neither setting enters the run id, and a
 fit computes the network it did before. No run id moves.
 
+**`xgboost` and `sequence-classifier` keep tied entries in one fold.** `cv_group_by` maps
+an entry token to a tie key or a list of them, such as an animal or a session. Training
+entries linked by shared keys, directly or through a chain, are dealt into one fold, the
+largest tie first to the fold with the fewest entries. With every entry a tie by itself
+the folds are those dealt before. It needs `cv_folds` and `cv_unit` `sequence`, and
+`cv_folds.parquet` keeps its columns. Unset, it does not enter the run id. No run id
+moves.
+
 ## Unreleased: per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names

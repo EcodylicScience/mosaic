@@ -226,6 +226,33 @@ def test_one_stage_and_no_label_smoothing_are_the_identity_without_them() -> Non
     assert "label_smoothing" not in omitted.identity_dump()
 
 
+def test_no_tie_mapping_is_the_identity_without_one_and_a_mapping_changes_it() -> None:
+    omitted = _params(cv_folds=3)
+
+    assert _params(cv_folds=3, cv_group_by=None).identity_dump() == (
+        omitted.identity_dump()
+    )
+    assert "cv_group_by" not in omitted.identity_dump()
+    spelled = _params(cv_folds=3, cv_group_by={"s0": "a", "g:s1": ["b", "a"]})
+    respelled = _params(cv_folds=3, cv_group_by={"g:s1": ["a", "b"], ":s0": ["a"]})
+    assert spelled.identity_dump() == respelled.identity_dump()
+    assert spelled.identity_dump() != omitted.identity_dump()
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        ({}, "cv_group_by ties entries into the folds of cv_folds"),
+        ({"cv_folds": 3, "cv_unit": "block"}, "cv_group_by ties whole entries"),
+    ],
+)
+def test_a_tie_mapping_without_folds_or_by_block_is_refused(
+    extra: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _ = _params(cv_group_by={"s0": "a"}, **extra)
+
+
 def test_a_label_smoothing_of_one_is_refused() -> None:
     with pytest.raises(ValidationError, match="label_smoothing"):
         _ = _params(label_smoothing=1.0)

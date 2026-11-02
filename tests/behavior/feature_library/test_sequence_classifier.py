@@ -1067,6 +1067,33 @@ def test_a_cached_run_with_folds_applies_the_same(tmp_path: Path) -> None:
     )
 
 
+def test_tied_entries_share_a_fold_and_each_is_scored_by_that_fold(
+    tmp_path: Path,
+) -> None:
+    entries = [("train", f"s{i}") for i in range(4)]
+    study, tables = _study(
+        tmp_path, {entry: i for i, entry in enumerate(entries)}, train=entries
+    )
+    group_by = {"train:s0": "mouse-a", "train:s3": ["mouse-a"]}
+
+    feature = _fit(study, tables, cv_folds=2, cv_group_by=group_by, steps=20)
+
+    bundle = _saved(feature, tmp_path / "saved")
+    folds = pd.read_parquet(tmp_path / "saved" / "cv_folds.parquet")
+    fold_of = {
+        (str(g), str(s)): int(f)
+        for g, s, f in zip(folds["group"], folds["sequence"], folds["fold"])
+    }
+    assert fold_of[entries[0]] == fold_of[entries[3]]
+    assert fold_of[entries[1]] == fold_of[entries[2]] != fold_of[entries[0]]
+    for index, entry in enumerate(entries):
+        scored = feature.apply(tables[entry])[PROBS].to_numpy()
+        held_out = _scored_by(
+            bundle, fold_of[entry], tables[entry], tmp_path / f"fold-{index}"
+        )
+        np.testing.assert_allclose(scored, held_out, atol=1e-6)
+
+
 # --- Cross-validation by block -----------------------------------------------------------
 
 

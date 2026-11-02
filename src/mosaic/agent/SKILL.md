@@ -286,11 +286,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   registered network as `head` (`tcn`, `gru` or `mlp`, options in `head_config`).
   `head_config` `stages` above 1 adds refinement stages, each a default `tcn` on the
   logits before it with a loss of its own, and `label_smoothing` smooths the targets. It
-  takes `cv_folds` and `cv_seed` as `xgboost` does, with the same folds. A head
-  registered in Python with `register_head` is visible to that process only, not to the
-  CLI or a queue worker. A fitted network predicts on the training device
-  (`apply_device` `auto`, on the CPU without CUDA; `cpu` or `cuda` force one), at
-  `n_threads` threads.
+  takes `cv_folds`, `cv_seed` and `cv_group_by` as `xgboost` does, with the same
+  folds. A head registered in Python with `register_head` is visible to that process
+  only, not to the CLI or a queue worker. A fitted network predicts on the training
+  device (`apply_device` `auto`, on the CPU without CUDA; `cpu` or `cuda` force one),
+  at `n_threads` threads.
   `probability-ensemble` averages or blends the `prob_<class>` columns of classifier
   runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the members'
   out-of-fold probabilities and refuses a member fitted without `cv_folds`. It writes
@@ -501,6 +501,12 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   the entries of the templates run, not of the request. The score is not nested, and a
   fold is whole sequences unless `cv_unit` is `block`
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+- When several training sequences come from one animal, session or recording, set
+  `cv_group_by` on `xgboost` or `sequence-classifier`: a mapping from an entry
+  (`group:sequence`, or a bare sequence) to a tie key or a list of them. Training entries
+  that share a key, directly or through a chain, fall into one fold, so `cv_folds` is at
+  most the number of ties. Take the keys from the sequence tags in mosaic-api. It needs
+  `cv_folds` and the sequence unit.
 - With one training sequence there is nothing to hold out, and `cv_folds` refuses it. Set
   `cv_unit: "block"` on `xgboost` or `sequence-classifier`: each sequence is cut into
   `cv_blocks_per_sequence` blocks of frames, a fold holds blocks out, and `cv_folds.parquet`

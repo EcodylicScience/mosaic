@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.memory_watch import host_memory_bytes
 from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
@@ -833,40 +834,69 @@ def _cv_entry_key(seed: int, group: str, sequence: str) -> str:
 
 
 def cv_fold_assignment(
-    entries: Iterable[tuple[str, str]], n_folds: int, seed: int = 0
-) -> dict[tuple[str, str], int]:
-    """Deal entries into *n_folds* folds, balanced in their count.
+    entries: Iterable[Entry],
+    n_folds: int,
+    seed: int = 0,
+    ties: Mapping[Entry, Hashable] | None = None,
+) -> dict[Entry, int]:
+    """Deal entries into *n_folds* folds, balanced in their count, keeping each tie in one fold.
 
-    The entries are ordered by the sha256 of ``[seed, group, sequence]`` and dealt
-    out in turn, so entry ``rank`` goes to fold ``rank % n_folds``. Folds differ by
-    at most one entry, and the result depends on the entries and the seed alone:
-    not on the order they arrive in, the process, or the rows each drew.
+    A tie is the entries that *ties* gives one value, and an entry absent from it
+    is a tie by itself. The ties are ordered by descending size, then by the
+    smallest sha256 of ``[seed, group, sequence]`` among their entries, and each
+    goes to the fold with the fewest entries so far, the lowest index on a tie.
+    With every entry a tie by itself, entry ``rank`` goes to fold
+    ``rank % n_folds``, and folds differ by at most one entry. The result depends
+    on the entries, the ties and the seed alone: not on the order they arrive in,
+    the process, or the rows each drew.
 
     Args:
         entries: The ``(group, sequence)`` of every entry to deal. A repeated
             entry is dealt once.
         n_folds: The number of folds, at least 2 and at most the number of
-            entries.
+            ties.
         seed: Changes the folds and nothing else.
+        ties: The tie of each entry, such as a component of entries that share
+            an animal. Unset, every entry is a tie by itself.
 
     Returns:
         The fold, from 0, of each entry.
 
     Raises:
-        ValueError: *n_folds* is below 2 or above the number of entries.
+        ValueError: *n_folds* is below 2 or above the number of ties.
     """
     unique = sorted(set(entries))
     if n_folds < 2:
         msg = f"cross-validation needs at least 2 folds, not {n_folds}"
         raise ValueError(msg)
-    if n_folds > len(unique):
+    members: dict[tuple[bool, Hashable], list[Entry]] = {}
+    for entry in unique:
+        tie = (
+            (True, ties[entry])
+            if ties is not None and entry in ties
+            else (False, entry)
+        )
+        members.setdefault(tie, []).append(entry)
+    if n_folds > len(members):
+        tied = (
+            "" if ties is None else f", tied by cv_group_by into {len(members)} ties,"
+        )
         msg = (
-            f"cannot deal {len(unique)} train entries into {n_folds} folds. "
-            f"Lower the number of folds to at most {len(unique)}"
+            f"cannot deal {len(unique)} train entries{tied} into {n_folds} folds. "
+            f"Lower the number of folds to at most {len(members)}"
         )
         raise ValueError(msg)
-    ranked = sorted(unique, key=lambda entry: _cv_entry_key(seed, *entry))
-    return {entry: rank % n_folds for rank, entry in enumerate(ranked)}
+    ordered = sorted(
+        members.values(),
+        key=lambda tie: (-len(tie), min(_cv_entry_key(seed, *entry) for entry in tie)),
+    )
+    sizes = [0] * n_folds
+    fold_of: dict[Entry, int] = {}
+    for tie in ordered:
+        fold = sizes.index(min(sizes))
+        sizes[fold] += len(tie)
+        fold_of.update(dict.fromkeys(tie, fold))
+    return fold_of
 
 
 def cv_block_bounds(first: int, stop: int, n_blocks: int) -> list[tuple[int, int, int]]:

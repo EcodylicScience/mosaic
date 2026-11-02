@@ -51,6 +51,7 @@ from .classifier_common import (
     CvBlock,
     CvBlocksPerSequence,
     CvGapFrames,
+    CvGroupBy,
     CvSeed,
     CvUnit,
     DecisionThreshold,
@@ -65,7 +66,7 @@ from .classifier_common import (
     check_folds,
     deal_blocks,
     deal_folds,
-    drop_block_settings,
+    drop_unused_cv_settings,
     fold_map,
     fold_rows,
     fold_table,
@@ -342,6 +343,7 @@ class XgboostFeature(FitReporting):
         cv_unit: CvUnit = "sequence"
         cv_blocks_per_sequence: CvBlocksPerSequence = None
         cv_gap_frames: CvGapFrames = 0
+        cv_group_by: CvGroupBy = None
         # Not HASH_EXCLUDE: a GPU histogram build need not give the model a CPU one does.
         device: Annotated[Literal["cpu", "cuda"], Declared(_DEVICE_DESCRIPTION)] = "cpu"
         # HASH_EXCLUDE: the threads of a fit change its time and not its model. One
@@ -374,18 +376,22 @@ class XgboostFeature(FitReporting):
                 cv_unit=self.cv_unit,
                 cv_blocks_per_sequence=self.cv_blocks_per_sequence,
                 cv_gap_frames=self.cv_gap_frames,
+                cv_group_by=self.cv_group_by,
             )
             return self
 
         @override
         def identity_dump(self) -> dict[str, object]:
-            """The hashed params, with the block settings left out under ``cv_unit="sequence"``.
+            """The hashed params, less the cross-validation settings the run leaves unused.
 
             A run that cross-validates by sequence, or not at all, has the identity it
             had before the block settings existed. ``check_cross_validation`` leaves
-            them at their defaults then, so leaving them out loses nothing.
+            them at their defaults then, so leaving them out loses nothing. A run
+            without ``cv_group_by`` has the identity it had before that setting existed.
             """
-            return drop_block_settings(super().identity_dump(), self.cv_unit)
+            return drop_unused_cv_settings(
+                super().identity_dump(), self.cv_unit, self.cv_group_by
+            )
 
     def __init__(
         self,
@@ -699,7 +705,13 @@ class XgboostFeature(FitReporting):
         classes = sorted(int(c) for c in np.unique(labels))
         if self.params.cv_unit == "block":
             return self._plan_block_folds(train, keys, labels, classes)
-        fold_of = deal_folds(self.name, self._train_entries, k, self.params.cv_seed)
+        fold_of = deal_folds(
+            self.name,
+            self._train_entries,
+            k,
+            self.params.cv_seed,
+            self.params.cv_group_by,
+        )
 
         row_fold = np.array([fold_of.get(key, -1) for key in keys], dtype=np.intp)
         self._refuse_unlisted_entries(keys, row_fold < 0)

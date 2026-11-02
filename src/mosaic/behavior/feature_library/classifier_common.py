@@ -26,8 +26,9 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
+from pydantic import AfterValidator, Field
 
+from mosaic.core.entry import Entry, entry_token, parse_entry_tokens
 from mosaic.core.evaluation import CountScores, pool_entry_counts
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import atomic_write
@@ -59,10 +60,12 @@ __all__ = [
     "TUNED_DECISION_THRESHOLD_DESCRIPTION",
     "CV_BLOCKS_PER_SEQUENCE_DESCRIPTION",
     "CV_GAP_FRAMES_DESCRIPTION",
+    "CV_GROUP_BY_DESCRIPTION",
     "CV_UNIT_DESCRIPTION",
     "CvBlock",
     "CvBlocksPerSequence",
     "CvGapFrames",
+    "CvGroupBy",
     "CvSeed",
     "CvUnit",
     "DecisionThreshold",
@@ -80,7 +83,7 @@ __all__ = [
     "check_folds",
     "deal_blocks",
     "deal_folds",
-    "drop_block_settings",
+    "drop_unused_cv_settings",
     "fold_map",
     "fold_rows",
     "fold_table",
@@ -219,20 +222,67 @@ CvGapFrames = Annotated[
 ]
 """The type of a classifier's ``cv_gap_frames`` parameter."""
 
+CV_GROUP_BY_DESCRIPTION: Final = (
+    "Ties training entries together, so that a fold holds out together the "
+    "entries of one animal, one session or one recording. A mapping from an "
+    "entry, group:sequence or a bare sequence of the empty group, to one tie "
+    "key or a list of them. Entries that share a key fall into one fold, and so "
+    "do entries linked through a chain of shared keys among the training "
+    "entries. A training entry the mapping does not list is a tie by itself, "
+    "and an entry outside the training set may be listed and is ignored, with a "
+    "warning counting such entries. The per-entry animal and session metadata "
+    "lives in the sequence tags of mosaic-api, and this mapping passes it to the "
+    "folds. Each tie goes whole to the fold with the fewest entries so far, the "
+    "largest first, so folds may differ in size by more than one entry, and "
+    "cv_folds may be at most the number of ties. Only with cv_folds and cv_unit "
+    "sequence."
+)
 
-def drop_block_settings(
-    dumped: dict[str, object], cv_unit: Literal["sequence", "block"]
+
+def _canonical_group_by(
+    value: dict[str, str | list[str]] | None,
+) -> dict[str, str | list[str]] | None:
+    """Return *value* in one spelling: entry tokens sorted, each with a sorted list of its keys.
+
+    ``:s`` and ``s`` name one entry, so their keys merge. An empty mapping ties
+    nothing and reads as unset.
+    """
+    if not value:
+        return None
+    merged: dict[str, set[str]] = {}
+    for token, keys in value.items():
+        (entry,) = parse_entry_tokens([token])
+        merged.setdefault(entry_token(*entry), set()).update(
+            [keys] if isinstance(keys, str) else keys
+        )
+    return {token: sorted(merged[token]) for token in sorted(merged)}
+
+
+CvGroupBy = Annotated[
+    dict[str, str | list[str]] | None,
+    AfterValidator(_canonical_group_by),
+    Declared(CV_GROUP_BY_DESCRIPTION),
+]
+"""The type of a classifier's ``cv_group_by`` parameter."""
+
+
+def drop_unused_cv_settings(
+    dumped: dict[str, object],
+    cv_unit: Literal["sequence", "block"],
+    cv_group_by: Mapping[str, str | list[str]] | None,
 ) -> dict[str, object]:
-    """Return *dumped* without the block settings when the unit is the sequence.
+    """Return *dumped* without the cross-validation settings that the run leaves unused.
 
-    A classifier's ``identity_dump`` calls this, so that a run which
-    cross-validates by sequence, or not at all, hashes as it did before the block
-    settings existed. ``check_cross_validation`` leaves them at their defaults
-    then, so leaving them out loses nothing.
+    A classifier's ``identity_dump`` calls this, so that a run hashes as it did
+    before a setting it does not use existed: the block settings when the unit is
+    the sequence, and ``cv_group_by`` when it is unset. ``check_cross_validation``
+    leaves the block settings at their defaults under the sequence unit, so
+    leaving them out loses nothing.
 
     Args:
         dumped: The hashed params of the classifier, which this changes in place.
         cv_unit: The classifier's ``cv_unit``.
+        cv_group_by: The classifier's ``cv_group_by``.
 
     Returns:
         *dumped*.
@@ -240,6 +290,8 @@ def drop_block_settings(
     if cv_unit == "sequence":
         for name in ("cv_unit", "cv_blocks_per_sequence", "cv_gap_frames"):
             del dumped[name]
+    if cv_group_by is None:
+        del dumped["cv_group_by"]
     return dumped
 
 
@@ -251,6 +303,7 @@ def check_cross_validation(
     cv_unit: Literal["sequence", "block"] = "sequence",
     cv_blocks_per_sequence: int | None = None,
     cv_gap_frames: int = 0,
+    cv_group_by: Mapping[str, str | list[str]] | None = None,
 ) -> int | None:
     """Refuse cross-validation settings that cannot describe one fit.
 
@@ -268,6 +321,8 @@ def check_cross_validation(
             for ``cv_folds`` blocks.
         cv_gap_frames: The frames around a held-out block that its fold does
             not train on.
+        cv_group_by: The tie keys of each entry, which keep tied entries in one
+            fold of whole entries.
 
     Returns:
         The blocks per sequence the fit cuts: the one given, else ``cv_folds``
@@ -275,7 +330,8 @@ def check_cross_validation(
         back, so that naming the default and leaving it out are one run id.
 
     Raises:
-        ValueError: ``cv_seed`` or a block setting is set without what it needs,
+        ValueError: ``cv_seed``, a block setting or ``cv_group_by`` is set
+            without what it needs, ``cv_group_by`` is set under the block unit,
             or ``cv_folds`` is set beside a ``model``.
     """
     block_settings = [
@@ -294,6 +350,11 @@ def check_cross_validation(
         if unset:
             msg = f"{', '.join(unset)} cut the folds of cv_folds, which is not set"
             raise ValueError(msg)
+        if cv_group_by is not None:
+            msg = (
+                "cv_group_by ties entries into the folds of cv_folds, which is not set"
+            )
+            raise ValueError(msg)
         return None
     if model_given:
         msg = (
@@ -306,6 +367,12 @@ def check_cross_validation(
             msg = f"{', '.join(block_settings)} only apply with cv_unit block"
             raise ValueError(msg)
         return None
+    if cv_group_by is not None:
+        msg = (
+            "cv_group_by ties whole entries into one fold, and cv_unit block deals "
+            "blocks of frames. Use cv_group_by with cv_unit sequence"
+        )
+        raise ValueError(msg)
     return cv_folds if cv_blocks_per_sequence is None else cv_blocks_per_sequence
 
 
@@ -504,20 +571,74 @@ def standardize(
 # --- Cross-validation folds ---
 
 
+def _tie_components(
+    feature: str,
+    train_entries: Iterable[Entry],
+    group_by: Mapping[str, str | list[str]],
+) -> dict[Entry, Entry]:
+    """Return the tie of each train entry: the smallest entry linked to it by shared keys.
+
+    Two train entries that share a key are linked, and so are the entries of a
+    chain of links. An entry outside the train entries links nothing, and the
+    entries the mapping names outside them are counted in a warning.
+    """
+    root = {entry: entry for entry in train_entries}
+
+    def find(entry: Entry) -> Entry:
+        while root[entry] != entry:
+            entry = root[entry]
+        return entry
+
+    first_of_key: dict[str, Entry] = {}
+    outside: set[Entry] = set()
+    for token, keys in group_by.items():
+        (entry,) = parse_entry_tokens([token])
+        if entry not in root:
+            outside.add(entry)
+            continue
+        for key in [keys] if isinstance(keys, str) else keys:
+            mine, theirs = find(entry), find(first_of_key.setdefault(key, entry))
+            root[max(mine, theirs)] = min(mine, theirs)
+    if outside:
+        log.warning(
+            "[%s] cv_group_by names %d entries outside the train entries, and "
+            "they tie no train entries together",
+            feature,
+            len(outside),
+        )
+    return {entry: find(entry) for entry in root}
+
+
 def deal_folds(
-    feature: str, train_entries: list[tuple[str, str]], folds: int, seed: int
-) -> dict[tuple[str, str], int]:
-    """Deal the train entries into *folds* folds, naming *feature* in a refusal.
+    feature: str,
+    train_entries: list[Entry],
+    folds: int,
+    seed: int,
+    group_by: Mapping[str, str | list[str]] | None = None,
+) -> dict[Entry, int]:
+    """Deal the train entries into *folds* folds, keeping tied entries together.
 
     Wraps :func:`~mosaic.behavior.feature_library.helpers.cv_fold_assignment`,
-    so that every classifier deals alike.
+    so that every classifier deals alike. The ties are the components of the
+    train entries that *group_by* links through shared keys.
+
+    Args:
+        feature: The classifier, which a refusal and a warning name.
+        train_entries: The entries to deal.
+        folds: The number of folds.
+        seed: The seed that deals them.
+        group_by: The tie keys of each entry token, as ``cv_group_by`` holds
+            them. Unset, every entry is a tie by itself.
 
     Raises:
         ValueError: Naming *feature*, when *folds* is below 2 or above the
-            number of entries.
+            number of ties.
     """
+    ties = (
+        None if group_by is None else _tie_components(feature, train_entries, group_by)
+    )
     try:
-        return cv_fold_assignment(train_entries, folds, seed)
+        return cv_fold_assignment(train_entries, folds, seed, ties)
     except ValueError as exc:
         msg = f"[{feature}] {exc}"
         raise ValueError(msg) from exc

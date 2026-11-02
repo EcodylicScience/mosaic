@@ -10,15 +10,18 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Literal
 
 import joblib
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 import pytest
+from pydantic import TypeAdapter
 
 from mosaic.behavior.feature_library.classifier_common import (
     CvBlock,
+    CvGroupBy,
     FitReporting,
     FoldLookup,
     RunningMoments,
@@ -31,7 +34,7 @@ from mosaic.behavior.feature_library.classifier_common import (
     check_folds,
     deal_blocks,
     deal_folds,
-    drop_block_settings,
+    drop_unused_cv_settings,
     fold_map,
     fold_rows,
     fold_table,
@@ -178,6 +181,43 @@ def test_block_settings_that_the_unit_or_the_folds_ignore_are_refused(
         )
 
 
+@pytest.mark.parametrize(
+    "cv_folds, model_given, cv_unit, message",
+    [
+        (
+            None,
+            False,
+            "sequence",
+            "cv_group_by ties entries into the folds of cv_folds",
+        ),
+        (None, True, "sequence", "cv_group_by ties entries into the folds of cv_folds"),
+        (3, True, "sequence", "cv_folds.*templates.*model"),
+        (3, False, "block", "cv_group_by ties whole entries.*cv_unit block"),
+    ],
+)
+def test_a_tie_mapping_without_folds_beside_a_model_or_by_block_is_refused(
+    cv_folds: int | None,
+    model_given: bool,
+    cv_unit: Literal["sequence", "block"],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        check_cross_validation(
+            cv_folds,
+            0,
+            model_given=model_given,
+            cv_unit=cv_unit,
+            cv_group_by={"s0": ["a"]},
+        )
+
+
+def test_a_tie_mapping_with_folds_by_sequence_is_accepted() -> None:
+    assert (
+        check_cross_validation(3, 0, model_given=False, cv_group_by={"s0": ["a"]})
+        is None
+    )
+
+
 # --- Standardization ---
 
 
@@ -300,6 +340,87 @@ def test_dealing_names_the_classifier_in_a_refusal() -> None:
 
     with pytest.raises(ValueError, match=r"^\[clf\] .*6 train entries into 7"):
         deal_folds("clf", TRAIN, 7, 0)
+
+
+def _shared(*entries: tuple[str, str]) -> bool:
+    return len({FOLDS_OF_TIED[entry] for entry in entries}) == 1
+
+
+GROUP_BY: dict[str, str | list[str]] = {
+    "g:s0": "mouse-a",
+    "g:s1": ["mouse-a", "day-1"],
+    "g:s2": "day-1",
+    "g:s3": "mouse-b",
+    "g:s4": "mouse-b",
+}
+FOLDS_OF_TIED = deal_folds("clf", TRAIN, 3, 0, GROUP_BY)
+
+
+def test_entries_that_share_a_key_directly_or_through_a_third_share_a_fold() -> None:
+    assert _shared(("g", "s0"), ("g", "s1"), ("g", "s2"))
+    assert _shared(("g", "s3"), ("g", "s4"))
+    assert sorted(FOLDS_OF_TIED.values()) == [0, 0, 0, 1, 1, 2]
+
+
+def test_the_order_of_the_mapping_and_of_its_values_changes_nothing() -> None:
+    reordered: dict[str, str | list[str]] = {
+        key: value[::-1] if isinstance(value, list) else value
+        for key, value in reversed(GROUP_BY.items())
+    }
+
+    assert deal_folds("clf", TRAIN[::-1], 3, 0, reordered) == FOLDS_OF_TIED
+
+
+def test_a_test_entry_does_not_tie_two_train_entries() -> None:
+    group_by: dict[str, str | list[str]] = {
+        "g:s0": "a",
+        "test:t": ["a", "b"],
+        "g:s1": "b",
+    }
+
+    assert deal_folds("clf", TRAIN, 6, 0, group_by) == deal_folds("clf", TRAIN, 6, 0)
+
+
+def test_a_key_outside_the_train_entries_is_counted_in_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING)
+
+    _ = deal_folds("clf", TRAIN, 3, 0, {"test:t": "a", "g:other": "a", "g:s0": "a"})
+
+    assert "[clf] cv_group_by names 2 entries outside the train entries" in (
+        caplog.text
+    )
+
+
+def test_a_mapping_of_every_entry_to_its_own_key_deals_as_without_one() -> None:
+    own: dict[str, str | list[str]] = {f"g:{s}": s for _, s in TRAIN}
+
+    assert deal_folds("clf", TRAIN, 3, 5, own) == deal_folds("clf", TRAIN, 3, 5)
+
+
+def test_more_folds_than_ties_is_refused_naming_the_classifier() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^\[clf\] cannot deal 6 train entries, tied by cv_group_by into 3 "
+            r"ties, into 4 folds"
+        ),
+    ):
+        deal_folds("clf", TRAIN, 4, 0, GROUP_BY)
+
+
+def test_a_mapping_is_read_in_one_canonical_spelling() -> None:
+    adapter: TypeAdapter[dict[str, str | list[str]] | None] = TypeAdapter(CvGroupBy)
+
+    read = adapter.validate_python(
+        {"s2": ["b", "a", "b"], ":s1": "x", "g:s0": "y", "s1": ["w"]}
+    )
+
+    assert read == {"g:s0": ["y"], "s1": ["w", "x"], "s2": ["a", "b"]}
+    assert list(read or {}) == ["g:s0", "s1", "s2"]
+    assert adapter.validate_python({}) is None
+    assert adapter.validate_python(None) is None
 
 
 def test_the_fold_of_each_entry_survives_a_bundle_round_trip() -> None:
@@ -725,7 +846,28 @@ def test_the_block_settings_leave_the_identity_of_the_sequence_unit() -> None:
             "cv_unit": "block",
             "cv_blocks_per_sequence": 3,
             "cv_gap_frames": 5,
+            "cv_group_by": None,
         }
 
-    assert drop_block_settings(dumped(), "sequence") == {"cv_folds": 3}
-    assert drop_block_settings(dumped(), "block") == dumped()
+    block = dumped()
+    del block["cv_group_by"]
+    assert drop_unused_cv_settings(dumped(), "sequence", None) == {"cv_folds": 3}
+    assert drop_unused_cv_settings(dumped(), "block", None) == block
+
+
+def test_an_unset_tie_mapping_leaves_the_identity_and_a_set_one_stays() -> None:
+    def dumped(group_by: dict[str, list[str]] | None) -> dict[str, object]:
+        return {
+            "cv_folds": 3,
+            "cv_unit": "sequence",
+            "cv_blocks_per_sequence": None,
+            "cv_gap_frames": 0,
+            "cv_group_by": group_by,
+        }
+
+    assert drop_unused_cv_settings(dumped(None), "sequence", None) == {"cv_folds": 3}
+    mapping = {"s0": ["a"]}
+    assert drop_unused_cv_settings(dumped(mapping), "sequence", mapping) == {
+        "cv_folds": 3,
+        "cv_group_by": mapping,
+    }

@@ -635,6 +635,113 @@ class TestHeldOut:
         assert set(out["predicted_label"]) <= {0, 3}
 
 
+ANIMALS: dict[str, object] = {
+    "g:s00": "mouse-a",
+    "g:s01": ["mouse-a", "day-2"],
+    "g:s02": "day-2",
+    "g:s03": "mouse-b",
+    "g:s04": "mouse-b",
+}
+
+
+class TestGroupBy:
+    @staticmethod
+    def _digest(**extra: object) -> str:
+        return run_id_digest(XgboostFeature.Params.from_overrides({**PARAMS, **extra}))
+
+    def test_no_mapping_is_the_identity_of_a_run_without_the_setting(self) -> None:
+        assert self._digest(cv_folds=3, cv_group_by=None) == self._digest(cv_folds=3)
+        assert "cv_group_by" not in (
+            XgboostFeature.Params.from_overrides(
+                {**PARAMS, "cv_folds": 3}
+            ).identity_dump()
+        )
+
+    def test_a_mapping_changes_the_identity_and_two_spellings_of_it_do_not(
+        self,
+    ) -> None:
+        spelled = self._digest(cv_folds=3, cv_group_by={"s0": "a", "g:s1": ["b", "a"]})
+        respelled = self._digest(
+            cv_folds=3, cv_group_by={"g:s1": ["a", "b", "a"], ":s0": ["a"]}
+        )
+
+        assert spelled == respelled
+        assert spelled != self._digest(cv_folds=3)
+        assert spelled != self._digest(cv_folds=3, cv_group_by={"s0": "a"})
+
+    @pytest.mark.parametrize(
+        "extra, message",
+        [
+            ({}, "cv_group_by ties entries into the folds of cv_folds"),
+            ({"cv_folds": 3, "cv_unit": "block"}, "cv_group_by ties whole entries"),
+        ],
+    )
+    def test_a_mapping_without_folds_or_by_block_is_refused(
+        self, extra: dict[str, object], message: str
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            XgboostFeature.Params.from_overrides(
+                {**PARAMS, "cv_group_by": {"s0": "a"}, **extra}
+            )
+
+    def test_a_mapping_beside_a_model_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="cv_group_by ties entries into the folds"):
+            XgboostFeature.Params.from_overrides(
+                {
+                    "model": {"feature": "xgboost", "run_id": "0.4-abc"},
+                    "default_class": 0,
+                    "cv_group_by": {"s0": "a"},
+                }
+            )
+
+    def test_tied_entries_share_a_fold_and_each_is_scored_by_that_fold(
+        self, tmp_path: Path, fits: list[FitCall]
+    ) -> None:
+        world = make_world(tmp_path / "templates", sequences(9, {0: 12, 1: 12}))
+        number = {entry: i for i, entry in enumerate(world.frames)}
+        feature, state = fitted(
+            world, tmp_path / "run", cv_folds=3, cv_group_by=ANIMALS
+        )
+        feature.save_state(tmp_path / "run")
+
+        folds = sidecar(tmp_path / "run")
+
+        fold_of = dict(zip(zip(folds["group"], folds["sequence"]), folds["fold"]))
+        first, second = (
+            [("g", f"s0{i}") for i in (0, 1, 2)],
+            [("g", "s03"), ("g", "s04")],
+        )
+        assert len({fold_of[entry] for entry in first}) == 1
+        assert len({fold_of[entry] for entry in second}) == 1
+        assert fold_of[first[0]] != fold_of[second[0]]
+        columns: list[str] = state["_feature_columns"]
+        for entry, fold in fold_of.items():
+            held_out = {number[e] for e, f in fold_of.items() if f == fold}
+            assert fits[int(fold)].entries.isdisjoint(held_out)
+            frame = world.frames[entry]
+            out = feature.apply(frame)
+            np.testing.assert_allclose(
+                out[prob_columns(out)].to_numpy(),
+                fits[int(fold)].model.predict_proba(
+                    frame[columns].to_numpy(dtype=np.float64)
+                ),
+            )
+
+    def test_more_folds_than_ties_is_refused(self, tmp_path: Path) -> None:
+        world = make_world(tmp_path / "templates", sequences(4, {0: 8, 1: 8}))
+        feature = make_feature(
+            world,
+            tmp_path / "run",
+            cv_folds=3,
+            cv_group_by={"g:s00": "a", "g:s01": "a", "g:s02": "b", "g:s03": "b"},
+        )
+
+        with pytest.raises(
+            ValueError, match=r"^\[xgboost\] .*tied by cv_group_by into 2 ties"
+        ):
+            feature.fit(NO_INPUT)
+
+
 class TestRefusals:
     def test_more_folds_than_train_entries_is_refused(self, tmp_path: Path) -> None:
         world = make_world(tmp_path / "templates", sequences(4, {0: 8, 1: 8}))
