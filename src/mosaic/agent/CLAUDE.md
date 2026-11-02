@@ -48,9 +48,13 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   a dataset, and each declares `confirm_when`. `patch_recipe` writes only a content-addressed
   recipe file through `save_recipe`, is idempotent, asks nothing and is refused on a
   managed dataset. No tool takes `overwrite` (`test_tool_spec.py`).
-- A recipe argument is a document or a saved recipe named `{"digest": ...}` or
-  `{"saved": ...}` (`graph/saved.py`). `LocalBackend._recipe` resolves both, so a tool
-  that takes a recipe takes a `dataset` for the reference.
+- A recipe argument is a document, a saved recipe named `{"digest": ...}` or
+  `{"saved": ...}` (`graph/saved.py`), or a file named `{"path": ...}`.
+  `LocalBackend._recipe` resolves each, so a tool that takes a recipe takes a `dataset`
+  for a saved one. A path is confined to the operator's `recipe_roots` by
+  `confined_path` (`dataset_tools.py`) and read by `read_json_file`
+  (`graph/recipe_file.py`), once per call, and a submission saves what it read by
+  digest (`test_recipe_references.py`). Without roots it is refused.
 - The confirmation conditions are the ones `test_tool_spec.py` pins. A whole-dataset
   or large plan is a `PlanWire.cautions` entry, not a condition. In `_binding.py` an
   elicitation's `cancel` is `confirmation_unanswered` and a decline or an unticked
