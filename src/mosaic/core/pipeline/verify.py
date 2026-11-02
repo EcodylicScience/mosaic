@@ -1180,7 +1180,7 @@ def verify_plan(
                     StepVerdict(
                         step=planned.step_id,
                         runs=planned.runs,
-                        role="evaluation" if evaluation else "fit",
+                        role="evaluation" if evaluation and not planned.fits else "fit",
                         status="error",
                         reason=f"{type(exc).__name__}: {exc}",
                     )

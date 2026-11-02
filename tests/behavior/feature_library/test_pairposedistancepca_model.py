@@ -13,9 +13,11 @@ import joblib
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistancePCA
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.inventory import read_run_report
 from mosaic.core.pipeline.run import compute_run_id
 from mosaic.core.pipeline.types import InputStream, Result
 
@@ -193,3 +195,47 @@ def test_the_model_artifact_names_the_result_of_a_fit() -> None:
     assert (artifact.feature, artifact.run_id) == (fitted.feature, fitted.run_id)
     assert artifact.pattern == "model.joblib"
     assert feature.scope_dependent is False
+
+
+# --- the explained variance ----------------------------------------------------------
+
+
+class _Variance(BaseModel):
+    """The report a fit writes."""
+
+    n_components: int
+    explained_variance_ratio: list[float]
+    cumulative_explained_variance_ratio: list[float]
+    n_samples_seen: int
+
+
+def test_a_fit_reports_how_much_variance_its_components_keep(tmp_path: Path) -> None:
+    model = _fitted(tmp_path)
+
+    raw = read_run_report(model.parent, str(PairPoseDistancePCA.report_file))
+
+    report = _Variance.model_validate(raw)
+    ratio = report.explained_variance_ratio
+    cumulative = report.cumulative_explained_variance_ratio
+    assert report.n_components == len(ratio) == len(cumulative) == 2
+    assert all(0.0 <= share <= 1.0 for share in ratio)
+    assert ratio == sorted(ratio, reverse=True)
+    assert cumulative[-1] == pytest.approx(sum(ratio))
+    assert cumulative[-1] <= 1.0 + 1e-9
+    assert report.n_samples_seen > 0
+    fitted = joblib.load(model)["ipca"]
+    assert ratio == pytest.approx(list(fitted.explained_variance_ratio_))
+
+
+def test_the_report_is_not_part_of_the_run_identity() -> None:
+    feature = PairPoseDistancePCA(params=BASIS)
+
+    assert (
+        _id(feature, "a")
+        == compute_run_id(
+            PairPoseDistancePCA(params=BASIS),
+            None,
+            None,
+            ResolvedScope(entries={("g", "a")}),
+        )[0]
+    )

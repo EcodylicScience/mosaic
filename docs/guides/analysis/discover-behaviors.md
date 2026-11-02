@@ -72,6 +72,13 @@ branches — `pair-posedistance-pca` → `pair-wavelet` for posture, and `pair-e
 its own recent history, which is what makes nearby points in the embedding mean
 similar movement.
 
+**How much posture the components keep.** The number of components caps the posture
+information the later steps see. A fit writes `explained_variance.json` to its run, with the
+share of the variance each component explains and the running total
+(`cumulative_explained_variance_ratio`). It is the run's report, so a client reads it as the
+report resource of the run. Raise `n_components` when the total is low. The file is not part
+of the run id.
+
 **Fit the posture basis on some groups.** `pair-posedistance-pca` fits its components on
 the entries in its scope, so a run over the training groups and a run over every group are
 two fits. To project every group onto a basis fitted on the training groups, add a second

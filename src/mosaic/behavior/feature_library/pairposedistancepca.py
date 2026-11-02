@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, ClassVar, TypedDict, TypeGuard, final, override
+import json
+from typing import Annotated, ClassVar, Final, TypedDict, TypeGuard, final, override
 
 import joblib
 import numpy as np
@@ -12,6 +13,7 @@ from pydantic import Field
 from sklearn.decomposition import IncrementalPCA
 
 from mosaic.core.individuals import id_arenas, individual_pairs
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
@@ -77,6 +79,10 @@ _MODEL_DESCRIPTION = (
     "leave the run id, and n_components, pose, include_intra_A, include_intra_B "
     "and include_inter must equal the fit's."
 )
+
+
+VARIANCE_FILE: Final = "explained_variance.json"
+"""The report of a fit: the variance each principal component explains."""
 
 
 class PairPoseDistancePCABundle(TypedDict):
@@ -181,6 +187,8 @@ class PairPoseDistancePCA:
     )
 
     ModelArtifact = PairPoseDistancePCAModelArtifact
+    report_file: ClassVar[str] = VARIANCE_FILE
+    """The file of a fit that the MCP report resource serves."""
 
     class Inputs(TrackInputs):
         pass
@@ -290,6 +298,30 @@ class PairPoseDistancePCA:
             "version": self.version,
         }
         joblib.dump(bundle, run_root / "model.joblib")
+        atomic_write(
+            run_root / VARIANCE_FILE,
+            lambda tmp: tmp.write_text(
+                json.dumps(self._variance_report(), indent=2) + "\n"
+            ),
+        )
+
+    def _variance_report(self) -> dict[str, object]:
+        """The share of the pose-distance variance that each component keeps.
+
+        ``explained_variance_ratio`` is per component, in order, and the
+        cumulative ratio is what the first components keep together. A basis that
+        keeps little of the variance is a cap on what the scores can show.
+        """
+        fitted: object = self._ipca
+        ratio: list[float] = np.asarray(
+            getattr(fitted, "explained_variance_ratio_", []), dtype=float
+        ).tolist()
+        return {
+            "n_components": len(ratio),
+            "explained_variance_ratio": ratio,
+            "cumulative_explained_variance_ratio": np.cumsum(ratio).tolist(),
+            "n_samples_seen": int(getattr(fitted, "n_samples_seen_", 0)),
+        }
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self._fitted:

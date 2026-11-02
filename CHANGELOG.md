@@ -76,6 +76,11 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**`pair-posedistance-pca` reports its explained variance.** A fit writes
+`explained_variance.json` beside `model.joblib`: the share of variance each component keeps,
+their running total and the samples seen. It is the run's report resource. The run id does
+not change.
+
 **`orientation-rel` runs without a body-scale run.** With `scale` unset and no
 `body-scale` run in the dataset, the run failed with `FileNotFoundError` on the missing
 index. It now scales each row by the focal individual's median keypoint distance in that

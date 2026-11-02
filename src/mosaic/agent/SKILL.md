@@ -574,7 +574,8 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `superseded` whose `retired` is set, and pass the same `retire` and the new
   fingerprint to `submit_pipeline`. A retirement lasts for that call, so repeat it each
   time.
-- A run's report, such as `evaluate-labels`' scores, is the resource
+- A run's report, such as `evaluate-labels`' scores or the explained variance of a
+  `pair-posedistance-pca` fit, is the resource
   `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`. `preview_output`
   shows one entry's rows and never the pooled metrics, so a client that does not read
   resources must get them from that report.
