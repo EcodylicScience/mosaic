@@ -166,6 +166,7 @@ their one writer.
 
 SOURCES: dict[str, tuple[str, ...]] = {
     "attention-target": ("pair-facing",),
+    "individual-wavelet": ("keypoint-kinematics", "speed-angvel"),
     "nn-delta-bins": ("nn-delta-response",),
     "pair-wavelet": ("pair-posedistance-pca",),
     "probability-ensemble": ("xgboost",),
@@ -177,6 +178,9 @@ A feature reading pair rows cannot also read the tracks, whose rows are about
 individuals. ``nn-delta-bins`` reads the responses of ``nn-delta-response``,
 whose rows are individuals, as the category column of ``id-tag-columns`` is;
 ``neighbor-delta-response`` writes the same responses as pair rows.
+``individual-wavelet`` transforms the columns of ``keypoint-kinematics``, whose
+measures are all conditional, so ``speed-angvel`` guarantees the numeric payload
+that its declaration requires.
 """
 
 FOLD_TABLES = frozenset({"tune-threshold"})

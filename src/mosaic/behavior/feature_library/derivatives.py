@@ -281,8 +281,8 @@ def frame_axis(df: pd.DataFrame, who: str) -> FrameAxis:
         raise ValueError(
             f"{who}: id {df[C.id_col].iloc[first]!r} has "
             f"{repeated.size} repeated frames, the first at frame "
-            f"{df[C.frame_col].iloc[first]}. A derivative needs one position "
-            f"per frame, so one row per (frame, id).{hint}"
+            f"{df[C.frame_col].iloc[first]}. One position per frame is needed, "
+            f"so one row per (frame, id).{hint}"
         )
     boundaries = np.flatnonzero(~same) + 1
     starts = np.concatenate(([0], boundaries)).astype(np.int64)

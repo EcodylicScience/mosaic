@@ -40,6 +40,8 @@
   "id-tag-columns/default": "0.1-360e7720af",
   "id-tag-columns/labels-one-variant": "0.1-e538ec7fa1",
   "id-tag-columns/no-labels-variant": "0.1-0ed02bfded",
+  "individual-wavelet/default": "0.1-0fbf2d766d",
+  "individual-wavelet/params-nfreq": "0.1-9221abe0f4",
   "interaction-crop-pipeline/default": "0.3-33c0805241",
   "keypoint-kinematics/default": "0.1-4bfb0ea209",
   "keypoint-kinematics/heading": "0.1-a09845edd5",

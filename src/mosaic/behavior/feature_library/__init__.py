@@ -64,6 +64,7 @@ from . import (
     id_tag_columns,
     identity_embedding_model,
     identity_model,
+    individual_wavelet,
     kpms,
     local_order_metrics,
     nearestneighbor,
@@ -116,6 +117,7 @@ from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
 from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
+from .individual_wavelet import IndividualWavelet
 from .keypoint_kinematics import KeypointKinematics
 from .kpms import KpmsFeature
 from .label_statistics import LabelStatistics
@@ -209,6 +211,7 @@ __all__ = [
     "GlobalTSNE",
     "GlobalWardClustering",
     "IdTagColumns",
+    "IndividualWavelet",
     "KeypointKinematics",
     "KpmsFeature",
     "LabelMapRef",
@@ -272,6 +275,7 @@ __all__ = [
     "id_tag_columns",
     "identity_embedding_model",
     "identity_model",
+    "individual_wavelet",
     "kpms",
     "local_order_metrics",
     "nearestneighbor",

@@ -99,6 +99,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "heading",
     "hidra",
     "id-tag-columns",
+    "individual-wavelet",
     "interaction-crop-pipeline",
     "keypoint-kinematics",
     "label-statistics",
@@ -184,6 +185,11 @@ CASES: tuple[Case, ...] = (
     Case(
         case_id="pair-wavelet/params-nfreq",
         feature="pair-wavelet",
+        params={"n_freq": 20},
+    ),
+    Case(
+        case_id="individual-wavelet/params-nfreq",
+        feature="individual-wavelet",
         params={"n_freq": 20},
     ),
     Case(

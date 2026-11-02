@@ -3,7 +3,7 @@
 
 # Features
 
-58 features are registered. Each one runs as
+59 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -150,6 +150,30 @@ HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
     | `y_prefix` | `string` | `"poseY"` |  | Column name prefix for a keypoint's Y coordinate, followed by its index. |
     | `confidence_prefix` | `string` | `"poseP"` |  | Column name prefix for a keypoint's confidence score, followed by its index. |
     | `keypoint_names` | list of `string` \| `None` | `null` |  | Human-readable name for each keypoint, ordered to match the keypoint columns. Its length must equal pose_n when set. Unset, a feature that needs names generates them (kp0, kp1, ...). |
+
+### `individual-wavelet`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet`
+
+CWT spectrograms of numeric columns of each individual. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. A pair model reads them through a join to its pair rows.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
+| `f_min` | `number` | `0.2` | > `0` | Minimum frequency of the CWT frequency band. [Hz] |
+| `f_max` | `number` | `5.0` | > `0` | Maximum frequency of the CWT frequency band. [Hz] |
+| `n_freq` | `integer` | `25` | > `0` | Number of frequency bins, dyadically spaced between f_min and f_max. |
+| `wavelet` | `string` | `"cmor1.5-1.0"` |  | Name of the PyWavelets continuous wavelet used for the CWT. |
+| `log_floor` | `number` | `-3.0` |  | Minimum value the log-power spectrogram is clamped to. |
+| `pc_prefix` | `string` | `"PC"` |  | Column-name prefix used to auto-detect principal-component input columns, for example PC0 and PC1. |
+| `cols` | list of `string` \| `None` | `null` |  | Explicit input column names for the CWT. Unset, columns are auto-detected via pc_prefix, falling back to every numeric feature column when none match. |
+
+??? note "`SamplingConfig`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
+    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `keypoint-kinematics`
 

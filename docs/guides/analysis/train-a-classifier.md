@@ -367,6 +367,16 @@ stacked_result = ds.run_feature(TemporalStackingFeature(
 `stacked_result` to `ExtractLabeledTemplates` and to the classifier in place of the raw
 features.
 
+`individual-wavelet` gives each individual a spectral context instead: the log power of
+the columns `cols` names at `n_freq` frequencies from `f_min` to `f_max`. Wavelets of
+speeds and signed velocities (`keypoint-kinematics`) improved a classifier on CalMS21,
+and wavelets of posture PCs did not. The band should suit the frame rate and the
+behavior: 0.5 to 15 Hz served 30 fps mouse video, and the default is 0.2 to 5 Hz. A pair
+model reads individual wavelets through a join to pair rows. A dropout (a missing frame
+or a NaN, such as a keypoint the tracker lost) blanks each frequency for half its
+wavelet's support on each side: about 40 s at 0.2 Hz and 1.6 s at 5 Hz with the default
+wavelet. Raising `f_min` shortens it.
+
 `lightning-action` and `sequence-classifier` model the temporal structure themselves,
 so they do not need this step. See [Model the sequence directly](#model-the-sequence-directly)
 and [Train a sequence network](#train-a-sequence-network).

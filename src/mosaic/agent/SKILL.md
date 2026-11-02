@@ -301,6 +301,16 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `heading` for the animal itself, and from `pair-keypoints` for its partner, whose
   keypoints and velocities it places in the focal's frame. `pair-egocentric` averages
   the keypoints it selects into one center per animal.
+- `individual-wavelet` gives each individual the log power of the columns `cols` names
+  at `n_freq` frequencies from `f_min` to `f_max`. Wavelets of speeds and signed
+  velocities (`keypoint-kinematics`) improved a classifier on CalMS21, and wavelets of
+  posture PCs did not. The band should suit the frame rate and the behavior: 0.5 to 15
+  Hz served 30 fps mouse video, and the default is 0.2 to 5 Hz. A pair model reads
+  individual wavelets through a join to pair rows. A dropout (a missing frame or a NaN,
+  such as a keypoint the tracker lost) blanks each frequency for half its wavelet's
+  support on each side: about 40 s at 0.2 Hz and 1.6 s at 5 Hz with the default wavelet.
+  Raising `f_min` shortens it
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.

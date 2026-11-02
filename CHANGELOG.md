@@ -29,6 +29,20 @@ the focal's heading and its left-hand normal, and `partner_vx__{kp}` and
 to the partner's keypoint `b`. `heading` is required, and a 3D table is refused. The
 run-id golden adds `pair-keypoints/heading` and `pair-keypoints/inter-distances`.
 
+**`individual-wavelet` transforms each individual.** A new feature runs the wavelet
+transform of `pair-wavelet` on individuals and writes `W_{col}_f{fi}`, the log power of
+input column `col` at frequency index `fi`, beside `frame` (or `time`), `id`, `sequence`
+and `group`. It takes the params of `pair-wavelet` and reads the columns `cols` names,
+else the `PC*` columns, else every numeric feature column. With a `frame` column, an
+individual's missing frames read as NaN, and a coefficient is NaN where its wavelet
+support covers a missing frame or a NaN, which blanks each frequency for half its
+wavelet's support on each side: about 40 s at 0.2 Hz and 1.6 s at 5 Hz with the default
+wavelet. A repeated `(frame, id)` and a non-integer frame are refused. The run-id golden
+adds `individual-wavelet/default` (`0.1-0fbf2d766d`) and
+`individual-wavelet/params-nfreq` (`0.1-9221abe0f4`), the identifiers `pair-wavelet` has
+under the same params, each under its own feature's directory. `pair-wavelet/*` lines do
+not move.
+
 ## Unreleased: one-call submission from an agent
 
 **A recipe file as a recipe argument.** The MCP server's recipe arguments also take

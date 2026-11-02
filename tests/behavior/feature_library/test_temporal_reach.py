@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.individual_wavelet import IndividualWavelet
 from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.sequence_heads import (
@@ -198,6 +199,30 @@ def test_a_wavelet_declares_no_reach_because_the_data_may_set_the_frame_rate() -
 
     # The reach follows the frame rate, and a constant ``fps`` column replaces
     # ``sampling.fps_default``: a declaration from the default alone is too small.
+    assert from_default == 120
+    assert from_column > from_default
+    assert wavelet.temporal_reach(wavelet.params) is None
+
+
+def test_an_individual_wavelet_declares_no_reach_as_a_pair_wavelet_does() -> None:
+    wavelet = IndividualWavelet(
+        IndividualWavelet.Inputs((Result(feature="keypoint-kinematics"),)),
+        params={"f_min": 2.0, "f_max": 5.0, "n_freq": 4},
+    )
+    rng = np.random.default_rng(2)
+    tracks = pd.DataFrame(
+        {
+            "frame": np.arange(N),
+            "id": 0,
+            "group": "g",
+            "sequence": "s",
+            "speed": rng.normal(size=N),
+        }
+    )
+
+    from_default = _farthest_change(wavelet.apply, tracks, "speed")
+    from_column = _farthest_change(wavelet.apply, tracks.assign(fps=60.0), "speed")
+
     assert from_default == 120
     assert from_column > from_default
     assert wavelet.temporal_reach(wavelet.params) is None

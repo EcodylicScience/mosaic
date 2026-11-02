@@ -44,7 +44,8 @@ parameter, generated from the registry. Grouped by the question they answer:
 between keypoints, and with `heading` each keypoint's velocity and position in the
 animal's own frame), `trajectory-smooth`, `body-scale`, `body-length` (length along a
 chain of keypoints, or one a tracker measured), `scale-to-cm`, `scale-to-bl` (lengths in
-body lengths, for comparing animals of different sizes), `track-subsample`.
+body lengths, for comparing animals of different sizes), `individual-wavelet` (the log
+power of chosen columns at a band of frequencies), `track-subsample`.
 
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at
