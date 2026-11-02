@@ -101,7 +101,8 @@ StepScopeOption = Annotated[
         help=(
             "Narrow one step to part of the request's scope, as STEP=SCOPE "
             'where SCOPE is a JSON selector such as {"groups": ["train"]} or '
-            '{"entries": [["g", "s"]]}, or @file.json (repeatable).'
+            '{"entries": [["g", "s"]]}, or @file.json (repeatable). A bare '
+            "@file.json holds a JSON object of STEP: SCOPE for several steps."
         ),
     ),
 ]
@@ -482,35 +483,54 @@ def entries_scope(
 
 
 def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
-    """Parse repeated ``--step-scope STEP=SCOPE`` tokens into step scopes.
+    """Parse repeated ``--step-scope`` tokens into step scopes.
 
-    SCOPE is a JSON selector, inline or as ``@file.json``. A token without a
-    step, a repeated step, or a value that is not a selector fails, naming
-    the token.
+    A token is ``STEP=SCOPE``, where SCOPE is a JSON selector, inline or as
+    ``@file.json``, or a bare ``@file.json`` holding a JSON object of ``STEP:
+    SCOPE``. A token without a step, a step named twice across the tokens, or
+    a value that is not a selector fails, naming the token.
     """
+    from mosaic.core.narrowing import is_str_mapping
+
+    found: dict[str, Scope] = {}
+    for token in values or ():
+        if token.startswith("@"):
+            mapping = load_json_arg(token)
+            if not is_str_mapping(mapping):
+                fail(f"--step-scope {token!r} must hold a JSON object of STEP: SCOPE.")
+            pairs = [
+                (step_id, selector, token) for step_id, selector in mapping.items()
+            ]
+        else:
+            step_id, separator, value = token.partition("=")
+            if not separator or not step_id.strip() or not value:
+                fail(f"--step-scope {token!r} is not STEP=SCOPE.")
+            pairs = [(step_id, load_json_arg(value), token)]
+        for step_id, selector, named in pairs:
+            step_id = step_id.strip()
+            if not step_id:
+                fail(f"--step-scope {named!r} names a step with no id.")
+            if step_id in found:
+                fail(f"--step-scope names step {step_id!r} twice.")
+            found[step_id] = _step_scope(selector, named)
+    return found
+
+
+def _step_scope(selector: object, token: str) -> Scope:
+    """The scope that *selector* names, failing with *token* when it names none."""
     from pydantic import ValidationError
 
     from mosaic.core.scope import Scope
 
-    found: dict[str, Scope] = {}
-    for token in values or ():
-        step_id, separator, value = token.partition("=")
-        step_id = step_id.strip()
-        if not separator or not step_id or not value:
-            fail(f"--step-scope {token!r} is not STEP=SCOPE.")
-        if step_id in found:
-            fail(f"--step-scope names step {step_id!r} twice.")
-        selector = load_json_arg(value)
-        if not isinstance(selector, dict):
-            fail(f"--step-scope {token!r}: SCOPE must be a JSON object.")
-        try:
-            narrowed = Scope.model_validate(selector)
-        except ValidationError as exc:
-            fail(f"--step-scope {token!r} is not a scope: {exc}")
-        if narrowed.addresses_cameras:
-            fail(
-                f"--step-scope {token!r} names cameras. A step scope narrows "
-                "(group, sequence) entries."
-            )
-        found[step_id] = narrowed
-    return found
+    if not isinstance(selector, dict):
+        fail(f"--step-scope {token!r}: SCOPE must be a JSON object.")
+    try:
+        narrowed = Scope.model_validate(selector)
+    except ValidationError as exc:
+        fail(f"--step-scope {token!r} is not a scope: {exc}")
+    if narrowed.addresses_cameras:
+        fail(
+            f"--step-scope {token!r} names cameras. A step scope narrows "
+            "(group, sequence) entries."
+        )
+    return narrowed

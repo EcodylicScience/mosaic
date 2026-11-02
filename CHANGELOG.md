@@ -32,6 +32,10 @@ whatever the recipe's size, and `get_request_status` with `brief` lists the rest
 that names an existing file, and does not open with `{`, `[` or `@`, as that file. The
 `@file.json`, `@-` and inline JSON forms are unchanged.
 
+**A step scope file.** A bare `--step-scope @file.json` holds a JSON object of `STEP:
+SCOPE`, each scope checked as a `STEP=SCOPE` token's is. A step named twice across the
+tokens and the file is refused.
+
 ## Unreleased: individual results joined onto pair rows
 
 **A pair consumer reads per-individual inputs.** A feature whose `emits` is `as-input`

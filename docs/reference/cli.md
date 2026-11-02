@@ -1125,7 +1125,7 @@ $ mosaic pipeline plan [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
@@ -1174,7 +1174,7 @@ $ mosaic pipeline verify [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--atol <float range>`: How far a tolerant feature's new fit may sit from the stored one, per value. Only a feature that trains a network is tolerant (it has an n_threads param, or a device other than cpu). Every other feature must match exactly.  [default: 1e-05; x>=0]
 * `--scratch <path>`: Where the new fits go, outside the dataset. It must be absent or empty, and is kept afterwards. Without it a temporary directory is used and removed.
 * `--n-threads <int range>`: The thread count a feature with an n_threads param is fitted with. It is outside the run id.  [default: 1; x>=1]
@@ -1229,7 +1229,7 @@ $ mosaic pipeline submit [OPTIONS]
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--allow-partial`: Let a step proceed when it would run over less than planned.
 * `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
 * `--owner <str>`: Recorded on the request and its attempts.
@@ -1277,7 +1277,7 @@ $ mosaic pipeline run [OPTIONS]
 * `--detach`: With --request, start the driver in a new session, print its pid and return. The driver and its steps append their output to the request's log under .mosaic/drivers/.
 * `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
 * `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--allow-partial`: Proceed when a step would run over less than it was planned for, or when it produces nothing new.
 * `--owner <str>`: Recorded on each attempt.
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
@@ -1385,7 +1385,7 @@ $ mosaic pipeline score [OPTIONS]
 * `--average-over <int>`: A class the macro F1 averages over (repeatable). Unset: every class.
 * `--classes <int>`: A class to report (repeatable), in order.
 * `--prediction-column <str>`: The column holding each row's predicted class.
-* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable).
+* `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--expect-plan <str>`: The plan_fingerprint that a --dry-run printed. Refuses the run, writing nothing more, when the scoring plan has changed since.
 * `--expect-md5 <str>`: The MD5 of the held-out file. Refuses an incomplete copy before anything is done. A file only.
 * `--reuse`: Continue with the copy in --out after a failure or a dry run. The plan recorded before the held-out data was added is the one compared.

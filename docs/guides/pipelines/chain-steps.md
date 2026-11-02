@@ -163,6 +163,9 @@ mosaic pipeline run -m dataset.yaml --recipe @recipe.json \
 
 SCOPE is a JSON selector, `{"groups": [...]}`, `{"sequences": [...]}` (both together
 cover their cross product) or `{"entries": [[group, sequence], ...]}`, or `@file.json`.
+A bare `--step-scope @scopes.json` holding `{"templates": {"groups": ["train"]},
+"evaluate": {"groups": ["test"]}}` scopes several steps at once, and a step it names
+may not be named again by another `--step-scope`.
 `plan`, `submit` and `run` take it, and so does an MCP client as `step_entries`. `--group` narrows the whole request to groups, as `--entry` narrows
 it to entries.
 

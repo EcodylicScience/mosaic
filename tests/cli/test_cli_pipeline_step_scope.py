@@ -123,6 +123,80 @@ def test_a_malformed_step_scope_is_refused(
     assert "--step-scope" in result.stderr
 
 
+def _scopes_file(tmp_path: Path, scopes: object) -> str:
+    path = tmp_path / "scopes.json"
+    _ = path.write_text(json.dumps(scopes), encoding="utf-8")
+    return f"@{path}"
+
+
+def test_a_step_scope_file_narrows_each_step_it_maps(
+    split: Dataset, tmp_path: Path
+) -> None:
+    scopes = {"speed": {"groups": ["train"]}, "templates": {"sequences": ["s1"]}}
+
+    plan = _plan(
+        split,
+        _recipe_file(tmp_path),
+        "--step-scope",
+        _scopes_file(tmp_path, scopes),
+    )
+
+    assert _targets(plan) == {"speed": 2, "templates": 1}
+
+
+def test_a_step_in_a_step_scope_file_and_a_token_is_refused(
+    split: Dataset, tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(split.manifest_path),
+            "--step-scope",
+            _scopes_file(tmp_path, {"templates": {"groups": ["train"]}}),
+            "--step-scope",
+            'templates={"groups": ["test"]}',
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "names step 'templates' twice" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        [{"groups": ["train"]}],
+        {"templates": [1, 2]},
+        {"templates": {"x": 1}},
+        {"": {"groups": ["train"]}},
+    ],
+)
+def test_a_malformed_step_scope_file_is_refused(
+    split: Dataset, tmp_path: Path, scopes: object
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "plan",
+            "--recipe",
+            _recipe_file(tmp_path),
+            "--manifest",
+            str(split.manifest_path),
+            "--step-scope",
+            _scopes_file(tmp_path, scopes),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--step-scope" in result.stderr
+
+
 def test_step_scope_with_request_is_refused(split: Dataset) -> None:
     result = runner.invoke(
         app,
