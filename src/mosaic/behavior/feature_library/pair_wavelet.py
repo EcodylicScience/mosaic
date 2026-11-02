@@ -1,14 +1,15 @@
-"""PairWavelet feature -- CWT spectrograms on PairPoseDistancePCA outputs."""
+"""PairWavelet feature -- CWT spectrograms of numeric columns of pair rows.
+
+The columns are chosen by ``cols``, else the ``pc_prefix`` columns, else every
+numeric feature column.
+"""
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
-from typing import Annotated, ClassVar, final
+from typing import ClassVar, final
 
-import numpy as np
 import pandas as pd
-from pydantic import Field
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
@@ -34,51 +35,35 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Declared, Params
 
-from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
-from .helpers import ensure_columns, feature_columns
+from .helpers import ensure_columns
 from .registry import register_feature
-from .types import SamplingConfig
-
-import pywt
-
-_F_MIN_DESCRIPTION = "Minimum frequency of the CWT frequency band."
-
-_F_MAX_DESCRIPTION = "Maximum frequency of the CWT frequency band."
-
-_N_FREQ_DESCRIPTION = (
-    "Number of frequency bins, dyadically spaced between f_min and f_max."
+from .wavelet import (
+    WaveletParams,
+    constant_fps,
+    log_power,
+    wavelet_band,
+    wavelet_columns,
+    wavelet_input_columns,
 )
 
-_WAVELET_DESCRIPTION = "Name of the PyWavelets continuous wavelet used for the CWT."
-
-_LOG_FLOOR_DESCRIPTION = "Minimum value the log-power spectrogram is clamped to."
-
-_PC_PREFIX_DESCRIPTION = (
-    "Column-name prefix used to auto-detect principal-component input "
-    "columns, for example PC0 and PC1."
-)
-
-_COLS_DESCRIPTION = (
-    "Explicit input column names for the CWT. Unset, columns are "
-    "auto-detected via pc_prefix, falling back to every numeric feature "
-    "column when none match."
-)
+_WHO = "[pair-wavelet]"
 
 
 @final
 @register_feature
 class PairWavelet:
     """
-    CWT spectrograms on PairPoseDistancePCA outputs.
-    It is the spectral stage of a behavioral map that follows the approach of
-    Berman et al. (2014), MotionMapper.
+    CWT spectrograms of numeric columns of pair rows.
+    The columns are those ``cols`` names, else the ``pc_prefix`` columns, else
+    every numeric feature column. It is the spectral stage of a behavioral map
+    that follows the approach of Berman et al. (2014), MotionMapper.
 
     Expects input df to contain columns:
       - 'perspective' (0 = A->B, 1 = B->A)
       - 'frame' (preferred) or 'time' (if used as order column)
-      - PC0..PC{k-1} (k = number of PCA components)
+      - the payload columns to transform: ``cols``, else the ``pc_prefix``
+        columns PC0..PC{k-1}, else every numeric feature column
 
     Returns a DataFrame with columns:
       - frame (or time if that was the order col)
@@ -95,6 +80,10 @@ class PairWavelet:
     the complex Morlet wavelet ``cmor1.5-1.0`` at 25 frequencies. Each column
     gives the natural log of the squared coefficient magnitude, clamped from
     below at ``log_floor``.
+
+    Consecutive rows are read as consecutive samples, and missing frames are not
+    filled. A NaN in a series makes every coefficient whose wavelet support
+    covers it NaN.
 
     Differences from Berman et al. (2014):
 
@@ -137,21 +126,8 @@ class PairWavelet:
     class Inputs(Inputs[TrackInput | Result]):
         pass
 
-    class Params(Params):
-        sampling: Annotated[SamplingConfig, Declared(SAMPLING_FPS_ONLY_DESCRIPTION)] = (
-            Field(default_factory=SamplingConfig)
-        )
-        f_min: Annotated[
-            float, Field(gt=0), Declared(_F_MIN_DESCRIPTION, unit="Hz")
-        ] = 0.2
-        f_max: Annotated[
-            float, Field(gt=0), Declared(_F_MAX_DESCRIPTION, unit="Hz")
-        ] = 5.0
-        n_freq: Annotated[int, Field(gt=0), Declared(_N_FREQ_DESCRIPTION)] = 25
-        wavelet: Annotated[str, Declared(_WAVELET_DESCRIPTION)] = "cmor1.5-1.0"
-        log_floor: Annotated[float, Declared(_LOG_FLOOR_DESCRIPTION)] = -3.0
-        pc_prefix: Annotated[str, Declared(_PC_PREFIX_DESCRIPTION)] = "PC"
-        cols: Annotated[list[str] | None, Declared(_COLS_DESCRIPTION)] = None
+    class Params(WaveletParams):
+        pass
 
     def __init__(
         self,
@@ -160,10 +136,6 @@ class PairWavelet:
     ):
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._cache_key: tuple[str, float, float, int, float] | None = None
-        self._frequencies: np.ndarray | None = None
-        self._scales: np.ndarray | None = None
-        self._central_f: float | None = None
 
     @staticmethod
     def temporal_reach(params: PairWavelet.Params) -> int | None:
@@ -195,14 +167,12 @@ class PairWavelet:
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
         order_col = resolve_order_col(df)
-        fps = self._infer_fps(df, p.sampling.fps_default)
-        in_cols = self._select_input_columns(df)
+        fps = constant_fps(df, p.sampling.fps_default)
+        in_cols = wavelet_input_columns(df, p, _WHO)
         ensure_columns(df, ["perspective"])
 
-        self._prepare_band(fps)
-        assert self._frequencies is not None and self._scales is not None
-
-        n_freq = len(self._frequencies)
+        band = wavelet_band(p.wavelet, p.f_min, p.f_max, p.n_freq, fps)
+        colnames = wavelet_columns(in_cols, len(band.scales))
         has_pair_ids = "id1" in df.columns and "id2" in df.columns
         group_keys = ["id1", "id2", "perspective"] if has_pair_ids else ["perspective"]
 
@@ -211,30 +181,7 @@ class PairWavelet:
             g = g.sort_values(order_col)
             persp = int(g["perspective"].iloc[0])
             signal = g[in_cols].to_numpy(dtype=float)  # (T, k)
-            n_time, n_components = signal.shape
-
-            # CWT power spectrogram per component
-            power = np.empty((n_components, n_freq, n_time), dtype=np.float32)
-            for comp in range(n_components):
-                coeffs, _ = pywt.cwt(
-                    signal[:, comp],
-                    self._scales,
-                    self._wavelet_obj(),
-                    sampling_period=1.0 / float(fps),
-                )
-                power[comp] = (np.abs(coeffs) ** 2).astype(np.float32)
-
-            # log + clamp
-            eps = np.finfo(np.float32).tiny
-            log_power = np.maximum(np.log(power + eps), p.log_floor)
-
-            # flatten to (T, k*n_freq)
-            flat = log_power.reshape(n_components * n_freq, n_time).T
-            colnames = [
-                f"W_{in_cols[comp]}_f{fi}"
-                for comp in range(n_components)
-                for fi in range(n_freq)
-            ]
+            flat = log_power(signal, band, p.wavelet, fps, p.log_floor)
             block = pd.DataFrame(flat, columns=colnames)
             block[order_col] = g[order_col].to_numpy()
             block["perspective"] = persp
@@ -259,76 +206,10 @@ class PairWavelet:
         sort_keys += ["perspective", order_col]
         out = out.sort_values(sort_keys).reset_index(drop=True)
 
-        out.attrs["frequencies_hz"] = self._frequencies.tolist()
-        out.attrs["scales"] = self._scales.tolist()
+        out.attrs["frequencies_hz"] = band.frequencies.tolist()
+        out.attrs["scales"] = band.scales.tolist()
         out.attrs["wavelet"] = str(p.wavelet)
         out.attrs["fps"] = float(fps)
         out.attrs["pc_cols"] = [c for c in in_cols if c.startswith(p.pc_prefix)]
         out.attrs["input_columns"] = list(map(str, in_cols))
         return out
-
-    def _select_input_columns(self, df: pd.DataFrame) -> list[str]:
-        # 1) explicit columns override
-        cols_param = self.params.cols
-        if cols_param:
-            cols = [c for c in cols_param if c in df.columns]
-            if not cols:
-                raise ValueError(
-                    "[pair-wavelet] None of the requested 'cols' are present in df."
-                )
-            return cols
-        # 2) PC-prefixed columns
-        pc_cols = self._pc_columns(df, self.params.pc_prefix)
-        if pc_cols:
-            return pc_cols
-        # 3) Auto-detect: every numeric column that is not identity or bookkeeping
-        num_cols = feature_columns(df)
-        if not num_cols:
-            raise ValueError(
-                "[pair-wavelet] Could not auto-detect numeric feature columns."
-            )
-        return num_cols
-
-    def _infer_fps(self, df: pd.DataFrame, default: float) -> float:
-        if "fps" in df.columns:
-            vals = pd.Series(df["fps"]).dropna().unique()
-            if len(vals) == 1:
-                return float(vals[0])
-        return float(default)
-
-    def _pc_columns(self, df: pd.DataFrame, prefix: str) -> list[str]:
-        pc_cols: list[str] = []
-        i = 0
-        while True:
-            col = f"{prefix}{i}"
-            if col in df.columns:
-                pc_cols.append(col)
-                i += 1
-            else:
-                break
-        return pc_cols
-
-    def _prepare_band(self, fps: float) -> None:
-        key = (
-            self.params.wavelet,
-            self.params.f_min,
-            self.params.f_max,
-            self.params.n_freq,
-            float(fps),
-        )
-        if self._cache_key == key and self._frequencies is not None:
-            return
-        f_min = self.params.f_min
-        f_max = self.params.f_max
-        n_freq = self.params.n_freq
-        freqs = np.logspace(math.log2(f_min), math.log2(f_max), n_freq, base=2.0)
-        w = self._wavelet_obj()
-        central_f: float = pywt.central_frequency(w)
-        scales = float(fps) / (freqs * central_f)
-        self._frequencies = freqs.astype(np.float32)
-        self._scales = scales.astype(np.float32)
-        self._central_f = float(central_f)
-        self._cache_key = key
-
-    def _wavelet_obj(self) -> pywt.ContinuousWavelet:
-        return pywt.ContinuousWavelet(self.params.wavelet)
