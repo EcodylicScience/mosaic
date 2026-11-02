@@ -74,7 +74,9 @@ is `"balanced"` by default (each frame weighs inversely to its class's frequency
 for equal weights, or a mapping from class to weight for the classes to weigh up or
 down. `n_jobs` limits the threads of a fit and does not enter the run id. `device` is `"cpu"`
 by default, and `"cuda"` fits on a GPU where the machine has one. It enters the run id,
-and the fitted model applies on any machine. The template
+and the fitted model applies on any machine. The plan cautions about a `"cpu"` fit over
+more than 50 entries on a machine that has PyTorch and a GPU. The caution changes
+nothing: the default stays `"cpu"` and the step keeps its lane. The template
 draw and the fit each refuse a sample that would not fit in the available memory, and
 the message says what to lower.
 

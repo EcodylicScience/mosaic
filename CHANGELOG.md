@@ -76,6 +76,12 @@ identifier moves.
 
 ## Unreleased: appearance re-identification with SLEAP embedding models
 
+**A plan cautions about a large `xgboost` fit on the CPU.** `plan_recipe` and `mosaic
+pipeline plan` caution on an `xgboost` step whose `device` is `cpu` and that is asked for
+more than 50 entries, when the host can import `torch` and shows a GPU
+(`CUDA_VISIBLE_DEVICES`, or `/dev/nvidia0` when it is unset). The default, the run ids and
+the lanes do not change, and the plan does not import `torch`.
+
 **`pipeline score` scores each held-out group.** `test_scores.json` gives every member a
 `per_group` mapping of group to `n_entries`, `n_scored`, `accuracy`, `macro_f1` and
 `per_class_f1`, and `test_scores.txt` a "by group" block when there is more than one
