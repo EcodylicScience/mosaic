@@ -217,6 +217,12 @@ C: Entry = ("test", "c")
 # --- Training ------------------------------------------------------------------
 
 
+def test_entries_do_not_run_in_parallel_threads() -> None:
+    """One loaded network serves every entry, and the package's predict teardown
+    moves it to the CPU, so threads sharing it would meet tensors on two devices."""
+    assert LightningActionFeature.parallelizable is False
+
+
 def test_each_training_file_is_one_entitys_consecutive_frames_with_their_labels(
     tmp_path: Path, package: LightningActionRecorder
 ) -> None:

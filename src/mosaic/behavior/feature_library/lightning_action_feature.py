@@ -333,7 +333,7 @@ class LightningActionFeature:
     # 0.6: the run id no longer covers the step's scope. The ``templates`` run
     # names the training set, so a wider scope applies the fit it has.
     version = "0.6"
-    parallelizable = True
+    parallelizable = False  # one loaded network per instance, on one device
     # The fit streams the step's inputs but trains only on the entries that
     # ``templates`` assigned to train, and skips the others before touching state.
     scope_dependent = False
