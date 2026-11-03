@@ -12,9 +12,10 @@ nothing of mosaic's, and a mosaic fit must give the same network.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import zlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Generator, Mapping, Sequence
 from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -476,6 +477,40 @@ def test_a_fit_leaves_the_torch_settings_as_it_found_them() -> None:
         torch.backends.cudnn.benchmark,
         torch.get_num_threads(),
     )
+
+
+def test_a_fit_reads_its_environment_inside_the_deterministic_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reading the GPU name starts CUDA, which must not happen before the block sets
+    the cuBLAS variable. A spy marks when the block is open.
+    """
+    study, tables = _two_entries(tmp_path)
+    inside: list[bool] = []
+    open_blocks: list[bool] = []
+    deterministic = module.deterministic_torch
+
+    @contextlib.contextmanager
+    def spying(*, device: str, n_threads: int) -> Generator[None]:
+        with deterministic(device=device, n_threads=n_threads):
+            open_blocks.append(True)
+            try:
+                yield
+            finally:
+                open_blocks.clear()
+
+    environment = SequenceClassifier._environment  # pyright: ignore[reportPrivateUsage]
+
+    def recording(self: SequenceClassifier, torch_version: str) -> dict[str, str]:
+        inside.append(bool(open_blocks))
+        return environment(self, torch_version)
+
+    monkeypatch.setattr(module, "deterministic_torch", spying)
+    monkeypatch.setattr(SequenceClassifier, "_environment", recording)
+
+    _ = _fit(study, tables)
+
+    assert inside == [True]
 
 
 # --- Applying ------------------------------------------------------------------

@@ -781,8 +781,8 @@ class SequenceClassifier(FitReporting):
 
         total = 1 + (p.cv_folds or 0)
         models: list[SequenceClassifierModel] = []
-        environment = self._environment(torch.__version__)
         with deterministic_torch(device=p.device, n_threads=p.n_threads):
+            environment = self._environment(torch.__version__)
             if plan is not None and p.cv_folds is not None:
                 for fold in range(p.cv_folds):
                     self._before_fit(fold, total, whole="all runs")
@@ -1189,7 +1189,11 @@ class SequenceClassifier(FitReporting):
             self.cancel_token.raise_if_cancelled()
 
     def _environment(self, torch_version: str) -> dict[str, str]:
-        """Record what fitted the models, which no run id names."""
+        """Record what fitted the models, which no run id names.
+
+        Reading the GPU name starts CUDA, so a fit calls this inside
+        ``deterministic_torch``, after that block has set the cuBLAS variable.
+        """
         import torch
 
         gpu = (
