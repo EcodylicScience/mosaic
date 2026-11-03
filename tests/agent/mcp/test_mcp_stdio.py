@@ -333,7 +333,9 @@ def test_a_client_plans_submits_polls_and_previews_over_clean_stdout(
 
     wait_for(finished, REQUEST_SECONDS, "the detached driver never ended the request")
     status = _structured(
-        session.call("get_request_status", dataset=uuid, request_id=request_id)
+        session.call(
+            "get_request_status", dataset=uuid, request_id=request_id, brief=False
+        )
     )
     steps = status["steps"]
     assert isinstance(steps, list)

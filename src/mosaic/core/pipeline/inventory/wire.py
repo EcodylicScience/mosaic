@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.entry import Entry
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.scope import Scope
@@ -99,7 +100,6 @@ type _SortKey = tuple[str, str, str, str]
 """A listing's order: ``(kind, name, run_id, ref)``."""
 
 _CURSOR: Final[TypeAdapter[_SortKey]] = TypeAdapter(tuple[str, str, str, str])
-_PARAMS: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(dict[str, JsonValue])
 _INPUTS: Final[TypeAdapter[list[JsonValue]]] = TypeAdapter(list[JsonValue])
 
 _ENTRY_KEYED: Final = (
@@ -425,7 +425,7 @@ class _Matched:
             drift=len(record.drift),
             params_state=record.params_state,
             params=(
-                _PARAMS.validate_python(params.params)
+                JSON_OBJECT.validate_python(params.params)
                 if params and with_params
                 else None
             ),

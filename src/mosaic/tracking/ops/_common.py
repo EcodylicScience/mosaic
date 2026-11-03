@@ -14,8 +14,9 @@ import socket
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.file_digest import file_digest
@@ -92,17 +93,6 @@ def fingerprint_dataset(path: Path) -> str:
 # The keys a YOLO / POLO ``data.yaml`` uses to name its splits. ``path`` is
 # deliberately absent: it is a location, not content.
 _SPLIT_KEYS: Final = ("train", "val", "test")
-
-
-_PARSED_DATA_YAML: Final = TypeAdapter(dict[str, JsonValue])
-"""Turns whatever the YAML parser produced into a typed mapping, or says why not.
-
-The same device ``core.manifest`` uses on ``dataset.yaml``, and for the same
-reason: a parser returns an untyped object, and a data.yaml that is a list, a
-bare string, or a mapping with a non-string key is a real thing to find on disk.
-Validating once here means the rest of this function works with
-``dict[str, JsonValue]`` instead of re-checking at each use.
-"""
 
 
 def _split_roots(declared: JsonValue, base: Path) -> list[Path]:
@@ -236,7 +226,7 @@ def fingerprint_yolo_dataset(data_yaml: Path) -> str:
         text = ""
     try:
         loaded: object = yaml.safe_load(text)
-        parsed = _PARSED_DATA_YAML.validate_python(loaded)
+        parsed = JSON_OBJECT.validate_python(loaded)
     except (yaml.YAMLError, ValidationError):
         # Unreadable, not a mapping, or carrying something no JSON value covers.
         # Fall back to the file's own text, so two different odd YAMLs still

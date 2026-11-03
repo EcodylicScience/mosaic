@@ -21,7 +21,7 @@ from mosaic.core.narrowing import is_str_mapping
 
 from ..error_kind import ClassifiedError, ErrorKind
 from .digest import DIGEST_LENGTH, recipe_digest
-from .store import load_recipe, pipelines_root, recipe_path
+from .recipe_store import load_recipe, pipelines_root, recipe_path
 
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue

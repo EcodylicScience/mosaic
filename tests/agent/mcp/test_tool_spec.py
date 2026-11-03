@@ -9,6 +9,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from mosaic.agent.mcp.local import LocalBackend
+from mosaic.agent.mcp.summaries import summarize
 from mosaic.agent.mcp.spec import (
     CONFIRMATION_CONDITIONS,
     MAX_PREVIEW_ROWS,
@@ -19,6 +20,7 @@ from mosaic.agent.mcp.spec import (
     TOOLS,
     DatasetList,
     DatasetListItem,
+    GetRequestStatusInput,
     ScopeSelector,
     ListDatasetsInput,
     PlanRecipeInput,
@@ -31,11 +33,12 @@ from mosaic.agent.mcp.spec import (
     call_tool,
     confirmation_tag,
     read_confirmation_tag,
+    result_too_large,
     tool_spec,
 )
 from mosaic.core.pipeline import preview
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
-from mosaic.core.pipeline.graph import Recipe
+from mosaic.core.pipeline.graph import OpenDuplicate, Recipe, describe_duplicates
 from tests.helpers import modules_loaded_by
 
 BUDGET_MODULES = (
@@ -238,12 +241,12 @@ def test_a_wait_longer_than_the_cap_is_refused_before_the_backend() -> None:
     ]
 
 
-def test_a_status_read_waits_and_shrinks_only_when_asked() -> None:
+def test_a_status_read_waits_only_when_asked_and_is_brief_unless_told_not() -> None:
     spec = tool_spec("get_request_status")
     assert spec is not None
     fields = spec.input_model.model_fields
 
-    assert (fields["wait_seconds"].default, fields["brief"].default) == (0, False)
+    assert (fields["wait_seconds"].default, fields["brief"].default) == (0, True)
     # Only brief shrinks a result, so only it is offered when one is too large.
     assert spec.narrowing == ("brief",)
     assert "wait_seconds" in spec.description
@@ -356,6 +359,33 @@ def test_a_result_above_the_budget_is_refused_with_how_to_narrow_it() -> None:
     assert isinstance(chars, int) and chars > MAX_RESULT_CHARS
     assert "limit" in refused.message
     assert isinstance(small, DatasetList)
+
+
+def test_a_summary_names_an_open_request_as_the_refusal_does() -> None:
+    submitted = _Oversized(1).submit_pipeline(
+        SubmitPipelineInput(dataset="d", recipe=RECIPE_EXAMPLE, plan_fingerprint="f")
+    )
+    duplicate = OpenDuplicate(submitted.duplicates[0].request_id, steps=("step_0",))
+
+    assert describe_duplicates([duplicate]) in summarize(submitted)
+
+
+def test_a_refusal_never_names_a_flag_the_call_already_set() -> None:
+    spec = tool_spec("get_request_status")
+    assert spec is not None
+    brief = GetRequestStatusInput(dataset="d", request_id="r")
+    whole = GetRequestStatusInput(dataset="d", request_id="r", brief=False)
+
+    after_brief = result_too_large(spec, brief, MAX_RESULT_CHARS + 1)
+    after_whole = result_too_large(spec, whole, MAX_RESULT_CHARS + 1)
+
+    assert brief.brief
+    assert after_brief.detail is not None
+    assert after_brief.detail["narrow_with"] == []
+    assert "brief" not in after_brief.message
+    assert after_whole.detail is not None
+    assert after_whole.detail["narrow_with"] == ["brief"]
+    assert "narrowed by brief" in after_whole.message
 
 
 def test_a_write_tool_result_is_never_replaced_by_the_backstop() -> None:

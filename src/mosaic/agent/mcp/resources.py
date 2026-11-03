@@ -241,7 +241,7 @@ def _read_request(backend: LocalBackend, variables: UriVariables) -> ResourceTex
     dataset = backend.dataset(uuid)
     status = _answered(
         backend.get_request_status(
-            GetRequestStatusInput(dataset=uuid, request_id=request_id)
+            GetRequestStatusInput(dataset=uuid, request_id=request_id, brief=False)
         )
     )
     request = read_request(dataset.base_dir, request_id)

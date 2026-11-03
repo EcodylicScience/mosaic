@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import TypeAdapter
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.runlog import (
     changed_at_or_after,
     parse_instant,
@@ -41,8 +42,13 @@ from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
 from .digest import canonical_recipe, recipe_digest
 from .model import ComputedRun, Recipe, Request
+from .recipe_store import (
+    load_recipe,
+    pipelines_root,
+    read_json,
+    recipe_path,
+)
 from .status import (
-    JSON_OBJECT,
     RequestPageWire,
     RequestSummaryWire,
     request_summary,
@@ -57,18 +63,15 @@ if TYPE_CHECKING:
 __all__ = [
     "DUPLICATE_STEP_SAMPLE",
     "OpenDuplicate",
+    "describe_duplicate",
     "RequestUnreadable",
     "computes_path",
     "computes_root",
     "current_digest",
     "list_requests",
     "load_computes",
-    "load_recipe",
     "load_request",
     "open_duplicates",
-    "pipelines_root",
-    "read_recipe_document",
-    "recipe_path",
     "request_ids",
     "request_path",
     "requests_matching",
@@ -104,11 +107,6 @@ class RequestUnreadable(ClassifiedError, ValueError):
         return {"request_id": self.request_id, "path": str(self.path)}
 
 
-def pipelines_root(base_dir: Path | str) -> Path:
-    """``<base_dir>/.mosaic/pipelines`` -- the recipes applied to this dataset."""
-    return Path(base_dir) / ".mosaic" / "pipelines"
-
-
 def requests_root(base_dir: Path | str) -> Path:
     """``<base_dir>/.mosaic/pipelines/requests`` -- one file per submission."""
     return pipelines_root(base_dir) / "requests"
@@ -122,11 +120,6 @@ def computes_root(base_dir: Path | str) -> Path:
 def computes_path(base_dir: Path | str, request_id: str) -> Path:
     """Where the runs that one submission computes are recorded."""
     return computes_root(base_dir) / f"{request_id}.json"
-
-
-def recipe_path(base_dir: Path | str, digest: str) -> Path:
-    """Where the recipe with this digest sits once copied in."""
-    return pipelines_root(base_dir) / f"{digest}.json"
 
 
 def request_path(base_dir: Path | str, request_id: str) -> Path:
@@ -147,32 +140,6 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
     path = recipe_path(base_dir, digest)
     _write_json(path, canonical_recipe(recipe))
     return path
-
-
-def read_recipe_document(path: Path | str) -> dict[str, JsonValue]:
-    """Read a recipe file as the JSON object it holds, without validating it.
-
-    The bytes a saved recipe holds are what its file name digests, so a reader
-    that verifies a file against its name needs the document as written, before
-    pydantic fills defaults or normalizes a value.
-
-    Raises:
-        FileNotFoundError: There is no file there.
-        ValueError: It is not valid JSON, or not a JSON object.
-    """
-    return JSON_OBJECT.validate_python(_read_json(Path(path), "recipe"))
-
-
-def load_recipe(path: Path | str) -> Recipe:
-    """Read a recipe file.
-
-    Raises:
-        FileNotFoundError: There is no file there.
-        ValueError: It is not valid JSON, or not a valid recipe -- including a
-            ``schema_version`` newer than this mosaic understands, which is
-            refused rather than read under the wrong rules.
-    """
-    return Recipe.model_validate(read_recipe_document(path))
 
 
 def save_request(base_dir: Path | str, request: Request) -> Path:
@@ -224,7 +191,7 @@ def load_computes(base_dir: Path | str, request_id: str) -> list[ComputedRun] | 
     if not path.is_file():
         return None
     try:
-        return _COMPUTED_RUNS.validate_python(_read_json(path, "computed runs"))
+        return _COMPUTED_RUNS.validate_python(read_json(path, "computed runs"))
     except (OSError, ValueError) as error:
         warnings.warn(
             f"skipped computed runs file {path}: {error}", UserWarning, stacklevel=3
@@ -241,7 +208,7 @@ def load_request(base_dir: Path | str, request_id: str) -> Request:
     """
     path = request_path(base_dir, request_id)
     try:
-        return Request.model_validate(_read_json(path, "request"))
+        return Request.model_validate(read_json(path, "request"))
     except ValueError as error:
         raise RequestUnreadable(request_id, path, str(error)) from error
 
@@ -364,6 +331,18 @@ class OpenDuplicate:
             "steps": list(self.named_steps),
             "steps_omitted": self.steps_omitted,
         }
+
+
+def describe_duplicate(request_id: str, steps: Sequence[str], omitted: int) -> str:
+    """Name one open request, the *steps* it shares and a count of *omitted* more.
+
+    A request that shares no named step is named as one of the same recipe.
+    """
+    if not steps:
+        return f"{request_id} (the same recipe)"
+    named = ", ".join(map(repr, steps))
+    more = f" and {omitted} more" if omitted else ""
+    return f"{request_id} (steps {named}{more})"
 
 
 def open_duplicates(
@@ -558,7 +537,7 @@ def _names_recipe(
 def _request_document(path: Path) -> dict[str, JsonValue] | None:
     """The JSON object at *path*, or ``None`` with a ``UserWarning`` naming it."""
     try:
-        return JSON_OBJECT.validate_python(_read_json(path, "request"))
+        return JSON_OBJECT.validate_python(read_json(path, "request"))
     except (OSError, ValueError) as error:
         warnings.warn(
             f"skipped request file {path}: {error}", UserWarning, stacklevel=4
@@ -630,15 +609,3 @@ def _write_json(path: Path, payload: object) -> None:
     from .._utils import atomic_write
 
     atomic_write(path, lambda temp: temp.write_text(json.dumps(payload, indent=2)))
-
-
-def _read_json(path: Path, what: str) -> object:
-    """Read one JSON document, naming the file when it does not parse."""
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        raise FileNotFoundError(f"no {what} file at {path}") from None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{path} is not valid JSON: {exc}") from exc

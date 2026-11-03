@@ -33,9 +33,9 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - A failure returns the error envelope (`core/pipeline/error_envelope.py`). Dataset
   content (notes, tags, names, error text) is returned in typed fields only.
 - `call_tool` refuses a read tool's result above `MAX_RESULT_CHARS` with
-  `result_too_large`, naming the `ToolSpec.narrowing` arguments. A write tool's
-  result is returned whatever its size. A new argument that shrinks a result joins
-  its tool's `narrowing`, and a new `limit` must
+  `result_too_large`, naming the `ToolSpec.narrowing` arguments, less a flag the call
+  already set true. A write tool's result is returned whatever its size. A new
+  argument that shrinks a result joins its tool's `narrowing`, and a new `limit` must
   (`test_every_tool_with_a_limit_names_it_among_its_narrowing`).
 - `ToolSpec.always_load` becomes the tool's `anthropic/alwaysLoad` meta in
   `_binding.py`. A success returns the summary, the output as JSON text, and the
@@ -69,9 +69,10 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - `get_request_status` waits when given `wait_seconds`, at most `MAX_WAIT_SECONDS`.
   `request_status_wire` polls the run-logs, and `LocalBackend` blocks on the worker
   thread that `_binding._run_tool` gives each call, never on the event loop, and holds
-  no dataset lock while it waits. `brief` shrinks the result and is among the tool's
-  `narrowing`, and `wait_seconds` delays it and is not
-  (`test_mcp_server.py`, `test_mcp_stdio.py`).
+  no dataset lock while it waits. `brief` shrinks the result, defaults to true and is
+  among the tool's `narrowing`, which a refusal leaves out once `brief` is true.
+  `wait_seconds` delays the result and is not among them
+  (`test_mcp_server.py`, `test_mcp_stdio.py`, `test_tool_spec.py`).
 - A run's report is a resource, not a tool: a feature declaring `report_file` has it
   served at `.../artifacts/feature/{name}/{run_id}/report` through
   `read_run_report`.

@@ -94,6 +94,29 @@ other step finished, its rollup is already terminal, so the bind is never re-che
 
 No run id moves for a request without binds.
 
+## Unreleased: a request reads failed once no step it has left can start
+
+**A request with a failed step reads `failed` as soon as no unstarted step can
+start.** Before, a failed request with an unstarted step read `running` while its
+driver lease file existed, then `orphaned` once the lease went stale, even when every
+unstarted step sat below a failed one and no driver would start it. The rollup now
+walks down from each failed step with the walk the drivers use to block a branch
+(`blocked_by`, which stops at a bound step). When every unstarted step is below a
+failed one, the request reads `failed` at once, and `mosaic wait` ends with exit
+code 1. A request that can start a step beside the failure keeps reading `running`
+under its lease.
+
+- The rollup reads the recipe file to decide. It stays `running` if the recipe cannot
+  be read. `request_verdict` reads neither the lease nor the recipe.
+- `run_pipeline` releases its lease in that case, so a call that left steps unrecorded
+  below a recorded failure ends the request instead of leaving it to read `orphaned`.
+- MCP `get_request_status` defaults to `brief: true`, listing the steps that need
+  attention and counting the rest in `omitted_finished` and `omitted_pending`. The
+  CLI's `mosaic pipeline status` keeps its default. A result above the size budget is
+  refused naming the arguments that narrow it, less `brief` once it is true.
+- The recipe readers move from `store.py` to a leaf, `recipe_store.py`, which the
+  rollup imports without the request listing and status wires above it.
+
 ## Unreleased: lightning-action cross-validation
 
 **`lightning-action` takes `cv_folds`.** With it, and the `cv_seed`, `cv_unit`,
@@ -233,7 +256,8 @@ cleanup without it is refused with `cleanup_needs_plan`.
 **A compact `submit_pipeline` result.** `SubmittedPipeline.steps` is replaced by
 `counts`, the steps by plan status, `first_steps`, the first three steps to compute,
 and `truncated`, whether more are to compute. A result stays under 1,000 characters
-whatever the recipe's size, and `get_request_status` without `brief` lists every step.
+whatever the recipe's size, and `get_request_status` with `brief: false` lists every
+step.
 
 **`--recipe` takes a file path.** The `mosaic pipeline` verbs read a `--recipe` value
 that names an existing file, and does not open with `{`, `[` or `@`, as that file. A

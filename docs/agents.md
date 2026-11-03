@@ -175,8 +175,10 @@ with `mosaic pipeline status`, cancel it with `cancel_request` or
 An agent waits for a request with `get_request_status` and `wait_seconds` (45 at most).
 The call returns as soon as a step of the request ends or the request does, and
 otherwise when the time is up, so the agent needs no polling loop and no look at the
-driver's process. With `brief` it lists only the steps that are running or did not
-finish cleanly, and counts the others (`omitted_finished`, `omitted_pending`).
+driver's process. It lists only the steps that are running or did not finish cleanly,
+and counts the others (`omitted_finished`, `omitted_pending`); `brief: false` lists
+every step. A request reads `failed` as soon as a step failed and every step left to
+start depends on a failed one.
 `mosaic pipeline status --request <id> --wait-seconds 45 --brief` does the same from a
 shell.
 

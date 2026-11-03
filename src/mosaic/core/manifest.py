@@ -41,13 +41,13 @@ from pydantic import (
     Field,
     PositiveInt,
     SerializerFunctionWrapHandler,
-    TypeAdapter,
     ValidationError,
     field_validator,
     model_serializer,
     model_validator,
 )
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.store_division import RecordingIdentity, recording_name_problem
 from mosaic.core.strict_model import StrictModel
@@ -1250,16 +1250,6 @@ def resolve_manifest_path(path: Path) -> Path:
     return path
 
 
-_PARSED_MANIFEST: Final = TypeAdapter(dict[str, JsonValue])
-"""Turns whatever the parser produced into a typed mapping, or says why not.
-
-A YAML or JSON parser returns an untyped object, and a manifest that is a list,
-a bare string or a mapping with a non-string key is a real thing to find on
-disk. Validating it here means the rest of the module works with
-``dict[str, JsonValue]`` rather than re-checking at each use.
-"""
-
-
 def parse_manifest(path: Path) -> dict[str, JsonValue]:
     """Parse the manifest file at *path* into a mapping, unvalidated and unmigrated.
 
@@ -1284,7 +1274,7 @@ def parse_manifest(path: Path) -> dict[str, JsonValue]:
     if parsed is None:
         return {}
     try:
-        return _PARSED_MANIFEST.validate_python(parsed)
+        return JSON_OBJECT.validate_python(parsed)
     except ValidationError as exc:
         msg = f"manifest {path} is a {type(parsed).__name__}, not a mapping"
         raise ValueError(msg) from exc

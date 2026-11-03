@@ -19,7 +19,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self
 
-from pydantic import Field, TypeAdapter, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.entry_claim import phase_activity
@@ -28,6 +28,7 @@ from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME, parse_op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
@@ -299,8 +300,6 @@ class TrainSleapInvalid(ClassifiedError, ValueError):
     error_kind: ClassVar[ErrorKind] = "invalid"
 
 
-_DOCUMENT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(dict[str, JsonValue])
-
 MODEL_DIRECTORY: Final = "model"
 """The directory under a run root that sleap-nn writes the model to."""
 _TRAINING_LOG: Final = "training_log.csv"
@@ -391,7 +390,9 @@ def _effective_settings(
             objective names a positive scope that sleap-nn does not.
     """
     try:
-        effective = effective_train_config(_DOCUMENT.validate_python(config), overrides)
+        effective = effective_train_config(
+            JSON_OBJECT.validate_python(config), overrides
+        )
         if params.head != "embedding":
             return None
         return embedding_settings(effective)

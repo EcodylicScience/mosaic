@@ -265,7 +265,7 @@ def test_a_request_written_while_planning_refuses_the_submission(
     with pytest.raises(DuplicateRequest) as raised:
         _ = submit_request(tracked, speed_recipe(), refuse_duplicates=True)
 
-    assert raised.value.request_ids == tuple(written)
+    assert [each.request_id for each in raised.value.duplicates] == written
     assert _request_count(tracked) == 1
 
 

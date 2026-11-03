@@ -88,7 +88,9 @@ importing `mosaic.tracking` registers neither.
   `sources add` and that tool build a source through `scan_source_from_fields`
   (`source_fields.py`, `tests/core/test_source_fields.py`).
 - Dataset tags use the grammar in `typed_attribute.py`, which mosaic-api shares. It
-  imports only the standard library and `json_value`. Keep dataset concepts out of it.
+  imports only the standard library and `json_value`, both pydantic-free. The
+  `JSON_OBJECT` adapter is in `json_object.py`
+  (`tests/meta/test_typed_attribute_imports.py`). Keep dataset concepts out of it.
 - `continuous_groups` refuses an empty or repeated name
   (`test_the_empty_group_cannot_be_continuous`). `Dataset.set_continuous_groups` also
   refuses `__` or `:` in a name, the name of an empty-group sequence, and a group with

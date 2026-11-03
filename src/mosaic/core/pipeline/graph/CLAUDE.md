@@ -6,12 +6,13 @@ named without a path is in `tests/core/pipeline/graph/`.
 
 ## Files under `<dataset>/.mosaic/`
 
-`pipelines/<digest>.json` is a recipe, `pipelines/requests/<rid>.json` one submission
-of it and `pipelines/computes/<rid>.json` the runs that submission computes
-(`store.py`). `runs/<execution_id>.jsonl` is a step attempt's run-log. `claims/`
-keeps the failure records (`claims.py`), the one part of a step's status that is stored
-instead of derived from artifacts. `drivers/<rid>.lease.json` is the lease of the process
-driving a request, and `drivers/<rid>.log` the output of that driver and its steps
+`pipelines/<digest>.json` is a recipe (`recipe_store.py`, a leaf the rollup reads),
+`pipelines/requests/<rid>.json` one submission of it and
+`pipelines/computes/<rid>.json` the runs that submission computes (`store.py`).
+`runs/<execution_id>.jsonl` is a step attempt's run-log. `claims/` keeps the failure
+records (`claims.py`), the one part of a step's status that is stored instead of derived
+from artifacts. `drivers/<rid>.lease.json` is the lease of the process driving a
+request, and `drivers/<rid>.log` the output of that driver and its steps
 (`driver_lease.py`).
 
 ## Recipe and request
@@ -35,7 +36,7 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   that a request submitted before it holds, and otherwise records a cache hit of the
   pinned run (outcome `bound`). Both drivers call it in their own process and start no
   step process for one. `ancestors_of` and `descendants_of` take `cut=request.bind`,
-  so `_pinned_parents` and `_blocked_by` neither enter a bound step nor walk past it,
+  so `_pinned_parents` and `blocked_by` neither enter a bound step nor walk past it,
   and a bound step pins nothing: a failure above it does not reach the steps below.
   `request_rollup` reads it through `bound_attempt` unless its run-log records a
   refusal, so the verdict and a wait end. The held-out guard and `reach_findings`
@@ -227,8 +228,10 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
 - A request is one-shot, and a driver does not drive one whose rollup has ended. A
   failed branch is not terminal while a sibling runs: `request_rollup` (`rollup.py`)
   reads a failed request with an unstarted step `running` while its driver lease file
-  exists, live or not. `request_verdict` does not read the lease
-  (`test_pipeline_step.py`).
+  exists, live or not, unless every unstarted step is below a failed one
+  (`blocked_by`, which the drivers share), and then `failed` at once. A recipe that
+  does not read leaves it `running`. `request_verdict` reads neither the lease nor the
+  recipe (`test_pipeline_step.py`, `tests/cli/test_cli_wait.py`).
 - `status.py` builds `RunStatusWire` and `RequestStatusWire` from run-logs and driver
   leases. Their `partial`, `pending` and `orphaned` are derived words, and none joins
   `runlog.TERMINAL_STATUSES`. `orphaned` is a running request whose driver lease is
@@ -280,9 +283,11 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   run-log records in this call ends the branch as in `run_request`, and a later call
   skips that branch when the step fails again. A raise with no recorded end, and a
   stall without `allow_partial`, leave the branch unrecorded and keep the lease, so
-  the request resumes. It raises the first error after the other steps ran. It stops
-  before a step that a cancel recorded `cancelled`, and records its unended steps
-  `cancelled` on `Cancelled` or `KeyboardInterrupt` (`test_pipeline_run.py`).
+  the request resumes, unless every step left unrecorded sits below a recorded
+  failure: the lease is then released and the request reads `failed`. It raises the
+  first error after the other steps ran. It stops before a step that a cancel recorded
+  `cancelled`, and records its unended steps `cancelled` on `Cancelled` or
+  `KeyboardInterrupt` (`test_pipeline_run.py`).
 - A request's cleanup runs in its driver after every step finished, in `run_request`
   and `run_pipeline` alike (`run_cleanup`, `cleanup.py`), under the driver's lease; it
   records no step. It removes only the approved runs that are still removable. Before

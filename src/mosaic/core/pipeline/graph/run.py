@@ -60,6 +60,7 @@ from typing import IO, TYPE_CHECKING, ClassVar, Final
 
 from pydantic import ValidationError
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.scope import Scope
 from mosaic.runlog import (
     TERMINAL_STATUSES,
@@ -86,11 +87,10 @@ from .driver_lease import (
 from .cleanup import run_cleanup
 from .plan import plan_pipeline
 from .request import load_recipe_for_request, step_argv, submit_request
-from .rollup import request_rollup
-from .status import JSON_OBJECT
+from .rollup import blocked_by, request_rollup
 from .step import StepOutcome, execute_step, record_step_ended
 from .step_preflight import CoverageShortfall, StepRefused
-from .topo import descendants_of, topological_order
+from .topo import topological_order
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -238,7 +238,9 @@ def run_pipeline(
     The run holds the request's driver lease, marked ``in_process``, and names in
     it the step that runs. It deletes the lease when the request has ended and
     keeps it otherwise. A run that left steps unrecorded then reads ``orphaned``
-    once the lease goes stale, and ``mosaic pipeline run --request`` resumes it.
+    once the lease goes stale, and ``mosaic pipeline run --request`` resumes it,
+    unless each such step is below a recorded failure: the run then releases
+    its lease and the request reads ``failed``.
     A later call in this process takes over the lease that an earlier one kept.
 
     A request with a cleanup (``Request.cleanup``) runs it here once every step
@@ -357,12 +359,12 @@ def run_pipeline(
                 # A record left by an earlier call is not this call's failure.
                 after = _run_record(ds, submitted, step_id)
                 if after is None or after == before or after["status"] != "failed":
-                    unrecorded |= _blocked_by(recipe, submitted, step_id)
+                    unrecorded |= blocked_by(recipe, submitted, step_id)
                 elif _refuses_every_step(after):
                     break
                 else:
                     _ = _record_blocked(ds, submitted, recipe, step_id)
-                    below_failure |= _blocked_by(recipe, submitted, step_id)
+                    below_failure |= blocked_by(recipe, submitted, step_id)
                 continue
             outcomes.append(outcome)
             if outcome.state == "stalled" and not submitted.allow_partial:
@@ -377,7 +379,7 @@ def run_pipeline(
                     outcome.target,
                     "the attempt exited clean and coverage did not move",
                 )
-                unrecorded |= _blocked_by(recipe, submitted, step_id)
+                unrecorded |= blocked_by(recipe, submitted, step_id)
         if _cleanup_due(ds, submitted):
             keeper.ensure_held()
             cleanup_status = run_cleanup(
@@ -660,7 +662,7 @@ def run_request(
                 ):
                     break
                 blocked.extend(_record_blocked(ds, request, recipe, step_id))
-                below_failure |= _blocked_by(recipe, request, step_id)
+                below_failure |= blocked_by(recipe, request, step_id)
         if not token.is_cancelled() and _cleanup_due(ds, request):
             keeper.ensure_held()
             cleanup_status = run_cleanup(ds, request, token=token).status
@@ -878,15 +880,6 @@ def _execute_or_error(
         return error
 
 
-def _blocked_by(recipe: Recipe, request: Request, step_id: str) -> frozenset[str]:
-    """Return the descendants of *step_id*, which its failure keeps from running.
-
-    A step that *request* binds to a run reads nothing above it, so it is not
-    blocked and the walk does not pass through it.
-    """
-    return descendants_of(recipe, step_id, cut=request.bind) - {step_id}
-
-
 def _record_blocked(
     ds: Dataset, request: Request, recipe: Recipe, parent: str
 ) -> tuple[str, ...]:
@@ -895,7 +888,7 @@ def _record_blocked(
     Each record's error is a :data:`PARENT_FAILED_TYPE` naming *parent* and its
     attempt. The steps are returned in topological order.
     """
-    below = _blocked_by(recipe, request, parent)
+    below = blocked_by(recipe, request, parent)
     unended = tuple(
         step.id
         for step in topological_order(recipe)

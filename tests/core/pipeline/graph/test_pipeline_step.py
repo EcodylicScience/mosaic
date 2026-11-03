@@ -62,6 +62,7 @@ from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     FakeTrainer,
     add_tracks_variant,
+    chain_with_sibling_recipe,
     make_dataset,
     write_data_yaml,
     write_driver_lease,
@@ -1010,19 +1011,23 @@ def test_a_refused_step_closes_its_request_as_failed(tracked: Dataset) -> None:
     assert request_rollup(tracked.base_dir, request).status == "failed"
 
 
-def test_a_failed_request_reads_running_while_its_driver_lease_exists(
-    tracked: Dataset,
-) -> None:
-    """Its driver still starts the steps that do not descend from the failure."""
-    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+def _fail_speed(dataset: Dataset, request: Request) -> None:
     record_step_ended(
-        tracked,
+        dataset,
         request.execution_of("speed"),
         step_id="speed",
         owner="",
         status="failed",
         error_json=json.dumps({"type": "RuntimeError", "message": "speed broke"}),
     )
+
+
+def test_a_failed_request_reads_running_while_its_driver_can_start_a_step(
+    tracked: Dataset,
+) -> None:
+    """``sibling`` does not descend from ``speed``, and its driver still starts it."""
+    request = submit_request(tracked, chain_with_sibling_recipe()).request
+    _fail_speed(tracked, request)
     assert request_rollup(tracked.base_dir, request).status == "failed"
 
     _ = write_driver_lease(tracked.base_dir, request.request_id, stale=True)
@@ -1033,6 +1038,32 @@ def test_a_failed_request_reads_running_while_its_driver_lease_exists(
     assert request_verdict_of(tracked.base_dir, rollup) == "orphaned"
     unread = request_rollup(tracked.base_dir, request, read_lease=False)
     assert unread.status == "failed"
+
+
+def test_a_failed_request_whose_unstarted_steps_descend_from_it_reads_failed(
+    tracked: Dataset,
+) -> None:
+    """``templates`` reads the failed ``speed``. A live driver does not start it."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    _fail_speed(tracked, request)
+    _ = write_driver_lease(tracked.base_dir, request.request_id, stale=False)
+
+    rollup = request_rollup(tracked.base_dir, request)
+
+    assert rollup.status == "failed"
+    assert request_verdict_of(tracked.base_dir, rollup) == "failed"
+
+
+def test_a_failed_request_whose_recipe_does_not_read_stays_running_under_its_lease(
+    tracked: Dataset,
+) -> None:
+    """The steps below the failure are read from the recipe, which is gone."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    _fail_speed(tracked, request)
+    _ = write_driver_lease(tracked.base_dir, request.request_id, stale=False)
+    recipe_path(tracked.base_dir, request.recipe_digest).unlink()
+
+    assert request_rollup(tracked.base_dir, request).status == "running"
 
 
 def test_a_status_recorded_outside_the_run_logs_closes_the_request() -> None:

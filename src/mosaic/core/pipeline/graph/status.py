@@ -23,8 +23,9 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final, Literal, TypeGuard, get_args
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.runlog import (
     ERROR_MESSAGE_LIMIT,
@@ -60,7 +61,6 @@ if TYPE_CHECKING:
 __all__ = [
     "CLEANUP_RUN_SAMPLE",
     "FAILED_ENTRY_SAMPLE",
-    "JSON_OBJECT",
     "MAX_WAIT_SECONDS",
     "POLL_AFTER_MAX_SECONDS",
     "POLL_AFTER_MIN_SECONDS",
@@ -127,10 +127,6 @@ has not ended is provably dead (:mod:`~.liveness`). Neither is a run-log status.
 
 _REFUSAL_REASONS: Final[frozenset[str]] = frozenset(get_args(RefusalReason.__value__))
 _ENVELOPE_KEYS: Final = frozenset({"reason", "step", "message"})
-JSON_OBJECT: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(
-    dict[str, JsonValue]
-)
-"""Validates a parsed JSON document as an object."""
 
 
 class RecordedErrorWire(GraphModel):

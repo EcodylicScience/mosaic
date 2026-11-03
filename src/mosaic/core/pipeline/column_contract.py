@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.types.data_config import (
     COLUMNS,
@@ -527,10 +528,6 @@ _SHOWN_ALTERNATIVES: Final = 3
 type ParamValues = Mapping[str, JsonValue]
 """A step's params as JSON, every field that a declaration reads included."""
 
-_PARAM_VALUES: Final[TypeAdapter[dict[str, JsonValue]]] = TypeAdapter(
-    dict[str, JsonValue]
-)
-
 
 def param_values(params: BaseModel, fields: Collection[str]) -> dict[str, JsonValue]:
     """The values of *fields* in a built params model, as JSON.
@@ -539,7 +536,7 @@ def param_values(params: BaseModel, fields: Collection[str]) -> dict[str, JsonVa
     resolves as unknown.
     """
     dumped: object = params.model_dump(mode="json", include=set(fields))
-    return _PARAM_VALUES.validate_python(dumped)
+    return JSON_OBJECT.validate_python(dumped)
 
 
 def is_set(value: JsonValue) -> bool:

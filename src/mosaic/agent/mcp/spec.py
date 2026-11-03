@@ -229,7 +229,7 @@ SUBMITTED_STEP_SAMPLE: Final = 3
 """The steps to compute that a ``submit_pipeline`` result lists, in topological order.
 
 Its result stays under 1,000 characters whatever the recipe's size, and
-``get_request_status`` without ``brief`` lists every step.
+``get_request_status`` with ``brief`` false lists every step.
 """
 
 MAX_ASSUMED_GROUPS: Final = 16
@@ -880,12 +880,12 @@ class GetRequestStatusInput(ToolInput):
         ),
     )
     brief: bool = Field(
-        default=False,
+        default=True,
         description=(
             "List only the steps that are running, failed, cancelled or partial, "
             "and those that ended during the wait. Steps that finished cleanly "
             "and steps not started are counted in omitted_finished and "
-            "omitted_pending."
+            "omitted_pending. false lists every step."
         ),
     )
 
@@ -1703,9 +1703,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "outcome, progress, phase, liveness, recorded error and a sample of "
             "lost entries. To wait for it, pass wait_seconds: the call returns as "
             "soon as a step ends or the request does, or after that many seconds. "
-            "Do not poll the driver's process. brief lists only the steps that "
-            "need attention. Without wait_seconds, wait poll_after_seconds before "
-            "reading again. A request reads 'orphaned' when its driver stopped or "
+            "Do not poll the driver's process. It lists only the steps that need "
+            "attention unless brief is false. Without wait_seconds, wait "
+            "poll_after_seconds before reading again. A request whose remaining "
+            "steps all sit below a failed step reads 'failed' at once. A request "
+            "reads 'orphaned' when its driver stopped or "
             "its step's process is provably gone (pid exited, host rebooted, or no "
             "heartbeat for 10 minutes). The user resumes it with mosaic pipeline "
             "run --manifest <manifest> --request <request_id>, where <manifest> "
@@ -1924,10 +1926,10 @@ def call_tool(
         request = spec.input_model.model_validate(dict(arguments))
     except ValidationError as error:
         return _invalid_arguments(spec.name, error)
-    return _bounded(spec, _dispatch(backend, request))
+    return _bounded(spec, request, _dispatch(backend, request))
 
 
-def _bounded(spec: ToolSpec, output: BaseModel) -> BaseModel:
+def _bounded(spec: ToolSpec, request: ToolInput, output: BaseModel) -> BaseModel:
     """Return *output*, or :func:`result_too_large` for a read above the budget.
 
     A tool that changes a dataset has done so by the time it returns, so its
@@ -1938,15 +1940,24 @@ def _bounded(spec: ToolSpec, output: BaseModel) -> BaseModel:
     chars = len(output.model_dump_json())
     if chars <= MAX_RESULT_CHARS:
         return output
-    return result_too_large(spec, chars)
+    return result_too_large(spec, request, chars)
 
 
-def result_too_large(spec: ToolSpec, chars: int) -> ErrorEnvelope:
-    """Refuse a result of *chars* characters, naming the arguments that narrow it."""
-    narrow_with: list[JsonValue] = list(spec.narrowing)
+def result_too_large(spec: ToolSpec, request: ToolInput, chars: int) -> ErrorEnvelope:
+    """Refuse a result of *chars* characters, naming the arguments that narrow it.
+
+    A flag already true in *request* is left out, since calling again with it
+    narrows nothing.
+    """
+    arguments = [
+        argument
+        for argument in spec.narrowing
+        if getattr(request, argument, None) is not True
+    ]
+    narrow_with: list[JsonValue] = list(arguments)
     advice = (
-        f"Call again narrowed by {', '.join(spec.narrowing)}."
-        if spec.narrowing
+        f"Call again narrowed by {', '.join(arguments)}."
+        if arguments
         else "No argument narrows it. The mosaic CLI prints it whole."
     )
     return ErrorEnvelope(

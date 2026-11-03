@@ -44,6 +44,7 @@ from tests.helpers import (
     RecordingStarter,
     add_tracks_variant,
     calms21_dataset,
+    chain_recipe,
     make_dataset,
     run_fresh,
     speed_recipe,
@@ -925,6 +926,31 @@ def test_the_resources_and_templates_are_listed_and_read(
     assert params["state"] == "absent"
 
 
+def test_a_request_resource_lists_every_step(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    """A resource read lists the steps that a brief status omits."""
+    uuid = _uuid(dataset)
+    request = submit_request(dataset, chain_recipe()).request
+    execution_id = request.execution_of("speed")
+    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
+        log.started(kind="feature", target=STORAGE)
+        log.finished()
+    uri = f"mosaic://dataset/{uuid}/requests/{request.request_id}"
+
+    async def body(client: Client) -> str:
+        (contents,) = (await client.read_resource(uri)).contents
+        assert isinstance(contents, types.TextResourceContents)
+        return contents.text
+
+    status = json.loads(_session(backend, body))["status"]
+
+    assert [(step["step"], step["outcome"]) for step in status["steps"]] == [
+        ("speed", "finished"),
+        ("templates", "pending"),
+    ]
+
+
 def test_report_resource_returns_the_evaluation_metrics(tmp_path: Path) -> None:
     """A run's report is a resource: read, not computed, and no tool slot."""
     from mosaic.core.pipeline.graph import Recipe
@@ -1072,3 +1098,5 @@ def test_the_prompts_are_listed_and_filled_in(
     assert uuid in built and "speed per animal" in built
     assert "Do not call submit_pipeline until" in built
     assert "r-0001" in explained and uuid in explained
+    # Explaining a request reads every step.
+    assert "get_request_status with brief false" in explained

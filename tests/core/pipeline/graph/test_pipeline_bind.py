@@ -290,6 +290,20 @@ def test_a_failure_above_a_bound_step_does_not_refuse_the_step_below(
     assert outcome.state == "ran"
 
 
+def test_a_failure_above_a_bound_step_leaves_the_request_running_under_its_lease(
+    tracked: Dataset,
+) -> None:
+    """``templates`` reads the bound ``speed``. It can start after ``pre`` failed."""
+    older = run_speed(tracked, 3)
+    request = submit_request(
+        tracked, _guarded_chain(), bind=_bound_speed(older)
+    ).request
+    _fail_without_a_run(tracked, request.execution_of("pre"), "pre")
+    _ = write_driver_lease(tracked.base_dir, request.request_id, stale=False)
+
+    assert request_rollup(tracked.base_dir, request).status == "running"
+
+
 def test_a_resumed_driver_runs_the_step_below_a_bound_step_whose_ancestor_failed(
     tracked: Dataset,
 ) -> None:

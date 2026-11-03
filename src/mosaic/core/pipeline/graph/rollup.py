@@ -12,9 +12,14 @@ somebody deleted to free space.
 That is the whole subtlety here. Reporting the request failed the moment one step
 did would close it while work is in flight, and whatever that work produces would
 land under a request nothing is watching. A local driver runs the steps that do
-not descend from a failure. A failed request with an unstarted step therefore
-reads ``running`` while its driver lease exists, and a stale lease then reads
-``orphaned`` (:func:`~.status.request_verdict_of`).
+not descend from a failure. A failed request with an unstarted step that no
+failed step is above therefore reads ``running`` while its driver lease exists,
+and a stale lease then reads ``orphaned`` (:func:`~.status.request_verdict_of`).
+One whose every unstarted step is below a failure reads ``failed`` at once,
+because a driver starts none of them. A driver records each of those steps
+``ParentFailed`` with a ``started`` line and then a ``failed`` one, and in the
+microseconds between the two a reader may see ``failed``, then ``running``, then
+``failed`` again.
 
 **A step the request binds to a run computes nothing.** It is that run, so before a
 driver records it and once it is recorded finished it reads ``finished`` with the
@@ -25,7 +30,7 @@ because the step could not have written that run, reads as its run-log does.
 different question, answered by planning the recipe against the dataset -- which
 costs the feature registry and is what ``mosaic pipeline plan`` is for. This one
 costs a directory of small JSON files and, for a failed request, its driver
-lease. Whatever polls it can poll it often.
+lease and recipe. Whatever polls it can poll it often.
 """
 
 from __future__ import annotations
@@ -36,16 +41,19 @@ from typing import TYPE_CHECKING, Literal
 from mosaic.runlog import TERMINAL_STATUSES, read_run, run_log_dir
 
 from .driver_lease import read_driver_lease
+from .recipe_store import load_recipe, recipe_path
+from .topo import descendants_of
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from .model import Request
+    from .model import Recipe, Request
 
 __all__ = [
     "RequestRollup",
     "RequestStatus",
     "StepAttempt",
+    "blocked_by",
     "bound_attempt",
     "request_rollup",
     "request_verdict",
@@ -176,6 +184,8 @@ def request_rollup(
     A failed request with a step that has not started stays ``running`` while
     the request's driver lease file exists, because its driver still starts
     the steps that do not descend from the failure. The lease need not be live.
+    No driver starts a step below a failed step (:func:`blocked_by`). A
+    request whose every unstarted step is below one reads ``failed``.
 
     Args:
         base_dir: The dataset root holding ``.mosaic/runs``.
@@ -202,13 +212,43 @@ def request_rollup(
     if (
         status == "failed"
         and read_lease
-        and any(not attempt.started for attempt in steps)
         and read_driver_lease(base_dir, request.request_id) is not None
+        and _may_start_a_step(base_dir, request, steps)
     ):
         status = "running"
     return RequestRollup(
         request_id=request.request_id, status=status, steps=steps, cleanup=cleanup
     )
+
+
+def blocked_by(recipe: Recipe, request: Request, step_id: str) -> frozenset[str]:
+    """Return the descendants of *step_id*, which its failure keeps from running.
+
+    A step that *request* binds to a run reads nothing above it. The walk
+    neither enters it nor passes through it.
+    """
+    return descendants_of(recipe, step_id, cut=request.bind) - {step_id}
+
+
+def _may_start_a_step(
+    base_dir: Path | str, request: Request, steps: tuple[StepAttempt, ...]
+) -> bool:
+    """Is a step unstarted that no failed step of *request* is above?
+
+    A recipe that cannot be read leaves every unstarted step possible.
+    """
+    unstarted = {attempt.step_id for attempt in steps if not attempt.started}
+    if not unstarted:
+        return False
+    try:
+        recipe = load_recipe(recipe_path(base_dir, request.recipe_digest))
+    except (FileNotFoundError, ValueError):
+        return True
+    blocked: set[str] = set()
+    for attempt in steps:
+        if attempt.status == "failed" and attempt.step_id in recipe.ids:
+            blocked |= blocked_by(recipe, request, attempt.step_id)
+    return not unstarted <= blocked
 
 
 def bound_attempt(request: Request, step_id: str) -> StepAttempt:

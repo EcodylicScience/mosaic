@@ -24,6 +24,7 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     RequestStatusWire,
     ValidationReport,
+    describe_duplicate,
 )
 from mosaic.core.pipeline.graph.model import COMPLETE_STATUSES
 from mosaic.core.pipeline.inventory import InventoryWire
@@ -36,7 +37,6 @@ from .spec import (
     DatasetList,
     FailureDiagnosis,
     SequencePage,
-    SubmittedDuplicate,
     SubmittedPipeline,
 )
 
@@ -328,18 +328,13 @@ def _plan(plan: PlanPage) -> str:
     )
 
 
-def _duplicate(duplicate: SubmittedDuplicate) -> str:
-    """Name an open request and the submission's steps whose runs it computes."""
-    if not duplicate.steps:
-        return f"{duplicate.request_id} (the same recipe)"
-    more = f" and {duplicate.steps_omitted} more" if duplicate.steps_omitted else ""
-    return f"{duplicate.request_id} (steps {', '.join(duplicate.steps)}{more})"
-
-
 def _submitted(submitted: SubmittedPipeline) -> str:
+    open_requests = [
+        describe_duplicate(each.request_id, each.steps, each.steps_omitted)
+        for each in submitted.duplicates
+    ]
     duplicates = (
-        " Open requests that compute runs of this one: "
-        f"{_names([_duplicate(each) for each in submitted.duplicates])}."
+        f" Open requests that compute runs of this one: {_names(open_requests)}."
         if submitted.duplicates
         else ""
     )
@@ -359,8 +354,8 @@ def _submitted(submitted: SubmittedPipeline) -> str:
         f"Submitted request {submitted.request_id} with {total} step(s), "
         f"{computed} to compute, running in the background.{duplicates}"
         f"{cleanup} Wait for it with get_request_status and wait_seconds, which "
-        "returns when a step or the request ends. get_request_status without "
-        "brief lists every step, and with brief the ones that need attention. "
+        "returns when a step or the request ends. get_request_status lists the "
+        "steps that need attention, and with brief false every step. "
         "Do not watch the driver's process. Its log, "
         "driver_log, explains a failure."
     )

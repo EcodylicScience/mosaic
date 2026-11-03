@@ -38,9 +38,10 @@ from mosaic_media.ffmpeg import (
 )
 from mosaic_media.hwaccel import encoder_available
 from mosaic_media.transcode import TranscodeError
-from pydantic import Field, TypeAdapter, model_validator
+from pydantic import Field, model_validator
 
 from mosaic.core.entry import CameraEntry, Entry
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.preprocess.crop import MIN_CROP_SIDE
@@ -142,9 +143,6 @@ _QUALITY_SCALES: Final[dict[VariantCodec, _QualityScale]] = {
     "h264": _QualityScale("x264 CRF", 51, H264_DEFAULT_CRF),
 }
 """Each codec's quality scale, which starts at 0 on both."""
-
-_JSON_OBJECT: Final = TypeAdapter(dict[str, JsonValue])
-"""The adapter that reads a step's identity dump as JSON, turning tuples into lists."""
 
 _STEPS_DESCRIPTION = (
     "The steps applied to each frame, in order. Every position and frame number "
@@ -249,7 +247,7 @@ def resolved_quality(params: PreprocessParams) -> int:
 def _step_terms(step: MediaStep) -> dict[str, JsonValue]:
     """Return *step* as identity terms: its parameters, name and version."""
     # The dump already contains the ``step`` discriminator, which equals the name.
-    terms = _JSON_OBJECT.validate_python(step.identity_dump())
+    terms = JSON_OBJECT.validate_python(step.identity_dump())
     return {**terms, "step": step.name, "version": step.version}
 
 

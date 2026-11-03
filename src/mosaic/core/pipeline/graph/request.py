@@ -46,13 +46,13 @@ from .plan import Plan, plan_pipeline, takes_no_entries
 from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
+from .recipe_store import read_recipe_document, recipe_path
 from .retirement import validate_retirement
 from .store import (
     OpenDuplicate,
+    describe_duplicate,
     open_duplicates,
     save_computes,
-    read_recipe_document,
-    recipe_path,
     save_recipe,
     save_request,
     submission_lock,
@@ -157,11 +157,6 @@ class DuplicateRequest(ClassifiedError):
         self.recipe_digest: str = recipe_digest
         self.duplicates: tuple[OpenDuplicate, ...] = duplicates
 
-    @property
-    def request_ids(self) -> tuple[str, ...]:
-        """The ids of the open requests."""
-        return tuple(duplicate.request_id for duplicate in self.duplicates)
-
     def error_detail(self) -> dict[str, JsonValue]:
         """Return the recipe digest, and each open request with its shared steps."""
         return {
@@ -177,16 +172,12 @@ def describe_duplicates(duplicates: Iterable[OpenDuplicate]) -> str:
     the rest. A request that recorded no runs is named as one of the same
     recipe.
     """
-    return ", ".join(_described(duplicate) for duplicate in duplicates)
-
-
-def _described(duplicate: OpenDuplicate) -> str:
-    """One open request with its named shared steps and the count of the rest."""
-    if not duplicate.steps:
-        return f"{duplicate.request_id} (the same recipe)"
-    named = ", ".join(map(repr, duplicate.named_steps))
-    more = f" and {duplicate.steps_omitted} more" if duplicate.steps_omitted else ""
-    return f"{duplicate.request_id} (steps {named}{more})"
+    return ", ".join(
+        describe_duplicate(
+            duplicate.request_id, duplicate.named_steps, duplicate.steps_omitted
+        )
+        for duplicate in duplicates
+    )
 
 
 class CleanupNeedsPlan(ClassifiedError):

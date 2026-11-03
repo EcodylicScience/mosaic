@@ -1075,7 +1075,8 @@ def test_a_failure_recorded_by_an_earlier_attempt_is_not_this_runs_record(
 ) -> None:
     """``speed`` raises unrecorded over its earlier failure.
 
-    ``templates`` stays unrecorded, and the lease is kept.
+    ``templates`` stays unrecorded. The earlier failure keeps it from ever
+    starting. The request has failed and the lease is released.
     """
     submitted = submit_request(tracked, chain_with_sibling_recipe()).request
     record_step_ended(
@@ -1098,7 +1099,8 @@ def test_a_failure_recorded_by_an_earlier_attempt_is_not_this_runs_record(
         read_run(run_log_dir(tracked.base_dir), submitted.execution_of("templates"))
         is None
     )
-    assert read_driver_lease(tracked.base_dir, submitted.request_id) is not None
+    assert read_driver_lease(tracked.base_dir, submitted.request_id) is None
+    assert request_rollup(tracked.base_dir, submitted).status == "failed"
 
 
 def test_an_in_process_stall_leaves_its_branch_unrecorded_and_runs_the_sibling(

@@ -14,11 +14,18 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
     Request,
     RequestWaitWire,
+    record_step_ended,
     request_path,
     save_request,
+    submit_request,
 )
 from mosaic.runlog import JsonlRunLog, run_log_path
-from tests.helpers import make_dataset
+from tests.helpers import (
+    add_tracks_variant,
+    chain_recipe,
+    make_dataset,
+    write_driver_lease,
+)
 
 
 @pytest.fixture
@@ -69,6 +76,33 @@ def test_a_failed_request_exits_one(dataset: Dataset) -> None:
     assert code == 1
     assert "request R1: finished" in stdout
     assert "request R2: failed" in stdout
+
+
+def test_a_failed_request_whose_driver_can_start_no_step_exits_one_at_once(
+    tmp_path: Path,
+) -> None:
+    """``templates`` reads the failed ``speed``. A live lease keeps nothing running."""
+    tracked = make_dataset(tmp_path / "tracked")
+    add_tracks_variant(
+        tracked, "convert-trex.0.2-1111111111", "seq_a", std_format="mosaic_v1"
+    )
+    request = submit_request(tracked, chain_recipe()).request
+    record_step_ended(
+        tracked,
+        request.execution_of("speed"),
+        step_id="speed",
+        owner="",
+        status="failed",
+        error_json='{"type": "RuntimeError", "message": "the fit broke"}',
+    )
+    _ = write_driver_lease(tracked.base_dir, request.request_id, stale=False)
+
+    code, stdout = _wait(tracked, request.request_id, "--timeout", "1", "--json")
+    waited = RequestWaitWire.model_validate(json.loads(stdout))
+
+    assert code == 1
+    assert waited.outcome == "failed"
+    assert [report.verdict for report in waited.requests] == ["failed"]
 
 
 def test_any_exits_with_the_first_request_that_ended(dataset: Dataset) -> None:

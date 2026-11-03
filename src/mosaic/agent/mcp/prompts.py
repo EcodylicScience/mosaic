@@ -111,7 +111,8 @@ def _explain_request(arguments: Mapping[str, str]) -> str:
     return f"""\
 Explain request {arguments["rid"]} of dataset {arguments["dataset"]}.
 
-1. Call get_request_status for its verdict and each step's outcome and progress.
+1. Call get_request_status with brief false for its verdict and each step's
+   outcome and progress.
 2. Call diagnose_failures for the request if a step failed or lost entries.
 3. Tell the user what each step did, why a refused or failed step stopped, and
    what answers it: allow_partial for a coverage shortfall or a quarantined

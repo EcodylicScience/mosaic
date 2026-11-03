@@ -47,12 +47,11 @@ from .status import (
     RetirableRecipeWire,
     request_verdict_of,
 )
+from .recipe_store import load_recipe, recipe_path
 from .store import (
     RequestUnreadable,
     current_digest,
-    load_recipe,
     load_request,
-    recipe_path,
     request_ids,
     requests_matching,
 )

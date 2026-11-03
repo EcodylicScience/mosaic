@@ -45,6 +45,7 @@ from tests.helpers import (
     SLEEPER_COMMAND,
     add_tracks_variant,
     chain_recipe,
+    chain_with_sibling_recipe,
     exited_pid,
     make_dataset,
     wait_for,
@@ -358,9 +359,10 @@ def test_a_finished_request_is_left_as_it_is(
 
 
 def test_a_failed_request_whose_driver_runs_is_cancelled_through_its_driver(
-    tracked: Dataset, submitted: Request, sleeper: subprocess.Popen[bytes]
+    tracked: Dataset, sleeper: subprocess.Popen[bytes]
 ) -> None:
     """The driver of a request with a failed step still starts the steps beside it."""
+    submitted = submit_request(tracked, chain_with_sibling_recipe()).request
     record_step_ended(
         tracked,
         submitted.execution_of("speed"),

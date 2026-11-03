@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated
 
 import typer
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
+from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 
 from mosaic.cli._context import load_dataset
@@ -34,10 +35,6 @@ tags_app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
-
-_CONSTRAINTS: Final = TypeAdapter(dict[str, JsonValue])
-"""Parses ``--constraints``. A JSON parser returns an untyped object, and a
-constraint blob that is a list or a bare string is a real thing to be handed."""
 
 ManifestOption = Annotated[
     Path,
@@ -173,7 +170,7 @@ def define_tag(
         if options or minimum is not None or maximum is not None or max_length:
             fail("Pass --constraints or the typed shorthands, not both.")
         try:
-            built = _CONSTRAINTS.validate_json(constraints)
+            built = JSON_OBJECT.validate_json(constraints)
         except ValidationError:
             fail("--constraints must be a JSON object mapping names to values.")
     else:

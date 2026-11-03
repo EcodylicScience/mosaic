@@ -200,7 +200,7 @@ def test_a_submission_of_many_steps_answers_in_under_a_thousand_characters(
         f"heading{index}" for index in range(SUBMITTED_STEP_SAMPLE)
     ]
     assert submitted.truncated
-    assert "get_request_status without brief" in summarize(submitted)
+    assert "with brief false every step" in summarize(submitted)
 
 
 def test_a_submission_of_few_steps_lists_them_all(

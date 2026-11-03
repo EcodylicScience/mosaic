@@ -580,7 +580,7 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   then plans it in the same call, and still refuses with `confirmation_required` when a
   condition applies. A cleanup always needs the reviewed plan's fingerprint. The result
   counts the steps by status and lists the first three to compute (`first_steps`);
-  `get_request_status` without `brief` lists every step.
+  `get_request_status` with `brief: false` lists every step.
 - A plan of about 40 steps or more is over the read limit. Plan it with `limit` (about
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;
@@ -634,11 +634,13 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   (`mosaic agent confirm-hook`). A confirmation it does not approve comes back
   declined or unanswered.
 - Wait with `get_request_status(wait_seconds=45)`, which returns when a step or the
-  request ends; `brief: true` lists only the steps still running or not finished
-  cleanly. Do not watch `driver_pid` (`kill -0`) or `tail` the driver log for
-  progress: the log holds output for explaining a failure. When no step has started
-  after a few waits, read `driver_log` once, because a driver that failed to start
-  leaves the request `running`. For a request that reads `orphaned`, propose
+  request ends. It lists only the steps still running or not finished cleanly, and
+  `brief: false` lists every step. A request reads `failed` as soon as a step failed and
+  every step left to start depends on a failed one. Do not watch `driver_pid`
+  (`kill -0`) or `tail` the driver log for progress: the log holds output for
+  explaining a failure. When no step has started after a few waits, read `driver_log`
+  once, because a driver that failed to start leaves the request `running`. For a
+  request that reads `orphaned`, propose
   `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
 - For a wait of minutes or hours, when you can run a background shell job, run
   `mosaic wait <request id> --manifest <manifest> --timeout 3600 --json` in the

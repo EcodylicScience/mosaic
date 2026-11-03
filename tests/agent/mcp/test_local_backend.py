@@ -823,6 +823,7 @@ def test_a_submitted_request_runs_detached_and_its_output_is_previewed(
         RequestStatusWire,
         dataset=uuid,
         request_id=submitted.request_id,
+        brief=False,
     )
     assert status.verdict == "finished", status
     # The driver outlives this test's process otherwise, and its handle warns
@@ -910,6 +911,7 @@ def test_a_submission_with_workers_runs_them_and_reports_the_memory_used(
         RequestStatusWire,
         dataset=uuid,
         request_id=submitted.request_id,
+        brief=False,
     )
     wait_for(
         lambda: not process_running(submitted.driver_pid),
@@ -977,6 +979,7 @@ def test_plan_and_submit_a_recipe_whose_first_step_converts(tmp_path: Path) -> N
         RequestStatusWire,
         dataset=uuid,
         request_id=submitted.request_id,
+        brief=False,
     )
     assert status.verdict == "finished", status
     assert [step.run_id for step in status.steps] == [
@@ -1294,10 +1297,11 @@ def test_a_status_call_with_nothing_to_report_returns_when_its_wait_runs_out(
 
     assert 0.9 <= waited < 10
     assert (status.verdict, status.terminal) == ("running", False)
+    # Brief unless told otherwise: the step not started is only counted.
     assert [(step.step, step.outcome) for step in status.steps] == [
-        ("speed", "running"),
-        ("templates", "pending"),
+        ("speed", "running")
     ]
+    assert (status.omitted_finished, status.omitted_pending) == (0, 1)
 
 
 def test_a_diagnosis_names_one_request_or_one_attempt(
