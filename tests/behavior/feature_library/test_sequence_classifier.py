@@ -499,14 +499,14 @@ def test_a_fit_reads_its_environment_inside_the_deterministic_block(
             finally:
                 open_blocks.clear()
 
-    environment = SequenceClassifier._environment  # pyright: ignore[reportPrivateUsage]
+    environment = module.fit_environment
 
-    def recording(self: SequenceClassifier, torch_version: str) -> dict[str, str]:
+    def recording(torch_version: str, device: str) -> dict[str, str]:
         inside.append(bool(open_blocks))
-        return environment(self, torch_version)
+        return environment(torch_version, device)
 
     monkeypatch.setattr(module, "deterministic_torch", spying)
-    monkeypatch.setattr(SequenceClassifier, "_environment", recording)
+    monkeypatch.setattr(module, "fit_environment", recording)
 
     _ = _fit(study, tables)
 

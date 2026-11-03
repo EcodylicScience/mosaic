@@ -50,6 +50,7 @@ from .classifier_common import (
     DEFAULT_CLASS_DESCRIPTION,
     CvBlock,
     CvBlocksPerSequence,
+    CvRecord,
     CvGapFrames,
     CvGroupBy,
     CvSeed,
@@ -60,17 +61,17 @@ from .classifier_common import (
     assemble_prediction,
     balanced_class_weights,
     block_fold_table,
-    block_list,
     block_rows,
     check_cross_validation,
     check_folds,
+    cv_record,
     deal_blocks,
     deal_folds,
     drop_unused_cv_settings,
-    fold_map,
-    fold_rows,
     fold_table,
     held_out_frames,
+    scoring_folds,
+    stored_folds,
     write_bundle,
 )
 from .helpers import (
@@ -78,7 +79,6 @@ from .helpers import (
     ensure_columns,
     feature_columns,
     finite_rows,
-    out_of_fold_choice,
     refuse_unlabeled_templates,
     train_entries_of_templates,
     train_labeled_frames_of_templates,
@@ -170,28 +170,17 @@ _DEVICE_DESCRIPTION = (
 )
 
 
-class XgboostCv(TypedDict):
+class XgboostCv(CvRecord):
     """The cross-validation half of a bundle, written when ``cv_folds`` is set.
 
-    By sequence, ``fold_of`` holds ``(group, sequence, fold)`` for every train
-    entry of the templates. By block, the keys ``unit``, ``blocks_per_sequence``,
-    ``gap_frames`` and ``blocks`` are written too, ``fold_of`` is empty, and
-    ``blocks`` holds ``(group, sequence, block, start, stop, fold)`` for every
-    block. ``models[fold]`` was fitted on the train rows outside that fold, and
-    outside the gap around its blocks, over the classes in ``classes[fold]``,
-    which are its probability columns in order and are fewer than the bundle's
-    when the rows held none of a class.
+    The folds are those of :class:`CvRecord`. ``models[fold]`` was fitted on the
+    train rows outside that fold, and outside the gap around its blocks, over the
+    classes in ``classes[fold]``, which are its probability columns in order and
+    are fewer than the bundle's when the rows held none of a class.
     """
 
-    folds: int
-    seed: int
-    fold_of: list[tuple[str, str, int]]
     models: list[XGBClassifier | list[XGBClassifier]]
     classes: list[list[int]]
-    unit: NotRequired[Literal["block"]]
-    blocks_per_sequence: NotRequired[int]
-    gap_frames: NotRequired[int]
-    blocks: NotRequired[list[tuple[str, str, int, int, int, int]]]
 
 
 class XgboostModelBundle(TypedDict):
@@ -472,25 +461,10 @@ class XgboostFeature(FitReporting):
         if not folds:
             return
         cv = bundle.get("cv")
-        if cv is None:
-            msg = (
-                f"[{self.name}] cv_folds is set and the cached model has no folds. "
-                "Remove xgboost_model.joblib from the run directory to fit again"
-            )
-            raise RuntimeError(msg)
-        by_block = self.params.cv_unit == "block"
-        if by_block != (cv.get("unit") == "block"):
-            msg = (
-                f"[{self.name}] cv_unit is {self.params.cv_unit!r} and the cached "
-                "model was fitted with the other unit. Remove xgboost_model.joblib "
-                "from the run directory to fit again"
-            )
-            raise RuntimeError(msg)
+        self._fold_of, self._blocks = stored_folds(
+            self.name, cv, self.params.cv_unit, "xgboost_model.joblib"
+        )
         self._cv = cv
-        if by_block:
-            self._blocks = FoldLookup.by_block(block_list(cv.get("blocks", [])))
-        else:
-            self._fold_of = fold_map(cv["fold_of"])
 
     def _undersampled_counts(self, counts: np.ndarray) -> list[int]:
         """The rows each class keeps under ``undersample_ratio``, given its rows in *counts*."""
@@ -956,18 +930,19 @@ class XgboostFeature(FitReporting):
         if plan is not None:
             assert self.params.cv_folds is not None
             cv: XgboostCv = {
-                "folds": self.params.cv_folds,
-                "seed": self.params.cv_seed,
-                "fold_of": fold_rows(plan.fold_of),
+                **cv_record(
+                    self.params.cv_folds,
+                    self.params.cv_seed,
+                    plan.fold_of,
+                    plan.blocks,
+                    blocks_per_sequence=self.params.cv_blocks_per_sequence,
+                    gap_frames=self.params.cv_gap_frames,
+                ),
                 "models": fold_models,
                 "classes": fold_classes,
             }
-            if plan.blocks and self.params.cv_blocks_per_sequence is not None:
-                cv["unit"] = "block"
-                cv["blocks_per_sequence"] = self.params.cv_blocks_per_sequence
-                cv["gap_frames"] = self.params.cv_gap_frames
-                cv["blocks"] = block_rows(plan.blocks)
-                self._blocks = FoldLookup.by_block(cv["blocks"])
+            if plan.blocks:
+                self._blocks = FoldLookup.by_block(block_rows(plan.blocks))
             self._cv = cv
             self._fold_of = dict(plan.fold_of)
             self._cv_table = plan.table
@@ -1004,34 +979,15 @@ class XgboostFeature(FitReporting):
             )
             self._metrics = report
 
-    def _scoring_model(
-        self, df: pd.DataFrame
+    def _fold_model(
+        self, fold: int
     ) -> tuple[XGBClassifier | list[XGBClassifier], list[int]]:
-        """The model that scores the entry *df* holds, and its classes.
-
-        Without folds, the model. With them, the fold's model for a training
-        sequence, and the full model for any other entry. By block the entry is
-        scored by row: see :meth:`_scoring_folds`.
-        """
+        """Return the model fitted without *fold* and its classes, the full model for ``-1``."""
         assert self._model is not None and self._classes is not None
-        if self._cv is None or self._blocks is not None:
+        if fold < 0:
             return self._model, self._classes
-        fold = out_of_fold_choice(df, self._fold_of, self.name)
-        if fold is None:
-            return self._model, self._classes
+        assert self._cv is not None
         return self._cv["models"][fold], self._cv["classes"][fold]
-
-    def _scoring_folds(self, df: pd.DataFrame) -> np.ndarray | None:
-        """The fold whose model scores each row of the entry *df* holds, by block.
-
-        Returns:
-            The fold of each row, ``-1`` for a row in no block, which the full
-            model scores. ``None`` when the run does not cross-validate by block.
-        """
-        if self._blocks is None:
-            return None
-        ensure_columns(df, ["frame"])
-        return self._blocks.scoring_folds(df, self.name)
 
     def _probabilities(
         self,
@@ -1066,23 +1022,21 @@ class XgboostFeature(FitReporting):
 
         feat_matrix = df[self._feature_columns].to_numpy(dtype=np.float64)
 
-        # Get probabilities
-        folds = self._scoring_folds(df)
-        if folds is None:
-            model, model_classes = self._scoring_model(df)
-            probs = self._probabilities(model, model_classes, feat_matrix)
+        # Each row is scored by the model fitted without its fold, or by the full
+        # model: see scoring_folds. Without blocks one model scores the whole
+        # entry, and its probabilities keep the dtype the model gives them.
+        if self._blocks is not None:
+            ensure_columns(df, ["frame"])
+        folds = scoring_folds(df, self._fold_of, self._blocks, self.name)
+        if self._blocks is None:
+            fold = int(folds[0]) if len(folds) else -1
+            probs = self._probabilities(*self._fold_model(fold), feat_matrix)
         else:
-            assert self._cv is not None
             probs = np.zeros((len(df), len(self._classes)))
             for fold in np.unique(folds):
                 rows = folds == fold
-                if fold < 0:
-                    model, model_classes = self._model, self._classes
-                else:
-                    model = self._cv["models"][int(fold)]
-                    model_classes = self._cv["classes"][int(fold)]
                 probs[rows] = self._probabilities(
-                    model, model_classes, feat_matrix[rows]
+                    *self._fold_model(int(fold)), feat_matrix[rows]
                 )
 
         return assemble_prediction(

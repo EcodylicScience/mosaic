@@ -644,6 +644,40 @@ ANIMALS: dict[str, object] = {
 }
 
 
+class TestOutputDtype:
+    """A run writes its probabilities in the dtype that its runs wrote before, under one run id."""
+
+    def test_without_blocks_the_probabilities_are_the_float32_the_model_gives(
+        self, tmp_path: Path
+    ) -> None:
+        world = make_world(
+            tmp_path / "templates",
+            sequences(6, {0: 12, 1: 12}),
+            outside={("test", "z"): {0: 9, 1: 9}},
+        )
+        plain, _ = fitted(world, tmp_path / "plain")
+        folded, _ = fitted(world, tmp_path / "folded", cv_folds=3)
+
+        for feature in (plain, folded):
+            for entry in (("g", "s00"), ("test", "z")):
+                out = feature.apply(world.frames[entry])
+                assert set(out[prob_columns(out)].dtypes) == {np.dtype(np.float32)}
+
+    def test_by_block_the_probabilities_are_float64(self, tmp_path: Path) -> None:
+        only: Entry = ("g", "only")
+        world = make_world(
+            tmp_path / "templates",
+            {only: {0: 30, 1: 30}},
+            with_frames=True,
+            interleave=True,
+        )
+        feature, _ = fitted(world, tmp_path / "run", cv_folds=3, cv_unit="block")
+
+        out = feature.apply(world.frames[only])
+
+        assert set(out[prob_columns(out)].dtypes) == {np.dtype(np.float64)}
+
+
 class TestGroupBy:
     @staticmethod
     def _digest(**extra: object) -> str:

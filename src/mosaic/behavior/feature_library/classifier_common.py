@@ -14,6 +14,7 @@ can use it without one.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from collections.abc import (
     Callable,
     Collection,
@@ -22,7 +23,16 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from typing import TYPE_CHECKING, Annotated, Final, Literal, NamedTuple
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Final,
+    Literal,
+    NamedTuple,
+    NotRequired,
+    Protocol,
+    TypedDict,
+)
 
 import numpy as np
 import pandas as pd
@@ -33,12 +43,14 @@ from mosaic.core.evaluation import CountScores, pool_entry_counts
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.types import COLUMNS, ParquetArtifact, ParquetLoadSpec
+from mosaic.core.track_quality import consecutive_runs
 
 from .helpers import (
     cv_block_assignment,
     cv_block_bounds,
     cv_fold_assignment,
     meta_columns,
+    out_of_fold_choice,
     scored_entry,
 )
 
@@ -64,13 +76,17 @@ __all__ = [
     "CV_UNIT_DESCRIPTION",
     "CvBlock",
     "CvBlocksPerSequence",
+    "CvRecord",
     "CvGapFrames",
     "CvGroupBy",
     "CvSeed",
+    "CvSettings",
     "CvUnit",
     "DecisionThreshold",
     "FitReporting",
     "FoldLookup",
+    "LabeledRun",
+    "RunFolds",
     "RunningMoments",
     "ThresholdsArtifact",
     "TunedDecisionThreshold",
@@ -81,19 +97,24 @@ __all__ = [
     "block_rows",
     "check_cross_validation",
     "check_folds",
+    "cv_record",
     "deal_blocks",
     "deal_folds",
+    "deal_runs",
     "drop_unused_cv_settings",
     "fold_map",
     "fold_rows",
     "fold_table",
     "held_out_frames",
+    "note_labeled_range",
     "pooled_class_scores",
     "predicted_labels",
     "read_fold_table",
     "read_thresholds",
     "refuse_entries_outside_scope",
+    "scoring_folds",
     "standardize",
+    "stored_folds",
     "write_bundle",
 ]
 
@@ -811,6 +832,308 @@ def block_fold_table(
     )
 
 
+class LabeledRun(Protocol):
+    """A stretch of consecutive labeled frames of one series, as the fold tables count it."""
+
+    @property
+    def entry(self) -> tuple[str, str]:
+        """The ``(group, sequence)`` it comes from."""
+        ...
+
+    @property
+    def y(self) -> npt.NDArray[np.intp]:
+        """The class index of each frame, in the order of the classes."""
+        ...
+
+    @property
+    def first_frame(self) -> int | None:
+        """The ``frame`` of its first row, set where runs are cut by block."""
+        ...
+
+
+def _runs_fold_table(
+    fold_of: Mapping[tuple[str, str], int],
+    runs: Iterable[LabeledRun],
+    classes: list[int],
+) -> pd.DataFrame:
+    """Return ``cv_folds.parquet`` by sequence: the fold of every train entry and its labeled frames.
+
+    Args:
+        fold_of: The fold of each train entry.
+        runs: The training runs, whose frames are counted.
+        classes: The class labels, which the runs' class indices point into.
+    """
+    frame = pd.DataFrame(
+        [
+            (run.entry[0], run.entry[1], classes[int(c)], int(n))
+            for run in runs
+            for c, n in zip(*np.unique(run.y, return_counts=True))
+        ],
+        columns=["group", "sequence", "label", "count"],
+    )
+    counts = (
+        frame.groupby(["group", "sequence", "label"])["count"]
+        .sum()
+        .unstack(fill_value=0)
+    )
+    return fold_table(fold_of, counts, classes)
+
+
+def _runs_block_table(
+    blocks: Sequence[CvBlock], runs: Iterable[LabeledRun], classes: list[int]
+) -> pd.DataFrame:
+    """Return ``cv_folds.parquet`` by block: the fold of every block and its labeled frames.
+
+    Args:
+        blocks: Every block, sorted by ``(group, sequence, block)``.
+        runs: The training runs, each with its ``first_frame``.
+        classes: The class labels, which the runs' class indices point into.
+    """
+    in_entry: dict[tuple[str, str], list[CvBlock]] = {}
+    for block in blocks:
+        in_entry.setdefault((block.group, block.sequence), []).append(block)
+    counts = {
+        (block.group, block.sequence, block.block): np.zeros(
+            len(classes), dtype=np.int64
+        )
+        for block in blocks
+    }
+    for run in runs:
+        assert run.first_frame is not None
+        of_entry = in_entry[run.entry]
+        starts = np.array([block.start for block in of_entry], dtype=np.int64)
+        frames = run.first_frame + np.arange(len(run.y))
+        where = np.clip(np.searchsorted(starts, frames, side="right") - 1, 0, None)
+        tally = np.bincount(
+            where * len(classes) + run.y, minlength=len(of_entry) * len(classes)
+        ).reshape(len(of_entry), len(classes))
+        for position, block in enumerate(of_entry):
+            counts[(block.group, block.sequence, block.block)] += tally[position]
+    frame = pd.DataFrame(
+        list(counts.values()),
+        index=pd.MultiIndex.from_tuples(
+            list(counts), names=["group", "sequence", "block"]
+        ),
+        columns=classes,
+    )
+    return block_fold_table(blocks, frame, classes)
+
+
+def _pieces_outside(
+    first_frame: int,
+    length: int,
+    held: Sequence[tuple[int, int]],
+    min_length: int,
+) -> list[tuple[int, int]]:
+    """Return the pieces of a run that lie outside the held-out frames.
+
+    Args:
+        first_frame: The ``frame`` of the run's first row, which the rows then
+            follow one by one.
+        length: The rows of the run.
+        held: The frames a fold's model does not train on, as half-open ranges.
+        min_length: The fewest rows a piece keeps.
+
+    Returns:
+        Each piece of *min_length* rows or more, as half-open row positions in
+        the run.
+    """
+    frames = first_frame + np.arange(length)
+    keep = np.ones(length, dtype=bool)
+    for first, stop in held:
+        keep &= (frames < first) | (frames >= stop)
+    return [
+        (start, stop)
+        for start, stop in consecutive_runs(frames, keep)
+        if stop - start >= min_length
+    ]
+
+
+def note_labeled_range(
+    ranges: dict[tuple[str, str], tuple[int, int]],
+    entry: tuple[str, str],
+    frames: npt.NDArray[np.int64],
+    labeled: npt.NDArray[np.bool_],
+) -> None:
+    """Widen *entry*'s labeled frames in *ranges* to cover the labeled *frames* of one series.
+
+    A range is ``(first, stop)``: the first labeled frame of any of the entry's
+    series and one past the last, as :func:`deal_blocks` cuts it.
+
+    Args:
+        ranges: The labeled frames of each entry so far, which this changes in place.
+        entry: The ``(group, sequence)`` the series belongs to.
+        frames: The ``frame`` of each row of the series.
+        labeled: Which rows a label covers.
+    """
+    if not labeled.any():
+        return
+    hit = frames[labeled]
+    first, stop = ranges.get(entry, (int(hit.min()), 0))
+    ranges[entry] = (min(first, int(hit.min())), max(stop, int(hit.max()) + 1))
+
+
+_BLOCK_FOLD_REMEDY: Final = (
+    "Lower cv_gap_frames or cv_folds, or cut fewer, larger blocks"
+)
+"""What to change when a block fold's training runs hold fewer than two classes."""
+
+
+class CvSettings(Protocol):
+    """The cross-validation parameters of a classifier that fits on runs of frames."""
+
+    @property
+    def cv_folds(self) -> int | None:
+        """The number of folds, unset for none."""
+        ...
+
+    @property
+    def cv_seed(self) -> int:
+        """The seed that deals the folds."""
+        ...
+
+    @property
+    def cv_unit(self) -> Literal["sequence", "block"]:
+        """What a fold holds out."""
+        ...
+
+    @property
+    def cv_blocks_per_sequence(self) -> int | None:
+        """The blocks each entry is cut into, set under the block unit."""
+        ...
+
+    @property
+    def cv_gap_frames(self) -> int:
+        """The frames on each side of a held-out block that its fold does not train on."""
+        ...
+
+    @property
+    def cv_group_by(self) -> Mapping[str, str | list[str]] | None:
+        """The tie keys of each entry."""
+        ...
+
+
+@dataclass(frozen=True)
+class RunFolds[R: LabeledRun]:
+    """The folds a fit on runs of frames deals, and what each fold's model trains on.
+
+    ``fold_of`` holds the fold of each entry by sequence, and ``blocks`` the
+    folded blocks by block. ``training[k]`` holds the pieces of runs that the
+    model without fold ``k`` trains on, each as ``(run, start, stop)`` with
+    half-open row positions in the run. ``table`` is ``cv_folds.parquet``.
+    """
+
+    table: pd.DataFrame
+    fold_of: dict[tuple[str, str], int]
+    blocks: list[CvBlock]
+    training: list[list[tuple[R, int, int]]]
+
+
+def deal_runs[R: LabeledRun](
+    feature: str,
+    settings: CvSettings,
+    runs: Sequence[R],
+    classes: list[int],
+    *,
+    train_entries: list[Entry],
+    ranges: Mapping[tuple[str, str], tuple[int, int]],
+    min_length: int,
+    multiple: int = 1,
+    block_remedy: str = _BLOCK_FOLD_REMEDY,
+) -> RunFolds[R]:
+    """Deal the folds of a fit on runs of labeled frames, and name what each fold's model trains on.
+
+    By sequence, a fold's model trains on the whole runs of every entry outside
+    the fold. By block, it trains on every entry's runs less the frames of its
+    own blocks and ``cv_gap_frames`` on each side of them. A piece of a run that
+    this leaves is cut to a whole number of *multiple* rows from its first row,
+    and kept when it holds *min_length* rows or more.
+
+    Args:
+        feature: The classifier, which a refusal and a warning name.
+        settings: The classifier's params, with ``cv_folds`` set.
+        runs: The training runs, each with the class index of its frames, and
+            with its ``first_frame`` under the block unit.
+        classes: The class labels, which the runs' class indices point into.
+        train_entries: The train entries to deal by sequence.
+        ranges: The labeled frames of each entry to cut into blocks, as
+            :func:`note_labeled_range` gathers them, under the block unit.
+        min_length: The fewest rows a piece of a run keeps.
+        multiple: The rows a piece is a whole number of, 1 to keep it as cut.
+        block_remedy: What the refusal of a block fold left with fewer than two
+            classes tells the user to change.
+
+    Raises:
+        ValueError: The folds cannot be dealt, or a fold's training frames hold
+            fewer than two classes.
+    """
+    folds = settings.cv_folds
+    assert folds is not None
+    if settings.cv_unit == "sequence":
+        fold_of = deal_folds(
+            feature, train_entries, folds, settings.cv_seed, settings.cv_group_by
+        )
+        table = _runs_fold_table(fold_of, runs, classes)
+        check_folds(feature, folds, table, classes, rows="labeled frames")
+        training = [
+            [(run, 0, len(run.y)) for run in runs if fold_of[run.entry] != fold]
+            for fold in range(folds)
+        ]
+        return RunFolds(table, fold_of, [], training)
+
+    assert settings.cv_blocks_per_sequence is not None
+    blocks = deal_blocks(
+        feature, ranges, settings.cv_blocks_per_sequence, folds, settings.cv_seed
+    )
+    table = _runs_block_table(blocks, runs, classes)
+    training: list[list[tuple[R, int, int]]] = []
+    for fold in range(folds):
+        held = held_out_frames(blocks, fold, settings.cv_gap_frames)
+        pieces: list[tuple[R, int, int]] = []
+        for run in runs:
+            held_frames = held.get(run.entry)
+            if not held_frames:
+                pieces.append((run, 0, len(run.y)))
+                continue
+            assert run.first_frame is not None
+            for start, stop in _pieces_outside(
+                run.first_frame, len(run.y), held_frames, min_length
+            ):
+                stop = start + (stop - start) // multiple * multiple
+                if stop - start >= min_length:
+                    pieces.append((run, start, stop))
+        training.append(pieces)
+
+    def enough_classes(
+        fold: int, present: npt.NDArray[np.intp], _: npt.NDArray[np.intp]
+    ) -> None:
+        kept = np.unique(
+            np.concatenate(
+                [run.y[start:stop] for run, start, stop in training[fold]]
+                or [np.empty(0, np.intp)]
+            )
+        )
+        if len(kept) < 2:
+            msg = (
+                f"[{feature}] holding out the blocks of fold {fold} and "
+                f"{settings.cv_gap_frames} frames around them leaves training runs "
+                f"of {len(kept)} class (of {len(present)} outside the blocks), and "
+                f"a classifier needs two. {block_remedy}"
+            )
+            raise ValueError(msg)
+
+    check_folds(
+        feature,
+        folds,
+        table,
+        classes,
+        rows="labeled frames",
+        unit="block",
+        per_fold=enough_classes,
+    )
+    return RunFolds(table, {}, blocks, training)
+
+
 def read_fold_table(path: Path) -> pd.DataFrame:
     """Return the columns of a ``cv_folds.parquet`` that say which rows are out of fold.
 
@@ -938,6 +1261,123 @@ class FoldLookup:
         """
         entry = scored_entry(df, feature)
         return self.folds(entry, df[COLUMNS.frame_col].to_numpy())
+
+
+class CvRecord(TypedDict):
+    """The folds of a cross-validated fit, as a classifier's bundle stores them.
+
+    By sequence, ``fold_of`` holds ``(group, sequence, fold)`` for every train entry.
+    By block, the keys ``unit``, ``blocks_per_sequence``, ``gap_frames`` and
+    ``blocks`` are written too, ``fold_of`` is empty, and ``blocks`` holds
+    ``(group, sequence, block, start, stop, fold)`` for every block. A classifier
+    whose bundle keeps its fold models beside the folds extends this.
+    """
+
+    folds: int
+    seed: int
+    fold_of: list[tuple[str, str, int]]
+    unit: NotRequired[Literal["block"]]
+    blocks_per_sequence: NotRequired[int]
+    gap_frames: NotRequired[int]
+    blocks: NotRequired[list[tuple[str, str, int, int, int, int]]]
+
+
+def cv_record(
+    folds: int,
+    seed: int,
+    fold_of: Mapping[tuple[str, str], int],
+    blocks: Sequence[CvBlock],
+    *,
+    blocks_per_sequence: int | None,
+    gap_frames: int,
+) -> CvRecord:
+    """Return the folds a fit dealt, as a bundle stores them.
+
+    Args:
+        folds: ``cv_folds``.
+        seed: ``cv_seed``.
+        fold_of: The fold of each train entry, empty by block.
+        blocks: Every block and its fold, empty by sequence.
+        blocks_per_sequence: ``cv_blocks_per_sequence``, set by block.
+        gap_frames: ``cv_gap_frames``.
+    """
+    cv: CvRecord = {"folds": folds, "seed": seed, "fold_of": fold_rows(fold_of)}
+    if blocks and blocks_per_sequence is not None:
+        cv["unit"] = "block"
+        cv["blocks_per_sequence"] = blocks_per_sequence
+        cv["gap_frames"] = gap_frames
+        cv["blocks"] = block_rows(blocks)
+    return cv
+
+
+def stored_folds(
+    feature: str,
+    cv: CvRecord | None,
+    cv_unit: Literal["sequence", "block"],
+    bundle_file: str,
+) -> tuple[dict[tuple[str, str], int], FoldLookup | None]:
+    """Return the folds of a cached bundle that a run with ``cv_folds`` scores by.
+
+    Args:
+        feature: The classifier, which a refusal names.
+        cv: The bundle's folds, ``None`` when it has none.
+        cv_unit: The run's ``cv_unit``.
+        bundle_file: The bundle's file name, which a refusal says to remove.
+
+    Returns:
+        The fold of each train entry and no block lookup by sequence, or no entry
+        folds and the block lookup by block.
+
+    Raises:
+        RuntimeError: The bundle has no folds, or was dealt by the other unit.
+    """
+    if cv is None:
+        msg = (
+            f"[{feature}] cv_folds is set and the cached model has no folds. "
+            f"Remove {bundle_file} from the run directory to fit again"
+        )
+        raise RuntimeError(msg)
+    by_block = cv_unit == "block"
+    if by_block != (cv.get("unit") == "block"):
+        msg = (
+            f"[{feature}] cv_unit is {cv_unit!r} and the cached model was fitted "
+            f"with the other unit. Remove {bundle_file} from the run directory to "
+            "fit again"
+        )
+        raise RuntimeError(msg)
+    if by_block:
+        return {}, FoldLookup.by_block(block_list(cv.get("blocks", [])))
+    return fold_map(cv["fold_of"]), None
+
+
+def scoring_folds(
+    df: pd.DataFrame,
+    fold_of: Mapping[tuple[str, str], int],
+    blocks: FoldLookup | None,
+    feature: str,
+) -> npt.NDArray[np.intp]:
+    """Return the fold whose model scores each row of the entry *df* holds, ``-1`` for the full model.
+
+    By sequence an entry of a fold is scored whole by that fold's model, and any
+    other entry by the full model. By block a row is scored by the model of the
+    fold whose block holds its frame, and a row in no block by the full model.
+    Without folds every row is the full model's.
+
+    Args:
+        df: One entry's table.
+        fold_of: The fold of each train entry, empty by block or without folds.
+        blocks: The block lookup by block, ``None`` otherwise.
+        feature: The classifier, which a refusal names.
+
+    Raises:
+        ValueError: *df* lacks ``group`` or ``sequence``, or holds more than one entry.
+    """
+    if blocks is not None:
+        return blocks.scoring_folds(df, feature)
+    if not fold_of:
+        return np.full(len(df), -1, dtype=np.intp)
+    fold = out_of_fold_choice(df, fold_of, feature)
+    return np.full(len(df), -1 if fold is None else fold, dtype=np.intp)
 
 
 def check_folds(
