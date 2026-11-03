@@ -820,6 +820,7 @@ class LocalBackend:
                 refuse=False,
                 step_scopes=_step_scopes(args.step_entries),
                 retire=args.retire,
+                bind=args.bind,
             )
         # Read outside the lock: it reads request files and run-logs only.
         unended = requests_matching(
@@ -894,11 +895,12 @@ class LocalBackend:
                 catalog=catalog,
                 step_scopes=step_scopes,
                 retire=args.retire,
+                bind=args.bind,
             )
             found = plan_fingerprint(plan)
             if args.plan_fingerprint is not None and found != args.plan_fingerprint:
                 raise PlanChanged(expected=args.plan_fingerprint, found=found)
-            findings = _submission_findings(dataset, recipe, plan, args, catalog, cache)
+            findings = _submission_findings(dataset, plan, args, catalog)
             if findings and not args.confirm:
                 raise ToolFailure(confirmation_required("submit_pipeline", findings))
             # An unconfirmed submission is checked for open duplicates again
@@ -932,7 +934,7 @@ class LocalBackend:
             raise ToolFailure(envelope.model_copy(update={"detail": detail})) from error
         lanes = {planned.lane for planned in submitted.plan.steps}
         to_compute = [
-            planned for planned in submitted.plan.steps if planned.status != "complete"
+            planned for planned in submitted.plan.steps if not planned.is_complete
         ]
         return SubmittedPipeline(
             request_id=request.request_id,
@@ -1823,11 +1825,9 @@ def _invalid_source(message: str) -> ErrorEnvelope:
 
 def _submission_findings(
     dataset: Dataset,
-    recipe: Recipe,
     plan: Plan,
     args: SubmitPipelineInput,
     catalog: DeclarationCatalog,
-    inventory: InventoryCache,
 ) -> list[ConfirmationFinding]:
     """Return each confirmation condition that submitting *plan* meets."""
     from mosaic.core.pipeline.graph import (
@@ -1899,21 +1899,11 @@ def _submission_findings(
                 f", {len(written)} of them written by the retired recipe(s) {recipes}"
             )
         findings.append(ConfirmationFinding("cleanup", deleted))
-    scope = _scope(args.entries) or Scope()
-    computes = computed_runs(
-        dataset,
-        recipe,
-        plan,
-        scope=scope,
-        bind=args.bind,
-        inventory=inventory,
-        catalog=catalog,
-    )
     duplicates = open_duplicates(
         dataset.base_dir,
         plan.recipe_digest,
-        scope,
-        computes,
+        _scope(args.entries) or Scope(),
+        computed_runs(plan),
         step_scopes=plan.step_scopes,
     )
     if duplicates:

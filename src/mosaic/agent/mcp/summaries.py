@@ -25,6 +25,7 @@ from mosaic.core.pipeline.graph import (
     RequestStatusWire,
     ValidationReport,
 )
+from mosaic.core.pipeline.graph.model import COMPLETE_STATUSES
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.preview import ArtifactPreview
 
@@ -349,7 +350,11 @@ def _submitted(submitted: SubmittedPipeline) -> str:
         else ""
     )
     total = sum(submitted.counts.values())
-    computed = total - submitted.counts.get("complete", 0)
+    computed = total - sum(
+        count
+        for status, count in submitted.counts.items()
+        if status in COMPLETE_STATUSES
+    )
     return (
         f"Submitted request {submitted.request_id} with {total} step(s), "
         f"{computed} to compute, running in the background.{duplicates}"

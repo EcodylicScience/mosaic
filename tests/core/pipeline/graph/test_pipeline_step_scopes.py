@@ -171,7 +171,11 @@ def test_a_step_scope_on_an_unscoped_op_or_a_bound_step_is_a_problem(
 
     assert _where(op_plan) == [("tracks", "step_scopes.tracks")]
     assert "takes no entry scope" in op_plan.problems[0].message
-    assert _where(bound_plan) == [("speed", "step_scopes.speed")]
+    # The bind names no run of the dataset, which is a problem of its own.
+    assert _where(bound_plan) == [
+        ("speed", "step_scopes.speed"),
+        ("speed", "bind.speed"),
+    ]
 
 
 def test_a_step_scope_selecting_nothing_is_a_problem(split: Dataset) -> None:

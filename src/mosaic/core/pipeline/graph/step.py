@@ -52,9 +52,8 @@ from ..ops import run_op
 from ..parallelism import ParallelSettings, effective_parallel
 from ..run import run_feature
 from .claims import FileFailureStore
-from .model import FeatureStepSpec
+from .model import COMPLETE_STATUSES, FeatureStepSpec
 from .plan import (
-    COMPLETE_STATUSES,
     MISSING_SAMPLE,
     Plan,
     PlannedStep,
@@ -113,7 +112,8 @@ class StepOutcome:
             the first time here.
         state: ``ran`` if work happened, ``cached`` if the artifact already
             answered for the whole scope, ``stalled`` if it exited clean and
-            produced nothing new.
+            produced nothing new, ``bound`` if the request binds it to a run,
+            which it then is.
         planned_run_id: What the plan said it would be called, or ``None`` where
             nothing could say. Kept beside the recorded one so a divergence is
             visible rather than inferred.
@@ -127,7 +127,7 @@ class StepOutcome:
     step_id: str
     kind: Literal["feature", "op"]
     run_id: str
-    state: Literal["ran", "cached", "stalled"]
+    state: Literal["ran", "cached", "stalled", "bound"]
     planned_run_id: str | None = None
     execution_id: str = ""
     failed_entries: tuple[str, ...] = ()
@@ -175,6 +175,11 @@ def execute_step(
             and not to the recipe, so it changes neither a step's identity nor
             its outputs. A feature that is not parallelizable ignores it, and an
             op step does too.
+
+    A step that *request* binds to a run is never executed: it is planned, so
+    that a bind it could not have written is refused as at submission, and is
+    recorded as a cache hit of the pinned run, with the outcome ``bound``. The
+    drivers call this for it in their own process.
 
     Returns:
         What this step did, and what it recorded doing it under.
@@ -248,6 +253,10 @@ def _execute(
     plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
     planned = plan.step(step_id)
 
+    if step_id in request.bind:
+        # After the plan, which refuses at this step a bind the step could not
+        # have written: an op step, another storage, or a run that is gone.
+        return _bound(ds, planned, attempt=attempt, owner=owner)
     if planned.status in COMPLETE_STATUSES and not overwrite:
         return _cached(ds, planned, attempt=attempt, owner=owner)
 
@@ -445,13 +454,19 @@ def _pinned_parents(
     and so on. Planning an ancestor from a prediction while pinning a parent from
     a fact would give this step an identifier neither of them agrees with.
 
+    A step the request binds to a run is the pinned run and stands for nothing
+    above it, so neither it nor what is only above it is read (``cut``), and a
+    bound step pins nothing.
+
     An ancestor with no run-log contributes nothing and is resolved normally --
     that is a step served from an earlier request's cache, which is the ordinary
     state of a partly built graph, not a fault.
     """
+    if step_id in request.bind:
+        return {}
     logs = run_log_dir(ds.base_dir)
     pinned: dict[str, str] = {}
-    for ancestor in sorted(ancestors_of(recipe, step_id) - {step_id}):
+    for ancestor in sorted(ancestors_of(recipe, step_id, cut=request.bind) - {step_id}):
         step = recipe.step(ancestor)
         if not isinstance(step, FeatureStepSpec):
             continue
@@ -682,6 +697,35 @@ def _cached(
         execution_id=attempt,
         covered=covered,
         target=covered,
+    )
+
+
+def _bound(
+    ds: Dataset, planned: PlannedStep, *, attempt: str, owner: str
+) -> StepOutcome:
+    """The record of a step that the request binds to a run.
+
+    Nothing is computed: the step is the pinned run. It is recorded as a full
+    cache hit of that run, which a cleanup does not count as written, so a queue
+    releases the steps below it and they pin the run from this record.
+    """
+    run_id = planned.run_id or ""
+    _record_terminal(
+        ds,
+        attempt,
+        kind="feature",
+        target=planned.storage_name,
+        owner=owner,
+        run_id=run_id,
+        cache_hit=True,
+    )
+    return StepOutcome(
+        step_id=planned.step_id,
+        kind="feature",
+        run_id=run_id,
+        state="bound",
+        planned_run_id=planned.run_id,
+        execution_id=attempt,
     )
 
 

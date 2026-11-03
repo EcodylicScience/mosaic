@@ -231,7 +231,7 @@ def run_command(
                 "run_id": outcome.run_id,
                 "status": attempt_outcome("finished", len(outcome.failed_entries)),
                 "state": outcome.state,
-                "cache_hit": outcome.state == "cached",
+                "cache_hit": outcome.state in ("cached", "bound"),
                 "covered": outcome.covered,
                 "target": outcome.target,
                 "failed_entries": list(outcome.failed_entries),

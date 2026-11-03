@@ -80,6 +80,7 @@ from ..inventory.model import (
     TrainedModelRef,
     reclassify,
 )
+from ..index import feature_run_root
 from ..inventory.scan import reportable_universe
 from ..models import PREPARED_DATA_KINDS
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
@@ -91,6 +92,8 @@ from .heldout import deferred_scope_problem, held_out_fit_problem
 from .compatibility import Reach
 from .lanes import lane_for
 from .model import (
+    BOUND_STATUS,
+    COMPLETE_STATUSES,
     TRACKS_INPUT,
     BoundRef,
     FeatureStepSpec,
@@ -99,6 +102,7 @@ from .model import (
     Request,
     Step,
     StepRef,
+    StepStatus,
     params_step_refs,
 )
 from .resolve import (
@@ -139,7 +143,6 @@ if TYPE_CHECKING:
     from .compatibility import Declaration, DeclarationCatalog
 
 __all__ = [
-    "COMPLETE_STATUSES",
     "ArtifactView",
     "CoverageShort",
     "DepsIncomplete",
@@ -167,18 +170,6 @@ A shortfall is acted on by a person deciding whether to proceed, and a list of
 several hundred entry names is not read. Naming a few and counting the rest is
 what makes the count mean something.
 """
-
-COMPLETE_STATUSES: Final[frozenset[ArtifactStatus]] = frozenset(
-    {"complete", "complete-but-drifted"}
-)
-"""The statuses that mean there is nothing left to compute.
-
-``complete-but-drifted`` is here deliberately: a drifted run is complete and
-loadable, and superseded is not invalid. It is surfaced as drift so a caller can
-choose to re-run it, and refusing to call it complete would make every dataset
-whose sources have moved read as unfinished work.
-"""
-
 
 # --- why a step is not simply running ------------------------------------------
 
@@ -324,7 +315,8 @@ class PlannedStep:
             what a single-artifact kind -- a trained model, a media derivative --
             says instead, because those are not addressed by entry.
         drift: Entries whose recorded sources have moved underneath the run.
-        status: Derived from coverage and consistency, never stored anywhere.
+        status: Derived from coverage and consistency, never stored anywhere,
+            or :data:`~.model.BOUND_STATUS` for a step the request binds to a run.
         finished: Whether the artifact records having finished. Beside the status
             rather than folded into it, because "never ran" and "ran and produced
             nothing" both read as ``absent`` and only one of them is a fault a
@@ -363,7 +355,7 @@ class PlannedStep:
         default_factory=lambda: Coverage[Entry](frozenset(), frozenset())
     )
     drift: tuple[Entry, ...] = ()
-    status: ArtifactStatus = "absent"
+    status: StepStatus = "absent"
     finished: bool = False
     reason: Reason | None = None
     parallelizable: bool = False
@@ -614,6 +606,7 @@ def plan_pipeline(
     recorded: Mapping[str, str] | None = None,
     refuse: bool = True,
     step_scopes: Mapping[str, Scope] | None = None,
+    bind: Mapping[str, BoundRef] | None = None,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -648,6 +641,12 @@ def plan_pipeline(
             back to the request's. A step's target is the graph's narrowed by
             its scope, and a step reading another's entries through ``inputs``
             or ``tracks`` must be planned over a subset of that step's.
+        bind: The out-of-graph pins, keyed by step id, which resolve a step
+            outright. ``None`` falls back to the request's. A bound step is
+            the run it names and is never executed, and its descendants read
+            that run. A bind of an op step, of a storage other than the step's
+            own, or of a run this dataset does not hold is a problem at
+            ``bind.<id>``, and one naming no step a problem at ``bind``.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -696,7 +695,8 @@ def plan_pipeline(
     _ = held.revalidate()
     inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
 
-    bind = request.bind if request is not None else {}
+    if bind is None:
+        bind = request.bind if request is not None else {}
     resolved: dict[str, ResolvedStep] = {}
     planned: dict[str, PlannedStep] = {}
     steps: list[PlannedStep] = []
@@ -721,9 +721,9 @@ def plan_pipeline(
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
-            # A step bound to a run is not executed, so it fits nothing. The
-            # guard does not wait on a step scope: a whole-dataset request with
-            # none is the case it exists for.
+            # A step bound to a run is the pinned run and is never executed,
+            # so it fits nothing. The guard does not wait on a step scope: a
+            # whole-dataset request with none is the case it exists for.
             leak = (
                 None
                 if step.id in bind
@@ -775,6 +775,7 @@ def plan_pipeline(
             recipe, planned, narrowed, catalog=catalog, bind=bind, deferred=deferred_by
         )
     )
+    problems.extend(_bind_problems(ds, recipe, planned, bind))
     if findings.tracks:
         problems.extend(check_recipe(recipe, catalog, tracks=findings.tracks))
     order = {planned_step.step_id: index for index, planned_step in enumerate(steps)}
@@ -815,6 +816,7 @@ def _plan_step(
     """Resolve one step against everything the walk has already established.
 
     What resolving its identity refuses in the step is added to *problems*.
+    A feature step that *bind* names is the run it pins (:func:`_bound_step`).
     *deferred_by* names the conversion step that writes the dataset's first
     tracks, when this graph has one. The entries of a step whose identity
     covers its scope are not known before that step runs, so such a step is
@@ -824,6 +826,18 @@ def _plan_step(
         step.feature if isinstance(step, FeatureStepSpec) else step.kind
     ]
     parents = parents_of(recipe, step.id)
+    bound = bind.get(step.id)
+    if bound is not None and isinstance(step, FeatureStepSpec):
+        return _bound_step(
+            recipe,
+            step,
+            bound,
+            inv=inv,
+            target=target,
+            resolved=resolved,
+            parents=parents,
+            declared=declared,
+        )
 
     inherited = _inherited_deferral(step, planned)
     if (
@@ -844,7 +858,7 @@ def _plan_step(
         # input from whatever the dataset happens to hold -- the first raises out
         # of a path that has nothing to do with this graph, and the second
         # silently answers a question nobody asked.
-        resolution = _Resolution(step=_unresolved(step, target, recipe, resolved, bind))
+        resolution = _Resolution(step=_unresolved(step, target, recipe, resolved))
         base = replace(resolution.step, reason=inherited)
         if isinstance(step, FeatureStepSpec):
             # What the class declares, since the feature is not built: a fitter
@@ -865,13 +879,13 @@ def _plan_step(
             )
     elif isinstance(step, OpStepSpec):
         resolution = _resolve_op_step(
-            ds, recipe, step, target=target, bind=bind, resolved=resolved
+            ds, recipe, step, target=target, resolved=resolved
         )
         problems.extend(resolution.problems)
         base = resolution.step
     else:
         resolution = _resolve_feature_step(
-            ds, recipe, step, target=target, bind=bind, resolved=resolved
+            ds, recipe, step, target=target, resolved=resolved
         )
         problems.extend(resolution.problems)
         base = replace(
@@ -912,6 +926,101 @@ def _plan_step(
     )
 
 
+def _bound_step(
+    recipe: Recipe,
+    step: FeatureStepSpec,
+    bound: BoundRef,
+    *,
+    inv: DatasetInventory,
+    target: frozenset[Entry],
+    resolved: Mapping[str, ResolvedStep],
+    parents: tuple[str, ...],
+    declared: Declaration,
+) -> PlannedStep:
+    """The record of a feature step that the submission binds to a run.
+
+    The step is the pinned run and is never executed: its ``run_id`` and
+    storage are the bind's, its status is :data:`~.model.BOUND_STATUS`, it fits
+    nothing and is asked for no entry. Its coverage is the pinned run's over
+    the step's target, which the steps that read it entry by entry are asked to
+    find whole. Its spec is the one the step would run, so its storage name is
+    the one :func:`_bind_problems` compares the bind's with. Its reach is
+    ``undeclared``, because the params of the pinned run are not the recipe's.
+    """
+    spec = resolve_step_spec(recipe, step.id, resolved)
+    pinned = FeatureRunRef(name=bound.feature, run_id=bound.run_id)
+    view = coverage_against(inv, pinned, target)
+    return PlannedStep(
+        step_id=step.id,
+        kind="feature",
+        runs=step.feature,
+        spec=spec,
+        lane=lane_for(declared),
+        parents=parents,
+        status_parents=_status_parents(step, parents),
+        stacked_parents=_stacked_parents(step, declared),
+        run_id=bound.run_id,
+        storage_name=bound.feature,
+        artifact=pinned,
+        coverage=view.coverage,
+        drift=view.drift,
+        status=BOUND_STATUS,
+        finished=view.finished,
+    )
+
+
+def _bind_problems(
+    ds: Dataset,
+    recipe: Recipe,
+    planned: Mapping[str, PlannedStep],
+    bind: Mapping[str, BoundRef],
+) -> list[Problem]:
+    """What is wrong with the binds of a plan, at ``bind.<id>``.
+
+    A bind replaces its step with the run it names, so it must name a step of
+    the recipe (a problem at ``bind``, the key quoted), and the run must be one
+    that step could have written: an op step cannot be bound, the bind's storage
+    must be the step's own output storage, and the run must exist in this
+    dataset. A step that runs checks its own bind through the plan it makes, so
+    a request submitted before a check existed is refused when it runs.
+    """
+    found: list[Problem] = []
+    steps = {step.id: step for step in recipe.steps}
+    for step_id in sorted(bind):
+        step = steps.get(step_id)
+        bound = bind[step_id]
+        if step is None:
+            # At ``bind``, with the key quoted in the message alone: a key that
+            # names no step is any string, and a refusal prints ``where`` as is.
+            message = f"bind {step_id!r} names no step of the recipe"
+            found.append(Problem("", "bind", message))
+            continue
+        where = f"bind.{step_id}"
+        if isinstance(step, OpStepSpec):
+            message = (
+                f"{step.kind} is an op step, and only a feature step can be bound "
+                f"to a run"
+            )
+            found.append(Problem(step_id, where, message))
+            continue
+        own = planned[step_id].spec.storage_name
+        if bound.feature != own:
+            message = (
+                f"binds this step to a run of {bound.feature!r}, and the step "
+                f"writes {own!r}. A bind replaces the step with a run it could "
+                f"have written"
+            )
+            found.append(Problem(step_id, where, message))
+            continue
+        if not feature_run_root(ds, bound.feature, bound.run_id).is_dir():
+            message = (
+                f"binds this step to run {bound.run_id!r} of {bound.feature!r}, "
+                f"which this dataset does not hold"
+            )
+            found.append(Problem(step_id, where, message))
+    return found
+
+
 def _reach_of(step: FeatureStepSpec, resolution: _Resolution) -> Reach:
     """The temporal reach of a feature step: the built feature's, else its params'."""
     if resolution.reach is not None:
@@ -944,7 +1053,6 @@ def _unresolved(
     target: frozenset[Entry],
     recipe: Recipe,
     resolved: Mapping[str, ResolvedStep],
-    bind: Mapping[str, BoundRef],
 ) -> PlannedStep:
     """The record for a step whose identity nothing above it can supply.
 
@@ -961,7 +1069,6 @@ def _unresolved(
         recipe,
         step.id,
         resolved,
-        bind=bind,
         entries=_op_scope(step.kind, target)
         if isinstance(step, OpStepSpec)
         else Scope(),
@@ -1225,7 +1332,6 @@ def _resolve_feature_step(
     step: FeatureStepSpec,
     *,
     target: frozenset[Entry],
-    bind: Mapping[str, BoundRef],
     resolved: Mapping[str, ResolvedStep],
 ) -> _Resolution:
     """One feature step's identity, from its params plus what is above it.
@@ -1233,7 +1339,7 @@ def _resolve_feature_step(
     A problem that :func:`_feature_problems` finds leaves the identity
     unresolved, and :func:`plan_pipeline` reports it.
     """
-    spec = resolve_step_spec(recipe, step.id, resolved, bind=bind)
+    spec = resolve_step_spec(recipe, step.id, resolved)
     shared = _shared_run_problems(recipe, step, resolved)
     if shared:
         # Before the feature is built, because its inputs model refuses a run
@@ -1414,7 +1520,6 @@ def _resolve_op_step(
     step: OpStepSpec,
     *,
     target: frozenset[Entry],
-    bind: Mapping[str, BoundRef],
     resolved: Mapping[str, ResolvedStep],
 ) -> _Resolution:
     """One op step's identity, asked of the op rather than reconstructed.
@@ -1430,7 +1535,6 @@ def _resolve_op_step(
         recipe,
         step.id,
         resolved,
-        bind=bind,
         entries=_op_scope(step.kind, target),
     )
     params = build_step_op_params(spec)

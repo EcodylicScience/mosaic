@@ -24,6 +24,7 @@ from mosaic.core.pipeline.graph import (
     CleanupPolicy,
     CleanupSpec,
     CleanupTarget,
+    Plan,
     PlanChanged,
     Recipe,
     Request,
@@ -43,6 +44,7 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.parallelism import ParallelSettings
+from mosaic.core.scope import Scope
 from tests.helpers import (
     add_tracks_variant,
     make_dataset,
@@ -54,6 +56,7 @@ from tests.helpers import (
 runner = CliRunner()
 
 type Document = dict[str, object]
+
 
 VARIANT = "convert-trex.0.2-1111111111"
 
@@ -333,8 +336,12 @@ LOOSE = CleanupPolicy(keep_newest=0, min_age_hours=0)
 SPEED_STORAGE = "speed-angvel__from__tracks"
 
 
-def _cleanup_fingerprint(dataset: Dataset, recipe: Recipe) -> str:
-    return plan_fingerprint(plan_with_cleanup(dataset, recipe, cleanup=LOOSE))
+def _cleanup_fingerprint(
+    dataset: Dataset, recipe: Recipe, bind: dict[str, BoundRef] | None = None
+) -> str:
+    return plan_fingerprint(
+        plan_with_cleanup(dataset, recipe, cleanup=LOOSE, bind=bind)
+    )
 
 
 def test_cleanup_requires_an_expected_plan(tracked: Dataset) -> None:
@@ -386,13 +393,14 @@ def test_a_bound_run_is_never_approved(tracked: Dataset) -> None:
     old = run_speed(tracked, 1)
     other = run_speed(tracked, 3)
     recipe = speed_recipe_stepping(2)
+    bind = {"speed": BoundRef(feature=SPEED_STORAGE, run_id=old)}
 
     submitted = submit_request(
         tracked,
         recipe,
-        bind={"elsewhere": BoundRef(feature=SPEED_STORAGE, run_id=old)},
+        bind=bind,
         cleanup=LOOSE,
-        expect_plan=_cleanup_fingerprint(tracked, recipe),
+        expect_plan=_cleanup_fingerprint(tracked, recipe, bind),
     )
 
     spec = submitted.request.cleanup
@@ -565,3 +573,68 @@ def test_a_submission_that_retires_an_unknown_recipe_writes_nothing(
 
     assert not request_path(tracked.base_dir, "x").parent.exists()
     assert not recipe_path(tracked.base_dir, recipe_digest(recipe)).exists()
+
+
+# --- a bound submission -------------------------------------------------------
+
+SEQ_A = Scope(entries=[("", "seq_a")])
+
+
+def _clustering() -> Recipe:
+    """The chain with a ``global-kmeans`` step that reads the templates."""
+    document = json.loads(json.dumps(CHAIN))
+    document["name"] = "speed, templates and clusters"
+    document["steps"].append(
+        {
+            "id": "kmeans",
+            "type": "feature",
+            "feature": "global-kmeans",
+            "inputs": [{"step": "speed"}],
+            "params": {"templates": {"step": "templates"}, "k": 2},
+        }
+    )
+    return Recipe.model_validate(document)
+
+
+def _bound_to_older_speed(dataset: Dataset) -> dict[str, BoundRef]:
+    """Bind the speed step to a speed run that the graph does not make."""
+    older = run_speed(dataset, 3)
+    return {"speed": BoundRef(feature=SPEED_STORAGE, run_id=older)}
+
+
+def _bound_plan(dataset: Dataset, recipe: Recipe, bind: dict[str, BoundRef]) -> Plan:
+    pinned = Request(request_id="pins", recipe_digest=recipe_digest(recipe), bind=bind)
+    return plan_pipeline(dataset, recipe, scope=SEQ_A, request=pinned)
+
+
+def test_a_bound_submission_returns_the_plan_of_the_bound_graph(
+    tracked: Dataset,
+) -> None:
+    recipe = _clustering()
+    bind = _bound_to_older_speed(tracked)
+    bound = _bound_plan(tracked, recipe, bind)
+
+    submitted = submit_request(tracked, recipe, scope=SEQ_A, bind=bind)
+
+    assert submitted.plan.step("speed").status == "bound"
+    assert submitted.plan.step("templates").spec.inputs == (
+        {"feature": SPEED_STORAGE, "run_id": bind["speed"].run_id},
+    )
+    assert [step.run_id for step in submitted.plan.steps] == [
+        step.run_id for step in bound.steps
+    ]
+    assert plan_fingerprint(submitted.plan) == plan_fingerprint(bound)
+
+
+def test_a_bound_submission_accepts_the_fingerprint_of_the_bound_plan(
+    tracked: Dataset,
+) -> None:
+    recipe = _clustering()
+    bind = _bound_to_older_speed(tracked)
+    reviewed = plan_fingerprint(_bound_plan(tracked, recipe, bind))
+
+    submitted = submit_request(
+        tracked, recipe, scope=SEQ_A, bind=bind, expect_plan=reviewed
+    )
+
+    assert plan_fingerprint(submitted.plan) == reviewed

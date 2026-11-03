@@ -257,8 +257,14 @@ def test_a_fit_bound_to_a_run_is_not_a_fit_over_the_test_group(
     bound = plan_pipeline(roled, recipe, request=request, refuse=False)
     unbound = plan_pipeline(roled, recipe, refuse=False)
 
-    assert ("templates", "scope") not in _problems(bound)
+    assert _problems(bound) == []
     assert _problems(unbound) == [("templates", "scope")]
+    # It is the pinned run, so it fits nothing over the test group.
+    assert (bound.step("templates").status, bound.step("templates").fits) == (
+        "bound",
+        False,
+    )
+    assert bound.step("templates").run_id == templates.run_id
 
 
 def test_a_graph_that_converts_first_cautions_the_fit_it_cannot_yet_check(

@@ -72,7 +72,6 @@ from .lanes import lane_for
 from .reach import class_reach, class_reach_by_option
 from .model import (
     TRACKS_INPUT,
-    BoundRef,
     OpStepSpec,
     Recipe,
     params_step_refs,
@@ -1003,7 +1002,6 @@ def resolve_step_spec(
     step_id: str,
     resolved: Mapping[str, ResolvedStep],
     *,
-    bind: Mapping[str, BoundRef] | None = None,
     entries: Scope | None = None,
 ) -> StepSpec:
     """Substitute every reference in one step from what is already resolved.
@@ -1028,11 +1026,11 @@ def resolve_step_spec(
     ``Params.identity_dump()``, neither of which recurses -- so finding a
     reference deeper would promise a substitution nothing performs.
 
-    *bind* is applied first and is never overridden: an out-of-graph artifact the
-    submission pinned is already resolved when the walk reaches it.
+    A step that a submission binds to a run is resolved in *resolved* as that
+    run, so a step reading it reads the pinned run. Its own spec is the one it
+    would run, which is what the plan compares the bind's storage with.
     """
     step = recipe.step(step_id)
-    bound = (bind or {}).get(step_id)
 
     if isinstance(step, OpStepSpec):
         types = _params_field_types("op", step.kind)
@@ -1104,11 +1102,6 @@ def resolve_step_spec(
         # The variant, never the op run id. They coincide today only because the
         # tracker variant payload is an unwrapped passthrough of the settings.
         tracks_run_id = upstream.tracks_variant if upstream else None
-
-    if bound is not None:
-        # An out-of-graph pin resolves the step outright; nothing derived above
-        # may override it, because the submission chose it deliberately.
-        inputs = [{"feature": bound.feature, "run_id": bound.run_id}]
 
     return StepSpec(
         step_id=step_id,

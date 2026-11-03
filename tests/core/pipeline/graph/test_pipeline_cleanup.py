@@ -515,7 +515,7 @@ def test_the_own_requests_binds_are_kept(dataset: Dataset) -> None:
     request = Request(
         request_id="R1",
         recipe_digest=plan.recipe_digest,
-        bind={"elsewhere": BoundRef(feature=STORAGE, run_id=old)},
+        bind={"speed": BoundRef(feature=STORAGE, run_id=old)},
     )
 
     cleanup = plan_cleanup(

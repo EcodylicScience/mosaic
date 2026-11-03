@@ -24,10 +24,28 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   `expect_plan`, `submit_request` compares it before writing either file and raises
   `PlanChanged`, a `conflict` and not a `RefusalReason`
   (`test_pipeline_plan_fingerprint.py`).
-- `submit_request` records the runs its plan leaves to compute (`computed_runs`,
-  planned again with the binds when there are any, because the submitted plan resolves
-  none) in `computes/<rid>.json` (`save_computes`), under `submission_lock` and before
-  the request file. The request file gains no key, so an older mosaic still reads it.
+- A bound step (`Request.bind`, `BoundRef`) is the run it names and is never executed
+  (`test_pipeline_bind.py`). The plan gives it that `run_id` and storage and the status
+  `bound` (`BOUND_STATUS`, in `COMPLETE_STATUSES`; `model.StepStatus` spells it flat
+  because the `plan_recipe` output schema has no room for an `anyOf`), and its
+  descendants resolve from it. `_bind_problems` refuses, at `bind.<id>`, an op step,
+  a storage other than the step's own and a run the dataset does not hold, and at
+  `bind` a key naming no step, quoted in the message alone because a refusal prints
+  `where` as is. `execute_step` plans a bound step, so the same check refuses a bind
+  that a request submitted before it holds, and otherwise records a cache hit of the
+  pinned run (outcome `bound`). Both drivers call it in their own process and start no
+  step process for one. `ancestors_of` and `descendants_of` take `cut=request.bind`,
+  so `_pinned_parents` and `_blocked_by` neither enter a bound step nor walk past it,
+  and a bound step pins nothing: a failure above it does not reach the steps below.
+  `request_rollup` reads it through `bound_attempt` unless its run-log records a
+  refusal, so the verdict and a wait end. The held-out guard and `reach_findings`
+  skip it, since it fits nothing.
+- `submit_request` plans once, with its `bind` (`plan_pipeline(bind=...)`), so the
+  returned plan, its fingerprint and an MCP `plan_recipe` given the same binds agree.
+  The request records the runs that plan leaves to compute (`computed_runs`), which a
+  bound step is not among, in `computes/<rid>.json` (`save_computes`), under
+  `submission_lock` and before the request file. The request file gains no key, so an
+  older mosaic still reads it.
   An empty list is a request that computes nothing, and no file is a request an older
   mosaic wrote. Nothing removes the file, and one whose request file is gone is never
   read. `open_duplicates` (`store.py`) returns the requests whose rollup verdict is

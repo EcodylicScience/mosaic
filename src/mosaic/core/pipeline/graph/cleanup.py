@@ -87,7 +87,7 @@ if TYPE_CHECKING:
     from ..inventory.model import AnyRecord
     from ..inventory.params import RunParams
     from .compatibility import DeclarationCatalog
-    from .model import Recipe, Request
+    from .model import BoundRef, Recipe, Request
     from .plan import Plan
     from .rollup import RequestRollup
 
@@ -216,6 +216,7 @@ def plan_with_cleanup(
     step_scopes: Mapping[str, Scope] | None = None,
     now: datetime.datetime | None = None,
     retire: Iterable[str] = (),
+    bind: Mapping[str, BoundRef] | None = None,
 ) -> Plan:
     """Plan *recipe*, and report its superseded runs when *cleanup* is given.
 
@@ -241,6 +242,7 @@ def plan_with_cleanup(
             wrote are judged wherever they sit
             (:func:`~.retirement.validate_retirement` lists what is refused).
             It needs *cleanup*, and it belongs to this plan alone.
+        bind: As for :func:`~.plan.plan_pipeline`.
 
     Returns:
         The plan, with ``cleanup`` set when *cleanup* was given.
@@ -271,6 +273,7 @@ def plan_with_cleanup(
         catalog=declarations,
         refuse=refuse,
         step_scopes=step_scopes,
+        bind=bind,
     )
     if cleanup is None:
         return plan

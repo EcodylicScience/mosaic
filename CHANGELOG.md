@@ -12,10 +12,10 @@ message of their branch, and for both the answer was **nothing**.
 
 **A submission is a duplicate of an open request that computes one of its runs, of any
 recipe.** A submission writes `.mosaic/pipelines/computes/<request_id>.json`: the
-runs (step, storage, `run_id`, `whole`) its plan left to compute, with a bound step's
-run left out. The request file is unchanged, so an older mosaic still reads it. A submission
-compares its own runs with each open request's. One run computed whole, as a fit, a run
-named by its entries or an op that takes no scope, is a duplicate over any entries.
+runs (step, storage, `run_id`, `whole`) its plan left to compute. The request file is
+unchanged, so an older mosaic still reads it. A submission compares its own runs with
+each open request's. One run computed whole, as a fit, a run named by its entries or
+an op that takes no scope, is a duplicate over any entries.
 Another run is one only where the two steps' scopes and step scopes overlap. A request
 of another recipe computing the same fit is now reported, and two requests of one
 recipe whose step scopes split a fit are not. A request without that file, which an
@@ -30,6 +30,47 @@ detail is `{"recipe_digest", "duplicates": [{"request_id", "steps", "steps_omitt
 the rest, as the refusal, the warning and the confirmation question do.
 The check runs once, after planning, under the submission lock, since it needs the
 plan. No run id moves.
+
+## Unreleased: a bound step is the run it names
+
+**A step that a submission binds is never executed.** `bind` maps a step id to a run
+(`BoundRef`: `feature`, `run_id`), and the step is that run: its `run_id` is the pinned
+one, its storage the bind's, and the steps below it read the run, their run ids
+derived from it as from any upstream run. Before, the bind replaced only the step's
+`inputs`, and the step ran over the pinned run, so a bound fitting step fitted where
+the held-out guard and the reach check skipped it. To read an older speed run, bind
+the speed step to it, not the step below.
+
+- The plan gives a bound step the status `bound`, which counts as complete
+  (`COMPLETE_STATUSES`). `PlannedStepWire.status` takes it (`StepStatus`), and the
+  MCP `plan_recipe` output schema stays within its budget.
+- The plan refuses, at `bind.<step>`, a bind of an op step, of a storage other than
+  the step's own output storage, and of a run the dataset does not hold, and at `bind`
+  a key naming no step of the recipe, which before was ignored, so a typo recomputed
+  the step it meant to pin.
+- `execute_step` on a bound step computes nothing: it records a cache hit of the
+  pinned run (`StepOutcome.state` `bound`), or refuses a bind the step could not have
+  written, which a request submitted before this check may hold. `run_pipeline` and
+  `run_request` call it in their own process, so a bound step starts no step process.
+  A failure above a bound step does not block or refuse the steps below it.
+- `request_rollup` reads a bound step as `finished` with the pinned run
+  (`StepAttempt.bound`) unless its run-log records a refusal, so a request status,
+  `mosaic wait` and the rollup treat it as done. `StepStatusWire.outcome` names it
+  `bound` (`AttemptOutcome` gains `bound`) with no liveness. `COMPLETE_STATUSES` moves
+  to `graph/model.py`, and the `submit_pipeline` summary and `first_steps` count no
+  complete step, bound or drifted, as work.
+- A bound step computes no run, so `computes/<request_id>.json` leaves it out.
+- `submit_request` plans once with its binds, so the returned plan, its fingerprint
+  and the `submit_pipeline` counts and `first_steps` are those of the bound graph.
+  `plan_pipeline` and `plan_with_cleanup` take `bind`. MCP `plan_recipe` takes `bind`,
+  and a bound submission given the fingerprint of an unbound plan is refused as
+  `PlanChanged`, whose message names the binds.
+
+A request submitted before this change whose bind used the old meaning is refused
+when its driver reaches the bound step. If that request's driver died after every
+other step finished, its rollup is already terminal, so the bind is never re-checked.
+
+No run id moves for a request without binds.
 
 ## Unreleased: lightning-action cross-validation
 

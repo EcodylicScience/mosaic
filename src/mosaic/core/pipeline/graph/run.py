@@ -31,7 +31,11 @@ and a second driver is refused while it lives.
 order, as ``mosaic run --graph-request`` does under a queue, and holds the
 request's driver lease (:mod:`~.driver_lease`) while it does. It submits nothing,
 and running a request again resumes it: a finished step is skipped, and a step
-without a terminal record runs. A request that has ended is not driven again.
+without a terminal record runs. A step the request binds to a run is never run by
+either driver: it is recorded as that run in the driver's process
+(:func:`~.step.execute_step`), which refuses a bind the step could not have
+written, and a failure above it does not reach the steps below it. A request
+that has ended is not driven again.
 :func:`start_detached_driver` starts that driver in a new session, which outlives
 the process that started it.
 
@@ -85,7 +89,7 @@ from .request import load_recipe_for_request, step_argv, submit_request
 from .rollup import request_rollup
 from .status import JSON_OBJECT
 from .step import StepOutcome, execute_step, record_step_ended
-from .step_preflight import CoverageShortfall
+from .step_preflight import CoverageShortfall, StepRefused
 from .topo import descendants_of, topological_order
 
 if TYPE_CHECKING:
@@ -220,9 +224,11 @@ def run_pipeline(
 ) -> PipelineRun:
     """Run every step of *recipe* against *ds*, in order, in this process.
 
-    A step that fails ends the branch below it, and the run goes on with the steps
-    that do not descend from it. When the failed step's run-log records the
-    failure, every step below it is recorded ``failed`` for it
+    A step the request binds to a run computes nothing: its outcome is
+    ``bound``, or a refusal of a bind it could not have written. A step that
+    fails ends the branch below it, down to a bound step, and the run
+    goes on with the steps that do not descend from it. When the failed step's
+    run-log records the failure, every step below it is recorded ``failed`` for it
     (:data:`PARENT_FAILED_TYPE`). A step that raises before its run-log records
     an end, and a stall without ``allow_partial``, leave the steps below them
     unrecorded. Once every other step has run, the first error is raised. A
@@ -351,12 +357,12 @@ def run_pipeline(
                 # A record left by an earlier call is not this call's failure.
                 after = _run_record(ds, submitted, step_id)
                 if after is None or after == before or after["status"] != "failed":
-                    unrecorded |= _blocked_by(recipe, step_id)
+                    unrecorded |= _blocked_by(recipe, submitted, step_id)
                 elif _refuses_every_step(after):
                     break
                 else:
                     _ = _record_blocked(ds, submitted, recipe, step_id)
-                    below_failure |= _blocked_by(recipe, step_id)
+                    below_failure |= _blocked_by(recipe, submitted, step_id)
                 continue
             outcomes.append(outcome)
             if outcome.state == "stalled" and not submitted.allow_partial:
@@ -371,7 +377,7 @@ def run_pipeline(
                     outcome.target,
                     "the attempt exited clean and coverage did not move",
                 )
-                unrecorded |= _blocked_by(recipe, step_id)
+                unrecorded |= _blocked_by(recipe, submitted, step_id)
         if _cleanup_due(ds, submitted):
             keeper.ensure_held()
             cleanup_status = run_cleanup(
@@ -486,7 +492,8 @@ class RequestRun:
         request_id: The request.
         status: The request's rollup status when the driver ended.
         ran: The steps that the driver started a process for, in order.
-        skipped: The steps it found finished.
+        skipped: The steps it found finished, and the steps the request binds
+            to a run, which it recorded as that run in its own process.
         cancelled: The steps without a terminal record that it recorded as
             cancelled when its cancel token fired.
         log_path: The log that the steps' output was appended to.
@@ -533,7 +540,10 @@ def run_request(
     Each step runs as ``mosaic run --graph-request`` in its own process and
     session, with its standard input closed and its output appended to
     :func:`~.driver_lease.driver_log_path`. A step whose run-log is finished is
-    skipped. A step that exits without a terminal record is recorded ``failed``
+    skipped. A step the request binds to a run starts no process: it is
+    recorded as the pinned run here, or refused and recorded ``failed`` when its
+    bind names a storage other than its own or a run that is gone. A step that
+    exits without a terminal record is recorded ``failed``
     (:func:`~.step.record_step_ended`). A failed step ends the branch below it: every
     step below it is recorded ``failed`` for it (:data:`PARENT_FAILED_TYPE`), and
     the steps that do not descend from it run. A step that a resume finds
@@ -623,6 +633,14 @@ def run_request(
                 if status == "finished":
                     skipped.append(step_id)
                     continue
+                if status not in TERMINAL_STATUSES and step_id in request.bind:
+                    # Recorded here, in no process of its own: it is the run it
+                    # names, unless the plan refuses the bind.
+                    keeper.ensure_held()
+                    status = _settle_bound(ds, request, step_id)
+                    if status == "finished":
+                        skipped.append(step_id)
+                        continue
                 if status not in TERMINAL_STATUSES:
                     keeper.ensure_held()
                     ran.append(step_id)
@@ -642,7 +660,7 @@ def run_request(
                 ):
                     break
                 blocked.extend(_record_blocked(ds, request, recipe, step_id))
-                below_failure |= _blocked_by(recipe, step_id)
+                below_failure |= _blocked_by(recipe, request, step_id)
         if not token.is_cancelled() and _cleanup_due(ds, request):
             keeper.ensure_held()
             cleanup_status = run_cleanup(ds, request, token=token).status
@@ -810,6 +828,21 @@ def _recorded_status(ds: Dataset, request: Request, step_id: str) -> str:
     return "" if snapshot is None else snapshot["status"]
 
 
+def _settle_bound(ds: Dataset, request: Request, step_id: str) -> str:
+    """Record a step that *request* binds to a run, and return its status.
+
+    :func:`~.step.execute_step` plans it, refuses a bind that the step could
+    not have written, and otherwise records the pinned run. Either way it
+    computes nothing.
+    """
+    try:
+        _ = execute_step(ds, request, step_id, owner=request.owner)
+    except StepRefused:
+        # execute_step has recorded the refusal in the step's run-log.
+        return "failed"
+    return "finished"
+
+
 def _execute_or_error(
     ds: Dataset,
     request: Request,
@@ -845,9 +878,13 @@ def _execute_or_error(
         return error
 
 
-def _blocked_by(recipe: Recipe, step_id: str) -> frozenset[str]:
-    """Return the descendants of *step_id*, which its failure keeps from running."""
-    return descendants_of(recipe, step_id) - {step_id}
+def _blocked_by(recipe: Recipe, request: Request, step_id: str) -> frozenset[str]:
+    """Return the descendants of *step_id*, which its failure keeps from running.
+
+    A step that *request* binds to a run reads nothing above it, so it is not
+    blocked and the walk does not pass through it.
+    """
+    return descendants_of(recipe, step_id, cut=request.bind) - {step_id}
 
 
 def _record_blocked(
@@ -858,7 +895,7 @@ def _record_blocked(
     Each record's error is a :data:`PARENT_FAILED_TYPE` naming *parent* and its
     attempt. The steps are returned in topological order.
     """
-    below = _blocked_by(recipe, parent)
+    below = _blocked_by(recipe, request, parent)
     unended = tuple(
         step.id
         for step in topological_order(recipe)
@@ -978,7 +1015,9 @@ def _cancel_unended(
     unended = tuple(
         step_id
         for step_id in order
-        if _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
+        # A bound step is the pinned run whether or not it was recorded.
+        if step_id not in request.bind
+        and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
     )
     for step_id in unended:
         record_step_ended(

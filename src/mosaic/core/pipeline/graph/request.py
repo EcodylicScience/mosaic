@@ -89,9 +89,10 @@ class SubmittedRequest:
 
     Attributes:
         request: What was asked for, with every step's attempt id assigned.
-        plan: What the recipe resolves to against this dataset, right now. A
-            preview: every step resolves its own identity again at its own start,
-            so nothing downstream may treat these identifiers as authoritative.
+        plan: What the recipe resolves to against this dataset, right now,
+            with the submission's binds. A preview: every step resolves its own
+            identity again at its own start, so nothing downstream may treat
+            these identifiers as authoritative.
         recipe_path: Where the recipe was copied to inside the dataset.
         request_path: Where the request document was written.
         duplicates: The requests open at submit that compute a run this one
@@ -119,8 +120,9 @@ class PlanChanged(ClassifiedError):
         message = (
             f"the plan of this recipe has fingerprint {found!r}, and the "
             f"submission expected {expected!r}. The dataset changed after it was "
-            f"planned. Plan the recipe again, review it, and submit with the new "
-            f"fingerprint."
+            f"planned, or the plan was made with other entries or binds than the "
+            f"submission's. Plan the recipe again with them, review it, and "
+            f"submit with the new fingerprint."
         )
         super().__init__(message)
         self.expected: str = expected
@@ -275,7 +277,8 @@ def submit_request(
         inventory: A held inventory to plan against.
         catalog: The declarations to resolve against.
         expect_plan: The :func:`~.serialize.plan_fingerprint` of the plan that
-            the caller reviewed, or ``None`` to submit whatever the plan is now.
+            the caller reviewed, planned with the same *scope*, *step_scopes*,
+            *bind* and *cleanup*, or ``None`` to submit whatever the plan is now.
         refuse_duplicates: Whether an open request that computes a run of the
             plan, of any recipe (:func:`~.store.open_duplicates`), refuses the
             submission. Otherwise the submission proceeds and reports the open
@@ -349,6 +352,7 @@ def submit_request(
         inventory=inventory,
         catalog=catalog,
         step_scopes=narrowed_steps,
+        bind=bind or {},
     )
     if cleanup is not None and inventory is not None and catalog is not None:
         # What plan_with_cleanup does, with the plan_pipeline of this module.
@@ -402,15 +406,7 @@ def submit_request(
         },
         cleanup=removal,
     )
-    computes = computed_runs(
-        ds,
-        recipe,
-        plan,
-        scope=narrowing,
-        bind=request.bind,
-        inventory=inventory,
-        catalog=catalog,
-    )
+    computes = computed_runs(plan)
     with submission_lock(ds.base_dir):
         duplicates = open_duplicates(
             ds.base_dir, digest, narrowing, computes, step_scopes=narrowed_steps
@@ -430,40 +426,16 @@ def submit_request(
         )
 
 
-def computed_runs(
-    ds: Dataset,
-    recipe: Recipe,
-    plan: Plan,
-    *,
-    scope: Scope | None = None,
-    bind: Mapping[str, BoundRef] | None = None,
-    inventory: InventoryCache | None = None,
-    catalog: DeclarationCatalog | None = None,
-) -> list[ComputedRun]:
-    """The runs that submitting *plan* with *bind* leaves to compute.
+def computed_runs(plan: Plan) -> list[ComputedRun]:
+    """The runs that submitting *plan* leaves to compute, as a request records them.
 
-    *plan* is the recipe planned over *scope* with no bind, as
-    :func:`submit_request` and the MCP server plan it. With *bind* the recipe
-    is planned again with it, because a bound step computes nothing and names
-    the run its descendants read. A step that is complete, bound to a run, or
-    of no resolved ``run_id`` computes none. A feature that fits or names its
-    run by its entries, and an op that takes no scope, computes its run whole
-    (``ComputedRun.whole``).
+    *plan* is planned with the submission's binds: a bound step is the run it
+    pins, computes nothing (its status is ``bound``, which is complete), and
+    names the runs below it. A step that is complete or of no resolved
+    ``run_id`` computes none. A feature that fits or
+    names its run by its entries, and an op that takes no scope, computes its
+    run whole (``ComputedRun.whole``).
     """
-    if bind:
-        plan = plan_pipeline(
-            ds,
-            recipe,
-            scope=scope,
-            # Carries the pins alone: the scope and step scopes are given.
-            request=Request(
-                request_id="", recipe_digest=plan.recipe_digest, bind=dict(bind)
-            ),
-            inventory=inventory,
-            catalog=catalog,
-            refuse=False,
-            step_scopes=plan.step_scopes,
-        )
     return [
         ComputedRun(
             step=planned.step_id,
@@ -472,9 +444,7 @@ def computed_runs(
             whole=planned.fits or planned.scope_dependent or takes_no_entries(planned),
         )
         for planned in plan.steps
-        if planned.run_id is not None
-        and not planned.is_complete
-        and planned.step_id not in plan.bound
+        if planned.run_id is not None and not planned.is_complete
     ]
 
 

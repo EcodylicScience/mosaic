@@ -10,10 +10,11 @@ subsets are running the same recipe.
 
 The **request** is one submission of one recipe against one dataset. It holds
 what the recipe must not: which entries, whether a shortfall may proceed, who
-asked, and the out-of-graph pins. It is defined here rather than where it is
-written because ``resolve_step_spec`` consumes ``request.bind`` and
-``plan_pipeline`` takes ``request=``; writing the file and minting the execution
-ids into it belong to the phase that executes.
+asked, and the out-of-graph pins, each of which replaces a step with the run it
+names, so the step is never executed. It is defined here rather than where it is
+written because ``plan_pipeline`` takes ``request=`` and resolves each bound step
+as its pinned run; writing the file and minting the execution ids into it belong
+to the phase that executes.
 
 **One place per fact.** Cross-step references live in the step body at the exact
 site they will be substituted, so there is no separate ``edges`` array to drift
@@ -41,6 +42,8 @@ from mosaic.core.scope import Scope
 from .expand import expand_repeats
 
 __all__ = [
+    "BOUND_STATUS",
+    "COMPLETE_STATUSES",
     "REQUEST_HOLD_FLOOR_HOURS",
     "BoundRef",
     "CleanupMode",
@@ -57,6 +60,7 @@ __all__ = [
     "Step",
     "StepRef",
     "StepRun",
+    "StepStatus",
     "TRACKS_INPUT",
     "canonical_number",
     "canonical_params",
@@ -368,9 +372,12 @@ class BoundRef(GraphModel):
     """An artifact this graph did not produce, pinned by the submission.
 
     What makes "run t-SNE over the speed feature I computed last month"
-    expressible. It lives on the request rather than in the recipe, so the recipe
-    stays portable and free of resolved identifiers while the binding is recorded
-    where it is auditable.
+    expressible: bind the speed step to that run. A bound step is the run it
+    names and is never executed. Its ``run_id`` is the pinned one, its storage is
+    ``feature``, which must be the step's own output storage, and the steps below
+    it read that run. It lives on the request rather than in the recipe, so the
+    recipe stays portable and free of resolved identifiers while the binding is
+    recorded where it is auditable.
 
     **It pins only.** Params are never bound, or the digest would stop describing
     the work it names.
@@ -378,6 +385,43 @@ class BoundRef(GraphModel):
 
     feature: str
     run_id: str
+
+
+BOUND_STATUS: Final = "bound"
+"""The status of a step that a submission binds to a run.
+
+The step is the pinned run: it is never executed, so it computes nothing, and
+the steps below it read that run. It counts as complete
+(:data:`COMPLETE_STATUSES`). A plan word, never an inventory status.
+"""
+
+type StepStatus = Literal[
+    "absent", "partial", "complete", "complete-but-drifted", "inconsistent", "bound"
+]
+"""What a planned step's artifact adds up to (an ``ArtifactStatus``), or
+:data:`BOUND_STATUS`.
+
+Spelled flat rather than as a union with ``ArtifactStatus``, which a JSON Schema
+renders as an ``anyOf`` that the ``plan_recipe`` output schema has no room for. A
+test asserts it is ``ARTIFACT_STATUSES`` and ``bound``. Defined here, where
+:class:`BoundRef` is, because a status read and the MCP tool models declare
+fields over it and load no pandas.
+"""
+
+
+COMPLETE_STATUSES: Final[frozenset[StepStatus]] = frozenset(
+    {"complete", "complete-but-drifted", BOUND_STATUS}
+)
+"""The statuses that mean there is nothing left to compute.
+
+``bound`` is a step that the submission binds to a run: it is that run, and is
+never executed.
+
+``complete-but-drifted`` is here deliberately: a drifted run is complete and
+loadable, and superseded is not invalid. It is surfaced as drift so a caller can
+choose to re-run it, and refusing to call it complete would make every dataset
+whose sources have moved read as unfinished work.
+"""
 
 
 REQUEST_HOLD_FLOOR_HOURS: Final = 1.0

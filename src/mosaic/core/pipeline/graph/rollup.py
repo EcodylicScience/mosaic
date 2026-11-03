@@ -16,6 +16,11 @@ not descend from a failure. A failed request with an unstarted step therefore
 reads ``running`` while its driver lease exists, and a stale lease then reads
 ``orphaned`` (:func:`~.status.request_verdict_of`).
 
+**A step the request binds to a run computes nothing.** It is that run, so before a
+driver records it and once it is recorded finished it reads ``finished`` with the
+pinned run and ``bound`` set (:func:`bound_attempt`). A bind that a driver refused,
+because the step could not have written that run, reads as its run-log does.
+
 **This reads attempts, not artifacts.** Whether every step's *work* is done is a
 different question, answered by planning the recipe against the dataset -- which
 costs the feature registry and is what ``mosaic pipeline plan`` is for. This one
@@ -41,6 +46,7 @@ __all__ = [
     "RequestRollup",
     "RequestStatus",
     "StepAttempt",
+    "bound_attempt",
     "request_rollup",
     "request_verdict",
 ]
@@ -90,6 +96,8 @@ class StepAttempt:
         min_available_bytes: The least memory the host had available when it
             measured, 0 before it reports.
         total_memory_bytes: The host's physical memory, 0 before it reports.
+        bound: Whether the request binds the step to a run, so that it has no
+            attempt and is that run (:func:`bound_attempt`).
     """
 
     step_id: str
@@ -116,6 +124,7 @@ class StepAttempt:
     peak_rss_bytes: int = 0
     min_available_bytes: int = 0
     total_memory_bytes: int = 0
+    bound: bool = False
 
     @property
     def started(self) -> bool:
@@ -161,6 +170,9 @@ def request_rollup(
     leaves the verdict to the steps, and :func:`request_verdict` itself reads
     the steps alone.
 
+    A step that the request binds to a run reads as its :func:`bound_attempt`
+    unless its run-log records it refused.
+
     A failed request with a step that has not started stays ``running`` while
     the request's driver lease file exists, because its driver still starts
     the steps that do not descend from the failure. The lease need not be live.
@@ -176,7 +188,7 @@ def request_rollup(
     """
     logs = run_log_dir(base_dir)
     steps = tuple(
-        _attempt(logs, step_id, execution_id)
+        _step_attempt(logs, request, step_id, execution_id)
         for step_id, execution_id in request.step_executions.items()
     )
     status = request_verdict(steps)
@@ -197,6 +209,35 @@ def request_rollup(
     return RequestRollup(
         request_id=request.request_id, status=status, steps=steps, cleanup=cleanup
     )
+
+
+def bound_attempt(request: Request, step_id: str) -> StepAttempt:
+    """The record of a step that *request* binds to a run.
+
+    The step is the pinned run and computes nothing, so it has ended as a full
+    cache hit of that run: ``finished``, with the run and its storage, and
+    ``bound`` set.
+    """
+    bound = request.bind[step_id]
+    return StepAttempt(
+        step_id=step_id,
+        execution_id=request.step_executions.get(step_id, ""),
+        status="finished",
+        run_id=bound.run_id,
+        target=bound.feature,
+        cache_hit=True,
+        bound=True,
+    )
+
+
+def _step_attempt(
+    logs: Path, request: Request, step_id: str, execution_id: str
+) -> StepAttempt:
+    """One step's attempt, a bound step's as its pinned run unless it was refused."""
+    attempt = _attempt(logs, step_id, execution_id)
+    if step_id in request.bind and attempt.status in ("", "finished"):
+        return bound_attempt(request, step_id)
+    return attempt
 
 
 def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:

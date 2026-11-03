@@ -17,6 +17,7 @@ deterministic, and it means a plan reads in the order its author wrote it.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
@@ -106,8 +107,13 @@ def children_of(recipe: Recipe, step_id: str) -> tuple[str, ...]:
     )
 
 
-def _walk(recipe: Recipe, start: str, forward: bool) -> frozenset[str]:
-    """Everything reachable from *start*, inclusive, in one direction."""
+def _walk(
+    recipe: Recipe, start: str, forward: bool, cut: Collection[str]
+) -> frozenset[str]:
+    """Everything reachable from *start*, inclusive, in one direction.
+
+    A step in *cut* other than *start* is neither entered nor walked past.
+    """
     _ = recipe.step(start)
     seen: set[str] = set()
     queue = [start]
@@ -117,19 +123,35 @@ def _walk(recipe: Recipe, start: str, forward: bool) -> frozenset[str]:
             continue
         seen.add(current)
         queue.extend(
-            children_of(recipe, current) if forward else parents_of(recipe, current)
+            step
+            for step in (
+                children_of(recipe, current) if forward else parents_of(recipe, current)
+            )
+            if step not in cut
         )
     return frozenset(seen)
 
 
-def descendants_of(recipe: Recipe, step_id: str) -> frozenset[str]:
-    """*step_id* and everything transitively downstream of it."""
-    return _walk(recipe, step_id, forward=True)
+def descendants_of(
+    recipe: Recipe, step_id: str, *, cut: Collection[str] = ()
+) -> frozenset[str]:
+    """*step_id* and everything transitively downstream of it.
+
+    A step in *cut*, such as one a request binds to a run, reads nothing above
+    it, so the walk does not enter it or pass through it.
+    """
+    return _walk(recipe, step_id, forward=True, cut=cut)
 
 
-def ancestors_of(recipe: Recipe, step_id: str) -> frozenset[str]:
-    """*step_id* and everything transitively upstream of it."""
-    return _walk(recipe, step_id, forward=False)
+def ancestors_of(
+    recipe: Recipe, step_id: str, *, cut: Collection[str] = ()
+) -> frozenset[str]:
+    """*step_id* and everything transitively upstream of it.
+
+    A step in *cut*, such as one a request binds to a run, stands for nothing
+    above it, so the walk does not enter it or pass through it.
+    """
+    return _walk(recipe, step_id, forward=False, cut=cut)
 
 
 def topological_order(recipe: Recipe) -> tuple[Step, ...]:

@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING
 from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
 from .plan import (
-    COMPLETE_STATUSES,
     MISSING_SAMPLE,
     Plan,
     PlannedStep,
@@ -38,6 +37,7 @@ from .plan import (
     step_target,
 )
 from .resolve import build_step_feature
+from .model import BOUND_STATUS, COMPLETE_STATUSES
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -228,7 +228,7 @@ def _lacking_stack(
     the entries of it that none of them holds.
     """
     steps = [plan.step(parent) for parent in parents]
-    if all(step.status in COMPLETE_STATUSES for step in steps) and target <= frozenset(
+    if all(_answers_for_target(step) for step in steps) and target <= frozenset(
         entry for step in steps for entry in step.coverage.target
     ):
         return None
@@ -247,7 +247,8 @@ def _lacking(
     must also have been planned over the whole of *target*, which a step scope
     can make wider than the parent's own target; the entries it lacks are then
     those of *target* it does not hold. A parent read otherwise lacks only what
-    its own coverage misses.
+    its own coverage misses. A parent bound to a run computes nothing, so read
+    entry by entry it is complete only where that run holds its target.
     """
     try:
         parent = plan.step(step_id)
@@ -256,13 +257,24 @@ def _lacking(
     held = parent.coverage.covered
     complete = parent.status in COMPLETE_STATUSES
     if entry_by_entry:
-        if complete and target <= parent.coverage.target:
+        if _answers_for_target(parent) and target <= parent.coverage.target:
             return None
         outside = target - held
         return outside or None
     if complete or not (target - held):
         return None
     return parent.coverage.missing or (target - held)
+
+
+def _answers_for_target(step: PlannedStep) -> bool:
+    """Whether *step* holds every entry it was planned over, read entry by entry.
+
+    A complete step does. A step bound to a run is complete without computing,
+    so it does only where the pinned run covers its target.
+    """
+    if step.status == BOUND_STATUS:
+        return step.coverage.covers_all or not step.coverage.missing
+    return step.status in COMPLETE_STATUSES
 
 
 def _refuse_empty_upstream(plan: Plan, planned: PlannedStep) -> None:

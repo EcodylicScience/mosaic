@@ -130,6 +130,7 @@ if TYPE_CHECKING:
         step_liveness as step_liveness,
     )
     from .model import (
+        COMPLETE_STATUSES as COMPLETE_STATUSES,
         SCHEMA_VERSION as SCHEMA_VERSION,
         BoundRef as BoundRef,
         FeatureStepSpec as FeatureStepSpec,
@@ -154,7 +155,6 @@ if TYPE_CHECKING:
         strip_schema_keywords as strip_schema_keywords,
     )
     from .plan import (
-        COMPLETE_STATUSES as COMPLETE_STATUSES,
         MISSING_SAMPLE as MISSING_SAMPLE,
         ArtifactView as ArtifactView,
         CoverageShort as CoverageShort,
@@ -500,7 +500,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "compact_params_schema": ".param_table",
     "param_rows": ".param_table",
     "strip_schema_keywords": ".param_table",
-    "COMPLETE_STATUSES": ".plan",
+    "COMPLETE_STATUSES": ".model",
     "MISSING_SAMPLE": ".plan",
     "ArtifactView": ".plan",
     "CoverageShort": ".plan",

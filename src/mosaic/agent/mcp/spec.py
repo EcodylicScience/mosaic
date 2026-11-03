@@ -54,6 +54,7 @@ from mosaic.core.pipeline.graph import (
     strip_schema_keywords,
 )
 from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
+from mosaic.core.pipeline.graph.model import StepStatus
 from mosaic.core.pipeline.graph.patch import PatchOp
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
@@ -365,7 +366,10 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
         "license for use by a company"
     ),
     "allow_partial": "allow_partial lets a step run over fewer entries than planned",
-    "bind": "bind pins artifacts that the recipe did not produce",
+    "bind": (
+        "bind replaces a step with a run the recipe did not produce, and the step "
+        "is never run"
+    ),
     "open_duplicate": (
         "a request that has not ended computes a run of the submission, whatever "
         "its recipe, and both would compute it at once"
@@ -704,6 +708,11 @@ class SuggestStepsInput(ToolInput):
     )
 
 
+_BIND_DESCRIPTION: Final = (
+    "Artifacts the recipe did not produce, pinned by step id as {feature, run_id}. "
+    "A bound step computes nothing, and the steps below it read that run."
+)
+
 _CLEANUP_DESCRIPTION: Final = (
     "'superseded' also judges the other runs of the recipe's feature storages, "
     "each removable or kept with its reason, under the server's cleanup policy."
@@ -770,6 +779,11 @@ class PlanRecipeInput(ToolInput):
         description=_CLEANUP_DESCRIPTION
         + " The fingerprint then covers the removable runs.",
     )
+    bind: dict[str, BoundRef] | None = Field(
+        default=None,
+        description=_BIND_DESCRIPTION
+        + " Plan with the binds you will submit, or the fingerprint differs.",
+    )
     retire: RetireDigests = Field(default_factory=list)
     assume_added: AssumeAdded = Field(default_factory=list)
     limit: PageSize | None = Field(
@@ -805,11 +819,7 @@ class SubmitPipelineInput(ToolInput):
         ),
     )
     bind: dict[str, BoundRef] | None = Field(
-        default=None,
-        description=(
-            "Artifacts the recipe did not produce, pinned by step id as "
-            "{feature, run_id}."
-        ),
+        default=None, description=_BIND_DESCRIPTION
     )
     owner: str = Field(default="", description="Recorded on the request.")
     cleanup: CleanupMode = Field(
@@ -1232,7 +1242,7 @@ class SubmittedStep(StrictModel):
     execution_id: str
     lane: str
     run_id: str | None
-    status: ArtifactStatus
+    status: StepStatus
 
 
 class SubmittedPipeline(StrictModel):
@@ -1244,7 +1254,8 @@ class SubmittedPipeline(StrictModel):
         plan_fingerprint: The fingerprint of the plan it was submitted under.
         counts: How many steps the plan gave each status.
         first_steps: The first :data:`SUBMITTED_STEP_SAMPLE` steps to compute,
-            those not ``complete``, in topological order.
+            those whose status is not one of ``COMPLETE_STATUSES`` (``complete``,
+            ``complete-but-drifted`` or ``bound``), in topological order.
         truncated: Whether more steps are to compute than ``first_steps`` lists.
         duplicates: The open requests, of any recipe, that compute runs of
             this one.
@@ -1265,7 +1276,7 @@ class SubmittedPipeline(StrictModel):
     request_id: str
     recipe_digest: str
     plan_fingerprint: str
-    counts: dict[ArtifactStatus, int]
+    counts: dict[StepStatus, int]
     first_steps: tuple[SubmittedStep, ...]
     truncated: bool
     duplicates: tuple[SubmittedDuplicate, ...]

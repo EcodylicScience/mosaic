@@ -240,8 +240,10 @@ class StepStatusWire(GraphModel):
         error_json: The failure it recorded, or ``""``.
         entries_written: How many entries it left with an output row.
         cache_hit: Whether it found the whole of its work already done.
-        outcome: ``status`` with ``pending`` before a run-log and ``partial`` for
-            a finished attempt that lost entries.
+        outcome: ``status`` with ``pending`` before a run-log, ``partial`` for
+            a finished attempt that lost entries, and ``bound`` for a step the
+            request binds to a run, which reads ``finished`` with that run and
+            is never executed.
         progress_done: How many entries or epochs it has completed.
         progress_total: How many it declared it would run, 0 until declared.
         progress_fraction: ``progress_done`` over ``progress_total``, ``None``
@@ -264,7 +266,7 @@ class StepStatusWire(GraphModel):
             measured, 0 before it reports.
         total_memory_bytes: The host's physical memory, 0 before it reports.
         liveness: Whether its process may still be running (:mod:`~.liveness`),
-            ``None`` before it writes a run-log.
+            ``None`` before it writes a run-log and for a bound step.
     """
 
     step: str
@@ -860,7 +862,9 @@ def _step_status(
         error_json=attempt.error_json,
         entries_written=attempt.entries_written,
         cache_hit=attempt.cache_hit,
-        outcome=attempt_outcome(attempt.status, attempt.entries_failed),
+        outcome="bound"
+        if attempt.bound
+        else attempt_outcome(attempt.status, attempt.entries_failed),
         progress_done=attempt.progress_done,
         progress_total=attempt.progress_total,
         progress_fraction=_fraction(attempt.progress_done, attempt.progress_total),
@@ -876,7 +880,9 @@ def _step_status(
         peak_rss_bytes=attempt.peak_rss_bytes,
         min_available_bytes=attempt.min_available_bytes,
         total_memory_bytes=attempt.total_memory_bytes,
-        liveness=step_liveness(attempt, now=now) if attempt.started else None,
+        liveness=step_liveness(attempt, now=now)
+        if attempt.started and not attempt.bound
+        else None,
     )
 
 

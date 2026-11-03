@@ -328,13 +328,14 @@ declares no interval. The rule is ``mosaic.core.pipeline.graph.liveness``.
 
 
 type AttemptOutcome = Literal[
-    "pending", "running", "finished", "partial", "failed", "cancelled"
+    "pending", "running", "finished", "partial", "failed", "cancelled", "bound"
 ]
 """How an attempt stands, as a report names it.
 
 ``pending`` is an attempt with no run-log yet. ``partial`` is a ``finished``
-attempt that lost entries. Both are reporting words and neither is a run-log status,
-so neither joins :data:`TERMINAL_STATUSES`, which mosaic-api's sweeper reaps.
+attempt that lost entries. ``bound`` is a step of a request that binds it to a
+run, which is never executed. All three are reporting words and none is a run-log
+status, so none joins :data:`TERMINAL_STATUSES`, which mosaic-api's sweeper reaps.
 """
 
 

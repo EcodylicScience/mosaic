@@ -59,11 +59,13 @@ from tests.helpers import (
     invoke_json,
     make_dataset,
     named_recipe,
-    run_id_of,
+    run_speed,
     speed_recipe,
     speed_recipe_stepping,
     write_driver_lease,
 )
+
+SPEED_STORAGE = "speed-angvel__from__tracks"
 
 VARIANT = "convert-trex.0.2-1111111111"
 SEQ_A = Scope(entries=[("", "seq_a")])
@@ -89,10 +91,7 @@ def _open(dataset: Dataset, recipe: Recipe | None = None) -> tuple[str, ...]:
     recipe = speed_recipe() if recipe is None else recipe
     plan = plan_pipeline(dataset, recipe)
     found = open_duplicates(
-        dataset.base_dir,
-        plan.recipe_digest,
-        Scope(),
-        computed_runs(dataset, recipe, plan),
+        dataset.base_dir, plan.recipe_digest, Scope(), computed_runs(plan)
     )
     return tuple(duplicate.request_id for duplicate in found)
 
@@ -247,6 +246,7 @@ def test_a_request_written_while_planning_refuses_the_submission(
         inventory: InventoryCache | None = None,
         catalog: DeclarationCatalog | None = None,
         step_scopes: Mapping[str, Scope] | None = None,
+        bind: Mapping[str, BoundRef] | None = None,
     ) -> Plan:
         monkeypatch.setattr(request_module, "plan_pipeline", plan_pipeline)
         written.append(submit_request(dataset, recipe).request.request_id)
@@ -257,6 +257,7 @@ def test_a_request_written_while_planning_refuses_the_submission(
             inventory=inventory,
             catalog=catalog,
             step_scopes=step_scopes,
+            bind=bind,
         )
 
     monkeypatch.setattr(request_module, "plan_pipeline", plan_while_another_submits)
@@ -489,17 +490,21 @@ def test_a_request_saved_without_its_runs_is_matched_by_recipe_and_scope(
     assert first.request.request_id not in {d.request_id for d in other.duplicates}
 
 
-def test_a_bound_step_is_not_recorded_as_computed(tracked: Dataset) -> None:
-    templates = run_id_of(run_pipeline(tracked, _chain()), "templates")
+def test_a_bound_step_computes_nothing_and_the_step_below_reads_its_run(
+    tracked: Dataset,
+) -> None:
+    """A bound step is the pinned run, and the step below computes from it."""
+    older = run_speed(tracked, 3)
+    bind = {"speed": BoundRef(feature=SPEED_STORAGE, run_id=older)}
 
-    bound = submit_request(
-        tracked,
-        _chain(),
-        scope=SEQ_A,
-        bind={"templates": BoundRef(feature="extract-templates", run_id=templates)},
+    bound = submit_request(tracked, _chain(), bind=bind)
+
+    computes = load_computes(tracked.base_dir, bound.request.request_id) or []
+    assert [run.step for run in computes] == ["templates"]
+    assert computes[0].run_id == bound.plan.step("templates").run_id
+    assert bound.plan.step("templates").spec.inputs == (
+        {"feature": SPEED_STORAGE, "run_id": older},
     )
-
-    assert load_computes(tracked.base_dir, bound.request.request_id) == []
 
 
 def test_a_request_file_keeps_the_keys_an_older_mosaic_reads(tracked: Dataset) -> None:

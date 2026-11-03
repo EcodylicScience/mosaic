@@ -161,7 +161,9 @@ that does not read, is left out and reported on the server's standard error.
 
 Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
 `patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission
-that names a plan's fingerprint is refused when the plan has changed since. Without one,
+that names a plan's fingerprint is refused when the plan has changed since, and a plan
+made with other `entries`, `step_entries` or `bind` than the submission's has changed.
+`plan_recipe` takes the `bind` you will submit. Without one,
 `submit_pipeline` plans the recipe itself, and still asks you to confirm each condition
 below. A cleanup always needs the fingerprint of the plan you reviewed. Ask the agent to
 show you the plan of a new recipe before it submits. A submitted
@@ -299,7 +301,10 @@ Restart it after installing an extra or building a tool's environment.
   tracker or model inference (`tracking_op`; TRex requires a paid license for use by
   a company);
 - `allow_partial` lets a step run over fewer entries than planned (`allow_partial`),
-  or `bind` pins artifacts that the recipe did not produce (`bind`);
+  or `bind` replaces a step with a run the recipe did not produce (`bind`). A bound
+  step is never run, and the steps below it read that run. The plan refuses a bind
+  that names no step of the recipe or an op step, whose `feature` is not the step's
+  own output storage, or whose run the dataset lacks;
 - a request that has not ended computes a run of the submission, whatever its recipe
   (`open_duplicate`). The question and the result's `duplicates` name each such
   request and the submission's steps whose runs it computes;

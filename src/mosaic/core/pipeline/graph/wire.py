@@ -38,12 +38,11 @@ from pydantic import Field
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
 
-from ..inventory.model import ArtifactStatus
 from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
 from ..types.feature import EmitsLevel
 from .compatibility import Declaration, Reach
-from .model import CleanupPolicy, GraphModel
+from .model import CleanupPolicy, GraphModel, StepStatus
 from .status import RequestSummaryWire, RetirableRecipeWire
 
 __all__ = [
@@ -686,7 +685,8 @@ class PlannedStepWire(GraphModel):
         runs: The feature slug or op kind.
         run_id: What its run will be called, ``None`` when that cannot be said
             yet.
-        status: What its coverage and consistency add up to.
+        status: What its coverage and consistency add up to, or ``bound`` for
+            a step the submission binds to a run, which is never executed.
         finished: Whether its artifact records having finished.
         coverage: Which planned entries it already holds.
         asked: How many entries it would be asked to compute.
@@ -713,7 +713,7 @@ class PlannedStepWire(GraphModel):
     type: Literal["feature", "op"]
     runs: str
     run_id: str | None
-    status: ArtifactStatus
+    status: StepStatus
     finished: bool
     coverage: CoverageWire
     asked: int
