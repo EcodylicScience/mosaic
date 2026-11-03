@@ -301,7 +301,7 @@ def test_absent_data_still_fingerprints(tmp_path: Path) -> None:
     """Planning for execution must reach the tool that says which file is missing.
 
     ``run`` plans with ``require_data=False``, so a raise here would replace
-    SLEAP's "labels file does not exist" with a bare ``open()`` error.
+    train-sleap's "No SLEAP labels exist" with a bare ``open()`` error.
     """
     assert fingerprint_dataset(tmp_path / "nope.slp")
 

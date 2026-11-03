@@ -46,6 +46,11 @@ from mosaic.tracking.sleap.probe import (
     require_identity_labels,
     require_sleap_nn,
 )
+from mosaic.tracking.sleap.labels import (
+    SHARD_TRAIN_DIRECTORY,
+    SHARD_VALIDATION_DIRECTORY,
+    SleapLabelFiles,
+)
 from mosaic.tracking.sleap.run import SleapError, SleapNotFoundError
 from mosaic.tracking.sleap import training as training_module
 from mosaic.tracking.sleap.training import (
@@ -164,14 +169,13 @@ def _an_environment_that_can_train(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_config_says_what_the_parameters_said() -> None:
     """Buildable without running anything, so it is assertable on its own."""
     config = sleap_train_config(
-        Path("session.slp"),
+        SleapLabelFiles(train=(Path("session.slp"),), validation=()),
         Path("/runs/r1"),
         head="centroid",
         backbone="convnext",
         max_epochs=30,
         seed=7,
         validation_fraction=0.25,
-        validation_labels=None,
         base_weights=None,
         run_name="model",
     )
@@ -190,14 +194,13 @@ def test_the_config_says_what_the_parameters_said() -> None:
 def test_base_weights_initialize_the_backbone_and_the_head() -> None:
     """sleap-nn's fine-tune mapping, which SLEAP's GUI and --base_checkpoint set."""
     config = sleap_train_config(
-        Path("labels.slp"),
+        SleapLabelFiles(train=(Path("labels.slp"),), validation=()),
         Path("/runs/r1"),
         head="centroid",
         backbone="unet",
         max_epochs=30,
         seed=7,
         validation_fraction=0.25,
-        validation_labels=None,
         base_weights=Path("/models/base/best.ckpt"),
         run_name="model",
     )
@@ -210,19 +213,43 @@ def test_base_weights_initialize_the_backbone_and_the_head() -> None:
 def test_a_validation_file_takes_the_place_of_the_validation_fraction() -> None:
     """sleap-nn validates on the file, so no fraction of the labels is held out."""
     config = sleap_train_config(
-        Path("labels.slp"),
+        SleapLabelFiles(
+            train=(Path("labels.slp"),), validation=(Path("labels.val.slp"),)
+        ),
         Path("/runs/r1"),
         head="centroid",
         backbone="unet",
         max_epochs=30,
         seed=7,
         validation_fraction=0.25,
-        validation_labels=Path("labels.val.slp"),
         base_weights=None,
         run_name="model",
     )
     assert config["data_config"]["train_labels_path"] == ["labels.slp"]
     assert config["data_config"].get("val_labels_path") == ["labels.val.slp"]
+    assert "validation_fraction" not in config["data_config"]
+
+
+def test_the_config_lists_every_shard_in_order() -> None:
+    """sleap-nn reads each list in order, and keys its videos by that order."""
+    train = (Path("labels/train/shard-00000.slp"), Path("labels/train/shard-00001.slp"))
+    validation = (
+        Path("labels/val/shard-00000.slp"),
+        Path("labels/val/shard-00001.slp"),
+    )
+    config = sleap_train_config(
+        SleapLabelFiles(train=train, validation=validation),
+        Path("/runs/r1"),
+        head="embedding",
+        backbone="unet",
+        max_epochs=30,
+        seed=7,
+        validation_fraction=0.25,
+        base_weights=None,
+        run_name="model",
+    )
+    assert config["data_config"]["train_labels_path"] == [str(p) for p in train]
+    assert config["data_config"].get("val_labels_path") == [str(p) for p in validation]
     assert "validation_fraction" not in config["data_config"]
 
 
@@ -238,14 +265,13 @@ def test_the_config_states_the_preprocessing_sleap_nn_reads_unmerged() -> None:
     defaults, so nothing about the run changes.
     """
     config = sleap_train_config(
-        Path("session.slp"),
+        SleapLabelFiles(train=(Path("session.slp"),), validation=()),
         Path("/runs/r1"),
         head="centered_instance",
         backbone="unet",
         max_epochs=1,
         seed=1,
         validation_fraction=0.1,
-        validation_labels=None,
         base_weights=None,
         run_name="model",
     )
@@ -280,14 +306,13 @@ def test_every_head_names_its_output_sections(
     Naming each section instantiates it at its own defaults.
     """
     config = sleap_train_config(
-        Path("session.slp"),
+        SleapLabelFiles(train=(Path("session.slp"),), validation=()),
         Path("/runs/r1"),
         head=head,
         backbone="unet",
         max_epochs=1,
         seed=1,
         validation_fraction=0.1,
-        validation_labels=None,
         base_weights=None,
         run_name="model",
     )
@@ -321,18 +346,17 @@ def _pose_documents() -> dict[str, str]:
     for head in _POSE_HEADS:
         for backbone in get_args(SleapBackbone):
             for variant, validation, weights in (
-                ("fraction", None, None),
-                ("file", Path("labels.val.slp"), Path("/models/base/best.ckpt")),
+                ("fraction", (), None),
+                ("file", (Path("labels.val.slp"),), Path("/models/base/best.ckpt")),
             ):
                 config = sleap_train_config(
-                    Path("labels.slp"),
+                    SleapLabelFiles(train=(Path("labels.slp"),), validation=validation),
                     Path("/runs/r1"),
                     head=head,
                     backbone=backbone,
                     max_epochs=30,
                     seed=7,
                     validation_fraction=0.25,
-                    validation_labels=validation,
                     base_weights=weights,
                     run_name="model",
                 )
@@ -406,14 +430,13 @@ def _embedding_document(
 ) -> Mapping[str, object]:
     """The embedding head's document, read back from the YAML it is written as."""
     config = sleap_train_config(
-        Path("labels.slp"),
+        SleapLabelFiles(train=(Path("labels.slp"),), validation=()),
         Path("/runs/r1"),
         head="embedding",
         backbone=backbone,
         max_epochs=30,
         seed=7,
         validation_fraction=0.25,
-        validation_labels=None,
         base_weights=None,
         run_name="model",
         objective=objective,
@@ -589,14 +612,13 @@ def _settings_document(
 ) -> dict[str, object]:
     """The dotted values of a document written with *settings*."""
     config = sleap_train_config(
-        Path("labels.slp"),
+        SleapLabelFiles(train=(Path("labels.slp"),), validation=()),
         Path("/runs/r1"),
         head=head,
         backbone=backbone,
         max_epochs=30,
         seed=7,
         validation_fraction=0.25,
-        validation_labels=None,
         base_weights=None,
         run_name="model",
         settings=settings,
@@ -958,6 +980,32 @@ def _preparation(
         f"{run_id},{ds.relative_to_root(labels)},{track_by}\n"
     )
     return run_id
+
+
+def _shard_preparation(ds: Dataset, *, validation_shards: int = 2) -> str:
+    """Record a prepare-embedding-data run that wrote a shard directory.
+
+    The directory holds two training shards and *validation_shards*
+    validation shards. Returns the run id.
+    """
+    kind = PREPARE_EMBEDDING_DATA_KIND
+    run_id = f"{kind}.0.2-0123456789"
+    labels = model_run_root(ds, kind, run_id) / "labels"
+    _ = _write_shards(labels / SHARD_TRAIN_DIRECTORY, 2)
+    _ = _write_shards(labels / SHARD_VALIDATION_DIRECTORY, validation_shards)
+    _ = model_index_path(ds, kind).write_text(
+        f"run_id,artifact_path,track_by\n{run_id},{ds.relative_to_root(labels)},\n"
+    )
+    return run_id
+
+
+def _write_shards(directory: Path, count: int) -> list[Path]:
+    """Write *count* shards of distinct bytes under *directory*."""
+    directory.mkdir(parents=True, exist_ok=True)
+    shards = [directory / f"shard-{index:05d}.slp" for index in range(count)]
+    for index, shard in enumerate(shards):
+        _ = shard.write_bytes(f"{directory.name} shard {index}".encode())
+    return shards
 
 
 def _embedding_setup(
@@ -1469,7 +1517,7 @@ def test_absent_labels_abort_before_anything_is_written(
     _point_at_sleap(tmp_path, monkeypatch)
     _ = _fake_trainer(monkeypatch)
 
-    with pytest.raises(FileNotFoundError, match="labels file does not exist"):
+    with pytest.raises(FileNotFoundError, match="No SLEAP labels exist at"):
         _ = run_op(ds, "train-sleap", {"labels": str(tmp_path / "nope.slp")})
 
 
@@ -2284,3 +2332,120 @@ def test_the_recorded_data_fingerprint_is_the_one_in_the_identity(
     assert is_str_mapping(document)
     data = document["data"]
     assert is_str_mapping(data) and data["fingerprint"] == recorded
+
+
+# --- a shard directory -------------------------------------------------------
+
+
+def _shard_directory(tmp_path: Path) -> tuple[Path, list[Path], list[Path]]:
+    """Write a labels directory of two training and two validation shards.
+
+    Returns:
+        The directory, its training shards and its validation shards.
+    """
+    labels = tmp_path / "labels"
+    train = _write_shards(labels / SHARD_TRAIN_DIRECTORY, 2)
+    validation = _write_shards(labels / SHARD_VALIDATION_DIRECTORY, 2)
+    return labels, train, validation
+
+
+def test_a_shard_directory_reaches_the_config_shard_by_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch)
+    labels, train, validation = _shard_directory(tmp_path)
+
+    _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+
+    data_config = _written_section(seen[0], "data_config")
+    assert data_config["train_labels_path"] == [str(p) for p in train]
+    assert data_config["val_labels_path"] == [str(p) for p in validation]
+    assert "validation_fraction" not in data_config
+
+
+def test_the_probe_is_handed_the_first_training_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    _ = _fake_trainer(monkeypatch)
+    probed = _fake_probe(monkeypatch)
+    labels, train, _ = _shard_directory(tmp_path)
+
+    _ = run_op(ds, "train-sleap", {"labels": str(labels), "max_epochs": 1})
+
+    assert str(train[0]) in probed[0]
+    assert str(labels) not in probed[0]
+
+
+def test_a_shard_directory_is_fingerprinted_shard_by_shard(tmp_path: Path) -> None:
+    labels, train, validation = _shard_directory(tmp_path)
+
+    assert fingerprint_sleap_labels(labels) == hash_params(
+        {
+            "labels": [fingerprint_dataset(p) for p in train],
+            "validation": [fingerprint_dataset(p) for p in validation],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("side", "index"), [("train", 0), ("train", 1), ("val", 0), ("val", 1)]
+)
+def test_any_changed_shard_changes_the_fingerprint(
+    tmp_path: Path, side: str, index: int
+) -> None:
+    """Rewritten at its own size, so a listing of sizes could not see it."""
+    labels, train, validation = _shard_directory(tmp_path)
+    before = fingerprint_sleap_labels(labels)
+    shard = (train if side == "train" else validation)[index]
+    _ = shard.write_bytes(bytes(reversed(shard.read_bytes())))
+
+    assert fingerprint_sleap_labels(labels) != before
+
+
+def test_a_directory_without_training_shards_is_refused(tmp_path: Path) -> None:
+    labels = tmp_path / "labels"
+    _ = _write_shards(labels / SHARD_VALIDATION_DIRECTORY, 1)
+
+    with pytest.raises(FileNotFoundError, match=str(labels)):
+        _ = fingerprint_sleap_labels(labels)
+
+
+def test_an_embedding_run_trains_on_a_shard_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch, head="embedding")
+    labels = _shard_preparation(ds)
+
+    _ = run_op(ds, "train-sleap", _embedding_params(labels))
+
+    root = model_run_root(ds, PREPARE_EMBEDDING_DATA_KIND, labels) / "labels"
+    data_config = _written_section(seen[0], "data_config")
+    assert data_config["train_labels_path"] == [
+        str(root / SHARD_TRAIN_DIRECTORY / f"shard-0000{index}.slp")
+        for index in range(2)
+    ]
+    assert data_config["val_labels_path"] == [
+        str(root / SHARD_VALIDATION_DIRECTORY / f"shard-0000{index}.slp")
+        for index in range(2)
+    ]
+
+
+@pytest.mark.parametrize("missing", ["directory", "shards"])
+def test_an_embedding_run_on_a_directory_without_validation_shards_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    ds = make_dataset(tmp_path / "ds", save=False)
+    _point_at_sleap(tmp_path, monkeypatch)
+    seen = _fake_trainer(monkeypatch, head="embedding")
+    labels = _shard_preparation(ds, validation_shards=0)
+    if missing == "directory":
+        root = model_run_root(ds, PREPARE_EMBEDDING_DATA_KIND, labels)
+        (root / "labels" / SHARD_VALIDATION_DIRECTORY).rmdir()
+
+    _assert_refused(ds, _embedding_params(labels), seen, "val/")

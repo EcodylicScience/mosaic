@@ -59,7 +59,10 @@ from mosaic.tracking.ops._train_descriptions import (
     MAX_RUNTIME_DESCRIPTION,
 )
 from mosaic.tracking.sleap.labels import (
-    validation_labels_beside,
+    SHARD_TRAIN_DIRECTORY,
+    SHARD_VALIDATION_DIRECTORY,
+    SleapLabelFiles,
+    sleap_label_files,
     validation_labels_path,
 )
 from mosaic.tracking.sleap.probe import (
@@ -226,20 +229,40 @@ _NUM_WORKERS_DESCRIPTION = LOADER_WORKERS_DESCRIPTION + (
 
 
 def fingerprint_sleap_labels(path: Path) -> str:
-    """Return the content digest of a ``.slp`` and of the validation file beside it.
+    """Return the content digest of the labels at *path* and of their validation files.
 
-    Labels without a validation file are digested as
+    A ``.slp`` without a validation file is digested as
     :func:`~mosaic.tracking.ops._common.fingerprint_dataset` digests any file.
     With one, the digest covers both files' digests, so a changed validation file
-    names a different model.
+    names a different model. A directory is digested by the content digest of
+    each of its training and validation shards, in order, so a change to any
+    shard names a different model.
+
+    Raises:
+        FileNotFoundError: *path* is a directory with no training shard.
     """
-    validation = validation_labels_beside(path)
-    if validation is None:
+    files = sleap_label_files(path)
+    if path.is_dir():
+        if not files.train:
+            msg = (
+                f"The labels directory {path} holds no .slp shard under "
+                f"{SHARD_TRAIN_DIRECTORY}/."
+            )
+            raise FileNotFoundError(msg)
+        return hash_params(
+            {
+                "labels": [fingerprint_dataset(shard) for shard in files.train],
+                "validation": [
+                    fingerprint_dataset(shard) for shard in files.validation
+                ],
+            }
+        )
+    if not files.validation:
         return fingerprint_dataset(path)
     return hash_params(
         {
             "labels": fingerprint_dataset(path),
-            "validation": fingerprint_dataset(validation),
+            "validation": fingerprint_dataset(files.validation[0]),
         }
     )
 
@@ -301,7 +324,7 @@ def _with_article(noun: str) -> str:
 
 def _training_document(
     params: TrainSleapParams,
-    labels_path: Path,
+    labels: SleapLabelFiles,
     run_root: Path,
     base_weights: Path | None,
 ) -> tuple[SleapTrainConfig, dict[str, JsonValue]]:
@@ -319,14 +342,13 @@ def _training_document(
 
     def document(select_metric: str) -> SleapTrainConfig:
         return sleap_train_config(
-            labels_path,
+            labels,
             run_root,
             head=params.head,
             backbone=params.backbone,
             max_epochs=params.max_epochs,
             seed=params.seed,
             validation_fraction=params.validation_fraction,
-            validation_labels=validation_labels_beside(labels_path),
             base_weights=base_weights,
             run_name=MODEL_DIRECTORY,
             objective=embedding_objective(params.labels),
@@ -485,8 +507,8 @@ def _refuse_untrainable_labels(
 ) -> bool:
     """Refuse embedding labels that cannot train the effective scope.
 
-    Reads the labels' preparation row and the validation file beside them, so
-    it runs only once the labels are on disk.
+    Reads the labels' preparation row and their validation files, so it runs
+    only once the labels are on disk.
 
     A ``prepare-training-data`` run with no row or a blank ``track_by`` cell
     has not recorded how its tracks were named yet: a recipe that runs an
@@ -501,7 +523,7 @@ def _refuse_untrainable_labels(
         TrainSleapInvalid: ``global_id`` on labels other than a
             ``prepare-training-data`` run that named tracks by alias,
             ``tracklet`` on labels that no ``prepare-embedding-data`` run cut,
-            or labels with no validation file beside them.
+            or labels with no validation file.
     """
     kind = _labels_kind(params.labels)
     track_by_deferred = False
@@ -536,13 +558,18 @@ def _refuse_untrainable_labels(
             "are not per-video tracks."
         )
         raise TrainSleapInvalid(msg)
-    if validation_labels_beside(labels_path) is None:
+    if not sleap_label_files(labels_path).validation:
+        expected = (
+            f"the .slp shards under {SHARD_VALIDATION_DIRECTORY}/ in its labels "
+            "directory"
+            if labels_path.is_dir()
+            else f"{validation_labels_path(labels_path).name} beside its labels"
+        )
         msg = (
-            "An embedding run validates on "
-            f"{validation_labels_path(labels_path).name} beside its labels, "
-            f"and {labels_path} has none. It takes no validation_fraction "
-            "split, because a random split puts frames of one track on both "
-            "sides and inflates the validation retrieval score."
+            f"An embedding run validates on {expected}, and {labels_path} has "
+            "none. It takes no validation_fraction split, because a random "
+            "split puts frames of one track on both sides and inflates the "
+            "validation retrieval score."
         )
         raise TrainSleapInvalid(msg)
     return track_by_deferred
@@ -709,7 +736,7 @@ class TrainSleapOp(Op[TrainSleapParams]):
         labels_path = resolve_training_data(ds, params.labels)
         config, overrides = _training_document(
             params,
-            labels_path,
+            sleap_label_files(labels_path),
             model_index_path(ds, self.kind).parent,
             Path(params.base_model) if params.base_model else None,
         )
@@ -791,20 +818,21 @@ class TrainSleapOp(Op[TrainSleapParams]):
         # and the refusals below are mosaic's. All are decided here without
         # importing anything the SLEAP environment owns.
         run_root = model_run_root(ds, self.kind, run_id)
-        config, overrides = _training_document(
-            params, labels_path, run_root, base_weights
-        )
+        files = sleap_label_files(labels_path)
+        config, overrides = _training_document(params, files, run_root, base_weights)
         settings = _refuse_untrainable_settings(params, config, overrides)
         if settings is not None:
             _ = _refuse_untrainable_labels(ds, params, settings, labels_path)
+        # Each window holds at least two tracks, so one shard answers the track
+        # checks below for the whole directory.
         probe = probe_sleap(
-            labels_path,
+            files.train[0],
             idle_timeout=params.idle_timeout,
             max_runtime=params.max_runtime,
             cancel_check=ctx.cancel_token.is_cancelled,
         )
         require_sleap_nn(probe)
-        require_identity_labels(probe, params.head, labels_path)
+        require_identity_labels(probe, params.head, files.train[0])
         if settings is not None:
             require_sleap_nn_at_least(probe, SLEAP_NN_EMBEDDING_MIN)
             require_embedding_labels(

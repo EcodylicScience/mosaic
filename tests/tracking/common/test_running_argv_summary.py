@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.tracking.sleap import run as sleap_run
+from mosaic.tracking.sleap.labels import SleapLabelFiles
 from mosaic.tracking.sleap import training as sleap_training
 from mosaic.tracking.trex import run as trex_run
 from mosaic.tracking.trex.params import TrexParams
@@ -66,14 +67,13 @@ def test_every_running_line_is_the_summary_of_the_argv_run(
             labels = tmp_path / "in.slp"
             _ = labels.write_bytes(b"slp")
             config = sleap_training.sleap_train_config(
-                labels,
+                SleapLabelFiles(train=(labels,), validation=()),
                 tmp_path / "run",
                 head="centered_instance",
                 backbone="unet",
                 max_epochs=1,
                 seed=42,
                 validation_fraction=0.1,
-                validation_labels=None,
                 base_weights=None,
                 run_name="model",
             )

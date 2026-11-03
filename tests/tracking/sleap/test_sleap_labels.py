@@ -27,7 +27,11 @@ from mosaic.core.annotations import (
 )
 from mosaic.tracking.sleap import run as sleap_run
 from mosaic.tracking.sleap.labels import (
+    SHARD_TRAIN_DIRECTORY,
+    SHARD_VALIDATION_DIRECTORY,
     SLEAP_VALIDATION_SUFFIX,
+    SleapLabelFiles,
+    sleap_label_files,
     validation_labels_beside,
     write_slp,
 )
@@ -353,3 +357,67 @@ def test_the_validation_file_beside_the_labels_is_found_by_its_suffix(
     _ = validation.write_bytes(b"slp")
 
     assert validation_labels_beside(labels) == validation == tmp_path / "labels.val.slp"
+
+
+def test_a_labels_file_is_its_own_training_file(tmp_path: Path) -> None:
+    labels = tmp_path / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+
+    assert sleap_label_files(labels) == SleapLabelFiles(train=(labels,), validation=())
+
+
+def test_a_labels_file_validates_on_the_file_beside_it(tmp_path: Path) -> None:
+    labels = tmp_path / "labels.slp"
+    _ = labels.write_bytes(b"slp")
+    validation = tmp_path / "labels.val.slp"
+    _ = validation.write_bytes(b"slp")
+
+    assert sleap_label_files(labels) == SleapLabelFiles(
+        train=(labels,), validation=(validation,)
+    )
+
+
+def _shards(directory: Path, names: tuple[str, ...]) -> tuple[Path, ...]:
+    """Write a shard of each of *names* under *directory*, in the order given."""
+    directory.mkdir(parents=True, exist_ok=True)
+    written = tuple(directory / name for name in names)
+    for shard in written:
+        _ = shard.write_bytes(b"slp")
+    return written
+
+
+def test_a_shard_directory_lists_its_shards_in_name_order(tmp_path: Path) -> None:
+    """Written out of order, so the listing cannot be the order of creation."""
+    labels = tmp_path / "labels"
+    train = _shards(
+        labels / SHARD_TRAIN_DIRECTORY, ("shard-00001.slp", "shard-00000.slp")
+    )
+    validation = _shards(
+        labels / SHARD_VALIDATION_DIRECTORY, ("shard-00002.slp", "shard-00000.slp")
+    )
+    _ = (labels / SHARD_TRAIN_DIRECTORY / "notes.txt").write_text("not a shard")
+    # macOS writes an AppleDouble file beside each file on exFAT and network
+    # volumes, and the glob of *.slp matches its name.
+    _ = (labels / SHARD_TRAIN_DIRECTORY / "._shard-00000.slp").write_bytes(b"xattr")
+    _ = (labels / SHARD_VALIDATION_DIRECTORY / ".hidden.slp").write_bytes(b"slp")
+
+    assert sleap_label_files(labels) == SleapLabelFiles(
+        train=tuple(sorted(train)), validation=tuple(sorted(validation))
+    )
+    assert (SHARD_TRAIN_DIRECTORY, SHARD_VALIDATION_DIRECTORY) == ("train", "val")
+
+
+def test_a_shard_directory_without_validation_shards_has_none(tmp_path: Path) -> None:
+    labels = tmp_path / "labels"
+    train = _shards(labels / SHARD_TRAIN_DIRECTORY, ("shard-00000.slp",))
+
+    assert sleap_label_files(labels) == SleapLabelFiles(train=train, validation=())
+    (labels / SHARD_VALIDATION_DIRECTORY).mkdir()
+    assert sleap_label_files(labels) == SleapLabelFiles(train=train, validation=())
+
+
+def test_an_empty_shard_directory_has_no_files(tmp_path: Path) -> None:
+    labels = tmp_path / "labels"
+    labels.mkdir()
+
+    assert sleap_label_files(labels) == SleapLabelFiles(train=(), validation=())

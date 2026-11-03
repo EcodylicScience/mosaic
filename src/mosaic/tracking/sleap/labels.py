@@ -25,6 +25,7 @@ beside the target and moved into place.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -33,7 +34,11 @@ from mosaic.core.annotations.writers import write_coco_keypoints
 from mosaic.tracking.sleap.run import publish_from_snippet, sleap_invocation
 
 __all__ = [
+    "SHARD_TRAIN_DIRECTORY",
+    "SHARD_VALIDATION_DIRECTORY",
     "SLEAP_VALIDATION_SUFFIX",
+    "SleapLabelFiles",
+    "sleap_label_files",
     "validation_labels_beside",
     "validation_labels_path",
     "write_slp",
@@ -41,6 +46,12 @@ __all__ = [
 
 SLEAP_VALIDATION_SUFFIX: Final = ".val.slp"
 """The suffix of the validation file written beside a ``.slp`` of training labels."""
+
+SHARD_TRAIN_DIRECTORY: Final = "train"
+"""The directory of a labels directory that holds the training shards."""
+
+SHARD_VALIDATION_DIRECTORY: Final = "val"
+"""The directory of a labels directory that holds the validation shards."""
 
 # Run by the SLEAP interpreter. Its only inputs are argv -- the COCO json, the
 # directory its file_name values are relative to, and where to write -- so no
@@ -82,6 +93,52 @@ def validation_labels_beside(labels_path: Path) -> Path | None:
     """Return the validation file beside *labels_path* when it exists, else ``None``."""
     validation = validation_labels_path(labels_path)
     return validation if validation.is_file() else None
+
+
+@dataclass(frozen=True)
+class SleapLabelFiles:
+    """The ``.slp`` files that a training run reads, each list in reading order.
+
+    Attributes:
+        train: The files it trains on.
+        validation: The files it validates on, empty when it holds out a
+            fraction of *train* instead.
+    """
+
+    train: tuple[Path, ...]
+    validation: tuple[Path, ...]
+
+
+def sleap_label_files(path: Path) -> SleapLabelFiles:
+    """Return the files that the labels at *path* train and validate on.
+
+    A ``.slp`` trains on itself and validates on the validation file beside it,
+    when there is one. A directory trains on the sorted ``.slp`` shards under
+    its ``train/`` directory and validates on those under its ``val/``
+    directory. A path that is neither is taken for a file.
+    """
+    if not path.is_dir():
+        validation = validation_labels_beside(path)
+        return SleapLabelFiles(
+            train=(path,), validation=() if validation is None else (validation,)
+        )
+    return SleapLabelFiles(
+        train=_shards(path / SHARD_TRAIN_DIRECTORY),
+        validation=_shards(path / SHARD_VALIDATION_DIRECTORY),
+    )
+
+
+def _shards(directory: Path) -> tuple[Path, ...]:
+    """The ``.slp`` files under *directory*, sorted by name, or none without one.
+
+    A hidden name is skipped. macOS writes an AppleDouble ``._<name>`` beside
+    each file on exFAT and network volumes, and ``*.slp`` matches it.
+    """
+    return tuple(
+        sorted(
+            shard for shard in directory.glob("*.slp") if not shard.name.startswith(".")
+        )
+    )
 
 
 def write_slp(

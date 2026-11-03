@@ -43,6 +43,7 @@ from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.pipeline.toolenv import subprocess_env, tool_invocation
+from mosaic.tracking.sleap.labels import SleapLabelFiles
 from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 
 logger = logging.getLogger(__name__)
@@ -550,7 +551,7 @@ class SleapTrainConfig(TypedDict):
 
 
 def sleap_train_config(
-    labels_path: Path,
+    labels: SleapLabelFiles,
     run_root: Path,
     *,
     head: SleapHead,
@@ -558,7 +559,6 @@ def sleap_train_config(
     max_epochs: int,
     seed: int,
     validation_fraction: float,
-    validation_labels: Path | None,
     base_weights: Path | None,
     run_name: str,
     objective: EmbeddingObjective = DEFAULT_EMBEDDING_OBJECTIVE,
@@ -568,9 +568,11 @@ def sleap_train_config(
     """The training configuration, as the mapping that is written to YAML.
 
     Built rather than templated so it can be asserted on without running anything, which
-    is what the tests do. A *validation_labels* file is written as ``val_labels_path``,
-    and *validation_fraction* only without one. A *base_weights* checkpoint is written
-    as both ``model_config.pretrained_backbone_weights`` and
+    is what the tests do. The training files of *labels* are written as
+    ``train_labels_path`` and its validation files as ``val_labels_path``, each in
+    order. *validation_fraction* is written only when *labels* has no validation
+    file. A *base_weights* checkpoint is written as both
+    ``model_config.pretrained_backbone_weights`` and
     ``model_config.pretrained_head_weights``, sleap-nn's fine-tune mapping. The run
     starts from the base's weights at epoch zero.
 
@@ -594,7 +596,7 @@ def sleap_train_config(
     """
     effective = effective_train_settings(head, backbone, settings)
     data_config: _DataConfig = {
-        "train_labels_path": [str(labels_path)],
+        "train_labels_path": [str(path) for path in labels.train],
         "provider": "LabelsReader",
         # Written at sleap-nn's own defaults, and only because sleap-nn reads
         # these two off the *unmerged* document. ``run_training`` completes the
@@ -615,10 +617,10 @@ def sleap_train_config(
         data_config["data_pipeline_fw"] = (
             _CACHED_PIPELINE if effective.cache_images else _STREAMED_PIPELINE
         )
-    if validation_labels is None:
-        data_config["validation_fraction"] = validation_fraction
+    if labels.validation:
+        data_config["val_labels_path"] = [str(path) for path in labels.validation]
     else:
-        data_config["val_labels_path"] = [str(validation_labels)]
+        data_config["validation_fraction"] = validation_fraction
     model_config: _ModelConfig = {
         # The backbone takes an empty block: its fields carry real defaults, so
         # merging one over sleap-nn's structured config yields those. A head
@@ -1184,7 +1186,8 @@ def train_sleap(
     """Train a SLEAP model and return the directory it produced.
 
     Args:
-        labels_path: The ``.slp`` that *config* trains on.
+        labels_path: The ``.slp``, or the directory of ``train/`` and ``val/``
+            shards, that *config* trains on.
         run_root: Where the model directory is written. The configuration is
             written here too, so a finished run carries the exact inputs it ran
             with beside its weights.
@@ -1214,14 +1217,18 @@ def train_sleap(
         artifact and what inference is later handed.
 
     Raises:
-        FileNotFoundError: *labels_path* does not exist, or training exited
+        FileNotFoundError: Nothing exists at *labels_path*, or training exited
             zero without producing a model directory.
         SleapNotFoundError: No SLEAP install could be located.
         SleapError: Training exited non-zero.
     """
     labels_path = Path(labels_path)
     if not labels_path.exists():
-        raise FileNotFoundError(f"SLEAP labels file does not exist: {labels_path}")
+        msg = (
+            f"No SLEAP labels exist at {labels_path}: it is neither a .slp file "
+            "nor a labels directory."
+        )
+        raise FileNotFoundError(msg)
     run_root = Path(run_root)
     run_root.mkdir(parents=True, exist_ok=True)
 
