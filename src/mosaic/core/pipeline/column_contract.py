@@ -521,6 +521,9 @@ def declared_names(
 PAYLOAD_LABEL: Final = "a numeric payload column"
 """How a message names what a :class:`Payload` requirement needs."""
 
+_SHOWN_ALTERNATIVES: Final = 3
+"""How many names a requirement's :attr:`~NamedColumns.phrase` spells out."""
+
 type ParamValues = Mapping[str, JsonValue]
 """A step's params as JSON, every field that a declaration reads included."""
 
@@ -570,17 +573,35 @@ class NamedColumns:
     unknown: bool = False
     payload: bool = False
 
-    @property
-    def label(self) -> str:
-        """The names, quoted and joined with ``or``, as a message prints them."""
+    def _alternatives(self) -> list[str]:
+        """The names, families and payload label that meet this, each quoted."""
         names = [repr(name) for name in self.columns]
         names.extend(repr(f"{prefix}*") for prefix in self.prefixes)
         if self.payload:
             names.append(PAYLOAD_LABEL)
+        return names
+
+    @property
+    def label(self) -> str:
+        """The names, quoted and joined with ``or``, as a message prints them."""
+        names = self._alternatives()
         if names:
             return " or ".join(names)
         fields = ", ".join(self.params)
         return f"the column named by {fields}"
+
+    @property
+    def phrase(self) -> str:
+        """:attr:`label`, or its first names when there are many.
+
+        Any one of the names meets the requirement, so a long list reads
+        ``any of 'a', 'b', 'c' and 18 more``, not a chain of ``or``.
+        """
+        names = self._alternatives()
+        if len(names) <= _SHOWN_ALTERNATIVES:
+            return self.label
+        shown = ", ".join(names[:_SHOWN_ALTERNATIVES])
+        return f"any of {shown} and {len(names) - _SHOWN_ALTERNATIVES} more"
 
     def met_by(self, present: Collection[str]) -> bool:
         """Whether a frame with the columns *present* meets this requirement."""

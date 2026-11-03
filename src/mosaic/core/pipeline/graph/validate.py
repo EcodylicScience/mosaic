@@ -45,7 +45,7 @@ still checked.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final
 
@@ -142,7 +142,9 @@ __all__ = [
     "check_recipe",
     "input_candidates",
     "insert_candidates",
+    "merge_cautions",
     "one_run_problems",
+    "patch_validation_report",
     "read_recipe",
     "reject_unless_valid",
     "resolved_columns",
@@ -691,9 +693,9 @@ def _column_problems(
                 Problem(step.id, "inputs", _absent_message(step, need, walk))
             )
         elif status == "possible":
-            maybe.append(need.label)
+            maybe.append(need.phrase)
         elif status == "unknown":
-            unchecked.append(need.label)
+            unchecked.append(need.phrase)
     if maybe:
         message = (
             f"{', '.join(maybe)} may be missing from its merged input. An input "
@@ -1078,9 +1080,11 @@ def validation_report(
     """Everything wrong with *document*, which need not parse.
 
     Structural faults when it does not parse, and :func:`check_recipe`'s
-    findings, the walk's cautions and its unchecked steps when it does. It does
-    not raise for a fault in the document, because an editor asks after every
-    edit and a list of problems is the ordinary answer.
+    findings, the walk's cautions and its unchecked steps when it does. A
+    step's caution stays at that step, since an editor marks the step it names;
+    a reader that lists them merges the repeats with :func:`merge_cautions`. It
+    does not raise for a fault in the document, because an editor asks after
+    every edit and a list of problems is the ordinary answer.
     """
     try:
         recipe = read_recipe(document)
@@ -1096,6 +1100,59 @@ def validation_report(
         cautions=tuple(examined.walk.cautions),
         unchecked=tuple(examined.walk.unchecked),
     )
+
+
+def merge_cautions(cautions: Iterable[Problem]) -> tuple[Problem, ...]:
+    """*cautions* with those of one location and text said once.
+
+    The merged caution stays at the first step and names the others in its
+    message. Cautions come out in the order their first copies went in.
+    """
+    groups: dict[tuple[str, str], list[Problem]] = {}
+    for caution in cautions:
+        groups.setdefault((caution.where, caution.message), []).append(caution)
+    merged: list[Problem] = []
+    for (where, message), found in groups.items():
+        first = found[0]
+        others = [
+            step
+            for step in dict.fromkeys(caution.step for caution in found[1:])
+            if step and step != first.step
+        ]
+        if others:
+            named = ", ".join(repr(step) for step in others)
+            message = f"{message}; the same holds for steps {named}"
+        merged.append(Problem(first.step, where, message))
+    return tuple(merged)
+
+
+def patch_validation_report(
+    base: object, patched: object, catalog: DeclarationCatalog | None = None
+) -> tuple[ValidationReport, tuple[Problem, ...]]:
+    """The report of *patched*, split by the cautions that *base* already held.
+
+    A caution is the same when its step, location and text are.
+
+    Args:
+        base: The recipe document before the edits.
+        patched: The recipe document after them.
+        catalog: The declarations to check against.
+
+    Returns:
+        The report of *patched* with only its added cautions, and the cautions
+        it shares with *base*. Both lists hold one caution per step, as
+        :func:`validation_report` does.
+    """
+    held = {
+        (caution.step, caution.where, caution.message)
+        for caution in validation_report(base, catalog).cautions
+    }
+    report = validation_report(patched, catalog)
+    added = [c for c in report.cautions if (c.step, c.where, c.message) not in held]
+    unchanged = tuple(
+        c for c in report.cautions if (c.step, c.where, c.message) in held
+    )
+    return report.model_copy(update={"cautions": tuple(added)}), unchanged
 
 
 def resolved_levels(

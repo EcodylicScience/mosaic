@@ -599,6 +599,8 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `ops`), then pass `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with
   `dataset`), `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
   (`add_step`, `remove_step`, `set_param`, `replace_step`), each returning a new digest.
+  A `patch_recipe` result omits the cautions the base recipe already held and counts them
+  (`cautions_unchanged`); `validate_recipe` gives the full list.
   When the server has recipe roots, keep the recipe in a JSON file inside one instead,
   edit the file, and pass `{"path": "<file>"}` as `recipe`: one `submit_pipeline` call
   then runs an edited experiment. A refusal with `roots_not_configured` means the

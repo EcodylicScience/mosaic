@@ -21,6 +21,7 @@ from mosaic.core.pipeline.graph import (
     ValidationReport,
     load_request,
     recipe_path,
+    validation_report,
 )
 from mosaic.core.scope import Scope
 from tests.helpers import RecordingStarter, calms21_dataset
@@ -105,6 +106,103 @@ def test_patching_with_no_edits_saves_the_expanded_recipe(
     assert saved.digest is not None
     assert recipe_path(split.base_dir, saved.digest).is_file()
     assert "repeat" not in recipe_path(split.base_dir, saved.digest).read_text()
+
+
+POSE_READERS: dict[str, object] = {
+    "schema_version": 1,
+    "name": "pose",
+    "steps": [
+        {
+            "id": "kin",
+            "type": "feature",
+            "feature": "keypoint-kinematics",
+            "inputs": ["tracks"],
+        },
+        {
+            "id": "pk",
+            "type": "feature",
+            "feature": "pair-keypoints",
+            "inputs": ["tracks"],
+            "params": {"heading": [0, 1]},
+        },
+    ],
+}
+"""Two keypoint readers of the tracks, which share one caution about the pose columns."""
+
+
+def test_validate_recipe_lists_a_shared_caution_once_and_the_report_keeps_each_step(
+    backend: LocalBackend,
+) -> None:
+    validated = _call(backend, "validate_recipe", ValidationReport, recipe=POSE_READERS)
+
+    (caution,) = validated.cautions
+    assert caution.step == "kin"
+    assert caution.message.endswith("; the same holds for steps 'pk'")
+    assert [c.step for c in validation_report(POSE_READERS).cautions] == ["kin", "pk"]
+
+
+def test_a_patch_adding_two_steps_with_one_caution_returns_it_once(
+    backend: LocalBackend, split: Dataset
+) -> None:
+    steps = [
+        {
+            "id": name,
+            "type": "feature",
+            "feature": "keypoint-kinematics",
+            "inputs": ["tracks"],
+            "params": {"window": window},
+        }
+        for name, window in (("kin2", 7), ("kin3", 9))
+    ]
+
+    patched = _saved(
+        backend,
+        split,
+        base=POSE_READERS,
+        ops=[{"op": "add_step", "document": step} for step in steps],
+    )
+
+    (caution,) = patched.cautions
+    assert caution.step == "kin2"
+    assert caution.message.endswith("; the same holds for steps 'kin3'")
+    assert patched.cautions_unchanged == 1
+
+
+def test_a_patch_that_leaves_the_cautions_alone_returns_none_and_counts_them(
+    backend: LocalBackend, split: Dataset
+) -> None:
+    validated = _call(backend, "validate_recipe", ValidationReport, recipe=POSE_READERS)
+    ops = [{"op": "set_param", "step": "pk", "path": "heading", "value": [0, 2]}]
+
+    patched = _saved(backend, split, base=POSE_READERS, ops=ops)
+
+    assert len(validated.cautions) == 1
+    assert patched.cautions == ()
+    assert patched.cautions_unchanged == 1
+
+
+def test_a_patch_returns_the_caution_it_adds_and_counts_the_ones_it_keeps(
+    backend: LocalBackend, split: Dataset
+) -> None:
+    added = {
+        "id": "kin2",
+        "type": "feature",
+        "feature": "keypoint-kinematics",
+        "inputs": ["tracks"],
+        "params": {"window": 7},
+    }
+
+    patched = _saved(
+        backend,
+        split,
+        base=POSE_READERS,
+        ops=[{"op": "add_step", "document": added}],
+    )
+
+    (caution,) = patched.cautions
+    assert caution.step == "kin2"
+    assert "'poseX*', 'poseY*' may be missing" in caution.message
+    assert patched.cautions_unchanged == 1
 
 
 def test_a_plan_by_digest_is_the_plan_of_the_document_and_its_call_is_small(

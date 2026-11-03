@@ -243,7 +243,7 @@ def fail_unrunnable(
 
 def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
     """Check a recipe against the registries. Opens no dataset."""
-    from mosaic.core.pipeline.graph import validation_report
+    from mosaic.core.pipeline.graph import merge_cautions, validation_report
 
     report = validation_report(recipe_document(recipe))
     if as_json:
@@ -251,7 +251,7 @@ def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
         if not report.valid:
             raise typer.Exit(code=1)
         return
-    for caution in report.cautions:
+    for caution in merge_cautions(report.cautions):
         typer.echo(f"caution: {caution}", err=True)
     if report.unchecked:
         steps = ", ".join(report.unchecked)

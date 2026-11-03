@@ -104,10 +104,15 @@ class PlanPage(PlanWire):
 class PatchedRecipe(ValidationReport):
     """A patched recipe as it was saved, and its validation report.
 
+    Its ``cautions`` are those the base recipe did not hold.
+
     Attributes:
         name: The recipe's name.
         steps_total: How many steps it has, ``repeat`` expanded.
+        cautions_unchanged: How many cautions the base also held, which are
+            not repeated.
     """
 
     name: str
     steps_total: int
+    cautions_unchanged: int

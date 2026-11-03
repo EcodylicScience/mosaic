@@ -1628,9 +1628,11 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "Change a recipe by edits and save the result in the dataset, so "
             "that the other recipe tools take it as {digest: <digest>} instead "
             "of the whole document. Returns its digest, its number of steps "
-            "after repeat is expanded, and its validation report. A recipe that "
-            "parses is saved even when it has problems, so it can be patched "
-            "again. Saving changes no data and runs nothing."
+            "after repeat is expanded, and its validation report, whose cautions are "
+            "only those the edits added, with the number left unchanged. An "
+            "added caution can repeat the text of a kept one. A "
+            "recipe that parses is saved even when it has problems, so it can "
+            "be patched again. Saving changes no data and runs nothing."
         ),
         input_model=PatchRecipeInput,
         output=ModelRef("mosaic.agent.mcp.outputs", "PatchedRecipe"),

@@ -31,6 +31,28 @@ the rest, as the refusal, the warning and the confirmation question do.
 The check runs once, after planning, under the submission lock, since it needs the
 plan. No run id moves.
 
+## Unreleased: validation says each caution once
+
+**A listing of cautions says a repeated caution once.** `mosaic pipeline validate` and
+the MCP `validate_recipe` merge the cautions of one location and text: the first step
+carries it, and its message ends with `; the same holds for steps ...`. The guppies
+recipe's six `ANGLE` cautions list as one. `validation_report`, the wire
+`ValidationReport` and `mosaic pipeline validate --json` keep one caution per step, as
+an editor marks the step a caution names. `merge_cautions` is the merge. `plan_recipe`
+is unchanged.
+
+- MCP `patch_recipe` returns only the cautions its edits added over the base recipe, in
+  `cautions`, merged among themselves, and counts the ones the base held in the new
+  `cautions_unchanged`. An added caution can repeat the text of a kept one. Its
+  `problems` and `unchecked` are as before.
+- A requirement that any of many columns meets reads `any of 'a', 'b', 'c' and 18 more`
+  in a caution, not a chain of `or`. A requirement of up to three names and a problem
+  read as before. `NamedColumns.label` is unchanged and `NamedColumns.phrase` is the
+  short form.
+- A step reading converted tracks still gets a caution for `poseX*` and `poseY*`. Not
+  every schema requires them (`mosaic_v1` makes keypoints optional), and a recipe is
+  validated with no dataset. A plan reads the tables and does.
+
 ## Unreleased: a bound step is the run it names
 
 **A step that a submission binds is never executed.** `bind` maps a step id to a run

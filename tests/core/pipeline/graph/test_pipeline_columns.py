@@ -14,6 +14,7 @@ wrong in a way that once failed only at run time, do not.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -57,6 +58,7 @@ from mosaic.core.pipeline.graph.columns import (
     requires_wire,
     tracks_columns,
 )
+from mosaic.core.pipeline.graph.validate import merge_cautions
 from mosaic.core.pipeline.graph.wire import NeedStatus
 from tests.helpers import (
     GUPPIES_RECIPE,
@@ -120,6 +122,9 @@ def test_the_guppies_recipe_validates_with_cautions_only() -> None:
     assert report.problems == ()
     assert [caution.step for caution in report.cautions] == list(DELTA_STEPS)
     assert all("'ANGLE'" in caution.message for caution in report.cautions)
+    (merged,) = merge_cautions(report.cautions)
+    assert merged.step == DELTA_STEPS[0]
+    assert all(f"'{step}'" in merged.message for step in DELTA_STEPS[1:])
 
 
 def test_nearest_neighbor_reading_speed_is_refused_at_its_inputs() -> None:
@@ -869,7 +874,25 @@ def test_the_cli_prints_cautions_beside_a_valid_verdict() -> None:
 
     assert result.exit_code == 0, result.output
     assert "This recipe is valid." in result.stdout
-    assert result.stderr.count("caution:") == len(DELTA_STEPS)
+    assert result.stderr.count("caution:") == 1
+    assert all(f"'{step}'" in result.stderr for step in DELTA_STEPS[1:])
+
+
+def test_the_cli_json_keeps_one_caution_per_step() -> None:
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "validate",
+            "--json",
+            "--recipe",
+            f"@{golden_path(GUPPIES_RECIPE)}",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    steps = [caution["step"] for caution in json.loads(result.stdout)["cautions"]]
+    assert steps == list(DELTA_STEPS)
 
 
 def test_stacked_inputs_guarantee_only_what_each_input_guarantees() -> None:
@@ -950,3 +973,108 @@ def test_a_recipe_with_the_individual_input_first_is_refused() -> None:
 
     assert [problem.step for problem in problems] == ["stack"]
     assert "pair-level input first" in problems[0].message
+
+
+# --- one caution for one finding -------------------------------------------------
+
+
+def _pose_readers(*, wavelet_columns: list[str] | None = None) -> dict[str, JsonValue]:
+    """Converted CalMS21 tracks read by two keypoint features, and a wavelet on one."""
+    steps: list[JsonValue] = [
+        {
+            "id": "tracks",
+            "type": "op",
+            "kind": "convert-tracks",
+            "params": {"source_format": "calms21_npy"},
+        },
+        {
+            "id": "kin",
+            "type": "feature",
+            "feature": "keypoint-kinematics",
+            "inputs": [TRACKS_INPUT],
+            "tracks": {"step": "tracks"},
+        },
+        {
+            "id": "pk",
+            "type": "feature",
+            "feature": "pair-keypoints",
+            "inputs": [TRACKS_INPUT],
+            "tracks": {"step": "tracks"},
+            "params": {"heading": [0, 1]},
+        },
+    ]
+    if wavelet_columns is not None:
+        steps.append(
+            {
+                "id": "wav",
+                "type": "feature",
+                "feature": "individual-wavelet",
+                "inputs": [{"step": "kin"}],
+                "params": {"cols": list(wavelet_columns)},
+            }
+        )
+    return {"schema_version": 1, "steps": steps}
+
+
+def test_each_reader_of_converted_tracks_keeps_its_pose_caution_until_merged() -> None:
+    """The tracks may hold no keypoints, so the pose columns stay a caution.
+
+    ``mosaic_v1`` makes keypoints optional ("a centroid-only tracker emits
+    none"), and ``trex_v1`` alone requires ``poseX``, so a recipe checked with
+    no dataset has no guarantee for converted tracks. A plan reads the tables
+    and does. The report keeps one caution per step, which an editor marks at
+    that step, and a listing merges them into one.
+    """
+    report = validation_report(_pose_readers())
+
+    assert report.valid, report.problems
+    assert [(c.step, c.where) for c in report.cautions] == [
+        ("kin", "inputs"),
+        ("pk", "inputs"),
+    ]
+    assert all(
+        "'poseX*', 'poseY*' may be missing" in c.message for c in report.cautions
+    )
+    (merged,) = merge_cautions(report.cautions)
+    assert (merged.step, merged.where) == ("kin", "inputs")
+    assert merged.message.endswith("; the same holds for steps 'pk'")
+
+
+def test_a_caution_for_one_of_several_columns_says_any_and_names_a_few() -> None:
+    """The wavelet transforms the ``cols`` present and needs only one of them."""
+    columns = [f"{kind}__kp{k}" for kind in ("speed", "vx", "vy") for k in range(7)]
+
+    report = validation_report(_pose_readers(wavelet_columns=columns))
+
+    (caution,) = [c for c in report.cautions if c.step == "wav"]
+    assert " or " not in caution.message
+    assert caution.message.startswith(
+        "any of 'speed__kp0', 'speed__kp1', 'speed__kp2' and 18 more"
+    )
+    assert "speed__kp6" not in caution.message
+
+
+def test_a_requirement_of_few_columns_is_still_named_whole() -> None:
+    assert NamedColumns(columns=("a", "b", "c")).phrase == "'a' or 'b' or 'c'"
+    assert NamedColumns(columns=("a", "b", "c", "d")).phrase == (
+        "any of 'a', 'b', 'c' and 1 more"
+    )
+    assert NamedColumns(columns=("a", "b", "c", "d")).label == (
+        "'a' or 'b' or 'c' or 'd'"
+    )
+
+
+def test_cautions_with_one_text_merge_into_one_naming_every_step() -> None:
+    cautions = (
+        Problem("a", "inputs", "'x' may be missing"),
+        Problem("b", "inputs", "'y' may be missing"),
+        Problem("c", "inputs", "'x' may be missing"),
+        Problem("d", "inputs", "'x' may be missing"),
+        Problem("d", "params", "'x' may be missing"),
+    )
+
+    assert merge_cautions(cautions) == (
+        Problem("a", "inputs", "'x' may be missing; the same holds for steps 'c', 'd'"),
+        Problem("b", "inputs", "'y' may be missing"),
+        Problem("d", "params", "'x' may be missing"),
+    )

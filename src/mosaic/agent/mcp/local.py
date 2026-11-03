@@ -635,6 +635,7 @@ class LocalBackend:
     def _validate_recipe(self, args: ValidateRecipeInput) -> ValidationReport:
         from mosaic.core.pipeline.graph import (
             canonical_recipe,
+            merge_cautions,
             recipe_reference,
             validation_report,
         )
@@ -643,9 +644,11 @@ class LocalBackend:
         if recipe_reference(document) is None:
             # Sent whole or read from a file, it is reported and not refused when
             # it does not parse.
-            return validation_report(document, self._declarations())
-        recipe = self._recipe(document, args.dataset)
-        return validation_report(canonical_recipe(recipe), self._declarations())
+            report = validation_report(document, self._declarations())
+        else:
+            recipe = self._recipe(document, args.dataset)
+            report = validation_report(canonical_recipe(recipe), self._declarations())
+        return report.model_copy(update={"cautions": merge_cautions(report.cautions)})
 
     def _suggest_steps(self, args: SuggestStepsInput) -> StepSuggestions:
         from mosaic.core.pipeline.graph import (
@@ -707,22 +710,28 @@ class LocalBackend:
     def _patch_recipe(self, args: PatchRecipeInput) -> PatchedRecipe:
         from mosaic.core.pipeline.graph import (
             canonical_recipe,
+            merge_cautions,
             patch_recipe,
+            patch_validation_report,
             save_recipe,
-            validation_report,
         )
 
         from .outputs import PatchedRecipe
 
         held = self._dataset(args.dataset)
         dataset = self._changeable(held, "patch_recipe")
-        patched = patch_recipe(self._recipe(args.base, args.dataset), args.ops)
+        base = self._recipe(args.base, args.dataset)
+        patched = patch_recipe(base, args.ops)
         _ = save_recipe(dataset.base_dir, patched)
-        report = validation_report(canonical_recipe(patched), self._declarations())
+        report, unchanged = patch_validation_report(
+            canonical_recipe(base), canonical_recipe(patched), self._declarations()
+        )
+        merged = report.model_copy(update={"cautions": merge_cautions(report.cautions)})
         return PatchedRecipe(
-            **report.model_dump(),
+            **merged.model_dump(),
             name=patched.name,
             steps_total=len(patched.steps),
+            cautions_unchanged=len(merge_cautions(unchanged)),
         )
 
     def _recipe_document(self, document: object) -> object:
