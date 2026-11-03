@@ -65,7 +65,9 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
   `require_sleap_nn_at_least`). train-sleap and the embedding run check it with the
   probe. The version is provenance. No identifier reads it.
 - `prepare-embedding-data` (`ops/prepare_embedding.py`) cuts training windows from a
-  `sleap` run. Its labels are the only ones that train the `tracklet` scope.
+  `sleap` run. Its labels are the only ones that train the `tracklet` scope. It writes
+  `labels/{train,val}/shard-NNNNN.slp` from frames decoded once per entry and published
+  with one `os.replace`, and `train-sleap` reads that directory (`sleap_label_files`).
 
 ## Model references and libraries
 

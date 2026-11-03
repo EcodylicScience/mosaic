@@ -2,15 +2,16 @@
 
 An embedding model learns from tracks, and a dataset without identity labels has
 tracker tracks only. This op cuts short windows from one sleap tracker run and
-writes them to ``models/prepare-embedding-data/<run_id>/labels.slp`` and
-``labels.val.slp``, one video per window, which ``train-sleap`` reads by this run's
-id.
+writes them as ``.slp`` shards under ``models/prepare-embedding-data/<run_id>/labels/``,
+``train/`` and ``val/``, one video per window, which ``train-sleap`` reads by this
+run's id.
 
 Each entry's tracked instances are read back from its ``predictions.slp`` in the
 SLEAP environment, the windows are planned here
-(:func:`~mosaic.tracking.sleap.embedding_windows.plan_windows`), and a second
-snippet in that environment writes the planned instances as user instances, with
-their frames embedded.
+(:func:`~mosaic.tracking.sleap.embedding_windows.plan_windows`) and grouped into
+shards (:func:`plan_shards`), and a second snippet in that environment, run once
+per entry, decodes the entry's frames once and writes the planned instances as
+user instances, with their frames embedded.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from mosaic.core.entry import Entry, make_entry_key, validate_entry_name
 from mosaic.core.params import Declared, Params
-from mosaic.core.pipeline._utils import atomic_write, staging_path
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.entry_claim import phase_activity
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.file_digest import file_digest
@@ -55,7 +56,11 @@ from mosaic.tracking.sleap.embedding_windows import (
     keep_evenly_spaced_windows,
     plan_windows,
 )
-from mosaic.tracking.sleap.labels import validation_labels_path
+from mosaic.tracking.sleap.labels import (
+    SHARD_TRAIN_DIRECTORY,
+    SHARD_VALIDATION_DIRECTORY,
+    sleap_label_files,
+)
 from mosaic.tracking.sleap.run import (
     SleapError,
     read_back_embeddings,
@@ -75,7 +80,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "EmbeddingDataIndexRow",
-    "EmbeddingLabelsFile",
+    "EmbeddingLabelsSplit",
+    "SHARD_MAX_FRAMES",
     "EmbeddingSource",
     "PrepareEmbeddingDataConflict",
     "PrepareEmbeddingDataInvalid",
@@ -83,31 +89,33 @@ __all__ = [
     "PrepareEmbeddingDataOp",
     "PrepareEmbeddingDataParams",
     "embedding_data_index",
+    "plan_shards",
     "prepare_embedding_data_run_id",
     "write_embedding_labels",
 ]
 
-PREPARE_EMBEDDING_VERSION: Final = "0.1"
+PREPARE_EMBEDDING_VERSION: Final = "0.2"
 
 _PREPARE_IDLE_SECONDS: Final = 900.0
 """How long a snippet of the preparation may print nothing.
 
 Each snippet prints once per predictions file it has loaded, and the writer
-prints every :data:`_HEARTBEAT_SECONDS` while it embeds a file's frames.
+prints every :data:`_HEARTBEAT_SECONDS` while it decodes an entry's frames or
+embeds them into one shard.
 """
 
 _HEARTBEAT_SECONDS: Final = 60.0
-"""How often the writer prints while it embeds the frames of one labels file."""
+"""How often the writer prints while it decodes frames or embeds one shard."""
 
-_MIN_TRACKS_PER_FILE: Final = 2
-"""The fewest tracks a labels file holds. One track gives no negative pair."""
+_MIN_TRACKS_PER_SPLIT: Final = 2
+"""The fewest tracks a split holds. One track gives no negative pair."""
 
 _SLEAP_RUN_ID_DESCRIPTION = "The run id of the sleap tracker run to cut windows from."
 
-_TRAIN_ENTRIES_DESCRIPTION = "The entries written to labels.slp."
+_TRAIN_ENTRIES_DESCRIPTION = "The entries written to the training shards."
 
 _VAL_ENTRIES_DESCRIPTION = (
-    "The entries written to labels.val.slp. No entry shares a recording with "
+    "The entries written to the validation shards. No entry shares a recording with "
     "train_entries, so validation measures another recording."
 )
 
@@ -220,7 +228,7 @@ class PrepareEmbeddingDataNotFound(ClassifiedError, LookupError):
 
 
 class PrepareEmbeddingDataConflict(ClassifiedError, ValueError):
-    """Refuses a labels file whose windows hold fewer than two tracks."""
+    """Refuses a split whose windows hold fewer than two tracks."""
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
@@ -232,16 +240,16 @@ class PrepareEmbeddingDataConflict(ClassifiedError, ValueError):
 class EmbeddingDataIndexRow(RunIndexRowBase):
     """Typed row for ``models/prepare-embedding-data/index.csv``.
 
-    ``artifact_path`` is the root-relative ``labels.slp``, the cell that
+    ``artifact_path`` is the root-relative ``labels`` directory, the cell that
     ``prepared_artifact_cell`` reads. ``consumed_predictions`` is a JSON list of
     ``{group, sequence, digest, size, mtime_ns}``, one per ``predictions.slp``
     read, sorted by entry: the file's content digest, its size and its
     modification time when it was read. No cell enters the run identifier.
 
-    ``n_windows`` counts the windows of both files, one video each, and
-    ``n_frames`` their frames, of which ``n_train`` are in ``labels.slp`` and
-    ``n_valid`` in ``labels.val.slp``. ``n_tracks`` counts the distinct window
-    tracks of both files.
+    ``n_windows`` counts the windows of both splits, one video each, and
+    ``n_frames`` their frames, of which ``n_train`` are in the ``train/`` shards
+    and ``n_valid`` in the ``val/`` shards. ``n_tracks`` counts the distinct
+    window tracks of both splits.
     """
 
     kind: str
@@ -293,6 +301,10 @@ def prepare_embedding_data_run_id(params: PrepareEmbeddingDataParams) -> str:
 # --- Labels writer ---------------------------------------------------------------
 
 
+SHARD_MAX_FRAMES: Final = 512
+"""The most frames a label shard holds, unless it holds a single window."""
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingSource:
     """One entry's predictions file and the windows planned from it.
@@ -307,11 +319,11 @@ class EmbeddingSource:
 
 
 @dataclass(frozen=True, slots=True)
-class EmbeddingLabelsFile:
-    """One labels file and the entries written to it, in order.
+class EmbeddingLabelsSplit:
+    """One split of the labels and the entries written to it, in order.
 
     Attributes:
-        out: Where the file is published.
+        out: The split's directory of shards, such as ``labels/train``.
         sources: The entries, each window of which becomes one video.
     """
 
@@ -319,199 +331,355 @@ class EmbeddingLabelsFile:
     sources: tuple[EmbeddingSource, ...]
 
 
-# Run by the SLEAP interpreter. Its only input is argv: a JSON request naming,
-# per labels file, where to write it and, per entry, the predictions .slp and the
-# planned windows, and how often to print while a file's frames are embedded.
-# Per (frame, track), a user instance is kept over a predicted one, and the last
-# predicted instance over an earlier one, the rule of the analysis export.
-# Each kept instance is written as a user instance, the only kind that sleap-nn
-# trains on. Each window becomes its own Video over the source file, and embed=True
-# copies its frames into the labels file. A window's video opens a reader for
-# each frame it reads and closes it again, since a reader kept open would leave
-# one open per window. The save decodes and encodes every frame. A thread prints
-# while it runs, and the supervisor counts each line as activity.
+def plan_shards(
+    sources: Sequence[EmbeddingSource], max_frames: int
+) -> list[tuple[int, ...]]:
+    """Assign each window of each source, in order, to a shard of their split.
+
+    A shard holds whole windows of one source, at most *max_frames* frames of
+    them unless it holds a single window. Each source starts a new shard, and the
+    shard numbers continue across the sources.
+
+    Args:
+        sources: The sources of one split, in order.
+        max_frames: The most frames a shard of more than one window holds.
+
+    Returns:
+        Per source, the shard number of each of its windows.
+    """
+    planned: list[tuple[int, ...]] = []
+    next_shard = 0
+    for source in sources:
+        shards: list[int] = []
+        held = 0
+        for window in source.windows.windows:
+            count = len(window.frames)
+            if not shards or held + count > max_frames:
+                shards.append(next_shard)
+                next_shard += 1
+                held = 0
+            else:
+                shards.append(shards[-1])
+            held += count
+        planned.append(tuple(shards))
+    return planned
+
+
+def _shard_name(number: int) -> str:
+    return f"shard-{number:05d}.slp"
+
+
+# Run by the SLEAP interpreter, once per source entry. Its only input is argv: a
+# JSON request naming the entry's predictions .slp, the directory its frames are
+# staged in, its planned windows with the shard path of each, and how often to
+# print while a step runs. Per (frame, track), a user instance is kept over a
+# predicted one, and the last predicted instance over an earlier one, the rule of
+# the analysis export. Each kept instance is written as a user instance, the only
+# kind that sleap-nn trains on. Every planned frame is read once, in ascending
+# order, through one reader of the source video and written as a PNG. Each window
+# then becomes a Video over its PNGs, indexed by position, and embed=True copies
+# their bytes into the shard. After each shard its videos are closed and its
+# Labels dropped, so memory holds one shard at a time. A thread prints while a
+# step runs, and the supervisor counts each line as activity.
 _WRITE_LABELS_SNIPPET: str = """
+import gc
 import json
 import os
 import sys
 import threading
 import time
 
+import cv2
 import sleap_io
 
 with open(sys.argv[1], encoding="utf-8") as _handle:
     _request = json.load(_handle)
+_every = _request["heartbeat_seconds"]
 
 
-def _beat(stop, out, every):
+def _beat(stop, doing):
     started = time.monotonic()
-    while not stop.wait(every):
+    while not stop.wait(_every):
         elapsed = time.monotonic() - started
-        print(f"embedding frames into {out}: {elapsed:.0f} s", flush=True)
+        print(f"{doing}: {elapsed:.0f} s", flush=True)
 
 
-_skeleton = None
-for _file in _request["files"]:
+def _beating(doing, work):
+    stop = threading.Event()
+    beater = threading.Thread(target=_beat, args=(stop, doing), daemon=True)
+    beater.start()
+    try:
+        return work()
+    finally:
+        stop.set()
+        beater.join()
+
+
+_predicted = _request["predictions"]
+_labels = sleap_io.load_slp(_predicted)
+print(f"loaded {_predicted}", flush=True)
+if len(_labels.videos) != 1:
+    sys.exit(f"{_predicted} holds {len(_labels.videos)} videos, not one")
+_named = _labels.videos[0].filename
+for _path in _named if isinstance(_named, list) else [_named]:
+    if not os.path.exists(_path):
+        sys.exit(f"the video {_path} that {_predicted} names is missing")
+_skeleton = _labels.skeletons[0]
+_slots = {}
+for _frame in _labels.labeled_frames:
+    for _instance in _frame.instances:
+        if _instance.track is None:
+            continue
+        _key = (int(_frame.frame_idx), str(_instance.track.name))
+        _held = _slots.get(_key)
+        _user = not isinstance(_instance, sleap_io.PredictedInstance)
+        if _held is None or _user or isinstance(_held, sleap_io.PredictedInstance):
+            _slots[_key] = _instance
+_points = {}
+for _window in _request["windows"]:
+    for _planned in _window["instances"]:
+        _key = (_planned["frame"], _planned["track"])
+        _instance = _slots.get(_key)
+        if _instance is None:
+            sys.exit(
+                f"{_predicted} has no instance of track "
+                f"{_planned['track']!r} in frame {_planned['frame']}"
+            )
+        _points[_key] = _instance.numpy()
+del _labels, _slots
+gc.collect()
+
+_frames_dir = _request["frames"]
+os.makedirs(_frames_dir, exist_ok=True)
+_wanted = sorted({_f for _window in _request["windows"] for _f in _window["frames"]})
+_images = {}
+
+
+def _decode():
+    reader = sleap_io.Video.from_filename(_named, keep_open=True)
+    try:
+        for frame_idx in _wanted:
+            image = reader[frame_idx]
+            if image.ndim == 3 and image.shape[-1] == 3:
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            path = os.path.join(_frames_dir, f"{frame_idx:08d}.png")
+            if not cv2.imwrite(path, image):
+                sys.exit(f"could not write frame {frame_idx} of {_named} to {path}")
+            _images[frame_idx] = path
+    finally:
+        reader.close()
+
+
+_beating(f"decoding frames of {_named}", _decode)
+print(f"decoded {len(_wanted)} frames from {_named}", flush=True)
+
+_shards = {}
+for _window in _request["windows"]:
+    _shards.setdefault(_window["shard"], []).append(_window)
+for _out, _windows in _shards.items():
     _tracks = {}
     _videos = []
     _frames = []
-    for _source in _file["sources"]:
-        _predicted = _source["predictions"]
-        _labels = sleap_io.load_slp(_predicted)
-        print(f"loaded {_predicted}", flush=True)
-        if len(_labels.videos) != 1:
-            sys.exit(f"{_predicted} holds {len(_labels.videos)} videos, not one")
-        _video = _labels.videos[0]
-        _named = _video.filename
-        for _path in _named if isinstance(_named, list) else [_named]:
-            if not os.path.exists(_path):
-                sys.exit(f"the video {_path} that {_predicted} names is missing")
-        if _skeleton is None:
-            _skeleton = _labels.skeletons[0]
-        _slots = {}
-        for _frame in _labels.labeled_frames:
-            for _instance in _frame.instances:
-                if _instance.track is None:
-                    continue
-                _key = (int(_frame.frame_idx), str(_instance.track.name))
-                _held = _slots.get(_key)
-                _user = not isinstance(_instance, sleap_io.PredictedInstance)
-                if (
-                    _held is None
-                    or _user
-                    or isinstance(_held, sleap_io.PredictedInstance)
-                ):
-                    _slots[_key] = _instance
-        for _window in _source["windows"]:
-            _window_video = sleap_io.Video.from_filename(_named, keep_open=False)
-            _videos.append(_window_video)
-            _kept = {}
-            for _planned in _window["instances"]:
-                _instance = _slots.get((_planned["frame"], _planned["track"]))
-                if _instance is None:
-                    sys.exit(
-                        f"{_predicted} has no instance of track "
-                        f"{_planned['track']!r} in frame {_planned['frame']}"
-                    )
-                _name = _planned["window_track"]
-                if _name not in _tracks:
-                    _tracks[_name] = sleap_io.Track(name=_name)
-                _kept.setdefault(_planned["frame"], []).append(
-                    sleap_io.Instance.from_numpy(
-                        _instance.numpy(), skeleton=_skeleton, track=_tracks[_name]
-                    )
+    for _window in _windows:
+        _video = sleap_io.Video.from_filename([_images[_f] for _f in _window["frames"]])
+        _videos.append(_video)
+        _kept = {}
+        for _planned in _window["instances"]:
+            _name = _planned["window_track"]
+            if _name not in _tracks:
+                _tracks[_name] = sleap_io.Track(name=_name)
+            _kept.setdefault(_planned["frame"], []).append(
+                sleap_io.Instance.from_numpy(
+                    _points[(_planned["frame"], _planned["track"])],
+                    skeleton=_skeleton,
+                    track=_tracks[_name],
                 )
-            for _frame_idx in _window["frames"]:
-                _frames.append(
-                    sleap_io.LabeledFrame(
-                        video=_window_video,
-                        frame_idx=_frame_idx,
-                        instances=_kept.get(_frame_idx, []),
-                    )
+            )
+        for _position, _frame_idx in enumerate(_window["frames"]):
+            _frames.append(
+                sleap_io.LabeledFrame(
+                    video=_video,
+                    frame_idx=_position,
+                    instances=_kept.get(_frame_idx, []),
                 )
+            )
     _written = sleap_io.Labels(
         labeled_frames=_frames,
         videos=_videos,
-        skeletons=[] if _skeleton is None else [_skeleton],
+        skeletons=[_skeleton],
         tracks=list(_tracks.values()),
     )
-    _stop = threading.Event()
-    _beater = threading.Thread(
-        target=_beat,
-        args=(_stop, _file["out"], _request["heartbeat_seconds"]),
-        daemon=True,
+    _beating(
+        f"embedding frames into {_out}",
+        lambda: sleap_io.save_slp(_written, _out, embed=True),
     )
-    _beater.start()
-    try:
-        sleap_io.save_slp(_written, _file["out"], embed=True)
-    finally:
-        _stop.set()
-        _beater.join()
+    for _video in _videos:
+        _video.close()
     print(
-        f"wrote {len(_videos)} videos and {len(_tracks)} tracks to {_file['out']}",
+        f"wrote {len(_videos)} videos and {len(_tracks)} tracks to {_out}",
         flush=True,
     )
+    del _written, _videos, _frames, _kept
+    gc.collect()
 """
 
 
-def _request_document(
-    files: Sequence[EmbeddingLabelsFile], heartbeat_seconds: float
-) -> str:
-    """The writer's request: per file, its staging path and its planned windows."""
-    document = {
-        "heartbeat_seconds": heartbeat_seconds,
-        "files": [
-            {
-                "out": str(staging_path(each.out)),
-                "sources": [
+@dataclass(frozen=True, slots=True)
+class _SourceRequest:
+    """One subprocess of the writer: an entry's request and the shards it writes."""
+
+    document: str
+    frames: Path
+    shards: tuple[Path, ...]
+
+
+def _source_requests(
+    splits: Sequence[EmbeddingLabelsSplit],
+    staging: Path,
+    max_frames: int,
+    heartbeat_seconds: float,
+) -> list[_SourceRequest]:
+    """One request per source entry with windows, in split and source order."""
+    requests: list[_SourceRequest] = []
+    for each in splits:
+        split = staging / each.out.name
+        for source, shards in zip(
+            each.sources, plan_shards(each.sources, max_frames), strict=True
+        ):
+            if not shards:
+                continue
+            frames = staging / "frames" / source.windows.entry_key
+            document = {
+                "heartbeat_seconds": heartbeat_seconds,
+                "predictions": str(source.predictions),
+                "frames": str(frames),
+                "windows": [
                     {
-                        "predictions": str(source.predictions),
-                        "windows": [
+                        "shard": str(split / _shard_name(shard)),
+                        "frames": list(window.frames),
+                        "instances": [
                             {
-                                "index": window.index,
-                                "frames": list(window.frames),
-                                "instances": [
-                                    {
-                                        "frame": instance.frame,
-                                        "track": instance.track,
-                                        "window_track": instance.window_track,
-                                    }
-                                    for instance in window.instances
-                                ],
+                                "frame": instance.frame,
+                                "track": instance.track,
+                                "window_track": instance.window_track,
                             }
-                            for window in source.windows.windows
+                            for instance in window.instances
                         ],
                     }
-                    for source in each.sources
+                    for window, shard in zip(
+                        source.windows.windows, shards, strict=True
+                    )
                 ],
             }
-            for each in files
-        ],
-    }
-    return json.dumps(document, sort_keys=True)
+            requests.append(
+                _SourceRequest(
+                    document=json.dumps(document, sort_keys=True),
+                    frames=frames,
+                    shards=tuple(
+                        split / _shard_name(shard) for shard in sorted(set(shards))
+                    ),
+                )
+            )
+    return requests
+
+
+def _labels_directory(splits: Sequence[EmbeddingLabelsSplit]) -> Path:
+    """The one directory that holds every split of *splits*.
+
+    Raises:
+        ValueError: The splits lie in different directories, or two share a name.
+    """
+    parents = {each.out.parent for each in splits}
+    names = [each.out.name for each in splits]
+    if len(parents) != 1 or len(set(names)) != len(names):
+        named = ", ".join(str(each.out) for each in splits)
+        msg = f"the splits {named} are not directories of one labels directory"
+        raise ValueError(msg)
+    (labels,) = parents
+    return labels
 
 
 def write_embedding_labels(
-    files: Sequence[EmbeddingLabelsFile],
-    request: Path,
+    splits: Sequence[EmbeddingLabelsSplit],
+    staging: Path,
     *,
+    max_frames: int = SHARD_MAX_FRAMES,
     sleap_conda_env: str | None = None,
     sleap_bin: Path | str | None = None,
     cancel_check: Callable[[], bool] | None = None,
     on_activity: Callable[[str], None] | None = None,
     heartbeat_seconds: float = _HEARTBEAT_SECONDS,
 ) -> None:
-    """Write each of *files* from its planned windows, in the SLEAP environment.
+    """Write the shards of each split of *splits* from its planned windows.
 
-    The SLEAP interpreter reads *request*, written here, and writes each file
-    beside its ``out`` under a staging name: ``labels.slp`` stages as
-    ``labels.partial.slp``. Once it exits cleanly, every staged file is moved
-    onto its ``out`` with ``os.replace``. *request* and the staged files are
-    removed on every path.
+    Each split's windows are grouped into shards by :func:`plan_shards`. One
+    SLEAP subprocess per source entry decodes the entry's planned frames once,
+    stages them as PNG files under ``<staging>/frames/``, and writes the entry's
+    shards under ``<staging>/<split>/``. Once every subprocess has exited
+    cleanly, the frames are removed and *staging* is moved onto the labels
+    directory that holds the splits with one ``os.replace``, so that directory
+    exists only when it is complete. *staging* and the request files are removed
+    on every path.
 
     Args:
-        files: The labels files to write.
-        request: Where the request is written.
+        splits: The splits to write, each an ``out`` directory under one labels
+            directory, such as ``labels/train`` and ``labels/val``.
+        staging: Where the labels are built, on the labels directory's file
+            system.
+        max_frames: The most frames a shard of more than one window holds.
         sleap_conda_env: Run SLEAP inside this conda env (overrides
             ``MOSAIC_SLEAP_CONDA_ENV``).
         sleap_bin: Path to a SLEAP console script (overrides
             ``MOSAIC_SLEAP_BIN``).
-        cancel_check: Polled while the snippet runs.
+        cancel_check: Polled while each subprocess runs.
         on_activity: Called with each line of either output stream.
-        heartbeat_seconds: How often the snippet prints while it embeds the
-            frames of one file.
+        heartbeat_seconds: How often a subprocess prints while it decodes an
+            entry's frames or embeds them into one shard.
 
     Raises:
+        ValueError: The splits are not directories of one labels directory.
         SleapNotFoundError: No SLEAP install could be located.
-        SleapError: The snippet exited non-zero, for instance because the video
+        SleapError: A subprocess exited non-zero, for instance because the video
             that a predictions file names is missing. The message names it.
-        FileNotFoundError: It exited cleanly and staged no file.
+        FileNotFoundError: A subprocess exited cleanly without a planned shard.
     """
-    staged = [staging_path(each.out) for each in files]
-    document = _request_document(files, heartbeat_seconds)
-    atomic_write(request, lambda path: path.write_text(document, encoding="utf-8"))
+    labels = _labels_directory(splits)
     invocation = sleap_invocation(
         "python", sleap_conda_env=sleap_conda_env, sleap_bin=sleap_bin
+    )
+    shutil.rmtree(staging, ignore_errors=True)
+    try:
+        for each in splits:
+            (staging / each.out.name).mkdir(parents=True)
+        requests = _source_requests(splits, staging, max_frames, heartbeat_seconds)
+        for number, source in enumerate(requests):
+            _run_source(
+                source,
+                staging / "requests" / f"source-{number:05d}.json",
+                invocation,
+                cancel_check=cancel_check,
+                on_activity=on_activity,
+            )
+        shutil.rmtree(staging / "frames", ignore_errors=True)
+        shutil.rmtree(staging / "requests", ignore_errors=True)
+        shutil.rmtree(labels, ignore_errors=True)
+        os.replace(staging, labels)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _run_source(
+    source: _SourceRequest,
+    request: Path,
+    invocation: Sequence[str],
+    *,
+    cancel_check: Callable[[], bool] | None,
+    on_activity: Callable[[str], None] | None,
+) -> None:
+    """Run the writer over one source entry and check that its shards exist."""
+    request.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write(
+        request, lambda path: path.write_text(source.document, encoding="utf-8")
     )
     cmd = [*invocation, "-c", _WRITE_LABELS_SNIPPET, str(request)]
     logger.info("Running: %s", command_summary(cmd, SleapError.head))
@@ -523,18 +691,15 @@ def write_embedding_labels(
             idle_timeout=_PREPARE_IDLE_SECONDS,
             on_activity=on_activity,
         )
-        if returncode != 0:
-            raise SleapError(cmd, returncode, stdout, stderr)
-        for partial in staged:
-            if not partial.is_file():
-                msg = f"sleap-io reported success but wrote no .slp at {partial}"
-                raise FileNotFoundError(msg)
-        for each, partial in zip(files, staged, strict=True):
-            os.replace(partial, each.out)
     finally:
         request.unlink(missing_ok=True)
-        for partial in staged:
-            partial.unlink(missing_ok=True)
+    if returncode != 0:
+        raise SleapError(cmd, returncode, stdout, stderr)
+    for shard in source.shards:
+        if not shard.is_file():
+            msg = f"sleap-io reported success but wrote no shard at {shard}"
+            raise FileNotFoundError(msg)
+    shutil.rmtree(source.frames, ignore_errors=True)
 
 
 # --- The run ---------------------------------------------------------------------
@@ -720,10 +885,10 @@ def _reusable_predictions(
 ) -> str | None:
     """The ``consumed_predictions`` of run *run_id* when it can be reused, else None.
 
-    A run is reusable when its row is finished and both labels files are still
-    there. The row is the only evidence that the writer returned, and a row can
-    outlive the files it names. An index that cannot be read is no evidence, and
-    the preparation runs again.
+    A run is reusable when its row is finished and its labels directory still
+    holds a training shard and a validation shard. The row is the only evidence
+    that the writer returned, and a row can outlive the files it names. An index
+    that cannot be read is no evidence, and the preparation runs again.
     """
     if not index.path.exists():
         return None
@@ -738,7 +903,10 @@ def _reusable_predictions(
     if not str(row.get("finished_at", "") or "") or not stored:
         return None
     labels = ds.resolve_path(stored)
-    if not labels.is_file() or not validation_labels_path(labels).is_file():
+    if not labels.is_dir():
+        return None
+    found = sleap_label_files(labels)
+    if not found.train or not found.validation:
         return None
     return str(row.get("consumed_predictions", "") or "")
 
@@ -769,7 +937,8 @@ def _reuse(
     ctx.cache_hit()
 
 
-def _window_tracks(labels: EmbeddingLabelsFile) -> set[str]:
+def _window_tracks(labels: EmbeddingLabelsSplit) -> set[str]:
+    """The window track names of every window of *labels*."""
     return {
         instance.window_track
         for source in labels.sources
@@ -778,7 +947,8 @@ def _window_tracks(labels: EmbeddingLabelsFile) -> set[str]:
     }
 
 
-def _n_frames(labels: EmbeddingLabelsFile) -> int:
+def _n_frames(labels: EmbeddingLabelsSplit) -> int:
+    """The frames of every window of *labels*."""
     return sum(
         len(window.frames)
         for source in labels.sources
@@ -790,8 +960,10 @@ def _n_frames(labels: EmbeddingLabelsFile) -> int:
 class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
     """Cut SLEAP training windows for an embedding model from a sleap tracker run.
 
-    Without ``overwrite``, a finished preparation whose two labels files are
-    still there is reused. The labels embed their frames. A swept tracker
+    Its labels are a directory of ``.slp`` shards, ``labels/train/`` and
+    ``labels/val/``, each shard whole windows of one entry. Without
+    ``overwrite``, a finished preparation whose labels still hold a shard of
+    each split is reused. The labels embed their frames. A swept tracker
     output leaves the preparation valid, and a predictions file that changed
     since is named in a warning.
     """
@@ -878,38 +1050,39 @@ class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
             )
         shutil.rmtree(readbacks)
 
-        labels = out / "labels.slp"
-        files = (
-            EmbeddingLabelsFile(
-                out=labels,
+        labels = out / "labels"
+        splits = (
+            EmbeddingLabelsSplit(
+                out=labels / SHARD_TRAIN_DIRECTORY,
                 sources=tuple(planned[ref.entry] for ref in params.train_entries),
             ),
-            EmbeddingLabelsFile(
-                out=validation_labels_path(labels),
+            EmbeddingLabelsSplit(
+                out=labels / SHARD_VALIDATION_DIRECTORY,
                 sources=tuple(planned[ref.entry] for ref in params.val_entries),
             ),
         )
         write_embedding_labels(
-            files,
-            out / "labels.request.json",
+            splits,
+            out / "labels.partial",
             cancel_check=ctx.cancel_token.is_cancelled,
             on_activity=on_activity,
         )
         ctx.check_cancel()
 
-        for each in files:
+        for each in splits:
             n_tracks = len(_window_tracks(each))
-            if n_tracks < _MIN_TRACKS_PER_FILE:
+            if n_tracks < _MIN_TRACKS_PER_SPLIT:
                 empty_claimed_run_root(out)
                 clear_inflight(out, execution_id=ctx.execution_id)
                 msg = (
-                    f"[{self.kind}] {each.out.name} holds {n_tracks} track(s), "
-                    f"fewer than {_MIN_TRACKS_PER_FILE}: no window of its entries "
+                    f"[{self.kind}] the {each.out.name} split holds {n_tracks} "
+                    f"track(s), "
+                    f"fewer than {_MIN_TRACKS_PER_SPLIT}: no window of its entries "
                     f"has a frame with {params.min_tracks_present} tracks present"
                 )
                 raise PrepareEmbeddingDataConflict(msg)
 
-        train, valid = files
+        train, valid = splits
         index = embedding_data_index(model_index_path(ds, self.kind))
         index.append(
             [
@@ -923,7 +1096,7 @@ class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
                     ),
                     n_windows=sum(
                         len(source.windows.windows)
-                        for each in files
+                        for each in splits
                         for source in each.sources
                     ),
                     n_frames=_n_frames(train) + _n_frames(valid),

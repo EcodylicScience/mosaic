@@ -46,13 +46,14 @@ TRAINING: Final = "prepare-training-data"
 
 ARTIFACT_NAMES: Final = {
     CONVERT: "data.yaml",
-    EMBEDDING: "labels.slp",
+    EMBEDDING: "labels",
     TRAINING: "labels.slp",
 }
-"""The file each kind records as what a trainer is handed."""
+"""The file, or for the embedding preparation the directory, each kind records as
+what a trainer is handed."""
 
 type Finish = Callable[[Dataset, str, Path], None]
-"""Record a finished preparation of the given run whose artifact is the given file."""
+"""Record a finished preparation of the given run whose artifact is the given path."""
 
 
 def _finish_convert(ds: Dataset, run_id: str, artifact: Path) -> None:
@@ -184,8 +185,13 @@ def _prepared(ds: Dataset, kind: str, finish: Finish, *, write_file: bool) -> st
     assert run_id is not None
     artifact = model_run_root(ds, kind, run_id) / ARTIFACT_NAMES[kind]
     if write_file:
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        _ = artifact.write_bytes(b"labels")
+        if kind == EMBEDDING:
+            shard = artifact / "train" / "shard-00000.slp"
+            shard.parent.mkdir(parents=True, exist_ok=True)
+            _ = shard.write_bytes(b"labels")
+        else:
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            _ = artifact.write_bytes(b"labels")
     finish(ds, run_id, artifact)
     return run_id
 

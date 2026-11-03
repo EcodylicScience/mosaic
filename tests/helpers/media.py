@@ -308,7 +308,7 @@ def write_mpeg4_mp4(
     *,
     frames: int = 6,
     size: tuple[int, int] = (64, 48),
-    shade: int | Literal["from-name"] = 0,
+    shade: int | Literal["from-name", "by-frame"] = 0,
 ) -> None:
     """Write a small MPEG-4 clip through OpenCV, parent directories created.
 
@@ -325,7 +325,8 @@ def write_mpeg4_mp4(
     derives it from the file's name, which is what a caller needs when two clips
     must differ: two all-black clips are byte-identical and therefore share one
     ``video_uuid`` by design, so an ordering or composition assertion over them
-    passes without measuring anything.
+    passes without measuring anything. ``"by-frame"`` shades frame ``i`` with
+    ``(8 * i) % 256``, which a caller needs when it compares frames by their pixels.
 
     Guards the ffmpeg toolchain even though the write itself is OpenCV's, because
     what these suites do with the clip -- probing it, indexing it -- shells out.
@@ -334,10 +335,15 @@ def write_mpeg4_mp4(
     """
     require_ffmpeg()
     path.parent.mkdir(parents=True, exist_ok=True)
-    value = _shade_for_name(path.name) if isinstance(shade, str) else shade
     width, height = size
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter.fourcc(*"mp4v"), 30.0, size)
-    for _ in range(frames):
+    for index in range(frames):
+        if shade == "by-frame":
+            value = (8 * index) % 256
+        elif shade == "from-name":
+            value = _shade_for_name(path.name)
+        else:
+            value = shade
         writer.write(np.full((height, width, 3), value, np.uint8))
     writer.release()
 

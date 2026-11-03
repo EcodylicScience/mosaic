@@ -124,15 +124,15 @@ Run Lightning Pose inference over scoped videos, bridging results into ``tracks/
 
 #### `prepare-embedding-data`
 
-Version `0.1` &middot; `mosaic.tracking.ops.prepare_embedding.PrepareEmbeddingDataOp`
+Version `0.2` &middot; `mosaic.tracking.ops.prepare_embedding.PrepareEmbeddingDataOp`
 
 Cut SLEAP training windows for an embedding model from a sleap tracker run.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `sleap_run_id` | `string` | _required_ | min length `1` | The run id of the sleap tracker run to cut windows from. |
-| `train_entries` | list of `EntryRef` | _required_ | min items `1` | The entries written to labels.slp. |
-| `val_entries` | list of `EntryRef` | _required_ | min items `1` | The entries written to labels.val.slp. No entry shares a recording with train_entries, so validation measures another recording. |
+| `train_entries` | list of `EntryRef` | _required_ | min items `1` | The entries written to the training shards. |
+| `val_entries` | list of `EntryRef` | _required_ | min items `1` | The entries written to the validation shards. No entry shares a recording with train_entries, so validation measures another recording. |
 | `window_frames` | `integer` | `300` | >= `1` | The length of one window. [frames] |
 | `frames_per_window` | `integer` | `16` | >= `1` | How many frames are taken from a window, evenly spaced over its qualifying frames. A window with fewer qualifying frames gives all of them. |
 | `min_tracks_present` | `integer` | `2` | >= `2` | A frame qualifies when at least this many tracks have an instance in it. |
@@ -736,13 +736,13 @@ Train a SLEAP model, registering the directory it produces.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `labels` | `string` | _required_ |  | The .slp file to train on. |
+| `labels` | `string` | _required_ |  | The .slp file, or the directory of train/ and val/ shards, to train on. |
 | `base_model` | `string` | `""` |  | Weights to fine-tune from, as a path or as the run id of the training op that produced them. Identity records the training run id when the reference is one, and the weights' content digest when it is a bare path. Both the backbone and the head start from these weights. The base must be a training of the same head. |
 | `head` | `"single_instance"` \| `"centroid"` \| `"centered_instance"` \| `"bottomup"` \| `"multi_class_bottomup"` \| `"multi_class_topdown"` \| `"embedding"` | `"centered_instance"` |  | Which task the network is trained for. centroid and centered_instance are the two halves of a top-down model, trained separately and passed to inference as a pair. The multi_class_ heads add identity classification, so they need labels that carry it: a .slp whose instances have no track trains one of them against no classes at all, which succeeds and produces a model that learned nothing. An embedding model maps each detection's crop to an appearance vector, predicts no pose, and runs only as the last model of a sleap op model list. |
 | `backbone` | `"unet"` \| `"convnext"` \| `"swint"` | `"unet"` |  | The feature extractor architecture, independent of the head. |
 | `max_epochs` | `integer` | `200` |  | How long the model trains at most. [epochs] |
 | `seed` | `integer` | `42` |  | Seeds sleap-nn's initialization. |
-| `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation. It applies only when the labels have no validation file beside them, such as the labels.val.slp that prepare-training-data writes beside labels.slp. |
+| `validation_fraction` | `number` | `0.1` |  | Fraction of labels held out for validation. It applies only when the labels have no validation file: a labels.val.slp beside the labels, as prepare-training-data writes, or .slp shards under val/ in a labels directory. |
 | `batch_size` | `integer` \| `None` | `null` |  | Samples per batch of the training and the validation loader. An embedding head draws each training batch from the objective's sampler, groups_per_batch times samples_per_group crops, so this sets its validation batch. Unset, a pose head keeps sleap-nn's default and an embedding head takes the value that trained the four-mice embedding model, 64. At sleap-nn's default of 4 an embedding run's validation pass is slow. |
 | `backbone_size` | `"tiny"` \| `"small"` \| `"base"` \| `"large"` \| `None` | `null` |  | The size of a convnext or swint backbone; swint has no large. Refused with unet. Unset, a pose head keeps sleap-nn's default and an embedding head takes the value that trained the four-mice embedding model, tiny. |
 | `pretrained_backbone` | `boolean` \| `None` | `null` |  | Whether a convnext or swint backbone starts from the ImageNet weights of its size. Refused true with unet. base_model's weights replace them. Unset, a pose head keeps sleap-nn's default and an embedding head takes the value that trained the four-mice embedding model, true. |

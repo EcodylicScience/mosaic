@@ -107,9 +107,10 @@ if TYPE_CHECKING:
 # 0.3 initializes the backbone and the head from base_model's weights, where 0.2
 # resumed base_model's run. 0.3 also validates on the validation file beside the
 # labels when there is one, such as the labels.val.slp that prepare-training-data
-# writes beside labels.slp, in place of holding out validation_fraction of the
-# labels. That file enters the data fingerprint. ``train-sleap.0.2-*`` runs stay
-# readable and resolve as models and as bases under their own ids.
+# writes beside labels.slp or the val/ shards of a labels directory, in place of
+# holding out validation_fraction of the labels. Those files enter the data
+# fingerprint. ``train-sleap.0.2-*`` runs stay readable and resolve as models and
+# as bases under their own ids.
 # 0.2 fingerprints the labels by their own bytes, where 0.1 listed every file
 # under their folder and so moved with anything written beside them. That moves
 # the digest, so the visible segment moves with it: ``train-sleap.0.1-*`` runs
@@ -117,7 +118,9 @@ if TYPE_CHECKING:
 # now means something else.
 TRAIN_SLEAP_VERSION: str = "0.3"
 
-_LABELS_DESCRIPTION = "The .slp file to train on."
+_LABELS_DESCRIPTION = (
+    "The .slp file, or the directory of train/ and val/ shards, to train on."
+)
 
 _BASE_MODEL_DESCRIPTION = BASE_MODEL_DESCRIPTION + (
     " Both the backbone and the head start from these weights. The base must "
@@ -197,8 +200,9 @@ _CACHE_IMAGES_DESCRIPTION = (
 
 _VALIDATION_FRACTION_DESCRIPTION = (
     "Fraction of labels held out for validation. It applies only when the labels "
-    "have no validation file beside them, such as the labels.val.slp that "
-    "prepare-training-data writes beside labels.slp."
+    "have no validation file: a labels.val.slp beside the labels, as "
+    "prepare-training-data writes, or .slp shards under val/ in a labels "
+    "directory."
 )
 
 _SLEAP_OVERRIDES_DESCRIPTION = (

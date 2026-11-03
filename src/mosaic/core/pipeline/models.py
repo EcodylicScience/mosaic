@@ -55,7 +55,7 @@ PREPARED_ARTIFACT_COLUMNS: Final = ("artifact_path", "data_yaml")
 ``convert-points`` records ``data_yaml``. ``prepare-training-data`` records
 ``artifact_path``, because its artifact is a ``data.yaml``, a ``.slp`` file or a
 Lightning Pose project depending on the target. ``prepare-embedding-data``
-records ``artifact_path``, its ``labels.slp``.
+records ``artifact_path``, its ``labels`` directory of shards.
 """
 
 

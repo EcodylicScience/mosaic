@@ -346,9 +346,10 @@ The run refuses, before it starts, each of these:
 - `tracklet` with `negatives.restrict_same_video` other than `true`, which would draw the
   same animal from another window as a negative.
 - `global_id` or `tracklet` on labels with fewer than two tracks.
-- Labels with no validation file beside them. The run validates on `labels.val.slp` and
-  takes no `validation_fraction` split, because a random split puts frames of one track on
-  both sides and inflates the retrieval score. `prepare-embedding-data` writes the file.
+- Labels with no validation file. The run validates on the `.slp` shards under `val/` of a
+  labels directory, or on the `labels.val.slp` beside a `.slp`. It takes no
+  `validation_fraction` split, because a random split puts frames of one track on both
+  sides and inflates the retrieval score. `prepare-embedding-data` writes the shards.
 - A `device` that names more than one CUDA index, and a `trainer_config.trainer_devices`
   other than 1.
 

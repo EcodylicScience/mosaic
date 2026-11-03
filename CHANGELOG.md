@@ -8,6 +8,27 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: sharded embedding labels
+
+**`prepare-embedding-data` writes shards, in bounded memory.** Version 0.2 writes
+`models/prepare-embedding-data/<run id>/labels/train/shard-NNNNN.slp` and
+`labels/val/shard-NNNNN.slp` in place of `labels.slp` and `labels.val.slp`. A shard
+holds whole windows of one source entry, up to 512 frames, and a longer window gets a
+shard of its own. The index row's `artifact_path` is the `labels` directory, which
+appears only once it is complete. Each entry's frames are decoded once, so memory no
+longer grows with the number of windows: 40 windows took 292 MB where they took
+5,434 MB, and 400 windows of 4 frames in 10 shards took 474 MB. While an entry is
+written, its planned frames also sit on disk as PNG files, about the size of that
+entry's frames. The version segment of the run id moves from
+`prepare-embedding-data.0.1-3862762b90` to `.0.2-3862762b90`, so a 0.1 preparation is
+not reused: the same parameters prepare again under the new id. 0.1 runs stay on disk
+and readable under their own ids.
+
+**`train-sleap` trains on a labels directory.** `labels` may be a directory whose
+`train/` and `val/` hold `.slp` shards, or the run id of a preparation that wrote one.
+The fingerprint of such labels covers every shard in order. Neither the fingerprint of a
+`.slp` nor any `train-sleap` run id moves.
+
 ## Unreleased: sequence-classifier training options
 
 **`sequence-classifier` predicts on its `device`.** `apply_device` is now `auto`,

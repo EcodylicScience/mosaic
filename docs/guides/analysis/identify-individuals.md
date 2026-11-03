@@ -30,8 +30,8 @@ frames, and its tracks stay as they are.
 ## 2. Prepare embedding data
 
 An embedding model learns from tracks which crops show one animal. It trains on frames
-cut from the first run. `prepare-embedding-data` cuts short windows from it and writes a
-training file and a validation file.
+cut from the first run. `prepare-embedding-data` cuts short windows from it and writes
+training and validation label shards.
 
 ```bash
 mosaic run -m dataset.yaml --kind prepare-embedding-data --params '{
@@ -52,15 +52,18 @@ further apart than that many frames. Each validation entry keeps 60 evenly space
 windows (`val_windows_per_entry`), which shortens each validation pass. `null` keeps
 every window.
 
-The run refuses an entry whose predictions file is missing, and a preparation with
-fewer than two tracks in either file. The frames are embedded in its output. Removing
-the tracker's working files later leaves it usable.
+The run refuses an entry whose predictions file is missing, and a preparation with fewer
+than two tracks in either split. It writes `train/` and `val/` shards to a `labels`
+directory under `models/prepare-embedding-data/<run id>/`, and the frames are embedded
+in them. Removing the tracker's working files later leaves it usable. Memory does not
+grow with the number of windows. While an entry is written, its planned frames also sit
+on disk as PNG files, so keep free disk space of about that size.
 
 ## 3. Train the embedding model
 
 ```bash
 mosaic run -m dataset.yaml --kind train-sleap --params '{
-  "labels": "prepare-embedding-data.0.1-<digest>",
+  "labels": "prepare-embedding-data.0.2-<digest>",
   "head": "embedding",
   "backbone": "convnext",
   "device": "0"

@@ -1,8 +1,8 @@
 """The ``prepare-embedding-data`` op: training windows cut from a sleap tracker run.
 
 The tracker runs against :func:`~tests.helpers.install_fake_sleap`. The readback of
-each entry's tracked instances and the writer of the two labels files are replaced
-by fakes, the writer's recording the windows it is handed. The writer's snippet is
+each entry's tracked instances and the writer of the label shards are replaced by
+fakes, the writer's recording the windows it is handed. The writer's snippet is
 then run against the stand-in ``sleap_io``.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,20 +36,27 @@ from mosaic.core.pipeline.run_log import run_log_path
 from mosaic.core.track_library.sleap import AppearanceReadback
 from mosaic.tracking.ops._common import resolve_training_data
 from mosaic.tracking.ops.prepare_embedding import (
-    EmbeddingLabelsFile,
+    SHARD_MAX_FRAMES,
+    EmbeddingLabelsSplit,
     EmbeddingSource,
     PrepareEmbeddingDataParams,
+    plan_shards,
     prepare_embedding_data_run_id,
     write_embedding_labels,
 )
 from mosaic.tracking.sleap.dataset_runs import sleap_index_path, sleap_run_root
-from mosaic.tracking.sleap.embedding_windows import EntryWindows, plan_windows
-from mosaic.tracking.sleap.labels import validation_labels_beside
+from mosaic.tracking.sleap.embedding_windows import (
+    EmbeddingWindow,
+    EntryWindows,
+    plan_windows,
+)
+from mosaic.tracking.sleap.labels import SleapLabelFiles, sleap_label_files
 from mosaic.tracking.sleap.run import SLEAP_ENV, SleapError
 from tests.helpers import (
     MediaClip,
     ReadbackRecord,
     StubInstance,
+    StubSavedLabels,
     install_fake_sleap,
     install_fake_tool_python,
     make_dataset,
@@ -104,28 +112,31 @@ class FakeReadback:
 
 @dataclass
 class FakeWriter:
-    """Stands in for the labels writer, recording the files it is handed.
+    """Stands in for the labels writer, recording the splits it is handed.
 
-    Each file is written as a placeholder.
+    Each split directory is written with one placeholder shard.
 
     Attributes:
-        calls: The files of each call, in order.
+        calls: The splits of each call, in order.
+        staging: The staging directory of each call, in order.
     """
 
-    calls: list[tuple[EmbeddingLabelsFile, ...]] = field(
-        default_factory=list[tuple[EmbeddingLabelsFile, ...]]
+    calls: list[tuple[EmbeddingLabelsSplit, ...]] = field(
+        default_factory=list[tuple[EmbeddingLabelsSplit, ...]]
     )
+    staging: list[Path] = field(default_factory=list[Path])
 
     def __call__(
-        self, files: Sequence[EmbeddingLabelsFile], request: Path, **_kwargs: object
+        self, splits: Sequence[EmbeddingLabelsSplit], staging: Path, **_kwargs: object
     ) -> None:
-        _ = request
-        self.calls.append(tuple(files))
-        for each in files:
-            _ = each.out.write_bytes(b"slp")
+        self.calls.append(tuple(splits))
+        self.staging.append(staging)
+        for each in splits:
+            each.out.mkdir(parents=True)
+            _ = (each.out / "shard-00000.slp").write_bytes(b"slp")
 
     @property
-    def files(self) -> tuple[EmbeddingLabelsFile, ...]:
+    def splits(self) -> tuple[EmbeddingLabelsSplit, ...]:
         (only,) = self.calls
         return only
 
@@ -201,7 +212,7 @@ def _refusal(caught: pytest.ExceptionInfo[Exception]) -> ClassifiedError:
 def test_the_op_declares_a_scope_free_cpu_conversion() -> None:
     op = OPS[KIND]
 
-    assert (op.version, op.category, op.domain) == ("0.1", "convert", "tracking")
+    assert (op.version, op.category, op.domain) == ("0.2", "convert", "tracking")
     assert op.scope_takes == "none"
     assert op.scope_dependent is False
     assert op.resource_class in {"", "cpu"}
@@ -212,7 +223,7 @@ def test_the_run_id_is_minted_over_the_params_alone(world: World) -> None:
 
     params = PrepareEmbeddingDataParams.model_validate(_params(world.sleap_run_id))
     assert run_id == prepare_embedding_data_run_id(params)
-    assert run_id.startswith("prepare-embedding-data.0.1-")
+    assert run_id.startswith("prepare-embedding-data.0.2-")
 
 
 def test_prepared_embedding_data_is_not_a_trained_model() -> None:
@@ -261,7 +272,7 @@ def test_a_file_of_fewer_than_two_tracks_is_refused_after_the_writer(
     """No frame of a validation entry that holds one track qualifies."""
     world.readback.tracks = {"s3": ("a",)}
 
-    with pytest.raises(ClassifiedError, match="labels.val.slp") as caught:
+    with pytest.raises(ClassifiedError, match="the val split holds 0 track") as caught:
         _ = _prepare(world)
 
     assert _refusal(caught).error_kind == "conflict"
@@ -335,9 +346,24 @@ def test_a_finished_preparation_is_reused_and_reports_a_cache_hit(
     assert len(_rows(world.ds)) == 1
 
 
-def test_a_preparation_missing_a_labels_file_is_prepared_again(world: World) -> None:
+@pytest.mark.parametrize("split", ["train", "val"])
+def test_a_preparation_missing_the_shards_of_a_split_is_prepared_again(
+    world: World, split: str
+) -> None:
     run_id = _prepare(world)
-    (model_run_root(world.ds, KIND, run_id) / "labels.val.slp").unlink()
+    (
+        model_run_root(world.ds, KIND, run_id) / "labels" / split / "shard-00000.slp"
+    ).unlink()
+
+    _ = _rerun(world, execution_id="exec-again")
+
+    assert len(world.writer.calls) == 2
+    assert "cache_hit" not in _run_log_events(world.ds, "exec-again")
+
+
+def test_a_preparation_whose_labels_are_gone_is_prepared_again(world: World) -> None:
+    run_id = _prepare(world)
+    shutil.rmtree(model_run_root(world.ds, KIND, run_id) / "labels")
 
     _ = _rerun(world, execution_id="exec-again")
 
@@ -467,21 +493,27 @@ def test_an_entry_with_no_detections_is_refused_by_name(
 # --- what is written ---------------------------------------------------------------
 
 
-def test_both_labels_files_are_written_in_the_run_root(world: World) -> None:
+def test_the_shards_of_both_splits_are_written_under_the_labels_directory(
+    world: World,
+) -> None:
     run_id = _prepare(world)
 
     root = model_run_root(world.ds, KIND, run_id)
-    labels = root / "labels.slp"
-    assert labels.is_file()
-    assert validation_labels_beside(labels) == root / "labels.val.slp"
-    train, val = world.writer.files
-    assert (train.out, val.out) == (labels, root / "labels.val.slp")
+    labels = root / "labels"
+    train, val = world.writer.splits
+    assert (train.out, val.out) == (labels / "train", labels / "val")
+    assert world.writer.staging == [root / "labels.partial"]
+    assert sleap_label_files(labels) == SleapLabelFiles(
+        train=(labels / "train" / "shard-00000.slp",),
+        validation=(labels / "val" / "shard-00000.slp",),
+    )
+    assert not (root / "labels.partial").exists()
 
 
 def test_each_file_reads_its_entries_predictions(world: World) -> None:
     _ = _prepare(world)
 
-    train, val = world.writer.files
+    train, val = world.writer.splits
     expected = {
         name: _predictions(world.ds, world.sleap_run_id, name) for name in SEQUENCES
     }
@@ -496,7 +528,7 @@ def test_each_file_reads_its_entries_predictions(world: World) -> None:
 def test_the_writer_is_handed_the_planned_windows(world: World) -> None:
     _ = _prepare(world)
 
-    train, _val = world.writer.files
+    train, _val = world.writer.splits
     assert train.sources[0].windows == _windows_of("s1")
 
 
@@ -505,7 +537,7 @@ def test_validation_keeps_the_requested_windows_per_entry(world: World) -> None:
 
     _ = run_op(world.ds, KIND, params)
 
-    train, val = world.writer.files
+    train, val = world.writer.splits
     assert [len(source.windows.windows) for source in train.sources] == [2, 2]
     (only,) = val.sources
     assert [window.index for window in only.windows.windows] == [0]
@@ -518,7 +550,7 @@ def test_validation_keeps_every_window_when_none_is_set(world: World) -> None:
 
     _ = run_op(world.ds, KIND, params)
 
-    _train, val = world.writer.files
+    _train, val = world.writer.splits
     assert [len(source.windows.windows) for source in val.sources] == [2]
 
 
@@ -528,7 +560,7 @@ def test_the_videos_of_both_files_number_the_windows(world: World) -> None:
     (row,) = _rows(world.ds)
     windows = [
         window
-        for each in world.writer.files
+        for each in world.writer.splits
         for source in each.sources
         for window in source.windows.windows
     ]
@@ -543,7 +575,7 @@ def test_track_names_are_unique_across_windows_entries_and_files(
 
     names_by_window = [
         {instance.window_track for instance in window.instances}
-        for each in world.writer.files
+        for each in world.writer.splits
         for source in each.sources
         for window in source.windows.windows
     ]
@@ -560,7 +592,7 @@ def test_the_row_records_the_preparation(world: World) -> None:
     assert row["status"] == "finished"
     assert row["finished_at"]
     assert row["sleap_run_id"] == world.sleap_run_id
-    labels = model_run_root(world.ds, KIND, run_id) / "labels.slp"
+    labels = model_run_root(world.ds, KIND, run_id) / "labels"
     assert world.ds.resolve_path(row["artifact_path"]) == labels
     assert not Path(row["artifact_path"]).is_absolute()
     counts = {
@@ -617,7 +649,7 @@ def test_a_finished_run_reports_its_entries_before_its_end(world: World) -> None
 def test_a_training_reference_resolves_to_the_labels(world: World) -> None:
     run_id = _prepare(world)
 
-    labels = model_run_root(world.ds, KIND, run_id) / "labels.slp"
+    labels = model_run_root(world.ds, KIND, run_id) / "labels"
     assert resolve_training_data(world.ds, run_id) == labels
 
 
@@ -679,11 +711,11 @@ def _windows_of(sequence: str, tracks: Sequence[str] = ("a", "b")) -> EntryWindo
     )
 
 
-def _labels_files(
+def _labels_splits(
     tmp_path: Path,
     videos: Mapping[str, Path],
     instances: Sequence[StubInstance] = (StubInstance("a"), StubInstance("b")),
-) -> list[EmbeddingLabelsFile]:
+) -> list[EmbeddingLabelsSplit]:
     sources = {
         name: EmbeddingSource(
             predictions=_stub_predictions(
@@ -693,13 +725,12 @@ def _labels_files(
         )
         for name, video in videos.items()
     }
+    labels = tmp_path / "out" / "labels"
     return [
-        EmbeddingLabelsFile(
-            out=tmp_path / "out" / "labels.slp", sources=(sources["s1"], sources["s2"])
+        EmbeddingLabelsSplit(
+            out=labels / "train", sources=(sources["s1"], sources["s2"])
         ),
-        EmbeddingLabelsFile(
-            out=tmp_path / "out" / "labels.val.slp", sources=(sources["s3"],)
-        ),
+        EmbeddingLabelsSplit(out=labels / "val", sources=(sources["s3"],)),
     ]
 
 
@@ -711,46 +742,139 @@ def _videos(tmp_path: Path) -> dict[str, Path]:
     return videos
 
 
+def _write(
+    splits: Sequence[EmbeddingLabelsSplit],
+    tmp_path: Path,
+    *,
+    max_frames: int = SHARD_MAX_FRAMES,
+    lines: list[str] | None = None,
+    heartbeat_seconds: float = 60.0,
+) -> None:
+    write_embedding_labels(
+        splits,
+        tmp_path / "out" / "labels.partial",
+        max_frames=max_frames,
+        on_activity=None if lines is None else lines.append,
+        heartbeat_seconds=heartbeat_seconds,
+    )
+
+
+def _shard(tmp_path: Path, split: str, number: int) -> StubSavedLabels:
+    return read_stub_labels(
+        tmp_path / "out" / "labels" / split / f"shard-{number:05d}.slp"
+    )
+
+
 def test_the_snippet_writes_one_video_per_window_of_user_instances(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stub_sleap(monkeypatch, tmp_path)
-    files = _labels_files(tmp_path, _videos(tmp_path))
-    (tmp_path / "out").mkdir()
+    splits = _labels_splits(tmp_path, _videos(tmp_path))
     lines: list[str] = []
 
-    write_embedding_labels(
-        files, tmp_path / "out" / "request.json", on_activity=lines.append
-    )
+    _write(splits, tmp_path, lines=lines)
 
-    train = read_stub_labels(tmp_path / "out" / "labels.slp")
-    val = read_stub_labels(tmp_path / "out" / "labels.val.slp")
-    assert (train["embed"], val["embed"]) == (True, True)
-    assert (len(train["videos"]), len(val["videos"])) == (4, 2)
-    assert train["videos"][0] == str(tmp_path / "media" / "s1.mp4")
-    assert train["tracks"] == [
+    first, second = _shard(tmp_path, "train", 0), _shard(tmp_path, "train", 1)
+    val = _shard(tmp_path, "val", 0)
+    assert (first["embed"], second["embed"], val["embed"]) == (True, True, True)
+    assert (len(first["videos"]), len(second["videos"]), len(val["videos"])) == (
+        2,
+        2,
+        2,
+    )
+    assert first["tracks"] == [
         "s1/w00000/a",
         "s1/w00000/b",
         "s1/w00001/a",
         "s1/w00001/b",
+    ]
+    assert second["tracks"] == [
         "s2/w00000/a",
         "s2/w00000/b",
         "s2/w00001/a",
         "s2/w00001/b",
     ]
-    first = train["frames"][0]
-    assert (first["video"], first["frame_idx"]) == (0, 0)
-    assert first["instances"] == [
+    first_frame = first["frames"][0]
+    assert (first_frame["video"], first_frame["frame_idx"]) == (0, 0)
+    assert first_frame["instances"] == [
         {"track": "s1/w00000/a", "predicted": False, "x": 0.0},
         {"track": "s1/w00000/b", "predicted": False, "x": 0.0},
     ]
-    assert [frame["frame_idx"] for frame in val["frames"]] == [0, 2, 4, 5, 7, 9]
-    assert any("wrote 4 videos and 8 tracks" in line for line in lines)
-    assert any("wrote 2 videos and 4 tracks" in line for line in lines)
-    assert sorted(path.name for path in (tmp_path / "out").iterdir()) == [
-        "labels.slp",
-        "labels.val.slp",
+    assert [(frame["video"], frame["frame_idx"]) for frame in val["frames"]] == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (1, 1),
+        (1, 2),
     ]
+    assert sum("wrote 2 videos and 4 tracks" in line for line in lines) == 3
+    assert sorted(
+        str(path.relative_to(tmp_path / "out"))
+        for path in (tmp_path / "out").rglob("*")
+    ) == [
+        "labels",
+        "labels/train",
+        "labels/train/shard-00000.slp",
+        "labels/train/shard-00001.slp",
+        "labels/val",
+        "labels/val/shard-00000.slp",
+    ]
+
+
+def test_each_window_video_reads_its_frames_from_staged_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A window's video names one image per frame, in the window's frame order."""
+    _stub_sleap(monkeypatch, tmp_path)
+    splits = _labels_splits(tmp_path, _videos(tmp_path))
+
+    _write(splits, tmp_path)
+
+    frames = tmp_path / "out" / "labels.partial" / "frames"
+    window_frames = [window.frames for window in _windows_of("s3").windows]
+    assert _shard(tmp_path, "val", 0)["videos"] == [
+        [str(frames / "s3" / f"{frame:08d}.png") for frame in each]
+        for each in window_frames
+    ]
+
+
+def test_each_source_is_decoded_once_in_one_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_sleap(monkeypatch, tmp_path)
+    videos = _videos(tmp_path)
+    splits = _labels_splits(tmp_path, videos)
+    lines: list[str] = []
+
+    _write(splits, tmp_path, lines=lines)
+
+    loaded = [line.strip() for line in lines if line.startswith("loaded ")]
+    decoded = [line.strip() for line in lines if line.startswith("decoded ")]
+    assert len(loaded) == 3
+    assert decoded == [f"decoded 6 frames from {videos[name]}" for name in SEQUENCES]
+
+
+def test_shards_hold_whole_windows_up_to_the_frame_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three frames a window and a bound of four give one shard per window."""
+    _stub_sleap(monkeypatch, tmp_path)
+    splits = _labels_splits(tmp_path, _videos(tmp_path))
+
+    _write(splits, tmp_path, max_frames=4)
+
+    train = sleap_label_files(tmp_path / "out" / "labels")
+    assert [path.name for path in train.train] == [
+        f"shard-{number:05d}.slp" for number in range(4)
+    ]
+    assert [path.name for path in train.validation] == [
+        "shard-00000.slp",
+        "shard-00001.slp",
+    ]
+    assert [
+        len(_shard(tmp_path, "train", number)["videos"]) for number in range(4)
+    ] == [1, 1, 1, 1]
 
 
 def test_the_snippet_keeps_a_user_instance_and_then_the_last_prediction(
@@ -763,15 +887,14 @@ def test_the_snippet_keeps_a_user_instance_and_then_the_last_prediction(
         StubInstance("b", x=3.0),
         StubInstance("b", x=4.0),
     )
-    files = _labels_files(tmp_path, _videos(tmp_path), instances)
-    (tmp_path / "out").mkdir()
+    splits = _labels_splits(tmp_path, _videos(tmp_path), instances)
 
-    write_embedding_labels(files, tmp_path / "out" / "request.json")
+    _write(splits, tmp_path)
 
     written = [
         (instance["track"], instance["x"])
-        for name in ("labels.slp", "labels.val.slp")
-        for frame in read_stub_labels(tmp_path / "out" / name)["frames"]
+        for path in (tmp_path / "out" / "labels").rglob("*.slp")
+        for frame in read_stub_labels(path)["frames"]
         for instance in frame["instances"]
     ]
     assert written
@@ -785,20 +908,15 @@ def test_the_snippet_prints_while_it_embeds_frames(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _stub_sleap(monkeypatch, tmp_path, save_seconds=0.5)
-    files = _labels_files(tmp_path, _videos(tmp_path))
-    (tmp_path / "out").mkdir()
+    splits = _labels_splits(tmp_path, _videos(tmp_path))
     lines: list[str] = []
 
-    write_embedding_labels(
-        files,
-        tmp_path / "out" / "request.json",
-        on_activity=lines.append,
-        heartbeat_seconds=0.05,
-    )
+    _write(splits, tmp_path, lines=lines, heartbeat_seconds=0.05)
 
     beats = [line for line in lines if "embedding frames into" in line]
-    assert any("labels.partial.slp" in line for line in beats)
-    assert any("labels.val.partial.slp" in line for line in beats)
+    staging = tmp_path / "out" / "labels.partial"
+    assert any(str(staging / "train" / "shard-00001.slp") in line for line in beats)
+    assert any(str(staging / "val" / "shard-00000.slp") in line for line in beats)
 
 
 def test_the_snippet_fails_on_a_missing_video_and_names_it(
@@ -807,10 +925,72 @@ def test_the_snippet_fails_on_a_missing_video_and_names_it(
     _stub_sleap(monkeypatch, tmp_path)
     videos = _videos(tmp_path)
     videos["s3"].unlink()
-    files = _labels_files(tmp_path, videos)
-    (tmp_path / "out").mkdir()
+    splits = _labels_splits(tmp_path, videos)
 
     with pytest.raises(SleapError, match=str(videos["s3"])):
-        write_embedding_labels(files, tmp_path / "out" / "request.json")
+        _write(splits, tmp_path)
 
     assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_a_rerun_replaces_the_labels_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_sleap(monkeypatch, tmp_path)
+    splits = _labels_splits(tmp_path, _videos(tmp_path))
+    _write(splits, tmp_path, max_frames=4)
+
+    _write(splits, tmp_path)
+
+    found = sleap_label_files(tmp_path / "out" / "labels")
+    assert [path.name for path in found.train] == ["shard-00000.slp", "shard-00001.slp"]
+    assert sorted(path.name for path in (tmp_path / "out").iterdir()) == ["labels"]
+
+
+def test_a_missing_shard_after_a_clean_exit_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer that exits cleanly without its planned shards publishes nothing."""
+    _stub_sleap(monkeypatch, tmp_path)
+    monkeypatch.setattr(prepare_embedding, "_WRITE_LABELS_SNIPPET", "pass")
+    splits = _labels_splits(tmp_path, _videos(tmp_path))
+
+    with pytest.raises(FileNotFoundError, match="shard-00000.slp"):
+        _write(splits, tmp_path)
+
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+# --- the shard planner -------------------------------------------------------------
+
+
+def _source_of(entry_key: str, frames_per_window: Sequence[int]) -> EmbeddingSource:
+    windows = tuple(
+        EmbeddingWindow(index=index, frames=tuple(range(count)), instances=())
+        for index, count in enumerate(frames_per_window)
+    )
+    return EmbeddingSource(
+        predictions=Path(f"{entry_key}.predictions.slp"),
+        windows=EntryWindows(entry_key=entry_key, windows=windows),
+    )
+
+
+def test_the_planner_fills_a_shard_up_to_the_bound() -> None:
+    planned = plan_shards([_source_of("a", [3, 3, 3, 3, 3])], max_frames=6)
+
+    assert planned == [(0, 0, 1, 1, 2)]
+
+
+def test_a_window_longer_than_the_bound_has_a_shard_of_its_own() -> None:
+    planned = plan_shards([_source_of("a", [2, 9, 2, 2])], max_frames=4)
+
+    assert planned == [(0, 1, 2, 2)]
+
+
+def test_each_source_starts_a_shard_and_numbers_continue() -> None:
+    planned = plan_shards(
+        [_source_of("a", [1, 1]), _source_of("b", []), _source_of("c", [1])],
+        max_frames=8,
+    )
+
+    assert planned == [(0, 0), (), (1,)]

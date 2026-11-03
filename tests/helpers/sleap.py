@@ -605,6 +605,9 @@ StubFrame = tuple[int, Sequence[StubInstance]]
 STUB_NODES: Final = ("head", "tail")
 """The skeleton of every stub file. Each instance has one point per node."""
 
+STUB_FRAME_SHAPE: Final = (4, 6, 3)
+"""The shape of every frame that a stub ``sleap_io.Video`` reads."""
+
 
 def write_stub_slp(
     path: Path, frames: Sequence[StubFrame], *, video: str = "video.mp4"
@@ -664,13 +667,14 @@ class StubSavedLabels(TypedDict):
 
     Attributes:
         embed: The ``embed`` argument of the save.
-        videos: The file name of each video, in order.
+        videos: The file name of each video, in order, or the list of image
+            files of a video over images.
         tracks: The name of each track, in order.
         frames: The labeled frames, in order.
     """
 
     embed: bool
-    videos: list[str]
+    videos: list[str | list[str]]
     tracks: list[str]
     frames: list[StubSavedFrame]
 
@@ -708,10 +712,19 @@ class Skeleton:
 class Video:
     def __init__(self, filename):
         self.filename = filename
+        self.closed = False
 
     @classmethod
     def from_filename(cls, filename, keep_open=True):
         return cls(filename)
+
+    def __getitem__(self, frame_idx):
+        if self.closed:
+            raise ValueError(f"{self.filename} is closed")
+        return np.full(FRAME_SHAPE, frame_idx % 256, dtype=np.uint8)
+
+    def close(self):
+        self.closed = True
 
 
 class Instance:
@@ -827,7 +840,8 @@ def save_slp(labels, filename, embed=False):
 what :func:`read_stub_labels` reads, after sleeping ``SAVE_SECONDS``.
 ``save_analysis_h5`` writes its arguments and the video's frame indices as JSON,
 and raises sleap-io's ``ValueError`` for a video without labeled frames.
-``NODES`` is :data:`STUB_NODES`.
+``NODES`` is :data:`STUB_NODES`. Frame ``i`` of a ``Video`` is an RGB image of
+:data:`STUB_FRAME_SHAPE` whose every value is ``i % 256``.
 """
 
 
@@ -848,7 +862,10 @@ def write_stub_sleap_io(directory: Path, *, save_seconds: float = 0.0) -> Path:
     """
     package = directory / "sleap_io"
     package.mkdir(parents=True, exist_ok=True)
-    header = f"NODES = {STUB_NODES!r}\nSAVE_SECONDS = {save_seconds!r}\n"
+    header = (
+        f"NODES = {STUB_NODES!r}\nFRAME_SHAPE = {STUB_FRAME_SHAPE!r}\n"
+        f"SAVE_SECONDS = {save_seconds!r}\n"
+    )
     source = header + _STUB_SLEAP_IO
     _ = (package / "__init__.py").write_text(source, encoding="utf-8")
     return directory
