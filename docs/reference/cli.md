@@ -1210,9 +1210,9 @@ attempt id per step, and pins the version every step's producer declares.
 Nothing is executed: the printed commands are, and any driver that can run
 them in dependency order will run the graph correctly.
 
-An open request of the same recipe over an overlapping scope is reported on
-stderr and under ``duplicates``, or refuses the submission with
-``--refuse-duplicates``.
+An open request, of any recipe, that computes a run of the plan is reported
+on stderr and under ``duplicates`` with the steps whose runs it shares, or
+refuses the submission with ``--refuse-duplicates``.
 
 ``--cleanup superseded`` records the runs that the plan reviewed under
 ``--expect-plan`` found removable, and whatever runs the request removes
@@ -1238,7 +1238,7 @@ $ mosaic pipeline submit [OPTIONS]
 * `--max-concurrent-steps <int>`: How many of this request's steps may run at once. Advisory here.
 * `--owner <str>`: Recorded on the request and its attempts.
 * `--expect-plan <str>`: The fingerprint that 'mosaic pipeline plan' printed. Refuses the submission, writing nothing, when the plan has changed since.
-* `--refuse-duplicates`: Refuse the submission, writing nothing, while a request of the same recipe over an overlapping scope has not ended. A submitted request whose steps were never run has not ended.
+* `--refuse-duplicates`: Refuse the submission, writing nothing, while a request that computes one of its runs, of any recipe, has not ended. A submitted request whose steps were never run has not ended.
 * `--cleanup <none|superseded>`: 'superseded' reports the other runs of the recipe's feature storages, each removable or kept with its reason; on submit and run they are removed after every step finished. Needs --expect-plan there.  [default: none]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
@@ -1250,8 +1250,8 @@ $ mosaic pipeline submit [OPTIONS]
 
 Run every step of a recipe here, in order, skipping what is already done.
 
-An open request of the same recipe over an overlapping scope is reported on
-stderr. With ``--request`` the steps of a submitted request run instead, and
+An open request, of any recipe, that computes a run of the plan is reported
+on stderr. With ``--request`` the steps of a submitted request run instead, and
 the command exits 1 when the request failed. Either way it exits 130 when the
 run was cancelled, by SIGTERM, SIGINT or ``mosaic cancel``.
 

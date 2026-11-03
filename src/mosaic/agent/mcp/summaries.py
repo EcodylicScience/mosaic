@@ -35,6 +35,7 @@ from .spec import (
     DatasetList,
     FailureDiagnosis,
     SequencePage,
+    SubmittedDuplicate,
     SubmittedPipeline,
 )
 
@@ -326,9 +327,18 @@ def _plan(plan: PlanPage) -> str:
     )
 
 
+def _duplicate(duplicate: SubmittedDuplicate) -> str:
+    """Name an open request and the submission's steps whose runs it computes."""
+    if not duplicate.steps:
+        return f"{duplicate.request_id} (the same recipe)"
+    more = f" and {duplicate.steps_omitted} more" if duplicate.steps_omitted else ""
+    return f"{duplicate.request_id} (steps {', '.join(duplicate.steps)}{more})"
+
+
 def _submitted(submitted: SubmittedPipeline) -> str:
     duplicates = (
-        f" Open requests of the same recipe: {_names(list(submitted.duplicates))}."
+        " Open requests that compute runs of this one: "
+        f"{_names([_duplicate(each) for each in submitted.duplicates])}."
         if submitted.duplicates
         else ""
     )

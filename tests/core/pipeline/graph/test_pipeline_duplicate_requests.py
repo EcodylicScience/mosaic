@@ -1,8 +1,9 @@
-"""A submission beside an open request of its recipe over an overlapping scope.
+"""A submission beside an open request that computes one of its runs.
 
-Two such requests run the same steps over the same entries. A feature run takes no
-claim, so both compute it. A submission reports the open requests, and refuses as a
-conflict when asked to.
+A request records the runs its plan leaves to compute. A feature run takes no
+claim, so two requests computing one run at once both compute it, whatever their
+recipes. A submission reports the open requests, and refuses as a conflict when
+asked to. A request that recorded no runs is matched by its recipe and scope.
 """
 
 from __future__ import annotations
@@ -23,16 +24,23 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.graph import (
+    BoundRef,
     DeclarationCatalog,
     DuplicateRequest,
     Plan,
     Recipe,
+    OpenDuplicate,
     execute_step,
-    open_requests_matching,
-    recipe_digest,
+    computed_runs,
+    computes_path,
+    describe_duplicates,
+    load_computes,
+    open_duplicates,
+    plan_pipeline,
     recipe_path,
     request_path,
     requests_root,
+    run_pipeline,
     save_request,
     submit_request,
 )
@@ -42,12 +50,18 @@ from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
+    CHAIN_RECIPE,
+    CONVERT_TRACKS_STEP,
     SPEED_RECIPE,
     add_tracks_variant,
+    calms21_dataset,
     exited_pid,
     invoke_json,
     make_dataset,
+    named_recipe,
+    run_id_of,
     speed_recipe,
+    speed_recipe_stepping,
     write_driver_lease,
 )
 
@@ -70,23 +84,36 @@ def _request_count(dataset: Dataset) -> int:
     return len(list(requests_root(dataset.base_dir).glob("*.json")))
 
 
+def _open(dataset: Dataset, recipe: Recipe | None = None) -> tuple[str, ...]:
+    """The open requests that *recipe*, or the speed recipe, meets over every entry."""
+    recipe = speed_recipe() if recipe is None else recipe
+    plan = plan_pipeline(dataset, recipe)
+    found = open_duplicates(
+        dataset.base_dir,
+        plan.recipe_digest,
+        Scope(),
+        computed_runs(dataset, recipe, plan),
+    )
+    return tuple(duplicate.request_id for duplicate in found)
+
+
+def _ids(duplicates: tuple[OpenDuplicate, ...]) -> tuple[str, ...]:
+    return tuple(duplicate.request_id for duplicate in duplicates)
+
+
 def test_an_open_request_over_the_same_scope_is_reported(tracked: Dataset) -> None:
     first = submit_request(tracked, speed_recipe())
 
     second = submit_request(tracked, speed_recipe())
 
-    assert second.duplicates == (first.request.request_id,)
+    assert _ids(second.duplicates) == (first.request.request_id,)
 
 
 def test_open_requests_are_listed_newest_first(tracked: Dataset) -> None:
     first = submit_request(tracked, speed_recipe())
     second = submit_request(tracked, speed_recipe())
 
-    found = open_requests_matching(
-        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
-    )
-
-    assert found == (second.request.request_id, first.request.request_id)
+    assert _open(tracked) == (second.request.request_id, first.request.request_id)
 
 
 def test_a_request_over_an_overlapping_scope_is_reported(tracked: Dataset) -> None:
@@ -94,7 +121,7 @@ def test_a_request_over_an_overlapping_scope_is_reported(tracked: Dataset) -> No
 
     second = submit_request(tracked, speed_recipe())
 
-    assert second.duplicates == (first.request.request_id,)
+    assert _ids(second.duplicates) == (first.request.request_id,)
 
 
 def test_a_finished_request_is_not_open(tracked: Dataset) -> None:
@@ -115,23 +142,19 @@ def test_a_request_over_a_disjoint_scope_is_not_reported(tracked: Dataset) -> No
     assert second.duplicates == ()
 
 
-def test_a_request_of_another_recipe_is_not_reported(tracked: Dataset) -> None:
+def test_a_request_computing_other_runs_is_not_reported(tracked: Dataset) -> None:
     _ = submit_request(tracked, speed_recipe())
 
-    found = open_requests_matching(tracked.base_dir, "0" * 64, Scope())
+    second = submit_request(tracked, speed_recipe_stepping(2))
 
-    assert found == ()
+    assert second.duplicates == ()
 
 
 def test_a_request_whose_driver_lease_is_stale_is_not_open(tracked: Dataset) -> None:
     orphaned = submit_request(tracked, speed_recipe()).request
     _ = write_driver_lease(tracked.base_dir, orphaned.request_id, stale=True)
 
-    found = open_requests_matching(
-        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
-    )
-
-    assert found == ()
+    assert _open(tracked) == ()
 
 
 def test_a_request_with_a_stale_lease_and_a_running_step_is_open(
@@ -147,22 +170,14 @@ def test_a_request_with_a_stale_lease_and_a_running_step_is_open(
         )
     _ = write_driver_lease(tracked.base_dir, driven.request_id, stale=True)
 
-    found = open_requests_matching(
-        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
-    )
-
-    assert found == (driven.request_id,)
+    assert _open(tracked) == (driven.request_id,)
 
 
 def test_a_request_with_a_live_driver_lease_is_open(tracked: Dataset) -> None:
     driven = submit_request(tracked, speed_recipe()).request
     _ = write_driver_lease(tracked.base_dir, driven.request_id, stale=False)
 
-    found = open_requests_matching(
-        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
-    )
-
-    assert found == (driven.request_id,)
+    assert _open(tracked) == (driven.request_id,)
 
 
 def test_a_request_whose_step_is_dead_is_not_an_open_duplicate(
@@ -176,20 +191,12 @@ def test_a_request_whose_step_is_dead_is_not_an_open_duplicate(
             kind="feature", target="speed", host=socket.gethostname(), pid=exited_pid()
         )
 
-    found = open_requests_matching(
-        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
-    )
-
-    assert found == ()
+    assert _open(tracked) == ()
     assert submit_request(tracked, speed_recipe()).duplicates == ()
 
 
 def test_a_dataset_without_requests_has_none_open(tracked: Dataset) -> None:
-    found = open_requests_matching(
-        tracked.base_dir, recipe_digest(speed_recipe()), Scope()
-    )
-
-    assert found == ()
+    assert _open(tracked) == ()
 
 
 def test_a_refused_duplicate_is_a_conflict_and_writes_nothing(
@@ -204,7 +211,13 @@ def test_a_refused_duplicate_is_a_conflict_and_writes_nothing(
     assert envelope.kind == "conflict"
     assert envelope.detail == {
         "recipe_digest": first.request.recipe_digest,
-        "request_ids": [first.request.request_id],
+        "duplicates": [
+            {
+                "request_id": first.request.request_id,
+                "steps": ["speed"],
+                "steps_omitted": 0,
+            }
+        ],
     }
     assert _request_count(tracked) == 1
 
@@ -263,7 +276,7 @@ def test_an_unreadable_request_file_is_skipped(tracked: Dataset) -> None:
     with pytest.warns(UserWarning, match="skipped request file"):
         second = submit_request(tracked, speed_recipe())
 
-    assert second.duplicates == (first.request.request_id,)
+    assert _ids(second.duplicates) == (first.request.request_id,)
 
 
 def test_an_invalid_request_of_the_recipe_is_skipped(tracked: Dataset) -> None:
@@ -274,7 +287,7 @@ def test_an_invalid_request_of_the_recipe_is_skipped(tracked: Dataset) -> None:
     with pytest.warns(UserWarning, match="skipped request file"):
         second = submit_request(tracked, speed_recipe())
 
-    assert second.duplicates == (first.request.request_id,)
+    assert _ids(second.duplicates) == (first.request.request_id,)
 
 
 # --- the CLI ---------------------------------------------------------------------
@@ -294,7 +307,7 @@ def test_a_float_and_an_integer_submission_are_duplicates(tracked: Dataset) -> N
     second = submit_request(tracked, Recipe.model_validate(_speed_with(1)))
 
     assert second.request.recipe_digest == first.request.recipe_digest
-    assert second.duplicates == (first.request.request_id,)
+    assert _ids(second.duplicates) == (first.request.request_id,)
 
 
 def _submit_args(dataset: Dataset, tmp_path: Path, *extra: str) -> list[str]:
@@ -321,7 +334,9 @@ def test_submit_json_reports_the_open_requests(
 
     assert result.exit_code == 0
     assert first["duplicates"] == []
-    assert json.loads(result.stdout)["duplicates"] == [first["request_id"]]
+    assert json.loads(result.stdout)["duplicates"] == [
+        {"request_id": first["request_id"], "steps": ["speed"], "steps_omitted": 0}
+    ]
     assert "warning:" in result.stderr
     assert str(first["request_id"]) in result.stderr
 
@@ -379,8 +394,9 @@ def test_pipeline_run_with_a_float_file_warns_of_an_integer_request(
 def test_a_request_saved_under_the_legacy_digest_is_open_for_its_recipe(
     tracked: Dataset,
 ) -> None:
-    """A request an earlier canonical form named is still a duplicate."""
-    submitted = submit_request(tracked, Recipe.model_validate(_speed_with(1)))
+    """A request an earlier canonical form named, which recorded no runs."""
+    recipe = Recipe.model_validate(_speed_with(1))
+    submitted = submit_request(tracked, recipe)
     legacy = _speed_with(1.0)
     name = document_digest(cast("JsonValue", legacy))
     _ = recipe_path(tracked.base_dir, name).write_text(json.dumps(legacy))
@@ -389,25 +405,160 @@ def test_a_request_saved_under_the_legacy_digest_is_open_for_its_recipe(
     )
     _ = save_request(tracked.base_dir, older)
 
-    found = open_requests_matching(
-        tracked.base_dir, submitted.request.recipe_digest, Scope()
-    )
-
     assert name != submitted.request.recipe_digest
-    assert found == (submitted.request.request_id, "00-legacy")
+    assert _open(tracked, recipe) == (submitted.request.request_id, "00-legacy")
 
 
 def test_a_request_whose_recipe_file_is_missing_is_not_a_duplicate(
     tracked: Dataset,
 ) -> None:
+    """A request that recorded no runs is matched by its recipe, which is gone."""
     submitted = submit_request(tracked, speed_recipe())
     orphan = submitted.request.model_copy(
         update={"request_id": "00-missing", "recipe_digest": "0" * 16}
     )
     _ = save_request(tracked.base_dir, orphan)
 
-    found = open_requests_matching(
-        tracked.base_dir, submitted.request.recipe_digest, Scope()
+    assert _open(tracked) == (submitted.request.request_id,)
+
+
+# --- the runs a request computes ------------------------------------------------
+
+
+def _chain() -> Recipe:
+    return Recipe.model_validate(CHAIN_RECIPE)
+
+
+def test_a_request_of_another_recipe_computing_the_same_fit_is_reported(
+    tracked: Dataset,
+) -> None:
+    """The fit is one run whichever recipe asks for it."""
+    _ = run_pipeline(tracked, speed_recipe())
+    first = submit_request(tracked, _chain())
+
+    second = submit_request(tracked, named_recipe(_chain(), "another name"))
+
+    assert second.request.recipe_digest != first.request.recipe_digest
+    assert second.duplicates == (
+        OpenDuplicate(first.request.request_id, steps=("templates",)),
     )
 
-    assert found == (submitted.request.request_id,)
+
+def test_fits_over_disjoint_step_scopes_of_one_recipe_are_not_reported(
+    tracked: Dataset,
+) -> None:
+    _ = run_pipeline(tracked, speed_recipe())
+    _ = submit_request(tracked, _chain(), step_scopes={"templates": SEQ_A})
+
+    second = submit_request(
+        tracked, _chain(), step_scopes={"templates": SEQ_B}, refuse_duplicates=True
+    )
+
+    assert second.duplicates == ()
+
+
+def test_one_fit_named_by_a_step_scope_and_by_a_request_scope_is_reported(
+    tracked: Dataset,
+) -> None:
+    """A fit over ``seq_a`` is one run, whichever scope narrows it to ``seq_a``."""
+    _ = run_pipeline(tracked, speed_recipe())
+    first = submit_request(tracked, _chain(), scope=SEQ_A)
+
+    second = submit_request(
+        tracked,
+        named_recipe(_chain(), "another name"),
+        step_scopes={"templates": SEQ_A},
+    )
+
+    assert second.duplicates == (
+        OpenDuplicate(first.request.request_id, steps=("templates",)),
+    )
+
+
+def test_a_request_saved_without_its_runs_is_matched_by_recipe_and_scope(
+    tracked: Dataset,
+) -> None:
+    first = submit_request(tracked, speed_recipe())
+    computes_path(tracked.base_dir, first.request.request_id).unlink()
+
+    second = submit_request(tracked, speed_recipe())
+    other = submit_request(tracked, named_recipe(speed_recipe(), "another name"))
+
+    assert load_computes(tracked.base_dir, first.request.request_id) is None
+    assert second.duplicates == (OpenDuplicate(first.request.request_id, steps=()),)
+    assert first.request.request_id not in {d.request_id for d in other.duplicates}
+
+
+def test_a_bound_step_is_not_recorded_as_computed(tracked: Dataset) -> None:
+    templates = run_id_of(run_pipeline(tracked, _chain()), "templates")
+
+    bound = submit_request(
+        tracked,
+        _chain(),
+        scope=SEQ_A,
+        bind={"templates": BoundRef(feature="extract-templates", run_id=templates)},
+    )
+
+    assert load_computes(tracked.base_dir, bound.request.request_id) == []
+
+
+def test_a_request_file_keeps_the_keys_an_older_mosaic_reads(tracked: Dataset) -> None:
+    """The computed runs are a file of their own, so the request file is unchanged."""
+    submitted = submit_request(tracked, speed_recipe())
+
+    document = json.loads(submitted.request_path.read_text())
+
+    assert set(document) == {
+        "request_id",
+        "recipe_digest",
+        "owner",
+        "created_at",
+        "scope",
+        "bind",
+        "allow_partial",
+        "max_concurrent_steps",
+        "step_executions",
+        "step_versions",
+    }
+    assert load_computes(tracked.base_dir, submitted.request.request_id) is not None
+
+
+def test_per_entry_runs_over_disjoint_step_scopes_are_not_reported(
+    tracked: Dataset,
+) -> None:
+    """One speed run, asked for ``seq_a`` by one request and ``seq_b`` by the other."""
+    _ = submit_request(tracked, speed_recipe(), step_scopes={"speed": SEQ_A})
+
+    second = submit_request(tracked, speed_recipe(), step_scopes={"speed": SEQ_B})
+
+    assert second.duplicates == ()
+
+
+def test_an_op_taking_no_scope_is_reported_under_disjoint_request_scopes(
+    tmp_path: Path,
+) -> None:
+    """A conversion writes every entry its files hold, whatever the scope."""
+    raw = calms21_dataset(
+        tmp_path / "raw", {"train": {"a": {"s1": 30}}, "test": {"a": {"s2": 30}}}
+    )
+    converting = Recipe.model_validate(
+        {"schema_version": 1, "name": "convert", "steps": [CONVERT_TRACKS_STEP]}
+    )
+    first = submit_request(raw, converting, scope=Scope(groups=["train"]))
+
+    second = submit_request(raw, converting, scope=Scope(groups=["test"]))
+
+    assert second.duplicates == (
+        OpenDuplicate(first.request.request_id, steps=("tracks",)),
+    )
+
+
+def test_a_duplicate_names_three_steps_and_counts_the_rest() -> None:
+    duplicate = OpenDuplicate("r", steps=("a", "b", "c", "d", "e"))
+
+    assert describe_duplicates([duplicate]) == "r (steps 'a', 'b', 'c' and 2 more)"
+    assert duplicate.as_json() == {
+        "request_id": "r",
+        "steps": ["a", "b", "c"],
+        "steps_omitted": 2,
+    }

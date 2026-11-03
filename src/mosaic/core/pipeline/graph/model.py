@@ -47,6 +47,7 @@ __all__ = [
     "CleanupPolicy",
     "CleanupSpec",
     "CleanupTarget",
+    "ComputedRun",
     "FeatureStepSpec",
     "GraphModel",
     "OpStepSpec",
@@ -438,6 +439,31 @@ class CleanupSpec(GraphModel):
     approved: list[CleanupTarget] = Field(default_factory=list)
     fingerprint: str = ""
     retired: list[str] = Field(default_factory=list)
+
+
+class ComputedRun(GraphModel):
+    """One run that a request's plan had left to compute when it was submitted.
+
+    A submission records its runs beside its request file
+    (:func:`~.store.save_computes`), and a later submission compares its own
+    with them, whatever its recipe, to find a request that computes the same
+    run.
+
+    Attributes:
+        step: The step of the request that computes it.
+        storage: Where a feature run's outputs live, empty for an op.
+        run_id: The run's identifier at submit.
+        whole: Whether the step computes the run as one piece, whatever its
+            entries: a feature that fits or names its run by its entries, or an
+            op that takes no scope. Two requests computing such a run duplicate
+            it over any entries. Two computing any other run duplicate it only
+            over entries they share.
+    """
+
+    step: str
+    storage: str
+    run_id: str
+    whole: bool = False
 
 
 class Request(GraphModel):

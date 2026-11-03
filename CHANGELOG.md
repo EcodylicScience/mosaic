@@ -8,6 +8,29 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: duplicate requests compared by run
+
+**A submission is a duplicate of an open request that computes one of its runs, of any
+recipe.** A submission writes `.mosaic/pipelines/computes/<request_id>.json`: the
+runs (step, storage, `run_id`, `whole`) its plan left to compute, with a bound step's
+run left out. The request file is unchanged, so an older mosaic still reads it. A submission
+compares its own runs with each open request's. One run computed whole, as a fit, a run
+named by its entries or an op that takes no scope, is a duplicate over any entries.
+Another run is one only where the two steps' scopes and step scopes overlap. A request
+of another recipe computing the same fit is now reported, and two requests of one
+recipe whose step scopes split a fit are not. A request without that file, which an
+earlier mosaic wrote, is matched by its recipe and scope as before.
+
+`SubmittedRequest.duplicates` holds `OpenDuplicate`s (`request_id`, `steps`): the
+submission's steps whose runs the open request computes, empty for a request matched
+by recipe. `open_duplicates` replaces `open_requests_matching`. `DuplicateRequest`'s
+detail is `{"recipe_digest", "duplicates": [{"request_id", "steps", "steps_omitted"}]}`,
+`mosaic pipeline submit --json` prints `duplicates` in that shape, and so does
+`submit_pipeline`. Each names at most three steps (`DUPLICATE_STEP_SAMPLE`) and counts
+the rest, as the refusal, the warning and the confirmation question do.
+The check runs once, after planning, under the submission lock, since it needs the
+plan. No run id moves.
+
 ## Unreleased: lightning-action cross-validation
 
 **`lightning-action` takes `cv_folds`.** With it, and the `cv_seed`, `cv_unit`,

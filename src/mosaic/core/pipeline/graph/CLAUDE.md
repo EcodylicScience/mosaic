@@ -6,8 +6,9 @@ named without a path is in `tests/core/pipeline/graph/`.
 
 ## Files under `<dataset>/.mosaic/`
 
-`pipelines/<digest>.json` is a recipe and `pipelines/requests/<rid>.json` one submission
-of it (`store.py`). `runs/<execution_id>.jsonl` is a step attempt's run-log. `claims/`
+`pipelines/<digest>.json` is a recipe, `pipelines/requests/<rid>.json` one submission
+of it and `pipelines/computes/<rid>.json` the runs that submission computes
+(`store.py`). `runs/<execution_id>.jsonl` is a step attempt's run-log. `claims/`
 keeps the failure records (`claims.py`), the one part of a step's status that is stored
 instead of derived from artifacts. `drivers/<rid>.lease.json` is the lease of the process
 driving a request, and `drivers/<rid>.log` the output of that driver and its steps
@@ -23,18 +24,29 @@ driving a request, and `drivers/<rid>.log` the output of that driver and its ste
   `expect_plan`, `submit_request` compares it before writing either file and raises
   `PlanChanged`, a `conflict` and not a `RefusalReason`
   (`test_pipeline_plan_fingerprint.py`).
-- `open_requests_matching` (`store.py`) returns the requests of one recipe digest whose
-  scope overlaps (`Scope.overlaps`) and whose rollup verdict is `running`. A verdict
-  of `orphaned` is not open, read as the status wires read it.
-  `requests_matching` summarizes the `running` and `orphaned` ones, which
-  `PlanWire.open_requests` lists outside the fingerprint (`test_pipeline_plan.py`).
-  A request whose digest differs is matched by what its saved recipe digests to now, so
-  a request saved under an earlier canonical form is still found.
-  `submit_request` reports them in `duplicates` and, given `refuse_duplicates`,
-  raises `DuplicateRequest`, a `conflict`, before writing either file
-  (`test_pipeline_duplicate_requests.py`). The check runs again with the write under
-  `submission_lock`. A request file that cannot be read is skipped with a warning, so
-  one damaged file leaves submission available.
+- `submit_request` records the runs its plan leaves to compute (`computed_runs`,
+  planned again with the binds when there are any, because the submitted plan resolves
+  none) in `computes/<rid>.json` (`save_computes`), under `submission_lock` and before
+  the request file. The request file gains no key, so an older mosaic still reads it.
+  An empty list is a request that computes nothing, and no file is a request an older
+  mosaic wrote. Nothing removes the file, and one whose request file is gone is never
+  read. `open_duplicates` (`store.py`) returns the requests whose rollup verdict is
+  `running` and that compute one of those runs, of any recipe: a run computed whole
+  (`ComputedRun.whole`) over any entries, another where both sides' scopes and step
+  scopes overlap pairwise. A request without the file is matched by recipe digest and
+  `Scope.overlaps`. A duplicate names at most `DUPLICATE_STEP_SAMPLE` shared steps and
+  counts the rest. A verdict of `orphaned`
+  is not open, read as the status wires read it. `submit_request` reports them in
+  `duplicates` and, given `refuse_duplicates`, raises `DuplicateRequest`, a
+  `conflict`, before writing either file. The check runs after planning, with the
+  write under `submission_lock` (`test_pipeline_duplicate_requests.py`). A request
+  file that cannot be read is skipped with a warning, so one damaged file leaves
+  submission available.
+- `requests_matching` summarizes the `running` and `orphaned` requests of one recipe
+  over an overlapping scope, which `PlanWire.open_requests` lists outside the
+  fingerprint (`test_pipeline_plan.py`). A request whose digest differs is matched by
+  what its saved recipe digests to now, so a request saved under an earlier canonical
+  form is still found.
 - A step's `params` are normalized at parse (`canonical_params`, the RFC 8785 number
   rule), and `save_recipe` writes `canonical_recipe`, so the bytes on disk are what the
   name digests. `load_recipe_for_request` also accepts the digest of the saved document

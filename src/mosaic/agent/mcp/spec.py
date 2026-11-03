@@ -137,6 +137,7 @@ __all__ = [
     "SequenceRow",
     "SubmitPipelineInput",
     "SubmittedPipeline",
+    "SubmittedDuplicate",
     "SubmittedStep",
     "StepTypeDetailLevel",
     "SuggestMode",
@@ -366,8 +367,8 @@ CONFIRMATION_CONDITIONS: Final[Mapping[ConfirmationCondition, str]] = {
     "allow_partial": "allow_partial lets a step run over fewer entries than planned",
     "bind": "bind pins artifacts that the recipe did not produce",
     "open_duplicate": (
-        "a request of this recipe over an overlapping scope has not ended, and "
-        "both compute the same runs"
+        "a request that has not ended computes a run of the submission, whatever "
+        "its recipe, and both would compute it at once"
     ),
     "cleanup": (
         "the submission deletes superseded runs of its steps' storage after its "
@@ -1196,6 +1197,24 @@ class SequencePage(StrictModel):
     next_cursor: str | None
 
 
+class SubmittedDuplicate(StrictModel):
+    """An open request that computes runs of a submitted one.
+
+    Attributes:
+        request_id: The open request.
+        steps: The first three of the submission's steps whose runs the open
+            request also computes
+            (:data:`~mosaic.core.pipeline.graph.DUPLICATE_STEP_SAMPLE`). Empty for a request
+            saved before mosaic recorded its runs, which is of the same recipe
+            over overlapping entries.
+        steps_omitted: How many more such steps there are.
+    """
+
+    request_id: str
+    steps: tuple[str, ...]
+    steps_omitted: int = 0
+
+
 class SubmittedStep(StrictModel):
     """One step of a submitted request.
 
@@ -1227,8 +1246,8 @@ class SubmittedPipeline(StrictModel):
         first_steps: The first :data:`SUBMITTED_STEP_SAMPLE` steps to compute,
             those not ``complete``, in topological order.
         truncated: Whether more steps are to compute than ``first_steps`` lists.
-        duplicates: The open requests of the same recipe over an overlapping
-            scope.
+        duplicates: The open requests, of any recipe, that compute runs of
+            this one.
         driver_pid: The process driving the request, for the user. A caller waits
             with ``get_request_status`` and ``wait_seconds``, never on this pid.
         driver_log: The log that the driver and its steps append to: their
@@ -1249,7 +1268,7 @@ class SubmittedPipeline(StrictModel):
     counts: dict[ArtifactStatus, int]
     first_steps: tuple[SubmittedStep, ...]
     truncated: bool
-    duplicates: tuple[str, ...]
+    duplicates: tuple[SubmittedDuplicate, ...]
     driver_pid: int
     driver_log: str
     poll_after_seconds: int

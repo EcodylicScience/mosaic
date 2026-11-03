@@ -51,7 +51,6 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     ValidationReport,
     catalog_index,
-    open_requests_matching,
     request_path,
     run_pipeline,
     search_catalog,
@@ -647,9 +646,9 @@ def test_validate_plan_and_a_cli_file_name_one_digest(
     )
 
     assert valid.digest == plan.recipe_digest == submitted.request.recipe_digest
-    assert open_requests_matching(dataset.base_dir, plan.recipe_digest, Scope()) == (
-        submitted.request.request_id,
-    )
+    assert [unended.request_id for unended in plan.open_requests] == [
+        submitted.request.request_id
+    ]
 
 
 def test_suggestions_list_the_allowed_choices_and_count_the_refused(

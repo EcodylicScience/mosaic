@@ -35,13 +35,16 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     LARGE_SCOPE_ENTRIES,
     CleanupPolicy,
+    OpenDuplicate,
     PlanWire,
     Recipe,
     Request,
     read_recipe,
     recipe_digest,
+    run_pipeline,
     save_recipe,
     save_request,
+    submit_request,
 )
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.parallelism import (
@@ -49,8 +52,10 @@ from mosaic.core.pipeline.parallelism import (
     ParallelSettings,
     host_cpus,
 )
+from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
 from tests.helpers import (
+    CHAIN_RECIPE,
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
     SPEED_RECIPE,
@@ -502,7 +507,26 @@ def test_an_open_request_of_the_recipe_asks_to_confirm_a_second(
     assert first.request_id in second.message
 
 
-def _no_open_requests(*_: object) -> tuple[str, ...]:
+def test_a_step_the_submission_binds_is_not_an_open_duplicate(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    """The open request fits templates over seq_a, which the submission binds."""
+    chain = Recipe.model_validate(CHAIN_RECIPE)
+    templates = run_id_of(run_pipeline(dataset, chain), "templates")
+    _ = submit_request(dataset, chain, scope=Scope(entries=[("", "seq_a")]))
+
+    refused = _submit(
+        backend,
+        dataset,
+        CHAIN_RECIPE,
+        entries=[["", "seq_a"]],
+        bind={"templates": {"feature": "extract-templates", "run_id": templates}},
+    )
+
+    assert _conditions(refused) == {"bind"}
+
+
+def _no_open_requests(*_: object, **__: object) -> tuple[OpenDuplicate, ...]:
     return ()
 
 
@@ -515,7 +539,7 @@ def test_an_unconfirmed_duplicate_written_after_the_check_refuses_the_submission
     first = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
     # The confirmation check reads no open request, as when another process
     # writes the first one after the check and before this submission's write.
-    monkeypatch.setattr(graph, "open_requests_matching", _no_open_requests)
+    monkeypatch.setattr(graph, "open_duplicates", _no_open_requests)
 
     second = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
 

@@ -157,6 +157,7 @@ __all__ = [
     "is_stalled",
     "plan_pipeline",
     "step_target",
+    "takes_no_entries",
 ]
 
 MISSING_SAMPLE: Final = 5
@@ -474,6 +475,14 @@ def step_target(planned: PlannedStep, plan: Plan) -> frozenset[Entry]:
     return plan.scope
 
 
+def takes_no_entries(planned: PlannedStep) -> bool:
+    """Whether *planned* is an op that declares ``scope_takes = "none"``."""
+    if planned.kind != "op":
+        return False
+    op_cls = op_class_for_kind(planned.spec.op_kind)
+    return op_cls is not None and op_cls.scope_takes == "none"
+
+
 def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
     """What this step should be asked to compute.
 
@@ -500,10 +509,8 @@ def asked_of(planned: PlannedStep, plan: Plan) -> tuple[Entry, ...]:
         ValueError: ``planned.spec.entries`` names groups or sequences instead
             of entries.
     """
-    if planned.kind == "op":
-        op_cls = op_class_for_kind(planned.spec.op_kind)
-        if op_cls is not None and op_cls.scope_takes == "none":
-            return ()
+    if takes_no_entries(planned):
+        return ()
     entries = planned.spec.entries
     if entries.groups is not None or entries.sequences is not None:
         raise ValueError(

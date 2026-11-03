@@ -72,6 +72,7 @@ from .spec import (
     SequencePage,
     SequenceRow,
     SubmitPipelineInput,
+    SubmittedDuplicate,
     SubmittedPipeline,
     SubmittedStep,
     StepTypeDetailLevel,
@@ -897,7 +898,7 @@ class LocalBackend:
             found = plan_fingerprint(plan)
             if args.plan_fingerprint is not None and found != args.plan_fingerprint:
                 raise PlanChanged(expected=args.plan_fingerprint, found=found)
-            findings = _submission_findings(dataset, recipe, plan, args, catalog)
+            findings = _submission_findings(dataset, recipe, plan, args, catalog, cache)
             if findings and not args.confirm:
                 raise ToolFailure(confirmation_required("submit_pipeline", findings))
             # An unconfirmed submission is checked for open duplicates again
@@ -950,7 +951,14 @@ class LocalBackend:
                 for planned in to_compute[:SUBMITTED_STEP_SAMPLE]
             ),
             truncated=len(to_compute) > SUBMITTED_STEP_SAMPLE,
-            duplicates=submitted.duplicates,
+            duplicates=tuple(
+                SubmittedDuplicate(
+                    request_id=duplicate.request_id,
+                    steps=duplicate.named_steps,
+                    steps_omitted=duplicate.steps_omitted,
+                )
+                for duplicate in submitted.duplicates
+            ),
             driver_pid=driver.pid,
             driver_log=str(driver.log_path),
             poll_after_seconds=POLL_AFTER_TRAINING_SECONDS
@@ -1819,13 +1827,15 @@ def _submission_findings(
     plan: Plan,
     args: SubmitPipelineInput,
     catalog: DeclarationCatalog,
+    inventory: InventoryCache,
 ) -> list[ConfirmationFinding]:
     """Return each confirmation condition that submitting *plan* meets."""
     from mosaic.core.pipeline.graph import (
         GPU_INFER_LANE,
         GPU_TRAIN_LANE,
-        open_requests_matching,
-        recipe_digest,
+        computed_runs,
+        describe_duplicates,
+        open_duplicates,
         retired_recipe_names,
     )
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
@@ -1889,16 +1899,29 @@ def _submission_findings(
                 f", {len(written)} of them written by the retired recipe(s) {recipes}"
             )
         findings.append(ConfirmationFinding("cleanup", deleted))
-    duplicates = open_requests_matching(
+    scope = _scope(args.entries) or Scope()
+    computes = computed_runs(
+        dataset,
+        recipe,
+        plan,
+        scope=scope,
+        bind=args.bind,
+        inventory=inventory,
+        catalog=catalog,
+    )
+    duplicates = open_duplicates(
         dataset.base_dir,
-        recipe_digest(recipe),
-        _scope(args.entries) or Scope(),
+        plan.recipe_digest,
+        scope,
+        computes,
+        step_scopes=plan.step_scopes,
     )
     if duplicates:
         findings.append(
             ConfirmationFinding(
                 "open_duplicate",
-                f"request(s) {', '.join(duplicates)} of this recipe have not ended",
+                f"request(s) {describe_duplicates(duplicates)} have not ended and "
+                f"compute runs of this submission",
             )
         )
     return findings

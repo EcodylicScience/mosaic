@@ -37,17 +37,20 @@ from .model import (
     CleanupPolicy,
     CleanupSpec,
     CleanupTarget,
+    ComputedRun,
     FeatureStepSpec,
     Recipe,
     Request,
 )
-from .plan import Plan, plan_pipeline
+from .plan import Plan, plan_pipeline, takes_no_entries
 from .serialize import plan_fingerprint
 from .step_preflight import StepRefused, refuse_mixed_schemas
 from .resolve import declared_version
 from .retirement import validate_retirement
 from .store import (
-    open_requests_matching,
+    OpenDuplicate,
+    open_duplicates,
+    save_computes,
     read_recipe_document,
     recipe_path,
     save_recipe,
@@ -72,6 +75,8 @@ __all__ = [
     "DuplicateRequest",
     "PlanChanged",
     "SubmittedRequest",
+    "computed_runs",
+    "describe_duplicates",
     "load_recipe_for_request",
     "step_argv",
     "submit_request",
@@ -89,16 +94,15 @@ class SubmittedRequest:
             so nothing downstream may treat these identifiers as authoritative.
         recipe_path: Where the recipe was copied to inside the dataset.
         request_path: Where the request document was written.
-        duplicates: The ids of the requests of the same recipe over an
-            overlapping scope that were open at submit
-            (:func:`~.store.open_requests_matching`), in descending id order.
+        duplicates: The requests open at submit that compute a run this one
+            computes (:func:`~.store.open_duplicates`), in descending id order.
     """
 
     request: Request
     plan: Plan
     recipe_path: Path
     request_path: Path
-    duplicates: tuple[str, ...] = ()
+    duplicates: tuple[OpenDuplicate, ...] = ()
 
 
 class PlanChanged(ClassifiedError):
@@ -128,34 +132,59 @@ class PlanChanged(ClassifiedError):
 
 
 class DuplicateRequest(ClassifiedError):
-    """Refuse a submission while a request of its recipe over its entries is open.
+    """Refuse a submission while an open request computes a run it computes.
 
     Attributes:
         recipe_digest: The recipe of the submission.
-        request_ids: The open requests (:func:`~.store.open_requests_matching`).
+        duplicates: The open requests (:func:`~.store.open_duplicates`).
     """
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
-    def __init__(self, *, recipe_digest: str, request_ids: tuple[str, ...]) -> None:
-        listed = ", ".join(request_ids)
+    def __init__(
+        self, *, recipe_digest: str, duplicates: tuple[OpenDuplicate, ...]
+    ) -> None:
         message = (
-            f"request(s) {listed} of recipe {recipe_digest!r} cover entries of "
-            f"this scope and have not ended. Both requests would compute the same "
-            f"runs at once. Run the open request with 'mosaic pipeline run "
-            f"--request <id>', or delete its file under .mosaic/pipelines/requests/ "
-            f"if it will not run, then submit again."
+            f"request(s) {describe_duplicates(duplicates)} have not ended and "
+            f"compute runs of this submission, which would compute them again at "
+            f"once. Run the open request with 'mosaic pipeline run --request "
+            f"<id>', or delete its file under .mosaic/pipelines/requests/ if it "
+            f"will not run, then submit again."
         )
         super().__init__(message)
         self.recipe_digest: str = recipe_digest
-        self.request_ids: tuple[str, ...] = request_ids
+        self.duplicates: tuple[OpenDuplicate, ...] = duplicates
+
+    @property
+    def request_ids(self) -> tuple[str, ...]:
+        """The ids of the open requests."""
+        return tuple(duplicate.request_id for duplicate in self.duplicates)
 
     def error_detail(self) -> dict[str, JsonValue]:
-        """Return the recipe digest and the ids of the open requests."""
+        """Return the recipe digest, and each open request with its shared steps."""
         return {
             "recipe_digest": self.recipe_digest,
-            "request_ids": list(self.request_ids),
+            "duplicates": [duplicate.as_json() for duplicate in self.duplicates],
         }
+
+
+def describe_duplicates(duplicates: Iterable[OpenDuplicate]) -> str:
+    """Name each open request and the submission's steps whose runs it computes.
+
+    Each names at most :data:`~.store.DUPLICATE_STEP_SAMPLE` steps and counts
+    the rest. A request that recorded no runs is named as one of the same
+    recipe.
+    """
+    return ", ".join(_described(duplicate) for duplicate in duplicates)
+
+
+def _described(duplicate: OpenDuplicate) -> str:
+    """One open request with its named shared steps and the count of the rest."""
+    if not duplicate.steps:
+        return f"{duplicate.request_id} (the same recipe)"
+    named = ", ".join(map(repr, duplicate.named_steps))
+    more = f" and {duplicate.steps_omitted} more" if duplicate.steps_omitted else ""
+    return f"{duplicate.request_id} (steps {named}{more})"
 
 
 class CleanupNeedsPlan(ClassifiedError):
@@ -247,13 +276,14 @@ def submit_request(
         catalog: The declarations to resolve against.
         expect_plan: The :func:`~.serialize.plan_fingerprint` of the plan that
             the caller reviewed, or ``None`` to submit whatever the plan is now.
-        refuse_duplicates: Whether an open request of *recipe* over an
-            overlapping scope refuses the submission. Otherwise the submission
-            proceeds and reports the open requests in ``duplicates``. The check
-            runs before planning, and again under
-            :func:`~.store.submission_lock` with the write of the request, so two
-            submissions on one mount cannot both pass it. A submitted request
-            whose steps never run stays open.
+        refuse_duplicates: Whether an open request that computes a run of the
+            plan, of any recipe (:func:`~.store.open_duplicates`), refuses the
+            submission. Otherwise the submission proceeds and reports the open
+            requests in ``duplicates``. The check compares the runs of the plan,
+            so it runs after planning, under :func:`~.store.submission_lock`
+            with the write of the request, and two submissions on one mount
+            cannot both pass it. A submitted request whose steps never run stays
+            open.
         step_scopes: Narrow single steps, keyed by step id, each intersected
             with *scope*. Recorded on the request, which every step re-plans
             from.
@@ -271,15 +301,15 @@ def submit_request(
 
     Returns:
         The request, the plan, the paths of both documents, and the open
-        requests of the same recipe over an overlapping scope.
+        requests that compute a run of the plan.
 
     Raises:
         RecipeInvalid: The recipe is malformed.
         PlanChanged: *expect_plan* differs from the fingerprint of the plan
             resolved here. The dataset is left unwritten.
-        DuplicateRequest: *refuse_duplicates* is set and a request of *recipe*
-            over an overlapping scope is open. Neither the recipe nor the
-            request is written.
+        DuplicateRequest: *refuse_duplicates* is set and an open request
+            computes a run of the plan. Neither the recipe nor the request is
+            written.
         StepRefused: The dataset's tracks tables are of incompatible schemas, so
             no feature reading unpinned tracks resolves against it at all.
         CleanupNeedsPlan: *cleanup* is given without *expect_plan*.
@@ -305,9 +335,6 @@ def submit_request(
     retired = validate_retirement(
         ds.base_dir, digest, retire, cleanup=cleanup is not None
     )
-    if refuse_duplicates:
-        # Refuses before planning, which can take seconds.
-        _ = _open_duplicates(ds.base_dir, digest, narrowing, refuse=True)
     narrowed_steps = dict(step_scopes or {})
     if cleanup is not None:
         from ..inventory.cache import InventoryCache
@@ -375,31 +402,80 @@ def submit_request(
         },
         cleanup=removal,
     )
+    computes = computed_runs(
+        ds,
+        recipe,
+        plan,
+        scope=narrowing,
+        bind=request.bind,
+        inventory=inventory,
+        catalog=catalog,
+    )
     with submission_lock(ds.base_dir):
-        duplicates = _open_duplicates(
-            ds.base_dir, digest, narrowing, refuse=refuse_duplicates
+        duplicates = open_duplicates(
+            ds.base_dir, digest, narrowing, computes, step_scopes=narrowed_steps
         )
+        if duplicates and refuse_duplicates:
+            raise DuplicateRequest(recipe_digest=digest, duplicates=duplicates)
+        recorded = save_recipe(ds.base_dir, recipe)
+        # Before the request file, so that no request this mosaic wrote is
+        # read without its runs.
+        _ = save_computes(ds.base_dir, request.request_id, computes)
         return SubmittedRequest(
             request=request,
             plan=plan,
-            recipe_path=save_recipe(ds.base_dir, recipe),
+            recipe_path=recorded,
             request_path=save_request(ds.base_dir, request),
             duplicates=duplicates,
         )
 
 
-def _open_duplicates(
-    base_dir: Path | str, digest: str, scope: Scope, *, refuse: bool
-) -> tuple[str, ...]:
-    """Return the open requests of *digest* over *scope*, or refuse on any.
+def computed_runs(
+    ds: Dataset,
+    recipe: Recipe,
+    plan: Plan,
+    *,
+    scope: Scope | None = None,
+    bind: Mapping[str, BoundRef] | None = None,
+    inventory: InventoryCache | None = None,
+    catalog: DeclarationCatalog | None = None,
+) -> list[ComputedRun]:
+    """The runs that submitting *plan* with *bind* leaves to compute.
 
-    Raises:
-        DuplicateRequest: *refuse* is set and a request is open.
+    *plan* is the recipe planned over *scope* with no bind, as
+    :func:`submit_request` and the MCP server plan it. With *bind* the recipe
+    is planned again with it, because a bound step computes nothing and names
+    the run its descendants read. A step that is complete, bound to a run, or
+    of no resolved ``run_id`` computes none. A feature that fits or names its
+    run by its entries, and an op that takes no scope, computes its run whole
+    (``ComputedRun.whole``).
     """
-    duplicates = open_requests_matching(base_dir, digest, scope)
-    if duplicates and refuse:
-        raise DuplicateRequest(recipe_digest=digest, request_ids=duplicates)
-    return duplicates
+    if bind:
+        plan = plan_pipeline(
+            ds,
+            recipe,
+            scope=scope,
+            # Carries the pins alone: the scope and step scopes are given.
+            request=Request(
+                request_id="", recipe_digest=plan.recipe_digest, bind=dict(bind)
+            ),
+            inventory=inventory,
+            catalog=catalog,
+            refuse=False,
+            step_scopes=plan.step_scopes,
+        )
+    return [
+        ComputedRun(
+            step=planned.step_id,
+            storage=planned.storage_name,
+            run_id=planned.run_id,
+            whole=planned.fits or planned.scope_dependent or takes_no_entries(planned),
+        )
+        for planned in plan.steps
+        if planned.run_id is not None
+        and not planned.is_complete
+        and planned.step_id not in plan.bound
+    ]
 
 
 def load_recipe_for_request(base_dir: Path | str, request: Request) -> Recipe:

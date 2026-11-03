@@ -300,8 +300,9 @@ Restart it after installing an extra or building a tool's environment.
   a company);
 - `allow_partial` lets a step run over fewer entries than planned (`allow_partial`),
   or `bind` pins artifacts that the recipe did not produce (`bind`);
-- a request of the same recipe over overlapping entries has not ended
-  (`open_duplicate`);
+- a request that has not ended computes a run of the submission, whatever its recipe
+  (`open_duplicate`). The question and the result's `duplicates` name each such
+  request and the submission's steps whose runs it computes;
 - the submission removes superseded runs of its steps' storage after its steps finish
   (`cleanup`). The question names how many runs, their size and their storages, and the
   retired recipes that wrote some of them. A hook that approves `cleanup` approves a
@@ -332,7 +333,7 @@ call with `confirm` set once you agree. A server serving over HTTP does not take
 `confirmation_unavailable` instead ([Serving another machine](#serving-another-machine-over-http)).
 Your answer confirms only the conditions the
 form named. A call that meets another condition by the time it runs, such as a request
-of the same recipe started since, shows the form again. The form has two other
+computing one of its runs started since, shows the form again. The form has two other
 outcomes:
 
 - `confirmation_declined`: the form was declined, or accepted with its box unticked.

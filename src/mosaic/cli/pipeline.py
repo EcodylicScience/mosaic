@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import (
         CleanupPolicy,
         CleanupStatusWire,
+        OpenDuplicate,
         Plan,
         PlannedStep,
         Problem,
@@ -677,14 +678,16 @@ def _failed_attempt(
     return "", ""
 
 
-def _warn_duplicates(duplicates: tuple[str, ...]) -> None:
-    """Warn on stderr about the open requests of a submitted recipe."""
+def _warn_duplicates(duplicates: tuple[OpenDuplicate, ...]) -> None:
+    """Warn on stderr about the open requests that compute runs of a submission."""
+    from mosaic.core.pipeline.graph import describe_duplicates
+
     if not duplicates:
         return
-    listed = ", ".join(duplicates)
     warning = (
-        f"warning: request(s) {listed} of this recipe over an overlapping scope "
-        f"have not ended. Running both computes the same runs twice at once."
+        f"warning: request(s) {describe_duplicates(duplicates)} have not ended "
+        f"and compute runs of this submission. Running both computes those runs "
+        f"twice at once."
     )
     log(warning)
 
@@ -762,8 +765,8 @@ def run_command(
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done.
 
-    An open request of the same recipe over an overlapping scope is reported on
-    stderr. With ``--request`` the steps of a submitted request run instead, and
+    An open request, of any recipe, that computes a run of the plan is reported
+    on stderr. With ``--request`` the steps of a submitted request run instead, and
     the command exits 1 when the request failed. Either way it exits 130 when the
     run was cancelled, by SIGTERM, SIGINT or ``mosaic cancel``.
 
@@ -1035,9 +1038,9 @@ def submit_command(
         typer.Option(
             "--refuse-duplicates",
             help=(
-                "Refuse the submission, writing nothing, while a request of the "
-                "same recipe over an overlapping scope has not ended. A submitted "
-                "request whose steps were never run has not ended."
+                "Refuse the submission, writing nothing, while a request that "
+                "computes one of its runs, of any recipe, has not ended. A "
+                "submitted request whose steps were never run has not ended."
             ),
         ),
     ] = False,
@@ -1054,9 +1057,9 @@ def submit_command(
     Nothing is executed: the printed commands are, and any driver that can run
     them in dependency order will run the graph correctly.
 
-    An open request of the same recipe over an overlapping scope is reported on
-    stderr and under ``duplicates``, or refuses the submission with
-    ``--refuse-duplicates``.
+    An open request, of any recipe, that computes a run of the plan is reported
+    on stderr and under ``duplicates`` with the steps whose runs it shares, or
+    refuses the submission with ``--refuse-duplicates``.
 
     ``--cleanup superseded`` records the runs that the plan reviewed under
     ``--expect-plan`` found removable, and whatever runs the request removes
@@ -1121,7 +1124,9 @@ def submit_command(
                     for step_id, narrowed in sorted(request.step_scopes.items())
                 },
                 "steps": steps,
-                "duplicates": list(submitted.duplicates),
+                "duplicates": [
+                    duplicate.as_json() for duplicate in submitted.duplicates
+                ],
                 "cleanup": None
                 if request.cleanup is None
                 else request.cleanup.model_dump(mode="json"),

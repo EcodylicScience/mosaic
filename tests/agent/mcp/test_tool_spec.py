@@ -23,6 +23,7 @@ from mosaic.agent.mcp.spec import (
     ListDatasetsInput,
     PlanRecipeInput,
     SubmitPipelineInput,
+    SubmittedDuplicate,
     SubmittedPipeline,
     SubmittedStep,
     ToolBackend,
@@ -330,7 +331,10 @@ class _Oversized:
                 ),
             ),
             truncated=False,
-            duplicates=tuple(f"{index:026d}" for index in range(self.n)),
+            duplicates=tuple(
+                SubmittedDuplicate(request_id=f"{index:026d}", steps=("step_0",))
+                for index in range(self.n)
+            ),
             driver_pid=1,
             driver_log="log",
             poll_after_seconds=5,

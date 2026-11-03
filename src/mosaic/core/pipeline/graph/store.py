@@ -23,8 +23,11 @@ import datetime
 import json
 import warnings
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Final
+
+from pydantic import TypeAdapter
 
 from mosaic.runlog import (
     changed_at_or_after,
@@ -37,7 +40,7 @@ from mosaic.runlog import (
 from ..error_kind import ClassifiedError, ErrorKind
 from ..index_lock import index_lock
 from .digest import canonical_recipe, recipe_digest
-from .model import Recipe, Request
+from .model import ComputedRun, Recipe, Request
 from .status import (
     JSON_OBJECT,
     RequestPageWire,
@@ -46,18 +49,23 @@ from .status import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Mapping, Sequence
 
     from mosaic.core.json_value import JsonValue
     from mosaic.core.scope import Scope
 
 __all__ = [
+    "DUPLICATE_STEP_SAMPLE",
+    "OpenDuplicate",
     "RequestUnreadable",
+    "computes_path",
+    "computes_root",
     "current_digest",
     "list_requests",
+    "load_computes",
     "load_recipe",
     "load_request",
-    "open_requests_matching",
+    "open_duplicates",
     "pipelines_root",
     "read_recipe_document",
     "recipe_path",
@@ -65,6 +73,7 @@ __all__ = [
     "request_path",
     "requests_matching",
     "requests_root",
+    "save_computes",
     "save_recipe",
     "save_request",
     "submission_lock",
@@ -103,6 +112,16 @@ def pipelines_root(base_dir: Path | str) -> Path:
 def requests_root(base_dir: Path | str) -> Path:
     """``<base_dir>/.mosaic/pipelines/requests`` -- one file per submission."""
     return pipelines_root(base_dir) / "requests"
+
+
+def computes_root(base_dir: Path | str) -> Path:
+    """``<base_dir>/.mosaic/pipelines/computes`` -- the runs each request computes."""
+    return pipelines_root(base_dir) / "computes"
+
+
+def computes_path(base_dir: Path | str, request_id: str) -> Path:
+    """Where the runs that one submission computes are recorded."""
+    return computes_root(base_dir) / f"{request_id}.json"
 
 
 def recipe_path(base_dir: Path | str, digest: str) -> Path:
@@ -173,6 +192,44 @@ def save_request(base_dir: Path | str, request: Request) -> Path:
         exclude["cleanup"] = {"retired": True}
     _write_json(path, request.model_dump(mode="json", exclude=exclude or None))
     return path
+
+
+_COMPUTED_RUNS: Final = TypeAdapter(list[ComputedRun])
+
+
+def save_computes(
+    base_dir: Path | str, request_id: str, runs: Sequence[ComputedRun]
+) -> Path:
+    """Record the runs that one submission's plan left to compute.
+
+    A file of its own under :func:`computes_root` and not a key of the request
+    file, because an older mosaic refuses a request file with a key it does not
+    know. An empty list records a request that computes nothing, which differs
+    from a request that has no such file. Nothing removes the file. One whose
+    request file is gone is never read, since :func:`open_duplicates` reads it
+    by the id of a request file.
+    """
+    path = computes_path(base_dir, request_id)
+    _write_json(path, _COMPUTED_RUNS.dump_python(list(runs), mode="json"))
+    return path
+
+
+def load_computes(base_dir: Path | str, request_id: str) -> list[ComputedRun] | None:
+    """The runs a submission recorded with :func:`save_computes`, or ``None``.
+
+    ``None`` for a request submitted before mosaic recorded them, and for a
+    file that does not read, with a ``UserWarning`` naming it.
+    """
+    path = computes_path(base_dir, request_id)
+    if not path.is_file():
+        return None
+    try:
+        return _COMPUTED_RUNS.validate_python(_read_json(path, "computed runs"))
+    except (OSError, ValueError) as error:
+        warnings.warn(
+            f"skipped computed runs file {path}: {error}", UserWarning, stacklevel=3
+        )
+        return None
 
 
 def load_request(base_dir: Path | str, request_id: str) -> Request:
@@ -267,43 +324,151 @@ def _changed_since(
     return False
 
 
-def open_requests_matching(
+DUPLICATE_STEP_SAMPLE: Final = 3
+"""The shared steps that a duplicate names in a message or a JSON object.
+
+The rest are counted, so a recipe of many steps keeps a refusal, a warning and
+a ``submit_pipeline`` result short.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class OpenDuplicate:
+    """An open request that computes a run that a submission computes.
+
+    Attributes:
+        request_id: The open request.
+        steps: The submission's steps whose runs the open request also
+            computes, in the submission's order. Empty for a request that
+            recorded no runs (:func:`load_computes` is ``None``), which is
+            matched by its recipe and scope instead.
+    """
+
+    request_id: str
+    steps: tuple[str, ...] = ()
+
+    @property
+    def named_steps(self) -> tuple[str, ...]:
+        """The first :data:`DUPLICATE_STEP_SAMPLE` shared steps."""
+        return self.steps[:DUPLICATE_STEP_SAMPLE]
+
+    @property
+    def steps_omitted(self) -> int:
+        """How many shared steps :attr:`named_steps` leaves out."""
+        return max(len(self.steps) - DUPLICATE_STEP_SAMPLE, 0)
+
+    def as_json(self) -> dict[str, JsonValue]:
+        """Return the request id, the named shared steps and the count of the rest."""
+        return {
+            "request_id": self.request_id,
+            "steps": list(self.named_steps),
+            "steps_omitted": self.steps_omitted,
+        }
+
+
+def open_duplicates(
     base_dir: Path | str,
     recipe_digest: str,
     scope: Scope,
-) -> tuple[str, ...]:
-    """Return the ids of the open requests of one recipe over an overlapping scope.
+    computes: Sequence[ComputedRun],
+    *,
+    step_scopes: Mapping[str, Scope] | None = None,
+) -> tuple[OpenDuplicate, ...]:
+    """Return the open requests that compute a run that a submission computes.
 
-    A request of the same recipe whose scope shares an entry with *scope*
-    (:meth:`~mosaic.core.scope.Scope.overlaps`) runs the same steps over that
-    entry. ``run_feature`` runs a feature without claiming it. Two such requests
-    that run at once both compute it. A request is open while its rollup is
-    ``running``, including before its first step starts. A request whose
+    A request of any recipe that recorded the runs it computes
+    (:func:`load_computes`) duplicates the submission where both name one run
+    (storage and ``run_id``). A run that either side computes whole
+    (``ComputedRun.whole``) is duplicated over any entries. Any other run is
+    duplicated only when the two steps' entries can meet: each side's scope
+    and its step's scope, compared pairwise with
+    :meth:`~mosaic.core.scope.Scope.overlaps`. A request that recorded no runs
+    duplicates the submission when it is of the same recipe and its scope
+    overlaps *scope*, as :func:`requests_matching` reads it.
+
+    ``run_feature`` runs a feature without claiming it, so two requests that
+    compute one run at once both compute it. A request is open while its rollup
+    is ``running``, including before its first step starts. A request whose
     driver lease is stale and none of whose step processes may still run is
     ``orphaned`` (:func:`~.status.request_verdict_of`) and is not open.
 
-    A request saved under an earlier canonical form of the recipe names it by
-    an older digest; it is matched by what its saved recipe digests to now.
-
-    Every request file is read, and the run-logs of each request of the recipe.
-    A request file that cannot be read, or is not a valid request of the recipe,
-    is skipped with a ``UserWarning`` naming it. A damaged request file therefore
+    Every request file is read, and the run-logs of each request that shares a
+    run. A request file that cannot be read, or is not a valid request, is
+    skipped with a ``UserWarning`` naming it. A damaged request file therefore
     leaves the dataset open to submissions.
 
     Args:
         base_dir: The dataset root.
         recipe_digest: The digest of the recipe to be submitted.
         scope: The scope to be submitted.
+        computes: The runs the submission's plan leaves to compute.
+        step_scopes: The scopes narrowing the submission's steps, by step id.
 
     Returns:
-        The ids of the open requests, in descending id order. That order is
-        creation order for the ids that ``submit_request`` mints.
+        The open requests, in descending id order. That order is creation
+        order for the ids that ``submit_request`` mints.
     """
-    return tuple(
-        summary.request_id
-        for summary in requests_matching(base_dir, recipe_digest, scope)
-        if summary.verdict == "running"
-    )
+    narrowed = step_scopes or {}
+    found: list[OpenDuplicate] = []
+    current: dict[str, str | None] = {}
+    for name in request_ids(base_dir):
+        path = request_path(base_dir, name)
+        document = _request_document(path)
+        request = None if document is None else _validated(path, document)
+        if request is None:
+            continue
+        theirs = load_computes(base_dir, request.request_id)
+        if theirs is None:
+            shared: tuple[str, ...] = ()
+            if not request.scope.overlaps(scope) or not _names_recipe(
+                base_dir, request.recipe_digest, recipe_digest, current
+            ):
+                continue
+        else:
+            shared = _shared_steps(computes, scope, narrowed, request, theirs)
+            if not shared:
+                continue
+        if request_summary(base_dir, request).verdict == "running":
+            found.append(OpenDuplicate(request.request_id, shared))
+    return tuple(found)
+
+
+def _shared_steps(
+    computes: Sequence[ComputedRun],
+    scope: Scope,
+    step_scopes: Mapping[str, Scope],
+    request: Request,
+    recorded: Sequence[ComputedRun],
+) -> tuple[str, ...]:
+    """Return the steps of *computes* whose runs *request* also computes.
+
+    *recorded* is what *request* recorded that it computes.
+    """
+    theirs: dict[tuple[str, str], list[ComputedRun]] = {}
+    for run in recorded:
+        theirs.setdefault((run.storage, run.run_id), []).append(run)
+    shared: list[str] = []
+    for run in computes:
+        if run.step in shared:
+            continue
+        mine = _selectors(scope, step_scopes.get(run.step))
+        if any(
+            run.whole
+            or other.whole
+            or all(
+                one.overlaps(two)
+                for one in mine
+                for two in _selectors(request.scope, request.step_scope(other.step))
+            )
+            for other in theirs.get((run.storage, run.run_id), ())
+        ):
+            shared.append(run.step)
+    return tuple(shared)
+
+
+def _selectors(scope: Scope, step_scope: Scope | None) -> tuple[Scope, ...]:
+    """The selectors that narrow one step: its request's, and its own if any."""
+    return (scope,) if step_scope is None else (scope, step_scope)
 
 
 def requests_matching(
@@ -313,10 +478,16 @@ def requests_matching(
 ) -> tuple[RequestSummaryWire, ...]:
     """Summarize the requests of one recipe over an overlapping scope that have not ended.
 
-    The requests are those :func:`open_requests_matching` reads, with a verdict
-    of ``running`` or ``orphaned``. An ``orphaned`` request is not open, since
-    nothing drives it, but its unfinished work is the plan's to resume or
-    cancel, so a plan lists it beside the open ones.
+    The requests are those whose scope shares an entry with *scope*
+    (:meth:`~mosaic.core.scope.Scope.overlaps`), with a verdict of ``running``
+    or ``orphaned``. An ``orphaned`` request is not open, since nothing drives
+    it, but its unfinished work is the plan's to resume or cancel, so a plan
+    lists it beside the open ones.
+
+    A request saved under an earlier canonical form of the recipe names it by
+    an older digest; it is matched by what its saved recipe digests to now. A
+    request file that cannot be read, or is not a valid request of the recipe,
+    is skipped with a ``UserWarning`` naming it.
 
     Args:
         base_dir: The dataset root.
@@ -349,28 +520,59 @@ def _request_of_recipe(
 ) -> Request | None:
     """Read the request at *path* when it is a request of *recipe_digest*, else ``None``.
 
-    A request names its recipe by the digest it had when it was submitted. A
-    later canonical form can name the same recipe differently, so a request
-    whose digest differs is matched by what its saved recipe digests to now.
-    *current* caches that answer per digest across one scan. The digest is
-    compared on the raw document, so a request file of another recipe is not
-    validated. A file that cannot be read or validated is ``None`` with a
-    ``UserWarning`` naming it. A request whose saved recipe cannot be read is
-    not a request of *recipe_digest*; the status tools report it.
+    The digest is compared on the raw document, so a request file of another
+    recipe is not validated. A file that cannot be read or validated is
+    ``None`` with a ``UserWarning`` naming it.
     """
+    document = _request_document(path)
+    if document is None:
+        return None
+    named = document.get("recipe_digest")
+    if not isinstance(named, str) or not _names_recipe(
+        base_dir, named, recipe_digest, current
+    ):
+        return None
+    return _validated(path, document)
+
+
+def _names_recipe(
+    base_dir: Path | str,
+    named: str,
+    recipe_digest: str,
+    current: dict[str, str | None],
+) -> bool:
+    """Whether a request naming *named* is a request of *recipe_digest*.
+
+    A request names its recipe by the digest it had when it was submitted. A
+    later canonical form can name the same recipe differently, so a digest that
+    differs is compared by what its saved recipe digests to now. *current*
+    caches that answer per digest across one scan. A request whose saved recipe
+    cannot be read is not a request of *recipe_digest*; the status tools report
+    it.
+    """
+    return named == recipe_digest or (
+        current_digest(base_dir, named, current) == recipe_digest
+    )
+
+
+def _request_document(path: Path) -> dict[str, JsonValue] | None:
+    """The JSON object at *path*, or ``None`` with a ``UserWarning`` naming it."""
     try:
-        document = JSON_OBJECT.validate_python(_read_json(path, "request"))
-        named = document.get("recipe_digest")
-        if not isinstance(named, str):
-            return None
-        if named != recipe_digest and (
-            current_digest(base_dir, named, current) != recipe_digest
-        ):
-            return None
-        return Request.model_validate(document)
+        return JSON_OBJECT.validate_python(_read_json(path, "request"))
     except (OSError, ValueError) as error:
         warnings.warn(
-            f"skipped request file {path}: {error}", UserWarning, stacklevel=3
+            f"skipped request file {path}: {error}", UserWarning, stacklevel=4
+        )
+        return None
+
+
+def _validated(path: Path, document: dict[str, JsonValue]) -> Request | None:
+    """*document* as a request, or ``None`` with a ``UserWarning`` naming *path*."""
+    try:
+        return Request.model_validate(document)
+    except ValueError as error:
+        warnings.warn(
+            f"skipped request file {path}: {error}", UserWarning, stacklevel=4
         )
         return None
 
