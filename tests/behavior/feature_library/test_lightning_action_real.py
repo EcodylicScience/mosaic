@@ -199,6 +199,54 @@ def test_the_package_builds_the_optimizer_that_the_params_name(
     assert group["weight_decay"] == pytest.approx(_WEIGHT_DECAY)
 
 
+def test_cross_validation_scores_a_training_entry_with_the_model_that_did_not_see_it(
+    in_process_loaders: None, tmp_path: Path
+) -> None:
+    # Twelve windows an entry: the package validates on a tenth of a model's
+    # windows, and a fold's model trains on one entry.
+    tables = {entry: _pair_table(entry, 600, seed) for seed, entry in enumerate(TRAIN)}
+    study = write_templates_study(
+        tmp_path, {entry: _events(600) for entry in TRAIN}, train=TRAIN
+    )
+    folded = fit_lightning_action(
+        study,
+        tables,
+        default_class=3,
+        num_epochs=5,
+        sequence_length=_WINDOW,
+        batch_size=4,
+        num_hid_units=8,
+        cv_folds=2,
+    )
+    folded.save_state(tmp_path / "run")
+    full_only = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params={
+            "model": {"feature": "lightning-action"},
+            "default_class": 3,
+            "device": "cpu",
+        },
+    )
+    assert full_only.load_state(tmp_path / "run", {}, {})
+    probs = [f"prob_{c}" for c in _CLASSES]
+    test_entry = _pair_table(("test", "c"), 333, seed=9)
+
+    assert sorted(pd.read_parquet(tmp_path / "run" / "cv_folds.parquet")["fold"]) == [
+        0,
+        1,
+    ]
+    for entry in TRAIN:
+        in_sample = full_only.apply(tables[entry])[probs].to_numpy()
+        out_of_fold = folded.apply(tables[entry])[probs].to_numpy()
+        assert not np.allclose(in_sample, out_of_fold, atol=1e-3)
+    np.testing.assert_allclose(
+        folded.apply(test_entry)[probs],
+        full_only.apply(test_entry)[probs],
+        rtol=1e-4,
+        atol=1e-5,
+    )
+
+
 TRAIN_GROUP, BOTH_GROUPS = Scope(groups=["train"]), Scope(groups=["train", "test"])
 
 

@@ -8,6 +8,18 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: lightning-action cross-validation
+
+**`lightning-action` takes `cv_folds`.** With it, and the `cv_seed`, `cv_unit`,
+`cv_blocks_per_sequence`, `cv_gap_frames` and `cv_group_by` settings that `xgboost` and
+`sequence-classifier` take, a fit trains one package model without each fold beside the
+full model. The run directory then holds `cv_folds.parquet`, as the other two write it,
+and a directory `lightning_action_model_fold<k>` per fold beside
+`lightning_action_model`. The bundle gains a `cv` key that names them, and a bundle
+without it loads as before. A training entry is scored by its fold's model, so the
+probabilities a `probability-ensemble` blend or `tune-threshold` reads are out of fold.
+Unset, none of the settings enters the run id. No run id moves.
+
 ## Unreleased: sharded embedding labels
 
 **`prepare-embedding-data` writes shards, in bounded memory.** Version 0.2 writes

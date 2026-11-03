@@ -255,9 +255,9 @@ What the score does not cover:
 
 ## Hold out the sequences of one animal together
 
-`cv_group_by` on `xgboost` or `sequence-classifier` maps an entry (`group:sequence`, or a
-bare sequence of the empty group) to a tie key or a list of them, such as an animal, a
-session or a recording:
+`cv_group_by` on `xgboost`, `sequence-classifier` or `lightning-action` maps an entry
+(`group:sequence`, or a bare sequence of the empty group) to a tie key or a list of
+them, such as an animal, a session or a recording:
 
 ```json
 {"id": "classifier", "type": "feature", "feature": "xgboost",
@@ -285,7 +285,8 @@ session or a recording:
 
 Folds of whole sequences need more training sequences than folds. A dataset with one
 training sequence has no score of that kind, and `cv_folds` refuses it. Set `cv_unit` to
-`block` on `xgboost` or `sequence-classifier` to hold out stretches of frames instead:
+`block` on `xgboost`, `sequence-classifier` or `lightning-action` to hold out stretches
+of frames instead:
 
 ```json
 {"id": "classifier", "type": "feature", "feature": "xgboost",
@@ -326,8 +327,8 @@ training sequence has no score of that kind, and `cv_folds` refuses it. Set `cv_
   labeled frames in the provenance. Templates from an older run are refused under
   `cv_unit: block`. Drawing them again moves the run id of every classifier built on
   them, `cv_unit: sequence` ones included.
-- `lightning-action` has no `cv_folds` yet, and so no `cv_unit`. To cross-validate a
-  single sequence, use `sequence-classifier` or `xgboost`.
+- `lightning-action` and `sequence-classifier` cut the held-out frames out of their runs
+  of labeled frames, so they need no frames in the templates.
 
 ## Choose decision thresholds out of fold
 
@@ -482,6 +483,19 @@ What differs from `xgboost`:
   `decision_threshold` for, and for a row with a missing `id1`, `id2` or `perspective`.
 - **It trains on a GPU** when the machine has one, and the step is offered to GPU
   workers. `device` set to `cpu` trains on the CPU.
+- **`cv_folds` works as for `xgboost`, at one more GPU training run per fold.** The
+  training entries are dealt into folds by the same hash of `cv_seed`, group and
+  sequence, so the classifiers on one templates run share their folds. One package model
+  is trained without each fold, and the full model last, so the fit takes K + 1 training
+  runs. A fold's model trains on the runs of the entries outside its fold and
+  standardizes by their frames alone. A training entry is scored by the model of its
+  fold, and any other entry by the full model. `cv_folds.parquet` lists the fold of
+  every entry and its training frames per class. With `cv_unit: block` a fold's model
+  trains on every run less its blocks and `cv_gap_frames` frames around them, each piece
+  that is left cut to whole windows of `sequence_length`, and a row is scored by the
+  model of the fold whose block holds its frame. `cv_group_by` ties entries into one
+  fold as it does for `xgboost`. Each fold's model validates on a tenth of its own
+  windows, so it warns sooner than the full model does.
 
 ## Train a sequence network
 

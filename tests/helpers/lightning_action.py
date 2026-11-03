@@ -16,8 +16,9 @@ that wrote or read CSVs its own way once hid a fit that raised on every real cal
 
 Its probabilities are a fixed function of each row's first feature, so a test can tell
 which row a prediction was made for. `LightningActionRecorder` keeps what the stub was
-given: the config, the files it trained on, how many times it trained and the files it
-predicted.
+given: the config of each model it built, the files it trained on, in all and per
+training, how many times it trained, the files it predicted and the directory of the
+model that predicted them.
 """
 
 from __future__ import annotations
@@ -73,7 +74,7 @@ class _Subscriptable(Protocol):
 class LightningActionRecorder:
     """What the stub package saw of a feature's calls."""
 
-    config: dict[str, object] = field(default_factory=dict[str, object])
+    configs: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
     trained: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = field(
         default_factory=dict[str, tuple[pd.DataFrame, pd.DataFrame]]
     )
@@ -82,11 +83,18 @@ class LightningActionRecorder:
     )
     class_names: list[str] = field(default_factory=lambda: list(LA_CLASS_NAMES))
     trainings: int = 0
+    fits: list[dict[str, tuple[pd.DataFrame, pd.DataFrame]]] = field(
+        default_factory=list[dict[str, tuple[pd.DataFrame, pd.DataFrame]]]
+    )
     predict_workers: list[object] = field(default_factory=list[object])
+    predicted_by: list[str] = field(default_factory=list[str])
 
-    def config_value(self, *keys: str) -> object:
-        """Read *keys* down the config of the last `from_config`, which nests by name."""
-        value: object = self.config
+    def config_value(self, *keys: str, model: int = -1) -> object:
+        """Read *keys* down the config of a `from_config`, which nests by name.
+
+        *model* counts the models built in order, and the last one by default.
+        """
+        value: object = self.configs[model]
         for key in keys:
             assert isinstance(value, _Subscriptable)
             value = value[key]
@@ -98,17 +106,18 @@ class _StubModel:
 
     recorder: ClassVar[LightningActionRecorder]
 
-    def __init__(self) -> None:
+    def __init__(self, path: str = "") -> None:
         self.config: dict[str, dict[str, object]] = {"training": {}}
+        self.path = path
 
     @classmethod
     def from_config(cls, config: dict[str, object], /) -> _StubModel:
-        cls.recorder.config = copy.deepcopy(config)
+        cls.recorder.configs.append(copy.deepcopy(config))
         return cls()
 
     @classmethod
     def from_dir(cls, path: str, /) -> _StubModel:
-        return cls()
+        return cls(path)
 
     def train(self, output_dir: str, post_inference: bool) -> None:
         recorder = self.recorder
@@ -116,6 +125,8 @@ class _StubModel:
         data = Path(str(recorder.config_value("data", "data_path")))
         features = {p.stem: p for p in sorted((data / "features").glob("*.csv"))}
         labels = {p.stem: p for p in sorted((data / "labels").glob("*.csv"))}
+        fit: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
+        recorder.fits.append(fit)
         for stem, path in features.items():
             # The package raises on a feature file that has no label file, and on
             # files of unequal length.
@@ -124,6 +135,7 @@ class _StubModel:
             assert len(frame) == len(one_hot), stem
             recorder.class_names = list(one_hot.columns)
             recorder.trained[stem] = (frame, one_hot)
+            fit[stem] = (frame, one_hot)
         # With no file of a whole window the package has nothing to train on.
         assert any(len(frame) >= LA_WINDOW for frame, _ in recorder.trained.values())
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -131,6 +143,7 @@ class _StubModel:
     def predict(self, *, data_path: str, input_dir: str, output_dir: str) -> None:
         recorder = self.recorder
         recorder.predict_workers.append(self.config["training"].get("num_workers"))
+        recorder.predicted_by.append(Path(self.path).name)
         calls: dict[str, pd.DataFrame] = {}
         for path in sorted((Path(data_path) / input_dir).glob("*.csv")):
             features = pd.read_csv(path, index_col=0)

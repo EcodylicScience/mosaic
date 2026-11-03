@@ -30,6 +30,7 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.classifier_common import FIT_SCOPE_REMEDY
+from mosaic.behavior.feature_library.sequence_training import sub_seed
 from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionFeature,
     LightningActionModelArtifact,
@@ -448,8 +449,12 @@ def test_the_config_puts_the_optimizer_where_the_package_reads_it(
 
     # The package reads `config["optimizer"]` and its weight decay as `wd`. Under
     # `training` the block is ignored without a warning, and its defaults apply.
-    assert package.config["optimizer"] == {"type": "AdamW", "lr": 0.01, "wd": 0.0005}
-    assert package.config["training"] == {
+    assert package.config_value("optimizer") == {
+        "type": "AdamW",
+        "lr": 0.01,
+        "wd": 0.0005,
+    }
+    assert package.config_value("training") == {
         "batch_size": 4,
         "num_epochs": 1,
         "device": "cpu",
@@ -831,3 +836,280 @@ def test_the_step_is_offered_to_a_gpu_worker_and_trains_there_by_default() -> No
 
     assert LightningActionFeature.resource_class == "gpu"
     assert LightningActionFeature.Params.from_overrides(overrides).device == "gpu"
+
+
+# --- Cross-validation ----------------------------------------------------------
+
+
+def _cv_tables() -> dict[Entry, tuple[pd.DataFrame, list[Event]]]:
+    """Two train entries over different frames, so their statistics differ, and a test entry."""
+    spans = {A: range(20), B: range(40, 60), C: range(20)}
+    return {
+        entry: (_table(entry, list(span), code=code), _events(list(span), _cycling))
+        for entry, code, span in (
+            (A, 1.0, spans[A]),
+            (B, 2.0, spans[B]),
+            (C, 3.0, spans[C]),
+        )
+    }
+
+
+def _cv_fit(
+    tmp_path: Path, **overrides: object
+) -> tuple[LightningActionFeature, dict[Entry, tuple[pd.DataFrame, list[Event]]]]:
+    tables = _cv_tables()
+    study = _study(tmp_path, tables, train=[A, B], test=[C])
+    return _fit(study, tables, cv_folds=2, **overrides), tables
+
+
+def _fold_of(run_root: Path) -> dict[Entry, int]:
+    table = pd.read_parquet(run_root / "cv_folds.parquet")
+    return {
+        (str(g), str(s)): int(f)
+        for g, s, f in zip(table["group"], table["sequence"], table["fold"])
+    }
+
+
+def test_cv_folds_fits_a_model_per_fold_then_the_full_model_and_writes_the_fold_table(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    fitted, _ = _cv_fit(tmp_path)
+    fitted.save_state(tmp_path / "run")
+
+    assert package.trainings == 3
+    table = pd.read_parquet(tmp_path / "run" / "cv_folds.parquet")
+    assert list(table.columns) == [
+        "group",
+        "sequence",
+        "fold",
+        "n_rows",
+        *[f"rows_{c}" for c in _CLASSES],
+    ]
+    assert sorted(table["fold"]) == [0, 1]
+    assert list(table["n_rows"]) == [20, 20]
+    bundle = LightningActionModelArtifact().from_path(
+        tmp_path / "run" / "lightning_action_model.joblib"
+    )
+    assert bundle["model_dir"] == "lightning_action_model"
+    cv = bundle.get("cv")
+    assert cv is not None
+    assert [m["model_dir"] for m in cv["models"]] == [
+        "lightning_action_model_fold0",
+        "lightning_action_model_fold1",
+    ]
+    for model in cv["models"]:
+        assert (tmp_path / "run" / model["model_dir"]).is_dir()
+    # A fold's model trains on the entry of the other fold alone, the full model on both.
+    fold_of = _fold_of(tmp_path / "run")
+    codes = {A: 1.0, B: 2.0}
+    for fold, fit in enumerate(package.fits[:2]):
+        model = cv["models"][fold]
+        seen = {
+            round(float(v), 3)
+            for features, _ in fit.values()
+            for v in features["feat_1"].to_numpy() * model["feature_std"][1]
+            + model["feature_mean"][1]
+        }
+        assert seen == {codes[e] for e in (A, B) if fold_of[e] != fold}
+    assert len(package.fits[2]) == 2
+
+
+def test_a_training_entry_is_scored_by_the_model_of_its_fold_and_any_other_by_the_full_model(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    fitted, tables = _cv_fit(tmp_path)
+    fitted.save_state(tmp_path / "run")
+    fold_of = _fold_of(tmp_path / "run")
+    reloaded = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(cv_folds=2),
+    )
+    assert reloaded.load_state(tmp_path / "run", {}, {})
+
+    for entry in (A, B, C):
+        package.predicted_by.clear()
+        _ = reloaded.apply(tables[entry][0])
+        expected = (
+            f"lightning_action_model_fold{fold_of[entry]}"
+            if entry in fold_of
+            else "lightning_action_model"
+        )
+        assert package.predicted_by == [expected]
+
+
+def test_out_of_fold_probabilities_of_a_training_entry_differ_from_the_full_models(
+    tmp_path: Path,
+) -> None:
+    fitted, tables = _cv_fit(tmp_path)
+    fitted.save_state(tmp_path / "run")
+    full_only = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params={
+            "model": {"feature": "lightning-action"},
+            "default_class": _DEFAULT,
+            "device": "cpu",
+        },
+    )
+    assert full_only.load_state(tmp_path / "run", {}, {})
+    probs = [f"prob_{c}" for c in _CLASSES]
+
+    in_sample = full_only.apply(tables[A][0])[probs].to_numpy()
+    out_of_fold = fitted.apply(tables[A][0])[probs].to_numpy()
+
+    assert not np.allclose(in_sample, out_of_fold)
+    pd.testing.assert_frame_equal(
+        fitted.apply(tables[C][0]), full_only.apply(tables[C][0])
+    )
+
+
+def test_cv_unit_block_holds_out_the_frames_of_each_folds_blocks(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(60))
+    tables = {A: (_table(A, frames, code=1.0), _events(frames, _cycling))}
+    study = _study(tmp_path, tables, train=[A])
+
+    fitted = _fit(study, tables, cv_folds=2, cv_unit="block")
+    fitted.save_state(tmp_path / "run")
+
+    table = pd.read_parquet(tmp_path / "run" / "cv_folds.parquet")
+    assert list(zip(table["start"], table["stop"])) == [(0, 30), (30, 60)]
+    bundle = LightningActionModelArtifact().from_path(
+        tmp_path / "run" / "lightning_action_model.joblib"
+    )
+    cv = bundle.get("cv")
+    assert cv is not None
+    assert cv.get("unit") == "block"
+    for fold, fit in enumerate(package.fits[:2]):
+        model = cv["models"][fold]
+        [(start, stop)] = [
+            (int(s), int(e))
+            for s, e, f in zip(table["start"], table["stop"], table["fold"])
+            if f == fold
+        ]
+        trained = sorted(
+            int(round(v * 100.0))
+            for features, _ in fit.values()
+            for v in features["feat_0"].to_numpy() * model["feature_std"][0]
+            + model["feature_mean"][0]
+        )
+        assert trained
+        assert not [f for f in trained if start <= f < stop]
+    # Every frame lies in a block, so the two fold models score the entry and the
+    # full model does not.
+    package.predicted_by.clear()
+    _ = fitted.apply(tables[A][0])
+    assert sorted(package.predicted_by) == [
+        "lightning_action_model_fold0",
+        "lightning_action_model_fold1",
+    ]
+
+
+def test_a_cached_model_without_folds_is_refused_when_cv_folds_is_set(
+    tmp_path: Path,
+) -> None:
+    _write_bundle(tmp_path / "run")
+    feature = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(cv_folds=2),
+    )
+
+    with pytest.raises(RuntimeError, match="cached model has no folds"):
+        feature.load_state(tmp_path / "run", {}, {})
+
+
+def test_a_run_without_cv_folds_hashes_no_cross_validation_setting() -> None:
+    plain = LightningActionFeature.Params.from_overrides(_fit_params()).identity_dump()
+    folded = LightningActionFeature.Params.from_overrides(
+        _fit_params(cv_folds=2)
+    ).identity_dump()
+
+    assert not [name for name in plain if name.startswith("cv_")]
+    assert {name for name in folded if name.startswith("cv_")} == {
+        "cv_folds",
+        "cv_seed",
+    }
+
+
+def test_cv_folds_is_refused_beside_a_model_and_cv_seed_without_it() -> None:
+    inputs = LightningActionFeature.Inputs((Result(feature="temporal-stack"),))
+
+    with pytest.raises(ValueError, match="refused beside model"):
+        LightningActionFeature(
+            inputs,
+            params={
+                "model": {"feature": "lightning-action"},
+                "default_class": 0,
+                "cv_folds": 2,
+            },
+        )
+    with pytest.raises(ValueError, match="cv_seed deals the folds"):
+        LightningActionFeature(inputs, params=_fit_params(cv_seed=3))
+
+
+def test_a_block_folds_model_trains_on_whole_windows_outside_its_blocks_and_their_gap(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    frames = list(range(80))
+    gap = 5
+    tables = {A: (_table(A, frames, code=1.0), _events(frames, _cycling))}
+    study = _study(tmp_path, tables, train=[A])
+
+    fitted = _fit(study, tables, cv_folds=2, cv_unit="block", cv_gap_frames=gap)
+    fitted.save_state(tmp_path / "run")
+
+    table = pd.read_parquet(tmp_path / "run" / "cv_folds.parquet")
+    assert list(zip(table["start"], table["stop"])) == [(0, 40), (40, 80)]
+    bundle = LightningActionModelArtifact().from_path(
+        tmp_path / "run" / "lightning_action_model.joblib"
+    )
+    cv = bundle.get("cv")
+    assert cv is not None
+    for fold, fit in enumerate(package.fits[:2]):
+        model = cv["models"][fold]
+        [(start, stop)] = [
+            (int(s), int(e))
+            for s, e, f in zip(table["start"], table["stop"], table["fold"])
+            if f == fold
+        ]
+        assert fit
+        for features, one_hot in fit.values():
+            # The package cuts whole windows, so a piece is kept in whole windows.
+            assert len(features) % _WINDOW == 0
+            assert len(one_hot) == len(features)
+            trained = [
+                int(round(v * 100.0))
+                for v in features["feat_0"].to_numpy() * model["feature_std"][0]
+                + model["feature_mean"][0]
+            ]
+            assert not [f for f in trained if start - gap <= f < stop + gap]
+
+
+def test_each_folds_model_is_seeded_from_random_state_and_the_full_model_by_it(
+    tmp_path: Path, package: LightningActionRecorder
+) -> None:
+    _ = _cv_fit(tmp_path, random_state=7)
+
+    seeds = [
+        (
+            package.config_value("model", "seed", model=index),
+            package.config_value("training", "seed", model=index),
+        )
+        for index in range(len(package.configs))
+    ]
+    assert seeds == [
+        (sub_seed(7, "fold", 0), sub_seed(7, "fold", 0)),
+        (sub_seed(7, "fold", 1), sub_seed(7, "fold", 1)),
+        (7, 7),
+    ]
+
+
+def test_a_gap_that_leaves_a_block_fold_no_whole_window_is_refused_naming_the_window(
+    tmp_path: Path,
+) -> None:
+    frames = list(range(60))
+    tables = {A: (_table(A, frames, code=1.0), _events(frames, _cycling))}
+    study = _study(tmp_path, tables, train=[A])
+
+    with pytest.raises(ValueError, match=r"leaves training runs.*sequence_length"):
+        _ = _fit(study, tables, cv_folds=2, cv_unit="block", cv_gap_frames=25)

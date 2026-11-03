@@ -281,7 +281,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   sequence of its own, from the entries of its `templates` run's train split. Its scope
   is not part of its run id: the `templates` run names the training set, so a wider
   request is the same run, which applies the stored fit to the new entries. The first
-  request must hold the training entries and is refused otherwise.
+  request must hold the training entries and is refused otherwise. It takes `cv_folds`
+  and the other `cv_*` settings as `xgboost` does, with the same folds, and each fold
+  costs one more GPU training run.
   `sequence-classifier` (`[deep-learning]`, GPU worker) is the same kind of step with a
   registered network as `head` (`tcn`, `gru`, `mlp`, `transformer` or `unet`, options
   in `head_config`). A `transformer` attends within blocks of `window` frames and their
@@ -511,19 +513,20 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   fold is whole sequences unless `cv_unit` is `block`
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - When several training sequences come from one animal, session or recording, set
-  `cv_group_by` on `xgboost` or `sequence-classifier`: a mapping from an entry
-  (`group:sequence`, or a bare sequence) to a tie key or a list of them. Training entries
-  that share a key, directly or through a chain, fall into one fold, so `cv_folds` is at
-  most the number of ties. Take the keys from the sequence tags in mosaic-api. It needs
-  `cv_folds` and the sequence unit.
+  `cv_group_by` on `xgboost`, `sequence-classifier` or `lightning-action`: a mapping
+  from an entry (`group:sequence`, or a bare sequence) to a tie key or a list of them.
+  Training entries that share a key, directly or through a chain, fall into one fold, so
+  `cv_folds` is at most the number of ties. Take the keys from the sequence tags in
+  mosaic-api. It needs `cv_folds` and the sequence unit.
 - With one training sequence there is nothing to hold out, and `cv_folds` refuses it. Set
-  `cv_unit: "block"` on `xgboost` or `sequence-classifier`: each sequence is cut into
-  `cv_blocks_per_sequence` blocks of frames, a fold holds blocks out, and `cv_folds.parquet`
-  has a row per block with `start` and `stop`. Set `cv_gap_frames` to the longest window
-  above the classifier. The plan refuses a gap shorter than the `temporal_reach` the steps
-  above declare, and cautions on a step that declares none while the gap is 0 or short of
-  what is known. `xgboost` needs templates from `extract-labeled-templates` 0.7, which
-  moves the run id of every classifier built on them. `lightning-action` has no `cv_unit`.
+  `cv_unit: "block"` on `xgboost`, `sequence-classifier` or `lightning-action`: each
+  sequence is cut into `cv_blocks_per_sequence` blocks of frames, a fold holds blocks
+  out, and `cv_folds.parquet` has a row per block with `start` and `stop`. Set
+  `cv_gap_frames` to the longest window above the classifier. The plan refuses a gap
+  shorter than the `temporal_reach` the steps above declare, and cautions on a step that
+  declares none while the gap is 0 or short of what is known. `xgboost` needs templates
+  from `extract-labeled-templates` 0.7, which moves the run id of every classifier built
+  on them.
 - Choose a decision threshold on the out-of-fold probabilities, never on the test groups:
   `tune-threshold` over a classifier fitted with `cv_folds`, then a one-member
   `probability-ensemble` over the same classifier with `decision_threshold: {"step":
