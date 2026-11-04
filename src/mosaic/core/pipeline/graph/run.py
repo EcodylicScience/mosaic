@@ -55,6 +55,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from typing import IO, TYPE_CHECKING, ClassVar, Final
 
@@ -75,6 +76,7 @@ from ..error_kind import ClassifiedError, ErrorKind
 from ..job import Cancelled, CancelToken
 from ..parallelism import ParallelSettings, parallel_flags
 from ..subprocess_util import terminate_group
+from . import gpu_lease
 from .driver_lease import (
     LeaseKeeper,
     driver_log_path,
@@ -85,6 +87,16 @@ from .driver_lease import (
     take_driver_lease,
 )
 from .cleanup import run_cleanup
+from .gpu_lease import (
+    CardLease,
+    LeasableCards,
+    LeaseDirectoryUnusable,
+    leasable_cards,
+    step_environment,
+    try_lease,
+)
+from .lanes import DEFAULT_LANE, GPU_INFER_LANE, GPU_TRAIN_LANE, lane_for_step
+from .model import OpStepSpec
 from .plan import plan_pipeline
 from .request import load_recipe_for_request, step_argv, submit_request
 from .rollup import blocked_by, request_rollup
@@ -122,6 +134,7 @@ __all__ = [
     "run_pipeline",
     "run_request",
     "start_detached_driver",
+    "step_lane",
 ]
 
 MOSAIC_COMMAND: Final[tuple[str, ...]] = (sys.executable, "-m", "mosaic")
@@ -157,7 +170,13 @@ only the branch below it.
 """
 
 _POLL_SECONDS: Final = 0.2
-"""How often a driver checks its cancel token while a step runs."""
+"""How often a driver checks its cancel token while a step runs or waits for a card."""
+
+_GPU_LANES: Final = frozenset({GPU_TRAIN_LANE, GPU_INFER_LANE})
+"""The lanes whose steps the driver leases a GPU card to."""
+
+_NO_LEASE_WARNING: Final = "[mosaic] warning: GPU steps take no card lease: {}\n"
+"""The driver log's line when GPU steps start with the driver's environment."""
 
 _DETACHED: list[subprocess.Popen[bytes]] = []
 """The detached drivers that this process started and that are still running.
@@ -536,6 +555,7 @@ def run_request(
     *,
     cancel_token: CancelToken | None = None,
     parallel: ParallelSettings | None = None,
+    gpu_cards: tuple[str, ...] | None = None,
 ) -> RequestRun:
     """Run the steps of a submitted request that have not finished, in order.
 
@@ -570,6 +590,13 @@ def run_request(
     keeps it, and the request then reads ``orphaned`` until it is run again. Before
     each step the driver checks that it still holds the lease.
 
+    A step on a GPU lane (:func:`step_lane`) takes one GPU card
+    (:mod:`~.gpu_lease`). Before it takes its lease, the driver lists the cards it
+    may lease once, when *gpu_cards* is given or a step it will run is on a GPU
+    lane. When nothing can be leased, it writes one warning to the log and GPU
+    steps start with its own environment. With every allowed card held, the
+    driver waits for one, as :func:`_run_step` describes.
+
     Args:
         ds: The dataset the request was submitted against.
         request: The request.
@@ -578,6 +605,8 @@ def run_request(
         parallel: How many entries a feature step computes at once, and how
             (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
             computes them in turn.
+        gpu_cards: The cards GPU steps may lease, as ``nvidia-smi`` indexes or
+            UUIDs among the visible cards. ``None`` allows every visible card.
 
     Returns:
         What the driver ran, skipped, blocked and cancelled, and the request's
@@ -587,6 +616,8 @@ def run_request(
         StepRefused: The request's recipe is missing or changed
             (:func:`~.request.load_recipe_for_request`).
         StepStillRunning: A process of one of the request's steps is running.
+        GpuCardsRefused: *gpu_cards* names a card that is not visible, raised
+            before the driver takes its lease or runs a step.
         DriverRunning: A live driver holds the request's lease, or took it over
             while this one ran.
         LeaseLost: The lease was deleted while this driver ran.
@@ -614,6 +645,14 @@ def run_request(
             cancelled=(),
             log_path=log_path,
         )
+    gpu_steps = frozenset(
+        step_id
+        for step_id in order
+        if step_id not in request.bind
+        and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
+        and step_lane(recipe, step_id) in _GPU_LANES
+    )
+    cards = leasable_cards(gpu_cards) if gpu_cards is not None or gpu_steps else None
     token = CancelToken() if cancel_token is None else cancel_token
     lease = take_driver_lease(ds.base_dir, request.request_id)
     keeper = LeaseKeeper(ds.base_dir, lease)
@@ -626,6 +665,9 @@ def run_request(
     cleanup_status = ""
     try:
         with log_path.open("a", encoding="utf-8") as log:
+            if cards is not None and cards.warning:
+                _ = log.write(_card_warning(cards))
+                log.flush()
             for step_id in order:
                 if token.is_cancelled():
                     break
@@ -645,8 +687,7 @@ def run_request(
                         continue
                 if status not in TERMINAL_STATUSES:
                     keeper.ensure_held()
-                    ran.append(step_id)
-                    status = _run_step(
+                    started = _run_step(
                         ds,
                         request,
                         step_id,
@@ -654,7 +695,13 @@ def run_request(
                         token=token,
                         keeper=keeper,
                         parallel=parallel,
+                        cards=cards if step_id in gpu_steps else None,
                     )
+                    if started is None:
+                        status = "cancelled"
+                    else:
+                        ran.append(step_id)
+                        status = started
                 if status == "finished":
                     continue
                 if status != "failed" or _refuses_every_step(
@@ -927,6 +974,78 @@ def _refuses_every_step(snapshot: RunLogSnapshot | None) -> bool:
     return blob.get("reason") in _REFUSALS_OF_EVERY_STEP
 
 
+def step_lane(recipe: Recipe, step_id: str) -> str:
+    """Return the lane of *recipe*'s step *step_id*, as its plan names it.
+
+    :data:`~.lanes.DEFAULT_LANE` for a feature or op that this installation no
+    longer registers, which the step's own process then reports.
+    """
+    step = recipe.step(step_id)
+    name = step.kind if isinstance(step, OpStepSpec) else step.feature
+    try:
+        return lane_for_step(name, step.params)
+    except KeyError:
+        return DEFAULT_LANE
+
+
+def _card_warning(cards: LeasableCards) -> str:
+    """Return the driver log's line for *cards*' warning."""
+    if not cards.cards:
+        return _NO_LEASE_WARNING.format(cards.warning)
+    return f"[mosaic] warning: {cards.warning}\n"
+
+
+def _take_card(
+    step_id: str,
+    cards: LeasableCards,
+    *,
+    log: IO[str],
+    token: CancelToken,
+    keeper: LeaseKeeper,
+) -> CardLease | None:
+    """Lease one of *cards* for *step_id*, waiting while every one is held.
+
+    The wait is named in the driver's lease
+    (:meth:`~.driver_lease.LeaseKeeper.record_gpu_wait`) and written to the log
+    once. Every :data:`~.gpu_lease.LEASE_RETRY_SECONDS` the driver checks *token*,
+    checks that it still holds its lease and tries again.
+
+    Returns:
+        The lease, or ``None`` when *token* fired during the wait or the lease
+        directory is unusable, which the log then names.
+
+    Raises:
+        LeaseNotRefreshed: The driver's lease went unrefreshed during the wait.
+        DriverRunning: Another driver took the driver's lease over.
+        LeaseLost: The driver's lease was deleted.
+    """
+    waiting = False
+    while True:
+        try:
+            lease = try_lease(cards.cards)
+        except LeaseDirectoryUnusable as unusable:
+            _ = log.write(_NO_LEASE_WARNING.format(unusable.reason))
+            log.flush()
+            return None
+        if lease is not None:
+            _ = log.write(
+                f"[mosaic] {now_iso()} step {step_id} took GPU {lease.card.label}\n"
+            )
+            log.flush()
+            return lease
+        if not waiting:
+            waiting = True
+            _ = log.write(f"[mosaic] {now_iso()} step {step_id} waits for a GPU\n")
+            log.flush()
+            keeper.record_gpu_wait(step_id)
+        retry_at = time.monotonic() + gpu_lease.LEASE_RETRY_SECONDS
+        while not token.is_cancelled() and time.monotonic() < retry_at:
+            time.sleep(min(_POLL_SECONDS, max(0.0, retry_at - time.monotonic())))
+        if token.is_cancelled():
+            return None
+        keeper.ensure_held()
+
+
 def _run_step(
     ds: Dataset,
     request: Request,
@@ -936,12 +1055,27 @@ def _run_step(
     token: CancelToken,
     keeper: LeaseKeeper,
     parallel: ParallelSettings | None,
-) -> str:
+    cards: LeasableCards | None,
+) -> str | None:
     """Run one step's process to its end, and return the status it recorded.
 
     The lease names the step and its process while it runs. A step that exits
     without a terminal record is recorded ``cancelled`` after a cancel and
     ``failed`` otherwise.
+
+    Given *cards* to lease, the step on a GPU lane first takes one
+    (:func:`_take_card`), waiting while every one is held. The step's process
+    starts with the card's environment
+    (:func:`~.gpu_lease.step_environment`) and the lock's descriptor, and the
+    driver closes its own copy once the process has started, so the lock lives
+    as long as the step and the tools it supervises. Every other step starts with
+    the driver's environment, less the lease variables. A cancel during the wait
+    starts no process and leaves the step unrecorded, so the driver records it
+    ``cancelled`` with the other steps that have not started.
+
+    Returns:
+        The status, or ``None`` when a cancel during the wait for a card came
+        before the step's process started.
     """
     execution_id = request.execution_of(step_id)
     argv = step_argv(
@@ -951,16 +1085,28 @@ def _run_step(
         program=MOSAIC_COMMAND,
         parallel=parallel,
     )
+    card: CardLease | None = None
+    if cards is not None and cards.cards:
+        card = _take_card(step_id, cards, log=log, token=token, keeper=keeper)
+        if card is None and token.is_cancelled():
+            keeper.record_step("", 0)
+            return None
     _ = log.write(f"[mosaic] {now_iso()} step {step_id} ({execution_id}) started\n")
     log.flush()
-    process = subprocess.Popen(
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=log,
-        start_new_session=sys.platform != "win32",
-        text=True,
-    )
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=sys.platform != "win32",
+            text=True,
+            env=step_environment(os.environ, card),
+            pass_fds=() if card is None else (card.fd,),
+        )
+    finally:
+        if card is not None:
+            card.close()
     keeper.record_step(step_id, process.pid)
     while True:
         try:
