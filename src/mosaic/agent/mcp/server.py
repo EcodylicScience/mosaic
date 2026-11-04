@@ -69,6 +69,7 @@ def serve(
     allow_cleanup: frozenset[CleanupClass] = frozenset(),
     cleanup_policy: CleanupPolicy | None = None,
     parallel_limits: ParallelLimits | None = None,
+    gpu_cards: Sequence[str] | None = None,
     dataset_roots: Sequence[Path] = (),
     source_roots: Sequence[Path] = (),
     recipe_roots: Sequence[Path] = (),
@@ -91,6 +92,8 @@ def serve(
             policy when ``None``.
         parallel_limits: The parallelism a submission may ask for. One worker, in
             threads, when ``None``.
+        gpu_cards: The cards a submission's drivers may lease to GPU steps, as
+            ``nvidia-smi`` indexes or UUIDs. Every visible card when ``None``.
         dataset_roots: Where ``manage_dataset`` may create a dataset.
         source_roots: Where ``manage_dataset`` may declare a source.
         recipe_roots: Where a recipe argument ``{"path": ...}`` may be read.
@@ -109,6 +112,7 @@ def serve(
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
             parallel_limits=parallel_limits,
+            gpu_cards=gpu_cards,
             dataset_roots=dataset_roots,
             source_roots=source_roots,
             recipe_roots=recipe_roots,
@@ -123,6 +127,7 @@ async def _serve(
     allow_cleanup: frozenset[CleanupClass],
     cleanup_policy: CleanupPolicy | None,
     parallel_limits: ParallelLimits | None,
+    gpu_cards: Sequence[str] | None,
     dataset_roots: Sequence[Path],
     source_roots: Sequence[Path],
     recipe_roots: Sequence[Path],
@@ -139,6 +144,7 @@ async def _serve(
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
             parallel_limits=parallel_limits,
+            gpu_cards=gpu_cards,
             dataset_roots=dataset_roots,
             source_roots=source_roots,
             recipe_roots=recipe_roots,
@@ -163,6 +169,7 @@ def serve_http(
     allow_cleanup: frozenset[CleanupClass] = frozenset(),
     cleanup_policy: CleanupPolicy | None = None,
     parallel_limits: ParallelLimits | None = None,
+    gpu_cards: Sequence[str] | None = None,
     dataset_roots: Sequence[Path] = (),
     source_roots: Sequence[Path] = (),
     recipe_roots: Sequence[Path] = (),
@@ -190,6 +197,7 @@ def serve_http(
         allow_cleanup: As for :func:`serve`.
         cleanup_policy: As for :func:`serve`.
         parallel_limits: As for :func:`serve`.
+        gpu_cards: As for :func:`serve`.
         dataset_roots: As for :func:`serve`.
         source_roots: As for :func:`serve`.
         recipe_roots: As for :func:`serve`.
@@ -210,6 +218,7 @@ def serve_http(
         allow_cleanup=allow_cleanup,
         cleanup_policy=cleanup_policy,
         parallel_limits=parallel_limits,
+        gpu_cards=gpu_cards,
         dataset_roots=dataset_roots,
         source_roots=source_roots,
         recipe_roots=recipe_roots,

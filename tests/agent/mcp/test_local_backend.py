@@ -762,6 +762,54 @@ def test_a_tracker_sweep_plans_and_submits_on_a_dataset_of_two_variants(
     assert starter.started == [submitted.request_id]
 
 
+@pytest.mark.parametrize("limit", [None, ("0", "GPU-1111")], ids=["none", "named"])
+def test_a_submission_hands_the_starter_the_servers_card_limit(
+    dataset: Dataset, limit: tuple[str, ...] | None
+) -> None:
+    starter = RecordingStarter()
+    backend = LocalBackend(
+        [dataset.manifest_path], warm=False, start_driver=starter, gpu_cards=limit
+    )
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+        plan_fingerprint=plan.fingerprint,
+        confirm=True,
+    )
+
+    assert starter.started == [submitted.request_id]
+    assert starter.gpu_cards == [limit]
+
+
+def test_discover_keeps_the_card_limit(dataset: Dataset, tmp_path: Path) -> None:
+    starter = RecordingStarter()
+    backend = LocalBackend.discover(
+        tmp_path, warm=False, start_driver=starter, gpu_cards=("1",)
+    )
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+    )
+
+    _ = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+        plan_fingerprint=plan.fingerprint,
+        confirm=True,
+    )
+
+    assert starter.gpu_cards == [("1",)]
+
+
 def test_plan_recipe_lists_an_unpinned_reader_of_two_variants_as_a_problem(
     backend: LocalBackend, dataset: Dataset
 ) -> None:

@@ -266,6 +266,70 @@ def test_a_detached_driver_is_started_with_the_parallel_flags(
     ]
 
 
+@pytest.mark.parametrize(
+    ("gpu_cards", "flags"),
+    [
+        (("0", "1"), ["--gpu-cards", "0,1"]),
+        (("GPU-aaaa",), ["--gpu-cards", "GPU-aaaa"]),
+        (None, []),
+    ],
+    ids=["indexes", "uuid", "unlimited"],
+)
+def test_a_detached_driver_is_started_with_the_card_limit_when_given(
+    tracked: Dataset,
+    submitted: Request,
+    monkeypatch: pytest.MonkeyPatch,
+    gpu_cards: tuple[str, ...] | None,
+    flags: list[str],
+) -> None:
+    seen: list[list[str]] = []
+
+    class _Started:
+        pid = 4242
+
+        def wait(self) -> int:
+            return 0
+
+    def popen(argv: list[str], **_kwargs: object) -> _Started:
+        seen.append(argv)
+        return _Started()
+
+    monkeypatch.setattr(graph_run.subprocess, "Popen", popen)
+    monkeypatch.setattr(graph_run, "_DETACHED", [])
+
+    _ = start_detached_driver(tracked, submitted, gpu_cards=gpu_cards)
+
+    argv = seen[0]
+    assert argv[argv.index("--request") + 2 :] == flags
+
+
+def test_the_card_limit_follows_the_parallel_flags_in_the_drivers_argv(
+    tracked: Dataset, submitted: Request, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[list[str]] = []
+
+    class _Started:
+        pid = 4242
+
+        def wait(self) -> int:
+            return 0
+
+    def popen(argv: list[str], **_kwargs: object) -> _Started:
+        seen.append(argv)
+        return _Started()
+
+    monkeypatch.setattr(graph_run.subprocess, "Popen", popen)
+    monkeypatch.setattr(graph_run, "_DETACHED", [])
+
+    _ = start_detached_driver(
+        tracked, submitted, ParallelSettings(workers=2), gpu_cards=("1",)
+    )
+
+    argv = seen[0]
+    assert argv[-2:] == ["--gpu-cards", "1"]
+    assert argv.index("--workers") < argv.index("--gpu-cards")
+
+
 def _pid_exists(pid: int) -> bool:
     """Whether ``kill -0 <pid>`` succeeds, which it does for a zombie."""
     try:

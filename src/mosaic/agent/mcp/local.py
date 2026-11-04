@@ -146,8 +146,14 @@ POLL_AFTER_TRAINING_SECONDS: Final = 60
 _EVALUATE_LABELS: Final = "evaluate-labels"
 """The one feature that scores a model's output against labels."""
 
-type DriverStarter = Callable[[Dataset, Request, ParallelSettings], DetachedDriver]
-"""What starts the process driving a submitted request, given its parallelism."""
+type DriverStarter = Callable[
+    [Dataset, Request, ParallelSettings, tuple[str, ...] | None], DetachedDriver
+]
+"""What starts the process driving a submitted request.
+
+It is given the request's parallelism and the cards the operator allows its GPU
+steps, ``None`` for every visible card.
+"""
 
 
 class ToolFailure(Exception):
@@ -200,6 +206,7 @@ class LocalBackend:
         allow_cleanup: frozenset[CleanupClass] = frozenset(),
         cleanup_policy: CleanupPolicy | None = None,
         parallel_limits: ParallelLimits | None = None,
+        gpu_cards: Sequence[str] | None = None,
         dataset_roots: Sequence[Path] = (),
         source_roots: Sequence[Path] = (),
         recipe_roots: Sequence[Path] = (),
@@ -217,6 +224,9 @@ class LocalBackend:
                 operator. The default policy when ``None``.
             parallel_limits: The parallelism a submission may ask for, fixed by
                 the operator. One worker, in threads, when ``None``.
+            gpu_cards: The cards a submission's drivers may lease to GPU steps,
+                as ``nvidia-smi`` indexes or UUIDs, fixed by the operator.
+                Every visible card when ``None``.
             warm: Whether to open the datasets and build the step-type catalog
                 on a background thread now. Otherwise the first call that needs
                 each builds it.
@@ -239,6 +249,9 @@ class LocalBackend:
             ParallelLimits() if parallel_limits is None else parallel_limits
         )
         self._start_driver: DriverStarter | None = start_driver
+        self._gpu_cards: tuple[str, ...] | None = (
+            None if gpu_cards is None else tuple(gpu_cards)
+        )
         self._dataset_roots: tuple[Path, ...] = tuple(
             root.resolve() for root in dataset_roots
         )
@@ -272,6 +285,7 @@ class LocalBackend:
         allow_cleanup: frozenset[CleanupClass] = frozenset(),
         cleanup_policy: CleanupPolicy | None = None,
         parallel_limits: ParallelLimits | None = None,
+        gpu_cards: Sequence[str] | None = None,
     ) -> LocalBackend:
         """Serve the datasets found in *root* and below it.
 
@@ -287,6 +301,7 @@ class LocalBackend:
             allow_cleanup: As for :class:`LocalBackend`.
             cleanup_policy: As for :class:`LocalBackend`.
             parallel_limits: As for :class:`LocalBackend`.
+            gpu_cards: As for :class:`LocalBackend`.
         """
         manifests = discovered_manifests(root, max_depth=max_depth)
         return cls(
@@ -297,6 +312,7 @@ class LocalBackend:
             allow_cleanup=allow_cleanup,
             cleanup_policy=cleanup_policy,
             parallel_limits=parallel_limits,
+            gpu_cards=gpu_cards,
         )
 
     def dataset(self, uuid: str) -> Dataset:
@@ -936,7 +952,7 @@ class LocalBackend:
         request = submitted.request
         start = self._start_driver or start_detached_driver
         try:
-            driver = start(dataset, request, parallel)
+            driver = start(dataset, request, parallel, self._gpu_cards)
         except ClassifiedError as error:
             envelope = error_envelope(error)
             detail = {**(envelope.detail or {}), "request_id": request.request_id}

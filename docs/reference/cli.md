@@ -1267,6 +1267,12 @@ outputs, so ``--request`` accepts it where it rejects the options above.
 Memory grows with the worker count, most steeply with ``--parallel-mode
 process``.
 
+A step on a GPU lane of a ``--request`` run takes one card of the host for as
+long as it runs, and waits while every card is held. ``--gpu-cards`` limits
+the cards the driver may take. It belongs to the machine like ``--workers``,
+and a card the host does not show ends the command before any step runs. A
+run of ``--recipe`` takes no card.
+
 **Usage**:
 
 ```console
@@ -1292,6 +1298,7 @@ $ mosaic pipeline run [OPTIONS]
 * `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
 * `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--gpu-cards <str>`: With --request, the cards its GPU steps may lease, as one comma-separated value of nvidia-smi indexes (PCI bus order) or UUIDs among the visible cards, such as 0,1. Without it every visible card is leased.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1484,7 +1491,7 @@ $ mosaic agent serve [OPTIONS]
 **Options**:
 
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
-* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`, the `dataset_roots` and `source_roots` that manage_dataset may write inside, and the `recipe_roots` that a recipe file is read from. Its relative paths are read from its directory.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`, the `gpu_cards` its GPU steps may lease, the `dataset_roots` and `source_roots` that manage_dataset may write inside, and the `recipe_roots` that a recipe file is read from. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
 * `--http HOST:PORT`: Serve one user over streamable HTTP at http://HOST:PORT/mcp instead of stdio, for a trusted network such as a tailnet. Needs --token-file. Write an IPv6 host in brackets.

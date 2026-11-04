@@ -14,6 +14,7 @@
     max_workers: 1          # most entries a feature step may compute at once
     allow_process_mode: false   # let a submission ask for process workers
     min_free_memory_fraction: 0.10   # share of host memory a parallel run keeps free
+    gpu_cards: [0, 1]       # cards GPU steps may lease; unset leases every visible card
     dataset_roots: []       # where manage_dataset may create datasets, served too
     source_roots: []        # where manage_dataset may declare sources
     recipe_roots: []        # where a recipe argument {path: ...} may be read
@@ -28,9 +29,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import Field, ValidationError
+from pydantic import BeforeValidator, Field, ValidationError
 
 from mosaic.core.pipeline.graph.model import CleanupPolicy
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelLimits
@@ -63,6 +64,23 @@ Superseded ones, and with ``retire`` the runs of retired recipes.
 """
 
 
+def _index_as_name(value: object) -> object:
+    """Turn a non-negative YAML integer into the card name it writes.
+
+    A ``bool`` is an ``int`` to Python and stays as it is, so the field refuses it.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return value
+    if value < 0:
+        msg = "a card index is not negative"
+        raise ValueError(msg)
+    return str(value)
+
+
+type CardName = Annotated[str, BeforeValidator(_index_as_name)]
+"""A card as ``nvidia-smi`` lists it: an index or a UUID."""
+
+
 class ServerConfig(StrictModel):
     """The datasets that a server serves and whether it may change a managed one.
 
@@ -90,6 +108,13 @@ class ServerConfig(StrictModel):
             entries while the share is lower, and fails when it is still lower
             with none in flight, ending in a state a later run resumes. 0 turns
             the check off.
+        gpu_cards: The cards the server's drivers may lease to GPU steps, as
+            ``nvidia-smi`` indexes (PCI bus order, which ``CUDA_VISIBLE_DEVICES``
+            integers follow under ``CUDA_DEVICE_ORDER=PCI_BUS_ID``) or UUIDs, among
+            the cards ``CUDA_VISIBLE_DEVICES`` leaves visible. An index may be written
+            as a YAML integer. ``None`` leases every visible card, and the server refuses to
+            start when a name is not visible. It belongs to the machine and is
+            part of no recipe, request or run id.
         dataset_roots: Directories inside which ``manage_dataset`` may create a
             dataset. The datasets below them are served, as ``discover``
             serves them, and one created while the server runs is served at
@@ -110,6 +135,7 @@ class ServerConfig(StrictModel):
     max_workers: int = Field(default=1, ge=1, le=MAX_WORKERS_CEILING)
     allow_process_mode: bool = False
     min_free_memory_fraction: float = Field(default=0.10, ge=0.0, lt=1.0)
+    gpu_cards: list[CardName] | None = Field(default=None, min_length=1)
     dataset_roots: list[Path] = Field(default_factory=list)
     source_roots: list[Path] = Field(default_factory=list)
     recipe_roots: list[Path] = Field(default_factory=list)

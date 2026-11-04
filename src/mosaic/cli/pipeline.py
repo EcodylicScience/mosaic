@@ -46,6 +46,7 @@ from mosaic.cli._io import (
     StepScopeOption,
     WorkersOption,
     parallel_settings,
+    parse_gpu_cards,
     emit_json,
     entries_scope,
     exit_refused,
@@ -761,6 +762,18 @@ def run_command(
     workers: WorkersOption = None,
     parallel_mode: ParallelModeOption = None,
     min_free_memory_fraction: MinFreeMemoryOption = 0.0,
+    gpu_cards: Annotated[
+        str | None,
+        typer.Option(
+            "--gpu-cards",
+            help=(
+                "With --request, the cards its GPU steps may lease, as one "
+                "comma-separated value of nvidia-smi indexes (PCI bus order) or "
+                "UUIDs among the visible cards, such as 0,1. Without it every "
+                "visible card is leased."
+            ),
+        ),
+    ] = None,
     as_json: JsonOption = False,
 ) -> None:
     """Run every step of a recipe here, in order, skipping what is already done.
@@ -781,6 +794,12 @@ def run_command(
     outputs, so ``--request`` accepts it where it rejects the options above.
     Memory grows with the worker count, most steeply with ``--parallel-mode
     process``.
+
+    A step on a GPU lane of a ``--request`` run takes one card of the host for as
+    long as it runs, and waits while every card is held. ``--gpu-cards`` limits
+    the cards the driver may take. It belongs to the machine like ``--workers``,
+    and a card the host does not show ends the command before any step runs. A
+    run of ``--recipe`` takes no card.
     """
     from mosaic.core.pipeline.graph import (
         request_status_wire,
@@ -809,11 +828,21 @@ def run_command(
                 "at submit, and are not used with --request."
             )
         _run_request(
-            manifest, request_id, detach=detach, as_json=as_json, parallel=parallel
+            manifest,
+            request_id,
+            detach=detach,
+            as_json=as_json,
+            parallel=parallel,
+            gpu_cards=parse_gpu_cards(gpu_cards),
         )
         return
     if recipe is None:
         fail("Provide exactly one of --recipe or --request.")
+    if gpu_cards is not None:
+        fail(
+            "--gpu-cards is used with --request. A --recipe run happens in this "
+            "process and takes no card."
+        )
     if detach:
         fail("--detach is used with --request. Submit the recipe first.")
     ds = load_dataset(manifest)
@@ -929,14 +958,27 @@ def _run_request(
     detach: bool,
     as_json: bool,
     parallel: ParallelSettings | None,
+    gpu_cards: tuple[str, ...] | None,
 ) -> None:
-    """Drive one submitted request here, or start its driver in a new session."""
+    """Drive one submitted request here, or start its driver in a new session.
+
+    Args:
+        manifest: The dataset's manifest.
+        request_id: The submitted request.
+        detach: Whether to start the driver in a new session and return.
+        as_json: Whether ``--json`` was given.
+        parallel: The ``--workers`` settings, or ``None``.
+        gpu_cards: The ``--gpu-cards`` names, or ``None`` to allow every visible
+            card. A detached run checks them here, since the driver would only
+            log the refusal.
+    """
     from mosaic.core.pipeline.graph import (
         load_request,
         request_status_wire,
         run_request,
         start_detached_driver,
     )
+    from mosaic.core.pipeline.graph.gpu_lease import leasable_cards
     from mosaic.core.pipeline.job import CancelToken, install_signal_handler
 
     ds = load_dataset(manifest)
@@ -946,7 +988,11 @@ def _run_request(
         fail(str(exc))
     if detach:
         try:
-            driver = start_detached_driver(ds, request, parallel=parallel)
+            if gpu_cards is not None:
+                _ = leasable_cards(gpu_cards)
+            driver = start_detached_driver(
+                ds, request, parallel=parallel, gpu_cards=gpu_cards
+            )
         except Refusal as refusal:
             exit_refused("", refusal, as_json=as_json)
         except ClassifiedError as error:
@@ -969,7 +1015,13 @@ def _run_request(
     install_signal_handler(token)
     try:
         with stdout_to_stderr():
-            done = run_request(ds, request, cancel_token=token, parallel=parallel)
+            done = run_request(
+                ds,
+                request,
+                cancel_token=token,
+                parallel=parallel,
+                gpu_cards=gpu_cards,
+            )
     except Refusal as refusal:
         exit_refused("", refusal, as_json=as_json)
     except ClassifiedError as error:

@@ -51,6 +51,7 @@ __all__ = [
     "GpuCardsRefused",
     "LeasableCards",
     "LeaseDirectoryUnusable",
+    "card_warning",
     "default_lease_directory",
     "inherited_lease_fds",
     "leasable_cards",
@@ -58,6 +59,7 @@ __all__ = [
     "leased_card",
     "leases_cards_here",
     "names_another_card",
+    "no_lease_warning",
     "query_cards",
     "step_environment",
     "try_lease",
@@ -128,6 +130,18 @@ class LeasableCards:
     warning: str
 
 
+def no_lease_warning(reason: str) -> str:
+    """Return the warning line for GPU steps that start with the caller's environment."""
+    return f"[mosaic] warning: GPU steps take no card lease: {reason}"
+
+
+def card_warning(cards: LeasableCards) -> str:
+    """Return the warning line for the non-empty ``warning`` of *cards*."""
+    if not cards.cards:
+        return no_lease_warning(cards.warning)
+    return f"[mosaic] warning: {cards.warning}"
+
+
 class CardQueryFailed(Exception):
     """``nvidia-smi`` is absent, failed, timed out or printed a row it cannot read.
 
@@ -153,7 +167,7 @@ class LeaseDirectoryUnusable(Exception):
 
 
 class GpuCardsRefused(ClassifiedError, ValueError):
-    """The operator's ``gpu_cards`` names a card that is not visible, or no card."""
+    """The operator's card limit names a card that is not visible, or no card."""
 
     error_kind: ClassVar[ErrorKind] = "invalid"
 
@@ -311,7 +325,7 @@ def _narrow(
         if card is None:
             visible_text = ", ".join(labels) or "none"
             message = (
-                f"gpu_cards names {name!r}, which is not a visible card "
+                f"the card limit names {name!r}, which is not a visible card "
                 f"(visible: {visible_text})"
             )
             raise GpuCardsRefused(message, card=name, visible=labels)
@@ -344,7 +358,7 @@ def leasable_cards(
     """
     if gpu_cards is not None and not gpu_cards:
         raise GpuCardsRefused(
-            "gpu_cards names no card; leave it unset to lease every visible card",
+            "the card limit names no card; leave it unset to lease every visible card",
             card=None,
             visible=(),
         )

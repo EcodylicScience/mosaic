@@ -177,6 +177,22 @@ def parallel_settings(
     )
 
 
+def parse_gpu_cards(value: str | None) -> tuple[str, ...] | None:
+    """Return the cards that a ``--gpu-cards`` value names, ``None`` when it is absent.
+
+    Args:
+        value: One comma-separated value of ``nvidia-smi`` indexes or UUIDs, as
+            ``CUDA_VISIBLE_DEVICES`` writes them.
+
+    Returns:
+        The names in order, with blanks dropped. An empty tuple for a value that
+        names none, which the driver refuses.
+    """
+    if value is None:
+        return None
+    return tuple(name.strip() for name in value.split(",") if name.strip())
+
+
 @contextlib.contextmanager
 def stdout_to_stderr() -> Generator[None]:
     """Redirect library stdout chatter (progress/completion prints) to stderr.

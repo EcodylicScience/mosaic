@@ -158,3 +158,40 @@ def test_the_dataset_source_and_recipe_roots_are_resolved_and_the_datasets_serve
     assert [path.resolve() for path in served_manifests([], read)] == [
         found.manifest_path.resolve()
     ]
+
+
+def test_the_card_limit_reads_from_the_file(tmp_path: Path) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text("gpu_cards: [0, GPU-1111]\n", encoding="utf-8")
+
+    assert read_server_config(config).gpu_cards == ["0", "GPU-1111"]
+
+
+def test_a_quoted_card_index_reads_as_an_unquoted_one_does(tmp_path: Path) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text('gpu_cards: ["1", 0]\n', encoding="utf-8")
+
+    assert read_server_config(config).gpu_cards == ["1", "0"]
+
+
+@pytest.mark.parametrize("card", ["true", "-1", "1.5", "[0]"])
+def test_a_card_that_is_not_an_index_or_a_name_is_invalid(
+    tmp_path: Path, card: str
+) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text(f"gpu_cards: [{card}]\n", encoding="utf-8")
+
+    with pytest.raises(ServerConfigInvalid, match="gpu_cards"):
+        _ = read_server_config(config)
+
+
+def test_no_card_limit_leases_every_visible_card() -> None:
+    assert ServerConfig().gpu_cards is None
+
+
+def test_an_empty_card_limit_is_invalid(tmp_path: Path) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text("gpu_cards: []\n", encoding="utf-8")
+
+    with pytest.raises(ServerConfigInvalid, match="gpu_cards"):
+        _ = read_server_config(config)

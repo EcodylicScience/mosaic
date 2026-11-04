@@ -25,18 +25,25 @@ class RecordingStarter:
     Attributes:
         started: The ids of the requests given, in order.
         parallel: The parallelism given with each request, in order.
+        gpu_cards: The operator's card limit given with each request, in order.
     """
 
     started: list[str] = field(default_factory=list)
     parallel: list[ParallelSettings] = field(default_factory=list)
+    gpu_cards: list[tuple[str, ...] | None] = field(default_factory=list)
 
     def __call__(
-        self, dataset: Dataset, request: Request, parallel: ParallelSettings
+        self,
+        dataset: Dataset,
+        request: Request,
+        parallel: ParallelSettings,
+        gpu_cards: tuple[str, ...] | None,
     ) -> DetachedDriver:
         from mosaic.core.pipeline.graph import DetachedDriver
 
         self.started.append(request.request_id)
         self.parallel.append(parallel)
+        self.gpu_cards.append(gpu_cards)
         return DetachedDriver(
             request_id=request.request_id,
             pid=4242,

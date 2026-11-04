@@ -30,7 +30,7 @@ from mosaic.agent import (
     guide_text,
     install_agent_files,
 )
-from mosaic.cli._io import emit_json, fail
+from mosaic.cli._io import emit_json, fail, log
 from mosaic.user_paths import user_path
 
 if TYPE_CHECKING:
@@ -204,7 +204,8 @@ def serve_command(
                 "A YAML file listing `datasets`, `discover` directories, "
                 "`allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, "
                 "the parallelism limits `max_workers`, `allow_process_mode` "
-                "and `min_free_memory_fraction`, the `dataset_roots` and "
+                "and `min_free_memory_fraction`, the `gpu_cards` its GPU steps "
+                "may lease, the `dataset_roots` and "
                 "`source_roots` that manage_dataset may write inside, and the "
                 "`recipe_roots` that a recipe file is read from. "
                 "Its relative paths are read from its directory."
@@ -330,6 +331,7 @@ def serve_command(
             *settings.allow_cleanup,
         ]
     )
+    _check_gpu_cards(settings)
     if http is not None:
         _serve_http(
             manifests,
@@ -366,12 +368,36 @@ def serve_command(
             allow_cleanup=granted,
             cleanup_policy=settings.cleanup,
             parallel_limits=settings.parallel_limits,
+            gpu_cards=settings.gpu_cards,
             dataset_roots=settings.dataset_roots,
             source_roots=settings.source_roots,
             recipe_roots=settings.recipe_roots,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))
+
+
+def _check_gpu_cards(settings: ServerConfig) -> None:
+    """Refuse to serve when ``gpu_cards`` names a card the host does not show.
+
+    Runs before the transport starts, so the failure reaches standard error and
+    standard output stays clear for JSON-RPC. A host that cannot answer the card
+    query leaves the work unleased, with a warning, as it does for a driver.
+    """
+    if settings.gpu_cards is None:
+        return
+    from mosaic.core.pipeline.graph.gpu_lease import (
+        GpuCardsRefused,
+        card_warning,
+        leasable_cards,
+    )
+
+    try:
+        cards = leasable_cards(settings.gpu_cards)
+    except GpuCardsRefused as exc:
+        fail(str(exc))
+    if cards.warning:
+        log(card_warning(cards))
 
 
 def _serve_http(
@@ -428,6 +454,7 @@ def _serve_http(
             allow_cleanup=allow_cleanup,
             cleanup_policy=settings.cleanup,
             parallel_limits=settings.parallel_limits,
+            gpu_cards=settings.gpu_cards,
             dataset_roots=settings.dataset_roots,
             source_roots=settings.source_roots,
             recipe_roots=settings.recipe_roots,

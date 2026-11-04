@@ -50,6 +50,20 @@ true for that step while the lease is live. A brief report lists the waiting ste
 of counting it in `omitted_pending`. `mosaic pipeline status` prints `waiting for a GPU`
 as its status and adds a `gpu_card` column when a step recorded one.
 
+**The operator limits the cards a driver may lease.** `mosaic pipeline run --request`
+takes `--gpu-cards`, one comma-separated value of `nvidia-smi` indexes (PCI bus order) or
+UUIDs among the visible cards, such as `0,1`. A card the host does not show, or an empty
+value, ends the command with exit code 1 before a step is recorded, and with `--detach`
+before a driver starts. `--recipe` refuses the flag, since an in-process run takes no
+card. `ServerConfig` gains `gpu_cards: list[str] | None` (`None` leases every visible
+card, `[]` is invalid, an index may be a YAML integer), and `mosaic agent serve` refuses to
+start, on standard error before the transport opens, when it names a card the host does not
+show. `start_detached_driver`, `run_request`, `LocalBackend`, `LocalBackend.discover`,
+`serve` and `serve_http` take `gpu_cards` as a keyword, and `DriverStarter` becomes
+`Callable[[Dataset, Request, ParallelSettings, tuple[str, ...] | None], DetachedDriver]`:
+a starter written for three arguments takes the card limit as a fourth. The limit is part
+of no recipe, request or run id.
+
 ## Unreleased: duplicate requests compared by run
 
 **A submission is a duplicate of an open request that computes one of its runs, of any

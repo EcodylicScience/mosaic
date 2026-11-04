@@ -91,7 +91,9 @@ from .gpu_lease import (
     CardLease,
     LeasableCards,
     LeaseDirectoryUnusable,
+    card_warning,
     leasable_cards,
+    no_lease_warning,
     step_environment,
     try_lease,
 )
@@ -174,9 +176,6 @@ _POLL_SECONDS: Final = 0.2
 
 _GPU_LANES: Final = frozenset({GPU_TRAIN_LANE, GPU_INFER_LANE})
 """The lanes whose steps the driver leases a GPU card to."""
-
-_NO_LEASE_WARNING: Final = "[mosaic] warning: GPU steps take no card lease: {}\n"
-"""The driver log's line when GPU steps start with the driver's environment."""
 
 _DETACHED: list[subprocess.Popen[bytes]] = []
 """The detached drivers that this process started and that are still running.
@@ -666,7 +665,7 @@ def run_request(
     try:
         with log_path.open("a", encoding="utf-8") as log:
             if cards is not None and cards.warning:
-                _ = log.write(_card_warning(cards))
+                _ = log.write(f"{card_warning(cards)}\n")
                 log.flush()
             for step_id in order:
                 if token.is_cancelled():
@@ -734,7 +733,10 @@ def run_request(
 
 
 def start_detached_driver(
-    ds: Dataset, request: Request, parallel: ParallelSettings | None = None
+    ds: Dataset,
+    request: Request,
+    parallel: ParallelSettings | None = None,
+    gpu_cards: tuple[str, ...] | None = None,
 ) -> DetachedDriver:
     """Start ``mosaic pipeline run --request`` for *request* in a new session.
 
@@ -749,6 +751,9 @@ def start_detached_driver(
         parallel: How many entries a feature step computes at once, and how
             (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
             computes them in turn.
+        gpu_cards: The cards the driver may lease to GPU steps, as ``nvidia-smi``
+            indexes or UUIDs, passed as ``--gpu-cards``. ``None`` allows every
+            visible card.
 
     Returns:
         The driver's pid and log.
@@ -771,6 +776,7 @@ def start_detached_driver(
         "--request",
         request.request_id,
         *parallel_flags(parallel),
+        *([] if gpu_cards is None else ["--gpu-cards", ",".join(gpu_cards)]),
     ]
     with log_path.open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
@@ -988,13 +994,6 @@ def step_lane(recipe: Recipe, step_id: str) -> str:
         return DEFAULT_LANE
 
 
-def _card_warning(cards: LeasableCards) -> str:
-    """Return the driver log's line for *cards*' warning."""
-    if not cards.cards:
-        return _NO_LEASE_WARNING.format(cards.warning)
-    return f"[mosaic] warning: {cards.warning}\n"
-
-
 def _take_card(
     step_id: str,
     cards: LeasableCards,
@@ -1024,7 +1023,7 @@ def _take_card(
         try:
             lease = try_lease(cards.cards)
         except LeaseDirectoryUnusable as unusable:
-            _ = log.write(_NO_LEASE_WARNING.format(unusable.reason))
+            _ = log.write(f"{no_lease_warning(unusable.reason)}\n")
             log.flush()
             return None
         if lease is not None:

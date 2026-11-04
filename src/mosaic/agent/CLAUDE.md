@@ -102,7 +102,10 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   and `ParallelLimits.settings_for` refuses a request over a limit
   (`parallel_limit`, `test_confirmation_gate.py`). `plan_recipe` takes neither. The
   settings reach the driver through `DriverStarter` and then argv flags, and are not
-  part of a recipe, a request or a run id.
+  part of a recipe, a request or a run id. `gpu_cards` is the operator's too, and no
+  tool takes it: `LocalBackend` hands it to `DriverStarter` as its fourth argument, and
+  it reaches the driver as `--gpu-cards`. `mosaic agent serve` refuses to start on a
+  card the host does not show (`test_cli_agent.py`).
 - An accepted confirmation confirms only the conditions it named. `_binding.py` runs
   the call again without `confirm` first and asks again when it meets another
   (`test_mcp_server.py`).

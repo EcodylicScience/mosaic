@@ -24,7 +24,7 @@ from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.parallelism import ParallelLimits
 from mosaic.core.pipeline.graph import CleanupPolicy
-from tests.helpers import make_dataset
+from tests.helpers import TWO_CARDS, install_fake_nvidia_smi, make_dataset
 
 runner = CliRunner()
 
@@ -341,6 +341,112 @@ class TestServe:
         assert served["parallel_limits"] == ParallelLimits(
             max_workers=4, allow_process_mode=True, min_free_memory_fraction=0.10
         )
+
+    def _recording_serve(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        served: dict[str, object] = {}
+
+        def record(manifests: object, **options: object) -> None:
+            served.update(options)
+            served["called"] = True
+
+        monkeypatch.setattr("mosaic.agent.mcp.server.serve", record)
+        return served
+
+    def _config(self, tmp_path: Path, cards: str) -> Path:
+        config = tmp_path / "server.yaml"
+        _ = config.write_text(
+            f"datasets: [{tmp_path}]\ngpu_cards: {cards}\n", encoding="utf-8"
+        )
+        return config
+
+    def test_a_card_limit_naming_a_hidden_card_refuses_to_start(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ = install_fake_nvidia_smi(monkeypatch, tmp_path, TWO_CARDS)
+        served = self._recording_serve(monkeypatch)
+        config = self._config(tmp_path, '["0", "7"]')
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+
+        assert result.exit_code == 1
+        assert "the card limit names '7'" in result.stderr
+        assert "gpu_cards" not in result.stderr
+        assert "1:GPU-22222222" in result.stderr
+        assert result.stdout == ""
+        assert "called" not in served
+
+    def test_a_card_limit_naming_a_visible_card_reaches_the_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ = install_fake_nvidia_smi(monkeypatch, tmp_path, TWO_CARDS)
+        served = self._recording_serve(monkeypatch)
+        config = self._config(tmp_path, '["1"]')
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+
+        assert result.exit_code == 0, result.output
+        assert served["gpu_cards"] == ["1"]
+        assert "warning" not in result.stderr
+
+    def test_a_card_limit_with_no_card_query_warns_and_serves(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        served = self._recording_serve(monkeypatch)
+        config = self._config(tmp_path, '["0"]')
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+
+        assert result.exit_code == 0, result.output
+        assert "warning: GPU steps take no card lease" in result.stderr
+        assert result.stdout == ""
+        assert served["gpu_cards"] == ["0"]
+
+    def test_without_a_card_limit_no_card_is_queried(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        served = self._recording_serve(monkeypatch)
+        config = tmp_path / "server.yaml"
+        _ = config.write_text(f"datasets: [{tmp_path}]\n", encoding="utf-8")
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+
+        assert result.exit_code == 0, result.output
+        assert served["gpu_cards"] is None
+        assert result.stderr == ""
+
+    def test_the_http_server_checks_and_receives_the_card_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ = install_fake_nvidia_smi(monkeypatch, tmp_path, TWO_CARDS)
+        served: dict[str, object] = {}
+
+        def record(manifests: object, **options: object) -> None:
+            served.update(options)
+
+        monkeypatch.setattr("mosaic.agent.mcp.server.serve_http", record)
+        token = tmp_path / "token"
+        _ = token.write_text("t" * 40, encoding="utf-8")
+        token.chmod(0o600)
+        argv = [
+            "agent",
+            "serve",
+            "--http",
+            "127.0.0.1:8765",
+            "--token-file",
+            str(token),
+        ]
+
+        hidden = runner.invoke(
+            app, [*argv, "--config", str(self._config(tmp_path, '["9"]'))]
+        )
+        visible = runner.invoke(
+            app, [*argv, "--config", str(self._config(tmp_path, '["0"]'))]
+        )
+
+        assert hidden.exit_code == 1
+        assert "the card limit names '9'" in hidden.stderr
+        assert served["gpu_cards"] == ["0"]
+        assert visible.exit_code == 0, visible.output
 
     def test_an_unknown_cleanup_class_is_refused(self, tmp_path: Path) -> None:
         result = runner.invoke(
