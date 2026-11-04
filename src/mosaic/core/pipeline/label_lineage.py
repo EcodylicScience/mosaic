@@ -18,7 +18,6 @@ class, so ``core`` reads it without importing ``behavior``. A run whose
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -29,22 +28,9 @@ from mosaic.core.pipeline.inventory.params import (
     features_roots,
     upstream_runs,
 )
+from mosaic.core.pipeline.label_controls import LabelControls
 
-__all__ = ["LabelControls", "lineage_label_controls"]
-
-
-@dataclass(frozen=True, slots=True)
-class LabelControls:
-    """The ``remap`` pairs and ``mask`` ids found on a set of runs.
-
-    True when either is non-empty.
-    """
-
-    remap: frozenset[tuple[int, int]] = frozenset()
-    mask: frozenset[int] = frozenset()
-
-    def __bool__(self) -> bool:
-        return bool(self.remap or self.mask)
+__all__ = ["lineage_label_controls"]
 
 
 class _RecordedControls(BaseModel):

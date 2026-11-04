@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mosaic.core.pipeline.label_lineage import LabelControls, lineage_label_controls
+from mosaic.core.pipeline.label_controls import LabelControls
+from mosaic.core.pipeline.label_lineage import lineage_label_controls
 from tests.helpers import write_lineage_run
 
 

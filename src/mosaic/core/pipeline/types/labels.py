@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, Generic, Literal, Self, TypeAlias
+from typing import Annotated, Generic, Literal, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -12,6 +12,7 @@ from mosaic.core.pipeline._loaders import (
     NpzLoadSpec,
 )
 from mosaic.core.helpers import UNLABELED
+from mosaic.core.pipeline.label_controls import LabelMask, LabelRemap
 from mosaic.core.params import Declared, NestedParams
 from mosaic.core.pipeline.types.results import ResultColumn
 
@@ -46,26 +47,6 @@ _PATTERN_UNWIRED = (
     "no code path reads this field -- the label file is the abs_path "
     "recorded in labels/<kind>/index.csv, not a file matched by a pattern"
 )
-
-
-_REMAP_DESCRIPTION = (
-    "Maps a class id of the label file to the id every reader sees, as {file_id: id}."
-)
-
-_MASK_DESCRIPTION = (
-    "Class ids whose frames are unlabeled, so no step trains on or scores them."
-)
-
-LabelId: TypeAlias = Annotated[int, Field(ge=0)]
-"""A class id of a label file, 0 or more."""
-
-LabelRemap: TypeAlias = Annotated[
-    dict[LabelId, LabelId] | None, Declared(_REMAP_DESCRIPTION)
-]
-"""A labels source's ``remap``: a class id of the file to the id readers see."""
-
-LabelMask: TypeAlias = Annotated[list[LabelId] | None, Declared(_MASK_DESCRIPTION)]
-"""A labels source's ``mask``: the class ids whose frames become unlabeled."""
 
 
 class LabelsSource(NestedParams, Generic[K]):

@@ -79,6 +79,7 @@ from .compatibility import (
 from .lanes import lane_for
 from .reach import class_reach, class_reach_by_option
 from .model import (
+    LABEL_CONTROL_FIELDS,
     TRACKS_INPUT,
     OpStepSpec,
     Recipe,
@@ -1096,8 +1097,9 @@ def resolve_step_spec(
     - a params field declared as a plain ``str`` becomes the bare identifier,
       which is how a model is named;
     - a params field declared as a labels source becomes ``{"kind": ...}``
-      naming the upstream's label kind, and the spec's ``labels_run_id`` pins
-      the labels variant the upstream writes.
+      naming the upstream's label kind, with the reference's ``remap`` and
+      ``mask`` when it gives them, and the spec's ``labels_run_id`` pins the
+      labels variant the upstream writes.
 
     Only top-level params fields are scanned, matching ``resolve_references`` and
     ``Params.identity_dump()``. The dump asks a nested model for its own dump, and
@@ -1161,7 +1163,12 @@ def resolve_step_spec(
         if upstream is None:
             continue
         if _is_labels_field(types.get(name)):
-            params[name] = {"kind": upstream.labels_kind or "behavior"}
+            params[name] = {
+                "kind": upstream.labels_kind or "behavior",
+                **reference.model_dump(
+                    mode="json", include=set(LABEL_CONTROL_FIELDS), exclude_none=True
+                ),
+            }
             labels_run_id = upstream.labels_variant or None
             continue
         if _is_reference_field(types.get(name)):

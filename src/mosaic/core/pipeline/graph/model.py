@@ -37,6 +37,7 @@ from typing import Annotated, ClassVar, Final, Literal, Self
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.label_controls import LabelMask, LabelRemap
 from mosaic.core.scope import Scope
 
 from .expand import expand_repeats
@@ -44,6 +45,7 @@ from .expand import expand_repeats
 __all__ = [
     "BOUND_STATUS",
     "COMPLETE_STATUSES",
+    "LABEL_CONTROL_FIELDS",
     "REQUEST_HOLD_FLOOR_HOURS",
     "BoundRef",
     "CleanupMode",
@@ -163,6 +165,25 @@ class StepRef(GraphModel):
         if not self.step.strip():
             raise ValueError("a step reference must name a step")
         return self
+
+
+class ParamsStepRef(StepRef):
+    """A step reference in a params field, which a labels field may give controls.
+
+    ``remap`` and ``mask`` are the controls of the labels source the reference
+    becomes. They are meaningful only at a labels field, and ``validate`` refuses
+    them anywhere else. A step's ``inputs`` and ``tracks`` are plain
+    :class:`StepRef`, which accepts neither.
+    """
+
+    remap: LabelRemap = None
+    mask: LabelMask = None
+
+
+LABEL_CONTROL_FIELDS: Final = tuple(
+    name for name in ParamsStepRef.model_fields if name not in StepRef.model_fields
+)
+"""The keys of a params reference that only a labels field takes."""
 
 
 class StepRun(GraphModel):
@@ -336,7 +357,7 @@ def references_of(step: Step) -> list[tuple[str, str]]:
     return found
 
 
-def params_step_refs(params: Mapping[str, JsonValue]) -> dict[str, StepRef]:
+def params_step_refs(params: Mapping[str, JsonValue]) -> dict[str, ParamsStepRef]:
     """The top-level params fields holding a step reference.
 
     A params reference is a mapping carrying a ``step`` key, because ``params``
@@ -353,15 +374,15 @@ def params_step_refs(params: Mapping[str, JsonValue]) -> dict[str, StepRef]:
     something the resolver does not do.
 
     Raises:
-        ValueError: A mapping carries ``step`` alongside a key ``StepRef`` does
-            not declare. Refused rather than ignored: it is a reference its
+        ValueError: A mapping carries ``step`` alongside a key ``ParamsStepRef``
+            does not declare. Refused rather than ignored: it is a reference its
             author expected to be honoured.
     """
-    found: dict[str, StepRef] = {}
+    found: dict[str, ParamsStepRef] = {}
     for name, value in params.items():
         if isinstance(value, dict) and "step" in value:
             try:
-                found[name] = StepRef.model_validate(value)
+                found[name] = ParamsStepRef.model_validate(value)
             except Exception as exc:
                 raise ValueError(
                     f"params.{name} looks like a step reference but is not a "

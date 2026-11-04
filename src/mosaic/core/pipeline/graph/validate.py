@@ -96,6 +96,7 @@ from .compatibility import (
 from .digest import recipe_digest
 from .expand import RepeatInvalid, expand_repeats
 from .model import (
+    LABEL_CONTROL_FIELDS,
     TRACKS_INPUT,
     FeatureStepSpec,
     OpStepSpec,
@@ -870,7 +871,7 @@ def _build_problems(step_id: str, exc: StepBuildError) -> list[Problem]:
 def _reference_site_problems(step: Step, name: str, kind: str) -> list[Problem]:
     """Params references landing in a field that cannot hold one."""
     found: list[Problem] = []
-    for field_name in params_step_refs(step.params):
+    for field_name, reference in params_step_refs(step.params).items():
         site = params_reference_site(kind, name, field_name)
         if site == "unknown":
             found.append(
@@ -890,6 +891,23 @@ def _reference_site_problems(step: Step, name: str, kind: str) -> list[Problem]:
                     f"substitute into. A reference resolves into a field declared "
                     f"as a Result or an ArtifactSpec, as a labels source, or as "
                     f"the bare identifier that names a model",
+                )
+            )
+        elif site != "labels" and (
+            controls := [
+                key
+                for key in LABEL_CONTROL_FIELDS
+                if getattr(reference, key) is not None
+            ]
+        ):
+            found.append(
+                Problem(
+                    step.id,
+                    f"params.{field_name}",
+                    f"{name}'s {field_name!r} is not a labels field, so its "
+                    f"reference takes no {' or '.join(controls)}. Label "
+                    f"controls go on a reference to a convert-labels step, at a "
+                    f"labels field",
                 )
             )
     return found

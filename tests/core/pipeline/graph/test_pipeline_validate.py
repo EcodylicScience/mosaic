@@ -841,3 +841,83 @@ def test_two_steps_differing_only_in_their_labels_step_are_two_runs() -> None:
         walk.resolved["swapped"].labels_variant
     )
     assert walk.resolved["first"].run_id != walk.resolved["second"].run_id
+
+
+# --- label controls on a labels reference -------------------------------------
+
+
+def _controlled(step_id: str, labels: Document) -> Document:
+    return {**_labeled(step_id, "labels"), "params": {"labels": labels, "n_total": 10}}
+
+
+def test_a_labels_reference_may_carry_remap_and_mask() -> None:
+    reference: Document = {"step": "labels", "remap": {"2": 0}, "mask": [3]}
+
+    assert _problems(_labels_recipe(_controlled("labeled", reference))) == ()
+
+
+def test_a_mask_at_a_field_that_is_not_a_labels_field_is_refused() -> None:
+    templates = TEMPLATE_STEPS["extract-templates"]
+    kmeans: Document = {
+        "id": "kmeans",
+        "type": "feature",
+        "feature": "global-kmeans",
+        "inputs": [{"step": "speed"}],
+        "params": {"templates": {"step": "templates", "mask": [1]}, "k": 2},
+    }
+
+    problem = _at(_labels_recipe(templates, kmeans), "params.templates")
+
+    assert problem.step == "kmeans"
+    assert "mask" in problem.message
+    assert "labels" in problem.message
+
+
+def test_a_remap_at_a_field_that_is_not_a_labels_field_is_refused() -> None:
+    templates = TEMPLATE_STEPS["extract-templates"]
+    kmeans: Document = {
+        "id": "kmeans",
+        "type": "feature",
+        "feature": "global-kmeans",
+        "inputs": [{"step": "speed"}],
+        "params": {"templates": {"step": "templates", "remap": {"1": 0}}, "k": 2},
+    }
+
+    problem = _at(_labels_recipe(templates, kmeans), "params.templates")
+
+    assert "remap" in problem.message
+
+
+@pytest.mark.parametrize("control", [{"remap": {"1": 0}}, {"mask": [1]}])
+def test_an_inputs_item_cannot_carry_label_controls(control: Document) -> None:
+    kmeans: Document = {
+        "id": "kmeans",
+        "type": "feature",
+        "feature": "global-kmeans",
+        "inputs": [{"step": "speed", **control}],
+        "params": {"k": 2},
+    }
+
+    with pytest.raises(ValueError, match="remap|mask"):
+        _ = Recipe.model_validate(_labels_recipe(kmeans))
+
+
+@pytest.mark.parametrize("control", [{"remap": {"-1": 0}}, {"mask": [-1]}])
+def test_a_label_control_must_hold_class_ids(control: Document) -> None:
+    reference: Document = {"step": "labels", **control}
+
+    with pytest.raises(ValueError, match="valid"):
+        _ = Recipe.model_validate(_labels_recipe(_controlled("labeled", reference)))
+
+
+def test_the_label_control_fields_are_the_keys_a_params_reference_adds() -> None:
+    from mosaic.core.pipeline.graph.model import (
+        LABEL_CONTROL_FIELDS,
+        ParamsStepRef,
+        StepRef,
+    )
+
+    assert set(LABEL_CONTROL_FIELDS) == {"remap", "mask"}
+    assert set(LABEL_CONTROL_FIELDS) == set(ParamsStepRef.model_fields) - set(
+        StepRef.model_fields
+    )

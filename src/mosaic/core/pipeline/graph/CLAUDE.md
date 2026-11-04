@@ -94,6 +94,10 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `writes_labels` (`convert-labels`): the field gets its label kind and
   `StepSpec.labels_run_id` pins the variant it writes, through the plan and
   `run_feature` (`test_pipeline_converting_graph.py`, `test_pipeline_validate.py`).
+  The reference may carry `remap` and `mask`, which the field's labels source takes
+  beside the kind. A params reference is a `ParamsStepRef`; a step's `inputs` and
+  `tracks` stay `StepRef`, which takes neither, and a params reference to any other
+  site is refused for carrying one.
 - `Request.step_scopes` narrows single steps, and `save_request` leaves the key out
   when it is empty, so such a request file reads in an older mosaic. A step's target
   is the plan's entries narrowed by its scope (`step_target`), and its identity,

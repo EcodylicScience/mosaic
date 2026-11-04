@@ -268,3 +268,106 @@ def test_a_step_runs_with_the_labels_variant_its_reference_names(
     resolved = json.loads(params_path.read_text())["_resolved"]
     read = [item["run_id"] for item in resolved if item["feature"] == "labels"]
     assert read == [variant]
+
+
+CONTROLS: dict[str, JsonValue] = {"remap": {"2": 0}, "mask": [3]}
+"""Label controls written beside a labels reference, with JSON's string keys."""
+
+CONTROLLED_FILES = {"train": {"a": {f"s{i}": 240 for i in range(1, 5)}}}
+
+
+def _controlled_recipe() -> Recipe:
+    """Templates, a classifier and its evaluation, each labels reference controlled."""
+    reference: dict[str, JsonValue] = {"step": "convert", **CONTROLS}
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "controlled",
+            "steps": [
+                CONVERT_TRACKS_STEP,
+                {**CONVERT_LABELS_STEP, "id": "convert"},
+                {
+                    "id": "heading",
+                    "type": "feature",
+                    "feature": "heading",
+                    "inputs": ["tracks"],
+                    "tracks": {"step": "tracks"},
+                    "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+                },
+                {
+                    "id": "pairs",
+                    "type": "feature",
+                    "feature": "pair-position",
+                    "inputs": ["tracks", {"step": "heading"}],
+                    "tracks": {"step": "tracks"},
+                },
+                {
+                    "id": "labeled",
+                    "type": "feature",
+                    "feature": "extract-labeled-templates",
+                    "inputs": [{"step": "pairs"}],
+                    "params": {
+                        "labels": reference,
+                        "n_total": 300,
+                        "test_fraction": 0.0,
+                    },
+                },
+                {
+                    "id": "classifier",
+                    "type": "feature",
+                    "feature": "xgboost",
+                    "inputs": [{"step": "pairs"}],
+                    "params": {
+                        "templates": {"step": "labeled"},
+                        "default_class": 0,
+                        "n_estimators": 5,
+                        "n_jobs": 1,
+                    },
+                },
+                {
+                    "id": "evaluate",
+                    "type": "feature",
+                    "feature": "evaluate-labels",
+                    "inputs": [{"step": "classifier"}],
+                    "params": {"labels": reference, "perspective": 0},
+                },
+            ],
+        }
+    )
+
+
+def test_a_labels_reference_carries_remap_and_mask_to_its_step(
+    tmp_path: Path,
+) -> None:
+    """The controls reach each step's params, and its planned run is the executed one."""
+    import json
+
+    from mosaic.core.scope import Scope
+
+    ds = calms21_dataset(tmp_path / "ds", CONTROLLED_FILES, seed=11, n_classes=3)
+    _ = ds.convert_all_tracks()
+    recipe = _controlled_recipe()
+    scopes = {
+        step: Scope(groups=["train"]) for step in ("labeled", "classifier", "evaluate")
+    }
+    variant = ds.label_conversion_variant("behavior", "calms21_npy")
+
+    planned = plan_pipeline(ds, recipe, step_scopes=scopes)
+    run = run_pipeline(ds, recipe, step_scopes=scopes)
+
+    executed = {outcome.step_id: outcome.run_id for outcome in run.outcomes}
+    for step_id in ("labeled", "evaluate"):
+        step = planned.step(step_id)
+        assert step.spec.labels_run_id == variant
+        assert step.run_id is not None
+        assert executed[step_id] == step.run_id
+        path = ds.get_root("features") / step.storage_name / step.run_id / "params.json"
+        document = json.loads(path.read_text())
+        labels = document["_params"]["labels"]
+        assert labels["kind"] == "behavior"
+        assert labels["remap"] == {"2": 0}
+        assert labels["mask"] == [3]
+        pinned = [
+            i["run_id"] for i in document["_resolved"] if i["feature"] == "labels"
+        ]
+        assert pinned == [variant]

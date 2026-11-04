@@ -515,7 +515,7 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - Conversion is a recipe step: `convert-tracks` and `convert-labels` with
   `source_format`. Scan the sources first. A feature reads the converted tracks
   through `"tracks": {"step": <id>}` and the converted labels through
-  `"labels": {"step": <id>}`.
+  `"labels": {"step": <id>}`, which may add `"remap": {"2": 0}` and `"mask": [3]`.
 - A train/test split is one request: step scopes narrow single steps
   (`--step-scope 'fit={"groups": ["train"]}'`). A step reading another through
   `inputs` or `tracks` must be narrowed to entries the other covers; a params
