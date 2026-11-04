@@ -8768,6 +8768,7 @@ class Dataset:
                     source=src_path,
                     source_md5=source_md5,
                     consumed_source_roots=("tracks_raw",),
+                    carries_tracklets=converter.tracklets(conv_params),
                 )
                 produced.append(out_path)
 
@@ -8827,6 +8828,7 @@ class Dataset:
             source=src_path,
             source_md5=str(raw_row.get("md5", "")),
             consumed_source_roots=("tracks_raw",),
+            carries_tracklets=converter.tracklets(conv_params),
         )
         return out_path
 
@@ -9342,6 +9344,7 @@ class Dataset:
                 source=self.resolve_path(first_row["abs_path"]),
                 source_md5=text_cell(first_row.get("md5", "")),
                 consumed_source_roots=("tracks_raw",),
+                carries_tracklets=converter.tracklets(conv_params),
             )
             advance(int(len(group_df)))
 

@@ -282,6 +282,12 @@ class TracksIndexRow(RunIndexRowBase):
     ``appearance_abs_path`` is the root-relative path of the row's appearance
     table, the per-instance vectors that sit beside the tracks table. Blank for
     a row with no such table, and for every row written before the column.
+
+    ``carries_tracklets`` says whether the table's ``id`` follows one animal
+    over time: ``"true"``, ``"false"``, or blank for unknown. A blank is not
+    refused. :func:`read_carries_tracklets` answers it from ``producer`` where
+    the producer settles the answer, and leaves it unknown for a conversion
+    that does not know and for every producer that does not settle it.
     """
 
     group: str
@@ -303,6 +309,7 @@ class TracksIndexRow(RunIndexRowBase):
     known_tail_loss: str = ""
     first_frame: str = ""
     appearance_abs_path: str = ""
+    carries_tracklets: str = ""
 
 
 TRACKS_INDEX_COLUMNS: Final[list[str]] = [
@@ -325,6 +332,26 @@ _KNOWN_TAIL_LOSS: Final = "known_tail_loss"
 
 _FIRST_FRAME: Final = "first_frame"
 """The cell of the first frame that a table was numbered from, named once likewise."""
+
+_CARRIES_TRACKLETS: Final = "carries_tracklets"
+"""The cell recording whether ids follow an animal, named once likewise."""
+
+_TRACKLETS_TRUE: Final = "true"
+_TRACKLETS_FALSE: Final = "false"
+"""The two answers that a cell spells. Any other cell reads as unknown."""
+
+PRODUCERS_WITHOUT_TRACKLETS: Final[frozenset[str]] = frozenset(
+    {"infer-pose", "infer-points", "infer-localizer"}
+)
+"""Producers whose ids never follow an animal: a detection number, or always 0."""
+
+PRODUCERS_WITH_TRACKLETS: Final[frozenset[str]] = frozenset(
+    {"trex", "ultralytics", "litpose"}
+)
+"""Producers whose ids follow an animal.
+
+``litpose`` writes one ``id`` 0 track per video, which names one animal over time.
+"""
 
 TRACKS_INDEX_PATH_COLUMNS: Final[tuple[str, ...]] = (
     "source_abs_path",
@@ -1096,6 +1123,57 @@ def read_first_frame(row: CellRow) -> int | None:
     return 0
 
 
+def read_carries_tracklets(row: CellRow) -> bool | None:
+    """Return whether one row's table has ids that follow an animal, or ``None``.
+
+    The only reader of the cell. A recorded ``"true"`` or ``"false"`` is the
+    answer. A blank cell, or one that spells neither, is answered from the row's
+    ``producer`` where the producer settles it
+    (:data:`PRODUCERS_WITH_TRACKLETS`, :data:`PRODUCERS_WITHOUT_TRACKLETS`), so
+    a row written before the cell keeps the answer of its producer. ``None``
+    covers a conversion that was not told, a SLEAP run, and every derived
+    variant, whose answer only the row can give.
+    """
+    recorded = text_cell(row.get(_CARRIES_TRACKLETS)).lower()
+    if recorded == _TRACKLETS_TRUE:
+        return True
+    if recorded == _TRACKLETS_FALSE:
+        return False
+    producer = text_cell(row.get("producer"))
+    if producer in PRODUCERS_WITH_TRACKLETS:
+        return True
+    if producer in PRODUCERS_WITHOUT_TRACKLETS:
+        return False
+    return None
+
+
+def entries_without_tracklets(
+    ds: Dataset, tracks_run_id: str | None, entries: Collection[Entry] | None
+) -> tuple[Entry, ...]:
+    """Return the entries whose tracks row records no tracklets, sorted.
+
+    Each entry is read from the row that :func:`select_variant_rows` resolves
+    for *tracks_run_id*, over the rows in scope of *entries*. An entry whose row
+    reads ``True`` or unknown (:func:`read_carries_tracklets`) is left out.
+    An entry holding two variants when *tracks_run_id* is ``None`` raises
+    :class:`AmbiguousTracksVariant` in the resolver; the planner refuses that
+    case before it asks, so this answers ``()``.
+    """
+    try:
+        rows = rows_in_scope(
+            select_variant_rows(read_tracks_index(ds), tracks_run_id), entries
+        )
+    except AmbiguousTracksVariant:
+        return ()
+    return tuple(
+        sorted(
+            (text_cell(row.get("group")), text_cell(row.get("sequence")))
+            for _, row in rows.iterrows()
+            if read_carries_tracklets(row) is False
+        )
+    )
+
+
 def recorded_first_frames(ds: Dataset, run_id: str) -> dict[tuple[str, str], int]:
     """Return the first frame that variant *run_id*'s table of each entry was numbered from.
 
@@ -1793,6 +1871,7 @@ def write_tracks_row(
     producer: str,
     std_format: str,
     n_rows: int,
+    carries_tracklets: bool | None,
     producer_run_id: str = "",
     source: Path | str = "",
     source_md5: str = "",
@@ -1807,7 +1886,7 @@ def write_tracks_row(
 ) -> None:
     """Record one standardized-tracks table. The only way to write this index.
 
-    Keyword-only throughout: six call sites in four files pass ``group`` and
+    Keyword-only throughout: the call sites pass ``group`` and
     ``sequence`` adjacently, and transposing them would be silent.
 
     ``n_keypoints`` is **measured from the parquet just written**, not passed in.
@@ -1844,6 +1923,10 @@ def write_tracks_row(
     from another variant passes what that table was built from, which no source
     root records. ``appearance_path`` is the appearance table written beside
     the tracks table, stored root-relative, and ``None`` records a blank.
+    ``carries_tracklets`` says whether the table's ``id`` follows one animal
+    over time. It is recorded as ``"true"`` or ``"false"``, and ``None``
+    records a blank for a producer that cannot say. A caller always passes it,
+    so a blank is never an omission.
 
     ``records_media`` says whether this producer read video. A **bridge** did --
     a tracker or an inference run opens the entry's media -- so its row records
@@ -1900,6 +1983,11 @@ def write_tracks_row(
         first_frame="" if first_frame is None else str(int(first_frame)),
         appearance_abs_path=(
             "" if appearance_path is None else ds.relative_to_root(appearance_path)
+        ),
+        carries_tracklets=(
+            ""
+            if carries_tracklets is None
+            else (_TRACKLETS_TRUE if carries_tracklets else _TRACKLETS_FALSE)
         ),
     )
     append_refusing_key_collision(

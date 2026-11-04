@@ -162,6 +162,7 @@ def _record_appearance(dataset: Dataset, sequence: str) -> None:
         std_format="mosaic_v1",
         n_rows=len(tracks),
         appearance_path=path,
+        carries_tracklets=None,
     )
 
 

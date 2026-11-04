@@ -224,6 +224,7 @@ def bridge_csv_to_tracks(
         consumed=[csv_path, *consumed_media, *model_files],
         axis=axis,
         frames_read=_frames_predicted(df),
+        carries_tracklets=True,
     )
 
 

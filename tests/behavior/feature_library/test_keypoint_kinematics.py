@@ -538,6 +538,7 @@ def _dataset(base: Path, table: pd.DataFrame, std_format: str) -> Dataset:
         producer="convert-x",
         std_format=std_format,
         n_rows=len(table),
+        carries_tracklets=None,
     )
     return dataset
 

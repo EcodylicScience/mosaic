@@ -480,6 +480,7 @@ def _entry_dataset(directory: Path, tracks: pd.DataFrame) -> Dataset:
         producer="convert-fixture",
         std_format="mosaic_v1",
         n_rows=len(tracks),
+        carries_tracklets=None,
     )
     media = dataset.get_root("media_raw")
     write_h264_mp4(

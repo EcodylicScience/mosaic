@@ -140,6 +140,7 @@ def _dataset_recording(
         producer="convert-x",
         std_format=std_format,
         n_rows=5,
+        carries_tracklets=None,
     )
     return ds
 
@@ -210,6 +211,7 @@ def _add_pixel_variant(ds: Dataset) -> str:
         producer="convert-y",
         std_format="mosaic_v1",
         n_rows=5,
+        carries_tracklets=None,
     )
     return run_id
 

@@ -60,6 +60,7 @@ def _write_row(
         n_rows=2,
         producer_run_id="infer-pose.0.1-aaaaaaaaaa" if bridged else "",
         records_media=bridged,
+        carries_tracklets=None,
     )
 
 

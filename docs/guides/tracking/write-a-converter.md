@@ -52,6 +52,14 @@ quietly: a `mosaic_v1`-shaped table is recorded as `trex_v1`, and the error surf
 much later, at the first feature run mixing those entries with real `mosaic_v1`
 ones. Say `mosaic_v1`.
 
+## Declare `carries_tracklets`
+
+Set it on the class: `True` when the `id` column follows one animal over the video,
+`False` when ids restart or number detections each frame, and `None` when the file
+cannot say. The tracks index records the answer, and a step that needs ids following
+an animal refuses tracks recorded `False`. `None` records no answer and refuses
+nothing.
+
 ## Shipping it inside mosaic
 
 mosaic discovers nothing on its own — no entry-point scan, no import hook — so where

@@ -96,6 +96,7 @@ def scoped(tmp_path: Path) -> Dataset:
             std_format="mosaic_v1",
             n_rows=len(frame),
             consumed_source_roots=("tracks_raw",),
+            carries_tracklets=None,
         )
     return dataset
 

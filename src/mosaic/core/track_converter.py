@@ -187,6 +187,12 @@ class TrackConverter(Generic[P]):
             :func:`register_track_converter` does not check it. A converter that
             omits the declaration is validated and recorded under that schema.
             Every new converter declares one, ``mosaic_v1`` for a pixel table.
+        carries_tracklets: Whether the converted ``id`` follows one animal over
+            time: ``True`` for a format whose ids name animals, ``False`` for one
+            whose ids restart or number detections, and ``None`` when the
+            format cannot say and the user is asked (:meth:`tracklets`). A
+            ClassVar, so it never enters ``identity_dump()``. Every converter
+            declares it, and the tracks index row records the answer.
         Params: The parameter model. Everything in it determines the output
             except fields marked ``HASH_EXCLUDE``.
     """
@@ -196,7 +202,17 @@ class TrackConverter(Generic[P]):
     enumerable: ClassVar[bool] = False
     merges_per_sequence: ClassVar[bool] = False
     output_schema: ClassVar[str] = "trex_v1"
+    carries_tracklets: ClassVar[bool | None] = None
     Params: ClassVar[type[TrackConvertParams]] = TrackConvertParams
+
+    def tracklets(self, params: P) -> bool | None:
+        """Return the tracklets answer that a conversion under *params* records.
+
+        The class's :attr:`carries_tracklets`, unless a format lets the user
+        answer through a parameter and the user did. ``None`` records a blank.
+        """
+        _ = params
+        return self.carries_tracklets
 
     def convert(self, path: Path, params: P, hints: EntryHints) -> pd.DataFrame:
         """Read *path* and return one schema-valid table.

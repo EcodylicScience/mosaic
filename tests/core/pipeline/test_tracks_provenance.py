@@ -542,6 +542,7 @@ def test_an_entrys_stamp_is_its_latest_whatever_the_row_order(tmp_path: Path) ->
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
         frame = read_tracks_index(ds)
         frame.loc[frame["run_id"] == run_id, "started_at"] = stamp
@@ -571,6 +572,7 @@ def test_drop_entries_can_retire_one_variant_and_keep_the_rest(
             producer=run_id.split(".")[0],
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
     with pytest.raises(ValueError, match="tracks_run_id"):
         _ = select_variant_rows(read_tracks_index(ds))
@@ -602,6 +604,7 @@ def test_drop_entries_without_a_variant_takes_every_row(tmp_path: Path) -> None:
             producer=run_id.split(".")[0],
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
     assert ds.drop_entries(scope=Scope(entries=[("", "seq_a")])) == 2
     assert len(read_tracks_index(ds)) == 0
@@ -682,6 +685,7 @@ def test_drop_entries_deletes_the_rows_appearance_table(tmp_path: Path) -> None:
         std_format="trex_v1",
         n_rows=40,
         appearance_path=appearance,
+        carries_tracklets=None,
     )
 
     assert ds.drop_entries(scope=Scope(entries=[("", "seq_a")]), delete_files=True) == 1
@@ -831,6 +835,7 @@ def test_the_sleap_bridge_records_the_run_and_a_portable_source(
         overwrite=True,
         axis=EntryAxis(),
         recorded_first_frame=None,
+        carries_tracklets=True,
     )
 
     assert written.n_rows == 6 and written.n_ids == 1

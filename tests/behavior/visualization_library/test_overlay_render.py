@@ -162,6 +162,7 @@ def _add_variant(ds: Dataset, variant: str, *, pose: bool) -> None:
         # units guard refused to draw a centroid it had been told was in cm.
         std_format="trex_v2",
         n_rows=len(table),
+        carries_tracklets=None,
     )
 
 

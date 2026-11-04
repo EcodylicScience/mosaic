@@ -831,6 +831,8 @@ class TrexNpzConverter(TrackConverter[TrackConvertParams]):
     # the tracking run, not by this one.
     version = "0.3"
     output_schema = "trex_v2"
+    # One file per individual, numbered by TREx's own tracker.
+    carries_tracklets = True
     merges_per_sequence = True
     Params = TrackConvertParams
 

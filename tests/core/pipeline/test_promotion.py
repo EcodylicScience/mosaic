@@ -283,6 +283,7 @@ def _prior_derivative(ds: Dataset) -> Path:
         consumed_source_roots=["tracks_raw"],
         std_format="trex_v1",
         n_rows=2,
+        carries_tracklets=None,
     )
     return table
 

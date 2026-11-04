@@ -54,6 +54,7 @@ by `mosaic convert-tracks`.
 | --- | --- | --- | --- | --- |
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 | `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the source video's measured fps by the tracker bridge. |
+| `tracks_named` | `boolean` \| `None` | `null` |  | Whether the export's tracks are named: each track index follows one animal over the video. A SLEAP export records identities only when its tracks are named, so the file cannot say. Leave unset to record no answer; the plan then does not refuse a step that needs ids following an animal. |
 
 #### `trex_npz`
 

@@ -203,6 +203,8 @@ class Calms21Converter(TrackConverter[Calms21Params]):
     version = "0.4"
     enumerable = True
     output_schema = "mosaic_v1"
+    # Two mice keep their slots through a sequence.
+    carries_tracklets = True
     Params = Calms21Params
 
     def convert(

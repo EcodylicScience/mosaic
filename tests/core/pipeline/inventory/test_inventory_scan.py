@@ -562,6 +562,7 @@ def _measured_variant(
         n_rows=read,
         media_frames=media,
         frames_read=read,
+        carries_tracklets=None,
     )
     return run_id
 

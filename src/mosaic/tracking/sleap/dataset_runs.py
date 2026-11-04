@@ -250,6 +250,7 @@ def bridge_analysis_h5_to_tracks(
     overwrite: bool,
     axis: EntryAxis,
     recorded_first_frame: int | None,
+    carries_tracklets: bool,
     readback: Path | None = None,
 ) -> BridgeCounts:
     """Bridge a SLEAP analysis HDF5 into ``tracks/<variant>/<group>__<seq>.parquet``.
@@ -262,6 +263,7 @@ def bridge_analysis_h5_to_tracks(
     published as the entry's appearance table (:func:`_appearance_for`). An
     existing table is reused as :func:`_reusable_table` decides, against
     *recorded_first_frame*, and otherwise both tables are republished.
+    *carries_tracklets* is whether the run tracked, which the row records.
 
     Returns:
         The counts of the published or reused table.
@@ -318,6 +320,7 @@ def bridge_analysis_h5_to_tracks(
         # when sleap-io can measure the video, and otherwise to the last frame
         # with an instance, and the file does not say which.
         frames_read=None,
+        carries_tracklets=carries_tracklets,
         appearance=appearance,
     )
     return dataclasses.replace(counts, n_vectors_unmatched=unmatched)
@@ -336,6 +339,7 @@ def _bridge_no_detections(
     overwrite: bool,
     axis: EntryAxis,
     recorded_first_frame: int | None,
+    carries_tracklets: bool,
     dim: int,
 ) -> BridgeCounts:
     """Publish the empty tracks and appearance tables of an entry without a detection.
@@ -374,6 +378,7 @@ def _bridge_no_detections(
         consumed=[marker, *consumed_media, *model_checkpoints],
         axis=axis,
         frames_read=None,
+        carries_tracklets=carries_tracklets,
         appearance=appearance,
     )
     return dataclasses.replace(counts, n_vectors_unmatched=0)
@@ -1033,6 +1038,7 @@ def run_sleap(
                     overwrite=overwrite_table,
                     axis=axis,
                     recorded_first_frame=job.recorded_first_frame,
+                    carries_tracklets=params.tracking,
                     dim=embedding.dim,
                 )
             return bridge_analysis_h5_to_tracks(
@@ -1048,6 +1054,7 @@ def run_sleap(
                 overwrite=overwrite_table,
                 axis=axis,
                 recorded_first_frame=job.recorded_first_frame,
+                carries_tracklets=params.tracking,
                 readback=readback_path if embedding is not None else None,
             )
 

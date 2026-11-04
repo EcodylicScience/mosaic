@@ -117,6 +117,7 @@ def recording(
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=len(table),
+        carries_tracklets=None,
     )
     ds.index_media([media])
     return ds, n_frames, size

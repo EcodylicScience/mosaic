@@ -49,7 +49,7 @@ from .tracks_identity import (
     tracks_variant_root,
     write_tracks_variant,
 )
-from .tracks_index import read_tracks_index, write_tracks_row
+from .tracks_index import read_carries_tracklets, read_tracks_index, write_tracks_row
 from .writers import read_parquet_table, write_parquet_atomic
 
 if TYPE_CHECKING:
@@ -218,6 +218,7 @@ def upgrade_trex_tables(ds: Dataset, *, apply: bool = False) -> UpgradeReport:
             n_rows=int(len(converted)),
             source=path,
             consumed_source_roots=("tracks",),
+            carries_tracklets=read_carries_tracklets(row),
         )
         outcome("upgraded", f"rescaled by 1/{cm_per_pixel}")
 

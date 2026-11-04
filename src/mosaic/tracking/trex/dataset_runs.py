@@ -420,6 +420,7 @@ def bridge_npz_to_tracks(
         consumed=[npz_paths[0], *consumed_media],
         axis=axis,
         frames_read=None if conversion is None else conversion.frames,
+        carries_tracklets=True,
         known_tail_loss=None if conversion is None else _known_tail_loss(conversion),
     )
 

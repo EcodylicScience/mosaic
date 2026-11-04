@@ -39,6 +39,7 @@ def _legacy_trex_table(
     producer: str = "convert-trex_npz",
     std_format: str = "trex_v1",
     carry_calibration: bool = True,
+    carries_tracklets: bool | None = None,
 ) -> Path:
     """A table as the centimetre-era conversion left it: cm, with X at the head."""
     n = len(pixels)
@@ -76,6 +77,7 @@ def _legacy_trex_table(
         std_format=std_format,
         n_rows=n,
         consumed_source_roots=("tracks_raw",),
+        carries_tracklets=carries_tracklets,
     )
     return out_path
 
@@ -137,6 +139,35 @@ def test_the_upgraded_row_records_the_new_schema(tmp_path: Path) -> None:
     index = read_tracks_index(ds)
     row = index[index["run_id"] == report.target_variant].iloc[0]
     assert str(row["std_format"]) == "trex_v2"
+
+
+@pytest.mark.parametrize(
+    ("producer", "recorded", "cell"),
+    [
+        ("convert-trex_npz", False, "false"),
+        ("convert-trex_npz", True, "true"),
+        ("convert-trex_npz", None, ""),
+        ("trex", None, "true"),
+    ],
+)
+def test_the_upgraded_row_answers_tracklets_as_its_source_does(
+    tmp_path: Path, producer: str, recorded: bool | None, cell: str
+) -> None:
+    ds = make_dataset(tmp_path / "dataset", name="upgrade", save=False)
+    _ = _legacy_trex_table(
+        ds,
+        "seq_a",
+        cm_per_pixel=0.5,
+        pixels=np.linspace(0.0, 10.0, 4),
+        producer=producer,
+        carries_tracklets=recorded,
+    )
+
+    report = upgrade_trex_tables(ds, apply=True)
+
+    index = read_tracks_index(ds)
+    row = index[index["run_id"] == report.target_variant].iloc[0]
+    assert str(row["carries_tracklets"]) == cell
 
 
 def test_a_table_without_a_calibration_is_refused_not_assumed(tmp_path: Path) -> None:

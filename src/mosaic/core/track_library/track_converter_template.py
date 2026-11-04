@@ -81,6 +81,9 @@ class MyFormatConverter(TrackConverter[MyFormatParams]):
     # caller validates against this, so a converter cannot claim one schema
     # while its rows are recorded under another.
     output_schema = "mosaic_v1"
+    # True when `id` follows one animal over the video, False when ids restart or
+    # number detections each frame, None when the file cannot say.
+    carries_tracklets = None
     Params = MyFormatParams
 
     def convert(

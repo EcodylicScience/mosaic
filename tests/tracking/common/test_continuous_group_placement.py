@@ -474,6 +474,7 @@ class TestAConversion:
             n_rows=len(frames),
             producer_run_id="",
             records_media=False,
+            carries_tracklets=None,
         )
         (cell,) = read_tracks_index(recording)["first_frame"].astype(str)
         assert cell == ""

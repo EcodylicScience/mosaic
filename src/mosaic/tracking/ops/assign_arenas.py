@@ -38,6 +38,7 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import (
+    read_carries_tracklets,
     read_first_frame,
     write_tracks_row,
 )
@@ -297,6 +298,7 @@ class AssignArenasOp(Op[AssignArenasParams]):
                     records_media=False,
                     first_frame=read_first_frame(row),
                     consumed_composition=composition,
+                    carries_tracklets=read_carries_tracklets(row),
                 )
                 if any(report.dropped.values()):
                     ctx.rows_dropped(

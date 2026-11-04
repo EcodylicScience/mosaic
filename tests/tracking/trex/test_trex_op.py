@@ -129,3 +129,20 @@ def test_run_trex_resolves_detect_model_run_id_to_weights(tmp_path, monkeypatch)
     # resolved run_id -> absolute best.pt
     (convert_kwargs,) = fake.convert_kwargs
     assert convert_kwargs["detect_model_path"] == weights
+
+
+def test_a_trex_run_records_tracklets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TREx's ids follow one animal each, and its tracks row says so."""
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+    from mosaic.tracking import run_trex
+    from mosaic.tracking.trex.params import TrexParams
+
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    _ = install_fake_trex(monkeypatch)
+
+    _ = run_trex(ds, TrexParams())
+
+    cells = [str(value) for value in read_tracks_index(ds)["carries_tracklets"]]
+    assert cells == ["true"]

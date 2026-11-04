@@ -206,6 +206,16 @@ def test_the_bridged_table_satisfies_the_schema_the_root_declares(
     assert report["forbidden_present"] == []
 
 
+@pytest.mark.parametrize("kind", sorted(_PRODUCERS))
+def test_an_inference_row_records_no_tracklets(tmp_path: Path, kind: str) -> None:
+    """A detection's ``id`` numbers it within its frame, and follows no animal."""
+    ds = _dataset(tmp_path, kind)
+    _ = _bridge_into(ds, kind, _PRODUCERS[kind]())
+
+    cells = [str(value) for value in read_tracks_index(ds)["carries_tracklets"]]
+    assert cells == ["false"]
+
+
 @pytest.mark.parametrize("kind", sorted(_NO_DETECTIONS))
 def test_predictions_without_a_row_publish_an_empty_table(
     tmp_path: Path, kind: str
@@ -442,6 +452,7 @@ def test_a_fixed_frame_publishes_the_pinned_row_and_table(
         "first_frame": 0,
         "consumed_composition": None,
         "appearance_path": None,
+        "carries_tracklets": False,
     }
     pd.testing.assert_frame_equal(
         pd.read_parquet(out_path),

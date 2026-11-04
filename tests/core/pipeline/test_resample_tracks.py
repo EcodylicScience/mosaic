@@ -315,7 +315,13 @@ def test_the_prefilter_threshold_is_per_second_not_per_frame() -> None:
 # --- the op -----------------------------------------------------------------
 
 
-def _seed_variant(ds: Dataset, sequences: tuple[str, ...], fps: float) -> None:
+def _seed_variant(
+    ds: Dataset,
+    sequences: tuple[str, ...],
+    fps: float,
+    *,
+    carries_tracklets: bool | None = None,
+) -> None:
     """A source tracks variant on disk, one table per sequence."""
     root = tracks_variant_root(ds.get_root("tracks"), SOURCE_VARIANT)
     for sequence in sequences:
@@ -332,6 +338,7 @@ def _seed_variant(ds: Dataset, sequences: tuple[str, ...], fps: float) -> None:
             std_format="trex_v2",
             n_rows=len(frame),
             consumed_source_roots=("tracks_raw",),
+            carries_tracklets=carries_tracklets,
         )
 
 
@@ -361,6 +368,23 @@ def test_the_op_writes_a_second_variant_and_leaves_the_first_alone(
         assert native_frame_rate(pd.read_parquet(ds.resolve_path(str(path)))) == (
             pytest.approx(30.0)
         )
+
+
+@pytest.mark.parametrize(
+    ("answer", "cell"), [(True, "true"), (False, "false"), (None, "")]
+)
+def test_the_op_copies_the_sources_tracklets_answer(
+    tmp_path: Path, answer: bool | None, cell: str
+) -> None:
+    """Re-gridding changes no id, so the table follows animals as its source does."""
+    ds = make_dataset(tmp_path / "ds")
+    _seed_variant(ds, ("s1",), 34.679, carries_tracklets=answer)
+
+    _ = run_op(ds, "resample-tracks", {"target_fps": 30.0}, track=False)
+
+    index = read_tracks_index(ds)
+    produced = index[index["producer"] == "resample-tracks"]
+    assert [str(value) for value in produced["carries_tracklets"]] == [cell]
 
 
 def test_the_op_records_the_new_frame_extent(tmp_path: Path) -> None:
@@ -399,6 +423,7 @@ def test_the_variant_chains_from_the_source_it_read(tmp_path: Path) -> None:
         std_format="trex_v2",
         n_rows=len(frame),
         consumed_source_roots=("tracks_raw",),
+        carries_tracklets=None,
     )
 
     params = ResampleTracksParams(target_fps=30.0)
@@ -427,6 +452,7 @@ def test_two_source_variants_in_scope_are_refused(tmp_path: Path) -> None:
         std_format="trex_v2",
         n_rows=len(frame),
         consumed_source_roots=("tracks_raw",),
+        carries_tracklets=None,
     )
 
     with pytest.raises(ValueError, match="reads one tracks variant"):

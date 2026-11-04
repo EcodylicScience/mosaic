@@ -111,6 +111,7 @@ def _publish(
     axis: EntryAxis | None = None,
     strict: bool = False,
     appearance: pd.DataFrame | None = None,
+    carries_tracklets: bool = False,
 ) -> BridgeCounts:
     return publish_tracks_table(
         ds,
@@ -126,6 +127,7 @@ def _publish(
         frames_read=None,
         strict=strict,
         appearance=appearance,
+        carries_tracklets=carries_tracklets,
     )
 
 
@@ -159,6 +161,17 @@ def _published(ds: Dataset) -> pd.DataFrame:
     rows = read_tracks_index(ds)
     assert len(rows) == 1
     return pd.read_parquet(ds.resolve_path(str(rows.iloc[0]["abs_path"])))
+
+
+@pytest.mark.parametrize(("answer", "cell"), [(True, "true"), (False, "false")])
+def test_the_bridge_records_the_callers_tracklets_flag(
+    tmp_path: Path, answer: bool, cell: str
+) -> None:
+    ds = make_dataset(tmp_path)
+
+    _ = _publish(ds, _variant_table(), carries_tracklets=answer)
+
+    assert str(read_tracks_index(ds).iloc[0]["carries_tracklets"]) == cell
 
 
 def test_a_mapped_table_is_published_in_source_space(tmp_path: Path) -> None:

@@ -65,6 +65,7 @@ def test_measure_tracks_counts_each_pass_s_rewrites_by_what_it_did(
             media_frames=20,
             frames_read=18,
             known_tail_loss=2,
+            carries_tracklets=None,
         )
     # The fixture's hand-written rows have no run_id. Drop them, as
     # `_one_trex_row` does.
@@ -108,6 +109,7 @@ def test_measure_tracks_apply_writes_each_count_cell(
         media_frames=20,
         frames_read=18,
         known_tail_loss=2,
+        carries_tracklets=None,
     )
     frame = read_tracks_index(ds)
     frame[frame["run_id"] != ""].to_csv(tracks_index_path(ds), index=False)
@@ -155,6 +157,7 @@ def _one_trex_row(ds: Dataset, *, read: int, media: int) -> None:
         n_rows=12,
         media_frames=media,
         frames_read=read,
+        carries_tracklets=None,
     )
     # The fixture's hand-written rows carry no run_id, so drop them: an
     # unlabelled row and a labelled one for the same entry is a resolution

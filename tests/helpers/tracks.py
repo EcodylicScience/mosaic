@@ -449,6 +449,7 @@ def add_tracks_variant(
     pose_prefixes: tuple[str, str] = ("poseX", "poseY"),
     source: Path | str = "",
     appearance_dim: int | None = None,
+    carries_tracklets: bool | None = None,
 ) -> None:
     """Write a variant-addressed track table per sequence, through the real writer.
 
@@ -508,6 +509,7 @@ def add_tracks_variant(
             producer_run_id=producer_run_id,
             source=source,
             appearance_dim=appearance_dim,
+            carries_tracklets=carries_tracklets,
         )
 
 
@@ -528,6 +530,7 @@ def add_tracks_table(
     source: Path | str = "",
     appearance_dim: int | None = None,
     appearance: pd.DataFrame | None = None,
+    carries_tracklets: bool | None = None,
 ) -> None:
     """Write *table*, one entry's rows, into the tracks variant *run_id*.
 
@@ -561,6 +564,8 @@ def add_tracks_table(
             recorded in the row, or ``None`` for no drawn table.
         appearance: An appearance table to write and record in place of a drawn
             one, or ``None``.
+        carries_tracklets: Whether the row records ids that follow an animal, or
+            ``None`` for a blank, as a conversion that was not told records it.
     """
     from mosaic.behavior.feature_library.helpers import entry_identity
     from mosaic.core.pipeline.tracks_identity import tracks_variant_root
@@ -595,6 +600,7 @@ def add_tracks_table(
         consumed_composition=consumed_composition,
         source=source,
         appearance_path=recorded,
+        carries_tracklets=carries_tracklets,
     )
 
 

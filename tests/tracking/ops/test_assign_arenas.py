@@ -182,7 +182,13 @@ class TestAssignArenas:
             )
 
 
-def _seed(ds: Dataset, table: pd.DataFrame, first_frame: int | None) -> None:
+def _seed(
+    ds: Dataset,
+    table: pd.DataFrame,
+    first_frame: int | None,
+    *,
+    carries_tracklets: bool | None = None,
+) -> None:
     """Write *table*, one entry, into the source variant."""
     group = str(table["group"].iloc[0])
     sequence = str(table["sequence"].iloc[0])
@@ -202,6 +208,7 @@ def _seed(ds: Dataset, table: pd.DataFrame, first_frame: int | None) -> None:
         n_rows=len(table),
         consumed_source_roots=("tracks_raw",),
         first_frame=first_frame,
+        carries_tracklets=carries_tracklets,
     )
 
 
@@ -248,6 +255,31 @@ class TestAssignArenasOp:
             assert {arena: list(ids) for arena, ids in by_arena.items()} == {
                 name: [ordinal] for ordinal, name in enumerate(princeton_layout().names)
             }
+
+    def test_each_table_keeps_its_source_s_tracklets_answer(
+        self, tmp_path: Path
+    ) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        _seed(
+            ds,
+            princeton_table("s1", frames=range(0, 4), id_of=_ids(0)),
+            None,
+            carries_tracklets=False,
+        )
+        _seed(
+            ds,
+            princeton_table("s2", frames=range(4, 8), id_of=_ids(20)),
+            4,
+            carries_tracklets=True,
+        )
+        ds.set_continuous_groups(["rec"])
+        _ = ds.set_arena_layout(princeton_layout(), group="rec")
+
+        _ = run_op(ds, "assign-arenas", {}, track=False)
+
+        rows = _assigned_rows(ds).set_index("sequence")
+        assert rows.loc["s1", "carries_tracklets"] == "false"
+        assert rows.loc["s2", "carries_tracklets"] == "true"
 
     def test_the_variant_keeps_its_source_s_frame_axis(self, dataset: Dataset) -> None:
         _ = run_op(dataset, "assign-arenas", {}, track=False)

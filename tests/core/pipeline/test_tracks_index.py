@@ -32,6 +32,7 @@ from mosaic.core.pipeline.tracks_index import (
     frame_tail_shortfalls,
     read_frame_extent,
     read_frame_extents,
+    read_carries_tracklets,
     read_media_frames,
     TRACKS_INDEX_COLUMNS,
     TRACKS_INDEX_PATH_COLUMNS,
@@ -40,6 +41,7 @@ from mosaic.core.pipeline.tracks_index import (
     adopt_legacy_columns,
     consumed_roots_for,
     encode_source_roots,
+    entries_without_tracklets,
     legacy_view,
     read_tracks_index,
     row_in_scope,
@@ -140,6 +142,7 @@ def test_row_field_order_is_the_csv_column_order(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     header = tracks_index_path(ds).read_text().splitlines()[0]
     assert header.split(",") == TRACKS_INDEX_COLUMNS
@@ -158,9 +161,9 @@ def test_the_registered_path_column_is_the_one_holding_a_path(tmp_path: Path) ->
     assert all(column in TRACKS_INDEX_COLUMNS for column in TRACKS_INDEX_PATH_COLUMNS)
 
 
-def test_the_appearance_cell_is_the_trailing_column() -> None:
-    """The cell joins the end of the header, and an older index lacks only a tail."""
-    assert TRACKS_INDEX_COLUMNS[-1] == "appearance_abs_path"
+def test_the_appearance_cell_precedes_the_tracklets_cell() -> None:
+    """The cell joined the end of the header, and an older index lacks only a tail."""
+    assert TRACKS_INDEX_COLUMNS[-2:] == ["appearance_abs_path", "carries_tracklets"]
     fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
     assert fields["appearance_abs_path"].default == ""
 
@@ -180,6 +183,7 @@ def test_a_written_appearance_path_is_stored_root_relative(tmp_path: Path) -> No
         std_format="trex_v1",
         n_rows=40,
         appearance_path=appearance,
+        carries_tracklets=None,
     )
     cell = str(read_tracks_index(ds).iloc[0]["appearance_abs_path"])
     assert cell == ds.relative_to_root(appearance)
@@ -198,6 +202,7 @@ def test_a_row_without_an_appearance_table_has_a_blank_cell(tmp_path: Path) -> N
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     assert str(read_tracks_index(ds).iloc[0]["appearance_abs_path"]) == ""
 
@@ -216,6 +221,7 @@ def test_an_index_without_the_appearance_column_reads_and_writes_blank(
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     path = tracks_index_path(ds)
     older = pd.read_csv(path, dtype=str, keep_default_na=False)
@@ -238,6 +244,7 @@ def test_an_index_without_the_appearance_column_reads_and_writes_blank(
         std_format="trex_v1",
         n_rows=40,
         appearance_path=appearance,
+        carries_tracklets=None,
     )
     assert path.read_text().splitlines()[0].split(",") == TRACKS_INDEX_COLUMNS
     frame = read_tracks_index(ds).set_index("sequence")
@@ -280,6 +287,7 @@ def test_a_row_count_stays_an_integer_on_disk(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     header, row = tracks_index_path(ds).read_text().splitlines()[:2]
     cells = dict(zip(header.split(","), row.split(","), strict=True))
@@ -318,6 +326,7 @@ def test_the_keypoint_count_is_measured_from_the_written_table(
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     row = read_tracks_index(ds).iloc[0]
     assert str(row["n_keypoints"]) == "7"
@@ -335,6 +344,7 @@ def test_a_centroid_only_table_records_no_keypoints(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     row = read_tracks_index(ds).iloc[0]
     assert str(row["n_keypoints"]) == "0"
@@ -352,6 +362,7 @@ def test_a_keypoint_count_stays_an_integer_on_disk(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     header, row = tracks_index_path(ds).read_text().splitlines()[:2]
     cells = dict(zip(header.split(","), row.split(","), strict=True))
@@ -387,6 +398,7 @@ def test_a_legacy_row_reads_as_unknown_not_as_no_keypoints(tmp_path: Path) -> No
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     df = read_tracks_index(ds)
     legacy = df[df["sequence"] == "legacy"].iloc[0]
@@ -415,6 +427,7 @@ def test_paths_are_stored_root_relative(tmp_path: Path) -> None:
         std_format="trex_v1",
         n_rows=40,
         source=source,
+        carries_tracklets=None,
     )
     row = read_tracks_index(ds).iloc[0]
     assert not Path(str(row["abs_path"])).is_absolute()
@@ -434,6 +447,7 @@ def test_an_absent_source_stays_empty_not_a_dot(tmp_path: Path) -> None:
         producer="infer-points",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     assert str(read_tracks_index(ds).iloc[0]["source_abs_path"]) == ""
 
@@ -456,6 +470,7 @@ def test_a_numpy_scalar_identity_is_stringified(tmp_path: Path) -> None:
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
     df = read_tracks_index(ds)
     assert len(df) == 1
@@ -485,6 +500,7 @@ def test_all_three_producers_keep_their_row_for_one_entry(tmp_path: Path) -> Non
             producer=producer,
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
     df = read_tracks_index(ds)
     assert len(df) == 3
@@ -501,6 +517,7 @@ def test_all_three_producers_keep_their_row_for_one_entry(tmp_path: Path) -> Non
         producer="trex",
         std_format="trex_v1",
         n_rows=99,
+        carries_tracklets=None,
     )
     df = read_tracks_index(ds)
     assert len(df) == 3
@@ -518,6 +535,7 @@ def test_the_write_is_atomic_and_leaves_no_orphan(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     names = sorted(p.name for p in ds.get_root("tracks").iterdir())
     # index.csv.lock is index_lock's sidecar: one zero-byte file per index,
@@ -595,6 +613,7 @@ def test_adoption_widens_a_legacy_index_without_losing_a_row(tmp_path: Path) -> 
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
 
     header = tracks_index_path(ds).read_text().splitlines()[0]
@@ -655,6 +674,7 @@ def test_adoption_is_idempotent(tmp_path: Path) -> None:
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
     first = tracks_index_path(ds).read_text()
     adopted = adopt_legacy_columns(adopt_legacy_columns(read_tracks_index(ds)))
@@ -753,6 +773,7 @@ def test_the_run_id_selector_filters_and_reports_an_unknown_run(
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     idx = tracks_index(tracks_index_path(ds))
     assert len(idx.read(run_id="convert-x.0.1-aaaaaaaaaa")) == 1
@@ -951,6 +972,7 @@ def test_legacy_view_rederives_the_safe_names(tmp_path: Path) -> None:
         producer="convert-calms21_npy",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     view = legacy_view(read_tracks_index(ds))
     assert str(view.iloc[0]["group_safe"]) == "calms21_task1"
@@ -998,6 +1020,7 @@ def test_the_index_writer_refuses_a_path_separator(tmp_path: Path) -> None:
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
 
 
@@ -1019,6 +1042,7 @@ def test_an_absent_group_is_recorded_as_empty(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
     row = read_tracks_index(ds).iloc[0]
     assert str(row["group"]) == ""
@@ -1050,6 +1074,7 @@ def test_an_absent_group_still_finds_its_composition(tmp_path: Path) -> None:
         std_format="trex_v1",
         n_rows=40,
         consumed_source_roots=("tracks_raw",),
+        carries_tracklets=None,
     )
     row = read_tracks_index(ds).iloc[0]
     assert row["consumed_composition"] == comp.digest != ""
@@ -1106,6 +1131,7 @@ def test_build_manifest_defaults_to_every_variant(tmp_path: Path) -> None:
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
 
     _, scope = build_manifest(ds, _feature_inputs())
@@ -1134,6 +1160,7 @@ def test_the_variant_term_is_collected_before_the_narrowing(tmp_path: Path) -> N
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
 
     both = ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bb")
@@ -1163,6 +1190,7 @@ def test_build_manifest_can_select_one_variant(tmp_path: Path) -> None:
             producer="convert-x",
             std_format="trex_v1",
             n_rows=40,
+            carries_tracklets=None,
         )
 
     _, scope = build_manifest(ds, _feature_inputs(), tracks_run_id="trex.0.1-bb")
@@ -1183,6 +1211,7 @@ def test_an_unknown_variant_raises_but_predicts_empty(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="trex_v1",
         n_rows=40,
+        carries_tracklets=None,
     )
 
     with pytest.raises(FileNotFoundError, match="no-such-variant"):
@@ -1315,6 +1344,7 @@ def test_write_tracks_row_records_the_extent(tmp_path: Path) -> None:
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=4,
+        carries_tracklets=None,
     )
     assert read_frame_extents(ds) == {("g", "s1"): (100, 103)}
 
@@ -1383,6 +1413,7 @@ def test_a_row_written_without_a_media_length_records_a_blank(tmp_path: Path) ->
         producer="convert-x",
         std_format="mosaic_v1",
         n_rows=4,
+        carries_tracklets=None,
     )
     assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
     assert frame_axis_mismatches(ds) == ()
@@ -1412,6 +1443,7 @@ def _entry_row(
         media_frames=media,
         frames_read=read,
         known_tail_loss=known_tail_loss,
+        carries_tracklets=None,
     )
 
 
@@ -1567,6 +1599,7 @@ def test_a_table_of_a_producer_declaring_no_tail_short_by_one_is_a_mismatch(
         n_rows=10,
         media_frames=300,
         frames_read=299,
+        carries_tracklets=None,
     )
 
     assert frame_tail_shortfalls(ds) == ()
@@ -1624,6 +1657,7 @@ def test_backfill_media_frames_fills_only_the_rows_that_lack_one(
         std_format="trex_v2",
         n_rows=580,
         frames_read=596,
+        carries_tracklets=None,
     )
 
     assert read_media_frames(read_tracks_index(ds).iloc[0]) is None
@@ -1664,6 +1698,7 @@ def _variant_row(
         n_rows=read,
         media_frames=media,
         frames_read=read,
+        carries_tracklets=None,
     )
 
 
@@ -1700,3 +1735,153 @@ def test_select_variant_rows_still_refuses_to_choose(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="no defensible default"):
         _ = select_variant_rows(read_tracks_index(ds))
+
+
+# --- the tracklets cell ---------------------------------------------------
+
+
+def _tracklets_row(
+    ds: Dataset,
+    sequence: str,
+    *,
+    producer: str = "convert-x",
+    carries_tracklets: bool | None = None,
+    run_id: str = "convert-x.0.1-aaaaaaaaaa",
+) -> None:
+    write_tracks_row(
+        ds,
+        run_id=run_id,
+        group="",
+        sequence=sequence,
+        out_path=_track_parquet(ds, sequence),
+        producer=producer,
+        std_format="trex_v1",
+        n_rows=40,
+        carries_tracklets=carries_tracklets,
+    )
+
+
+def test_the_tracklets_cell_is_the_trailing_column() -> None:
+    """The cell joins the end of the header, and an older index lacks only a tail."""
+    assert TRACKS_INDEX_COLUMNS[-1] == "carries_tracklets"
+    fields = {f.name: f for f in dataclasses.fields(TracksIndexRow)}
+    assert fields["carries_tracklets"].default == ""
+    assert "carries_tracklets" not in TRACKS_INDEX_PATH_COLUMNS
+
+
+def test_an_index_without_the_tracklets_column_reads_and_writes_blank(
+    tmp_path: Path,
+) -> None:
+    """An index written before the column adopts it on read and on write."""
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "old")
+    path = tracks_index_path(ds)
+    older = pd.read_csv(path, dtype=str, keep_default_na=False)
+    older = older.drop(columns=["carries_tracklets"])
+    older.to_csv(path, index=False)
+    assert "carries_tracklets" not in path.read_text().splitlines()[0]
+
+    assert str(read_tracks_index(ds).iloc[0]["carries_tracklets"]) == ""
+
+    _tracklets_row(ds, "new", carries_tracklets=False)
+    assert path.read_text().splitlines()[0].split(",") == TRACKS_INDEX_COLUMNS
+    frame = read_tracks_index(ds).set_index("sequence")
+    assert str(frame.loc["old", "carries_tracklets"]) == ""
+    assert str(frame.loc["new", "carries_tracklets"]) == "false"
+
+
+@pytest.mark.parametrize(
+    ("answer", "cell"), [(True, "true"), (False, "false"), (None, "")]
+)
+def test_the_writer_records_the_answer_as_text(
+    tmp_path: Path, answer: bool | None, cell: str
+) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", carries_tracklets=answer)
+    assert str(read_tracks_index(ds).iloc[0]["carries_tracklets"]) == cell
+
+
+@pytest.mark.parametrize(
+    "producer", ["convert-trex_npz", "convert-calms21_npy", "sleap"]
+)
+def test_a_blank_tracklets_cell_reads_as_unknown(tmp_path: Path, producer: str) -> None:
+    """A conversion and a SLEAP run leave the answer to whoever wrote the row."""
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", producer=producer)
+    row = read_tracks_index(ds).iloc[0]
+    assert read_carries_tracklets(row) is None
+
+
+@pytest.mark.parametrize("producer", ["infer-pose", "infer-points", "infer-localizer"])
+def test_a_blank_cell_of_an_inference_row_reads_false(
+    tmp_path: Path, producer: str
+) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", producer=producer)
+    assert read_carries_tracklets(read_tracks_index(ds).iloc[0]) is False
+
+
+@pytest.mark.parametrize("producer", ["trex", "ultralytics", "litpose"])
+def test_a_blank_cell_of_a_trex_row_reads_true(tmp_path: Path, producer: str) -> None:
+    """TREx, Ultralytics tracking and LitPose settle the answer by their kind."""
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", producer=producer)
+    assert read_carries_tracklets(read_tracks_index(ds).iloc[0]) is True
+
+
+def test_a_recorded_tracklets_cell_outranks_the_producer(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "a", producer="trex", carries_tracklets=False)
+    _tracklets_row(ds, "b", producer="sleap", carries_tracklets=True)
+    frame = read_tracks_index(ds).set_index("sequence")
+    assert read_carries_tracklets(frame.loc["a"]) is False
+    assert read_carries_tracklets(frame.loc["b"]) is True
+
+
+def test_entries_without_tracklets_lists_only_false_rows(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "z-false", carries_tracklets=False)
+    _tracklets_row(ds, "a-false", carries_tracklets=False)
+    _tracklets_row(ds, "true", carries_tracklets=True)
+    _tracklets_row(ds, "unknown", producer="sleap")
+    _tracklets_row(ds, "from-producer", producer="infer-pose")
+    _tracklets_row(ds, "trex-blank", producer="trex")
+    entries = [
+        (g, s)
+        for g, s in [
+            ("", "z-false"),
+            ("", "a-false"),
+            ("", "true"),
+            ("", "unknown"),
+            ("", "from-producer"),
+            ("", "trex-blank"),
+        ]
+    ]
+
+    found = entries_without_tracklets(ds, None, entries)
+
+    assert found == (("", "a-false"), ("", "from-producer"), ("", "z-false"))
+    assert entries_without_tracklets(ds, None, [("", "true"), ("", "unknown")]) == ()
+    assert entries_without_tracklets(ds, None, [("", "a-false")]) == (("", "a-false"),)
+
+
+def test_entries_without_tracklets_reads_the_named_variant(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
+    _tracklets_row(ds, "s", carries_tracklets=True, run_id="trex.0.1-bbbbbbbbbb")
+
+    assert entries_without_tracklets(ds, "convert-x.0.1-aaaaaaaaaa", [("", "s")]) == (
+        ("", "s"),
+    )
+    assert entries_without_tracklets(ds, "trex.0.1-bbbbbbbbbb", [("", "s")]) == ()
+
+
+def test_entries_without_tracklets_leaves_an_ambiguous_entry_to_the_planner(
+    tmp_path: Path,
+) -> None:
+    """Two variants and no named one is refused as ``variant_ambiguous`` elsewhere."""
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
+    _tracklets_row(ds, "s", carries_tracklets=False, run_id="trex.0.1-bbbbbbbbbb")
+
+    assert entries_without_tracklets(ds, None, [("", "s")]) == ()

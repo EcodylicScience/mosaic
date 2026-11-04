@@ -291,6 +291,7 @@ def bridge_predictions_to_tracks(
         consumed=[predictions_path, *consumed_media, *model_files],
         axis=axis,
         frames_read=frames_read,
+        carries_tracklets=True,
     )
 
 

@@ -204,6 +204,8 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
     # reports no shape, and direction of travel is not a body orientation.
     version = "0.2"
     output_schema = "mosaic_v1"
+    # The tracker numbers each track once, and the converter keeps that order.
+    carries_tracklets = True
     Params = UltralyticsTracksParams
 
     def convert(

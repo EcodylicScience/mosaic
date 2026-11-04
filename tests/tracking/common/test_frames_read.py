@@ -109,6 +109,7 @@ class TestTheCell:
             producer="trex",
             std_format="trex_v2",
             n_rows=2,
+            carries_tracklets=None,
         )
         index = tracks_index_path(ds)
         legacy = pd.read_csv(index, dtype=str, keep_default_na=False)
@@ -126,6 +127,7 @@ class TestTheCell:
             std_format="trex_v2",
             n_rows=2,
             frames_read=40,
+            carries_tracklets=None,
         )
 
         on_disk = pd.read_csv(index, dtype=str, keep_default_na=False)
@@ -401,6 +403,7 @@ class TestAPastRowIsFilledFromWhatItsRunLeft:
             std_format="mosaic_v1",
             n_rows=2,
             frames_read=_FRAMES,
+            carries_tracklets=None,
         )
 
         would = backfill_frames_read(ds, dry_run=True)

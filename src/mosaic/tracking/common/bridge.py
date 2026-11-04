@@ -199,6 +199,7 @@ def publish_tracks_table(
     consumed: Sequence[Path],
     axis: EntryAxis,
     frames_read: int | None,
+    carries_tracklets: bool,
     known_tail_loss: int | None = None,
     strict: bool = False,
     appearance: pd.DataFrame | None = None,
@@ -235,6 +236,8 @@ def publish_tracks_table(
             file it read, or ``None`` when the producer cannot know. The row
             records it. It is not the table's extent: a table with rows only
             where something was detected ends at its last detection.
+        carries_tracklets: Whether the table's ``id`` follows one animal over
+            time. The row records it as ``"true"`` or ``"false"``.
         known_tail_loss: How many frames short of the end of the file it read
             the tool is known to stop, from that file's header by the rule of
             the producer's root (``TrackingRoot.tail_loss``). The row records
@@ -302,6 +305,7 @@ def publish_tracks_table(
         known_tail_loss=known_tail_loss,
         first_frame=axis.first_frame,
         appearance_path=vectors_path,
+        carries_tracklets=carries_tracklets,
         # A bridge opens the entry's media, so its row records what that
         # media was. The variant identity has no term for the pixels, so
         # this cell is the only thing that notices a re-transcode.

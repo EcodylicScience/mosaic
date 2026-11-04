@@ -810,6 +810,7 @@ def _dataset(tmp_path: Path, kind: str = "behavior") -> Dataset:
         producer="convert-pixels",
         std_format="mosaic_v1",
         n_rows=len(table),
+        carries_tracklets=None,
     )
 
     labels_run = "convert-labels-segments.0.1-bbbbbbbbbb"

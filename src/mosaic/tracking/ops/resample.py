@@ -36,7 +36,10 @@ from mosaic.core.pipeline.tracks_identity import (
     tracks_variant_root,
     write_tracks_variant,
 )
-from mosaic.core.pipeline.tracks_index import write_tracks_row
+from mosaic.core.pipeline.tracks_index import (
+    read_carries_tracklets,
+    write_tracks_row,
+)
 from mosaic.core.params import (
     Declared,
     Params,
@@ -238,6 +241,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
                     source=source,
                     consumed_source_roots=("tracks",),
                     records_media=False,
+                    carries_tracklets=read_carries_tracklets(row),
                 )
             except Exception as exc:  # noqa: BLE001 -- recorded, then re-raised below
                 ctx.entry_failed(key, exc)

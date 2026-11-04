@@ -236,6 +236,7 @@ def test_a_relative_manifest_path_writes_root_relative_rows(
         producer="convert-x",
         std_format="trex_v1",
         n_rows=1,
+        carries_tracklets=None,
     )
 
     assert ds.base_dir.is_absolute()
@@ -328,6 +329,7 @@ def _tracks_row(base: Path) -> _IndexedRow:
         n_rows=1,
         source=source,
         appearance_path=appearance,
+        carries_tracklets=None,
     )
     columns = ("abs_path", "source_abs_path", "appearance_abs_path")
     return _IndexedRow(ds, tracks_index_path(ds), columns)

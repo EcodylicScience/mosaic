@@ -571,6 +571,8 @@ def _bridge_df_to_tracks(
         consumed=[*consumed_media, model_pt],
         axis=axis,
         frames_read=frames_read,
+        # A detection's `id` numbers it within its frame, so it follows no animal.
+        carries_tracklets=False,
         # Strict here alone. Every *tracker* write path validates leniently,
         # because a missing required column is merely an incomplete table, and
         # whether that should still be true is a separate question with a wider

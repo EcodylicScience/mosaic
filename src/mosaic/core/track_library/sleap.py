@@ -43,7 +43,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Annotated, Final, override
 
 import numpy as np
 import numpy.typing as npt
@@ -219,10 +219,33 @@ _FPS_DESCRIPTION = (
 )
 
 
+_TRACKS_NAMED_DESCRIPTION = (
+    "Whether the export's tracks are named: each track index follows one animal "
+    "over the video. A SLEAP export records identities only when its tracks are "
+    "named, so the file cannot say. Leave unset to record no answer; the plan then "
+    "does not refuse a step that needs ids following an animal."
+)
+
+
 class SleapConvertParams(TrackConvertParams):
     """Parameters for the SLEAP analysis-HDF5 converter."""
 
     fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
+    tracks_named: Annotated[bool | None, Declared(_TRACKS_NAMED_DESCRIPTION)] = None
+
+    @override
+    def identity_dump(self) -> dict[str, object]:
+        """The hashed params, with ``tracks_named`` left out while it is unset.
+
+        A conversion without an answer has the identity it had before the field
+        existed. An answer enters the identity, because a table converted again
+        under the same identifier would be served from the cache with its old
+        row.
+        """
+        dumped = super().identity_dump()
+        if self.tracks_named is None:
+            del dumped["tracks_named"]
+        return dumped
 
 
 def empty_sleap_tracks() -> pd.DataFrame:
@@ -241,7 +264,13 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
     # went with them, so the recipe changed twice over.
     version = "0.2"
     output_schema = "mosaic_v1"
+    # The file cannot say: its tracks are named only if the user named them.
+    carries_tracklets = None
     Params = SleapConvertParams
+
+    @override
+    def tracklets(self, params: SleapConvertParams) -> bool | None:
+        return params.tracks_named
 
     def convert(
         self, path: Path, params: SleapConvertParams, hints: EntryHints

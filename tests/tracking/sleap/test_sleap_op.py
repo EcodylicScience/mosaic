@@ -17,6 +17,7 @@ import mosaic.tracking.sleap.dataset_runs as dataset_runs
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.markers import INFLIGHT_MARKER_NAME
 from mosaic.core.pipeline.ops import OPS, describe_op, run_op
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from mosaic.tracking.common.bridge import BridgeCounts
 from mosaic.tracking.sleap.params import SleapParams
@@ -440,3 +441,20 @@ def test_the_index_row_of_one_model_names_its_type_alone(
         dataset_runs.sleap_index_path(ds), dtype=str, keep_default_na=False
     )
     assert list(index["model_type"]) == ["bottomup"]
+
+
+@pytest.mark.parametrize(("tracking", "cell"), [(True, "true"), (False, "false")])
+def test_a_tracked_sleap_run_records_tracklets_and_an_untracked_one_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tracking: bool, cell: str
+) -> None:
+    """Whether the run tracked decides what its tracks row says its ids follow."""
+    _ = install_fake_sleap(monkeypatch)
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    params = SleapParams(
+        model_paths=[str(write_sleap_model(tmp_path / "model"))], tracking=tracking
+    )
+
+    _ = dataset_runs.run_sleap(ds, params)
+
+    index = read_tracks_index(ds)
+    assert [str(value) for value in index["carries_tracklets"]] == [cell]

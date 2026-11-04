@@ -123,6 +123,7 @@ def _seed(
     known_tail_loss: int | None = None,
     first_frame: int | None = None,
     consumed_composition: str | None = None,
+    carries_tracklets: bool | None = None,
 ) -> None:
     table, vectors = _tables(sequence, tracks)
     add_tracks_table(
@@ -136,6 +137,7 @@ def _seed(
         first_frame=first_frame,
         consumed_composition=consumed_composition,
         appearance=vectors if appearance else None,
+        carries_tracklets=carries_tracklets,
     )
 
 
@@ -481,6 +483,19 @@ def test_the_rows_copy_the_source_cells_and_record_no_media_or_appearance(
     for sequence in ("s1", "s2"):
         assert text_cell(rows.loc[sequence, "consumed_media_composition"]) == ""
         assert text_cell(rows.loc[sequence, "appearance_abs_path"]) == ""
+
+
+def test_the_rows_record_that_the_ids_follow_an_animal(tmp_path: Path) -> None:
+    """Assigned ids name an identity, whatever the source's ids followed."""
+    ds = make_dataset(tmp_path / "ds")
+    _seed(ds, "s1", REFERENCE_TRACKS, carries_tracklets=False)
+    _seed(ds, "s2", SCORED_TRACKS, carries_tracklets=False)
+    params = _params()
+
+    _ = _run(ds, params)
+
+    rows = _output_rows(ds, params)
+    assert [text_cell(value) for value in rows["carries_tracklets"]] == ["true"] * 2
 
 
 def test_repeated_rows_are_refused_before_each_write(

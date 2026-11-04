@@ -100,6 +100,7 @@ def _sleap(
         overwrite=overwrite,
         axis=axis,
         recorded_first_frame=recorded,
+        carries_tracklets=True,
     )
 
 
@@ -166,6 +167,22 @@ _BRIDGES: dict[str, tuple[str, Bridge]] = {
 def bridge(request: pytest.FixtureRequest) -> tuple[str, Bridge]:
     name: str = request.param
     return _BRIDGES[name]
+
+
+def test_each_bridge_records_whether_its_tracker_names_animals(
+    tmp_path: Path, bridge: tuple[str, Bridge]
+) -> None:
+    """TREx, Ultralytics and Lightning Pose name an animal in each track.
+
+    The SLEAP bridge here is told that its run tracked.
+    """
+    _, run = bridge
+    ds = make_dataset(tmp_path / "ds")
+
+    _ = run(ds, _axis(0), None, True)
+
+    (cell,) = read_tracks_index(ds)["carries_tracklets"].astype(str)
+    assert cell == "true"
 
 
 def _first_frame_of_table(ds: Dataset, kind: str) -> int:
@@ -240,6 +257,7 @@ def _sleap_embedding(
         overwrite=overwrite,
         axis=axis,
         recorded_first_frame=recorded,
+        carries_tracklets=True,
         readback=readback,
     )
 

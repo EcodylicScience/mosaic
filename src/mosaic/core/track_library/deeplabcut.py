@@ -220,6 +220,8 @@ class DlcConverter(TrackConverter[DlcParams]):
     # heading params are gone. Also serves Lightning Pose.
     version = "0.2"
     output_schema = "mosaic_v1"
+    # An individual keeps its column block through the file.
+    carries_tracklets = True
     Params = DlcParams
 
     def convert(self, path: Path, params: DlcParams, hints: EntryHints) -> pd.DataFrame:

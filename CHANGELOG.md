@@ -90,11 +90,41 @@ result carries `locked_steps`. `MAX_SCHEMA_BYTES` rises from 8192 to 8448 so tha
 `plan_recipe` output schema fits. `mosaic run --graph-request` now refuses
 `--labels-run-id`, which it used to ignore: a step's labels are chosen in the recipe.
 
+**A tracks row records whether its ids follow an animal.** `TracksIndexRow` gains a last
+column, `carries_tracklets`: `"true"`, `"false"`, or blank for unknown. A conversion
+writes its converter's answer, which `TrackConverter.carries_tracklets` declares:
+`True` for the TREx, CalMS21, DeepLabCut and Ultralytics formats, and `None` (blank) for
+`sleap_analysis_h5`, whose file cannot say. `SleapConvertParams.tracks_named` (default
+`None`) is the user's answer for a SLEAP export and sets the cell. An unset answer
+leaves `identity_dump` unchanged, so no existing tracks variant id moves, and an answer
+enters the variant id, so a re-import with one is a second variant beside the
+unanswered one. `read_carries_tracklets` reads the cell and, for a blank, answers from
+`producer` where the producer settles it (`infer-pose`, `infer-points` and
+`infer-localizer` false; `trex`, `ultralytics` and `litpose` true), so a row written
+before the cell takes its producer's answer, and the plan refuses an older inference
+row too. `entries_without_tracklets` lists the entries whose resolved row records
+false. An index written before the column reads blank and is widened on its next
+write. A mosaic 0.17 worker that rewrites the
+tracks index drops the column, because its `adopt_legacy_columns` drops off-schema
+columns; the rows then read blank and are answered from `producer`. No run id moves.
+
+**Every tracker and op writes the answer.** `write_tracks_row` and `publish_tracks_table`
+now take `carries_tracklets` without a default, so no row is blank by omission. The
+inference ops (`infer-pose`, `infer-points`, `infer-localizer`) record `false`, because
+a detection's `id` numbers it within its frame. TREx, the Ultralytics tracker and
+Lightning Pose record `true`, a SLEAP run records its `tracking` parameter, and
+`assign-identities` records `true`. `resample-tracks`, `assign-arenas` and
+`upgrade_trex_tables` copy the answer of the source row. The cell enters no identity, so
+no run id, op identity or tracks variant moves, and a row written earlier keeps its
+cell.
+
 **mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
 `variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,
 "")` and plans with `refuse=False`, so it reports the ambiguity as a problem at `tracks`
 until it passes `recipe=`, `scope=` and the variant to `refuse_mixed_schemas` and answers
-409 `dataset_refused` at plan.
+409 `dataset_refused` at plan. Its test helpers that call `write_tracks_row`
+(`tests/helpers/pipelines.py` and `tests/helpers/tracks_tables.py`) must pass
+`carries_tracklets`, which is now required.
 
 ## Unreleased: visual-network feature
 

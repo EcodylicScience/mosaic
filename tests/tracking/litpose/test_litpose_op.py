@@ -6,6 +6,8 @@ throughput knobs kept out of that run id, and model identity by config and weigh
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from mosaic.core.pipeline.ops import OPS, describe_op, run_op
@@ -118,3 +120,23 @@ def test_litpose_unresolvable_model_raises(tmp_path):
     (no_ckpt / "config.yaml").write_text("model: {}\n")
     with pytest.raises(FileNotFoundError):
         resolve_model_set(None, [str(no_ckpt)], "litpose")
+
+
+def test_a_litpose_run_records_tracklets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One track per video names one animal over time, and the tracks row says so."""
+    from mosaic.core.pipeline.tracks_index import read_tracks_index
+    from mosaic.tracking.litpose.dataset_runs import run_litpose
+    from mosaic.tracking.litpose.params import LitposeParams
+
+    from tests.helpers import install_fake_litpose
+
+    ds = stub_media_dataset(tmp_path, ["vid1"])
+    _ = install_fake_litpose(monkeypatch)
+    model = write_litpose_model(tmp_path / "litpose_model")
+
+    _ = run_litpose(ds, LitposeParams(model_path=str(model)))
+
+    cells = [str(value) for value in read_tracks_index(ds)["carries_tracklets"]]
+    assert cells == ["true"]

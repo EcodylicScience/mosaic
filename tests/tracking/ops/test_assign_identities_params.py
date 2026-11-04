@@ -226,6 +226,7 @@ def _seed_other_variant(ds: Dataset) -> None:
         std_format="trex_v1",
         n_rows=len(table),
         consumed_source_roots=("tracks_raw",),
+        carries_tracklets=None,
     )
 
 

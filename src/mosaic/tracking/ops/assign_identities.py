@@ -750,4 +750,5 @@ class AssignIdentitiesOp(Op[AssignIdentitiesParams]):
             known_tail_loss=read_known_tail_loss(each.row),
             first_frame=built_from.first_frame,
             consumed_composition=built_from.consumed_composition,
+            carries_tracklets=True,
         )

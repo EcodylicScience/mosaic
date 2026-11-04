@@ -107,6 +107,17 @@ are in `graph/CLAUDE.md`.
   producer passes `media_frames`, `frames_read` and `known_tail_loss`. A blank cell on
   every count column means unknown. The `TracksIndexRow` docstring defines each
   column.
+- `carries_tracklets` is the row's `"true"`, `"false"` or blank for whether `id` follows
+  an animal. `read_carries_tracklets` is the only reader. It answers a blank from
+  `producer` where the producer settles it and otherwise returns `None`, which no plan
+  refuses. A converter declares it (`TrackConverter.carries_tracklets`), SLEAP through
+  the user's `tracks_named`, and `entries_without_tracklets` lists the entries whose row
+  says false (`tests/core/pipeline/test_tracks_index.py`).
+- `write_tracks_row` requires `carries_tracklets`. A tracker passes its own answer to
+  `publish_tracks_table`. An op that derives a variant from another copies
+  `read_carries_tracklets` of its source row, and never passes `None` or a constant
+  (`resample-tracks`, `assign-arenas`, `upgrade_trex_tables`). `assign-identities`
+  relabels by identity and writes `True`.
 - `frame_axis_verdict` is the one rule separating a frame-axis mismatch from a known
   tail shortfall. The `backfill_*` passes behind `mosaic measure-tracks` document their
   rules in their docstrings. The lock discipline of the three cell passes is in

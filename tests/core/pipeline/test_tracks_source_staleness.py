@@ -347,6 +347,7 @@ class TestTheFirstFrameATableWasNumberedFrom:
             n_rows=2,
             consumed_source_roots=("tracks_raw",),
             first_frame=first_frame,
+            carries_tracklets=None,
         )
         return tracks_compositions(ds, (VARIANT,))[("", "seq_a")]
 

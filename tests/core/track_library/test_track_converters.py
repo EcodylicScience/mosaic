@@ -41,13 +41,17 @@ from mosaic.core.track_library.sleap import (
 )
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.placement import place_converted
+from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.track_library.trex import TrexNpzConverter
 
 from tests.helpers import (
     calms21_dataset,
+    make_dataset,
     tree_snapshot,
+    write_dlc_csv,
     write_sleap_analysis_h5,
     write_trex_npz,
+    write_ultralytics_predictions,
 )
 
 # What entry identity is spelled as. A converter may accept these as hints; none
@@ -110,6 +114,27 @@ def test_no_converter_can_hash_an_entry_name(src_format: str) -> None:
 def test_every_converter_declares_a_version(src_format: str) -> None:
     """The version becomes a visible segment of the tracks variant identity."""
     assert TRACK_CONVERTERS[src_format].version
+
+
+BUILT_IN_FORMATS = sorted(
+    name
+    for name, cls in TRACK_CONVERTERS.items()
+    if cls.__module__.startswith("mosaic.core.track_library.")
+)
+"""The formats the library registers, as a test module's own converter is not."""
+
+
+@pytest.mark.parametrize("src_format", BUILT_IN_FORMATS)
+def test_every_converter_declares_carries_tracklets(src_format: str) -> None:
+    """Each built-in names whether its tracks follow an animal, or that it cannot say."""
+    converter = TRACK_CONVERTERS[src_format]
+    declaring = [
+        cls
+        for cls in converter.__mro__
+        if cls is not TrackConverter and "carries_tracklets" in vars(cls)
+    ]
+    assert declaring, f"{src_format} leaves carries_tracklets to the base class"
+    assert converter.carries_tracklets in (True, False, None)
 
 
 @pytest.mark.parametrize("src_format", sorted(TRACK_CONVERTERS))
@@ -836,6 +861,7 @@ def test_a_superseded_spelling_is_reported_with_the_safe_remedy(
         producer="",
         std_format="trex_v1",
         n_rows=0,
+        carries_tracklets=None,
     )
     _ = capsys.readouterr()
 
@@ -1084,3 +1110,87 @@ def test_a_converted_table_with_a_repeated_row_fails_its_entry(
     assert "'s'" in heard[0]
     assert "frame 1 of id 0 appears in more than one row" in heard[0]
     assert dataset.list_entries() == []
+
+
+# --- the tracklets flag a conversion records --------------------------------
+
+
+def _converted_flag(ds: Dataset, params: dict[str, object] | None = None) -> str:
+    """Convert every raw row, and return the one tracks row's tracklets cell."""
+    _ = ds.convert_all_tracks(params=params)
+    index = read_tracks_index(ds)
+    assert len(index) == 1
+    return str(index.iloc[0]["carries_tracklets"])
+
+
+def _raw_dataset(tmp_path: Path, src_format: str, pattern: str) -> Dataset:
+    ds = make_dataset((tmp_path / "ds").resolve(), roots=("tracks_raw", "tracks"))
+    ds.index_tracks_raw(
+        [ds.base_dir / "raw"], patterns=[pattern], src_format=src_format
+    )
+    return ds
+
+
+def test_a_trex_conversion_records_tracklets(tmp_path: Path) -> None:
+    raw = tmp_path / "ds" / "raw"
+    for individual in (0, 1):
+        write_trex_npz(raw / f"myseq_fish{individual}.npz", individual=individual)
+    ds = _raw_dataset(tmp_path, "trex_npz", "*.npz")
+    assert _converted_flag(ds) == "true"
+
+
+def test_a_calms21_conversion_records_tracklets(tmp_path: Path) -> None:
+    ds = calms21_dataset(tmp_path / "ds", {"train": {"a": {"s1": 4}}})
+    assert _converted_flag(ds) == "true"
+
+
+def test_a_deeplabcut_conversion_records_tracklets(tmp_path: Path) -> None:
+    _ = write_dlc_csv(tmp_path / "ds" / "raw" / "myseq.csv", ["a", "b"], n_frames=6)
+    ds = _raw_dataset(tmp_path, "deeplabcut", "*.csv")
+    assert _converted_flag(ds) == "true"
+
+
+def test_an_ultralytics_conversion_records_tracklets(tmp_path: Path) -> None:
+    write_ultralytics_predictions(tmp_path / "ds" / "raw" / "myseq.parquet")
+    ds = _raw_dataset(tmp_path, "ultralytics_tracks", "*.parquet")
+    assert _converted_flag(ds) == "true"
+
+
+def _sleap_dataset(tmp_path: Path) -> Dataset:
+    tracks, scores = _two_track_fixture()
+    write_sleap_analysis_h5(tmp_path / "ds" / "raw" / "myseq.h5", tracks, scores)
+    return _raw_dataset(tmp_path, "sleap_analysis_h5", "*.h5")
+
+
+@pytest.mark.parametrize(
+    ("answer", "cell"), [(True, "true"), (False, "false"), (None, "")]
+)
+def test_a_sleap_conversion_records_the_users_answer(
+    tmp_path: Path, answer: bool | None, cell: str
+) -> None:
+    ds = _sleap_dataset(tmp_path)
+    params: dict[str, object] = {} if answer is None else {"tracks_named": answer}
+    assert _converted_flag(ds, params) == cell
+
+
+def test_a_sleap_conversion_without_an_answer_keeps_its_variant(
+    tmp_path: Path,
+) -> None:
+    """The field joins the identity only once the user sets it."""
+    ds = make_dataset((tmp_path / "ds").resolve())
+
+    assert "tracks_named" not in SleapConvertParams().identity_dump()
+    assert (
+        ds.track_conversion_variant("sleap_analysis_h5")
+        == "convert-sleap_analysis_h5.0.2-3c20a2e6ea"
+    )
+
+
+def test_an_answered_sleap_conversion_is_another_variant(tmp_path: Path) -> None:
+    ds = make_dataset((tmp_path / "ds").resolve())
+
+    unanswered = ds.track_conversion_variant("sleap_analysis_h5")
+    named = ds.track_conversion_variant("sleap_analysis_h5", {"tracks_named": True})
+    unnamed = ds.track_conversion_variant("sleap_analysis_h5", {"tracks_named": False})
+
+    assert len({unanswered, named, unnamed}) == 3

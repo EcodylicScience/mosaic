@@ -244,6 +244,7 @@ def test_a_table_made_from_another_table_is_cleared(
         std_format="mosaic_v1",
         n_rows=2,
         media_frames=_FRAMES,
+        carries_tracklets=None,
     )
 
     would = backfill_media_frames(ds, dry_run=True)
@@ -345,6 +346,7 @@ def test_a_row_is_reported_not_established_only_when_it_holds_a_value(
             std_format="trex_v2",
             n_rows=2,
             media_frames=media_frames,
+            carries_tracklets=None,
         )
 
     done = backfill_media_frames(ds)
@@ -399,6 +401,7 @@ def test_a_row_whose_variant_has_no_record_stays_blank(tmp_path: Path) -> None:
         producer="trex",
         std_format="trex_v2",
         n_rows=2,
+        carries_tracklets=None,
     )
 
     assert len(backfill_media_frames(ds).written) == 0
@@ -508,6 +511,7 @@ def test_a_row_published_while_a_pass_judges_keeps_what_it_was_published_with(
             std_format=str(republished["std_format"]),
             n_rows=2,
             frames_read=frames_read,
+            carries_tracklets=None,
         )
         published.append(sequence)
 
