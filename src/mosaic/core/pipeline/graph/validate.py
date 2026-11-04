@@ -318,6 +318,8 @@ class _Walk:
     )
     """The columns of the tracks that a step reads, keyed by step id, where a plan
     has read them from the tables."""
+    ignore_unavailable: bool = False
+    """Whether a step type that this installation cannot run is no problem."""
     tracks: ColumnSet = field(init=False)
     """The columns of the dataset's tracks, as the declarations describe them."""
 
@@ -407,6 +409,7 @@ def check_recipe(
     catalog: DeclarationCatalog | None = None,
     *,
     tracks: Mapping[str, ColumnSet] | None = None,
+    ignore_unavailable: bool = False,
 ) -> tuple[Problem, ...]:
     """Every reason *recipe* cannot be run, in topological order.
 
@@ -420,11 +423,15 @@ def check_recipe(
             id, as a plan reads them from a dataset's tables. A step left out
             reads the tracks as the registered schemas describe them, and a
             column that they may contain is then a caution.
+        ignore_unavailable: Whether a step type that this installation cannot
+            run is no problem. A worker that runs one step of a recipe sets it,
+            so that the steps beside one that needs a tool the worker lacks
+            still run. That step refuses itself before it runs.
 
     Returns:
         The problems found, empty when the recipe is well formed.
     """
-    return _examine(recipe, catalog, tracks).problems
+    return _examine(recipe, catalog, tracks, ignore_unavailable).problems
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +447,7 @@ def _examine(
     recipe: Recipe,
     catalog: DeclarationCatalog | None,
     tracks: Mapping[str, ColumnSet] | None = None,
+    ignore_unavailable: bool = False,
 ) -> _Examined:
     """Walk *recipe* in topological order, checking every step."""
     known = declaration_catalog() if catalog is None else catalog
@@ -455,6 +463,7 @@ def _examine(
         catalog=known,
         levels=resolved_levels(recipe, known),
         measured_tracks=tracks or {},
+        ignore_unavailable=ignore_unavailable,
     )
     problems: list[Problem] = []
     for step in ordered:
@@ -501,7 +510,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         walk.unchecked.append(step.id)
 
     problems: list[Problem] = []
-    if declared.unavailable is not None:
+    if declared.unavailable is not None and not walk.ignore_unavailable:
         # The rest of the step is still checked, because its params and its
         # wiring are the author's to fix on any installation.
         problems.append(Problem(step.id, where, declared.unavailable))
@@ -1061,7 +1070,10 @@ def _edge_problem(step: Step, declared: Declaration, walk: _Walk) -> Problem | N
 
 
 def reject_unless_valid(
-    recipe: Recipe, catalog: DeclarationCatalog | None = None
+    recipe: Recipe,
+    catalog: DeclarationCatalog | None = None,
+    *,
+    ignore_unavailable: bool = False,
 ) -> None:
     """Raise unless *recipe* is well formed.
 
@@ -1069,10 +1081,16 @@ def reject_unless_valid(
     malformed graph is refused as a document rather than half-planned against
     storage.
 
+    Args:
+        recipe: The graph to check.
+        catalog: The declarations to check against.
+        ignore_unavailable: Whether a step type that this installation cannot
+            run is no problem (:func:`check_recipe`).
+
     Raises:
         RecipeInvalid: Carrying every problem found, not only the first.
     """
-    problems = check_recipe(recipe, catalog)
+    problems = check_recipe(recipe, catalog, ignore_unavailable=ignore_unavailable)
     if problems:
         raise RecipeInvalid(problems)
 

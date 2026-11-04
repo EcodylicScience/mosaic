@@ -23,6 +23,7 @@ from mosaic.behavior.feature_library.runner_client import (
     RunnerVersionError,
 )
 from mosaic.core.pipeline.job import CancelCheck, Cancelled
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.toolenv import ToolEnv, ToolExitError, ToolNotFoundError
 from tests.helpers import (
     FAKE_HANDLERS,
@@ -30,6 +31,7 @@ from tests.helpers import (
     appender_program,
     assert_process_exited,
     assert_stopped_writing,
+    isolate_tool_location,
     journal_source,
     wait_for,
     write_fake_runner,
@@ -156,6 +158,7 @@ class _Runners:
         runner = RunnerProcess(
             _ENV.placed(bin_path=interpreter),
             self.program(version=version, preamble=preamble),
+            tool="fake-tool",
             failure=_FakeExit,
             version=required,
             on_start=on_start,
@@ -196,14 +199,36 @@ def test_a_missing_interpreter_is_refused_at_the_first_request(
     missing = tmp_path / "no-environment" / "bin" / "python"
     runner = runners.make(interpreter=missing)
 
-    with pytest.raises(_FakeNotFound) as refused:
+    with pytest.raises(ToolUnavailable) as refused:
         _ = runner.request("echo", _Text(text="hello"))
 
+    assert refused.value.detail == {"tool": "fake-tool", "cause": "environment"}
+    assert isinstance(refused.value.__cause__, _FakeNotFound)
     message = str(refused.value)
     assert f"'{missing}'" in message
     assert "the binary this run was placed with" in message
     assert "could not be started" in message
     assert "Build the fake tool's environment." in message
+
+
+def test_locating_with_no_environment_is_a_tool_unavailable_refusal(
+    runners: _Runners, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    isolate_tool_location(monkeypatch, _ENV, found={})
+    runner = RunnerProcess(
+        _ENV,
+        runners.program(),
+        tool="fake-tool",
+        failure=_FakeExit,
+        version=None,
+    )
+
+    with pytest.raises(ToolUnavailable) as refused:
+        _ = runner.locate()
+
+    assert refused.value.reason == "tool_unavailable"
+    assert refused.value.detail == {"tool": "fake-tool", "cause": "environment"}
+    assert isinstance(refused.value.__cause__, _FakeNotFound)
 
 
 def test_locate_resolves_the_interpreter_and_starts_no_runner(

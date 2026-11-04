@@ -34,6 +34,7 @@ __all__ = [
     "REFUSED_EXIT_CODE",
     "Refusal",
     "RefusalReason",
+    "ToolUnavailable",
 ]
 
 REFUSED_EXIT_CODE: Final = 65
@@ -70,6 +71,7 @@ type RefusalReason = Literal[
     "apply_request_unfinished",
     "apply_step_changed",
     "apply_tracks_changed",
+    "tool_unavailable",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -98,13 +100,26 @@ dataset does not hold or that does not read (``apply_request_missing``), one
 that has not finished (``apply_request_unfinished``), a locked step that differs
 from the named request's recipe or that it lacks (``apply_step_changed``), and a
 tracks variant other than the one the named request read
-(``apply_tracks_changed``).
+(``apply_tracks_changed``). ``tool_unavailable`` is a step whose worker lacks the
+tool that the step runs: its ``tool`` detail names the tool, and its ``cause`` is
+``license`` when the tool's license is not accepted there and ``environment``
+when the tool is not installed or cannot be started.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its
 tool runs, such as a missing join or a clip without an identity, and a model
 reference that does not resolve (``ModelReferenceRefusedError``).
 """
+
+
+def _restore_refusal[R: Refusal](
+    cls: type[R], args: tuple[object, ...], state: dict[str, object]
+) -> R:
+    """Rebuild a refusal of *cls* from its ``args`` and attributes, without ``__init__``."""
+    refusal = cls.__new__(cls)
+    refusal.args = args
+    refusal.__dict__.update(state)
+    return refusal
 
 
 class Refusal(ClassifiedError):
@@ -136,6 +151,15 @@ class Refusal(ClassifiedError):
         self.step_id: str = step_id
         self.detail: dict[str, JsonValue] = dict(detail or {})
 
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Pickle the refusal whatever its subclass's ``__init__`` takes.
+
+        A process worker sends the refusal it raised to its parent through a
+        pickle, and the default rebuilds an exception by calling its class with
+        ``args``. A subclass takes other arguments than the message.
+        """
+        return (_restore_refusal, (type(self), self.args, self.__dict__))
+
     def error_reason(self) -> str:
         """Return :attr:`reason`."""
         return self.reason
@@ -164,3 +188,24 @@ class Refusal(ClassifiedError):
             **self.detail,
         }
         return json.dumps(payload)
+
+
+class ToolUnavailable(Refusal):
+    """The worker that runs a step lacks the tool the step needs.
+
+    Attributes:
+        tool: The tool by the name its feature declares.
+        cause: ``license`` when the tool's license is not accepted here, else
+            ``environment``.
+    """
+
+    def __init__(
+        self, tool: str, cause: Literal["license", "environment"], message: str
+    ) -> None:
+        super().__init__(
+            message,
+            reason="tool_unavailable",
+            detail={"tool": tool, "cause": cause},
+        )
+        self.tool: str = tool
+        self.cause: Literal["license", "environment"] = cause

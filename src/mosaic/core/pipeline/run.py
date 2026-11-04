@@ -116,6 +116,7 @@ from .parallelism import (
 )
 from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
+from .refusal import ToolUnavailable
 from .writers import (
     FeatureOutput,
     default_check_output,
@@ -1966,6 +1967,10 @@ def _run_feature_impl(
             f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
             file=sys.stderr,
         )
+        # A tool this machine lacks fails every entry the same way, so it is the
+        # run's refusal and not one entity's loss.
+        if isinstance(exc, ToolUnavailable):
+            raise exc
 
     def _drain_completed() -> None:
         done, _ = wait(pending, return_when=FIRST_COMPLETED)
@@ -1979,7 +1984,14 @@ def _run_feature_impl(
                 _report_resources(final=True)
                 raise WorkerProcessDied(_memory_use()) from exc
             except Exception as exc:
-                _entry_failed(meta.group, meta.sequence, exc)
+                try:
+                    _entry_failed(meta.group, meta.sequence, exc)
+                except ToolUnavailable:
+                    # A future already running cannot be cancelled. The rest
+                    # never start.
+                    for waiting in pending:
+                        _ = waiting.cancel()
+                    raise
                 continue
             if selector is not None:
                 result_df = trim_feature_output(result_df, selector)
@@ -2166,7 +2178,7 @@ def _run_feature_impl(
             while pending:
                 _drain_completed()
             executor.shutdown(wait=True)
-    except (Cancelled, WorkerProcessDied, MemoryFloorReached):
+    except (Cancelled, WorkerProcessDied, MemoryFloorReached, ToolUnavailable):
         _flush_idx()
         # A run that stops after writing 40 of 100 entries has 40 durable on disk,
         # and "how far did it get" is the question an operator resubmits on.

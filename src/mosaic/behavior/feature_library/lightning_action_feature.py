@@ -70,6 +70,7 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
 )
 from mosaic.core.pipeline.loading import labels_for_rows
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.types import (
     COLUMNS,
     EmitsLevel,
@@ -85,7 +86,11 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.track_quality import consecutive_runs
-from mosaic.optional_dependency import OptionalModule, Prerequisite
+from mosaic.optional_dependency import (
+    MissingOptionalDependency,
+    OptionalModule,
+    Prerequisite,
+)
 
 from .classifier_common import (
     FIT_SCOPE_REMEDY,
@@ -136,7 +141,10 @@ log = logging.getLogger(__name__)
 LIGHTNING_ACTION: Final = OptionalModule(
     "lightning_action", "lightning-action", "the lightning-action classifier"
 )
-"""The lightning-action package, imported when the feature is constructed."""
+"""The lightning-action package, imported when the feature fits or applies."""
+
+LIGHTNING_ACTION_TOOL_NAME: Final = "lightning-action"
+"""The name that a :class:`~mosaic.core.pipeline.refusal.ToolUnavailable` gives it."""
 
 
 # --- Model artifact ---
@@ -209,6 +217,20 @@ class _PackageModelClass(Protocol):
 @runtime_checkable
 class _Assignable(Protocol):
     def __setitem__(self, key: str, value: int, /) -> None: ...
+
+
+def _require_package() -> None:
+    """Raise unless the lightning-action package imports.
+
+    Raises:
+        ToolUnavailable: The package is not installed.
+    """
+    try:
+        _ = LIGHTNING_ACTION.load()
+    except MissingOptionalDependency as missing:
+        raise ToolUnavailable(
+            LIGHTNING_ACTION_TOOL_NAME, "environment", str(missing)
+        ) from missing
 
 
 def _package_model_class() -> _PackageModelClass:
@@ -404,6 +426,7 @@ class LightningActionFeature(FitReporting):
     costly_fit = True  # a superseded-run cleanup keeps its runs
     resource_class = "gpu"
     name = "lightning-action"
+    tool: ClassVar[str] = LIGHTNING_ACTION_TOOL_NAME
     # 0.3: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``
     # 0.3 too (``BOOKKEEPING_COLS``).
@@ -558,7 +581,6 @@ class LightningActionFeature(FitReporting):
         inputs: LightningActionFeature.Inputs,
         params: dict[str, object] | None = None,
     ) -> None:
-        _ = LIGHTNING_ACTION.load()
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
         self.fits = self.params.model is None
@@ -627,6 +649,7 @@ class LightningActionFeature(FitReporting):
         return False
 
     def fit(self, inputs: InputStream) -> None:
+        _require_package()
         from lightning_action.data.utils import compute_sequence_pad
 
         if self._train_entries is None:
@@ -737,6 +760,7 @@ class LightningActionFeature(FitReporting):
         print("[lightning-action] Training complete.", file=sys.stderr)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        _require_package()
         if (
             self._feature_columns is None
             or self._feature_mean is None

@@ -18,7 +18,8 @@ from typer.testing import CliRunner
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from tests.helpers import SLEEPER_COMMAND, invoke_json, speed_recipe
+from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
+from tests.helpers import SLEEPER_COMMAND, hide_package, invoke_json, speed_recipe
 
 runner = CliRunner()
 
@@ -56,6 +57,47 @@ def test_run_then_status_roundtrip(dataset: tuple[Path, Dataset]) -> None:
     assert status["status"] == "finished"
     assert status["run_id"] == payload["run_id"]
     assert status["kind"] == "feature"
+
+
+def test_a_direct_run_of_feral_without_the_package_exits_refused(
+    dataset: tuple[Path, Dataset],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tool the machine lacks is a refusal, not a crash, for a direct run too."""
+    manifest, _ = dataset
+    upstream = invoke_json(
+        ["run", "-m", str(manifest), "--feature", "speed-angvel", "--json"]
+    )
+    assert upstream["status"] == "finished"
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "model_best.pt").write_bytes(b"")
+    hide_package(monkeypatch, "feral")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "-m",
+            str(manifest),
+            "--feature",
+            "feral",
+            "--inputs",
+            json.dumps(
+                [{"feature": upstream["feature"], "run_id": upstream["run_id"]}]
+            ),
+            "--params",
+            json.dumps({"model_dir": str(model_dir)}),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == REFUSED_EXIT_CODE, result.output
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "tool_unavailable"
+    assert payload["detail"] == {"tool": "feral", "cause": "environment"}
 
 
 def test_second_identical_run_is_cache_hit(dataset: tuple[Path, Dataset]) -> None:

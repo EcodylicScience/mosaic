@@ -36,7 +36,9 @@ from mosaic.behavior.feature_library.lightning_action_feature import (
     LightningActionModelArtifact,
     LightningActionModelBundle,
 )
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.types import InputStream, Result
+from mosaic.optional_dependency import MissingOptionalDependency
 from tests.helpers import (
     LA_CLASS_NAMES,
     LA_CLASSES,
@@ -47,6 +49,7 @@ from tests.helpers import (
     StudyEntry,
     TemplatesStudy,
     fit_lightning_action,
+    hide_package,
     install_lightning_action_stub,
     lightning_action_params,
     stub_probabilities,
@@ -800,6 +803,24 @@ def test_templates_come_with_labels_and_a_model_with_none() -> None:
             inputs,
             params={"model": model, "labels": {"kind": "behavior"}, "default_class": 0},
         )
+
+
+def test_a_feature_is_built_without_the_package_and_refuses_to_fit_or_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hide_package(monkeypatch, "lightning_action")
+    feature = LightningActionFeature(
+        LightningActionFeature.Inputs((Result(feature="temporal-stack"),)),
+        params=_fit_params(),
+    )
+
+    with pytest.raises(ToolUnavailable) as fitted:
+        feature.fit(InputStream(lambda: iter([]), n_entries=0))
+    with pytest.raises(ToolUnavailable):
+        _ = feature.apply(pd.DataFrame({"frame": [0]}))
+
+    assert fitted.value.detail == {"tool": "lightning-action", "cause": "environment"}
+    assert isinstance(fitted.value.__cause__, MissingOptionalDependency)
 
 
 def test_no_run_hashes_the_scope_and_only_a_fit_fits() -> None:

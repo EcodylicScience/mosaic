@@ -19,7 +19,7 @@ from mosaic.core.pipeline.graph import RecipeInvalid, RecipeRefused, StepBuildEr
 from mosaic.core.pipeline.graph.step_preflight import CoverageShortfall
 from mosaic.core.pipeline.graph.wire import Problem
 from mosaic.core.pipeline.ops import ScopeRefused
-from mosaic.core.pipeline.refusal import Refusal
+from mosaic.core.pipeline.refusal import Refusal, ToolUnavailable
 from mosaic.optional_dependency import MissingOptionalDependency
 
 
@@ -44,6 +44,19 @@ def test_a_refusal_raised_outside_a_step_names_no_step_and_no_detail() -> None:
 
     assert envelope == ErrorEnvelope(
         kind="refused", reason="undecodable_codec", message="clip0.mp4 is av1"
+    )
+
+
+def test_an_unavailable_tool_is_refused_with_its_tool_and_cause() -> None:
+    error = ToolUnavailable("keypoint-moseq", "license", "accept the license")
+
+    envelope = error_envelope(error)
+
+    assert envelope == ErrorEnvelope(
+        kind="refused",
+        reason="tool_unavailable",
+        message="accept the license",
+        detail={"tool": "keypoint-moseq", "cause": "license"},
     )
 
 

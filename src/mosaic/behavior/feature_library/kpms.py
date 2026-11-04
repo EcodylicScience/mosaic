@@ -53,6 +53,7 @@ from mosaic.core.pipeline.column_contract import (
     kept,
 )
 from mosaic.core.pipeline.job import CancelCheck, CancelToken, cancel_check
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.optional_dependency import Prerequisite
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
@@ -175,10 +176,13 @@ class KpmsExitError(ToolExitError):
     tool_name = "The keypoint-MoSeq runner"
 
 
+KPMS_TOOL_NAME: Final = "keypoint-moseq"
+"""The name that a :class:`~mosaic.core.pipeline.refusal.ToolUnavailable` gives kpms."""
+
 # keypoint-moseq does not install a console script. Rung 5 reads the interpreter
 # under external/.venv.
 KPMS_ENV: Final = ToolEnv(
-    tool="keypoint-moseq",
+    tool=KPMS_TOOL_NAME,
     conda_env_var=KPMS_CONDA_ENV_VAR,
     bin_var=KPMS_PYTHON_ENV,
     bin_mode="direct",
@@ -207,11 +211,12 @@ def check_license_accepted() -> None:
     second failure mode with an identical remedy would only add noise.
 
     Raises:
-        RuntimeError: with :data:`LICENSE_NOTICE` when acceptance is absent.
+        ToolUnavailable: with :data:`LICENSE_NOTICE` and the cause ``license``
+            when acceptance is absent.
     """
     if license_accepted():
         return
-    raise RuntimeError(LICENSE_NOTICE)
+    raise ToolUnavailable(KPMS_TOOL_NAME, "license", LICENSE_NOTICE)
 
 
 def license_accepted() -> bool:
@@ -449,6 +454,7 @@ class KpmsFeature:
     # keypoint-MoSeq fits in JAX, and is built for a GPU; on CPU a fit takes days.
     resource_class = "gpu"
     name = "kpms"
+    tool: ClassVar[str] = KPMS_TOOL_NAME
     version = "0.1"
     parallelizable = False
     # The entries in scope are the training set, so a fit hashes them. A run given
@@ -554,6 +560,7 @@ class KpmsFeature:
         self._runner = RunnerProcess(
             KPMS_ENV.placed(bin_path=self.params.kpms_python),
             KPMS_SERVER_SCRIPT,
+            tool=KPMS_TOOL_NAME,
             failure=KpmsExitError,
             version=None,
             on_start=self._prepare,

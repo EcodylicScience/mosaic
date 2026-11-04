@@ -14,6 +14,7 @@ import pytest
 
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.manifest import build_manifest
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
 from mosaic.core.pipeline.types.feature import EmitsLevel
@@ -30,6 +31,7 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.scope import Scope
+from mosaic.runlog import read_run, run_log_dir
 from mosaic.core.dataset import Dataset
 from tests.helpers import (
     MockDataset,
@@ -1262,3 +1264,51 @@ def test_run_feature_passes_an_empty_map_over_a_feature_input(tmp_path: Path) ->
     assert feature.hook_calls == 1
     assert feature.tracklets == {}
     assert _echoed(ds, result) == {"s_false": "absent"}
+
+
+# --- A tool the worker lacks ----------------------------------------------------
+
+
+class _ToolMissing(ParallelFeature):
+    """Marks each entry that it starts, and then finds that its tool is missing."""
+
+    name = "test-tool-missing"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        marks = Path(os.environ["MOSAIC_TEST_MARK_DIR"])
+        (marks / str(df["sequence"].iloc[0])).touch()
+        raise ToolUnavailable("fake-tool", "environment", "fake-tool is not set up")
+
+
+def test_a_tool_unavailable_in_a_process_worker_refuses_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    sequences = [f"seq_{index}" for index in range(8)]
+    add_tracks_variant(ds, _TRACKLETS_VARIANT, *sequences, std_format="mosaic_v1")
+    marks = tmp_path / "marks"
+    marks.mkdir()
+    monkeypatch.setenv("MOSAIC_TEST_MARK_DIR", str(marks))
+    workers = 2
+
+    with pytest.raises(ToolUnavailable) as refused:
+        _ = run_feature(
+            ds,
+            _ToolMissing(),
+            parallel_workers=workers,
+            parallel_mode="process",
+            execution_id="TESTUNAVAILABLE",
+        )
+
+    assert refused.value.reason == "tool_unavailable"
+    assert refused.value.detail == {"tool": "fake-tool", "cause": "environment"}
+    snapshot = read_run(run_log_dir(ds.base_dir), "TESTUNAVAILABLE")
+    assert snapshot is not None
+    assert snapshot["status"] == "failed"
+    recorded = json.loads(snapshot["error_json"])
+    assert recorded["reason"] == "tool_unavailable"
+    assert (recorded["tool"], recorded["cause"]) == ("fake-tool", "environment")
+    # A future that is already running cannot be cancelled, and the pool holds
+    # at most one per worker. Entries beyond those are never started.
+    assert len(list(marks.iterdir())) <= workers
+    assert list(ds.get_root("features").glob("*/*/*.parquet")) == []

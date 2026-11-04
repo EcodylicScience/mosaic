@@ -189,6 +189,9 @@ class VameExitError(ToolExitError):
     tool_name = "The VAME runner"
 
 
+VAME_TOOL_NAME: Final = "vame"
+"""The name that a :class:`~mosaic.core.pipeline.refusal.ToolUnavailable` gives VAME."""
+
 # A $PATH lookup cannot single out VAME's interpreter. Rung 5 reads the one under
 # external/vame-env/.venv.
 VAME_ENV: Final = ToolEnv(
@@ -565,6 +568,7 @@ class VameFeature:
     # VAME trains a recurrent network, and is built for a GPU.
     resource_class = "gpu"
     name = "vame"
+    tool: ClassVar[str] = VAME_TOOL_NAME
     version = "0.1"
     parallelizable = False
     # The entries in scope are the training set, so a fit hashes them. A run given
@@ -782,6 +786,7 @@ class VameFeature:
         self._runner = RunnerProcess(
             VAME_ENV.placed(bin_path=self.params.vame_python),
             VAME_RUNNER_SCRIPT,
+            tool=VAME_TOOL_NAME,
             failure=VameExitError,
             version=VAME_VERSION,
             on_start=self._prepare,
@@ -815,8 +820,9 @@ class VameFeature:
                 a bundle. A run with ``model`` set does not fit.
             ValueError: The bundle was trained by another VAME release, or a
                 param of :data:`MODEL_SETTINGS` differs from the bundle's.
-            VameNotFoundError: ``model`` is set, the run root lacks a bundle, and
-                VAME's interpreter cannot be located. The run is refused even
+            ToolUnavailable: ``model`` is set, the run root lacks a bundle, and
+                VAME's interpreter cannot be located; the cause is a
+                :class:`VameNotFoundError`. The run is refused even
                 when every entry is cached, because ``run_feature`` calls
                 load_state before it checks any entry against the cache.
         """

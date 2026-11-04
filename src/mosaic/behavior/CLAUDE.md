@@ -163,9 +163,16 @@ module registers nothing. A new converter adds a call to that file.
   `tests/behavior/feature_library/test_runner_client.py` covers it.
 - **The kpms license is checked per request, and in `load_state` when it finds a model
   to apply.** `KpmsFeature._request` calls `check_license_accepted()`
-  (`MOSAIC_KPMS_LICENSE_ACCEPTED=1`). `__init__` skips the check because
-  `mosaic reconcile` constructs features without running them.
-  `tests/behavior/feature_library/test_kpms_license.py` tests it.
+  (`MOSAIC_KPMS_LICENSE_ACCEPTED=1`), which raises `ToolUnavailable` with the cause
+  `license`. `__init__` skips the check because `mosaic reconcile` constructs features
+  without running them. `tests/behavior/feature_library/test_kpms_license.py` tests it.
+- **A feature that needs a tool refuses with `ToolUnavailable`, in `fit` or `apply`
+  and never in `__init__`.** `RunnerProcess` raises it, with the cause `environment`,
+  when its interpreter cannot be located or started; `lightning-action` and `feral` do
+  so when their package does not import. A feature names its tool in a `tool` class
+  attribute, which the pipeline's refusal for an unavailable step reads. `__init__`
+  must construct without the tool, because a worker plans the steps beside an
+  unavailable one, and that builds them.
 - **Each runner's interpreter comes from a `ToolEnv` ladder** (`KPMS_ENV` in `kpms.py`,
   `VAME_ENV` in `vame_feature.py`). The user builds both environments from
   `external/README.md` and `external/vame-env/README.md`. Both are excluded from the uv

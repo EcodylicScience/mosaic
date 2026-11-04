@@ -308,6 +308,15 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   step, or submit without the field to fit again)
   or `apply_tracks_changed` (leave `tracks_run_id` unset to read the fit's tracks). Do
   not pass `pins` beside it: the CLI exits 2 and the MCP tools refuse the arguments.
+- A step whose tool the machine running it lacks ends as `tool_unavailable`, with the
+  tool and a `cause` in its error (`mosaic run --graph-request` exits 65). Planning and
+  submitting already report such a step type as a problem, so this reaches a worker
+  whose installation differs from the submitter's. With `cause` `environment`, install
+  the tool's extra or build its environment on that worker. With `license`, tell the
+  user the license is not accepted there and let them decide; do not set the
+  acceptance variable. The request's other steps run. A deployment words it "{tool} is
+  not set up on this deployment." or "{tool}'s license is not accepted on this
+  deployment."
 - A run that loses some entries finishes as `partial` and names them in
   `result.failed_entries`. Check it before any global fit, since a fit over fewer
   entries is a different result. Losing every entry raises.

@@ -14,6 +14,8 @@ because its index row landed a second later.
 from __future__ import annotations
 
 import json
+import sys
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -23,6 +25,7 @@ from typer.testing import CliRunner
 
 import mosaic.core.pipeline.graph.step as step_module
 import mosaic.core.pipeline.parallelism as parallelism
+from mosaic.behavior.feature_library.kpms import KPMS_LICENSE_ENV, KPMS_PYTHON_ENV
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
@@ -31,11 +34,13 @@ from mosaic.core.pipeline.graph import (
     Plan,
     PlannedStep,
     Recipe,
+    RecipeInvalid,
     Request,
     StepAttempt,
     StepRefused,
     StepSpec,
     asked_of,
+    declaration_catalog,
     execute_step,
     plan_pipeline,
     load_recipe_for_request,
@@ -55,14 +60,26 @@ from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.parallelism import ParallelSettings
-from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
+from mosaic.core.pipeline.ops import registered_op
+from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE, ToolUnavailable
+from mosaic.core.pipeline.tracking_roots import ToolCodecError
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
-from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
+from mosaic.runlog import (
+    TERMINAL_STATUSES,
+    JsonlRunLog,
+    read_run,
+    run_log_dir,
+    run_log_path,
+)
 from tests.helpers import (
     FakeTrainer,
     add_tracks_variant,
     chain_with_sibling_recipe,
+    hide_package,
+    install_lightning_action_stub,
+    kpms_params,
+    lightning_action_params,
     make_dataset,
     run_speed,
     write_data_yaml,
@@ -1836,3 +1853,223 @@ def test_the_worker_count_is_not_part_of_a_steps_identity(tracked: Dataset) -> N
     )
 
     assert outcome.run_id == planned.run_id
+
+
+# --- a worker without the tool ------------------------------------------------
+
+
+@pytest.fixture
+def fresh_catalog() -> Iterator[None]:
+    """Build the declaration catalog again on entry and on exit.
+
+    ``declaration_catalog`` caches what each feature's prerequisites answered when
+    it was first built, so a test that changes the installation builds it afresh
+    and leaves none of it behind.
+    """
+    declaration_catalog.cache_clear()
+    yield
+    declaration_catalog.cache_clear()
+
+
+def _tool_recipe(feature: str) -> Recipe:
+    """``speed-angvel`` beside a step that needs a tool, both reading the tracks."""
+    tool_step: Document
+    if feature == "kpms":
+        tool_step = {
+            "id": "tool",
+            "type": "feature",
+            "feature": "kpms",
+            "inputs": ["tracks"],
+            "params": kpms_params(),
+        }
+    else:
+        tool_step = {
+            "id": "tool",
+            "type": "feature",
+            "feature": "lightning-action",
+            "inputs": [{"step": "speed"}],
+            "params": lightning_action_params(),
+        }
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "a tool beside a sibling",
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                },
+                tool_step,
+            ],
+        }
+    )
+
+
+def _submit_with_kpms(tracked: Dataset, monkeypatch: pytest.MonkeyPatch) -> Request:
+    """Submit the kpms recipe where the license is accepted and an interpreter found."""
+    monkeypatch.setenv(KPMS_LICENSE_ENV, "1")
+    monkeypatch.setenv(KPMS_PYTHON_ENV, sys.executable)
+    declaration_catalog.cache_clear()
+    return submit_request(tracked, _tool_recipe("kpms")).request
+
+
+def _run_step_json(
+    dataset: Dataset, request: Request, step_id: str
+) -> tuple[int, dict[str, object]]:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--json",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--graph-request",
+            request.request_id,
+            "--step",
+            step_id,
+            "--execution-id",
+            request.execution_of(step_id),
+        ],
+    )
+    return result.exit_code, json.loads(result.stdout)
+
+
+def _recorded_error(
+    dataset: Dataset, request: Request, step_id: str
+) -> dict[str, object]:
+    logged = read_run(run_log_dir(dataset.base_dir), request.execution_of(step_id))
+    assert logged is not None
+    assert logged["status"] == "failed"
+    return json.loads(logged["error_json"])
+
+
+def _terminal_events(dataset: Dataset, execution_id: str) -> list[str]:
+    lines = run_log_path(dataset.base_dir, execution_id).read_text().splitlines()
+    events = [json.loads(line)["ev"] for line in lines]
+    return [event for event in events if event in TERMINAL_STATUSES]
+
+
+@pytest.mark.usefixtures("fresh_catalog")
+def test_kpms_without_its_license_exits_65(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _submit_with_kpms(tracked, monkeypatch)
+    monkeypatch.delenv(KPMS_LICENSE_ENV)
+    declaration_catalog.cache_clear()
+
+    code, payload = _run_step_json(tracked, request, "tool")
+
+    assert code == REFUSED_EXIT_CODE
+    assert payload["status"] == "refused"
+    assert payload["reason"] == "tool_unavailable"
+    recorded = _recorded_error(tracked, request, "tool")
+    assert recorded["reason"] == "tool_unavailable"
+    assert (recorded["tool"], recorded["cause"]) == ("keypoint-moseq", "license")
+    assert recorded["step"] == "tool"
+
+
+@pytest.mark.usefixtures("fresh_catalog")
+def test_lightning_action_not_installed_exits_65(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _ = install_lightning_action_stub(monkeypatch)
+    declaration_catalog.cache_clear()
+    request = submit_request(tracked, _tool_recipe("lightning-action")).request
+    hide_package(monkeypatch, "lightning_action")
+    declaration_catalog.cache_clear()
+
+    code, payload = _run_step_json(tracked, request, "tool")
+
+    assert code == REFUSED_EXIT_CODE
+    assert payload["reason"] == "tool_unavailable"
+    recorded = _recorded_error(tracked, request, "tool")
+    assert recorded["reason"] == "tool_unavailable"
+    assert (recorded["tool"], recorded["cause"]) == ("lightning-action", "environment")
+
+
+@pytest.mark.usefixtures("fresh_catalog")
+def test_a_sibling_step_runs_on_a_worker_without_the_tool(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _submit_with_kpms(tracked, monkeypatch)
+    monkeypatch.delenv(KPMS_LICENSE_ENV)
+    declaration_catalog.cache_clear()
+
+    outcome = execute_step(tracked, request, "speed")
+
+    assert outcome.state == "ran"
+    with pytest.raises(ToolUnavailable):
+        _ = execute_step(tracked, request, "tool")
+    # Neither a submission nor a plan accepts the step on this installation.
+    with pytest.raises(RecipeInvalid):
+        _ = submit_request(tracked, _tool_recipe("kpms"))
+    with pytest.raises(RecipeInvalid):
+        _ = plan_pipeline(tracked, _tool_recipe("kpms"))
+
+
+@pytest.mark.usefixtures("fresh_catalog")
+def test_a_refusal_before_the_run_log_records_the_step_ended(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = _submit_with_kpms(tracked, monkeypatch)
+    monkeypatch.delenv(KPMS_LICENSE_ENV)
+    declaration_catalog.cache_clear()
+    attempt = request.execution_of("tool")
+    _ = execute_step(tracked, request, "speed")
+
+    with pytest.raises(ToolUnavailable):
+        _ = execute_step(tracked, request, "tool")
+
+    assert _terminal_events(tracked, attempt) == ["failed"]
+    assert _recorded_error(tracked, request, "tool")["reason"] == "tool_unavailable"
+    assert request_rollup(tracked.base_dir, request).status == "failed"
+
+
+def test_a_tracker_codec_refusal_leaves_one_terminal_event(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "regrid",
+                    "type": "op",
+                    "kind": "resample-tracks",
+                    "params": {"target_fps": 30.0},
+                }
+            ],
+        }
+    )
+    request = submit_request(tracked, recipe).request
+
+    def _refuse(*args: object, **kwargs: object) -> str:
+        raise ToolCodecError("clip0.mp4 is av1")
+
+    monkeypatch.setattr(registered_op("resample-tracks"), "run", _refuse)
+
+    with pytest.raises(ToolCodecError):
+        _ = execute_step(tracked, request, "regrid")
+
+    assert _terminal_events(tracked, request.execution_of("regrid")) == ["failed"]
+    assert _recorded_error(tracked, request, "regrid")["reason"] == "undecodable_codec"
+
+
+@pytest.mark.usefixtures("fresh_catalog")
+def test_a_tool_unavailable_from_fit_leaves_one_terminal_event(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The declaration still reads the license as accepted when ``fit`` finds it gone."""
+    request = _submit_with_kpms(tracked, monkeypatch)
+    accepted = declaration_catalog()
+    monkeypatch.delenv(KPMS_LICENSE_ENV)
+
+    with pytest.raises(ToolUnavailable):
+        _ = execute_step(tracked, request, "tool", catalog=accepted)
+
+    attempt = request.execution_of("tool")
+    assert _terminal_events(tracked, attempt) == ["failed"]
+    recorded = _recorded_error(tracked, request, "tool")
+    assert (recorded["reason"], recorded["cause"]) == ("tool_unavailable", "license")

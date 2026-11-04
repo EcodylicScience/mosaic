@@ -23,10 +23,10 @@ from mosaic.behavior.feature_library.kpms import (
     KPMS_ENV,
     KPMS_LICENSE_ENV,
     KpmsFeature,
-    KpmsNotFoundError,
 )
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.job import CancelToken, Cancelled
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.types import InputStream
@@ -350,7 +350,7 @@ def test_an_apply_without_the_license_is_refused_before_any_entry(
     fitted = run_feature(dataset, fake.feature())
     monkeypatch.delenv(KPMS_LICENSE_ENV)
 
-    with pytest.raises(RuntimeError, match="non-commercial"):
+    with pytest.raises(ToolUnavailable, match="non-commercial"):
         _ = run_feature(dataset, fake.feature(model=model_reference(fitted)))
 
     assert len(fake.journal.starts()) == 1
@@ -364,7 +364,7 @@ def test_an_apply_without_an_interpreter_is_refused_before_any_entry(
     missing = tmp_path / "no-environment" / "bin" / "python"
     feature = fake.feature(model=model_reference(fitted), kpms_python=str(missing))
 
-    with pytest.raises(KpmsNotFoundError, match="the binary this run was placed with"):
+    with pytest.raises(ToolUnavailable, match="the binary this run was placed with"):
         _ = run_feature(dataset, feature)
 
     assert len(fake.journal.starts()) == 1

@@ -27,6 +27,7 @@ from mosaic.behavior.feature_library.kpms import (
     KpmsNotFoundError,
     check_license_accepted,
 )
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.toolenv import tool_invocation
 from mosaic.core.pipeline.types import InputStream
 from tests.helpers import (
@@ -69,8 +70,16 @@ def _one_track() -> InputStream:
 # --- acceptance ------------------------------------------------------------
 
 
+def test_an_unaccepted_license_is_a_tool_unavailable_refusal() -> None:
+    with pytest.raises(ToolUnavailable) as refused:
+        check_license_accepted()
+
+    assert refused.value.reason == "tool_unavailable"
+    assert refused.value.detail == {"tool": "keypoint-moseq", "cause": "license"}
+
+
 def test_unset_refuses_and_says_why() -> None:
-    with pytest.raises(RuntimeError) as exc:
+    with pytest.raises(ToolUnavailable) as exc:
         check_license_accepted()
     message = str(exc.value)
     assert KPMS_LICENSE_ENV in message
@@ -102,7 +111,7 @@ def test_nothing_but_one_accepts(monkeypatch: pytest.MonkeyPatch, value: str) ->
     institution's entitlement on its behalf.
     """
     monkeypatch.setenv(KPMS_LICENSE_ENV, value)
-    with pytest.raises(RuntimeError, match="non-commercial"):
+    with pytest.raises(ToolUnavailable, match="non-commercial"):
         check_license_accepted()
 
 
@@ -158,11 +167,11 @@ def test_license_is_checked_before_the_filesystem(scratch: Path) -> None:
 
     The refusal must not depend on whether an interpreter happens to be
     installed, so this asserts the license error rather than
-    :class:`KpmsNotFoundError`.
+    an environment refusal.
     """
     with (
         closing(_make_feature()) as feature,
-        pytest.raises(RuntimeError, match="non-commercial"),
+        pytest.raises(ToolUnavailable, match="non-commercial"),
     ):
         feature.fit(_one_track())
 
@@ -176,9 +185,12 @@ def test_accepted_then_missing_interpreter(
     monkeypatch.setenv(KPMS_PYTHON_ENV, "/nonexistent/kpms/bin/python")
     with (
         closing(_make_feature()) as feature,
-        pytest.raises(KpmsNotFoundError, match="/nonexistent/kpms/bin/python"),
+        pytest.raises(ToolUnavailable, match="/nonexistent/kpms/bin/python") as refused,
     ):
         feature.fit(_one_track())
+
+    assert refused.value.detail == {"tool": "keypoint-moseq", "cause": "environment"}
+    assert isinstance(refused.value.__cause__, KpmsNotFoundError)
 
     assert list(scratch.iterdir()) == [], "close left the exchange directory"
 
@@ -199,7 +211,7 @@ def test_the_kpms_python_param_places_the_feature_on_the_interpreter_it_names(
     monkeypatch.setenv(KPMS_PYTHON_ENV, str(existing))
     with (
         closing(_make_feature(kpms_python="/nonexistent/param/python")) as feature,
-        pytest.raises(KpmsNotFoundError) as exc,
+        pytest.raises(ToolUnavailable) as exc,
     ):
         feature.fit(_one_track())
 

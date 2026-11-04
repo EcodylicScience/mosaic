@@ -90,6 +90,26 @@ result carries `locked_steps`. `MAX_SCHEMA_BYTES` rises from 8192 to 8448 so tha
 `plan_recipe` output schema fits. `mosaic run --graph-request` now refuses
 `--labels-run-id`, which it used to ignore: a step's labels are chosen in the recipe.
 
+**`tool_unavailable` is a new `RefusalReason`.** A step whose worker lacks the tool it
+runs ends as a refusal, `ToolUnavailable`, with the detail `{"tool": ..., "cause":
+"license" | "environment"}`, and `mosaic run --graph-request` exits 65. `kpms` raises it
+for an unaccepted license (cause `license`, tool `keypoint-moseq`) and, with `vame`, for an
+interpreter that cannot be located or started (`RunnerProcess` takes the tool's name).
+`lightning-action` and `feral` raise it from `fit` and `apply`, and no longer from
+`__init__`, so that a worker builds the steps beside one it cannot run. A feature names
+its tool in a `tool` class attribute, else its slug. A step checks its own declaration
+before it plans, and plans past an unavailable sibling (`plan_pipeline` and
+`reject_unless_valid` take `ignore_unavailable`); submit and plan still report the step as a
+problem. `run_feature` re-raises a `ToolUnavailable` from an entry as the run's refusal
+and cancels the entries it has not started, since a missing tool fails every entry. A
+`Refusal` now survives the process pool with its reason, step and detail. The
+`ToolNotFoundError` of a tracker still exits 1. `check_license_accepted` raises
+`ToolUnavailable` where it raised `RuntimeError`, and a `RunnerProcess` start raises it
+where it raised the tool's `ToolNotFoundError`, now its `__cause__`. `feral`'s
+`_import_feral` raises it too. A direct `mosaic run` of `kpms`, `vame`,
+`lightning-action` or `feral` without its tool or license now exits 65 with
+`tool_unavailable`, where it exited 1. No run id moves.
+
 **A tracks row records whether its ids follow an animal.** `TracksIndexRow` gains a last
 column, `carries_tracklets`: `"true"`, `"false"`, or blank for unknown. A conversion
 writes its converter's answer, which `TrackConverter.carries_tracklets` declares:

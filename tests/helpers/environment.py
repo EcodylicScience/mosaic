@@ -42,8 +42,11 @@ the same outcome.
 from __future__ import annotations
 
 import importlib
+import importlib.abc
 import shutil
-from collections.abc import Mapping
+import sys
+import types
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
@@ -461,6 +464,37 @@ It exists nowhere, like :data:`FAKE_CONDA`. That rung then refuses each tool
 declaring :attr:`~mosaic.core.pipeline.toolenv.ToolEnv.repo_venv` by default,
 whether or not the venv is built on the suite's machine.
 """
+
+
+class _PackageBlocked(importlib.abc.MetaPathFinder):
+    """Refuses to find any module of one top-level package."""
+
+    def __init__(self, package: str) -> None:
+        self._package = package
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: Sequence[str] | None,
+        target: types.ModuleType | None = None,
+    ) -> None:
+        if fullname.split(".")[0] == self._package:
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+
+
+def hide_package(monkeypatch: pytest.MonkeyPatch, package: str) -> None:
+    """Make *package* unimportable, whether or not it is installed or stubbed.
+
+    Any module of it already imported is removed from ``sys.modules``, and a
+    finder ahead of the others refuses it. Both are undone with the test.
+    """
+    for name in [
+        name
+        for name in sys.modules
+        if name == package or name.startswith(f"{package}.")
+    ]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(sys, "meta_path", [_PackageBlocked(package), *sys.meta_path])
 
 
 def isolate_tool_location(

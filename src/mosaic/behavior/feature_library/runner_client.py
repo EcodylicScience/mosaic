@@ -24,12 +24,14 @@ from pydantic import BaseModel, JsonValue, ValidationError
 
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.job import CancelCheck, Cancelled
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.subprocess_util import LineChild, ProcessCancelled
 from mosaic.core.pipeline.toolenv import (
     PROBE_DEADLINE_FLOOR_SECONDS,
     ToolEnv,
     ToolExitError,
     ToolInvocation,
+    ToolNotFoundError,
     interpreter_refusal,
     locate_tool,
     missing_interpreter,
@@ -160,6 +162,8 @@ class RunnerProcess:
     Args:
         env: The tool's placement.
         script: The runner program.
+        tool: The tool's name in a
+            :class:`~mosaic.core.pipeline.refusal.ToolUnavailable`.
         failure: The error raised when the runner exits during a request or
             breaks the protocol, for example with a non-envelope line after
             ``Ready``.
@@ -177,6 +181,7 @@ class RunnerProcess:
         env: ToolEnv,
         script: Path,
         *,
+        tool: str,
         failure: type[ToolExitError],
         version: str | None,
         on_start: OnStart | None = None,
@@ -184,6 +189,7 @@ class RunnerProcess:
     ) -> None:
         self._env = env
         self._script = script
+        self._tool = tool
         self._failure = failure
         self._version = version
         self._on_start = on_start
@@ -221,8 +227,8 @@ class RunnerProcess:
             The result of the runner's ``Done``, as JSON.
 
         Raises:
-            ToolNotFoundError: The subclass that *env* names, when the
-                interpreter cannot be located or started.
+            ToolUnavailable: The interpreter cannot be located or started. Its
+                cause is the subclass of ``ToolNotFoundError`` that *env* names.
             RunnerVersionError: The runner reported another tool version.
             Cancelled: *cancel* returned True, or the runner reported the
                 command as cancelled.
@@ -254,10 +260,14 @@ class RunnerProcess:
         """Resolve the next runner's interpreter, without starting it.
 
         Raises:
-            ToolNotFoundError: The subclass that *env* names, when its ladder
-                does not locate an interpreter.
+            ToolUnavailable: The ladder of *env* does not locate an interpreter.
+                Its cause is the subclass of ``ToolNotFoundError`` that *env*
+                names.
         """
-        return locate_tool(self._env, executable="python")
+        try:
+            return locate_tool(self._env, executable="python")
+        except ToolNotFoundError as missing:
+            raise ToolUnavailable(self._tool, "environment", str(missing)) from missing
 
     def exchange_dir(self) -> Path:
         """Return the directory of the files exchanged with the runner.
@@ -389,7 +399,9 @@ class RunnerProcess:
                 invocation.source,
                 "could not be started",
             )
-            raise self._env.not_found(message) from missing
+            not_found = self._env.not_found(message)
+            not_found.__cause__ = missing
+            raise ToolUnavailable(self._tool, "environment", message) from not_found
 
     def _ready(self, child: LineChild, cancel: CancelCheck | None) -> Ready:
         """Return the runner's ``Ready``, and skip the lines before it."""

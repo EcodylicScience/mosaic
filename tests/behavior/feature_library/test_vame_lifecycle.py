@@ -37,10 +37,10 @@ from mosaic.behavior.feature_library.vame_feature import (
     VAME_RUNNER_LOG,
     VameFeature,
     VameModelBundle,
-    VameNotFoundError,
 )
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.job import CancelToken, Cancelled
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.types import Result
@@ -586,7 +586,7 @@ def test_an_apply_without_an_interpreter_is_refused_before_any_entry(
     missing = tmp_path / "no-environment" / "bin" / "python"
     feature = fake.feature(model=model_reference(fitted), vame_python=str(missing))
 
-    with pytest.raises(VameNotFoundError, match="the binary this run was placed with"):
+    with pytest.raises(ToolUnavailable, match="the binary this run was placed with"):
         _ = run_feature(dataset, feature)
 
     assert len(fake.journal.starts()) == 1

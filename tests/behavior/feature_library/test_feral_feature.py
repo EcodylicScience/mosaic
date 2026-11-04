@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.feral_feature import (
@@ -20,7 +21,9 @@ from mosaic.behavior.feature_library.feral_feature import (
 )
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.core.dataset import Dataset, new_dataset_manifest
-from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.refusal import ToolUnavailable
+from mosaic.core.pipeline.types import InputStream, Result
+from tests.helpers import hide_package
 
 _HAS_FERAL = importlib.util.find_spec("feral") is not None
 
@@ -76,7 +79,7 @@ class TestLoadCheckpointStateDict:
 
 
 class TestImportGuard:
-    """FeralFeature is registered even without feral; instantiating without it errors."""
+    """FeralFeature is registered and constructed even without feral; fit and apply refuse."""
 
     def test_feature_is_registered(self) -> None:
         # The module imports (light deps only), so the feature registers
@@ -85,16 +88,47 @@ class TestImportGuard:
 
     @pytest.mark.skipif(_HAS_FERAL, reason="feral is installed")
     def test_check_feral_raises_helpful_error(self) -> None:
-        with pytest.raises(ImportError, match=r"mosaic-behavior\[feral\]"):
+        with pytest.raises(
+            ToolUnavailable, match=r"mosaic-behavior\[feral\]"
+        ) as raised:
             _check_feral()
 
+        assert raised.value.detail == {"tool": "feral", "cause": "environment"}
+
     @pytest.mark.skipif(_HAS_FERAL, reason="feral is installed")
-    def test_instantiation_raises_without_feral(self) -> None:
-        with pytest.raises(ImportError, match=r"mosaic-behavior\[feral\]"):
-            FeralFeature(
-                FeralFeature.Inputs((Result(feature="upstream"),)),
-                {"model_dir": "/tmp/does-not-matter"},
-            )
+    def test_construction_succeeds_and_fit_and_apply_refuse_without_feral(
+        self,
+    ) -> None:
+        feature = FeralFeature(
+            FeralFeature.Inputs((Result(feature="upstream"),)),
+            {"model_dir": "/tmp/does-not-matter"},
+        )
+
+        with pytest.raises(ToolUnavailable, match=r"mosaic-behavior\[feral\]"):
+            feature.fit(InputStream(lambda: iter([]), 0))
+        with pytest.raises(ToolUnavailable, match=r"mosaic-behavior\[feral\]"):
+            _ = feature.apply(pd.DataFrame({"frame": [0]}))
+
+    def test_loading_a_model_without_feral_is_a_tool_unavailable_refusal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``load_state`` finds a checkpoint to apply and needs the package for it."""
+        hide_package(monkeypatch, "feral")
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        (model_dir / "model_best.pt").write_bytes(b"")
+        feature = FeralFeature(
+            FeralFeature.Inputs((Result(feature="upstream"),)),
+            {"model_dir": str(model_dir)},
+        )
+
+        with pytest.raises(
+            ToolUnavailable, match=r"mosaic-behavior\[feral\]"
+        ) as raised:
+            _ = feature.load_state(tmp_path / "run", {}, {})
+
+        assert raised.value.detail == {"tool": "feral", "cause": "environment"}
+        assert isinstance(raised.value.__cause__, ImportError)
 
 
 class TestPathResolution:

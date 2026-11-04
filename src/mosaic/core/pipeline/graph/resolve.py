@@ -39,7 +39,12 @@ from pydantic import BaseModel
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_tuple
 from mosaic.core.scope import Scope
-from mosaic.optional_dependency import Prerequisite, license_notes, unmet
+from mosaic.optional_dependency import (
+    Prerequisite,
+    RestrictedUse,
+    license_notes,
+    unmet,
+)
 
 if TYPE_CHECKING:
     from pydantic import ValidationError
@@ -58,6 +63,7 @@ from ..column_contract import (
     declared_requires,
 )
 from ..error_kind import ClassifiedError, ErrorKind
+from ..refusal import ToolUnavailable
 from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
 from .columns import provided_wire, requires_wire, tracks_provides
@@ -112,6 +118,7 @@ __all__ = [
     "run_reference_fields",
     "step_type_detail",
     "step_type_lane",
+    "unavailable_tool",
 ]
 
 _EMITS_LEVELS: frozenset[str] = frozenset(
@@ -216,6 +223,32 @@ def declared_version(kind: Literal["feature", "op"], name: str) -> str:
         return ""
     version = getattr(cls, "version", "")
     return version if isinstance(version, str) else ""
+
+
+def unavailable_tool(
+    kind: Literal["feature", "op"], name: str, catalog: DeclarationCatalog
+) -> ToolUnavailable | None:
+    """The refusal for a producer that *catalog* reads as unavailable, else ``None``.
+
+    The tool is the name that the producer's class declares in a ``tool``
+    attribute, else the producer's own name. The cause is ``license`` when a
+    prerequisite that restricts use is unmet, and ``environment`` otherwise.
+    The message is the catalog's sentence naming what to provide.
+    """
+    declared = catalog.get(name)
+    if declared is None or declared.unavailable is None:
+        return None
+    cls = feature_class_for_slug(name) if kind == "feature" else op_class_for_kind(name)
+    prerequisites = () if cls is None else _prerequisites_of(cls)
+    restricted = any(
+        isinstance(prerequisite, RestrictedUse) and prerequisite.missing() is not None
+        for prerequisite in prerequisites
+    )
+    declared_tool: object = getattr(cls, "tool", name)
+    tool = declared_tool if isinstance(declared_tool, str) else name
+    return ToolUnavailable(
+        tool, "license" if restricted else "environment", declared.unavailable
+    )
 
 
 class StepBuildError(ClassifiedError, ValueError):

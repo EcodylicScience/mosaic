@@ -50,6 +50,7 @@ from ..inventory.model import ArtifactRef, FeatureRunRef
 from ..job import Cancelled
 from ..ops import run_op
 from ..parallelism import ParallelSettings, effective_parallel
+from ..refusal import Refusal
 from ..run import run_feature
 from .claims import FileFailureStore
 from ..gpu_lease import leased_card
@@ -75,7 +76,9 @@ from .request import load_recipe_for_request
 from .resolve import (
     build_step_feature,
     build_step_op_params,
+    declaration_catalog,
     declared_version,
+    unavailable_tool,
 )
 from .topo import ancestors_of
 
@@ -88,7 +91,7 @@ if TYPE_CHECKING:
     from ..job import CancelToken
     from .compatibility import DeclarationCatalog
     from .failures import FailureStore
-    from .model import Recipe, Request
+    from .model import Recipe, Request, Step
 
 __all__ = ["STEP_RUN_KIND", "StepOutcome", "execute_step", "record_step_ended"]
 
@@ -240,8 +243,91 @@ def _execute(
     cancel_token: CancelToken | None,
     parallel: ParallelSettings | None,
 ) -> StepOutcome:
-    """The body, with every refusal free to propagate to its recorder."""
+    """The body, with every refusal free to propagate to its recorder.
+
+    A refusal that comes before the attempt is handed to ``run_op`` or
+    ``run_feature`` is recorded here, because no run-log is open for it. One
+    raised inside them is recorded by the job context of the attempt, and a second
+    record would append another ``started`` and ``failed`` to the same file.
+    """
+    try:
+        ready = _before_run(
+            ds,
+            request,
+            step_id,
+            attempt=attempt,
+            overwrite=overwrite,
+            store=store,
+            inventory=inventory,
+            catalog=catalog,
+            owner=owner,
+        )
+    except StepRefused:
+        # Recorded by execute_step.
+        raise
+    except Refusal as refusal:
+        _record_terminal(
+            ds,
+            attempt,
+            kind=STEP_RUN_KIND,
+            target=step_id,
+            owner=owner,
+            error_json=refusal.error_json(step_id),
+        )
+        raise
+    if isinstance(ready, StepOutcome):
+        return ready
+    outcome = _run(
+        ds,
+        ready.planned,
+        ready.asked,
+        asks_every_entry=_asks_every_entry(ready.planned, ready.plan),
+        attempt=attempt,
+        overwrite=overwrite,
+        store=store,
+        owner=owner,
+        cancel_token=cancel_token,
+        parallel=parallel,
+    )
+    return _measured(ds, ready.held, ready.plan, ready.planned, outcome)
+
+
+@dataclass(frozen=True, slots=True)
+class _Ready:
+    """A step that passed every check before its run, and what the run needs.
+
+    Attributes:
+        plan: The step's graph, resolved against the dataset.
+        planned: The step in *plan*.
+        asked: The entries this attempt computes.
+        held: The inventory the plan was resolved against.
+    """
+
+    plan: Plan
+    planned: PlannedStep
+    asked: tuple[Entry, ...]
+    held: InventoryCache
+
+
+def _before_run(
+    ds: Dataset,
+    request: Request,
+    step_id: str,
+    *,
+    attempt: str,
+    overwrite: bool,
+    store: FailureStore,
+    inventory: InventoryCache | None,
+    catalog: DeclarationCatalog | None,
+    owner: str,
+) -> StepOutcome | _Ready:
+    """Check the step and plan it, or answer it from what is on disk.
+
+    Returns:
+        The outcome of a step that needs no run, else what its run needs.
+    """
     recipe = load_recipe_for_request(ds.base_dir, request)
+    _refuse_unavailable_tool(recipe.step(step_id), catalog)
     _refuse_moved_versions(recipe, request, step_id)
     # Before planning, because resolving the identity of a feature reading
     # unpinned tracks against a dataset of mixed schemas already fails -- and
@@ -316,19 +402,28 @@ def _execute(
             # over an empty scope is a legitimate no-op rather than a stall.
             return _stalled(ds, planned, attempt=attempt, owner=owner)
 
-    outcome = _run(
-        ds,
-        planned,
-        asked,
-        asks_every_entry=_asks_every_entry(planned, plan),
-        attempt=attempt,
-        overwrite=overwrite,
-        store=store,
-        owner=owner,
-        cancel_token=cancel_token,
-        parallel=parallel,
+    return _Ready(plan, planned, asked, held)
+
+
+def _refuse_unavailable_tool(step: Step, catalog: DeclarationCatalog | None) -> None:
+    """Refuse a step whose tool this worker lacks, before anything is planned.
+
+    Planning validates the whole recipe, and the step would fail as an invalid
+    recipe before its feature ran. Its siblings are planned past it
+    (:func:`_plan`).
+
+    Raises:
+        ToolUnavailable: The step's feature or op declares a prerequisite that
+            this installation does not meet.
+    """
+    is_feature = isinstance(step, FeatureStepSpec)
+    refusal = unavailable_tool(
+        "feature" if is_feature else "op",
+        step.feature if is_feature else step.kind,
+        declaration_catalog() if catalog is None else catalog,
     )
-    return _measured(ds, held, plan, planned, outcome)
+    if refusal is not None:
+        raise refusal
 
 
 def _plan(
@@ -343,9 +438,11 @@ def _plan(
 ) -> Plan:
     """This step's graph, resolved against what is on disk right now.
 
-    Only a problem at this step refuses it. The dataset can change after the
-    request was submitted, as when an op of the graph writes the tracks that a
-    later step reads, and a problem found then belongs to the step it names.
+    Only a problem at this step refuses it, and a step that needs a tool this
+    worker lacks is no problem at another: the step that needs it refuses itself
+    first. The dataset can change after the request was submitted, as when an op of
+    the graph writes the tracks that a later step reads, and a problem found then
+    belongs to the step it names.
 
     Raises:
         RecipeRefusedAtStep: The dataset refuses this step.
@@ -359,6 +456,7 @@ def _plan(
         inventory=inventory,
         catalog=catalog,
         refuse=False,
+        ignore_unavailable=True,
     )
     own = tuple(problem for problem in plan.problems if problem.step == step_id)
     if own:

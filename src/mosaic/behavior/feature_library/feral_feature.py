@@ -66,6 +66,7 @@ from mosaic.core.params import (
 )
 
 from mosaic.core.pipeline.progress import CSVProgressCallback
+from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .registry import register_feature
@@ -85,6 +86,14 @@ unavailable.
 """
 
 
+_FERAL_MISSING: Final = (
+    "FERAL is not installed. Install it with "
+    "`pip install 'mosaic-behavior[feral]'`, or set feral_code_dir to a "
+    "local checkout of the package."
+)
+"""What a :class:`~mosaic.core.pipeline.refusal.ToolUnavailable` says of feral."""
+
+
 def _import_feral(feral_code_dir: str | Path | None = None):
     """Ensure the installed ``feral`` package is importable and return its modules.
 
@@ -101,6 +110,11 @@ def _import_feral(feral_code_dir: str | Path | None = None):
     feral_code_dir : str or Path or None
         Optional path to a local checkout of the ``feral`` package, prepended to
         ``sys.path``. ``None`` (default) uses the installed package.
+
+    Raises
+    ------
+    ToolUnavailable
+        The package is not importable.
     """
     if feral_code_dir is not None:
         feral_dir = str(feral_code_dir)
@@ -109,11 +123,7 @@ def _import_feral(feral_code_dir: str | Path | None = None):
     try:
         from feral import dataset, metrics, model, utils
     except ImportError as e:
-        raise ImportError(
-            "FERAL is not installed. Install it with "
-            "`pip install 'mosaic-behavior[feral]'`, or set feral_code_dir to a "
-            "local checkout of the package."
-        ) from e
+        raise ToolUnavailable("feral", "environment", _FERAL_MISSING) from e
     return SimpleNamespace(model=model, dataset=dataset, utils=utils, metrics=metrics)
 
 
@@ -190,11 +200,14 @@ def _load_into(model, state_dict) -> None:
 
 
 def _check_feral(feral_code_dir: str | Path | None = None) -> None:
-    """Raise a helpful ImportError if the ``feral`` package is not importable.
+    """Raise a helpful refusal if the ``feral`` package is not importable.
 
     Applies the optional ``feral_code_dir`` ``sys.path`` override first so a
     local checkout is honored. Lightweight -- importing the ``feral`` package
     does not pull torch (its public API is lazily loaded).
+
+    Raises:
+        ToolUnavailable: The package is not importable.
     """
     if feral_code_dir is not None:
         feral_dir = str(feral_code_dir)
@@ -202,12 +215,8 @@ def _check_feral(feral_code_dir: str | Path | None = None) -> None:
             sys.path.insert(0, feral_dir)
     try:
         import feral  # noqa: F401
-    except ImportError:
-        raise ImportError(
-            "FERAL is required for FeralFeature. Install it with "
-            "`pip install 'mosaic-behavior[feral]'`, or set feral_code_dir to a "
-            "local checkout of the package."
-        ) from None
+    except ImportError as e:
+        raise ToolUnavailable("feral", "environment", _FERAL_MISSING) from e
 
 
 def _resolve_dataset_path(ds: Dataset | None, value: str | Path) -> Path:
@@ -519,6 +528,7 @@ class FeralFeature:
     # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.
     resource_class = "gpu"
     name = "feral"
+    tool: ClassVar[str] = "feral"
     version = "0.2"
     parallelizable = False
     scope_dependent = False
@@ -654,7 +664,6 @@ class FeralFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        _check_feral(self.params.feral_code_dir)
         self._model = None  # torch.nn.Module
         self._config: dict = {}
         self._classes: list[int] = []
@@ -827,7 +836,11 @@ class FeralFeature:
 
         The ``inputs`` argument is not consumed -- FERAL reads video files
         directly from ``params.video_dir``.
+
+        Raises:
+            ToolUnavailable: The ``feral`` package is not importable.
         """
+        _check_feral(self.params.feral_code_dir)
         if self._model is not None:
             return
 
@@ -1463,6 +1476,7 @@ class FeralFeature:
     # --- Apply ---
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        _check_feral(self.params.feral_code_dir)
         if self._model is None:
             raise RuntimeError("No model loaded — call load_state() first")
         if df.empty:
@@ -1999,7 +2013,7 @@ def feral_setup_check(
     # 1. Package import
     try:
         _import_feral(feral_code_dir)
-    except ImportError as e:
+    except ToolUnavailable as e:
         print(f"[FAIL] {e}")
         if feral_code_dir is not None:
             print(

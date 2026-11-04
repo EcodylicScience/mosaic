@@ -632,6 +632,7 @@ def plan_pipeline(
     tracks_run_id: str | None = None,
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
+    ignore_unavailable: bool = False,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -687,6 +688,9 @@ def plan_pipeline(
             Its pins, its tracks variant and its locked steps are derived from
             that request (:func:`~.apply.derive_applied_fit`). ``None`` takes
             what the request records, and derives nothing.
+        ignore_unavailable: Whether a step type that this installation cannot
+            run is no problem. A step that runs sets it, so that a step beside
+            one that needs a tool this worker lacks still runs.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -711,7 +715,7 @@ def plan_pipeline(
             so cannot be answered alongside the recipe problems above.
     """
     catalog = declaration_catalog() if catalog is None else catalog
-    reject_unless_valid(recipe, catalog)
+    reject_unless_valid(recipe, catalog, ignore_unavailable=ignore_unavailable)
     pair_reads = pair_rules(recipe, catalog)
 
     narrowing = scope
@@ -879,7 +883,14 @@ def plan_pipeline(
     )
     problems.extend(_bind_problems(ds, recipe, planned, bind))
     if findings.tracks:
-        problems.extend(check_recipe(recipe, catalog, tracks=findings.tracks))
+        problems.extend(
+            check_recipe(
+                recipe,
+                catalog,
+                tracks=findings.tracks,
+                ignore_unavailable=ignore_unavailable,
+            )
+        )
     order = {planned_step.step_id: index for index, planned_step in enumerate(steps)}
     plan = Plan(
         recipe_digest=recipe_digest(recipe),
