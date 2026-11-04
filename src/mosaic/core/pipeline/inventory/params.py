@@ -65,6 +65,7 @@ __all__ = [
     "named_references",
     "read_run_params",
     "read_run_report",
+    "run_key_of",
     "run_tracks_variants",
     "upstream_runs",
 ]
@@ -611,6 +612,15 @@ def features_roots(run_root: Path) -> DatasetRoots:
     every other root raises ``KeyError``.
     """
     return _FeaturesRoot(run_root.parent.parent)
+
+
+def run_key_of(run_root: Path) -> RunKey:
+    """The ``(storage, run_id)`` of the feature run at *run_root*.
+
+    Args:
+        run_root: A run directory, ``<features>/<storage>/<run_id>``.
+    """
+    return run_root.parent.name, run_root.name
 
 
 def run_tracks_variants(

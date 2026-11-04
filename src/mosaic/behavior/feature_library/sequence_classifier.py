@@ -95,6 +95,7 @@ from mosaic.core.pipeline.inventory.params import (
     features_roots,
     named_references,
     read_run_params,
+    run_key_of,
     upstream_runs,
 )
 from mosaic.core.pipeline.column_contract import (
@@ -870,9 +871,7 @@ class SequenceClassifier(FitReporting):
             raise FileNotFoundError(msg)
         source_root = path.parent
         seen = _lineage_train_entries(
-            self.name,
-            features_roots(source_root),
-            (source_root.parent.name, source_root.name),
+            self.name, features_roots(source_root), run_key_of(source_root)
         )
         test = entries_of_templates(templates, "test") or []
         held_out = [("test", test)]

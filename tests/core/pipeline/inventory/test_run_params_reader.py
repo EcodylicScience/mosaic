@@ -29,6 +29,7 @@ from mosaic.core.pipeline.inventory.params import (
     named_references,
     read_run_params,
     read_run_report,
+    run_key_of,
     run_tracks_variants,
     upstream_runs,
 )
@@ -489,6 +490,12 @@ def test_features_roots_resolve_a_sibling_run_and_refuse_other_roots(
     assert read_run_params(feature_run_root(roots, "up", "r1")).state == "present"
     with pytest.raises(KeyError, match="media"):
         _ = roots.get_root("media")
+
+
+def test_run_key_of_names_the_storage_and_the_run_id(tmp_path: Path) -> None:
+    run_root = tmp_path / "features" / "up" / "r1"
+
+    assert run_key_of(run_root) == ("up", "r1")
 
 
 # --- and it is the only reader -----------------------------------------------

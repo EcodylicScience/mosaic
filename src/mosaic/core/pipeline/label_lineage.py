@@ -26,6 +26,7 @@ from mosaic.core.pipeline.inventory.params import (
     RunKey,
     RunParams,
     features_roots,
+    run_key_of,
     upstream_runs,
 )
 from mosaic.core.pipeline.label_controls import LabelControls
@@ -76,7 +77,7 @@ def lineage_label_controls(input_run_roots: Iterable[Path]) -> LabelControls:
     roots = list(input_run_roots)
     if not roots:
         return LabelControls()
-    starts: list[RunKey] = [(root.parent.name, root.name) for root in roots]
+    starts: list[RunKey] = [run_key_of(root) for root in roots]
     remap: set[tuple[int, int]] = set()
     mask: set[int] = set()
     for _, params in upstream_runs(features_roots(roots[0]), starts):
