@@ -122,6 +122,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "speed-angvel",
     "track-subsample",
     "trajectory-smooth",
+    "visual-network",
 )
 
 _TEMPLATES_REF: dict[str, object] = {

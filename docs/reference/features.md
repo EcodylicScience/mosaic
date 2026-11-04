@@ -3,7 +3,7 @@
 
 # Features
 
-59 features are registered. Each one runs as
+60 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -666,6 +666,29 @@ Per-sequence feature that smooths and interpolates trajectory positions.
 | `expand_frames` | `integer` | `2` |  | How far on each side of a speed-flagged row the bad flag extends. [frames] |
 | `savgol_window` | `integer` \| `None` | `null` |  | Unset, no Savitzky-Golay smoothing is applied. Set, smooths centroid and pose positions regardless of the interpolation settings, for an id with at least this many rows. Must exceed savgol_polyorder. An odd value keeps the filter window centered. [frames] |
 | `savgol_polyorder` | `integer` | `2` |  | The polynomial order of the Savitzky-Golay filter. |
+
+### `visual-network`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.visual_network.VisualNetwork`
+
+Per-frame visibility between individuals, by 2-D ray casting.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `head_index` | `integer` | `0` | >= `0` | The pose keypoint index of the head. Without eyes, every ray is cast from it. |
+| `tail_index` | `integer` | `-1` | >= `-1` | The pose keypoint index of the tail tip, a corner of the default outline. -1 means the highest keypoint index the table carries. |
+| `left_eye_index` | `integer` \| `None` | `null` |  | The pose keypoint index of the left eye, on the negative side of the heading in image coordinates. Set with right_eye_index or not at all. Unset, one viewpoint at the head sees the union of both eyes' fields, and the default outline is the head-to-tail segment. |
+| `right_eye_index` | `integer` \| `None` | `null` |  | The pose keypoint index of the right eye, on the positive side of the heading in image coordinates. Set with left_eye_index or not at all. |
+| `outline_indices` | list of `integer` \| `None` | `null` |  | The pose keypoint indices of a closed body outline, in order, replacing the default outline. A viewpoint ignores its own outline's segments that end at it. Two indices make one segment. |
+| `heading_source` | `"ANGLE"` \| `"keypoints"` | `"ANGLE"` |  | Where the heading comes from: the ANGLE column, in radians in image coordinates, or keypoints, the direction from heading_back_index to the head. |
+| `heading_back_index` | `integer` | `1` | >= `0` | The pose keypoint index the heading points away from, when heading_source is keypoints. |
+| `n_rays` | `integer` | `1000` | >= `8` | The rays each eye casts around the full circle. One ray spans 360 / n_rays degrees, the resolution of angular_size_deg. |
+| `blind_angle_deg` | `number` | `25.0` | >= `0.0`, <= `360.0` | The width of the blind wedge behind the individual. [deg] |
+| `binocular_overlap_deg` | `number` | `12.5` | >= `0.0`, <= `180.0` | How far past the heading each eye's field reaches into the other side. [deg] |
+| `min_rays` | `integer` | `1` | >= `1` | The fewest rays that make a target visible. |
+| `include_hidden` | `boolean` | `false` |  | Whether to write every ordered pair of one arena present in a frame, with a visible column, instead of the visible pairs alone. Set it for a consumer that expects every pair, such as temporal-stack or frame-aggregate. |
+| `x_prefix` | `string` | `"poseX"` |  | The column name prefix for pose X coordinates. |
+| `y_prefix` | `string` | `"poseY"` |  | The column name prefix for pose Y coordinates. |
 
 ## Per-sequence summary
 

@@ -55,7 +55,10 @@ whichever level you feed them.
 `pair-egocentric`, `pair-keypoints` (each partner keypoint's position and velocity in
 the focal's body frame, and chosen distances between the two animals' keypoints),
 `pair-facing`, `pair-wavelet`, `pair-posedistance-pca`, `pair-interaction-filter` — plus
-`orientation-rel` and `approach-avoidance`.
+`orientation-rel` and `approach-avoidance`. `visual-network` says which individuals each
+one can see, by casting rays from its eyes against every body outline, and writes only
+the visible pairs. Set its `include_hidden` before `temporal-stack` or
+`frame-aggregate`, which expect every pair in every frame.
 
 **Neighbors and social forces.** `nearest-neighbor` and its `nn-delta-response` /
 `nn-delta-bins` chain, and `attention-target`. These describe an individual's

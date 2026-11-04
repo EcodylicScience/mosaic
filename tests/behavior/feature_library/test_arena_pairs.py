@@ -123,6 +123,13 @@ def _neighbor_delta_response(df: pd.DataFrame) -> pd.DataFrame:
     return NeighborDeltaResponse(params={"speed_col": "speed"}).apply(df)
 
 
+def _visual_network(df: pd.DataFrame) -> pd.DataFrame:
+    """Every pair, seen or hidden, so the fish of one line all pair."""
+    from mosaic.behavior.feature_library.visual_network import VisualNetwork
+
+    return VisualNetwork(params={"tail_index": 2, "include_hidden": True}).apply(df)
+
+
 PRODUCERS = [
     pytest.param(_pair_position, id="pair-position"),
     pytest.param(_pair_egocentric, id="pair-egocentric"),
@@ -132,6 +139,7 @@ PRODUCERS = [
     pytest.param(_orientation_rel, id="orientation-rel"),
     pytest.param(_pair_interaction_filter, id="pair-interaction-filter"),
     pytest.param(_neighbor_delta_response, id="neighbor-delta-response"),
+    pytest.param(_visual_network, id="visual-network"),
 ]
 
 

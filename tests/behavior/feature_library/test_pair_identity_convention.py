@@ -185,11 +185,29 @@ def _pair_interaction_filter() -> pd.DataFrame:
     ).apply(_tracks())
 
 
+def _visual_network() -> pd.DataFrame:
+    """Each fish sees the other, so both perspectives are written.
+
+    The visible pairs alone are written, and the fixture's two fish lie side by
+    side, each inside the other's field of view.
+    """
+    from mosaic.behavior.feature_library.visual_network import VisualNetwork
+
+    return VisualNetwork(
+        params={
+            "tail_index": 2,
+            "heading_source": "keypoints",
+            "heading_back_index": 2,
+        }
+    ).apply(_tracks())
+
+
 LATE_PRODUCERS = [
     pytest.param(_approach_avoidance, id="approach-avoidance"),
     pytest.param(_pair_facing, id="pair-facing"),
     pytest.param(_orientation_rel, id="orientation-rel"),
     pytest.param(_pair_interaction_filter, id="pair-interaction-filter"),
+    pytest.param(_visual_network, id="visual-network"),
 ]
 
 

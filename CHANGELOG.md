@@ -8,6 +8,14 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: visual-network feature
+
+**A new pair feature, `visual-network`.** It writes one row per ordered pair per frame
+in which `id1` sees `id2`, by 2-D ray casting from the eyes (Davidson et al. 2021), with
+`angular_size_deg`, `n_rays` and `distance`. Its output directory is
+`features/visual-network__from__tracks/`. No existing run id, op identity or tracks
+variant moves.
+
 ## Unreleased: GPU card leases
 
 **A local request leases a GPU card to each step on a GPU lane.** The driver of a local

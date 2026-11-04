@@ -92,6 +92,7 @@ from . import (
     trajectory_smooth,
     tune_threshold,
     vame_feature,
+    visual_network,
     xgboost_feature,
 )
 from .arhmm import ArHmmFeature
@@ -146,6 +147,7 @@ from .track_subsample import TrackSubsample
 from .trajectory_smooth import TrajectorySmooth
 from .tune_threshold import TuneThresholdFeature
 from .vame_feature import VameFeature
+from .visual_network import VisualNetwork
 from .xgboost_feature import XgboostFeature
 
 # Imported unconditionally, like every module above. None of the three imports
@@ -240,6 +242,7 @@ __all__ = [
     "TrajectorySmooth",
     "TuneThresholdFeature",
     "VameFeature",
+    "VisualNetwork",
     "XgboostFeature",
     # Optional, present only when their extra is installed. Named here anyway,
     # matching how the feral and lightning-action entries below are already
@@ -303,5 +306,6 @@ __all__ = [
     "trajectory_smooth",
     "tune_threshold",
     "vame_feature",
+    "visual_network",
     "xgboost_feature",
 ]

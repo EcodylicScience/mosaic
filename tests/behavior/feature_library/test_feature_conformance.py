@@ -74,6 +74,7 @@ ARENA_AWARE = frozenset(
         "pair-position",
         "pair-wavelet",
         "temporal-stack",
+        "visual-network",
     }
 )
 """The features that pair individuals within one arena, or read pairs so formed."""
