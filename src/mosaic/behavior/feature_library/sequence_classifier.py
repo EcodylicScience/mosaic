@@ -255,7 +255,7 @@ def _head_options_of(bundle: SequenceClassifierBundle) -> dict[str, object]:
 # --- Warm-start lineage ---
 
 
-def _named_run(params: RunParams, field: str) -> RunKey | None:
+def _reference_in(params: RunParams, field: str) -> RunKey | None:
     """Return the run that the params field *field* of a run names, if it names one."""
     pairs, _ = named_references({field: params.params.get(field)})
     return next(iter(pairs), None)
@@ -269,7 +269,7 @@ def _templates_train_entries(
     Returns:
         The entries, or why they are unknown.
     """
-    templates = _named_run(params, "templates")
+    templates = _reference_in(params, "templates")
     if templates is None:
         return "its params.json names no templates run"
     entries = entries_of_templates(
@@ -324,7 +324,7 @@ def _lineage_train_entries(
             raise ValueError(msg)
         seen.update(found)
         assert read.params is not None
-        link = _named_run(read.params, "init_from")
+        link = _reference_in(read.params, "init_from")
     for run, params in upstream_runs(roots, chain, cache):
         if run in chain or params is None:
             continue
