@@ -434,6 +434,7 @@ class LightningActionFeature(FitReporting):
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (LIGHTNING_ACTION,)
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     # Apply reads the template columns and writes one probability per class.
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(), Column(COLUMNS.frame_col))
     provides: ClassVar[Provides] = Provides(

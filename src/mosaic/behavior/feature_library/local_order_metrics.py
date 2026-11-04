@@ -266,6 +266,7 @@ class LocalOrderMetrics:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     # ``auto`` reads ``ANGLE`` when present.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),

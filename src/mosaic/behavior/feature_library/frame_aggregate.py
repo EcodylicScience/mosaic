@@ -115,6 +115,7 @@ class FrameAggregate:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
+    follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (ParamColumn("column"), ORDER_COLUMN)
     provides: ClassVar[Provides] = Provides(
         adds=(ParamColumn("output_column", fallback="{column}_{agg}"),),

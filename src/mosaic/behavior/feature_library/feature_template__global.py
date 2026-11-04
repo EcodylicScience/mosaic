@@ -81,6 +81,10 @@ class MyGlobalFeature:
     # augments the frame it was handed rather than re-keying it, so it passes
     # its input's level through. Change this if yours does re-key.
     emits: EmitsLevel = "as-input"
+    # True unless apply() reads each row alone. The plan refuses a feature that
+    # follows ids over tracks whose ids restart each frame; the template declares
+    # the conservative answer.
+    follows_ids: bool = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[Result]):

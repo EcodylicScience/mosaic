@@ -203,6 +203,7 @@ class ScaleToCm:
     )
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"
+    follows_ids: bool = False
     # ``apply`` reads the group and sequence to find the calibration, unless
     # ``cm_per_pixel`` is set. The scaled columns are met by one column that
     # ``columns`` names or by one length column. ``apply`` refuses an input that

@@ -292,6 +292,7 @@ class GlobalTSNE:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     # Apply maps the template columns to two coordinates and keeps every other
     # column. Templates sampled from the same input contain its numeric payload
     # columns, which leaves the identity and bookkeeping ones.

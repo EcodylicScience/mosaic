@@ -42,6 +42,7 @@ from mosaic.core.pipeline.tracks_index import (
     consumed_roots_for,
     encode_source_roots,
     entries_without_tracklets,
+    rows_without_tracklets,
     legacy_view,
     read_tracks_index,
     row_in_scope,
@@ -1885,3 +1886,17 @@ def test_entries_without_tracklets_leaves_an_ambiguous_entry_to_the_planner(
     _tracklets_row(ds, "s", carries_tracklets=False, run_id="trex.0.1-bbbbbbbbbb")
 
     assert entries_without_tracklets(ds, None, [("", "s")]) == ()
+
+
+def test_rows_without_tracklets_pairs_each_entry_with_its_variant(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "b", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
+    _tracklets_row(ds, "a", carries_tracklets=False, run_id="trex.0.1-bbbbbbbbbb")
+    _tracklets_row(ds, "c", carries_tracklets=True, run_id="trex.0.1-bbbbbbbbbb")
+
+    assert rows_without_tracklets(ds, None, None) == (
+        (("", "a"), "trex.0.1-bbbbbbbbbb"),
+        (("", "b"), "convert-x.0.1-aaaaaaaaaa"),
+    )

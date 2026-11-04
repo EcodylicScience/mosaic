@@ -287,6 +287,16 @@ class Declaration:
     fixed weights) declares the fitting answer on the class, and its instance
     narrows it. ``False`` for an op and for a feature that declares nothing.
     """
+    follows_ids: bool = False
+    """Whether a feature follows ``id`` across frames.
+
+    Read off the feature's ``follows_ids`` class attribute. ``True`` unless the
+    feature reads each row alone, so ids that restart each frame (tracks that carry
+    no tracklets) give it nothing it can read. ``False`` for an op and for
+    ``tracks``; a feature that declares nothing reads ``True``, since a step that
+    is not known to read each row alone is not safe over ids that restart. It is
+    not hashed.
+    """
     temporal_reach: Reach = "undeclared"
     """The frames on each side that one output row depends on, at default params.
 

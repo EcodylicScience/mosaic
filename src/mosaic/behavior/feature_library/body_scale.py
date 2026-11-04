@@ -72,6 +72,7 @@ class BodyScaleFeature:
     accepts_overlap = False  # measures one entry, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column(C.id_col),

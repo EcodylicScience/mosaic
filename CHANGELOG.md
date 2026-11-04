@@ -118,6 +118,31 @@ Lightning Pose record `true`, a SLEAP run records its `tracking` parameter, and
 no run id, op identity or tracks variant moves, and a row written earlier keeps its
 cell.
 
+**Every feature declares `follows_ids`.** The class attribute `follows_ids: bool` sits
+beside `emits`, outside the `Feature` protocol as `fits` and `relates` are, and
+`test_every_feature_declares_whether_it_follows_ids` fails on a feature that leaves it
+off. It is `True` unless `apply` reads each row alone: a feature that differences,
+smooths, windows or groups by `id` across frames, or labels a row by its ids, needs ids
+that name one animal over time. `heading`, `collective-motion-metrics`, `frame-aggregate`
+and `feral` are `False`, and the nine label readers are `True`. `Declaration.follows_ids`
+and `StepTypeDetail.follows_ids` (default `False`) carry the class value, so a plan reads
+it without building the feature; the editor catalog's `CatalogEntry.declaration` carries
+it as part of `Declaration`. A class that declares nothing reads `True`; `tracks` and
+the ops read `False`. It enters no run id or feature version, and no run id moves.
+
+**A plan refuses a step that follows ids over tracks without tracklets.** A feature step
+that reads `tracks` and declares `follows_ids` gets a `Problem` at `inputs` when the row
+of any entry it is asked for, in the variant it reads, records `carries_tracklets` as
+false (`entries_without_tracklets`). The message names the feature, the variant, up to
+five of the entries and that the step needs ids that name one animal over time. A blank
+cell is not refused, and neither is a step bound or pinned, a step that reads another
+step's output, or one that does not follow ids, such as `heading`. It is a `Problem`, so
+a submit raises `RecipeRefused` and a step's own plan refuses with `recipe_refused`; no
+`RefusalReason` is added. Rows from `infer-pose`, `infer-points` and `infer-localizer`
+now refuse a `speed-angvel`, as every row whose converter or tracker declared no
+tracklets does. A test that registers a feature without `follows_ids` reads `True` and
+needs the attribute set to `False` to plan over such rows. No run id moves.
+
 **mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
 `variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,
 "")` and plans with `refuse=False`, so it reports the ambiguity as a problem at `tracks`

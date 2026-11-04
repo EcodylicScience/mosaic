@@ -340,6 +340,9 @@ class StepTypeDetail(CatalogIndexEntry):
             the entries in scope fits, and a scoring step depends on scope and
             learns nothing. A step type whose runs differ by params reads
             ``True`` here and its run may fit nothing.
+        follows_ids: Whether a step of it follows ``id`` across frames, and so
+            needs ids that name one animal over time. ``False`` for a step type
+            that reads each row alone.
         temporal_reach: The frames on each side that one output row depends on,
             at the default params: ``0`` for a feature that computes within a
             frame, ``unknown`` for a declared reach that no params bound, and
@@ -359,6 +362,7 @@ class StepTypeDetail(CatalogIndexEntry):
     resource_class: str
     scope_dependent: bool
     fits: bool = False
+    follows_ids: bool = False
     temporal_reach: Reach = "undeclared"
     temporal_reach_by_option: dict[str, Reach] = {}
     params: tuple[ParamRow, ...] = ()
@@ -771,8 +775,9 @@ class PlanWire(GraphModel):
         steps: Every step, in topological order.
         problems: Why this dataset refuses the recipe, in topological order of
             their steps: a time filter without a frame rate, at
-            ``run.filter_start_time`` or ``run.filter_end_time``, and a column
-            that the tracks tables lack, at ``inputs``. Empty when the plan
+            ``run.filter_start_time`` or ``run.filter_end_time``, a column
+            that the tracks tables lack, and a step that follows ids over
+            tracks without tracklets, each at ``inputs``. Empty when the plan
             may run.
         cautions: What the person submitting should know first: a plan over
             the whole dataset, or a step asked for more than

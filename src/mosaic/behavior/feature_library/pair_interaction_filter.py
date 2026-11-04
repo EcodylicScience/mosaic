@@ -245,6 +245,7 @@ class PairInteractionFilter:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    follows_ids: bool = True
     # The position columns follow use_pixel_coords and pose_head_index: the head
     # keypoint, x_pixels/y_pixels where present and else X/Y, or X/Y.
     requires: ClassVar[tuple[Requirement, ...]] = (

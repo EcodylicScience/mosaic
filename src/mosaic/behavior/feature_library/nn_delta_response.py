@@ -196,6 +196,7 @@ class NearestNeighborDelta:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     # A tracker does not measure speed. A feature such as speed-angvel derives
     # it, and the speed column comes from that feature's output.
     requires: ClassVar[tuple[Requirement, ...]] = (

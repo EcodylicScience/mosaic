@@ -464,6 +464,7 @@ class KpmsFeature:
         RunnerInterpreter(KPMS_ENV),
     )
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     # Apply decodes each individual's keypoints in frame order. Its code names
     # the frame and id columns literally, and so does this declaration.
     requires: ClassVar[tuple[Requirement, ...]] = (

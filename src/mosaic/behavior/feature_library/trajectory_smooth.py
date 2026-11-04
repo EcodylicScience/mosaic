@@ -111,6 +111,7 @@ class TrajectorySmooth:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (Column(COLUMNS.id_col), ORDER_COLUMN)
     provides: ClassVar[Provides] = Provides(
         passthrough=True, adds=(Column("bad_frame"),)

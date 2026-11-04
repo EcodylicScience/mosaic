@@ -181,6 +181,7 @@ class EvaluateLabels:
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
+    follows_ids: bool = True
     report_file: ClassVar[str] = METRICS_FILE
     """The file of a run that the MCP report resource serves."""
     requires: ClassVar[tuple[Requirement, ...]] = (

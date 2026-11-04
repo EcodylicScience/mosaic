@@ -381,6 +381,43 @@ def test_every_feature_declares_what_it_emits(cls: type) -> None:
     )
 
 
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_every_feature_declares_whether_it_follows_ids(cls: type) -> None:
+    """Whether a feature follows ``id`` across frames is not a default.
+
+    The plan refuses a feature that follows ids over tracks whose ids restart
+    each frame. A feature that declares nothing reads ``True`` in the catalog,
+    which is the safe answer, but the declaration is still required so that the
+    answer is the author's. It is declared on the class itself, so a subclass
+    does not inherit another feature's answer.
+    """
+    assert "follows_ids" in vars(cls), (
+        f"{cls.__name__} declares no 'follows_ids' on the class. Declare it "
+        f"beside 'emits': True unless apply() reads each row alone."
+    )
+    declared: object = vars(cls)["follows_ids"]
+    assert isinstance(declared, bool), (
+        f"{cls.__name__} declares follows_ids = {declared!r}, not a bool."
+    )
+
+
+@pytest.mark.parametrize(
+    ("slug", "follows"),
+    [
+        ("heading", False),
+        ("collective-motion-metrics", False),
+        ("frame-aggregate", False),
+        ("feral", False),
+        ("extract-labeled-templates", True),
+        ("id-tag-columns", True),
+    ],
+)
+def test_the_spec_fixes_these_follows_ids(slug: str, follows: bool) -> None:
+    """The six features whose answer the feature-pipelines spec states."""
+    by_slug = {cls.name: cls for cls in FEATURE_CLASSES}
+    assert vars(by_slug[slug])["follows_ids"] is follows
+
+
 BANNED_IDENTITY_NAMES = frozenset(
     {"id_a", "id_b", "id_A", "id_B", "focal_id", "target_id"}
 )

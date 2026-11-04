@@ -108,6 +108,7 @@ class MovementSmooth:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (MOVEMENT,)
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = MOVEMENT_REQUIRES
     provides: ClassVar[Provides] = MOVEMENT_PROVIDES
 

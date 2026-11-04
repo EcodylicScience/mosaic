@@ -205,6 +205,7 @@ class KeypointKinematics:
     accepts_overlap = False  # one individual's frame axis is one entry's
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column(C.id_col),

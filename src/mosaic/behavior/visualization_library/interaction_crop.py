@@ -156,6 +156,7 @@ class InteractionCropPipeline:
     accepts_overlap = False  # opens the entry's own video
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "pair"
+    follows_ids: bool = True
     # ``angle_col`` and the ``heading_points`` keypoints are read where present,
     # and the heading is 0 without them.
     requires: ClassVar[tuple[Requirement, ...]] = (

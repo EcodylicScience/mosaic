@@ -96,6 +96,7 @@ class FFGroupsMetrics:
     consumed_roots: tuple[str, ...] = ()
     # Its rows are one per id and group size, each about one individual.
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.x_col),
         Column(C.y_col),

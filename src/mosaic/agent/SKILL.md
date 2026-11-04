@@ -262,6 +262,15 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `submit_pipeline`), or pin the step to the step that produced it. Add that step if
   the recipe lacks it, since a step whose output exists is complete. `resample-tracks`
   and `assign-arenas` take `source_tracks_run_id`.
+- A feature that follows `id` across frames (`speed-angvel`, the smoothing and windowed
+  features; `describe_step_types` gives each step type's `follows_ids`) is a problem at
+  `inputs` when it reads tracks whose row records no tracklets, such as `infer-pose`
+  output or a SLEAP conversion that said its tracks are not named. The ids of such
+  tracks restart each frame, so a difference or a window over one id mixes animals. Use
+  tracks that carry tracklets, by `tracks_run_id` or a `tracks` reference to a tracker
+  that produces them, or use a step that reads each row alone, such as `heading`. A
+  blank answer is not refused. When converting SLEAP tracks that follow an animal, set
+  `tracks_named`.
 - To reuse a fit over other sequences, pin its step to the finished run:
   `pins={"<step id>": "<run id>"}` on `submit_request` or `run_pipeline`
   (`--pin STEP=RUN_ID`, repeatable, on `mosaic pipeline plan`, `submit` and `run`;

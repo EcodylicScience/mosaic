@@ -11,18 +11,32 @@ from __future__ import annotations
 
 import json
 
+from collections.abc import Iterator
+from pathlib import Path
+
+import pandas as pd
 import pytest
 from pydantic import BaseModel, Field
 
+from mosaic.behavior.feature_library import FEATURES
 from mosaic.core.json_value import JsonValue
+from mosaic.core.params import Params
 from mosaic.core.pipeline.graph import (
     StepTypeDetail,
     StepTypeNotFound,
     catalog_index,
     compact_params_schema,
+    declaration_catalog,
+    editor_catalog,
     param_rows,
     step_type_detail,
 )
+from mosaic.core.pipeline.types.feature import (
+    DependencyLookup,
+    EmitsLevel,
+    InputStream,
+)
+from mosaic.core.pipeline.types.inputs import InputsLike
 
 
 def _keys_outside_property_maps(value: JsonValue) -> set[str]:
@@ -103,6 +117,77 @@ def test_a_detail_served_without_fits_reads_as_not_fitting() -> None:
     del served["fits"]
 
     assert not StepTypeDetail.model_validate(served).fits
+
+
+def test_the_detail_states_follows_ids() -> None:
+    assert step_type_detail("speed-angvel").follows_ids
+    assert not step_type_detail("heading").follows_ids
+    assert not step_type_detail("tracks").follows_ids
+    assert not step_type_detail("infer-pose").follows_ids
+
+
+class _DeclaresNothing:
+    """A feature class with every member of the protocol and no optional declaration."""
+
+    name = "declares-nothing"
+    version = "0"
+    parallelizable = False
+    scope_dependent = False
+    accepts_overlap = False
+    emits: EmitsLevel = "individual"
+    consumed_roots: tuple[str, ...] = ()
+
+    @property
+    def inputs(self) -> InputsLike:
+        raise NotImplementedError
+
+    @property
+    def params(self) -> Params:
+        raise NotImplementedError
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        raise NotImplementedError
+
+    def fit(self, inputs: InputStream) -> None:
+        raise NotImplementedError
+
+    def save_state(self, run_root: Path) -> None:
+        raise NotImplementedError
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        raise NotImplementedError
+
+
+@pytest.fixture
+def declares_nothing_registered() -> Iterator[None]:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(FEATURES, "DeclaresNothing", _DeclaresNothing)
+        declaration_catalog.cache_clear()
+        editor_catalog.cache_clear()
+        yield
+    declaration_catalog.cache_clear()
+    editor_catalog.cache_clear()
+
+
+def test_a_feature_that_declares_nothing_follows_ids(
+    declares_nothing_registered: None,
+) -> None:
+    declared = declaration_catalog().get("declares-nothing")
+
+    assert declared is not None
+    assert declared.follows_ids is True
+
+
+def test_a_detail_served_without_follows_ids_reads_as_not_following() -> None:
+    served = json.loads(step_type_detail("speed-angvel").model_dump_json())
+    del served["follows_ids"]
+
+    assert not StepTypeDetail.model_validate(served).follows_ids
 
 
 def test_a_feature_reports_whether_it_computes_entries_in_parallel() -> None:

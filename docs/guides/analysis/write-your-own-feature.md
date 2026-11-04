@@ -19,7 +19,7 @@ package, so copying one does not add a half-finished feature to the registry.
 
 ## The protocol
 
-Seven attributes and four methods.
+Nine attributes and four methods.
 
 | Attribute | Answers |
 | --- | --- |
@@ -30,6 +30,7 @@ Seven attributes and four methods.
 | `scope_dependent` | Whether the output depends on which sequences were in scope |
 | `accepts_overlap` | Whether `apply` may be handed rows from neighboring sequences |
 | `emits` | At what entity level the output rows are keyed |
+| `follows_ids` | Whether `apply` follows `id` across frames; `True` unless it reads each row alone. A feature that declares nothing reads `True` |
 | `consumed_roots` | Source roots the feature opens directly, past its inputs |
 
 ```python

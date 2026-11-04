@@ -139,6 +139,7 @@ class NeighborDeltaResponse:
     accepts_overlap = False  # the shuffle wraps around one entry's whole span
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column(C.id_col),

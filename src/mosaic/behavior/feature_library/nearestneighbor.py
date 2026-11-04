@@ -60,6 +60,7 @@ class NearestNeighbor:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.x_col),

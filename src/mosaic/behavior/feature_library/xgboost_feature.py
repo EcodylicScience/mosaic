@@ -279,6 +279,7 @@ class XgboostFeature(FitReporting):
     temporal_reach = 0  # one row in, one row out
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     # Apply reads the template columns and writes one probability per class.
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
     provides: ClassVar[Provides] = Provides(

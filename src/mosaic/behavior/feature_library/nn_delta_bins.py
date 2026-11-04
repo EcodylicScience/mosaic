@@ -230,6 +230,7 @@ class NearestNeighborDeltaBins:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
+    follows_ids: bool = False
     # In the order apply reads them. The response columns come first. The
     # category specs then derive their columns, which may be the category
     # columns. Rows are written per focal category, or else per neighbor

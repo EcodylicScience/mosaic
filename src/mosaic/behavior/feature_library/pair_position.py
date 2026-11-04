@@ -85,6 +85,7 @@ class PairPositionFeatures:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.seq_col),

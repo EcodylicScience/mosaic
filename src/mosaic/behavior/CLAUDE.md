@@ -95,6 +95,15 @@ own environments.
   (`named_model_file` in `feature_library/named_model.py`), because a step that fitted
   in its place would store a fit of this scope under the missing model's id. The catalog's
   `Declaration.fits` and `StepTypeDetail.fits` carry the class value. It is not hashed.
+- **Every feature declares `follows_ids`**, a bool on the class itself outside the
+  protocol (`test_every_feature_declares_whether_it_follows_ids`). `True` unless `apply`
+  reads each row alone: a feature that differences, smooths, windows or groups by `id`
+  across frames, or labels a row by its ids (`labels_for_rows`), needs ids that name one
+  animal over time, and the ids of tracks that carry no tracklets restart each frame.
+  `heading`, `collective-motion-metrics`, `frame-aggregate` and `feral` are `False`
+  (`test_the_spec_fixes_these_follows_ids`). The catalog's `Declaration.follows_ids` and
+  `StepTypeDetail.follows_ids` carry the class value, and a feature that declares nothing
+  reads `True`. It is not hashed.
 - **A fitter that streams its inputs hashes its scope, unless it pins its fit set.**
   `fit()` that reads its stream is `scope_dependent = True`
   (`test_stream_fitting_features_declare_scope_dependent`). `sequence-classifier`,

@@ -431,6 +431,7 @@ class SequenceClassifier(FitReporting):
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TORCH,)
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(), Column(COLUMNS.frame_col))
     provides: ClassVar[Provides] = Provides(
         adds=(Prefix("prob_"), Column("predicted_label")),

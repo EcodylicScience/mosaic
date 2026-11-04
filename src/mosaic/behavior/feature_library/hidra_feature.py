@@ -486,6 +486,7 @@ class HidraFeature:
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    follows_ids: bool = True
     resource_class = "gpu"
     prerequisites: ClassVar[tuple[Prerequisite, ...]] = (HidraPredictAvailable(),)
     requires: ClassVar[tuple[Requirement, ...]] = (

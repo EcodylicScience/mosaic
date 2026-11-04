@@ -425,6 +425,7 @@ class TuneThresholdFeature:
     accepts_overlap = False  # computes within a row
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (Prefix("prob_"),)
     provides: ClassVar[Provides] = Provides(
         adds=(Prefix("prob_"), Column("predicted_label")),

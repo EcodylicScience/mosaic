@@ -1147,15 +1147,16 @@ def read_carries_tracklets(row: CellRow) -> bool | None:
     return None
 
 
-def entries_without_tracklets(
+def rows_without_tracklets(
     ds: Dataset, tracks_run_id: str | None, entries: Collection[Entry] | None
-) -> tuple[Entry, ...]:
-    """Return the entries whose tracks row records no tracklets, sorted.
+) -> tuple[tuple[Entry, str], ...]:
+    """Return ``(entry, run_id)`` for each tracks row that records no tracklets, sorted.
 
     Each entry is read from the row that :func:`select_variant_rows` resolves
-    for *tracks_run_id*, over the rows in scope of *entries*. An entry whose row
-    reads ``True`` or unknown (:func:`read_carries_tracklets`) is left out.
-    An entry holding two variants when *tracks_run_id* is ``None`` raises
+    for *tracks_run_id*, over the rows in scope of *entries*, and ``run_id`` is
+    that row's variant, empty for an unlabeled one. An entry whose row reads
+    ``True`` or unknown (:func:`read_carries_tracklets`) is left out. An entry
+    holding two variants when *tracks_run_id* is ``None`` raises
     :class:`AmbiguousTracksVariant` in the resolver; the planner refuses that
     case before it asks, so this answers ``()``.
     """
@@ -1167,10 +1168,25 @@ def entries_without_tracklets(
         return ()
     return tuple(
         sorted(
-            (text_cell(row.get("group")), text_cell(row.get("sequence")))
+            (
+                (text_cell(row.get("group")), text_cell(row.get("sequence"))),
+                text_cell(row.get("run_id")),
+            )
             for _, row in rows.iterrows()
             if read_carries_tracklets(row) is False
         )
+    )
+
+
+def entries_without_tracklets(
+    ds: Dataset, tracks_run_id: str | None, entries: Collection[Entry] | None
+) -> tuple[Entry, ...]:
+    """Return the entries whose tracks row records no tracklets, sorted.
+
+    The entries of :func:`rows_without_tracklets`.
+    """
+    return tuple(
+        entry for entry, _ in rows_without_tracklets(ds, tracks_run_id, entries)
     )
 
 

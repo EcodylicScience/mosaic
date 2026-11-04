@@ -113,6 +113,7 @@ class ScaleToBodyLength:
     accepts_overlap = False  # one entry's length, and refuses a multi-entry frame
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     # The group and sequence find the entry's length, unless ``length`` is set.
     requires: ClassVar[tuple[Requirement, ...]] = (
         *(

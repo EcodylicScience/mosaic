@@ -104,6 +104,7 @@ class IndividualWavelet:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     # apply transforms the columns that cols names and needs only one of them.
     # Unset, it transforms the pc_prefix columns, or else every payload column.
     requires: ClassVar[tuple[Requirement, ...]] = (

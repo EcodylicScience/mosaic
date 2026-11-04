@@ -60,7 +60,7 @@ from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
 from ..manifest import tracks_table_columns
-from ..tracks_index import AmbiguousTracksVariant
+from ..tracks_index import AmbiguousTracksVariant, rows_without_tracklets
 from ..inventory.cache import InventoryCache
 from ..inventory.model import (
     ArtifactRef,
@@ -829,6 +829,17 @@ def plan_pipeline(
                 # A tracks reference to a producer whose identity is unresolved
                 # does not name a variant, and its tables cannot be read.
                 findings.read_tracks(ds, step.id, step_plan.spec.tracks_run_id, target)
+            if (
+                TRACKS_INPUT in step.inputs
+                and step.id not in exempt
+                and catalog.entries[step.feature].follows_ids
+                and (step.tracks is None or step_plan.spec.tracks_run_id)
+            ):
+                lacking = rows_without_tracklets(
+                    ds, step_plan.spec.tracks_run_id, step_entries
+                )
+                if lacking:
+                    findings.problems.append(_without_tracklets_problem(step, lacking))
         else:
             findings.problems.extend(_conversion_source_problems(ds, step))
             findings.problems.extend(
@@ -1639,6 +1650,34 @@ def _unresolved_feature(
         storage_name=spec.storage_name,
         reason=IdentityUnresolved(step=step.id, because=problems[0].message),
         parallelizable=feature_parallelizable(step.feature),
+    )
+
+
+def _without_tracklets_problem(
+    step: FeatureStepSpec, lacking: Sequence[tuple[Entry, str]]
+) -> Problem:
+    """A problem at ``inputs`` for a step that follows ids over *lacking* rows.
+
+    Each is an entry and the tracks variant whose row records that ``id`` does
+    not follow an animal, so a difference, a window or a group over one id mixes
+    animals.
+    """
+    entries = [entry for entry, _ in lacking]
+    sample = ", ".join(str(entry) for entry in entries[:MISSING_SAMPLE])
+    more = len(entries) - MISSING_SAMPLE
+    if more > 0:
+        sample += f" and {more} more"
+    variants = sorted({variant for _, variant in lacking})
+    noun = "variant" if len(variants) == 1 else "variants"
+    named = ", ".join(repr(variant) for variant in variants)
+    verb = "records" if len(variants) == 1 else "record"
+    count = "1 entry" if len(entries) == 1 else f"{len(entries)} entries"
+    return Problem(
+        step.id,
+        "inputs",
+        f"{step.feature} needs ids that name one animal over time, and tracks "
+        f"{noun} {named} {verb} none for {count}: {sample}. Read tracks that "
+        "carry tracklets, or use a step that reads each row alone",
     )
 
 

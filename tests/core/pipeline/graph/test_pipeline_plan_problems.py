@@ -11,30 +11,40 @@ that finds one of its own when it re-plans itself is refused and recorded.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import mosaic.core.pipeline.graph.step as step_module
+from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistancePCA
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
+    MISSING_SAMPLE,
+    BoundRef,
     FeatureStepSpec,
     Recipe,
     RecipeInvalid,
     RecipeRefused,
     RecipeRefusedAtStep,
     Request,
+    declaration_catalog,
+    editor_catalog,
     execute_step,
     plan_pipeline,
     plan_wire,
     read_recipe,
     request_rollup,
+    run_pipeline,
     submit_request,
 )
 from mosaic.core.pipeline.graph.columns import measured_columns
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
+from mosaic.core.scope import Scope
+from mosaic.core.track_library.calms21 import Calms21Converter
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     add_tracks_variant,
@@ -378,3 +388,262 @@ def test_a_convert_step_with_no_raw_rows_of_its_format_is_a_problem(
     dataset.scan_labels()
     plan = plan_pipeline(dataset, recipe)
     assert plan.step("convert").run_id
+
+
+# --- a step that follows ids over tracks without tracklets --------------------------
+
+
+def _following_dataset(root: Path, **flags: bool | None) -> Dataset:
+    """A dataset with one variant whose *flags* give each sequence's tracklets cell.
+
+    A sequence maps to ``carries_tracklets``; ``None`` leaves the cell blank.
+    """
+    dataset = make_dataset(root)
+    for sequence, flag in flags.items():
+        add_tracks_variant(
+            dataset, VARIANT, sequence, std_format="mosaic_v1", carries_tracklets=flag
+        )
+    return dataset
+
+
+def _single(feature: str) -> Recipe:
+    return read_recipe(
+        {"steps": [{"id": "step", "type": "feature", "feature": feature}]}
+    )
+
+
+def test_a_step_that_follows_ids_is_refused_over_tracks_without_tracklets(
+    tmp_path: Path,
+) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=False)
+
+    refusal = _refused(dataset, _single("speed-angvel"))
+
+    (problem,) = refusal.problems
+    assert (problem.step, problem.where) == ("step", "inputs")
+    assert "speed-angvel" in problem.message
+    assert "ids that name one animal over time" in problem.message
+    assert "seq_a" in problem.message
+
+
+def test_heading_is_not_refused_over_tracks_without_tracklets(tmp_path: Path) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=False)
+
+    plan = plan_pipeline(dataset, _single("heading"))
+
+    assert plan.problems == ()
+
+
+def test_a_blank_tracklets_cell_is_not_refused(tmp_path: Path) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=None)
+
+    plan = plan_pipeline(dataset, _single("speed-angvel"))
+
+    assert plan.problems == ()
+
+
+def test_a_step_reading_another_steps_output_is_not_checked(tmp_path: Path) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=False)
+    recipe = read_recipe(
+        {
+            "steps": [
+                {"id": "scaled", "type": "feature", "feature": "scale-to-cm"},
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": [{"step": "scaled"}],
+                },
+            ]
+        }
+    )
+
+    plan = plan_pipeline(dataset, recipe, refuse=False)
+
+    assert [problem for problem in plan.problems if problem.step == "speed"] == []
+
+
+def test_one_entry_without_tracklets_refuses_the_step(tmp_path: Path) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=True, seq_b=False)
+
+    refusal = _refused(dataset, _single("speed-angvel"))
+
+    (problem,) = refusal.problems
+    assert "seq_b" in problem.message
+    assert "seq_a" not in problem.message
+
+
+def test_a_scope_that_leaves_out_the_entry_without_tracklets_plans(
+    tmp_path: Path,
+) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=True, seq_b=False)
+
+    plan = plan_pipeline(
+        dataset, _single("speed-angvel"), scope=Scope(entries=[("", "seq_a")])
+    )
+
+    assert plan.problems == ()
+
+
+def test_the_message_samples_the_entries(tmp_path: Path) -> None:
+    sequences = {f"seq_{index}": False for index in range(MISSING_SAMPLE + 2)}
+    dataset = _following_dataset(tmp_path / "ds", **sequences)
+
+    refusal = _refused(dataset, _single("speed-angvel"))
+
+    (problem,) = refusal.problems
+    assert "seq_0" in problem.message
+    assert f"seq_{MISSING_SAMPLE}" not in problem.message
+    assert "2 more" in problem.message
+
+
+def test_the_message_names_the_variant_of_the_rows_it_read(tmp_path: Path) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=False)
+
+    refusal = _refused(dataset, _single("speed-angvel"))
+
+    (problem,) = refusal.problems
+    assert f"tracks variant '{VARIANT}'" in problem.message
+
+
+def test_the_message_names_each_variant_in_order_and_counts_in_the_singular(
+    tmp_path: Path,
+) -> None:
+    other = "convert-trex.0.2-0000000000"
+    dataset = make_dataset(tmp_path / "ds")
+    add_tracks_variant(
+        dataset, VARIANT, "seq_a", std_format="mosaic_v1", carries_tracklets=False
+    )
+    add_tracks_variant(
+        dataset, other, "seq_b", std_format="mosaic_v1", carries_tracklets=False
+    )
+
+    refusal = _refused(dataset, _single("speed-angvel"))
+
+    (problem,) = refusal.problems
+    assert f"tracks variants '{other}', '{VARIANT}'" in problem.message
+    assert "for 2 entries" in problem.message
+    single = _refused(
+        _following_dataset(tmp_path / "one", seq_a=False), _single("speed-angvel")
+    )
+    assert "for 1 entry:" in single.problems[0].message
+
+
+# --- a step that is bound, pinned or reads a variant an op mints ----------------------
+
+
+def test_a_bound_step_is_not_refused_over_tracks_without_tracklets(
+    tmp_path: Path,
+) -> None:
+    dataset = _following_dataset(tmp_path / "ds", seq_a=False)
+    bound = BoundRef(feature="speed-angvel__from__tracks", run_id="0.1-aaaaaaaaaa")
+
+    plan = plan_pipeline(
+        dataset,
+        _single("speed-angvel"),
+        request=Request(request_id="R", recipe_digest="0" * 16, bind={"step": bound}),
+        refuse=False,
+    )
+
+    assert [p for p in plan.problems if "one animal over time" in p.message] == []
+
+
+@pytest.fixture
+def untracked_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Dataset]:
+    """CalMS21 tracks converted by a converter that records no tracklets."""
+    with monkeypatch.context() as patch:
+        patch.setattr(Calms21Converter, "carries_tracklets", False)
+        dataset = calms21_dataset(
+            tmp_path / "ds", {"train": {"a": {"s1": 40, "s2": 30}}}, seed=5
+        )
+        _ = dataset.convert_all_tracks()
+    yield dataset
+
+
+def test_a_pinned_step_is_not_refused_over_tracks_without_tracklets(
+    untracked_split: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fitted step is pinned to a finished run, which reads none of the tracks."""
+    recipe = read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "fit",
+                    "type": "feature",
+                    "feature": "pair-posedistance-pca",
+                    "inputs": ["tracks"],
+                    "params": {"n_components": 2, "pose": {"pose_n": 3}},
+                }
+            ]
+        }
+    )
+    run = run_pipeline(untracked_split, recipe)
+    pin = run.outcomes[0].run_id
+    assert pin
+    with monkeypatch.context() as patch:
+        patch.setattr(PairPoseDistancePCA, "follows_ids", True)
+        declaration_catalog.cache_clear()
+        editor_catalog.cache_clear()
+        try:
+            unpinned = plan_pipeline(untracked_split, recipe, refuse=False)
+            pinned = plan_pipeline(
+                untracked_split, recipe, pins={"fit": pin}, refuse=False
+            )
+        finally:
+            declaration_catalog.cache_clear()
+            editor_catalog.cache_clear()
+
+    assert [p.where for p in unpinned.problems] == ["inputs"]
+    assert pinned.problems == ()
+
+
+def test_a_variant_an_op_mints_is_refused_when_the_reader_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No row of the variant exists at plan time, so only the step's own plan sees it."""
+    dataset = _following_dataset(tmp_path / "ds", seq_a=True)
+    recipe = read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "regrid",
+                    "type": "op",
+                    "kind": "resample-tracks",
+                    "params": {"target_fps": 15.0},
+                },
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "tracks": {"step": "regrid"},
+                },
+            ]
+        }
+    )
+    submitted = submit_request(dataset, recipe)  # the plan holds no problem
+    regrid = submitted.plan.step("regrid")
+    minted = regrid.tracks_variant
+    assert minted
+
+    def _resample(*args: object, **kwargs: object) -> str:
+        add_tracks_variant(
+            dataset,
+            minted,
+            "seq_a",
+            std_format="mosaic_v1",
+            producer_run_id=regrid.run_id or "",
+            carries_tracklets=False,
+        )
+        return regrid.run_id or ""
+
+    monkeypatch.setattr(step_module, "run_op", _resample)
+    _ = execute_step(dataset, submitted.request, "regrid")
+    with pytest.raises(RecipeRefusedAtStep) as caught:
+        _ = execute_step(dataset, submitted.request, "speed")
+
+    assert caught.value.reason == "recipe_refused"
+    [problem] = caught.value.problems
+    assert (problem.step, problem.where) == ("speed", "inputs")
+    assert minted in problem.message

@@ -529,6 +529,7 @@ class FeralFeature:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (FERAL,)
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     # Apply predicts each frame of the crop videos that its input names: one per
     # row of an interaction crop table, or one per individual of an egocentric
     # crop table. A pair input, one with id1 and id2, keeps its pair columns,

@@ -73,6 +73,10 @@ class MyPerSequenceFeature:
     # keys its rows by -- a pair-producing feature left on "individual" has its
     # cartesian join permitted rather than caught.
     emits: EmitsLevel = "individual"
+    # True unless apply() reads each row alone. The plan refuses a feature that
+    # follows ids over tracks whose ids restart each frame; the template declares
+    # the conservative answer.
+    follows_ids: bool = True
     consumed_roots: tuple[str, ...] = ()
 
     class Inputs(TrackInputs):

@@ -222,6 +222,7 @@ class GlobalIdentityModel:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (TIMM,)
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     # Fit reads crop images from disk, and apply returns its input unchanged.
     requires: ClassVar[tuple[Requirement, ...]] = ()
     provides: ClassVar[Provides] = Provides(passthrough=True)

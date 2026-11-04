@@ -118,6 +118,7 @@ class TrackSubsample:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     # The k-means methods read the pose, ``X``, ``Y`` and ``ANGLE`` when the input
     # has them, and space the rows evenly otherwise.
     requires: ClassVar[tuple[Requirement, ...]] = ()

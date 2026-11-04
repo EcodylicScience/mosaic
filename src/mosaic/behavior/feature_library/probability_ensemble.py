@@ -279,6 +279,7 @@ class ProbabilityEnsembleFeature:
     temporal_reach = 0  # blends the members' probabilities of one row
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (Prefix("prob_"),)
     provides: ClassVar[Provides] = Provides(
         adds=(Prefix("prob_"), Column("predicted_label")),

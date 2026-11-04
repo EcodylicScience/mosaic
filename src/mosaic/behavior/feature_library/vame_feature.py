@@ -576,6 +576,7 @@ class VameFeature:
     consumed_roots: tuple[str, ...] = ()
     prerequisites: tuple[Prerequisite, ...] = (RunnerInterpreter(VAME_ENV),)
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(COLUMNS.frame_col),
         Template("{pose.x_prefix}", family=True),

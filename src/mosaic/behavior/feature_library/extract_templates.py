@@ -128,6 +128,7 @@ class ExtractTemplates:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     # Fit reads each entry's sequence and samples its payload columns, every one
     # or those that ``columns`` names. Apply returns an empty table, because the
     # sample in ``save_state`` is the output. ``columns`` is not declared, because

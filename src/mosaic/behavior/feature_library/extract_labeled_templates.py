@@ -263,6 +263,7 @@ class ExtractLabeledTemplates:
     temporal_reach = 0  # draws rows of its inputs as they are
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     # Fit aligns each entry's labels by frame and samples its payload columns,
     # every one or those that ``columns`` names. Apply returns an empty table,
     # because the sample in ``save_state`` is the output. ``columns`` is not

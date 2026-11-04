@@ -134,6 +134,7 @@ class FitLabelMap:
     accepts_overlap = False
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         ParamColumn("prediction_column"),

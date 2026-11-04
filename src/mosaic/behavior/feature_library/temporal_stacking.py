@@ -267,6 +267,7 @@ class TemporalStackingFeature:
     accepts_overlap = True
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     # ``apply`` also sorts a pair input, one with ``id1`` and ``id2``, by
     # ``frame``. A requirement cannot depend on the input's other columns.
     # ``columns`` is not declared, because a requirement on a list param is met

@@ -235,6 +235,7 @@ class ArHmmFeature:
     # The output is keyed as the input is: by id for individuals, by the ordered
     # pair for a pair table.
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = True
     # Apply decodes each series' payload columns in frame order, every one or
     # those that ``columns`` names. A series is an individual or an ordered
     # pair. Its code names the frame column literally, and so does this

@@ -167,6 +167,7 @@ class PairPoseDistancePCA:
     temporal_reach = 0
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.seq_col),

@@ -147,6 +147,7 @@ class Overlay:
     accepts_overlap = False  # It opens the entry's own video.
     consumed_roots: tuple[str, ...] = ("media_raw",)
     emits: EmitsLevel = "individual"
+    follows_ids: bool = False
     # The drawing reads the tracks and each input feature's labels from the
     # dataset. The merged input names the entry, and contributes its counts where
     # present. A dataset without groups names its entries with an empty group,

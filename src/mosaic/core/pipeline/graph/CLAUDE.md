@@ -184,6 +184,13 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `refuse=False` the ambiguity stays a `Problem` at `tracks` or
   `params.source_tracks_run_id`, so a step recording its run keeps it
   (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
+- A feature step that names `tracks` in `inputs`, whose declaration has `follows_ids`
+  and that is neither bound nor pinned, is a `Problem` at `inputs` when
+  `rows_without_tracklets` lists any entry it is asked for, in the variant it resolved,
+  and the message names the variants of those rows. A blank cell, a step reading another
+  step's output and a step that does not follow ids are not checked. A variant that an op
+  of the same recipe mints has no rows yet, so the step's own plan at its start refuses it
+  (`test_pipeline_plan_problems.py`).
 - An op step's scope comes from the plan through `_op_scope`. An op with `scope_takes =
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a

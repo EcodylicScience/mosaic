@@ -106,6 +106,7 @@ class GlobalScaler:
     temporal_reach = 0  # standardizes each row by itself
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
     # The templates decide the fitted columns, which a declaration cannot name.
     # Each is a payload column of the input under the same name. Validation reads

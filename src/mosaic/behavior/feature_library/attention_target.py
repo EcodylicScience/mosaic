@@ -103,6 +103,7 @@ class AttentionTarget:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column("id1"),

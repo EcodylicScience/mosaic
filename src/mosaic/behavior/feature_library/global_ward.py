@@ -108,6 +108,7 @@ class GlobalWardClustering:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
+    follows_ids: bool = False
     # Apply assigns a cluster from the template columns and keeps every other
     # column. Templates sampled from the same input contain its numeric payload
     # columns, which leaves the identity and bookkeeping ones.

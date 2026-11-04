@@ -382,6 +382,7 @@ class VisualNetwork:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "pair"
+    follows_ids: bool = False  # each frame's ids name its individuals alone
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         ORDER_COLUMN,

@@ -83,6 +83,17 @@ class Feature(Protocol):
     - ``close()``: see :class:`ClosesResources`.
     - ``check_output(self, meta, run_root) -> bool``: validates the output of a
       cache hit, called only when ``run_feature`` is given ``check_output``.
+
+    Every registered feature also declares ``follows_ids: bool``, a class
+    attribute outside the protocol, as ``relates`` is. It is ``True`` unless
+    ``apply`` reads each row alone: a feature that differences, smooths, windows
+    or groups by ``id`` across frames, or that labels a row by its ids, needs ids
+    that name one animal over time, and the ids of tracks that carry no tracklets
+    restart each frame. The graph reads it from the class without building the
+    feature (``Declaration.follows_ids``; a class that declares nothing reads
+    ``True``), and it enters no run id or version
+    (``tests/behavior/feature_library/test_feature_conformance.py`` fails on a
+    feature that leaves it undeclared).
     """
 
     name: str

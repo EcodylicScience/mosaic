@@ -75,6 +75,7 @@ class IdTagColumns:
     accepts_overlap = False  # computes within a frame, so gains nothing
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
+    follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = ()
     # ``fields=None`` attaches every field in the labels file, and only the data
     # names those columns. An empty list attaches none.
