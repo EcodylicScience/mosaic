@@ -539,6 +539,26 @@ def test_a_class_in_fewer_sequences_than_folds_is_reported_with_the_rows_it_coun
     )
 
 
+def test_a_class_absent_from_every_sequence_is_not_reported_as_thin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A warm start keeps a class of its source that its own runs lack."""
+    fold_of = {("g", "a"): 0, ("g", "b"): 1, ("g", "c"): 2}
+    counts = _counts(
+        {
+            ("g", "a"): {0: 9, 1: 9},
+            ("g", "b"): {0: 9, 1: 9},
+            ("g", "c"): {0: 9, 1: 9},
+        }
+    )
+    table = fold_table(fold_of, counts, [0, 1, 2])
+    caplog.set_level(logging.WARNING)
+
+    check_folds("clf", 3, table, [0, 1, 2], rows="labeled frames")
+
+    assert "give it probability 0 there" not in caplog.text
+
+
 def test_a_fold_that_leaves_under_half_of_a_class_is_reported(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

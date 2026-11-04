@@ -1431,9 +1431,10 @@ def check_folds(
     """Refuse a fold that cannot be fitted without, and report one that will fit thinly.
 
     A fold whose training rows contain fewer than two classes is refused. A
-    class that is in fewer sequences than there are folds, and a fold whose
-    training rows are under half of a class's rows, are warned about, because
-    the model of that fold sees the class thinly or not at all.
+    class that is in some sequences but fewer than there are folds, and a fold
+    whose training rows are under half of a class's rows, are warned about,
+    because the model of that fold sees the class thinly or not at all. A class
+    in no sequence, which a warm start keeps from its source, is not.
 
     Args:
         feature: The classifier, which a refusal and a warning name.
@@ -1475,7 +1476,7 @@ def check_folds(
     for cls in classes:
         column = table[f"rows_{cls}"]
         n_sequences = int((column > 0).sum())
-        if n_sequences < folds:
+        if 0 < n_sequences < folds:
             log.warning(
                 "[%s] class %d has %s in %d %s%s, fewer than "
                 "cv_folds=%d, so the models of some fold never see it and "
