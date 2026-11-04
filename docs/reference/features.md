@@ -738,6 +738,8 @@ Score a run's predictions or clusters against ground-truth labels.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -832,7 +834,7 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `labels` | `ResultColumn` \| `GroundTruthLabelsSource` | `{"kind": "behavior", "source": "labels", "load": {"key": "labels", "kind": "npz", "transpose": false}, "pattern": null}` |  | Where the label sequence comes from. A GroundTruthLabelsSource reads each entry's converted label file from labels/<kind>/, through its segment sidecar when the file carries one. A ResultColumn reads a categorical column of a feature's output: from that feature's run when it names a feature, from this feature's own input when its feature is left empty. |
+| `labels` | `ResultColumn` \| `GroundTruthLabelsSource` | `{"kind": "behavior", "source": "labels", "load": {"key": "labels", "kind": "npz", "transpose": false}, "pattern": null, "remap": null, "mask": null}` |  | Where the label sequence comes from. A GroundTruthLabelsSource reads each entry's converted label file from labels/<kind>/, through its segment sidecar when the file carries one. A ResultColumn reads a categorical column of a feature's output: from that feature's run when it names a feature, from this feature's own input when its feature is left empty. |
 | `states` | list of (`string` \| `integer`) \| `None` | `null` |  | The fixed vocabulary of states, which gives every entry the same columns -- a state an entry never shows reads as zero usage and zero bouts rather than as a missing column. An integer names a label id or a numeric column value, a string a label name or a text column value. Required for a ResultColumn source. Unset for ground truth, it is the label file's label_names in file order, less those in ignore, so it can differ between entries whose files were converted with different vocabularies; a file that declares no label_ids has no vocabulary to default to and is refused. A label or value in neither states nor ignore is refused. |
 | `fps` | `number` \| `None` | `null` |  | The frame rate that converts bout lengths to seconds and bout counts to rates. Unset, it is read from the input's time column as the median time step per frame, and an input without a usable time column is refused. [fps] |
 | `min_bout_frames` | `integer` | `1` | >= `1` | The shortest bout kept. A shorter run or segment is dropped before any statistic is taken: it adds to no usage and no coverage, is no bout, and takes part in no transition. A bout's length is its rows times the entry's frame step, so on a table holding every k-th frame a bout of r rows has length r*k. [frames] |
@@ -846,6 +848,8 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1009,6 +1013,8 @@ Extract labeled, split-annotated templates from upstream features.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1150,6 +1156,8 @@ Map each cluster to the behavior class its labeled rows favor.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1688,6 +1696,8 @@ Supervised temporal action segmentation via lightning-action.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1764,6 +1774,8 @@ Average or blend the class probabilities of several classifier runs.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -1852,6 +1864,8 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`HeadConfig`"
 
@@ -1936,6 +1950,8 @@ Choose the probability thresholds of a cross-validated classifier.
     | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
     | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
     | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 

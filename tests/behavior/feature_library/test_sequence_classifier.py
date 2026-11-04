@@ -1768,3 +1768,25 @@ def test_a_head_registered_in_python_takes_refinement_stages(
         name.startswith("refinements.0.")
         for name in _weights(_saved(feature, tmp_path / "saved"))
     )
+
+
+# --- Label controls ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("controls", "classes"),
+    [({"remap": {2: 1}}, [0, 1]), ({"mask": [2]}, [0, 1])],
+    ids=["remap", "mask"],
+)
+def test_the_network_trains_on_the_controlled_classes(
+    tmp_path: Path, controls: dict[str, object], classes: list[int]
+) -> None:
+    study, tables = _two_entries(tmp_path)
+
+    fitted = _fit(
+        study, tables, labels={"kind": "behavior", **controls}, steps=20, head="mlp"
+    )
+
+    bundle = _saved(fitted, tmp_path / "saved")
+    assert bundle["classes"] == classes
+    assert "prob_2" not in fitted.apply(tables[C]).columns

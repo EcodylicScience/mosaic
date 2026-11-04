@@ -864,3 +864,88 @@ def test_fitted_weights_pool_the_rows_inside_the_blocks_and_no_others(
         {(entry, 0): (0, FRAMES, 0) for entry in TRAIN},
     )
     assert whole["n_frames"] == 4 * FRAMES
+
+
+# --- Label controls -------------------------------------------------------------
+
+
+def _fit_report(study: _Study, **labels: object) -> dict[str, object]:
+    feature = _feature(
+        2,
+        weights="fit",
+        labels={"kind": "behavior", **labels},
+        score_classes=[0, 1],
+    )
+    run = study.root / "fit-run"
+    assert not feature.load_state(run, {}, study.lookups())
+    feature.fit(study.stream())
+    feature.save_state(run)
+    report: dict[str, object] = json.loads((run / "ensemble_report.json").read_text())
+    return report
+
+
+def _rewrite_labels(study: _Study, relabel: dict[int, int | None]) -> None:
+    """Rewrite the label files of *study*: a class to its target, or dropped."""
+    for index, entry in enumerate(study.tables):
+        events: list[Event] = [
+            (frame, 0, -1, target)
+            for frame, label in enumerate(_truth(index))
+            if (target := relabel.get(int(label), int(label))) is not None
+        ]
+        study.files[entry] = write_sparse_labels(
+            study.root / "relabeled" / f"{entry[1]}.npz", events
+        )
+
+
+@pytest.mark.parametrize(
+    ("labels", "relabel"),
+    [({"remap": {2: 1}}, {2: 1}), ({"mask": [2]}, {2: None})],
+    ids=["remap", "mask"],
+)
+def test_the_fit_reads_the_labels_through_their_controls(
+    tmp_path: Path, labels: dict[str, object], relabel: dict[int, int | None]
+) -> None:
+    controlled = _fit_report(_Study(tmp_path / "controlled"), **labels)
+    rewritten = _Study(tmp_path / "rewritten")
+    _rewrite_labels(rewritten, relabel)
+    expected = _fit_report(rewritten)
+
+    for key in ("weights_used", "objective", "n_frames"):
+        assert controlled[key] == expected[key], key
+
+
+def _members_without_class_two(study: _Study) -> _Study:
+    """*study* with members that write no ``prob_2``, as members fitted with 2 masked."""
+    for sequence, entry in enumerate(list(study.tables)):
+        members = [
+            member.drop(columns=["prob_2"])
+            for member in _members_for(sequence, accuracy=(0.75, 0.6), seed=3)
+        ]
+        study.tables[entry] = _merged(members, study.root / "narrow" / entry[1])
+    return study
+
+
+def test_a_mask_on_the_members_and_not_here_is_refused_by_class(
+    tmp_path: Path,
+) -> None:
+    study = _members_without_class_two(_Study(tmp_path))
+    lookups = study.lookups()
+    member = next(iter(lookups["_input_0"].values())).parent
+    (member / "params.json").write_text(
+        json.dumps({"_params": {"labels": {"kind": "behavior", "mask": [2]}}})
+    )
+    feature = _feature(
+        2, weights="fit", labels={"kind": "behavior"}, score_classes=[0, 1]
+    )
+    assert not feature.load_state(study.root / "fit-run", {}, lookups)
+
+    with pytest.raises(ValueError, match=r"classes \[2\].*remap and mask"):
+        feature.fit(study.stream())
+
+
+def test_without_controls_members_missing_a_class_still_fit(tmp_path: Path) -> None:
+    study = _members_without_class_two(_Study(tmp_path))
+
+    report = _fit_report(study)
+
+    assert report["n_frames"] == 4 * FRAMES

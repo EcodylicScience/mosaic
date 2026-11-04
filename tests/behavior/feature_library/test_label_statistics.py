@@ -966,3 +966,63 @@ def test_a_column_of_an_upstream_run_is_read_through_its_lookup(
     assert row["usage__4"] == pytest.approx(0.75)
     assert row["p__3__4"] == pytest.approx(1.0)
     assert row["bout_mean_s__4"] == pytest.approx(1.5)
+
+
+# --- remap and mask on the labels source ----------------------------------------
+
+
+def _controlled(path: Path, **controls: object) -> LabelStatistics:
+    return _ground_truth_feature(
+        path, ignore=["none"], labels={"kind": "behavior", **controls}
+    )
+
+
+def test_a_masked_label_beside_a_label_of_minus_one_has_no_bouts(
+    tmp_path: Path,
+) -> None:
+    """unsure unsure rest rest groom groom, groom masked: its frames are unlabelled."""
+    path = tmp_path / "s.npz"
+    atomic_savez(
+        path,
+        labels=np.array([-1, -1, 1, 1, 2, 2]),
+        label_ids=np.array([-1, 1, 2]),
+        label_names=np.array(["unsure", "rest", "groom"], dtype=object),
+    )
+    feature = _ground_truth_feature(path, labels={"kind": "behavior", "mask": [2]})
+    row = _row(feature.apply(_tracks({0: list(range(6))})), 0)
+    assert (row["bouts__unsure"], row["bouts__rest"]) == (1, 1)
+    assert row["usage__unsure"] == pytest.approx(2 / 6)
+    assert row["bouts__groom"] == 0
+    assert row["usage__groom"] == 0.0
+    assert row["coverage"] == pytest.approx(4 / 6)
+
+
+def test_a_remapped_dense_label_counts_as_its_target(tmp_path: Path) -> None:
+    path = _label_file(tmp_path / "s.npz", None, dense=[0, 0, 1, 1, 1, 2, 2, 0, 0, 0])
+    row = _row(_controlled(path, remap={2: 1}).apply(_tracks({0: list(range(10))})), 0)
+    assert row["usage__rest"] == pytest.approx(0.5)
+    assert (row["bouts__rest"], row["bouts__groom"]) == (1, 0)
+
+
+def test_masked_segments_are_dropped(tmp_path: Path) -> None:
+    path = _label_file(tmp_path / "s.npz", _segments())
+    row = _row(_controlled(path, mask=[2]).apply(_tracks({0: list(range(20))})), 0)
+    assert (row["n_bouts"], row["bouts__rest"], row["bouts__groom"]) == (1, 1, 0)
+    assert row["coverage"] == pytest.approx(0.5)
+
+
+def test_remapped_segments_take_their_target(tmp_path: Path) -> None:
+    path = _label_file(tmp_path / "s.npz", _segments())
+    row = _row(_controlled(path, remap={2: 1}).apply(_tracks({0: list(range(20))})), 0)
+    assert (row["bouts__rest"], row["bouts__groom"]) == (3, 0)
+
+
+def test_masked_events_are_dropped(tmp_path: Path) -> None:
+    path = _event_file(tmp_path / "s.npz")
+    out = _controlled(path, mask=[2]).apply(
+        _tracks({0: list(range(10)), 1: list(range(10))})
+    )
+    first, second = _row(out, 0), _row(out, 1)
+    assert first["usage__rest"] == pytest.approx(0.4)
+    assert first["bouts__groom"] == second["bouts__groom"] == 0
+    assert second["usage__rest"] == pytest.approx(0.1)

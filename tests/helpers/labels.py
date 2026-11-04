@@ -7,7 +7,8 @@ the default ``background_id`` is ``-1``.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -102,3 +103,37 @@ def add_labels(
         n_frames=len(events),
     )
     return path
+
+
+def write_lineage_run(
+    features: Path,
+    storage: str,
+    run_id: str,
+    params: Mapping[str, object],
+    upstream: Sequence[tuple[str, str]] = (),
+) -> Path:
+    """Write the ``params.json`` of a feature run that read the runs *upstream*.
+
+    Args:
+        features: The dataset's ``features`` root.
+        storage: The run's storage directory.
+        run_id: The run.
+        params: Its recorded ``_params``.
+        upstream: The ``(storage, run_id)`` of each run it read, as its
+            ``_resolved`` entries name them.
+
+    Returns:
+        The run's directory.
+    """
+    root = features / storage / run_id
+    root.mkdir(parents=True)
+    document = {
+        "_params": dict(params),
+        "_inputs": [],
+        "_resolved": [
+            {"where": f"inputs[{index}]", "feature": feature, "run_id": upstream_id}
+            for index, (feature, upstream_id) in enumerate(upstream)
+        ],
+    }
+    _ = (root / "params.json").write_text(json.dumps(document))
+    return root

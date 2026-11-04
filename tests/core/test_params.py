@@ -14,7 +14,7 @@ from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
 from mosaic.behavior.feature_library.types import InterpolationConfig, SamplingConfig
-from mosaic.core.params import HASH_EXCLUDE, Params
+from mosaic.core.params import HASH_EXCLUDE, NestedParams, Params
 from tests.helpers import run_id_digest
 
 
@@ -159,3 +159,40 @@ def test_real_field_still_changes_run_id() -> None:
     assert run_id_digest(_ThroughputParams(real_field=1)) != run_id_digest(
         _ThroughputParams(real_field=2)
     )
+
+
+# --- NestedParams: a nested model that names its own identity ---
+
+
+class _Nested(NestedParams):
+    kept: int = 1
+    dropped: int | None = None
+
+    def identity_dump(self) -> dict[str, object]:
+        dumped = self.model_dump()
+        if self.dropped is None:
+            del dumped["dropped"]
+        return dumped
+
+
+class _HoldsNested(Params):
+    nested: _Nested = Field(default_factory=_Nested)
+    optional: _Nested | None = None
+
+
+def test_identity_dump_asks_a_nested_model_for_its_own_dump() -> None:
+    params = _HoldsNested(optional=_Nested(kept=2))
+    assert params.identity_dump() == {"nested": {"kept": 1}, "optional": {"kept": 2}}
+    assert params.model_dump()["nested"] == {"kept": 1, "dropped": None}
+
+
+def test_a_nested_model_field_left_at_none_dumps_as_none() -> None:
+    assert _HoldsNested().identity_dump()["optional"] is None
+
+
+def test_a_nested_model_dumps_whole_by_default() -> None:
+    class _Plain(NestedParams):
+        a: int = 1
+        b: int | None = None
+
+    assert _Plain().identity_dump() == {"a": 1, "b": None}

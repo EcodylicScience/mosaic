@@ -895,6 +895,8 @@ class SequenceClassifier(FitReporting):
         assert self._train_entries is not None
         p = self.params
         train = set(self._train_entries)
+        source = p.labels
+        assert source is not None, "templates validate with labels"
         columns: list[str] | None = None
         runs: list[TrainingRun] = []
         ranges: dict[tuple[str, str], tuple[int, int]] = {}
@@ -919,7 +921,7 @@ class SequenceClassifier(FitReporting):
                 )
             ensure_columns(df, columns)
             for _, rows in iter_series(df):
-                labels = labels_for_rows(label_file, rows)
+                labels = labels_for_rows(label_file, rows, source)
                 frames = rows[COLUMNS.frame_col].to_numpy()
                 matrix = rows[columns].to_numpy(dtype=np.float32)
                 if by_block:

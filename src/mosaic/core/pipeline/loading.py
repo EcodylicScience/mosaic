@@ -26,6 +26,7 @@ from .index import (
     resolve_artifact_file,
 )
 from .types import ArtifactSpec, NNResult
+from .types.labels import GroundTruthLabelsSource, LabelsSource
 from .types.data_config import ALIGN_COLS, COLUMNS, ID_COLS, NON_PAYLOAD_COLS
 
 if TYPE_CHECKING:
@@ -622,7 +623,11 @@ def row_individual_pairs(df: pd.DataFrame) -> np.ndarray | None:
 
 
 def labels_for_rows(
-    path: Path, df: pd.DataFrame, *, default_label: int | None = None
+    path: Path,
+    df: pd.DataFrame,
+    labels: LabelsSource,
+    *,
+    default_label: int | None = None,
 ) -> np.ndarray:
     """One label per row of *df*, from the label file at *path*.
 
@@ -631,11 +636,13 @@ def labels_for_rows(
     matched by its frame and its own individuals (:func:`row_individual_pairs`),
     so a pair row takes the label of its own direction, and a row no event
     matches takes the file's background class -- :data:`~mosaic.core.helpers.UNLABELED`
-    (``-1``) for a file with none.
+    (``-1``) for a file with none. A :class:`GroundTruthLabelsSource` then
+    applies its ``mask`` and ``remap`` (:meth:`GroundTruthLabelsSource.relabel`).
 
     Args:
         path: The ``.npz`` label file of the row's entry.
         df: Rows with a ``frame`` column.
+        labels: The labels source *path* was resolved for.
         default_label: The label for an unmatched row. ``None`` takes the
             file's background class.
 
@@ -650,12 +657,15 @@ def labels_for_rows(
             f"labels align to rows by their {COLUMNS.frame_col!r} column, which "
             f"these rows lack"
         )
-    return load_labels_for_feature_frames(
+    aligned = load_labels_for_feature_frames(
         path,
         df[COLUMNS.frame_col].to_numpy(),
         default_label=default_label,
         individual_filter=row_individual_pairs(df),
     )
+    if isinstance(labels, GroundTruthLabelsSource):
+        return labels.relabel(aligned)
+    return aligned
 
 
 def resolve_sequence_identity(

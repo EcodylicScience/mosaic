@@ -1134,3 +1134,36 @@ def test_a_gap_that_leaves_a_block_fold_no_whole_window_is_refused_naming_the_wi
 
     with pytest.raises(ValueError, match=r"leaves training runs.*sequence_length"):
         _ = _fit(study, tables, cv_folds=2, cv_unit="block", cv_gap_frames=25)
+
+
+# --- Label controls ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("controls", "classes"),
+    [({"remap": {3: 1}}, [1, 2]), ({"mask": [3]}, [1, 2])],
+    ids=["remap", "mask"],
+)
+def test_the_network_trains_on_the_controlled_classes(
+    tmp_path: Path,
+    package: LightningActionRecorder,
+    controls: dict[str, object],
+    classes: list[int],
+) -> None:
+    frames = list(range(45))
+
+    def blocks(frame: int) -> int:
+        return _CLASSES[frame // 15]
+
+    tables = {
+        entry: (_table(entry, frames, code=code), _events(frames, blocks))
+        for entry, code in ((A, 1.0), (B, 5.0), (C, 50.0))
+    }
+    study = _study(tmp_path, tables, train=[A, B], test=[C])
+
+    bundle = _saved(
+        _fit(study, tables, labels={"kind": "behavior", **controls}), tmp_path
+    )
+
+    assert bundle["classes"] == classes
+    assert package.config_value("model", "output_size") == len(classes)

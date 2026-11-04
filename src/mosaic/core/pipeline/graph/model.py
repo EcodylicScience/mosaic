@@ -347,9 +347,10 @@ def params_step_refs(params: Mapping[str, JsonValue]) -> dict[str, StepRef]:
     to mark one.
 
     **Top-level only**, matching ``resolve_references`` and
-    ``Params.identity_dump()``, neither of which recurses into a nested model. A
-    reference buried inside a nested dict would be substituted by neither, so
-    finding one here would promise something the resolver does not do.
+    ``Params.identity_dump()``. The dump asks a nested model for its own dump, and
+    no reference is found below the top level. A reference buried inside a nested
+    dict would be substituted by neither, so finding one here would promise
+    something the resolver does not do.
 
     Raises:
         ValueError: A mapping carries ``step`` alongside a key ``StepRef`` does

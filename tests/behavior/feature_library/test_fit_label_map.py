@@ -150,3 +150,29 @@ def test_the_weighting_enters_the_run_identity_and_the_version() -> None:
 def test_an_unknown_weighting_is_refused() -> None:
     with pytest.raises(ValueError, match="class_balanced"):
         _ = FitLabelMap.Params.model_validate({"weighting": "prevalence"})
+
+
+def _fitted_map(tmp_path: Path, labels: dict[str, object]) -> dict[int, int]:
+    """Fit clusters 5 (frames 0-4, class 2) and 6 (frames 5-9, class 0)."""
+    events = [(frame, 0, 1, 2 if frame < 5 else 0) for frame in range(FRAMES)]
+    path = write_sparse_labels(tmp_path / "labels.npz", events)
+    rows = _rows([5] * 5 + [6] * 5)
+    feature = FitLabelMap(
+        FitLabelMap.Inputs((Result(feature="global-kmeans"),)),
+        {"labels": {"kind": "behavior", **labels}},
+    )
+    run_root = tmp_path / "run"
+    assert not feature.load_state(run_root, {}, {"labels": {("g", "s"): path}})
+    feature.fit(
+        InputStream(lambda: iter([(make_entry_key("g", "s"), rows)]), n_entries=1)
+    )
+    feature.save_state(run_root)
+    return read_label_map(run_root / LABEL_MAP_FILE)
+
+
+def test_the_map_targets_the_remapped_classes(tmp_path: Path) -> None:
+    assert _fitted_map(tmp_path, {"remap": {2: 1}}) == {5: 1, 6: 0}
+
+
+def test_a_masked_class_fits_no_cluster(tmp_path: Path) -> None:
+    assert _fitted_map(tmp_path, {"mask": [2]}) == {6: 0}

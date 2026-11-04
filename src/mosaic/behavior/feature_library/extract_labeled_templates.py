@@ -598,7 +598,7 @@ class ExtractLabeledTemplates:
             if npz_path is None:
                 continue
 
-            labels = labels_for_rows(npz_path, df)
+            labels = labels_for_rows(npz_path, df, self.params.labels)
             keep = labels != UNLABELED
             self._note_labeled_frames((group, sequence), df, labels)
             labels = labels[keep]
@@ -772,7 +772,7 @@ class ExtractLabeledTemplates:
             if npz_path is None:
                 continue
 
-            labels = labels_for_rows(npz_path, df)
+            labels = labels_for_rows(npz_path, df, self.params.labels)
             self._note_labeled_frames((group, sequence), df, labels)
             labels = labels[labels != UNLABELED]
             for label_int in np.unique(labels).tolist():
@@ -824,7 +824,7 @@ class ExtractLabeledTemplates:
             if npz_path is None:
                 continue
 
-            labels = labels_for_rows(npz_path, df)
+            labels = labels_for_rows(npz_path, df, self.params.labels)
             keep = labels != UNLABELED
             labels = labels[keep]
             matrix = df[cols].to_numpy(dtype=np.float64)[keep]

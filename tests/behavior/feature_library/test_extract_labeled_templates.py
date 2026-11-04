@@ -1267,3 +1267,78 @@ class TestEdgeCasesLabeled:
         templates = pd.read_parquet(run_root / "templates.parquet")
         assert set(templates["label"].unique()) == {0}
         assert len(templates) == 20
+
+
+_DRAWS = pytest.mark.parametrize(
+    "draw",
+    [
+        {"n_per_class": 100},
+        {"n_per_class": 100, "pool": {"allocation": "exact"}},
+        {"n_per_class": 100, "strategy": "farthest_first", "pool": {"size": 200}},
+    ],
+    ids=["reservoir", "exact", "farthest_first"],
+)
+
+
+def _controlled_run(
+    tmp_path: Path, draw: dict[str, object], controls: dict[str, object]
+) -> Path:
+    """Entry a: class 1 on frames 5-14, class 3 on 15-24. Entry b: class 2 on 20-29."""
+    lookup = {
+        ("g", "a"): write_sparse_labels(
+            tmp_path / "labels" / "a.npz",
+            [(f, 0, -1, 1) for f in range(5, 15)]
+            + [(f, 0, -1, 3) for f in range(15, 25)],
+        ),
+        ("g", "b"): write_sparse_labels(
+            tmp_path / "labels" / "b.npz", [(f, 0, -1, 2) for f in range(20, 30)]
+        ),
+    }
+    feat = _make_feature_with_labels(
+        lookup,
+        params={
+            "labels": {"kind": "behavior", **controls},
+            "test_fraction": 0.0,
+            **draw,
+        },
+    )
+    feat.fit(
+        _make_factory(
+            [
+                ("g__a", _coded_df("a", "g", 40, 0.0)),
+                ("g__b", _coded_df("b", "g", 40, 1000.0)),
+            ]
+        )
+    )
+    feat.save_state(tmp_path / "run")
+    return tmp_path / "run"
+
+
+@_DRAWS
+def test_a_remapped_class_draws_its_templates_as_the_target(
+    tmp_path: Path, draw: dict[str, object]
+) -> None:
+    run = _controlled_run(tmp_path, draw, {"remap": {2: 0}})
+
+    templates = pd.read_parquet(run / "templates.parquet")
+    assert 2 not in set(templates["label"])
+    from_b = templates.loc[templates["sequence"] == "b"]
+    assert set(from_b["label"]) == {0}
+    assert sorted(from_b["frame"]) == list(range(20, 30))
+
+
+@_DRAWS
+def test_a_masked_class_draws_no_template_and_leaves_the_labeled_range(
+    tmp_path: Path, draw: dict[str, object]
+) -> None:
+    run = _controlled_run(tmp_path, draw, {"mask": [3]})
+
+    templates = pd.read_parquet(run / "templates.parquet")
+    assert set(templates["label"]) == {1, 2}
+    assert templates.loc[templates["sequence"] == "a", "frame"].max() == 14
+    provenance = pd.read_parquet(run / "template_provenance.parquet")
+    ranges = {
+        str(row["sequence"]): (row["labeled_start"], row["labeled_stop"])
+        for row in provenance.to_dict("records")
+    }
+    assert ranges["a"] == (5, 15)

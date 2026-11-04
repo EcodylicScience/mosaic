@@ -106,7 +106,10 @@ from .classifier_common import (
     assemble_prediction,
     pooled_class_scores,
     predicted_labels,
+    input_run_root,
+    label_controls_in_play,
     probability_classes,
+    refuse_unpredicted_classes,
     read_fold_table,
     read_thresholds,
     refuse_entries_outside_scope,
@@ -497,6 +500,7 @@ class TuneThresholdFeature:
         self._report: dict[str, object] | None = None
         self._fold_table: pd.DataFrame | None = None
         self._label_files: DependencyLookup = {}
+        self._controls_in_play: bool = False
 
     # --- Feature protocol ---
 
@@ -515,6 +519,9 @@ class TuneThresholdFeature:
             return True
         self._fold_table = self._input_fold_table(dependency_lookups)
         self._label_files = dependency_lookups.get("labels", {})
+        self._controls_in_play = label_controls_in_play(
+            self.params.labels, dependency_lookups
+        )
         return False
 
     def fit(self, inputs: InputStream) -> None:
@@ -562,10 +569,10 @@ class TuneThresholdFeature:
         self, dependency_lookups: dict[str, DependencyLookup]
     ) -> pd.DataFrame | None:
         """Return the input's ``cv_folds.parquet``, ``None`` when it writes none."""
-        lookup = dependency_lookups.get("_input_0", {})
-        if not lookup:
+        root = input_run_root(dependency_lookups.get("_input_0", {}))
+        if root is None:
             return None
-        path = next(iter(lookup.values())).parent / "cv_folds.parquet"
+        path = root / "cv_folds.parquet"
         if not path.exists():
             return None
         return read_fold_table(path)
@@ -608,7 +615,7 @@ class TuneThresholdFeature:
                 ensure_columns(df, ["perspective"])
                 df = df.loc[df["perspective"] == perspective]
             probs = df[[f"prob_{cls}" for cls in classes]].to_numpy(dtype=np.float64)
-            labels = labels_for_rows(label_file, df)
+            labels = labels_for_rows(label_file, df, self.params.labels)
             row_folds = folds.folds(entry, df["frame"].to_numpy())
             # A labeled row with a NaN probability stays: the rule assigns it
             # default_class, and evaluate-labels counts it as that prediction.
@@ -688,6 +695,8 @@ class TuneThresholdFeature:
         tuned.sort()
 
         present = {int(v) for v in np.unique(rows.truth)}
+        if self._controls_in_play:
+            refuse_unpredicted_classes(self.name, present, classes)
         labels = sorted(set(classes) | present | {params.default_class})
         position = {label: index for index, label in enumerate(labels)}
         pooled = _Rows(

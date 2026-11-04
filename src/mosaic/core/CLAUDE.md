@@ -232,7 +232,10 @@ importing `mosaic.tracking` registers neither.
 ## Parameter models
 
 - `Params.identity_dump` drops `HASH_EXCLUDE` fields at the top level only, and a knob
-  inside a nested config model is hashed. A field declares its prose with
+  inside a nested config model is hashed. A top-level `NestedParams` value, such as a
+  labels source, dumps through its own `identity_dump()`, one level deep. A field added
+  to one leaves its unset value out of that dump, or every run id reading it moves.
+  A field declares its prose with
   `Declared(...)` in its `Annotated`. A `Field(description=...)` overrides it, and
   `tests/meta/test_params_declaration.py` refuses one.
 

@@ -103,18 +103,33 @@ def test_an_entry_without_a_label_file_is_unlabeled(
     assert values["labels-behavior"].tolist() == [-1] * 4
 
 
+@pytest.mark.parametrize(
+    ("source", "resident"),
+    [
+        (GroundTruthLabelsSource(), 2),
+        (GroundTruthLabelsSource(remap={2: 1}), 1),
+        (GroundTruthLabelsSource(mask=[2]), -1),
+    ],
+    ids=["plain", "remap", "mask"],
+)
 def test_rows_are_labeled_by_their_own_ids(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: GroundTruthLabelsSource,
+    resident: int,
 ) -> None:
-    """A resident -> intruder event labels the resident's rows, not the intruder's."""
+    """A resident -> intruder event labels the resident's rows, not the intruder's.
+
+    The source's remap and mask then apply to the resident's label.
+    """
     ds = MockDataset(tmp_path)
     add_track_sequences(ds, ("g1", "s1"), n_rows=4, n_ids=2)
     _with_labels(monkeypatch, {("g1", "s1"): _labels_file(tmp_path / "s1.npz")})
 
-    values = load_values(ds, [TracksColumn(column="X"), GroundTruthLabelsSource()])
+    values = load_values(ds, [TracksColumn(column="X"), source])
 
     by_id = values.groupby("id")["labels-behavior"].unique()
-    assert by_id[0].tolist() == [2]
+    assert by_id[0].tolist() == [resident]
     assert by_id[1].tolist() == [-1]
 
 

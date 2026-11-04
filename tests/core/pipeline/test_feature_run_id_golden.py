@@ -539,6 +539,18 @@ CASES: tuple[Case, ...] = (
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
     ),
     Case(
+        case_id="sequence-classifier/label-remap",
+        feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior", "remap": {"2": 1}, "mask": [3]},
+            "default_class": 0,
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
         case_id="sequence-classifier/tcn-cross-validated",
         feature="sequence-classifier",
         inputs=[{"feature": "global-scaler"}],
@@ -740,6 +752,18 @@ CASES: tuple[Case, ...] = (
         feature="evaluate-labels",
         inputs=[{"feature": "xgboost"}],
         params={"perspective": 0, "average_over": [0, 1, 2]},
+        scope=(("test", "s3"),),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
+        case_id="evaluate-labels/label-mask",
+        feature="evaluate-labels",
+        inputs=[{"feature": "xgboost"}],
+        params={
+            "labels": {"kind": "behavior", "mask": [3]},
+            "perspective": 0,
+            "average_over": [0, 1, 2],
+        },
         scope=(("test", "s3"),),
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
     ),

@@ -330,6 +330,19 @@ class DeclaredModel(StrictModel):
         return schema
 
 
+class NestedParams(DeclaredModel):
+    """Base for a model a :class:`Params` field holds that names its own identity.
+
+    :meth:`Params.identity_dump` dumps such a field's value through the value's
+    :meth:`identity_dump`, so a nested model can leave a field out of a run's
+    identity, as a labels source leaves out a ``remap`` it does not set.
+    """
+
+    def identity_dump(self) -> dict[str, object]:
+        """The model's part of the run_id hash input: its whole ``model_dump()``."""
+        return self.model_dump()
+
+
 class Params(DeclaredModel):
     """Base for every parameter model in mosaic.
 
@@ -343,13 +356,19 @@ class Params(DeclaredModel):
 
         Fields tagged ``Annotated[T, HASH_EXCLUDE]`` are throughput-only knobs
         that don't affect output, so they're stripped here to keep them out of
-        run identity. Top-level fields only (throughput knobs are top-level);
-        nested config models are not recursed into.
+        run identity. Top-level fields only (throughput knobs are top-level).
+        A top-level field whose value is a :class:`NestedParams` dumps as that
+        value's own ``identity_dump()``, one level deep. Every other nested
+        model dumps whole.
         """
         dumped = self.model_dump()
         for name, info in type(self).model_fields.items():
             if any(isinstance(m, HashExclude) for m in info.metadata):
                 dumped.pop(name, None)
+                continue
+            value: object = getattr(self, name, None)
+            if isinstance(value, NestedParams):
+                dumped[name] = value.identity_dump()
         return dumped
 
     @classmethod

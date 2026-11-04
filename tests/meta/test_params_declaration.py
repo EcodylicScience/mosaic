@@ -237,6 +237,13 @@ only the second carries a module prefix.
 
 PACKAGE_ROOT = Path(mosaic.__file__ or "").resolve().parent
 
+NOT_PARAMS_BASES: frozenset[str] = frozenset({"NestedParams"})
+"""Bases whose names end in ``Params`` and that are not ``Params`` subclasses.
+
+``NestedParams`` is the base of a model a ``Params`` field holds, such as a
+labels source. Its fields reach a client through that field.
+"""
+
 PARAMS_MODULE_EXEMPTIONS: tuple[tuple[str, str], ...] = ()
 """Modules declaring a ``Params`` subclass that ``PARAMS_MODELS`` may skip,
 each with the reason its fields reach no client. Empty: every module under
@@ -666,6 +673,8 @@ def modules_declaring_params() -> dict[str, tuple[str, ...]]:
     A base is matched by name, which is what a walk over source can read. The
     error that leaves is a module listed because it reuses a name. A listed
     module has to be reached or exempted rather than dropped.
+    :data:`NOT_PARAMS_BASES` names the bases the suffix matches that are not
+    ``Params``.
     """
     records = class_declarations()
     matched: set[tuple[str, str]] = set()
@@ -674,7 +683,11 @@ def modules_declaring_params() -> dict[str, tuple[str, ...]]:
         found = {
             (module, name)
             for module, name, bases in records
-            if any(base.endswith("Params") or base in known for base in bases)
+            if any(
+                (base.endswith("Params") and base not in NOT_PARAMS_BASES)
+                or base in known
+                for base in bases
+            )
         }
         if found == matched:
             break

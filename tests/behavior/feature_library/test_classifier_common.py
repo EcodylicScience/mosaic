@@ -20,6 +20,9 @@ import pytest
 from pydantic import TypeAdapter
 
 from mosaic.behavior.feature_library.classifier_common import (
+    input_run_roots,
+    label_controls_in_play,
+    refuse_unpredicted_classes,
     CvBlock,
     CvGroupBy,
     FitReporting,
@@ -49,6 +52,7 @@ from mosaic.behavior.feature_library.classifier_common import (
 from mosaic.behavior.feature_library.helpers import iter_series_positions
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
+from mosaic.core.pipeline.types import GroundTruthLabelsSource
 
 # --- Prediction ---
 
@@ -886,3 +890,45 @@ def test_an_unset_tie_mapping_leaves_the_identity_and_a_set_one_stays() -> None:
         "cv_folds": 3,
         "cv_group_by": mapping,
     }
+
+
+# --- Truth classes the input cannot predict ---
+
+
+def test_a_truth_class_the_input_lacks_is_refused_by_name() -> None:
+    with pytest.raises(ValueError, match=r"\[2\].*remap.*mask"):
+        refuse_unpredicted_classes("tune-threshold", [0, 1, 2], [0, 1])
+
+
+def test_truth_classes_the_input_predicts_pass() -> None:
+    refuse_unpredicted_classes("tune-threshold", [0, 1], [0, 1, 2])
+
+
+def test_the_input_run_roots_are_the_parents_of_each_input_lookup(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "features" / "a" / "0.1-aaaaaaaaaa"
+    second = tmp_path / "features" / "b" / "0.1-bbbbbbbbbb"
+    lookups = {
+        "labels": {("g", "s"): tmp_path / "labels" / "s.npz"},
+        "_input_1": {("g", "s"): second / "s.parquet"},
+        "_input_0": {("g", "s"): first / "s.parquet"},
+        "_input_2": {},
+    }
+    assert input_run_roots(lookups) == [first, second]
+
+
+def test_controls_are_in_play_from_the_step_or_from_its_inputs(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "features" / "sequence-classifier" / "0.1-aaaaaaaaaa"
+    root.mkdir(parents=True)
+    lookups = {"_input_0": {("g", "s"): root / "s.parquet"}}
+    plain = GroundTruthLabelsSource()
+    assert not label_controls_in_play(plain, lookups)
+    assert label_controls_in_play(GroundTruthLabelsSource(mask=[2]), lookups)
+    (root / "params.json").write_text(
+        '{"_params": {"labels": {"kind": "behavior", "mask": [2]}}}'
+    )
+    assert label_controls_in_play(plain, lookups)
+    assert label_controls_in_play(None, lookups)

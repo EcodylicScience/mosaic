@@ -34,7 +34,7 @@ from mosaic.core.evaluation import (
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import InputStream, Result
 from mosaic.core.scope import Scope
-from tests.helpers import write_sparse_labels
+from tests.helpers import write_lineage_run, write_sparse_labels
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import Recipe
@@ -860,3 +860,123 @@ def test_a_stack_is_planned_over_the_union_of_its_inputs_and_no_more(
     problems = [p for p in uncovered.problems if p.step == "stacked"]
     assert [p.where for p in problems] == ["inputs"]
     assert "('test', 's4')" in problems[0].message
+
+
+# --- remap, mask and the classes the input predicts ---
+
+
+def _metrics_of(run_root: Path) -> EvaluationReport:
+    return EvaluationReport.model_validate_json((run_root / METRICS_FILE).read_text())
+
+
+def test_a_remapped_label_is_scored_as_its_target(tmp_path: Path) -> None:
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz", first=0, second=2)}
+
+    _ = _run(
+        _feature({"perspective": 0, "labels": {"kind": "behavior", "remap": {2: 1}}}),
+        {("g", "s"): _rows("g", "s", [0] * 5 + [1] * 5)},
+        lookup,
+        tmp_path / "run",
+    )
+
+    report = _metrics_of(tmp_path / "run")
+    assert report.accuracy == 1.0
+    assert report.classes == [0, 1]
+
+
+def test_a_masked_label_is_unlabeled(tmp_path: Path) -> None:
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz", first=0, second=2)}
+
+    _ = _run(
+        _feature({"perspective": 0, "labels": {"kind": "behavior", "mask": [2]}}),
+        {("g", "s"): _rows("g", "s", [0] * 5 + [1] * 5)},
+        lookup,
+        tmp_path / "run",
+    )
+
+    report = _metrics_of(tmp_path / "run")
+    assert (report.n_scored, report.n_unlabeled) == (5, 5)
+    assert report.classes == [0]
+
+
+def _probabilities(frame: pd.DataFrame, classes: list[int]) -> pd.DataFrame:
+    """*frame* with a ``prob_<class>`` column per class of the input."""
+    return frame.assign(**{f"prob_{value}": 0.5 for value in classes})
+
+
+def _score_over(
+    tmp_path: Path, input_root: Path, labels: dict[str, object]
+) -> EvaluationReport:
+    """Score an input of classes 0 and 1, read from *input_root*, against 0 and 2."""
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz", first=0, second=2)}
+    feature = _feature({"perspective": 0, "labels": {"kind": "behavior", **labels}})
+    run_root = tmp_path / "run"
+    lookups = {
+        "labels": lookup,
+        "_input_0": {("g", "s"): input_root / "s.parquet"},
+    }
+    assert not feature.load_state(run_root, {}, lookups)
+    frame = _probabilities(_rows("g", "s", [0] * 5 + [1] * 5), [0, 1])
+    feature.fit(InputStream(lambda: iter([("g__s", frame)]), n_entries=1))
+    feature.save_state(run_root)
+    return _metrics_of(run_root)
+
+
+def test_a_mask_on_the_classifier_and_not_here_is_refused_by_class(
+    tmp_path: Path,
+) -> None:
+    features = tmp_path / "features"
+    classifier = write_lineage_run(
+        features,
+        "sequence-classifier",
+        "0.1-aaaaaaaaaa",
+        {"labels": {"kind": "behavior", "mask": [2]}},
+    )
+
+    with pytest.raises(ValueError, match=r"classes \[2\].*remap and mask"):
+        _ = _score_over(tmp_path, classifier, {})
+
+    report = _score_over(tmp_path / "masked", classifier, {"mask": [2]})
+    assert report.classes == [0]
+
+
+def test_a_mask_upstream_of_a_uniform_ensemble_is_refused(tmp_path: Path) -> None:
+    features = tmp_path / "features"
+    masked = {"labels": {"kind": "behavior", "mask": [2]}}
+    for run_id in ("0.1-aaaaaaaaaa", "0.1-bbbbbbbbbb"):
+        _ = write_lineage_run(features, "sequence-classifier", run_id, masked)
+    ensemble = write_lineage_run(
+        features,
+        "probability-ensemble",
+        "0.1-cccccccccc",
+        {"weights": "uniform", "labels": None},
+        upstream=[
+            ("sequence-classifier", "0.1-aaaaaaaaaa"),
+            ("sequence-classifier", "0.1-bbbbbbbbbb"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=r"classes \[2\]"):
+        _ = _score_over(tmp_path, ensemble, {})
+
+
+def test_without_controls_a_class_the_input_lacks_scores_as_misses(
+    tmp_path: Path,
+) -> None:
+    """A class the classifier never trained on for another reason is a miss.
+
+    Its runs may all be shorter than ``min_run``, or it may occur only in the
+    test groups. Without label controls the step does not refuse it.
+    """
+    classifier = write_lineage_run(
+        tmp_path / "features",
+        "sequence-classifier",
+        "0.1-aaaaaaaaaa",
+        {"labels": {"kind": "behavior", "remap": None, "mask": None}, "min_run": 8},
+    )
+
+    report = _score_over(tmp_path, classifier, {})
+
+    assert report.classes == [0, 1, 2]
+    two = next(score for score in report.per_class if score.label == 2)
+    assert (two.support, two.predicted) == (5, 0)

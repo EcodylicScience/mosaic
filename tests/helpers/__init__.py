@@ -308,6 +308,7 @@ from tests.helpers.labels import (
     LABELS_VARIANT,
     Event,
     add_labels,
+    write_lineage_run,
     write_sparse_labels,
 )
 from tests.helpers.lightning_action import (
@@ -687,6 +688,7 @@ __all__ = [
     "write_appearance_readback",
     "write_calms21_npy",
     "write_dlc_csv",
+    "write_lineage_run",
     "write_sparse_labels",
     "write_templates_study",
     "write_driver_lease",

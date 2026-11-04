@@ -59,7 +59,8 @@ not-yet-computed upstream rather than failing. The reference is then resolved --
 or reported missing -- later, by whichever consumer needs the file.
 
 Only top-level params fields are scanned, matching ``_resolve_dependencies`` and
-``Params.identity_dump()``, neither of which recurses into a nested model.
+``Params.identity_dump()``. The dump asks a nested model for its own dump, and no
+reference is found below the top level.
 """
 
 from __future__ import annotations

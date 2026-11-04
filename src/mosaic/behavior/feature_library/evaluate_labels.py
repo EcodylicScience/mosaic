@@ -34,6 +34,15 @@ steps join several inputs column-wise instead, and this one declares
 
 The labels come from the run's dependency lookup, so a ``labels`` reference to a
 ``convert-labels`` step scores against the variant that step wrote.
+
+**Remap, mask and label map.** ``labels.remap`` and ``labels.mask`` rewrite the
+truth before it is scored, and ``label_map`` maps the predictions. A
+``fit-label-map`` step that fits the map takes the same ``remap``, and its map
+then targets the remapped classes. In ``classifier`` mode over an input with
+``prob_<class>`` columns, where this step's labels or a run upstream of its
+inputs set ``remap`` or ``mask``, a truth class that the input writes no
+probability for is refused: the classifier's labels were controlled one way and
+this step's another.
 """
 
 from __future__ import annotations
@@ -83,6 +92,11 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
+from .classifier_common import (
+    label_controls_in_play,
+    probability_classes,
+    refuse_unpredicted_classes,
+)
 from .fit_label_map import LabelMapRef, read_label_map
 from .helpers import ensure_columns, entry_identity
 from .registry import register_feature
@@ -242,6 +256,7 @@ class EvaluateLabels:
         self._report: EvaluationReport | None = None
         self._contingency: pd.DataFrame | None = None
         self._names: dict[int, str] = {}
+        self._controls_in_play: bool = False
 
     # --- Feature protocol ---
 
@@ -256,6 +271,7 @@ class EvaluateLabels:
         self._report = None
         self._contingency = None
         self._names = {}
+        self._controls_in_play = False
         if self.params.label_map is not None and "label_map" in artifact_paths:
             self._label_map = read_label_map(artifact_paths["label_map"])
         path = run_root / METRICS_FILE
@@ -264,6 +280,10 @@ class EvaluateLabels:
             if self._label_map is None and self._report.label_map:
                 self._label_map = dict(self._report.label_map)
             return True
+        if self.params.mode == "classifier":
+            self._controls_in_play = label_controls_in_play(
+                self.params.labels, dependency_lookups
+            )
         return False
 
     def fit(self, inputs: InputStream) -> None:
@@ -277,10 +297,12 @@ class EvaluateLabels:
         true: list[np.ndarray] = []
         pred: list[np.ndarray] = []
         n_entries = n_unlabeled = n_missing = n_conflicting = 0
+        input_classes: set[int] = set()
         for _key, df in inputs():
             scored = self._scored(df)
             if scored is None:
                 continue
+            input_classes.update(probability_classes(df.columns))
             n_entries += 1
             frame, unlabeled, missing, conflicting = scored
             n_unlabeled += unlabeled
@@ -290,6 +312,10 @@ class EvaluateLabels:
             pred.append(frame["_prediction"].to_numpy(dtype=np.int32))
         y_true = np.concatenate(true) if true else np.empty(0, dtype=np.int32)
         y_pred = np.concatenate(pred) if pred else np.empty(0, dtype=np.int32)
+        if self._controls_in_play and input_classes:
+            refuse_unpredicted_classes(
+                self.name, (int(v) for v in np.unique(y_true)), input_classes
+            )
         self._report = self._evaluate(
             y_true,
             y_pred,
@@ -376,7 +402,7 @@ class EvaluateLabels:
             return None
         if not self._names:
             self._names = _class_names(path)
-        rows = df.assign(_label=labels_for_rows(path, df))
+        rows = df.assign(_label=labels_for_rows(path, df, self.params.labels))
         selected = select_scored_rows(
             rows,
             perspective=self.params.perspective,

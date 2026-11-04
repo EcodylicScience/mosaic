@@ -1100,8 +1100,9 @@ def resolve_step_spec(
       the labels variant the upstream writes.
 
     Only top-level params fields are scanned, matching ``resolve_references`` and
-    ``Params.identity_dump()``, neither of which recurses -- so finding a
-    reference deeper would promise a substitution nothing performs.
+    ``Params.identity_dump()``. The dump asks a nested model for its own dump, and
+    no reference is found below the top level, so finding a reference deeper
+    would promise a substitution nothing performs.
 
     A step that a submission binds to a run is resolved in *resolved* as that
     run, so a step reading it reads the pinned run. Its own spec is the one it

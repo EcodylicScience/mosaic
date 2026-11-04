@@ -100,7 +100,10 @@ from .classifier_common import (
     TunedDecisionThreshold,
     assemble_prediction,
     pooled_class_scores,
+    input_run_root,
+    label_controls_in_play,
     probability_classes,
+    refuse_unpredicted_classes,
     read_fold_table,
     read_thresholds,
     refuse_entries_outside_scope,
@@ -346,6 +349,7 @@ class ProbabilityEnsembleFeature:
         self._report: dict[str, object] | None = None
         self._cv_table: pd.DataFrame | None = None
         self._label_files: DependencyLookup = {}
+        self._controls_in_play: bool = False
 
     # --- Feature protocol ---
 
@@ -358,6 +362,7 @@ class ProbabilityEnsembleFeature:
         self._weights = None
         self._report = None
         self._label_files = {}
+        self._controls_in_play = False
         self._threshold = self._resolved_threshold(artifact_paths)
         self._cv_table = self._members_fold_table(dependency_lookups)
 
@@ -367,6 +372,10 @@ class ProbabilityEnsembleFeature:
             self._weights = np.asarray(stored.weights, dtype=np.float64)
             return True
         self._label_files = dependency_lookups.get("labels", {})
+        if self.params.weights == "fit":
+            self._controls_in_play = label_controls_in_play(
+                self.params.labels, dependency_lookups
+            )
         return False
 
     def fit(self, inputs: InputStream) -> None:
@@ -518,12 +527,12 @@ class ProbabilityEnsembleFeature:
         tables: list[pd.DataFrame | None] = []
         unresolved: list[str] = []
         for position in range(self._members):
-            lookup = dependency_lookups.get(f"_input_{position}", {})
-            if not lookup:
+            root = input_run_root(dependency_lookups.get(f"_input_{position}", {}))
+            if root is None:
                 unresolved.append(str(position))
                 tables.append(None)
                 continue
-            path = next(iter(lookup.values())).parent / "cv_folds.parquet"
+            path = root / "cv_folds.parquet"
             tables.append(read_fold_table(path) if path.exists() else None)
         if unresolved and fitting:
             msg = (
@@ -586,6 +595,8 @@ class ProbabilityEnsembleFeature:
                 "members with cv_folds"
             )
             raise ValueError(msg)
+        source = self.params.labels
+        assert source is not None, "weights fit validates with labels"
         folds = FoldLookup.from_table(self._cv_table)
         fit_entries = folds.entries
         seen: set[tuple[str, str]] = set()
@@ -606,7 +617,7 @@ class ProbabilityEnsembleFeature:
                 if not classes:
                     raise ValueError(_NO_PROBABILITIES)
             probs = member_probabilities(df, classes, self._members)
-            labels = labels_for_rows(label_file, df)
+            labels = labels_for_rows(label_file, df, source)
             keep = (
                 (labels != UNLABELED)
                 & ~np.isnan(probs).any(axis=(1, 2))
@@ -641,7 +652,10 @@ class ProbabilityEnsembleFeature:
                 f"[{self.name}] the labels cover no frame of the members' fold entries"
             )
             raise ValueError(msg)
-        labels_all = sorted(set(classes) | {int(v) for v in np.unique(truth)})
+        present = {int(v) for v in np.unique(truth)}
+        if self._controls_in_play:
+            refuse_unpredicted_classes(self.name, present, classes)
+        labels_all = sorted(set(classes) | present)
         position_of = {label: index for index, label in enumerate(labels_all)}
         truth_index = np.array([position_of[int(v)] for v in truth], dtype=np.intp)
         class_index = np.array([position_of[label] for label in classes], dtype=np.intp)

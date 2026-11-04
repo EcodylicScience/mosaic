@@ -220,7 +220,7 @@ class FitLabelMap:
         path = self._labels_lookup.get(entry_identity(df))
         if path is None:
             return None
-        return labels_for_rows(path, df)
+        return labels_for_rows(path, df, self.params.labels)
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if self._map is None:

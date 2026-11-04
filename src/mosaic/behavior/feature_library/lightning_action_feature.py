@@ -885,6 +885,8 @@ class LightningActionFeature(FitReporting):
             RuntimeError: No run is left, or the runs hold one class.
         """
         assert self._train_entries is not None
+        source = self.params.labels
+        assert source is not None, "templates validate with labels"
         window = self.params.sequence_length
         by_block = self.params.cv_folds is not None and self.params.cv_unit == "block"
         runs_dir.mkdir(parents=True)
@@ -914,7 +916,7 @@ class LightningActionFeature(FitReporting):
                 ensure_columns(df, columns)
 
             for _, rows in iter_series(df):
-                labels = labels_for_rows(label_file, rows)
+                labels = labels_for_rows(label_file, rows, source)
                 frames = rows[COLUMNS.frame_col].to_numpy()
                 matrix = rows[columns].to_numpy(dtype=np.float64)
                 if by_block:

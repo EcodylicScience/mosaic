@@ -43,7 +43,14 @@ from mosaic.core.entry import Entry, entry_token, parse_entry_tokens
 from mosaic.core.evaluation import CountScores, pool_entry_counts
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.pipeline.types import COLUMNS, ParquetArtifact, ParquetLoadSpec
+from mosaic.core.pipeline.label_lineage import lineage_label_controls
+from mosaic.core.pipeline.types import (
+    COLUMNS,
+    DependencyLookup,
+    GroundTruthLabelsSource,
+    ParquetArtifact,
+    ParquetLoadSpec,
+)
 from mosaic.core.track_quality import consecutive_runs
 
 from .helpers import (
@@ -108,6 +115,9 @@ __all__ = [
     "fold_rows",
     "fold_table",
     "held_out_frames",
+    "input_run_root",
+    "input_run_roots",
+    "label_controls_in_play",
     "note_labeled_range",
     "pooled_class_scores",
     "predicted_labels",
@@ -115,6 +125,7 @@ __all__ = [
     "read_fold_table",
     "read_thresholds",
     "refuse_entries_outside_scope",
+    "refuse_unpredicted_classes",
     "scoring_folds",
     "standardize",
     "stored_folds",
@@ -1593,5 +1604,81 @@ def refuse_entries_outside_scope(
     msg = (
         f"[{feature}] {len(absent)} {who} have labels and are not in this step's "
         f"scope: {shown}. {consequence} {remedy}"
+    )
+    raise ValueError(msg)
+
+
+_INPUT_LOOKUP: Final = re.compile(r"^_input_([0-9]+)$")
+"""The dependency lookup of a step's feature input, ``_input_<position>``."""
+
+
+def input_run_root(lookup: DependencyLookup) -> Path | None:
+    """The run directory of one input's lookup, the parent of its first output.
+
+    Returns ``None`` for a lookup that resolved no output.
+    """
+    first = next(iter(lookup.values()), None)
+    return None if first is None else first.parent
+
+
+def input_run_roots(dependency_lookups: Mapping[str, DependencyLookup]) -> list[Path]:
+    """The run directories of a step's feature inputs, in input order.
+
+    Each is :func:`input_run_root` of an ``_input_<position>`` lookup. An input
+    that resolved no output has none.
+    """
+    positions = sorted(
+        (int(match[1]), name)
+        for name in dependency_lookups
+        if (match := _INPUT_LOOKUP.match(name)) is not None
+    )
+    roots: list[Path] = []
+    for _, name in positions:
+        root = input_run_root(dependency_lookups[name])
+        if root is not None:
+            roots.append(root)
+    return roots
+
+
+def label_controls_in_play(
+    labels: GroundTruthLabelsSource | None,
+    dependency_lookups: Mapping[str, DependencyLookup],
+) -> bool:
+    """Whether *labels* or any run upstream of the inputs sets ``remap`` or ``mask``.
+
+    The runs are those :func:`~mosaic.core.pipeline.label_lineage.lineage_label_controls`
+    walks from :func:`input_run_roots`. A step reads it once, in ``load_state``.
+    """
+    if labels is not None and (labels.remap is not None or labels.mask is not None):
+        return True
+    return bool(lineage_label_controls(input_run_roots(dependency_lookups)))
+
+
+def refuse_unpredicted_classes(
+    feature: str, truth_classes: Iterable[int], input_classes: Iterable[int]
+) -> None:
+    """Refuse truth classes that the input writes no ``prob_<class>`` column for.
+
+    A ``remap`` or ``mask`` given to a classifier's labels and not to the step
+    that scores it leaves such classes. A step calls this only where label
+    controls are in play (:func:`label_controls_in_play`). Without them a class
+    the classifier never trained on is scored as a miss.
+
+    Args:
+        feature: The feature, which the refusal names.
+        truth_classes: The classes of the labeled rows the step collected.
+        input_classes: The classes of the input's ``prob_<class>`` columns.
+
+    Raises:
+        ValueError: A truth class is not among *input_classes*.
+    """
+    missing = sorted(set(truth_classes) - set(input_classes))
+    if not missing:
+        return
+    msg = (
+        f"[{feature}] labeled frames hold classes {missing}, for which the input "
+        f"writes no prob_<class> column: its classes are "
+        f"{sorted(set(input_classes))}. Give this step the remap and mask of the "
+        "classifier's labels"
     )
     raise ValueError(msg)

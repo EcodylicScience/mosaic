@@ -34,7 +34,7 @@ from mosaic.behavior.feature_library.tune_threshold import (
     TuneThresholdFeature,
 )
 from mosaic.core.pipeline.types import DependencyLookup, InputStream, Result
-from tests.helpers import Event, write_sparse_labels
+from tests.helpers import Event, write_lineage_run, write_sparse_labels
 
 GROUP = "g"
 FRAMES = 240
@@ -125,13 +125,15 @@ class _Study:
         *,
         fold_table: bool = True,
         blocks: Sequence[tuple[int, int, int]] | None = None,
+        run: Path | None = None,
     ) -> dict[str, DependencyLookup]:
         """The lookups of the input, with a fold table of entries or of *blocks*.
 
         *blocks* are ``(start, stop, fold)`` cut out of every entry: a table of
-        blocks is what a classifier fitted with ``cv_unit="block"`` writes.
+        blocks is what a classifier fitted with ``cv_unit="block"`` writes. *run*
+        is the input's run directory, ``classifier`` under the root by default.
         """
-        run = self.root / "classifier"
+        run = self.root / "classifier" if run is None else run
         run.mkdir(parents=True, exist_ok=True)
         lookup: DependencyLookup = {}
         for group, sequence in self.tables:
@@ -885,3 +887,112 @@ def test_an_ensemble_still_takes_a_float_and_a_mapping() -> None:
     assert _ensemble(decision_threshold=0.3).params.decision_threshold == 0.3
     mapping = _ensemble(decision_threshold={"0": 1.0, "1": 0.2}).params
     assert mapping.decision_threshold == {0: 1.0, 1: 0.2}
+
+
+# --- Label controls -------------------------------------------------------------
+
+
+def _relabeled(study: _Study, relabel: dict[int, int | None]) -> _Study:
+    """*study* with each label file rewritten: a class to its target, or dropped."""
+    for entry, truth in study.truth.items():
+        events: list[Event] = [
+            (frame, 0, -1, target)
+            for frame, label in enumerate(truth)
+            if (target := relabel.get(int(label), int(label))) is not None
+        ]
+        study.files[entry] = write_sparse_labels(
+            study.root / "relabeled" / f"{entry[1]}.npz", events
+        )
+    return study
+
+
+@pytest.mark.parametrize(
+    ("labels", "relabel"),
+    [({"remap": {2: 1}}, {2: 1}), ({"mask": [2]}, {2: None})],
+    ids=["remap", "mask"],
+)
+def test_the_labels_are_read_through_their_controls(
+    tmp_path: Path, labels: dict[str, object], relabel: dict[int, int | None]
+) -> None:
+    controlled = _Study(tmp_path / "controlled", classes=3)
+    _, run = _tuned(
+        controlled, labels={"kind": "behavior", **labels}, classes=[1], nested=False
+    )
+    rewritten = _relabeled(_Study(tmp_path / "rewritten", classes=3), relabel)
+    _, expected = _tuned(rewritten, classes=[1], nested=False)
+
+    assert read_thresholds(run / THRESHOLDS_FILE) == read_thresholds(
+        expected / THRESHOLDS_FILE
+    )
+    assert _report(run)["n_rows"] == _report(expected)["n_rows"]
+
+
+def _without_class_two(study: _Study) -> _Study:
+    """*study* as a classifier fitted with class 2 masked writes it: no ``prob_2``."""
+    study.tables = {
+        entry: table.drop(columns=["prob_2"]) for entry, table in study.tables.items()
+    }
+    return study
+
+
+def _smoothed_masked_classifier(features: Path) -> Path:
+    """A classifier fitted with class 2 masked, then smoothed, as an input run."""
+    _ = write_lineage_run(
+        features,
+        "sequence-classifier",
+        "0.1-aaaaaaaaaa",
+        {"labels": {"kind": "behavior", "mask": [2]}},
+    )
+    return write_lineage_run(
+        features,
+        "smooth-probabilities",
+        "0.1-bbbbbbbbbb",
+        {"window": 5},
+        upstream=[("sequence-classifier", "0.1-aaaaaaaaaa")],
+    )
+
+
+def _tuned_over(
+    study: _Study, input_run: Path, **params: object
+) -> tuple[TuneThresholdFeature, Path]:
+    feature = _feature(nested=False, **params)
+    run = study.root / "run"
+    assert not feature.load_state(run, {}, study.lookups(run=input_run))
+    feature.fit(study.stream())
+    feature.save_state(run)
+    return feature, run
+
+
+def test_a_mask_upstream_of_the_input_and_not_here_is_refused_by_class(
+    tmp_path: Path,
+) -> None:
+    study = _without_class_two(_Study(tmp_path, classes=3))
+    smoothed = _smoothed_masked_classifier(tmp_path / "features")
+
+    with pytest.raises(ValueError, match=r"classes \[2\].*remap and mask"):
+        _ = _tuned_over(study, smoothed)
+
+
+def test_the_same_mask_here_tunes(tmp_path: Path) -> None:
+    study = _without_class_two(_Study(tmp_path, classes=3))
+    smoothed = _smoothed_masked_classifier(tmp_path / "features")
+
+    _, run = _tuned_over(study, smoothed, labels={"kind": "behavior", "mask": [2]})
+
+    assert sorted(read_thresholds(run / THRESHOLDS_FILE)) == [0, 1]
+
+
+def test_without_controls_a_class_the_input_lacks_is_tuned_as_misses(
+    tmp_path: Path,
+) -> None:
+    study = _without_class_two(_Study(tmp_path, classes=3))
+    plain = write_lineage_run(
+        tmp_path / "features",
+        "xgboost",
+        "0.4-aaaaaaaaaa",
+        {"templates": {"feature": "extract-labeled-templates"}},
+    )
+
+    _, run = _tuned_over(study, plain)
+
+    assert sorted(read_thresholds(run / THRESHOLDS_FILE)) == [0, 1]

@@ -2520,7 +2520,7 @@ def load_values(
                     )
                     raise ValueError(msg)
                 else:
-                    entry_data[col_name] = labels_for_rows(label_path, entry_df)
+                    entry_data[col_name] = labels_for_rows(label_path, entry_df, source)
 
         if entry_data:
             all_parts.append(pd.DataFrame(entry_data))

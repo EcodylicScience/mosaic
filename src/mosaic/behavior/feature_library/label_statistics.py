@@ -821,31 +821,44 @@ class LabelStatistics:
         labels: GroundTruthLabelsSource,
         entry: tuple[str, str],
     ) -> tuple[tuple[str | int, ...], _PerFrame | _Events | _Intervals]:
-        """The entry's states and its labels: segments if the file has them."""
+        """The entry's states and its labels: segments if the file has them.
+
+        The source's ``mask`` drops the segments and events of a masked label
+        and leaves a masked frame of the dense array outside the labels, and
+        its ``remap`` gives every other label its target before the states are
+        matched. A file may declare ``-1`` as a label of its own, so a masked
+        frame is never mapped to ``-1``.
+        """
         path = self._entry_label_path(entry, f"labels/{labels.kind} file")
         vocabulary, content = self._read_label_file(path, entry)
         states = self._ground_truth_states(vocabulary, entry)
 
         if isinstance(content, LabelSegments):
+            kept = ~labels.masked(content.label)
             distinct, inverse = np.unique(
-                content.label.astype(np.int64), return_inverse=True
+                labels.relabel(content.label[kept]), return_inverse=True
             )
             code = self._label_table(vocabulary, distinct, states)[inverse]
             keep = code != _UNLABELLED
             return states, _Intervals(
-                start=content.start_frame[keep],
-                end=content.end_frame[keep],
+                start=content.start_frame[kept][keep],
+                end=content.end_frame[kept][keep],
                 code=code[keep],
                 individual=None
                 if content.individual is None
-                else content.individual[keep],
+                else content.individual[kept][keep],
             )
 
         if isinstance(content, _EventFile):
-            distinct, inverse = np.unique(content.label, return_inverse=True)
+            kept = ~labels.masked(content.label)
+            distinct, inverse = np.unique(
+                labels.relabel(content.label[kept]), return_inverse=True
+            )
             table = self._label_table(vocabulary, distinct, states)
             return states, _Events(
-                frame=content.frame, code=table[inverse], actor=content.actor
+                frame=content.frame[kept],
+                code=table[inverse],
+                actor=content.actor[kept],
             )
 
         # Looked up once per distinct frame, not once per row: every individual
@@ -853,7 +866,9 @@ class LabelStatistics:
         unique_frames, frame_inverse = np.unique(frame, return_inverse=True)
         per_frame = np.full(unique_frames.size, _NO_LABEL, dtype=np.int64)
         inside = (unique_frames >= 0) & (unique_frames < content.size)
-        per_frame[inside] = content[unique_frames[inside]]
+        per_frame[inside] = labels.relabel(
+            content[unique_frames[inside]], unlabeled=_NO_LABEL
+        )
         distinct, inverse = np.unique(per_frame, return_inverse=True)
         labelled = distinct != _NO_LABEL
         table = np.full(distinct.size, _UNLABELLED, dtype=np.int32)
