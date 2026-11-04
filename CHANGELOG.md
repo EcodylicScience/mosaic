@@ -8,6 +8,48 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: label controls and probability smoothing
+
+**`remap` and `mask` on a labels source.** `labels` gains `remap`, a map from a class id
+of the label file to the id every step reads, and `mask`, a list of class ids whose
+frames become unlabeled. They apply to every entry a step reads, on
+`extract-labeled-templates`, `xgboost` through its templates, `sequence-classifier`,
+`lightning-action`, `tune-threshold`, `probability-ensemble` with `weights="fit"`,
+`evaluate-labels`, `fit-label-map` and `label-statistics`. A labels step reference may
+take them: `{"step": <id>, "remap": {...}, "mask": [...]}`, at a labels field only.
+`params.json` of a run that reads labels now records `remap` and `mask`, `null` by
+default.
+
+**A truth class that the input cannot predict is refused where controls are set.** When
+`remap` or `mask` is set on the step or upstream of its input, `tune-threshold`,
+`probability-ensemble` with `weights="fit"` and `evaluate-labels` in `classifier` mode
+refuse labeled frames of a class for which the input has no `prob_<class>` column. A
+chain without controls scores such a class as missed, as before.
+
+**A new feature, `smooth-probabilities`.** It smooths a classifier's `prob_<class>`
+columns over consecutive frames (`gaussian`, `median` or `none`), merges bouts shorter
+than `min_bout_frames`, and copies the input's `cv_folds.parquet`. It refuses a frame
+step other than 1, and declares `follows_ids`, since it smooths each id's frames in
+order. A `tune-threshold` decision threshold applies only with `method: "none"`, over
+the step it was tuned on.
+
+**`sequence-classifier` gains `init_from`.** The fit starts from another
+`sequence-classifier` run's network and standardization. The head, its options other
+than `dropout` and `columns` must match, the labels may contain a subset of the source's
+classes, and a source that trained on an entry this run withholds is refused.
+`check_folds` no longer warns of a class that no sequence contains.
+
+**Other changes.** A step type's parameter table (`mosaic features describe`, the
+`describe_step_types` tool) no longer lists fields that no step reads, and the reference
+pages still do. `merged_classes` left
+`mosaic.behavior.feature_library.probability_ensemble`, and `probability_classes` in
+`classifier_common` parses the class columns. In `helpers`, `train_entries_of_templates`
+became `entries_of_templates(templates_path, split)`, with `split` `"train"` or
+`"test"`.
+
+No run id moves and no feature's `version` changes. A run that omits `remap`, `mask` and
+`init_from` has the identity it had.
+
 ## Unreleased: request pins, tracklets and the aggregates
 
 **A request names the tracks variant its steps read.** `Request.tracks_run_id` (default

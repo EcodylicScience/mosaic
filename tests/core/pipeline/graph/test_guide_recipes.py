@@ -114,11 +114,23 @@ def tuned(block_validated: dict[str, Any]) -> dict[str, Any]:
     ``evaluate`` reads the step that applies the cuts, as a reader who wants the tuned
     score does.
     """
-    recipe = _replaced(
-        block_validated, "tuned", _guide_steps('"feature": "tune-threshold"')
-    )
+    recipe = _replaced(block_validated, "tuned", _guide_steps('"id": "tune"'))
     (evaluate,) = [s for s in recipe["steps"] if s["id"] == "evaluate"]
     evaluate["inputs"] = [{"step": "apply"}]
+    return recipe
+
+
+@pytest.fixture(scope="module")
+def smoothed(block_validated: dict[str, Any]) -> dict[str, Any]:
+    """The block-validated recipe with the steps of the smoothing section.
+
+    ``evaluate`` reads the step that applies the tuned cuts and merges bouts.
+    """
+    recipe = _replaced(
+        block_validated, "smoothed", _guide_steps('"feature": "smooth-probabilities"')
+    )
+    (evaluate,) = [s for s in recipe["steps"] if s["id"] == "evaluate"]
+    evaluate["inputs"] = [{"step": "smooth-apply"}]
     return recipe
 
 
@@ -207,6 +219,38 @@ def test_the_tuned_thresholds_are_chosen_on_the_train_groups_and_applied_to_the_
 
     assert set(step_states(run).values()) == {"ran"}
     assert {"tune", "apply", "evaluate"} <= set(step_states(run))
+
+
+def test_the_smoothed_thresholds_are_chosen_on_the_smoothed_train_groups_and_applied_with_bouts_merged(
+    tmp_path: Path, smoothed: dict[str, Any], commands: list[str]
+) -> None:
+    ds = guide_dataset(tmp_path / "ds")
+    recipe = Recipe.model_validate(smoothed)
+    scopes = {
+        **step_scopes(commands[2]),
+        **step_scopes(
+            '--step-scope \'smooth={"groups": ["train", "test"]}\' '
+            '--step-scope \'smooth-tune={"groups": ["train"]}\' '
+            '--step-scope \'smooth-apply={"groups": ["train", "test"]}\''
+        ),
+    }
+
+    run = run_pipeline(ds, recipe, step_scopes=scopes)
+
+    assert set(step_states(run).values()) == {"ran"}
+    assert {"smooth", "smooth-tune", "smooth-apply", "evaluate"} <= set(
+        step_states(run)
+    )
+    plan = plan_pipeline(ds, recipe, step_scopes=scopes)
+    ids = run_ids(run)
+    roots = {
+        step: ds.get_root("features") / plan.step(step).storage_name / ids[step]
+        for step in ("smooth", "classifier")
+    }
+    pd.testing.assert_frame_equal(
+        pd.read_parquet(roots["smooth"] / "cv_folds.parquet"),
+        pd.read_parquet(roots["classifier"] / "cv_folds.parquet"),
+    )
 
 
 def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(

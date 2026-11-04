@@ -81,6 +81,45 @@ machine that has PyTorch and a GPU. The caution changes nothing: the default sta
 `"cpu"` and the step keeps its lane. The template draw and the fit each refuse a sample
 that would not fit in the available memory, and the message says what to lower.
 
+## Remap and mask labels
+
+`remap` and `mask` change the classes a step sees, without converting the labels again.
+`remap` maps a class id of the label file to the id that every step reads, and merges
+classes when two ids map to one. `mask` lists class ids whose frames become unlabeled,
+and steps neither train on nor score them. Both go on `labels`:
+
+```json
+{"labels": {"step": "labels", "remap": {"2": 0}, "mask": [3]}}
+```
+
+- **Controls apply to every entry a step reads.** They rewrite the labels as read and
+  leave the file as it is. All swaps happen at once, so `{"1": 2, "2": 1}` exchanges two
+  classes. A frame the file marks as background is remapped like any other. An id in
+  both fields is refused, and so is a negative id.
+- **Give each step that reads labels the same controls.** These are
+  `extract-labeled-templates`, `sequence-classifier`, `lightning-action`,
+  `tune-threshold`, `probability-ensemble` with `weights` set to `"fit"`,
+  `evaluate-labels`, `fit-label-map` and `label-statistics`. `xgboost` reads labels
+  through its templates and takes none. A classifier trains on the classes its templates
+  and labels leave, and a step that scores it must score the same ones.
+- **A truth class the classifier cannot predict is refused.** Where controls are set, on
+  the step or on any step upstream of its input, `tune-threshold`,
+  `probability-ensemble` with `weights` set to `"fit"` and `evaluate-labels` in
+  `classifier` mode refuse labeled frames of a class for which the input has no
+  `prob_<class>` column. The message names the classes and says to give the step the
+  controls of the classifier's labels. A chain without controls is not checked, and a
+  class missing from the classifier is scored as missed. That covers a class omitted by
+  `n_per_class` and a class with only runs shorter than `min_run`.
+- **A `labels` reference takes the controls.** `{"step": "labels", "remap": {...},
+  "mask": [...]}` reads the labels that step converts, with the controls. Only a
+  `labels` field accepts them. An `inputs`, `tracks` or `templates` reference with
+  `remap` or `mask` is refused.
+- **A setting changes the run id.** A run that reads labels records `remap` and `mask`
+  in its `params.json`, and a run with neither keeps the id it had.
+- `evaluate-labels` also takes `label_map`, which maps its predictions and not its
+  truth. A `fit-label-map` step takes the same `remap`, and its map then targets the
+  remapped classes.
+
 ## Train and score in one request
 
 A recipe can run the whole route at once, from the raw files to a score on held-out
@@ -378,6 +417,59 @@ classifier fitted with `cv_folds`, against the labels, and saves it for a step t
   the same run, which applies the stored cuts to the new entries. Ask the first request
   over a scope that holds the classifier's training entries.
 
+## Smooth probabilities and merge short bouts
+
+A frame-by-frame classifier flickers inside a bout. `smooth-probabilities` takes one
+classifier run (or one `probability-ensemble`), smooths each `prob_<class>` over
+consecutive frames, divides each row by its sum and chooses `predicted_label` again from
+the result:
+
+- `method` is `gaussian` (`sigma` frames, 2.0 by default), `median` (an odd `window` of
+  at least 3 frames, 5 by default) or `none`. `sigma` is refused without `gaussian`, and
+  `window` without `median`.
+- `min_bout_frames` merges bouts: a run of one predicted class shorter than it takes the
+  class of the neighbor whose class has the higher mean probability over the short run,
+  the shortest first. The default of 1 merges nothing. A merged frame can differ from
+  the argmax of its probabilities.
+- `default_class` is required, as on `probability-ensemble`, and `decision_threshold`
+  takes a number or a mapping of class to cut.
+- The step reads one series at a time, cut at a frame gap, at a row without a
+  probability and where the scoring fold changes. A series sampled at a frame step
+  other than 1, such as every second frame, is refused, naming the frame step it found.
+  Smooth the table before anything subsamples it.
+- A row depends on about `4 * sigma` frames on each side with `gaussian` and on half of
+  `window` with `median`. With `min_bout_frames` above 1 the dependence is unbounded.
+  It matters only for a classifier stacked over the step, where `cv_gap_frames` must
+  cover it.
+- **Out-of-fold scores stay out of fold.** A fold's network did not train on the frames
+  it scored, and smoothing combines only frames of one fold. The step copies the
+  input's `cv_folds.parquet`, so `tune-threshold` and a fitted-weight
+  `probability-ensemble` downstream find the folds where they find a classifier's.
+
+Cuts chosen by `tune-threshold` were scored on the probabilities of its input, and
+smoothing changes them. A `decision_threshold` that names a `tune-threshold` run is
+therefore accepted only with `method` set to `none`, and only for the run tuned on this
+step's input. Tune over the smoothing step, then apply the cuts and merge bouts in a
+second step that smooths nothing:
+
+```json
+{"id": "smooth", "type": "feature", "feature": "smooth-probabilities",
+ "inputs": [{"step": "classifier"}],
+ "params": {"method": "gaussian", "sigma": 2.0, "default_class": 3}},
+{"id": "smooth-tune", "type": "feature", "feature": "tune-threshold",
+ "inputs": [{"step": "smooth"}],
+ "params": {"labels": {"step": "labels"}, "default_class": 3,
+            "metric": "macro_f1", "average_over": [0, 1, 2]}},
+{"id": "smooth-apply", "type": "feature", "feature": "smooth-probabilities",
+ "inputs": [{"step": "smooth"}],
+ "params": {"method": "none", "default_class": 3, "min_bout_frames": 5,
+            "decision_threshold": {"step": "smooth-tune"}}}
+```
+
+Score `smooth-apply` with `evaluate-labels`, scoped to the test groups, as for the cuts
+of the previous section. `smooth` and `smooth-apply` take the scope of the classifier,
+and `smooth-tune` the training groups.
+
 ## Give each frame its context
 
 A single frame rarely identifies a behavior. `temporal-stack` widens each row into a
@@ -631,6 +723,16 @@ mosaic pipeline run -m dataset.yaml --recipe @network.json \
   differ from the CPU's in the low bits. A CPU fit repeats at one thread count
   (`n_threads`, 1 by default, which an apply also uses), and a GPU fit repeats on the
   same machine. The torch and CUDA versions are recorded in the model's bundle.
+- **Start from another run's network.** `init_from` names a `sequence-classifier` run,
+  as `{"step": "pretrain"}`, and every model of the fit starts from that run's weights
+  and keeps its standardization: the mean and standard deviation the source learned,
+  since the weights fit inputs scaled by them. The head, its options other than
+  `dropout`, and `columns` must equal the source's. The labels may contain a subset of
+  the source's classes. The classes, output layer and `prob_<class>` columns stay the
+  source's, and a class the runs lack gets weight 0 and is not a target. A class the
+  source lacks is refused. The fit is refused when the source, or a run it started from,
+  trained on an entry this run withholds: a test entry of the templates run, or under
+  `cv_folds` also a train entry. A source cannot be combined with `model`.
 - **A head of your own.** Register one in Python with `register_head(HeadSpec(...))`,
   giving its name, the model of its options and a function that builds a torch module
   from the options, the number of input columns and the number of classes. Raise

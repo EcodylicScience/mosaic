@@ -359,6 +359,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   gives `head` an installed head that every process with the package finds. A fitted
   network predicts on `device` when CUDA is available there and on the CPU otherwise
   (`apply_device` `auto`; `cpu` or `cuda` force one), at `n_threads` threads.
+  `init_from` (`{"step": <id>}`) starts the fit from another `sequence-classifier` run's
+  network and standardization. The head, its options other than `dropout` and `columns`
+  must match, the labels may contain a subset of its classes, and the fit is refused
+  when that run, or one it started from, trained on an entry this run withholds.
   `probability-ensemble` averages or blends the `prob_<class>` columns of classifier
   runs: `weights` is `uniform`, a list, or `fit`, which chooses them on the members'
   out-of-fold probabilities and refuses a member fitted without `cv_folds`. It writes
@@ -550,6 +554,13 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
 - A frame or row no annotation covers is unlabeled, `-1`, and not class 0. Scores and
   templates leave it out and count it. Labels attach to rows: a pair row takes the
   label of its own direction, so a CalMS21 label labels the resident-focal row only.
+- `remap` (`{"2": 0}`, a class id of the label file to the id every step reads) and
+  `mask` (`[3]`, class ids whose frames become unlabeled) go on `labels`, also in a
+  `labels` step reference. They apply to every entry a step reads. Give them to each
+  step that reads the labels, as a classifier's templates and `evaluate-labels` do. When
+  they are set, `tune-threshold`, a fitted-weight `probability-ensemble` and
+  `evaluate-labels` refuse a truth class their input has no `prob_<class>` column for
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Score a classifier or a clustering with an `evaluate-labels` step, narrowed to the
   held-out groups. Set `perspective` on pair output (`0`, `"pooled"` or
   `"mean_probabilities"`), and `average_over` to leave a catch-all class such as
@@ -597,6 +608,13 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   and `warnings` when a cut is the lowest or highest `grid` value, which is the edge of what
   was tried and not a tuned value. The default class takes threshold 1.0, and a class left
   out of `classes` has 0
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+- `smooth-probabilities` smooths a classifier's `prob_<class>` over consecutive frames
+  (`method` `gaussian`, `median` or `none`) and merges bouts shorter than
+  `min_bout_frames`. It keeps the input's folds and refuses a frame step other than 1.
+  Tuned thresholds apply only with `method: "none"`, over the step they were tuned on:
+  classifier, smoothing, `tune-threshold` over the smoothing step, then a `method:
+  "none"` step over the smoothing step with `decision_threshold: {"step": "<tune>"}`
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
