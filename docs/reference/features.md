@@ -681,7 +681,7 @@ Per-frame visibility between individuals, by 2-D ray casting.
 | `right_eye_index` | `integer` \| `None` | `null` |  | The pose keypoint index of the right eye, on the positive side of the heading in image coordinates. Set with left_eye_index or not at all. |
 | `outline_indices` | list of `integer` \| `None` | `null` |  | The pose keypoint indices of a closed body outline, in order, replacing the default outline. A viewpoint ignores its own outline's segments that end at it. Two indices make one segment. |
 | `heading_source` | `"ANGLE"` \| `"keypoints"` | `"ANGLE"` |  | Where the heading comes from: the ANGLE column, in radians in image coordinates, or keypoints, the direction from heading_back_index to the head. |
-| `heading_back_index` | `integer` | `1` | >= `0` | The pose keypoint index the heading points away from, when heading_source is keypoints. |
+| `heading_back_index` | `integer` | `2` | >= `0` | The pose keypoint index the heading points away from, when heading_source is keypoints. |
 | `n_rays` | `integer` | `1000` | >= `8` | The rays each eye casts around the full circle. One ray spans 360 / n_rays degrees, the resolution of angular_size_deg. |
 | `blind_angle_deg` | `number` | `25.0` | >= `0.0`, <= `360.0` | The width of the blind wedge behind the individual. [deg] |
 | `binocular_overlap_deg` | `number` | `12.5` | >= `0.0`, <= `180.0` | How far past the heading each eye's field reaches into the other side. [deg] |

@@ -275,3 +275,52 @@ def test_an_empty_table_gives_typed_empty_output() -> None:
     assert {"frame", "id1", "id2", "perspective", "n_rays"} <= set(out.columns)
     assert out["n_rays"].dtype == np.int64
     assert out["perspective"].dtype == np.int64
+
+
+@pytest.mark.parametrize("arenas", [False, True], ids=["no-arenas", "arenas"])
+def test_thousands_of_ids_with_few_per_frame(arenas: bool) -> None:
+    """Tracklet tables mint an id per fragment, a few of them in any one frame."""
+    n_frames = 3000
+    rows: list[dict[str, object]] = []
+    for frame in range(n_frames):
+        rows.append(_fish(2 * frame, 0.0, 0.0, 0.0, length=2.0, frame=frame))
+        rows.append(_fish(2 * frame + 1, 20.0, 0.0, math.pi / 2, frame=frame))
+    table = pd.DataFrame(rows)
+    if arenas:
+        table["arena"] = np.where(table["frame"] % 2 == 0, "a", "b")
+    out = VisualNetwork(params={**HEAD_ONLY, "n_rays": 64}).apply(table)
+
+    assert len(out) == n_frames
+    assert (out["id2"] == out["id1"] + 1).all()
+    assert sorted(out["frame"]) == list(range(n_frames))
+
+
+def test_a_target_across_the_ray_seam_is_measured_whole() -> None:
+    """Ray 0 points along -x, so a target there spans both ends of the ray order."""
+    length, distance, n_rays = 10.0, 50.0, 1000
+    rows = [
+        _fish(0, 0.0, 1.0, -math.pi / 2, length=2.0),
+        _fish(1, -distance, 0.0, math.pi / 2, length=length),
+    ]
+    out = VisualNetwork(params={**HEAD_ONLY, "n_rays": n_rays}).apply(
+        pd.DataFrame(rows)
+    )
+    row = out[(out["id1"] == 0) & (out["id2"] == 1)]
+
+    expected = math.degrees(2 * math.atan(length / (2 * distance)))
+    assert abs(float(row["angular_size_deg"].iloc[0]) - expected) <= 360 / n_rays
+
+
+def test_a_body_almost_touching_the_eye_fills_its_view() -> None:
+    gap, length, n_rays = 0.05, 10.0, 1000
+    rows = [
+        _fish(0, -1.0, 0.0, 0.0, length=2.0),
+        _fish(1, gap, 0.0, math.pi / 2, length=length),
+    ]
+    out = VisualNetwork(params={**HEAD_ONLY, "n_rays": n_rays}).apply(
+        pd.DataFrame(rows)
+    )
+    row = out[(out["id1"] == 0) & (out["id2"] == 1)]
+
+    expected = math.degrees(2 * math.atan(length / (2 * gap)))
+    assert abs(float(row["angular_size_deg"].iloc[0]) - expected) <= 360 / n_rays

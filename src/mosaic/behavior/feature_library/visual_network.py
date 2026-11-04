@@ -28,7 +28,6 @@ screen):
 from __future__ import annotations
 
 import re
-from collections.abc import Hashable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal, Self, final
@@ -38,7 +37,7 @@ import numpy.typing as npt
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.individuals import id_arenas, same_arena_mask
+from mosaic.core.individuals import arena_codes, id_arenas, same_arena_codes
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
@@ -78,6 +77,21 @@ BoolArray = npt.NDArray[np.bool_]
 
 _PARALLEL_TOLERANCE: Final = 1e-12
 """The cross product below which a ray and a segment count as parallel."""
+
+_RAY_MARGIN: Final = 1
+"""Rays tested past each end of a segment's angular extent.
+
+The extent comes from ``arctan2`` of its ends, and a ray at the very edge of
+it could fall either side of the computed boundary. One ray of margin keeps
+every ray that meets the segment among those tested.
+"""
+
+_WIDE_EXTENT: Final = 1e-6
+"""How close to pi a segment's angular extent may come before every ray is tested.
+
+A segment the viewpoint nearly lies on subtends nearly pi, and the side of its
+extent is then uncertain.
+"""
 
 _OUTPUT_COLUMNS: Final = (
     C.frame_col,
@@ -162,36 +176,96 @@ def _cross(
     return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
 
 
+def _candidates(
+    first: FloatArray, second: FloatArray, n_rays: int
+) -> tuple[IntArray, IntArray]:
+    """Return the ``(ray, segment)`` pairs whose ray may meet the segment.
+
+    A segment subtends less than pi from a point off its line, and only the rays
+    between the directions of its two ends can meet it. Each segment is paired
+    with those rays and :data:`_RAY_MARGIN` more at each side, wrapping past the
+    ray at ``-pi``. A segment whose extent nears pi, or whose end is the
+    viewpoint itself, is paired with every ray.
+
+    Args:
+        first: The ``(S, 2)`` first ends of the segments, relative to the viewpoint.
+        second: The ``(S, 2)`` second ends, relative to the viewpoint.
+        n_rays: The rays around the full circle, ray ``k`` at
+            ``2 * pi * k / n_rays - pi``.
+    """
+    start_angle = np.arctan2(first[:, 1], first[:, 0])
+    end_angle = np.arctan2(second[:, 1], second[:, 0])
+    turn = _wrap(end_angle - start_angle)
+    low = np.where(turn >= 0, start_angle, end_angle)
+    extent = np.abs(turn)
+    spacing = 2 * np.pi / n_rays
+    lowest = np.floor((low + np.pi) / spacing).astype(np.int64) - _RAY_MARGIN
+    counts = np.ceil(extent / spacing).astype(np.int64) + 1 + 2 * _RAY_MARGIN
+    whole = (
+        (extent > np.pi - _WIDE_EXTENT)
+        | ~np.any(first != 0, axis=1)
+        | ~np.any(second != 0, axis=1)
+    )
+    lowest[whole] = 0
+    counts = np.where(whole, n_rays, np.minimum(counts, n_rays))
+    segments = np.repeat(np.arange(len(first), dtype=np.int64), counts)
+    offsets = np.arange(len(segments), dtype=np.int64) - np.repeat(
+        np.cumsum(counts) - counts, counts
+    )
+    rays = (np.repeat(lowest, counts) + offsets) % n_rays
+    return rays, segments
+
+
 def _first_hits(
-    origin: FloatArray, directions: FloatArray, starts: FloatArray, ends: FloatArray
+    origin: FloatArray,
+    directions: FloatArray,
+    inside: BoolArray,
+    starts: FloatArray,
+    ends: FloatArray,
 ) -> IntArray:
     """Return, per ray, the index of the segment it meets first, ``-1`` for none.
 
+    A ray outside *inside* meets nothing. A ray is tested only against the
+    segments whose angular extent it falls in (:func:`_candidates`), and among
+    equally near segments the lowest index wins.
+
     Args:
         origin: The ``(2,)`` point every ray leaves from.
-        directions: The ``(R, 2)`` unit directions of the rays.
+        directions: The ``(R, 2)`` unit directions of all rays.
+        inside: The ``(R,)`` rays the viewpoint keeps.
         starts: The ``(S, 2)`` first ends of the segments.
         ends: The ``(S, 2)`` second ends of the segments.
     """
-    if len(starts) == 0 or len(directions) == 0:
-        return np.full(len(directions), -1, dtype=np.int64)
+    hits = np.full(len(directions), -1, dtype=np.int64)
+    if len(starts) == 0:
+        return hits
     first = starts - origin
     second = ends - origin
     along = second - first
-    ray = directions[:, None, :]
-    denominator = _cross(ray, along[None])
+    rays, segments = _candidates(first, second, len(directions))
+    kept = inside[rays]
+    rays, segments = rays[kept], segments[kept]
+    ray = directions[rays]
+    offset = first[segments]
+    span = along[segments]
+    denominator = _cross(ray, span)
     with np.errstate(divide="ignore", invalid="ignore"):
-        reach = _cross(first[None], along[None]) / denominator
-        position = _cross(first[None], ray) / denominator
+        reach = _cross(offset, span) / denominator
+        position = _cross(offset, ray) / denominator
     meets = (
         (np.abs(denominator) > _PARALLEL_TOLERANCE)
         & (reach > 0)
         & (position >= 0)
         & (position <= 1)
     )
-    reach = np.where(meets, reach, np.inf)
-    nearest = reach.argmin(axis=1)
-    return np.where(np.isfinite(reach.min(axis=1)), nearest, -1).astype(np.int64)
+    rays, segments, reach = rays[meets], segments[meets], reach[meets]
+    if len(rays) == 0:
+        return hits
+    order = np.lexsort((segments, reach, rays))
+    rays, segments = rays[order], segments[order]
+    nearest = np.r_[True, rays[1:] != rays[:-1]]
+    hits[rays[nearest]] = segments[nearest]
+    return hits
 
 
 @dataclass(frozen=True)
@@ -362,7 +436,7 @@ class VisualNetwork:
         ] = "ANGLE"
         heading_back_index: Annotated[
             int, Field(ge=0), Declared(_HEADING_BACK_INDEX_DESCRIPTION)
-        ] = 1
+        ] = 2
         n_rays: Annotated[int, Field(ge=8), Declared(_N_RAYS_DESCRIPTION)] = 1000
         blind_angle_deg: Annotated[
             float,
@@ -428,7 +502,8 @@ class VisualNetwork:
         keys = [C.seq_col, order_col] if C.seq_col in df.columns else [order_col]
         table = df.sort_values([*keys, C.id_col], kind="stable")
         codes_all, uniques = pd.factorize(table[C.id_col], sort=True)
-        related = _related(list(uniques), id_arenas(df))
+        arenas = id_arenas(df)
+        arena_of = None if arenas is None else arena_codes(list(uniques), arenas)
 
         points = np.stack(
             [
@@ -473,7 +548,7 @@ class VisualNetwork:
                 headings=headings[kept_rows],
                 centers=centers[kept_rows],
             )
-            links = self._links(frame, plan, related, angles, directions)
+            links = self._links(frame, plan, arena_of, angles, directions)
             if len(links.observers) == 0:
                 continue
             pair_parts.append(links)
@@ -512,7 +587,7 @@ class VisualNetwork:
         self,
         frame: _Frame,
         plan: _Plan,
-        related: BoolArray,
+        arena_of: IntArray | None,
         angles: FloatArray,
         directions: FloatArray,
     ) -> _Links:
@@ -524,12 +599,17 @@ class VisualNetwork:
         segment_starts = frame.points[:, plan.segment_starts].reshape(-1, 2)
         segment_ends = frame.points[:, plan.segment_ends].reshape(-1, 2)
         positions = np.arange(n)
+        arenas = None if arena_of is None else arena_of[frame.codes]
 
         observers: list[IntArray] = []
         targets: list[IntArray] = []
         counts: list[IntArray] = []
         for i in range(n):
-            peers = related[frame.codes[i], frame.codes]
+            peers = (
+                np.ones(n, dtype=bool)
+                if arenas is None
+                else same_arena_codes(arenas[i : i + 1], arenas)
+            )
             peers[i] = True
             relative = _wrap(angles - _wrap(frame.headings[i : i + 1]))
             seen: list[IntArray] = []
@@ -537,20 +617,20 @@ class VisualNetwork:
                 inside = np.zeros(len(angles), dtype=bool)
                 for low, high in viewpoint.fields:
                     inside |= (relative >= low) & (relative <= high)
-                rays = np.flatnonzero(inside)
-                casting = peers[owners].copy()
+                casting = peers[owners]
                 casting[i * n_segments : (i + 1) * n_segments] &= ~viewpoint.own_skipped
                 segments = np.flatnonzero(casting)
                 hit = _first_hits(
                     frame.points[i, viewpoint.keypoint],
-                    directions[rays],
+                    directions,
+                    inside,
                     segment_starts[segments],
                     segment_ends[segments],
                 )
-                met = hit >= 0
-                hit_owner = owners[segments[hit[met]]]
+                rays = np.flatnonzero(hit >= 0)
+                hit_owner = owners[segments[hit[rays]]]
                 other = hit_owner != i
-                seen.append(rays[met][other] * n + hit_owner[other])
+                seen.append(rays[other] * n + hit_owner[other])
             union = np.unique(np.concatenate(seen))
             per_target = np.bincount(union % n, minlength=n).astype(np.int64)
             if p.include_hidden:
@@ -663,10 +743,3 @@ class VisualNetwork:
             if col in df.columns:
                 columns[col] = pd.Series([], dtype=df[col].dtype)
         return pd.DataFrame(columns)
-
-
-def _related(ids: list[Hashable], arenas: dict[Hashable, str] | None) -> BoolArray:
-    """Return which ids may see each other, as an ``(n, n)`` matrix over *ids*."""
-    first = [observer for observer in ids for _ in ids]
-    second = [target for _ in ids for target in ids]
-    return same_arena_mask(first, second, arenas).reshape(len(ids), len(ids))

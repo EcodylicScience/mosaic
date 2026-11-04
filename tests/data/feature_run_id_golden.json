@@ -111,7 +111,7 @@
   "vame/model-scope-ab": "0.1-39ef1ae922",
   "vame/scope-a": "0.1-41f95befb4",
   "vame/scope-ab": "0.1-7ac5c99474",
-  "visual-network/default": "0.1-9508678a2b",
+  "visual-network/default": "0.1-b53770683b",
   "xgboost/cv-block": "0.4-e9b536ef79",
   "xgboost/cv-grouped": "0.4-af82d63169",
   "xgboost/cv-sequence": "0.4-1d641a8689",

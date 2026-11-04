@@ -26,10 +26,12 @@ if TYPE_CHECKING:
     from pandas._typing import Scalar
 
 __all__ = [
+    "arena_codes",
     "id_arenas",
     "individual_pairs",
     "iter_individuals",
     "refuse_repeated_rows",
+    "same_arena_codes",
     "same_arena_mask",
 ]
 
@@ -140,15 +142,35 @@ def same_arena_mask(
         raise ValueError(message)
     if arenas is None:
         return np.ones(len(first), dtype=bool)
+    return same_arena_codes(arena_codes(first, arenas), arena_codes(second, arenas))
+
+
+def arena_codes(
+    ids: Sequence[Hashable], arenas: Mapping[Hashable, str]
+) -> npt.NDArray[np.int64]:
+    """Return each of *ids*' arena as an integer code, ``-1`` for an id without one.
+
+    The codes number the arenas of *arenas* in sorted order, so the codes of two
+    calls over one *arenas* compare.
+    """
     codes = {name: code for code, name in enumerate(sorted(set(arenas.values())))}
 
     def code_of(identity: Hashable) -> int:
         arena = arenas.get(identity)
         return -1 if arena is None else codes[arena]
 
-    first_codes = np.array([code_of(a) for a in first], dtype=np.int64)
-    second_codes = np.array([code_of(b) for b in second], dtype=np.int64)
-    return (first_codes >= 0) & (first_codes == second_codes)
+    return np.array([code_of(identity) for identity in ids], dtype=np.int64)
+
+
+def same_arena_codes(
+    first: npt.NDArray[np.int64], second: npt.NDArray[np.int64]
+) -> npt.NDArray[np.bool_]:
+    """Return which pairs of :func:`arena_codes` a feature may relate.
+
+    Two codes of one arena relate, and the code of an id without an arena
+    relates to none. The arrays broadcast against each other.
+    """
+    return (first >= 0) & (first == second)
 
 
 def individual_pairs[T: Hashable](
