@@ -796,10 +796,12 @@ def run_command(
     process``.
 
     A step on a GPU lane of a ``--request`` run takes one card of the host for as
-    long as it runs, and waits while every card is held. ``--gpu-cards`` limits
-    the cards the driver may take. It belongs to the machine like ``--workers``,
-    and a card the host does not show ends the command before any step runs. A
-    run of ``--recipe`` takes no card.
+    long as it runs, and waits while every card is held. A step whose run, and
+    the runs of all its upstream steps, were complete when the request was
+    submitted takes none. ``--gpu-cards`` limits the cards the driver may take.
+    It belongs to the machine like ``--workers``, and a card the host does not
+    show ends the command before any step runs. A run of ``--recipe`` takes no
+    card.
     """
     from mosaic.core.pipeline.graph import (
         request_status_wire,
@@ -1238,8 +1240,9 @@ def status_command(
         typer.Option(
             "--brief",
             help=(
-                "List only the steps that are running, failed, cancelled or "
-                "partial, and those that ended during the wait. Count the rest."
+                "List only the steps that are running, waiting for a GPU, "
+                "failed, cancelled or partial, and those that ended during the "
+                "wait. Count the rest."
             ),
         ),
     ] = False,
@@ -1263,7 +1266,8 @@ def status_command(
     ``--wait-seconds`` waits instead of polling: the report comes as soon as a
     step has ended since the command began, or the request has ended or reads
     ``orphaned``, and otherwise when the time is up. ``--brief`` lists the steps
-    that are running or did not finish cleanly, and counts the others.
+    that are running, waiting for a GPU or did not finish cleanly, and counts the
+    others.
     """
     from mosaic.core.pipeline.graph import load_request, request_status_wire
 

@@ -11,18 +11,24 @@ message of their branch, and for both the answer was **nothing**.
 ## Unreleased: GPU card leases
 
 **A local request leases a GPU card to each step on a GPU lane.** The driver of a local
-request (`mosaic pipeline run --request`, which `mosaic agent serve` and
-`mosaic pipeline submit` start) takes one card before it starts such a step and sets the
-step's `CUDA_VISIBLE_DEVICES` to that card's UUID, so `cuda` and index 0 inside the step
-name it. Requests that run at the same time on a multi-card host take separate cards,
-and a request waits, checking every 2 seconds, while every allowed card is held. The
-lock is a file per card in `/tmp/mosaic-gpu-leases-<uid>`, or in `MOSAIC_GPU_LEASE_DIR`,
-and the kernel frees it when the step and its supervised tools have exited, also after a
-killed driver. A host without `nvidia-smi`, a failed query, a card in MIG mode and
-Windows leave GPU steps unleased, as before, with a warning in the driver log.
-`mosaic pipeline run --recipe`, `verify`, `score`, `mosaic run` and mosaic-queue workers
-take no lease. No run id, op identity or tracks variant moves: the card is part of no
-params model, recipe, request or `run_id`.
+request, which `mosaic pipeline run --request [--detach]` runs and `mosaic agent serve`
+starts, takes one card before it starts such a step and sets the step's
+`CUDA_VISIBLE_DEVICES` to that card's UUID, so `cuda` and index 0 inside the step name
+it. One user's requests that run at the same time on a multi-card host take separate
+cards, and a request waits, checking every 2 seconds, while every allowed card is held.
+A GPU step whose run, and the runs of all its upstream steps, were complete when the
+request was submitted only records a cache hit, and takes no card and does not wait.
+Every other GPU step takes one, also a step below a conversion, whose run id the
+submission could not resolve. The driver reads the runs a request computes from
+`pipelines/computes/<rid>.json`, and leases a card to every GPU step of a request
+without that file, which an older mosaic submitted. The lock is a file per card in
+`/tmp/mosaic-gpu-leases-<uid>`, or in `MOSAIC_GPU_LEASE_DIR`, and the kernel frees it
+when the step and its supervised tools have exited, also after a killed driver. A host
+without `nvidia-smi`, a failed query, a card in MIG mode and Windows leave GPU steps
+unleased, as before, with a warning in the driver log. `mosaic pipeline run --recipe`,
+`verify`, `score`, `mosaic run` and mosaic-queue workers take no lease. No run id, op
+identity or tracks variant moves: the card is part of no params model, recipe, request
+or `run_id`.
 
 **A new refusal reason, `gpu_card_not_leased`.** A step that holds a leased GPU card
 (`MOSAIC_GPU_CARD` set) and whose `device` names another card or several, such as `1`,

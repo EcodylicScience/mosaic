@@ -104,7 +104,8 @@ from .request import load_recipe_for_request, step_argv, submit_request
 from .rollup import blocked_by, request_rollup
 from .step import StepOutcome, execute_step, record_step_ended
 from .step_preflight import CoverageShortfall, StepRefused
-from .topo import topological_order
+from .store import load_computes
+from .topo import ancestors_of, topological_order
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -587,11 +588,18 @@ def run_request(
     each step the driver checks that it still holds the lease.
 
     A step on a GPU lane (:func:`step_lane`) takes one GPU card
-    (:mod:`~mosaic.core.pipeline.gpu_lease`). Before it takes its lease, the driver
-    lists the cards it may lease once, when *gpu_cards* is given or a step it will
-    run is on a GPU lane. When nothing can be leased, it writes one warning to the
-    log and GPU steps start with its own environment. With every allowed card held,
-    the driver waits for one, as :func:`_run_step` describes.
+    (:mod:`~mosaic.core.pipeline.gpu_lease`) unless neither its run nor the run
+    of any step above it is among the runs the submission recorded
+    (:func:`~.store.load_computes`). Such a step's run, and the runs it reads,
+    were complete at submit, so it only records a cache hit, and starts with no
+    card and no wait, as a CPU step does. A step below a conversion, whose run
+    id the submission could not resolve, takes a card. A request with no
+    recorded runs, which an older mosaic submitted, leases a card to every GPU
+    step. Before it takes its lease, the driver lists the cards it may lease
+    once, when *gpu_cards* is given or a step that takes a card is still to
+    run. When nothing can be leased, it writes one warning to the log and GPU
+    steps start with its own environment. With every allowed card held, the
+    driver waits for one, as :func:`_run_step` describes.
 
     Args:
         ds: The dataset the request was submitted against.
@@ -641,10 +649,16 @@ def run_request(
             cancelled=(),
             log_path=log_path,
         )
+    computes = load_computes(ds.base_dir, request.request_id)
+    computed = None if computes is None else frozenset(run.step for run in computes)
     gpu_steps = frozenset(
         step_id
         for step_id in order
         if step_id not in request.bind
+        and (
+            computed is None
+            or not computed.isdisjoint(ancestors_of(recipe, step_id, cut=request.bind))
+        )
         and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
         and step_lane(recipe, step_id) in GPU_LANES
     )

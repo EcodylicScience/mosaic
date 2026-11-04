@@ -678,9 +678,10 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   or a memory-floor failure, or its peak nears the host's memory, halve `workers` or
   use `thread`, then submit the recipe again. Written entries are kept, because the
   worker count is not part of a run's identity. Do not retry at the same setting.
-- GPU cards: on a host with several cards, one user's requests that run at the same
-  time take separate cards, one to each step on a GPU lane, the steps that raise the
-  `gpu_lane` confirmation. `xgboost` and `global-kmeans` join them with `device: cuda`.
+- GPU cards: on a host with several cards, one user's requests that run at the same time
+  take separate cards, one to each step on a GPU lane, the steps that raise the
+  `gpu_lane` confirmation, unless its run and the runs of all its upstream steps were
+  complete at submit. `xgboost` and `global-kmeans` join them with `device: cuda`.
   Requests of different users can take the same card. A request whose cards are all
   taken waits for a free one: `get_request_status` reports `waiting_for_gpu` on that
   step while its `status` stays empty, so do not cancel it for that. A step's `gpu_card`

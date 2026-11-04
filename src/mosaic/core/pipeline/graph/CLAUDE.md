@@ -277,11 +277,15 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   driver stops with `LeaseNotRefreshed` before a step once its lease has gone
   unrefreshed for half the grace.
 - `run_request` leases one GPU card to each step on a GPU lane (`step_lane`) through
-  `core/pipeline/gpu_lease.py`. It hands the lock's descriptor to the step's process
-  and closes its own copy after `Popen`, so the driver holds no card. The step's
-  `CUDA_VISIBLE_DEVICES` is narrowed to the card's UUID, and every other step keeps
-  the driver's and loses the lease variables. With every allowed card held the
-  driver waits, named in its lease (`gpu_wait_step`) and not in a status
+  `core/pipeline/gpu_lease.py`. A GPU step takes no card when neither its run nor the
+  run of any step above it (`ancestors_of`) is among the runs the submission recorded
+  (`load_computes`), since they were all complete at submit. A step below a conversion
+  has no run id at submit, so its ancestors decide, and a request without
+  `computes/<rid>.json` leases one to every GPU step. The driver hands the lock's
+  descriptor to the step's process and closes its own copy after `Popen`, so it holds no
+  card. The step's `CUDA_VISIBLE_DEVICES` is narrowed to the card's UUID, and every
+  other step keeps the driver's and loses the lease variables. With every allowed card
+  held the driver waits, named in its lease (`gpu_wait_step`) and not in a status
   (`test_pipeline_request_driver_gpu.py`).
 - `run_pipeline` (`run.py`) holds an `in_process` lease that names its own pid as the
   running step's, deletes it when the request ends, and keeps it after a shortfall

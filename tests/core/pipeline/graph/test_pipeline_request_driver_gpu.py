@@ -28,12 +28,15 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     Request,
     RequestRun,
+    computes_path,
     driver_lease_path,
+    load_computes,
     plan_pipeline,
     read_driver_lease,
     request_status_wire,
     run_pipeline,
     run_request,
+    save_computes,
     submit_request,
 )
 from mosaic.core.pipeline import gpu_lease
@@ -51,10 +54,12 @@ from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
+    SPEED_OF_CONVERTED_STEP,
     TWO_CARDS,
     add_tracks_variant,
     calms21_dataset,
     classifier_recipe,
+    converting_recipe,
     install_fake_nvidia_smi,
     make_dataset,
     wait_for,
@@ -100,6 +105,26 @@ STAND_IN = (
     "while not any(map(os.path.exists, release)) and time.monotonic() < deadline:\n"
     "    time.sleep(0.05)\n"
 )
+
+# Runs the steps named in its first argument as real mosaic steps, and every
+# other step as the stand-in, whose arguments follow.
+REAL_OR_STAND_IN = (
+    "import os, sys\n"
+    "real = sys.argv.pop(1).split(',')\n"
+    "step_args = sys.argv[2:]\n"
+    "if step_args[step_args.index('--step') + 1] in real:\n"
+    "    command = [sys.executable, '-m', 'mosaic', *step_args]\n"
+    "    os.execv(sys.executable, command)\n"
+) + STAND_IN
+
+TEMPLATES_OF_CONVERTED: dict[str, JsonValue] = {
+    "id": "templates",
+    "type": "feature",
+    "feature": "extract-templates",
+    "inputs": [{"step": "speed"}],
+    "params": {"n_templates": 10},
+}
+"""A fit over the ``speed`` step of the tracks that the ``tracks`` step converts."""
 
 
 def _speed_step(step_id: str, step_size: int) -> dict[str, JsonValue]:
@@ -400,6 +425,134 @@ def test_a_cancel_while_waiting_for_a_card_records_the_step_cancelled(
     assert (done.status, done.ran, done.cancelled) == ("cancelled", (), ("gpu",))
     assert _status(tracked, request, "gpu") == "cancelled"
     assert not stand_ins.started(request, "gpu")
+
+
+def _computes_only(ds: Dataset, request: Request, *step_ids: str) -> None:
+    """Record that *request* computes the runs of *step_ids* and of no other step.
+
+    A submission leaves out a step whose run is already complete, which a step
+    of the stand-in recipe never is.
+    """
+    computes = load_computes(ds.base_dir, request.request_id)
+    assert computes is not None
+    _ = save_computes(
+        ds.base_dir,
+        request.request_id,
+        [run for run in computes if run.step in step_ids],
+    )
+
+
+def test_a_gpu_step_whose_run_is_not_computed_starts_while_every_card_is_held(
+    tracked: Dataset,
+    stand_ins: StandIns,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The step only records a cache hit, so it takes no card and does not wait."""
+    _ = install_fake_nvidia_smi(monkeypatch, tmp_path, TWO_CARDS[:1])
+    _on_gpu(monkeypatch, "cached", "computed")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.setenv(GPU_CARD_VAR, "0:GPU-inherited")
+    request = submit_request(tracked, _recipe("cached", "computed")).request
+    _computes_only(tracked, request, "computed")
+    held = try_lease(_cards())
+    assert held is not None
+    try:
+        joined = stand_ins.drive(tracked, request)
+        cached = stand_ins.seen(request, "cached")
+        stand_ins.release(request, "cached")
+        wait_for(
+            lambda: _gpu_wait_step(tracked, request) == "computed",
+            STEP_SECONDS,
+            "the computed step never waited for the card",
+        )
+        assert not stand_ins.started(request, "computed")
+    finally:
+        held.close()
+    computed = stand_ins.seen(request, "computed")
+    stand_ins.release(request, "computed")
+    done = joined()
+
+    assert (cached["CUDA_VISIBLE_DEVICES"], cached["MOSAIC_GPU_CARD"]) == ("0", None)
+    assert cached["MOSAIC_GPU_LEASE_FDS"] is None
+    assert computed["MOSAIC_GPU_CARD"] == f"0:{FIRST_UUID}"
+    log = done.log_path.read_text()
+    assert "step cached waits for a GPU" not in log, log
+    assert done.ran == ("cached", "computed")
+
+
+def test_a_gpu_step_below_a_conversion_takes_a_card(
+    tmp_path: Path, stand_ins: StandIns, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fit planned after a conversion has no run id at submit, and computes."""
+    ds = calms21_dataset(tmp_path / "study", {"train": {"a": {"s1": 90}}}, seed=11)
+    _ = install_fake_nvidia_smi(monkeypatch, tmp_path, TWO_CARDS[:1])
+    _on_gpu(monkeypatch, "templates")
+    monkeypatch.setattr(
+        graph_run,
+        "MOSAIC_COMMAND",
+        (
+            sys.executable,
+            "-c",
+            REAL_OR_STAND_IN,
+            "tracks,speed",
+            str(stand_ins.directory),
+        ),
+    )
+    request = submit_request(
+        ds, converting_recipe(SPEED_OF_CONVERTED_STEP, TEMPLATES_OF_CONVERTED)
+    ).request
+    computes = load_computes(ds.base_dir, request.request_id)
+    assert computes is not None
+    assert "templates" not in [run.step for run in computes]
+    held = try_lease(_cards())
+    assert held is not None
+    try:
+        joined = stand_ins.drive(ds, request)
+        wait_for(
+            lambda: _gpu_wait_step(ds, request) == "templates",
+            STEP_SECONDS,
+            "the fit below the conversion never waited for the card",
+        )
+        assert not stand_ins.started(request, "templates")
+    finally:
+        held.close()
+    seen = stand_ins.seen(request, "templates")
+    stand_ins.release(request, "templates")
+    done = joined()
+
+    assert seen["MOSAIC_GPU_CARD"] == f"0:{FIRST_UUID}"
+    assert done.ran == ("tracks", "speed", "templates")
+
+
+def test_a_request_without_its_computed_runs_leases_every_gpu_step(
+    tracked: Dataset,
+    stand_ins: StandIns,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request an older mosaic submitted records no runs, so each GPU step waits."""
+    _ = install_fake_nvidia_smi(monkeypatch, tmp_path, TWO_CARDS[:1])
+    _on_gpu(monkeypatch, "gpu")
+    request = submit_request(tracked, _recipe("gpu")).request
+    computes_path(tracked.base_dir, request.request_id).unlink()
+    held = try_lease(_cards())
+    assert held is not None
+    try:
+        joined = stand_ins.drive(tracked, request)
+        wait_for(
+            lambda: _gpu_wait_step(tracked, request) == "gpu",
+            STEP_SECONDS,
+            "the step never waited for the card",
+        )
+        assert not stand_ins.started(request, "gpu")
+    finally:
+        held.close()
+    seen = stand_ins.seen(request, "gpu")
+    stand_ins.release(request, "gpu")
+    _ = joined()
+
+    assert seen["MOSAIC_GPU_CARD"] == f"0:{FIRST_UUID}"
 
 
 def test_a_hidden_card_is_refused_before_the_driver_takes_its_lease(

@@ -586,12 +586,16 @@ also runs several steps at once, the processors used are the steps times the wor
 
 On a host with several NVIDIA cards, the requests of one user that run at the same time
 take separate cards. Each step on a GPU lane, which raises the `gpu_lane` confirmation,
-takes one card and keeps it until the step ends. `xgboost` and `global-kmeans` are on a
-GPU lane when their `device` is `cuda`, and on a CPU lane otherwise. A request whose
-cards are all taken waits for a free one. `get_request_status` reports `waiting_for_gpu`
-on the step it waits to start, whose `status` stays empty, and cancelling the request
-ends the wait. Which waiting request gets a freed card is not first come, first served.
-Once a step has a card, its `gpu_card` in the status names it.
+takes one card and keeps it until the step ends. The kpms and VAME runners do not hold
+the card after their step is killed. A GPU step whose run, and the runs of all its
+upstream steps, were complete when the request was submitted only records a cache hit,
+and takes no card and does not wait. Such a step whose output was removed before it ran
+computes without a card. `xgboost` and `global-kmeans` are on a GPU lane when their
+`device` is `cuda`, and on a CPU lane otherwise. A request whose cards are all taken
+waits for a free one. `get_request_status` reports `waiting_for_gpu` on the step it
+waits to start, whose `status` stays empty, and cancelling the request ends the wait.
+Which waiting request gets a freed card is not first come, first served. Once a step has
+a card, its `gpu_card` in the status names it.
 
 Drivers of different users do not share leases and can take the same card. Sharing a
 host's GPUs between users goes through mosaic-queue.
