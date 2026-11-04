@@ -110,11 +110,11 @@ class ServerConfig(StrictModel):
             the check off.
         gpu_cards: The cards the server's drivers may lease to GPU steps, as
             ``nvidia-smi`` indexes (PCI bus order, which ``CUDA_VISIBLE_DEVICES``
-            integers follow under ``CUDA_DEVICE_ORDER=PCI_BUS_ID``) or UUIDs, among
-            the cards ``CUDA_VISIBLE_DEVICES`` leaves visible. An index may be written
-            as a YAML integer. ``None`` leases every visible card, and the server refuses to
-            start when a name is not visible. It belongs to the machine and is
-            part of no recipe, request or run id.
+            integers follow under ``CUDA_DEVICE_ORDER=PCI_BUS_ID``) or UUIDs, among the
+            cards ``CUDA_VISIBLE_DEVICES`` leaves visible. An index may be written as a
+            YAML integer. ``None`` leases every visible card, and the server refuses to
+            start when a name is not visible. It belongs to the machine and is part of
+            no recipe, request or run id.
         dataset_roots: Directories inside which ``manage_dataset`` may create a
             dataset. The datasets below them are served, as ``discover``
             serves them, and one created while the server runs is served at

@@ -131,6 +131,8 @@ cleanup:               # which superseded runs a cleanup keeps
 max_workers: 1         # the most entries a parallelizable step computes at once
 allow_process_mode: false   # let a submission ask for process workers
 min_free_memory_fraction: 0.10   # the share of host memory a parallel run keeps free
+gpu_cards: [0, 1]      # the cards GPU steps may lease, by nvidia-smi index or UUID;
+                       # unset leases every card the host shows
 dataset_roots: []      # where manage_dataset may create datasets; those below are served
 source_roots: []       # where manage_dataset may declare sources of raw files
 recipe_roots: []       # where a recipe named {"path": ...} is read from
@@ -546,8 +548,10 @@ them:
   flight, whose tables free memory as they finish. When the share is still lower with
   none in flight, the run fails in a state that a later run resumes.
 
-A submission over a limit is refused with the reason `parallel_limit`, and nothing is
-recorded.
+- `gpu_cards` lists the cards that GPU steps may lease (see [GPU cards](#gpu-cards)).
+
+A submission over a worker limit is refused with the reason `parallel_limit`, and
+nothing is recorded.
 
 Threads share one copy of the feature and of the imported libraries, so memory grows by
 about one entry's table per worker. A thread gains little for work that holds Python's
@@ -577,6 +581,59 @@ The same options exist outside the server: `mosaic run --feature`, `mosaic run
 `mosaic pipeline run --request` runs its steps in turn unless you pass them. A queue
 that dispatches the steps builds its own commands and does not pass them. When a queue
 also runs several steps at once, the processors used are the steps times the workers.
+
+### GPU cards
+
+On a host with several NVIDIA cards, the requests of one user that run at the same time
+take separate cards. Each step on a GPU lane, which raises the `gpu_lane` confirmation,
+takes one card and keeps it until the step ends. `xgboost` and `global-kmeans` are on a
+GPU lane when their `device` is `cuda`, and on a CPU lane otherwise. A request whose
+cards are all taken waits for a free one. `get_request_status` reports `waiting_for_gpu`
+on the step it waits to start, whose `status` stays empty, and cancelling the request
+ends the wait. Which waiting request gets a freed card is not first come, first served.
+Once a step has a card, its `gpu_card` in the status names it.
+
+Drivers of different users do not share leases and can take the same card. Sharing a
+host's GPUs between users goes through mosaic-queue.
+
+Inside the step, `device` `cuda` or `0` names its card, so a step that names another
+index (`1`, `cuda:1`) or several (`0,1`) is refused with `gpu_card_not_leased`, and the
+plan cautions about it. The card belongs to the machine and is part of no recipe,
+request or run id: a run is a cache hit whichever card computed it.
+
+You limit the cards in the configuration with `gpu_cards`, a list of `nvidia-smi`
+indexes (YAML integers are accepted) or UUIDs, and unset leases every card the host
+shows. Indexes follow `nvidia-smi`'s PCI bus order. Integer tokens of
+`CUDA_VISIBLE_DEVICES` count in that order too, so on a host whose cards are of mixed
+models, set `CUDA_DEVICE_ORDER=PCI_BUS_ID` or name the cards by UUID.
+`CUDA_VISIBLE_DEVICES` is a further limit: a server started with
+`CUDA_VISIBLE_DEVICES=1` leases only card 1. The server does not start when `gpu_cards`
+names a card that the host does not show or that `CUDA_VISIBLE_DEVICES` hides.
+`mosaic pipeline run --request --gpu-cards 0,1` applies the same limit to a request
+resumed by hand.
+
+The lease directory defaults to a per-user path under `/tmp`, and `MOSAIC_GPU_LEASE_DIR`
+moves it, for example where `/tmp` is cleaned while long runs hold a card. The directory
+must belong to the user the driver runs as, on a local filesystem. Under systemd's
+`PrivateTmp`, or in a container, the drivers of one user share leases only when
+`MOSAIC_GPU_LEASE_DIR` names one directory they all see.
+
+Some conditions leave GPU steps unleased: they start with the driver's environment, as
+before, and the driver log gets the warning `GPU steps take no card lease` with the
+reason. They are a host without `nvidia-smi` or whose query fails, any visible card in
+MIG mode, no visible card (`CUDA_VISIBLE_DEVICES` empty or `-1`), a
+`CUDA_VISIBLE_DEVICES` that names a MIG device or a card the host does not list, a lease
+directory that is unusable or owned by another user, and Windows. Read the log when two
+requests seem to share a card.
+
+Two kinds of work take no lease:
+
+- `mosaic pipeline run --recipe`, `mosaic pipeline verify`, `mosaic pipeline score` and
+  `mosaic run --feature` or `--kind` run in the calling process. On a busy host, submit
+  a request rather than run them beside GPU requests.
+- mosaic-queue GPU workers, which pin their own card with `--gpu`. A host that runs
+  queue GPU workers should not also run local GPU requests, because the two do not
+  share cards.
 
 ### Data sent to the model provider
 

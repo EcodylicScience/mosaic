@@ -638,13 +638,13 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   (`mosaic agent confirm-hook`). A confirmation it does not approve comes back
   declined or unanswered.
 - Wait with `get_request_status(wait_seconds=45)`, which returns when a step or the
-  request ends. It lists only the steps still running or not finished cleanly, and
-  `brief: false` lists every step. A request reads `failed` as soon as a step failed and
-  every step left to start depends on a failed one. Do not watch `driver_pid`
-  (`kill -0`) or `tail` the driver log for progress: the log holds output for
-  explaining a failure. When no step has started after a few waits, read `driver_log`
-  once, because a driver that failed to start leaves the request `running`. For a
-  request that reads `orphaned`, propose
+  request ends. It lists only the steps still running, not finished cleanly or waiting
+  for a GPU card, and `brief: false` lists every step. A request reads `failed` as soon
+  as a step failed and every step left to start depends on a failed one. Do not watch
+  `driver_pid` (`kill -0`) or `tail` the driver log for progress: the log holds output
+  for explaining a failure. When no step has started after a few waits, read
+  `driver_log` once, because a driver that failed to start leaves the request
+  `running`. For a request that reads `orphaned`, propose
   `mosaic pipeline run --manifest <manifest> --request <id>`, which resumes it.
 - For a wait of minutes or hours, when you can run a background shell job, run
   `mosaic wait <request id> --manifest <manifest> --timeout 3600 --json` in the
@@ -678,6 +678,18 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   or a memory-floor failure, or its peak nears the host's memory, halve `workers` or
   use `thread`, then submit the recipe again. Written entries are kept, because the
   worker count is not part of a run's identity. Do not retry at the same setting.
+- GPU cards: on a host with several cards, one user's requests that run at the same
+  time take separate cards, one to each step on a GPU lane, the steps that raise the
+  `gpu_lane` confirmation. `xgboost` and `global-kmeans` join them with `device: cuda`.
+  Requests of different users can take the same card. A request whose cards are all
+  taken waits for a free one: `get_request_status` reports `waiting_for_gpu` on that
+  step while its `status` stays empty, so do not cancel it for that. A step's `gpu_card`
+  names the card it was given, and `device` `cuda` or `0` names it (see
+  `gpu_card_not_leased` above). `mosaic pipeline run --recipe`, `verify` and `score`
+  take no card: on a busy host, run the work as a request rather than beside GPU
+  requests. A host that runs mosaic-queue GPU workers should not also run local GPU
+  requests, because the two do not share cards. The operator may limit the cards with
+  `gpu_cards`, which you cannot change.
 - The tools delete nothing except superseded feature runs, and with `retire` the
   runs of recipes retired in that call, through `cleanup` on `submit_pipeline`, which
   the operator must allow and the user confirms. They do not
