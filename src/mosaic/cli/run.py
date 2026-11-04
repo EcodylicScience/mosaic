@@ -188,6 +188,11 @@ def run_command(
             "records its tracks variant when it is submitted. Name it with "
             "'mosaic pipeline submit --tracks-run-id'."
         )
+    if graph_request is not None and labels_run_id is not None:
+        fail(
+            "--labels-run-id is not supported with --graph-request. A step's "
+            "labels are chosen in the recipe, in the step's inputs."
+        )
 
     from mosaic.core.pipeline._utils import new_execution_id
     from mosaic.core.pipeline.error_kind import ClassifiedError

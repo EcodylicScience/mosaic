@@ -179,18 +179,18 @@ def deferred_fit_cautions(plan: Plan) -> tuple[Problem, ...]:
     The step is refused when it runs, after the steps above it have, if the
     conversion writes a group of role ``test`` or ``sealed``. This names each such
     step up front. It is a caution because nothing can enumerate the groups the
-    conversion will write. A step bound to a run is not executed and is left out,
-    as are the steps whose scope names a held-out group, which
+    conversion will write. A step bound or pinned to a run is not executed and is
+    left out, as are the steps whose scope names a held-out group, which
     :func:`deferred_scope_problem` refuses.
 
     Args:
-        plan: The plan. Its ``deferred_by``, ``splits``, ``bound`` and
-            ``request_scope`` are read.
+        plan: The plan. Its ``deferred_by``, ``splits``, ``bound``, ``pinned``
+            and ``request_scope`` are read.
 
     Returns:
-        One caution for each step that is ``scope_dependent``, ``fits``, is not
-        bound and has no step scope. Empty unless the plan is deferred and the
-        manifest names a held-out group.
+        One caution for each step that is ``scope_dependent``, ``fits``, is
+        neither bound nor pinned, and has no step scope. Empty unless the plan
+        is deferred and the manifest names a held-out group.
     """
     held = held_out_groups(plan.splits)
     if plan.deferred_by is None or not held:
@@ -213,6 +213,7 @@ def deferred_fit_cautions(plan: Plan) -> tuple[Problem, ...]:
         and planned.fits
         and planned.step_id not in plan.step_scopes
         and planned.step_id not in plan.bound
+        and planned.step_id not in plan.pinned
     )
 
 

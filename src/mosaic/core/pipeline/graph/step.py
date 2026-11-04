@@ -254,12 +254,14 @@ def _execute(
         tracks_run_id=request.tracks_run_id,
         scope=request.scope,
         only=step_id,
-        bound=request.bind.keys(),
+        bound=request.bind.keys() | request.pins.keys(),
     )
 
     held = InventoryCache(ds) if inventory is None else inventory
     excluded = set(store.exclusions(request.request_id).entries)
-    recorded = _pinned_parents(ds, recipe, request, step_id)
+    # A pin is the run its step serves, this step's own included, and it
+    # governs over what an attempt's run-log recorded.
+    recorded = {**_pinned_parents(ds, recipe, request, step_id), **request.pins}
     plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
     planned = plan.step(step_id)
 
@@ -267,7 +269,11 @@ def _execute(
         # After the plan, which refuses at this step a bind the step could not
         # have written: an op step, another storage, or a run that is gone.
         return _bound(ds, planned, attempt=attempt, owner=owner)
-    if planned.status in COMPLETE_STATUSES and not overwrite:
+    # A pinned step serves its run and computes nothing, under overwrite too:
+    # recomputing it would fit over this request's entries under the pin's name.
+    if planned.status in COMPLETE_STATUSES and (
+        not overwrite or step_id in request.pins
+    ):
         return _cached(ds, planned, attempt=attempt, owner=owner)
 
     preflight(ds, plan, step_id, allow_partial=request.allow_partial)

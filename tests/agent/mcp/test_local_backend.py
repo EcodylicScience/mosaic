@@ -1222,6 +1222,159 @@ def test_submit_pipeline_records_step_scopes(split: Dataset) -> None:
     }
 
 
+def _fit_over_train(split: Dataset) -> tuple[str, str]:
+    """The finished request that fit SPLIT_RECIPE on the train group, and its fit."""
+    done = run_pipeline(
+        split, Recipe.model_validate(SPLIT_RECIPE), scope=Scope(groups=["train"])
+    )
+    (fit,) = [o.run_id for o in done.outcomes if o.step_id == "templates"]
+    return done.request_id, fit
+
+
+def test_submit_takes_pins_and_an_apply(split: Dataset) -> None:
+    named, fit = _fit_over_train(split)
+    starter = RecordingStarter()
+    backend = LocalBackend([split.manifest_path], warm=False, start_driver=starter)
+    uuid = _uuid(split)
+    over_test: dict[str, object] = {
+        "dataset": uuid,
+        "recipe": SPLIT_RECIPE,
+        "entries": {"groups": ["test"]},
+    }
+
+    pinned = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        **over_test,
+        pins={"templates": fit},
+    )
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        **over_test,
+        applies_request_id=named,
+    )
+    applied = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        **over_test,
+        applies_request_id=named,
+        plan_fingerprint=plan.fingerprint,
+        confirm=True,
+    )
+
+    pinned_request = load_request(split.base_dir, pinned.request_id)
+    assert pinned_request.pins == {"templates": fit}
+    assert pinned_request.applies_request_id is None
+    assert plan.locked_steps == ("speed", "templates")
+    assert applied.plan_fingerprint == plan.fingerprint
+    applied_request = load_request(split.base_dir, applied.request_id)
+    assert applied_request.applies_request_id == named
+    assert applied_request.pins == {"templates": fit}
+    assert applied_request.locked == ["speed", "templates"]
+
+
+def test_a_cleaning_apply_plans_both_times_with_the_apply(split: Dataset) -> None:
+    """The cleanup path plans through ``plan_with_cleanup`` as well as submit."""
+    named, _ = _fit_over_train(split)
+    backend = LocalBackend(
+        [split.manifest_path],
+        warm=False,
+        start_driver=RecordingStarter(),
+        allow_cleanup=frozenset({"feature-runs"}),
+    )
+    arguments: dict[str, object] = {
+        "dataset": _uuid(split),
+        "recipe": SPLIT_RECIPE,
+        "entries": {"groups": ["test"]},
+        "cleanup": "superseded",
+        "applies_request_id": named,
+    }
+    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        **arguments,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    assert plan.locked_steps == ("speed", "templates")
+    assert submitted.plan_fingerprint == plan.fingerprint
+
+
+def test_empty_pins_beside_an_apply_are_no_pins(split: Dataset) -> None:
+    named, fit = _fit_over_train(split)
+    backend = LocalBackend(
+        [split.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    arguments: dict[str, object] = {
+        "dataset": _uuid(split),
+        "recipe": SPLIT_RECIPE,
+        "entries": {"groups": ["test"]},
+        "applies_request_id": named,
+        "pins": {},
+    }
+    plan = _call(backend, "plan_recipe", PlanWire, **arguments)
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        **arguments,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    assert submitted.plan_fingerprint == plan.fingerprint
+    request = load_request(split.base_dir, submitted.request_id)
+    assert request.pins == {"templates": fit}
+
+
+@pytest.mark.parametrize("tool", ["plan_recipe", "submit_pipeline"])
+def test_pins_beside_an_apply_are_invalid(split: Dataset, tool: str) -> None:
+    named, fit = _fit_over_train(split)
+    backend = LocalBackend(
+        [split.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+
+    refused = _refusal(
+        backend,
+        tool,
+        dataset=_uuid(split),
+        recipe=SPLIT_RECIPE,
+        pins={"templates": fit},
+        applies_request_id=named,
+    )
+
+    assert refused.kind == "invalid"
+    assert refused.detail is not None
+    assert "applies_request_id" in str(refused.detail["errors"])
+
+
+@pytest.mark.parametrize("tool", ["plan_recipe", "submit_pipeline"])
+def test_a_step_both_bound_and_pinned_is_invalid(split: Dataset, tool: str) -> None:
+    _, fit = _fit_over_train(split)
+    backend = LocalBackend(
+        [split.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+
+    refused = _refusal(
+        backend,
+        tool,
+        dataset=_uuid(split),
+        recipe=SPLIT_RECIPE,
+        bind={"templates": {"feature": "extract-templates", "run_id": fit}},
+        pins={"templates": fit},
+    )
+
+    assert refused.kind == "invalid"
+    assert "both bound and pinned" in refused.message
+
+
 def test_get_inventory_accepts_a_groups_selector(split: Dataset) -> None:
     backend = LocalBackend([split.manifest_path], warm=False)
 

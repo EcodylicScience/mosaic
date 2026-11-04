@@ -7,9 +7,9 @@ removes the ones a submission approved, after the request's steps have finished.
 
 Two recipes are versions of each other when they have the same digest or the same
 non-empty ``name``. An unnamed recipe is a version only of itself. A candidate that
-a request of another recipe recorded or binds stays kept after that request's hold
-lapses (``recipe_uses``). A candidate recorded by no request, such as a run written by
-``run_feature``, is judged by the other rules alone.
+a request of another recipe recorded, binds or pins stays kept after that request's
+hold lapses (``recipe_uses``). A candidate recorded by no request, such as a run
+written by ``run_feature``, is judged by the other rules alone.
 
 Only feature runs of the storages the recipe names are candidates, with one
 addition. A submission may **retire** saved recipes by digest
@@ -33,14 +33,14 @@ A candidate is kept, by the first rule that matches:
    again (``params_unknown``).
 5. A run-log that may still run names it (``attempt_open``).
 6. Another request holds it (``held_by_request``): a running or orphaned
-   request whatever its age, for the runs it recorded, binds or names in its
-   steps' params, a running one also for every run of the features its recipe
+   request whatever its age, for the runs it recorded, binds, pins or names in
+   its steps' params, a running one also for every run of the features its recipe
    names, and an ended one for :data:`~.model.REQUEST_HOLD_FLOOR_HOURS` or
    ``min_age_hours``, whichever is longer.
-7. A request of a recipe that is not a version of the planned one recorded or
-   binds it, at any age (``recipe_uses``). A request whose recipe file does not
+7. A request of a recipe that is not a version of the planned one recorded,
+   binds or pins it, at any age (``recipe_uses``). A request whose recipe file does not
    read keeps the runs it recorded the same way. A request of a retired recipe
-   keeps only the runs it did not write, and the runs it bound.
+   keeps only the runs it did not write, and the runs it bound or pinned.
 8. It holds entries its replacement lacks (``wider_coverage``), or it is a
    scope-dependent fit over entries its replacement does not cover
    (``other_fit_scope``). A retired run in a storage the recipe does not name has
@@ -218,6 +218,8 @@ def plan_with_cleanup(
     retire: Iterable[str] = (),
     bind: Mapping[str, BoundRef] | None = None,
     tracks_run_id: str | None = None,
+    pins: Mapping[str, str] | None = None,
+    applies_request_id: str | None = None,
 ) -> Plan:
     """Plan *recipe*, and report its superseded runs when *cleanup* is given.
 
@@ -245,6 +247,8 @@ def plan_with_cleanup(
             It needs *cleanup*, and it belongs to this plan alone.
         bind: As for :func:`~.plan.plan_pipeline`.
         tracks_run_id: As for :func:`~.plan.plan_pipeline`.
+        pins: As for :func:`~.plan.plan_pipeline`.
+        applies_request_id: As for :func:`~.plan.plan_pipeline`.
 
     Returns:
         The plan, with ``cleanup`` set when *cleanup* was given.
@@ -277,6 +281,8 @@ def plan_with_cleanup(
         step_scopes=step_scopes,
         bind=bind,
         tracks_run_id=tracks_run_id,
+        pins=pins,
+        applies_request_id=applies_request_id,
     )
     if cleanup is None:
         return plan
@@ -940,7 +946,10 @@ class _RunLabels:
         *,
         skip: Collection[tuple[str, str]] = (),
     ) -> None:
-        """Record the runs that *request*'s attempts recorded and its binds.
+        """Record the runs that *request*'s attempts recorded, its binds and its pins.
+
+        A pin names a run id without its storage, so it is held by run id, as
+        an attempt is, and is held before any attempt has named it.
 
         Args:
             request: The request.
@@ -955,6 +964,10 @@ class _RunLabels:
         for bound in request.bind.values():
             if (bound.feature, bound.run_id) not in skip:
                 _ = self.pairs.setdefault((bound.feature, bound.run_id), label)
+        skipped = {run_id for _, run_id in skip}
+        for run_id in request.pins.values():
+            if run_id not in skipped:
+                _ = self.run_ids.setdefault(run_id, label)
 
     def get(self, key: tuple[str, str]) -> str:
         """The label of run *key*, or ``""``."""

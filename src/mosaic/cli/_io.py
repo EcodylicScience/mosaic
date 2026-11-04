@@ -534,6 +534,24 @@ def parse_step_scopes(values: list[str] | None) -> dict[str, Scope]:
     return found
 
 
+def parse_pins(values: list[str] | None) -> dict[str, str]:
+    """Parse repeated ``--pin STEP=RUN_ID`` tokens into a pin for each step.
+
+    A token without a step or a run id, or a step named twice, exits 2 as a
+    usage error naming the token.
+    """
+    found: dict[str, str] = {}
+    for token in values or ():
+        step_id, separator, run_id = token.partition("=")
+        step_id, run_id = step_id.strip(), run_id.strip()
+        if not separator or not step_id or not run_id:
+            fail(f"--pin {token!r} is not STEP=RUN_ID.", code=2)
+        if step_id in found:
+            fail(f"--pin names step {step_id!r} twice.", code=2)
+        found[step_id] = run_id
+    return found
+
+
 def _step_scope(selector: object, token: str) -> Scope:
     """The scope that *selector* names, failing with *token* when it names none."""
     from pydantic import ValidationError

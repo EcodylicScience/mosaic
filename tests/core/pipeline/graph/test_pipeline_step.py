@@ -72,6 +72,8 @@ from tests.helpers import (
 
 runner = CliRunner()
 
+SPEED_STORAGE = "speed-angvel__from__tracks"
+
 type Document = dict[str, object]
 
 VARIANT = "convert-trex.0.2-1111111111"
@@ -1054,7 +1056,7 @@ def test_a_bound_tracks_reader_is_not_refused_on_an_ambiguous_entry(
 ) -> None:
     """A bound step is the run it names, so it reads no tracks to choose."""
     older = run_speed(tracked, 3)
-    bind = {"speed": BoundRef(feature="speed-angvel__from__tracks", run_id=older)}
+    bind = {"speed": BoundRef(feature=SPEED_STORAGE, run_id=older)}
     recipe = Recipe.model_validate(_chain())
     request = submit_request(tracked, recipe, bind=bind).request
     add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
@@ -1064,6 +1066,55 @@ def test_a_bound_tracks_reader_is_not_refused_on_an_ambiguous_entry(
     assert plan.step("speed").status == "bound"
     assert plan.step("speed").spec.tracks_run_id is None
     assert execute_step(tracked, request, "speed").run_id == older
+
+
+def test_a_bound_tracks_reader_over_an_ambiguous_entry_is_submitted_as_its_step_plans(
+    tracked: Dataset,
+) -> None:
+    """The submission plans with its bind, so it fingerprints the plan a step makes."""
+    from mosaic.core.pipeline.graph import plan_fingerprint
+
+    older = run_speed(tracked, 3)
+    bind = {"speed": BoundRef(feature=SPEED_STORAGE, run_id=older)}
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(_chain())
+
+    submitted = submit_request(tracked, recipe, bind=bind)
+    # What execute_step plans for a step with no ancestors and no exclusions.
+    stepped = plan_pipeline(tracked, recipe, request=submitted.request, refuse=False)
+
+    assert plan_fingerprint(stepped) == plan_fingerprint(submitted.plan)
+    assert execute_step(tracked, submitted.request, "speed").run_id == older
+
+
+def test_a_pinned_tracks_reader_is_not_refused_on_an_ambiguous_entry(
+    tracked: Dataset,
+) -> None:
+    """A pinned step is not executed, so it reads no tracks to choose."""
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "a fit over the tracks",
+            "steps": [
+                {
+                    "id": "fit",
+                    "type": "feature",
+                    "feature": "pair-posedistance-pca",
+                    "inputs": ["tracks"],
+                    "params": {"n_components": 2, "pose": {"pose_n": 3}},
+                }
+            ],
+        }
+    )
+    fitted = execute_step(tracked, submit_request(tracked, recipe).request, "fit")
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    plan = plan_pipeline(tracked, recipe, pins={"fit": fitted.run_id}, refuse=True)
+    request = submit_request(tracked, recipe, pins={"fit": fitted.run_id}).request
+
+    assert plan.step("fit").status == "complete"
+    outcome = execute_step(tracked, request, "fit")
+    assert (outcome.state, outcome.run_id) == ("cached", fitted.run_id)
 
 
 def test_a_finished_unpinned_parent_keeps_its_run_under_a_later_variant(
@@ -1181,6 +1232,30 @@ def test_run_graph_request_refuses_tracks_run_id(tracked: Dataset) -> None:
     assert result.exit_code == 1
     assert "--tracks-run-id" in result.output
     assert "mosaic pipeline submit --tracks-run-id" in result.output
+
+
+def test_run_graph_request_refuses_labels_run_id(tracked: Dataset) -> None:
+    """A step's labels are chosen in the recipe, and the flag used to be ignored."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(tracked.manifest_path),
+            "--graph-request",
+            request.request_id,
+            "--step",
+            "speed",
+            "--labels-run-id",
+            "labels.0.1-abc123def0",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--labels-run-id" in result.output
+    assert "--graph-request" in result.output
+    assert "recipe" in result.output
 
 
 # --- what an op step hands its op --------------------------------------------

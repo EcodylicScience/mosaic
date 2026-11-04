@@ -62,6 +62,14 @@ type RefusalReason = Literal[
     "undecodable_codec",
     "gpu_card_not_leased",
     "variant_ambiguous",
+    "pin_unknown_step",
+    "pin_not_fitted",
+    "pin_run_missing",
+    "pin_run_unfinished",
+    "apply_request_missing",
+    "apply_request_unfinished",
+    "apply_step_changed",
+    "apply_tracks_changed",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -80,7 +88,17 @@ before any entry runs. ``gpu_card_not_leased`` is a step that was leased one GPU
 card and whose ``device`` names another, or several; a leased step sees one card,
 which index ``0`` names. ``variant_ambiguous`` is a request whose feature step
 reads the tracks with neither a ``tracks`` reference nor the request's
-``tracks_run_id``, over a dataset where an entry holds two variants.
+``tracks_run_id``, over a dataset where an entry holds two variants. The
+``pin_`` reasons refuse a ``Request.pins`` entry: a key naming no feature step
+of the recipe (``pin_unknown_step``), a step that does not fit over its scope
+(``pin_not_fitted``), and a run its storage's index lacks
+(``pin_run_missing``) or that has not finished (``pin_run_unfinished``). The
+``apply_`` reasons refuse a ``Request.applies_request_id``: a named request the
+dataset does not hold or that does not read (``apply_request_missing``), one
+that has not finished (``apply_request_unfinished``), a locked step that differs
+from the named request's recipe or that it lacks (``apply_step_changed``), and a
+tracks variant other than the one the named request read
+(``apply_tracks_changed``).
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

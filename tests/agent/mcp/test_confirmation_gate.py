@@ -118,7 +118,7 @@ def _submit(
     recipe: Mapping[str, object],
     **arguments: object,
 ) -> SubmittedPipeline | ErrorEnvelope:
-    """Plan *recipe* over the entries that *arguments* name, then submit that plan."""
+    """Plan *recipe* with the entries and binds in *arguments*, then submit it."""
     entries = arguments.get("entries")
     plan = _call(
         backend,

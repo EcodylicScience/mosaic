@@ -55,6 +55,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
 from mosaic.core.pipeline.graph.model import StepStatus
+from mosaic.core.pipeline.graph.model import refuse_pins_beside_apply
 from mosaic.core.pipeline.graph.patch import PatchOp
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
@@ -169,7 +170,7 @@ __all__ = [
 SHARED_TOOL_LIMIT: Final = 16
 """The most tools the shared set may declare. Each tool costs a model context."""
 
-MAX_SCHEMA_BYTES: Final = 8192
+MAX_SCHEMA_BYTES: Final = 8448
 """The most bytes of compact JSON that one tool's input or output schema takes."""
 
 MAX_PAGE_SIZE: Final = 100
@@ -548,6 +549,35 @@ PlanTracksRunId = Annotated[
 ]
 """The tracks variant a plan or a submission reads."""
 
+Pins = Annotated[
+    dict[str, str] | None,
+    Field(
+        description=(
+            "Fitted steps served from finished runs, by step id: {step: run_id}. "
+            "The step is not executed and the steps below it derive their "
+            "identity from the run. Pass them to plan_recipe and again to "
+            "submit_pipeline. Not with applies_request_id."
+        )
+    ),
+]
+"""The finished runs a plan or a submission serves its fitted steps from."""
+
+AppliesRequestId = Annotated[
+    str | None,
+    Field(
+        min_length=1,
+        description=(
+            "A finished request of the dataset whose fit this one reuses over "
+            "other entries. Its fitted steps are pinned to the runs it made, "
+            "those steps and the steps they read are locked, and the tracks "
+            "variant is its own. Refused when a locked step differs from that "
+            "request's recipe. Pass it to plan_recipe and again to "
+            "submit_pipeline. Not with pins."
+        ),
+    ),
+]
+"""The finished request whose fit a plan or a submission applies."""
+
 
 class ToolInput(StrictModel):
     """The arguments of one tool call. Each tool's input model subclasses it."""
@@ -802,6 +832,8 @@ class PlanRecipeInput(ToolInput):
     retire: RetireDigests = Field(default_factory=list)
     assume_added: AssumeAdded = Field(default_factory=list)
     tracks_run_id: PlanTracksRunId = None
+    pins: Pins = None
+    applies_request_id: AppliesRequestId = None
     limit: PageSize | None = Field(
         default=None,
         description=(
@@ -811,6 +843,11 @@ class PlanRecipeInput(ToolInput):
         ),
     )
     cursor: Cursor = None
+
+    @model_validator(mode="after")
+    def _pins_or_an_apply(self) -> Self:
+        refuse_pins_beside_apply(self.pins, self.applies_request_id)
+        return self
 
 
 class SubmitPipelineInput(ToolInput):
@@ -848,6 +885,8 @@ class SubmitPipelineInput(ToolInput):
     )
     retire: RetireDigests = Field(default_factory=list)
     tracks_run_id: PlanTracksRunId = None
+    pins: Pins = None
+    applies_request_id: AppliesRequestId = None
     workers: int | None = Field(
         default=None,
         ge=1,
@@ -877,6 +916,11 @@ class SubmitPipelineInput(ToolInput):
             "with reason confirmation_required listed."
         ),
     )
+
+    @model_validator(mode="after")
+    def _pins_or_an_apply(self) -> Self:
+        refuse_pins_beside_apply(self.pins, self.applies_request_id)
+        return self
 
 
 class GetRequestStatusInput(ToolInput):

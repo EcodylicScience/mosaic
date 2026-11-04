@@ -1107,7 +1107,9 @@ printed with its problems. A ``schema_family_mismatch`` or
 instead of the plan, and also exits 1. The requests of the recipe over an
 overlapping scope that have not ended, running or orphaned, are listed with
 it. ``--tracks-run-id`` names the tracks variant that the steps reading the
-tracks read, which an entry of two variants requires.
+tracks read, which an entry of two variants requires. ``--pin`` serves a
+fitted step from a finished run, and ``--applies-request`` reuses the fit of
+a finished request; the steps it locks are listed with the plan.
 ``--step-scope`` narrows one step, as a train/test split narrows the fit
 to the training groups and the scoring to the test groups.
 ``--cleanup superseded`` also reports the superseded runs of the recipe's
@@ -1136,6 +1138,8 @@ $ mosaic pipeline plan [OPTIONS]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--assume-added GROUP`: Assume this group joins the dataset (repeatable) and note which steps of the plan would refit and which would only re-score, as the same scope covers it. It changes nothing else.
 * `--tracks-run-id <str>`: The tracks variant that each feature step reading the tracks without a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. Needed when an entry holds two variants. Recorded on the request a submission makes: give it to the plan and again to the submission.
+* `--pin STEP=RUN_ID`: Serve a fitted step from this finished run instead of running it (repeatable; STEP is a step of the recipe that fits over its scope, RUN_ID the run of its storage). The steps below it derive their identity from the run. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --applies-request.
+* `--applies-request REQUEST_ID`: Reuse the fit of this finished request of the dataset over other entries. Its fitted steps are pinned to the runs it made, those steps and the steps they read are locked, and the tracks variant is its own: leave --tracks-run-id unset, since another variant is refused. Refused when a locked step differs from that request's recipe. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --pin.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1219,6 +1223,10 @@ An open request, of any recipe, that computes a run of the plan is reported
 on stderr and under ``duplicates`` with the steps whose runs it shares, or
 refuses the submission with ``--refuse-duplicates``.
 
+``--pin STEP=RUN_ID`` serves a fitted step from a finished run, and
+``--applies-request RID`` reuses the fit of a finished request over other
+entries. The request records the pins and the apply.
+
 ``--cleanup superseded`` records the runs that the plan reviewed under
 ``--expect-plan`` found removable, and whatever runs the request removes
 them after every step has finished. ``--retire <digest>`` adds the runs that
@@ -1249,6 +1257,8 @@ $ mosaic pipeline submit [OPTIONS]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--tracks-run-id <str>`: The tracks variant that each feature step reading the tracks without a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. Needed when an entry holds two variants. Recorded on the request a submission makes: give it to the plan and again to the submission.
+* `--pin STEP=RUN_ID`: Serve a fitted step from this finished run instead of running it (repeatable; STEP is a step of the recipe that fits over its scope, RUN_ID the run of its storage). The steps below it derive their identity from the run. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --applies-request.
+* `--applies-request REQUEST_ID`: Reuse the fit of this finished request of the dataset over other entries. Its fitted steps are pinned to the runs it made, those steps and the steps they read are locked, and the tracks variant is its own: leave --tracks-run-id unset, since another variant is refused. Refused when a locked step differs from that request's recipe. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --pin.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1303,6 +1313,8 @@ $ mosaic pipeline run [OPTIONS]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--tracks-run-id <str>`: The tracks variant that each feature step reading the tracks without a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. Needed when an entry holds two variants. Recorded on the request a submission makes: give it to the plan and again to the submission.
+* `--pin STEP=RUN_ID`: Serve a fitted step from this finished run instead of running it (repeatable; STEP is a step of the recipe that fits over its scope, RUN_ID the run of its storage). The steps below it derive their identity from the run. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --applies-request.
+* `--applies-request REQUEST_ID`: Reuse the fit of this finished request of the dataset over other entries. Its fitted steps are pinned to the runs it made, those steps and the steps they read are locked, and the tracks variant is its own: leave --tracks-run-id unset, since another variant is refused. Refused when a locked step differs from that request's recipe. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --pin.
 * `--expect-plan <str>`: With --recipe, the fingerprint that 'mosaic pipeline plan' printed. Refuses the run, writing nothing, when the plan has changed since. Required with --cleanup.
 * `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.

@@ -81,7 +81,7 @@ from ..inventory.model import (
     reclassify,
 )
 from ..index import feature_run_root
-from ..inventory.scan import reportable_universe
+from ..inventory.scan import inventory as scan_inventory, reportable_universe
 from ..models import PREPARED_DATA_KINDS
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..preprocess_layout import PREPROCESS_KIND
@@ -104,6 +104,7 @@ from .model import (
     StepRef,
     StepStatus,
     params_step_refs,
+    refuse_pins_beside_apply,
 )
 from .resolve import (
     ResolvedStep,
@@ -111,6 +112,7 @@ from .resolve import (
     build_step_feature,
     build_step_op_params,
     declaration_catalog,
+    declared_fit,
     feature_class_for_slug,
     feature_parallelizable,
     op_class_for_kind,
@@ -400,6 +402,10 @@ class Plan:
         bound: The ids of the steps a request binds to a run. They are not
             executed, so they fit nothing. Not part of the wire or the
             fingerprint.
+        pinned: The ids of the steps a request pins to a run
+            (``Request.pins``). They are not executed, and each reads complete
+            over any scope when its run has finished. The fingerprint covers
+            each with its run id when there are any.
         request_scope: The selector the plan was asked for, ``None`` for none.
             Kept for :func:`~.heldout.deferred_fit_cautions`, which cannot read
             groups out of a scope that selects no entries yet. Not part of the
@@ -412,6 +418,9 @@ class Plan:
         tracks_run_id: The tracks variant that each feature step without a
             ``tracks`` reference reads, ``None`` for each entry's one variant.
             The fingerprint covers it when it is set.
+        locked: The steps an apply keeps as the request it names ran them
+            (:func:`~.apply.derive_applied_fit`), in topological order. Empty
+            for a plan that applies no fit. Not part of the fingerprint.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -434,8 +443,10 @@ class Plan:
     deferred_by: str | None = None
     reach_cautions: tuple[Problem, ...] = ()
     bound: frozenset[str] = frozenset()
+    pinned: frozenset[str] = frozenset()
     request_scope: Scope | None = None
     tracks_run_id: str | None = None
+    locked: tuple[str, ...] = ()
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -612,6 +623,8 @@ def plan_pipeline(
     step_scopes: Mapping[str, Scope] | None = None,
     bind: Mapping[str, BoundRef] | None = None,
     tracks_run_id: str | None = None,
+    pins: Mapping[str, str] | None = None,
+    applies_request_id: str | None = None,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -658,6 +671,15 @@ def plan_pipeline(
             tracks without a ``tracks`` reference reads. ``None`` falls back to
             the request's, and then to each entry's one variant. It also
             decides the entries the plan covers.
+        pins: The run each pinned step serves, keyed by step id. ``None``
+            falls back to the request's. A pin overrides what *recorded* says
+            of its step, the step reads complete over any scope when its run
+            has finished, and the steps below it derive their identity from
+            the run.
+        applies_request_id: The finished request whose fit this plan applies.
+            Its pins, its tracks variant and its locked steps are derived from
+            that request (:func:`~.apply.derive_applied_fit`). ``None`` takes
+            what the request records, and derives nothing.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -671,6 +693,11 @@ def plan_pipeline(
             (``schema_family_mismatch``), or a step reads the tracks with no
             variant named while an entry holds two (``variant_ambiguous``).
             Raised before any step resolves, and only when *refuse* is set.
+            Or a pin is unusable (:func:`~.pins.refuse_unusable_pins`), raised
+            after the walk whatever *refuse* says. Or the request that
+            *applies_request_id* names cannot be applied, raised before the
+            dataset's tracks are read.
+        ValueError: *pins* and *applies_request_id* are both given.
         ScopeRefused: An op step's scope is one that op's declaration does not
             accept. Raised on the first such step rather than collected,
             because it takes the dataset to enumerate the selector against and
@@ -686,6 +713,22 @@ def plan_pipeline(
         tracks_run_id = request.tracks_run_id
     if bind is None:
         bind = request.bind if request is not None else {}
+    if applies_request_id is not None:
+        # Imported here, because apply imports this module through request.
+        from .apply import derive_applied_fit
+
+        refuse_pins_beside_apply(pins, applies_request_id)
+        fit = derive_applied_fit(
+            ds, recipe, applies_request_id, tracks_run_id=tracks_run_id, catalog=catalog
+        )
+        pins, tracks_run_id, locked = fit.pins, fit.tracks_run_id, fit.locked
+    else:
+        locked = tuple(request.locked) if request is not None else ()
+    if pins is None:
+        pins = request.pins if request is not None else {}
+    # A bound or pinned step is not executed: it reads no tracks and fits
+    # nothing.
+    exempt = frozenset(bind) | frozenset(pins)
     if refuse:
         # Imported here, because step_preflight imports this module.
         from .step_preflight import refuse_mixed_schemas
@@ -696,7 +739,7 @@ def plan_pipeline(
             recipe=recipe,
             tracks_run_id=tracks_run_id,
             scope=narrowing,
-            bound=bind.keys(),
+            bound=exempt,
         )
     # A converter of raw files takes no scope and writes whatever entries its
     # files hold, which need not be what there is media for, so it does not
@@ -726,6 +769,10 @@ def plan_pipeline(
     held = InventoryCache(ds) if inventory is None else inventory
     _ = held.revalidate()
     inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
+    # A pinned run was fit on entries of its own, which a view narrowed to this
+    # plan's target would not measure it over. The held view cannot answer: it
+    # keeps whatever scope it was first built with.
+    pinned_inv = scan_inventory(ds, kinds=("feature",)) if pins else None
 
     resolved: dict[str, ResolvedStep] = {}
     planned: dict[str, PlannedStep] = {}
@@ -745,24 +792,25 @@ def plan_pipeline(
             bind=bind,
             resolved=resolved,
             planned=planned,
-            recorded=recorded or {},
+            recorded={**(recorded or {}), **pins},
             problems=findings.problems,
             deferred_by=deferred_by,
             tracks_run_id=tracks_run_id,
+            pinned_inv=pinned_inv if step.id in pins else None,
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
-            # A step bound to a run is the pinned run and is never executed,
-            # so it fits nothing. The guard does not wait on a step scope: a
-            # whole-dataset request with none is the case it exists for.
+            # A step bound or pinned to a run is not executed, so it fits
+            # nothing. The guard does not wait on a step scope: a whole-dataset
+            # request with none is the case it exists for.
             leak = (
                 None
-                if step.id in bind
+                if step.id in exempt
                 else held_out_fit_problem(
                     step_plan, step_entries, splits, narrowed=step.id in narrowed
                 )
             )
-            if leak is None and deferred_by is not None and step.id not in bind:
+            if leak is None and deferred_by is not None and step.id not in exempt:
                 # No entries to ask yet, but a scope that names the group says
                 # where the step will read.
                 leak = deferred_scope_problem(
@@ -773,8 +821,10 @@ def plan_pipeline(
                 )
             if leak is not None:
                 findings.problems.append(leak)
-            if TRACKS_INPUT in step.inputs and (
-                step.tracks is None or step_plan.spec.tracks_run_id
+            if (
+                TRACKS_INPUT in step.inputs
+                and step.id not in pins
+                and (step.tracks is None or step_plan.spec.tracks_run_id)
             ):
                 # A tracks reference to a producer whose identity is unresolved
                 # does not name a variant, and its tables cannot be read.
@@ -798,8 +848,9 @@ def plan_pipeline(
             labels_kind=step_plan.labels_kind,
         )
 
-    reached = reach_findings(recipe, steps, skip=bind)
+    reached = reach_findings(recipe, steps, skip=exempt)
     problems = list(findings.problems)
+    problems.extend(_pinned_input_problems(recipe, pins))
     problems.extend(reached.problems)
     problems.extend(
         _step_scope_problems(
@@ -822,9 +873,16 @@ def plan_pipeline(
         deferred_by=deferred_by,
         reach_cautions=reached.cautions,
         bound=frozenset(bind),
+        pinned=frozenset(step_id for step_id in pins if step_id in planned),
         request_scope=narrowing,
         tracks_run_id=tracks_run_id,
+        locked=locked,
     )
+    if pinned_inv is not None:
+        # Imported here, because pins imports this module.
+        from .pins import refuse_unusable_pins
+
+        refuse_unusable_pins(ds, recipe, plan, pins, inventory=pinned_inv)
     if refuse and plan.problems:
         raise RecipeRefused(plan)
     return plan
@@ -845,6 +903,7 @@ def _plan_step(
     problems: list[Problem],
     deferred_by: str | None = None,
     tracks_run_id: str | None = None,
+    pinned_inv: DatasetInventory | None = None,
 ) -> PlannedStep:
     """Resolve one step against everything the walk has already established.
 
@@ -856,6 +915,10 @@ def _plan_step(
     tracks, when this graph has one. The entries of a step whose identity
     covers its scope are not known before that step runs, so such a step is
     left unresolved rather than named over no entries.
+    *pinned_inv* is given for a step the request pins, as an unscoped view of
+    the feature runs. The step reads complete over *target* when its pinned
+    run has finished (:func:`~.pins.pinned_run_complete`), and is asked for
+    no entries.
     """
     declared = catalog.entries[
         step.feature if isinstance(step, FeatureStepSpec) else step.kind
@@ -894,7 +957,9 @@ def _plan_step(
         # of a path that has nothing to do with this graph, and the second
         # silently answers a question nobody asked.
         resolution = _Resolution(
-            step=_unresolved(step, target, recipe, resolved, tracks_run_id=tracks_run_id)
+            step=_unresolved(
+                step, target, recipe, resolved, tracks_run_id=tracks_run_id
+            )
         )
         base = replace(resolution.step, reason=inherited)
         if isinstance(step, FeatureStepSpec):
@@ -902,16 +967,12 @@ def _plan_step(
             # given a ``model`` applies it, and the others fit. Left at the
             # default, the cross-validation gap of a classifier whose upstream
             # has not run would go unchecked until its step ran and was refused.
-            applies = step.params.get("model") is not None
-            cls = feature_class_for_slug(step.feature)
+            # ``deferred_fit_cautions`` asks a step for both.
+            fits, scope_dependent = declared_fit(step.feature, step.params, declared)
             base = replace(
                 base,
-                fits=declared.fits and not applies,
-                # Read for the same reason: ``deferred_fit_cautions`` asks a
-                # step for both, and a fitter given a model covers no entries
-                # in its identity.
-                scope_dependent=bool(getattr(cls, "scope_dependent", False))
-                and not (declared.fits and applies),
+                fits=fits,
+                scope_dependent=scope_dependent,
                 temporal_reach=_reach_of(step, resolution),
             )
     elif isinstance(step, OpStepSpec):
@@ -928,6 +989,7 @@ def _plan_step(
             target=target,
             resolved=resolved,
             tracks_run_id=tracks_run_id,
+            pinned=pinned_inv is not None,
         )
         problems.extend(resolution.problems)
         base = replace(
@@ -950,6 +1012,9 @@ def _plan_step(
         base = _as_recorded(base, recorded.get(step.id, ""))
 
     view = coverage_against(inv, base.artifact, target)
+    pinned = _pinned_view(pinned_inv, base.artifact, target)
+    if pinned is not None:
+        view = pinned
     return replace(
         base,
         parents=parents,
@@ -958,7 +1023,9 @@ def _plan_step(
         lane=lane_for(declared, step.params),
         spec=replace(
             base.spec,
-            entries=_entries_for(step, resolution, target, view.coverage, view.status),
+            entries=Scope()
+            if pinned is not None
+            else _entries_for(step, resolution, target, view.coverage, view.status),
         ),
         coverage=view.coverage,
         status=view.status,
@@ -1060,6 +1127,57 @@ def _bind_problems(
                 f"which this dataset does not hold"
             )
             found.append(Problem(step_id, where, message))
+    return found
+
+
+def _pinned_view(
+    pinned_inv: DatasetInventory | None,
+    ref: ArtifactRef | None,
+    target: frozenset[Entry],
+) -> ArtifactView | None:
+    """A pinned step's view: complete over *target* when its run has finished.
+
+    ``None`` for a step that is not pinned, or whose run has not finished, which
+    :func:`~.pins.refuse_unusable_pins` refuses after the walk. The pinned run
+    answers for every entry of the target, as a global output does, so a step
+    below it reads no entry missing from it.
+    """
+    if pinned_inv is None or not isinstance(ref, FeatureRunRef):
+        return None
+    # Imported here, because pins imports this module.
+    from .pins import pinned_run_complete
+
+    record = pinned_inv.record(ref)
+    if record is None or not pinned_run_complete(record):
+        return None
+    return ArtifactView(
+        coverage=Coverage[Entry](target=target, present=frozenset(), covers_all=True),
+        status="complete",
+        drift=record.drift,
+        finished=True,
+    )
+
+
+def _pinned_input_problems(recipe: Recipe, pins: Mapping[str, str]) -> list[Problem]:
+    """A problem at ``inputs`` of each step that reads a pinned step through them.
+
+    A pinned run's per-entry output covers the entries it was fit on alone, so
+    a reader over other entries would find none of its own. An apply reads the
+    pinned fit through its ``model`` instead.
+    """
+    found: list[Problem] = []
+    for step in recipe.steps:
+        if not isinstance(step, FeatureStepSpec):
+            continue
+        for item in step.inputs:
+            if isinstance(item, StepRef) and item.step in pins:
+                message = (
+                    f"{step.id!r} reads pinned step {item.step!r} through its "
+                    f"inputs, and the pinned run covers only the entries it was "
+                    f"fit on. Read the fit through a model reference, as an "
+                    f"apply does, or leave {item.step!r} unpinned"
+                )
+                found.append(Problem(step.id, "inputs", message))
     return found
 
 
@@ -1379,13 +1497,15 @@ def _resolve_feature_step(
     target: frozenset[Entry],
     resolved: Mapping[str, ResolvedStep],
     tracks_run_id: str | None = None,
+    pinned: bool = False,
 ) -> _Resolution:
     """One feature step's identity, from its params plus what is above it.
 
     A problem that :func:`_feature_problems` finds leaves the identity
     unresolved, and :func:`plan_pipeline` reports it. *tracks_run_id* is the
     request's variant, which a step reading the tracks without a ``tracks``
-    reference reads.
+    reference reads. A *pinned* step takes its identity from its pin, so an
+    entry of two variants leaves it unnamed here and raises no problem.
     """
     spec = resolve_step_spec(recipe, step.id, resolved, tracks_run_id=tracks_run_id)
     shared = _shared_run_problems(recipe, step, resolved)
@@ -1442,6 +1562,21 @@ def _resolve_feature_step(
             overlap_frames=spec.overlap_frames,
         )
     except AmbiguousTracksVariant as ambiguous:
+        if pinned:
+            return _Resolution(
+                step=PlannedStep(
+                    step_id=step.id,
+                    kind="feature",
+                    runs=step.feature,
+                    spec=spec,
+                    run_id=None,
+                    storage_name=spec.storage_name,
+                    parallelizable=feature_parallelizable(step.feature),
+                ),
+                scope_dependent=scope_dependent,
+                fits=fits,
+                reach=reach,
+            )
         problem = _ambiguous_tracks_problem(
             step.id, "tracks", ambiguous, _NAME_THE_TRACKS_STEP
         )

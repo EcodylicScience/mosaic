@@ -439,6 +439,20 @@ def test_a_run_another_recipe_binds_is_kept_after_its_hold(dataset: Dataset) -> 
     assert _reasons(cleanup) == {old: "recipe_uses"}
 
 
+def test_a_run_another_recipe_pins_is_kept_after_its_hold(dataset: Dataset) -> None:
+    """A pin holds its run as a bind does, before any attempt has named it."""
+    _ = run_pipeline(dataset, _chain(1))
+    old = _run_ids(dataset, _chain(1))["templates"]
+    request = submit_request(
+        dataset, named_recipe(_chain(1), "other"), pins={"templates": old}
+    ).request
+    _ = cancel_request(dataset, request.request_id)
+
+    cleanup = _cleanup(dataset, _chain(2), now=LATER)
+
+    assert _reasons(cleanup)[old] == "recipe_uses"
+
+
 def test_a_request_saved_under_an_earlier_canonical_form_is_the_same_recipe(
     dataset: Dataset,
 ) -> None:

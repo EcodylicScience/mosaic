@@ -834,19 +834,20 @@ class LocalBackend:
         # (the split roles above all) are those on disk now and not at start.
         dataset = open_dataset(held.manifest, ensure_roots=False)
         with held.lock:
-            # A read, so it needs no --allow-cleanup.
+            # A read, so it needs no --allow-cleanup. Planned with the binds, as
+            # the submission plans, so its fingerprint is the submission's.
             plan = plan_with_cleanup(
                 dataset,
                 recipe,
                 cleanup=self._cleanup(args.cleanup),
-                scope=scope,
+                request=_planning_request(
+                    recipe, args, scope, _step_scopes(args.step_entries)
+                ),
                 inventory=self._inventory(held),
                 catalog=catalog,
                 refuse=False,
-                step_scopes=_step_scopes(args.step_entries),
                 retire=args.retire,
-                bind=args.bind,
-                tracks_run_id=args.tracks_run_id,
+                applies_request_id=args.applies_request_id,
             )
         # Read outside the lock: it reads request files and run-logs only.
         unended = requests_matching(
@@ -912,17 +913,16 @@ class LocalBackend:
         step_scopes = _step_scopes(args.step_entries)
         with held.lock:
             cache = self._inventory(held)
+            # Planned with the submission's binds, as submit_request plans.
             plan = plan_with_cleanup(
                 dataset,
                 recipe,
                 cleanup=cleanup,
-                scope=narrowing,
+                request=_planning_request(recipe, args, narrowing, step_scopes),
                 inventory=cache,
                 catalog=catalog,
-                step_scopes=step_scopes,
                 retire=args.retire,
-                bind=args.bind,
-                tracks_run_id=args.tracks_run_id,
+                applies_request_id=args.applies_request_id,
             )
             found = plan_fingerprint(plan)
             if args.plan_fingerprint is not None and found != args.plan_fingerprint:
@@ -951,6 +951,8 @@ class LocalBackend:
                 cleanup=cleanup,
                 retire=args.retire,
                 tracks_run_id=args.tracks_run_id,
+                pins=args.pins,
+                applies_request_id=args.applies_request_id,
             )
         request = submitted.request
         start = self._start_driver or start_detached_driver
@@ -1619,6 +1621,7 @@ def _plan_page(wire: PlanWire, limit: int | None, cursor: str | None) -> PlanPag
         retirable=wire.retirable if first else (),
         retirable_omitted=wire.retirable_omitted if first else 0,
         parallel=wire.parallel if first else None,
+        locked_steps=wire.locked_steps if first else (),
         steps_total=len(wire.steps),
         next_cursor=(
             json.dumps([wire.steps[stop - 1].step, wire.fingerprint]) if more else None
@@ -1844,6 +1847,37 @@ def _dataset_exists(target: Path) -> ErrorEnvelope:
         ),
         detail={"path": str(target)},
     )
+
+
+def _planning_request(
+    recipe: Recipe,
+    args: PlanRecipeInput | SubmitPipelineInput,
+    scope: Scope | None,
+    step_scopes: dict[str, Scope],
+) -> Request:
+    """Return the request that a plan and the submission after it plan with.
+
+    Raises:
+        ToolFailure: A choice the request refuses, such as a step both bound
+            and pinned.
+    """
+    from mosaic.core.pipeline.graph import planning_request
+
+    try:
+        return planning_request(
+            recipe,
+            scope=scope,
+            bind=args.bind,
+            step_scopes=step_scopes,
+            tracks_run_id=args.tracks_run_id,
+            pins=args.pins,
+        )
+    except ValueError as invalid:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid", reason="invalid_arguments", message=str(invalid)
+            )
+        ) from invalid
 
 
 def _invalid_source(message: str) -> ErrorEnvelope:

@@ -100,6 +100,7 @@ __all__ = [
     "build_step_op_params",
     "catalog_index",
     "declaration_catalog",
+    "declared_fit",
     "declared_version",
     "describe_step_type",
     "editor_catalog",
@@ -145,6 +146,28 @@ def feature_class_for_slug(slug: str) -> type | None:
         if getattr(cls, "name", None) == slug:
             return cls
     return None
+
+
+def declared_fit(
+    slug: str, params: Mapping[str, JsonValue], declared: Declaration
+) -> tuple[bool, bool]:
+    """Whether a feature step fits, and whether it fits over its scope.
+
+    Read off the class and the step's *params* without building the feature,
+    for a step whose feature cannot be built yet or need not be: a fitter given
+    a ``model`` applies it and fits nothing, and its identity covers no
+    entries. A built feature answers both on its instance.
+
+    Returns:
+        ``(fits, scope_dependent)``.
+    """
+    applies = params.get("model") is not None
+    cls = feature_class_for_slug(slug)
+    fits = declared.fits and not applies
+    scope_dependent = bool(getattr(cls, "scope_dependent", False)) and not (
+        declared.fits and applies
+    )
+    return fits, scope_dependent
 
 
 def feature_parallelizable(slug: str) -> bool:

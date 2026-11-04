@@ -187,6 +187,32 @@ it to entries.
 A request without step scopes is written as before, and older mosaic reads it. A
 request with them is read by this version and later.
 
+### Reuse a fit over other sequences
+
+A step that fits, such as `extract-templates`, is fitted on the entries a request
+covers. To reuse a fit over other sequences without fitting again, name the finished
+request that made it, with the same recipe and a new scope:
+
+```bash
+mosaic pipeline plan -m dataset.yaml --recipe @recipe.json --group day3 \
+    --applies-request 01J8ZQ4W3N7M2R5K6T9V0XYABC
+mosaic pipeline run -m dataset.yaml --recipe @recipe.json --group day3 \
+    --applies-request 01J8ZQ4W3N7M2R5K6T9V0XYABC
+```
+
+The fitted steps are served from the runs of that request and do not run, and the steps
+below them read those runs. The plan lists the locked steps: the fitting steps and every
+step they read. A locked step must be as the named request ran it, in its feature,
+inputs, `tracks` reference, params and run arguments. Params compare as written, so a
+key restated at its default counts as a change, and the command refuses until the step
+is restored. The tracks variant is the named request's, so leave `--tracks-run-id`
+unset. `plan`, `submit` and `run` take `--applies-request`, and an MCP client passes
+`applies_request_id`.
+
+To serve one step from a finished run instead, `--pin STEP=RUN_ID` (repeatable;
+`pins` for an MCP client) pins a step that fits to the run of its storage. It takes no
+`--applies-request`, which derives its pins.
+
 ### Score on held-out data
 
 A held-out score needs the test data to have taken no part in any fit. Mark the groups

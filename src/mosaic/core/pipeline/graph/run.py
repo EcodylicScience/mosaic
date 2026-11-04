@@ -238,6 +238,8 @@ def run_pipeline(
     step_scopes: Mapping[str, Scope] | None = None,
     parallel: ParallelSettings | None = None,
     tracks_run_id: str | None = None,
+    pins: Mapping[str, str] | None = None,
+    applies_request_id: str | None = None,
 ) -> PipelineRun:
     """Run every step of *recipe* against *ds*, in order, in this process.
 
@@ -292,6 +294,12 @@ def run_pipeline(
         tracks_run_id: The tracks variant that each feature step reading the
             tracks without a ``tracks`` reference reads. Recorded on the
             request that is submitted, and ignored when *request* is given.
+        pins: The finished run each pinned step serves, keyed by step id.
+            Recorded on the request that is submitted, and ignored when
+            *request* is given.
+        applies_request_id: The finished request whose fit the run applies,
+            as for :func:`~.request.submit_request`. Ignored when *request* is
+            given.
 
     Returns:
         One :class:`~mosaic.core.pipeline.graph.step.StepOutcome` per step, in
@@ -325,6 +333,8 @@ def run_pipeline(
             catalog=catalog,
             step_scopes=step_scopes,
             tracks_run_id=tracks_run_id,
+            pins=pins,
+            applies_request_id=applies_request_id,
         ).request
     elif allow_partial and not submitted.allow_partial:
         submitted = submitted.model_copy(update={"allow_partial": True})

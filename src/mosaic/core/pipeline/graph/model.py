@@ -66,6 +66,7 @@ __all__ = [
     "canonical_params",
     "params_step_refs",
     "references_of",
+    "refuse_pins_beside_apply",
 ]
 
 SCHEMA_VERSION: Final = 1
@@ -510,10 +511,28 @@ class ComputedRun(GraphModel):
     whole: bool = False
 
 
+def refuse_pins_beside_apply(
+    pins: Mapping[str, str] | None, applies_request_id: str | None
+) -> None:
+    """Refuse pins given beside an ``applies_request_id``.
+
+    An apply derives its pins from the request it names, so a call names one
+    source of pins. Empty pins are none.
+
+    Raises:
+        ValueError: *pins* holds a pin and *applies_request_id* is given.
+    """
+    if pins and applies_request_id is not None:
+        raise ValueError(
+            "pins and applies_request_id are both given; an apply derives its "
+            "pins from the request it names"
+        )
+
+
 class Request(GraphModel):
     """One submission of one recipe against one dataset.
 
-    Holds no ``run_id`` of its own beyond the explicit ``bind`` pins: the
+    Holds no ``run_id`` of its own beyond the explicit ``bind`` and ``pins``: the
     execution ids are *assigned* before anything runs, which is what makes this
     document complete at submit rather than filled in as work lands.
 
@@ -575,6 +594,33 @@ class Request(GraphModel):
     reads in an older mosaic.
     """
 
+    pins: dict[str, str] = Field(default_factory=dict)
+    """The run each pinned step serves, keyed by step id.
+
+    A pin names a finished run of a step that fits over its scope, and keeps
+    the step's inputs, which ``bind`` replaces. The pinned step is not
+    executed, reads complete over any scope, and the steps below it derive
+    their identity from the run. Left out of the request file when empty, so a
+    request without one reads in an older mosaic.
+    """
+
+    applies_request_id: str | None = None
+    """The finished request whose fit this request applies, or ``None``.
+
+    The request then records the pins, the tracks variant and the locked steps
+    derived from it (:func:`~.apply.derive_applied_fit`), and a plan read from
+    it takes them from here and does not read the named request again. Left
+    out of the request file when ``None``, so a request without one reads in
+    an older mosaic.
+    """
+
+    locked: list[str] = Field(default_factory=list)
+    """The steps an apply keeps as the named request ran them, in topological order.
+
+    Every step that fits and every step one reads. Empty for a request that
+    applies nothing, and left out of the request file then.
+    """
+
     cleanup: CleanupSpec | None = None
     """The superseded runs to remove after every step finished, or ``None``.
 
@@ -605,6 +651,15 @@ class Request(GraphModel):
         return self
 
     @model_validator(mode="after")
+    def _applied_request_is_named(self) -> Self:
+        if self.applies_request_id is not None and not self.applies_request_id.strip():
+            raise ValueError(
+                "applies_request_id names no request; leave it unset for a "
+                "request that applies no fit"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _bind_targets_are_named(self) -> Self:
         for step_id, bound in self.bind.items():
             if not bound.feature.strip():
@@ -612,6 +667,22 @@ class Request(GraphModel):
             if not bound.run_id.strip():
                 raise ValueError(
                     f"bind[{step_id!r}] names no run_id; a bind exists to pin one"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _pins_name_a_step_and_a_run(self) -> Self:
+        for step_id, run_id in self.pins.items():
+            if not step_id.strip():
+                raise ValueError("pins holds a run under an empty step id")
+            if not run_id.strip():
+                raise ValueError(
+                    f"pins[{step_id!r}] names no run_id; a pin exists to name one"
+                )
+            if step_id in self.bind:
+                raise ValueError(
+                    f"step {step_id!r} is both bound and pinned. A bind replaces "
+                    f"the step's inputs and a pin keeps them; give it one of the two"
                 )
         return self
 

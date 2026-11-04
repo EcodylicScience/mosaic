@@ -194,8 +194,8 @@ def refuse_mixed_schemas(
         tracks_run_id: The request's variant, ``None`` for none.
         scope: What the request covers, ``None`` for everything.
         only: Ask about this step's reading alone, as a step does at its start.
-        bound: The steps a request binds to a run. A bound step is the run
-            it names and is never executed, so it reads no tracks.
+        bound: The steps a request binds or pins to a run. Neither is
+            executed, so neither reads tracks.
 
     Raises:
         StepRefused: ``schema_family_mismatch`` or ``variant_ambiguous``.
@@ -229,7 +229,7 @@ def refuse_mixed_schemas(
 def _unpinned_readers(
     recipe: Recipe, only: str | None, bound: Collection[str]
 ) -> tuple[str, ...]:
-    """The unbound feature steps of *recipe* reading the tracks with no variant."""
+    """The executed feature steps of *recipe* reading the tracks with no variant."""
     return tuple(
         step.id
         for step in recipe.steps

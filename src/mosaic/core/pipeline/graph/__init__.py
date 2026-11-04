@@ -33,6 +33,10 @@ from typing import TYPE_CHECKING, Final
 from mosaic.lazy_exports import lazy_export
 
 if TYPE_CHECKING:
+    from .apply import (
+        AppliedFit as AppliedFit,
+        derive_applied_fit as derive_applied_fit,
+    )
     from .catalog_search import (
         CatalogMatch as CatalogMatch,
         catalog_listing as catalog_listing,
@@ -174,6 +178,10 @@ if TYPE_CHECKING:
         is_stalled as is_stalled,
         plan_pipeline as plan_pipeline,
     )
+    from .pins import (
+        pinned_run_complete as pinned_run_complete,
+        refuse_unusable_pins as refuse_unusable_pins,
+    )
     from .step_preflight import (
         CoverageShortfall as CoverageShortfall,
         RecipeRefusedAtStep as RecipeRefusedAtStep,
@@ -197,6 +205,7 @@ if TYPE_CHECKING:
         computed_runs as computed_runs,
         describe_duplicates as describe_duplicates,
         load_recipe_for_request as load_recipe_for_request,
+        planning_request as planning_request,
         step_argv as step_argv,
         submit_request as submit_request,
         CleanupNeedsPlan as CleanupNeedsPlan,
@@ -526,6 +535,10 @@ _MODULE_OF: Final[dict[str, str]] = {
     "coverage_against": ".plan",
     "is_stalled": ".plan",
     "plan_pipeline": ".plan",
+    "pinned_run_complete": ".pins",
+    "refuse_unusable_pins": ".pins",
+    "AppliedFit": ".apply",
+    "derive_applied_fit": ".apply",
     "JsonFileUnreadable": ".recipe_file",
     "read_json_file": ".recipe_file",
     "CoverageShortfall": ".step_preflight",
@@ -540,6 +553,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "describe_duplicate": ".store",
     "describe_duplicates": ".request",
     "load_recipe_for_request": ".request",
+    "planning_request": ".request",
     "step_argv": ".request",
     "submit_request": ".request",
     "ReferenceSite": ".resolve",
@@ -796,6 +810,7 @@ __all__ = [
     "WAIT_POLL_SECONDS",
     "ZIP_KEY",
     "AddStep",
+    "AppliedFit",
     "ArtifactView",
     "AttachReport",
     "Attachment",
@@ -970,6 +985,7 @@ __all__ = [
     "coverage_against",
     "declaration_catalog",
     "declared_version",
+    "derive_applied_fit",
     "describe_duplicate",
     "describe_duplicates",
     "descendants_of",
@@ -1013,12 +1029,14 @@ __all__ = [
     "parents_of",
     "patch_recipe",
     "patch_validation_report",
+    "pinned_run_complete",
     "pipelines_root",
     "plan_cleanup",
     "plan_fingerprint",
     "plan_pipeline",
     "plan_wire",
     "plan_with_cleanup",
+    "planning_request",
     "poll_after_seconds",
     "possible_connections",
     "preflight",
@@ -1033,6 +1051,7 @@ __all__ = [
     "refit_set",
     "refuse_live_driver",
     "refuse_mixed_schemas",
+    "refuse_unusable_pins",
     "reject_unless_valid",
     "release_driver_lease",
     "render_location",

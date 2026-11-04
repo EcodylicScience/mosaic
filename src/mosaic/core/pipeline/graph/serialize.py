@@ -132,6 +132,7 @@ def plan_wire(
         retirable=retirable,
         retirable_omitted=retirable_omitted,
         parallel=None if parallel is None else _parallel_wire(parallel),
+        locked_steps=plan.locked,
     )
 
 
@@ -310,7 +311,8 @@ def plan_fingerprint(plan: Plan) -> str:
     without them unchanged. They are needed while a conversion defers every
     step's entries, when the counts above cannot tell two narrowings apart.
     The request's tracks variant enters it only when there is one, for the
-    same reason.
+    same reason, and so do the request's pins, as sorted pairs of step id and
+    pinned run id.
 
     A plan asked for a cleanup (:func:`~.cleanup.plan_with_cleanup`) adds the
     policy and the runs it may remove, so a submission removes only the runs
@@ -334,6 +336,11 @@ def plan_fingerprint(plan: Plan) -> str:
         }
     if plan.tracks_run_id is not None:
         document["tracks_run_id"] = plan.tracks_run_id
+    if plan.pinned:
+        document["pins"] = [
+            [step_id, plan.step(step_id).run_id or ""]
+            for step_id in sorted(plan.pinned)
+        ]
     if plan.cleanup is not None:
         policy = plan.cleanup.policy
         removable = sorted((run.storage, run.run_id) for run in plan.cleanup.removable)

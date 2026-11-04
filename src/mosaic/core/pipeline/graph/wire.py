@@ -792,6 +792,10 @@ class PlanWire(GraphModel):
         parallel: The parallelism a submission may ask for, when the caller
             supplied the limits, ``None`` otherwise. The fingerprint leaves it
             out.
+        locked_steps: The steps an apply keeps as the request it names ran
+            them: every step that fits and every step one reads, in
+            topological order. An editor locks them. Empty for a plan that
+            applies no fit.
     """
 
     recipe_digest: str
@@ -806,3 +810,4 @@ class PlanWire(GraphModel):
     retirable: tuple[RetirableRecipeWire, ...] = ()
     retirable_omitted: int = 0
     parallel: ParallelWire | None = None
+    locked_steps: tuple[str, ...] = ()

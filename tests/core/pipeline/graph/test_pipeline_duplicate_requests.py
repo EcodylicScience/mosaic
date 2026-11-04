@@ -8,8 +8,6 @@ asked to. A request that recorded no runs is matched by its recipe and scope.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 import json
 import os
 import socket
@@ -30,6 +28,7 @@ from mosaic.core.pipeline.graph import (
     Plan,
     Recipe,
     OpenDuplicate,
+    Request,
     execute_step,
     computed_runs,
     computes_path,
@@ -242,24 +241,14 @@ def test_a_request_written_while_planning_refuses_the_submission(
         dataset: Dataset,
         recipe: Recipe,
         *,
-        scope: Scope | None = None,
+        request: Request | None = None,
         inventory: InventoryCache | None = None,
         catalog: DeclarationCatalog | None = None,
-        step_scopes: Mapping[str, Scope] | None = None,
-        bind: Mapping[str, BoundRef] | None = None,
-        tracks_run_id: str | None = None,
     ) -> Plan:
         monkeypatch.setattr(request_module, "plan_pipeline", plan_pipeline)
         written.append(submit_request(dataset, recipe).request.request_id)
         return plan_pipeline(
-            dataset,
-            recipe,
-            scope=scope,
-            inventory=inventory,
-            catalog=catalog,
-            step_scopes=step_scopes,
-            bind=bind,
-            tracks_run_id=tracks_run_id,
+            dataset, recipe, request=request, inventory=inventory, catalog=catalog
         )
 
     monkeypatch.setattr(request_module, "plan_pipeline", plan_while_another_submits)

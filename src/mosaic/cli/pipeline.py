@@ -55,6 +55,7 @@ from mosaic.cli._io import (
     json_file_arg,
     load_json_arg,
     log,
+    parse_pins,
     parse_step_scopes,
     stdout_to_stderr,
     with_command_line_scope,
@@ -166,6 +167,40 @@ TracksRunIdOption = Annotated[
     ),
 ]
 
+PinOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--pin",
+        metavar="STEP=RUN_ID",
+        help=(
+            "Serve a fitted step from this finished run instead of running it "
+            "(repeatable; STEP is a step of the recipe that fits over its "
+            "scope, RUN_ID the run of its storage). The steps below it derive "
+            "their identity from the run. Recorded on the request a submission "
+            "makes: give it to the plan and again to the submission. Not with "
+            "--applies-request."
+        ),
+    ),
+]
+
+AppliesRequestOption = Annotated[
+    str | None,
+    typer.Option(
+        "--applies-request",
+        metavar="REQUEST_ID",
+        help=(
+            "Reuse the fit of this finished request of the dataset over other "
+            "entries. Its fitted steps are pinned to the runs it made, those "
+            "steps and the steps they read are locked, and the tracks variant "
+            "is its own: leave --tracks-run-id unset, since another variant is "
+            "refused. Refused when a locked step differs from that request's "
+            "recipe. Recorded on the request a "
+            "submission makes: give it to the plan and again to the "
+            "submission. Not with --pin."
+        ),
+    ),
+]
+
 AssumeAddedOption = Annotated[
     list[str] | None,
     typer.Option(
@@ -222,6 +257,26 @@ def recipe_argument(argument: str, *, as_json: bool) -> "Recipe":
         return read_recipe(recipe_document(argument))
     except RecipeInvalid as exc:
         fail_classified(exc, as_json=as_json)
+
+
+def _pins_and_apply(
+    pin: list[str] | None, applies_request: str | None
+) -> tuple[dict[str, str], str | None]:
+    """The pins that ``--pin`` gives and the request that ``--applies-request`` names.
+
+    Exits 2 for a malformed pin, a blank request id, or both options, since an
+    apply derives its own pins.
+    """
+    pins = parse_pins(pin)
+    if applies_request is not None and not applies_request.strip():
+        fail("--applies-request names no request.", code=2)
+    if pins and applies_request is not None:
+        fail(
+            "--pin and --applies-request are both given; an apply derives its pins "
+            "from the request it names.",
+            code=2,
+        )
+    return pins, applies_request
 
 
 def _cleanup_policy(
@@ -342,6 +397,8 @@ def plan_command(
     retire: RetireOption = None,
     assume_added: AssumeAddedOption = None,
     tracks_run_id: TracksRunIdOption = None,
+    pin: PinOption = None,
+    applies_request: AppliesRequestOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
@@ -352,7 +409,9 @@ def plan_command(
     instead of the plan, and also exits 1. The requests of the recipe over an
     overlapping scope that have not ended, running or orphaned, are listed with
     it. ``--tracks-run-id`` names the tracks variant that the steps reading the
-    tracks read, which an entry of two variants requires.
+    tracks read, which an entry of two variants requires. ``--pin`` serves a
+    fitted step from a finished run, and ``--applies-request`` reuses the fit of
+    a finished request; the steps it locks are listed with the plan.
     ``--step-scope`` narrows one step, as a train/test split narrows the fit
     to the training groups and the scoring to the test groups.
     ``--cleanup superseded`` also reports the superseded runs of the recipe's
@@ -377,6 +436,7 @@ def plan_command(
     parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
+    pins, applies_request_id = _pins_and_apply(pin, applies_request)
     try:
         with stdout_to_stderr():
             plan = plan_with_cleanup(
@@ -387,6 +447,8 @@ def plan_command(
                 step_scopes=step_scopes,
                 retire=retire or (),
                 tracks_run_id=tracks_run_id,
+                pins=pins or None,
+                applies_request_id=applies_request_id,
             )
     except RecipeRefused as refusal:
         if as_json:
@@ -768,6 +830,8 @@ def run_command(
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
     tracks_run_id: TracksRunIdOption = None,
+    pin: PinOption = None,
+    applies_request: AppliesRequestOption = None,
     expect_plan: Annotated[
         str | None,
         typer.Option(
@@ -843,12 +907,15 @@ def run_command(
             or cleanup != "none"
             or retire
             or tracks_run_id is not None
+            or pin
+            or applies_request is not None
             or expect_plan is not None
         ):
             fail(
                 "--entry, --group, --step-scope, --allow-partial, --owner, "
-                "--cleanup, --retire, --tracks-run-id and --expect-plan are "
-                "recorded on a request at submit, and are not used with --request."
+                "--cleanup, --retire, --tracks-run-id, --pin, --applies-request "
+                "and --expect-plan are recorded on a request at submit, and are "
+                "not used with --request."
             )
         _run_request(
             manifest,
@@ -872,6 +939,7 @@ def run_command(
     parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
+    pins, applies_request_id = _pins_and_apply(pin, applies_request)
     submitted: Request | None = None
     token = CancelToken()
     install_signal_handler(token)
@@ -890,6 +958,8 @@ def run_command(
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                 retire=retire or (),
                 tracks_run_id=tracks_run_id,
+                pins=pins or None,
+                applies_request_id=applies_request_id,
             )
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
@@ -1125,6 +1195,8 @@ def submit_command(
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
     tracks_run_id: TracksRunIdOption = None,
+    pin: PinOption = None,
+    applies_request: AppliesRequestOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Record a submission of a recipe, and print the command for every step.
@@ -1137,6 +1209,10 @@ def submit_command(
     An open request, of any recipe, that computes a run of the plan is reported
     on stderr and under ``duplicates`` with the steps whose runs it shares, or
     refuses the submission with ``--refuse-duplicates``.
+
+    ``--pin STEP=RUN_ID`` serves a fitted step from a finished run, and
+    ``--applies-request RID`` reuses the fit of a finished request over other
+    entries. The request records the pins and the apply.
 
     ``--cleanup superseded`` records the runs that the plan reviewed under
     ``--expect-plan`` found removable, and whatever runs the request removes
@@ -1151,6 +1227,7 @@ def submit_command(
     parsed = recipe_argument(recipe, as_json=as_json)
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
+    pins, applies_request_id = _pins_and_apply(pin, applies_request)
     try:
         with stdout_to_stderr():
             submitted = submit_request(
@@ -1166,6 +1243,8 @@ def submit_command(
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                 retire=retire or (),
                 tracks_run_id=tracks_run_id,
+                pins=pins or None,
+                applies_request_id=applies_request_id,
             )
     except ClassifiedError as error:
         fail_unrunnable(error, as_json=as_json)
@@ -1472,6 +1551,8 @@ def _emit_plan(
     render_table(
         rows, ["step", "type", "runs", "run_id", "status", "coverage", "lane", "reason"]
     )
+    if wire.locked_steps:
+        typer.echo(f"locked: {', '.join(wire.locked_steps)}")
     for caution in wire.cautions:
         log(f"caution: {caution}")
     for planned in plan.steps:

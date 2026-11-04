@@ -90,7 +90,8 @@ class PlanPage(PlanWire):
     ``scope_size`` and ``complete``, so a submission needs the fingerprint of
     any one page. The first page also carries the plan-level blocks
     (``problems``, ``cautions``, ``open_requests``, ``cleanup``, ``retirable``,
-    ``retirable_omitted`` and ``parallel``), and a later page leaves them empty.
+    ``retirable_omitted``, ``parallel`` and ``locked_steps``), and a later page
+    leaves them empty.
 
     Attributes:
         steps_total: How many steps the whole plan has.

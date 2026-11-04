@@ -262,6 +262,32 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `submit_pipeline`), or pin the step to the step that produced it. Add that step if
   the recipe lacks it, since a step whose output exists is complete. `resample-tracks`
   and `assign-arenas` take `source_tracks_run_id`.
+- To reuse a fit over other sequences, pin its step to the finished run:
+  `pins={"<step id>": "<run id>"}` on `submit_request` or `run_pipeline`
+  (`--pin STEP=RUN_ID`, repeatable, on `mosaic pipeline plan`, `submit` and `run`;
+  `pins` on `plan_recipe` and `submit_pipeline`). The pinned step does not run, and the
+  steps below it read that run. Only a step that fits over its scope takes a pin: a
+  template step, or `arhmm`, `kpms`, `vame` or `pair-posedistance-pca` without a
+  `model`. A pin is refused before anything is written with `pin_unknown_step` (no
+  feature step of the recipe has that id),
+  `pin_not_fitted` (pin the template step that the fitter reads instead, or leave the
+  step unpinned), `pin_run_missing` (the step's storage holds no such run; check the run
+  id) or `pin_run_unfinished` (finish the run or pin another). A step reading the
+  pinned step through `inputs` is a problem at `inputs`; read the fit through `model`.
+- To apply a whole finished fit to other sequences, name its request instead of pinning
+  by hand: `applies_request_id="<request id>"` on `submit_request` or `run_pipeline`,
+  with the same recipe and a new scope (`--applies-request <request id>` on `mosaic
+  pipeline plan`, `submit` and `run`; `applies_request_id` on `plan_recipe` and
+  `submit_pipeline`). The plan lists the locked steps in `locked_steps`. Give the plan's
+  flags again to the submission. mosaic pins each fitted step to that request's
+  run and reads its tracks variant. It is refused with `apply_request_missing` (no such
+  request in this dataset; check the id), `apply_request_unfinished` (wait for it to
+  finish, or name one that has), `apply_step_changed` (a step that fits or feeds a fit
+  differs from the named recipe in its feature, inputs, `tracks`, params or `run`; params
+  compare as written, so a key restated at its default counts as a change; restore the
+  step, or submit without the field to fit again)
+  or `apply_tracks_changed` (leave `tracks_run_id` unset to read the fit's tracks). Do
+  not pass `pins` beside it: the CLI exits 2 and the MCP tools refuse the arguments.
 - A run that loses some entries finishes as `partial` and names them in
   `result.failed_entries`. Check it before any global fit, since a fit over fewer
   entries is a different result. Losing every entry raises.

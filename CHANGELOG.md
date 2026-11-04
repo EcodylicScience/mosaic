@@ -39,6 +39,57 @@ duplicate and a retirement refusal now come before a schema refusal.
 ignore it. The MCP `list_sequences` envelope for an entry of two variants now reads
 `variant_ambiguous` where it read `ambiguous_tracks_variant`, with the kind `invalid`.
 
+**A request pins a fitted step to a run.** `Request.pins` (default empty) maps a step
+that fits over its scope (`fits` and `scope_dependent`: a template step, or `arhmm`,
+`kpms`, `vame` or `pair-posedistance-pca` without a `model`) to a finished run of its
+storage. `plan_pipeline`, `submit_request`, `run_pipeline` and `plan_with_cleanup` take
+`pins`. The pinned step is not executed: it reads complete over any scope, is served
+from the cache under the pin, under `overwrite` too, and the steps below it derive their
+identity from the run. It is exempt from the held-out guard and from the tracks variant
+check, as a bound step is, and a step reading it through `inputs` is a problem at
+`inputs`. A cleanup keeps a run that another request pins, as it keeps a bound one. Four
+new `RefusalReason` members refuse a pin before anything is written: `pin_unknown_step`,
+`pin_not_fitted`, `pin_run_missing` and `pin_run_unfinished`. `Request` refuses an empty
+pin and a step both bound and pinned. `save_request` leaves the key out when it is
+empty, and the plan fingerprint covers the pins only when there are any. No run id
+moves.
+
+**A submission plans with its binds.** `submit_request` plans with a request carrying
+the submission's `bind`, variant and pins (`planning_request`), as each of its steps
+plans, and a cleanup it judges keeps the bound runs as `bound`. A bound tracks reader
+over an entry of two variants is therefore submitted, where it was refused at submit and
+ran at its step. A bound submission's fingerprint can change. The MCP `plan_recipe`
+takes `bind`, and both it and `submit_pipeline` plan with it, so a plan reviewed with
+the bind fingerprints as the bound submission does. No run id moves.
+
+**A request applies the fit of a finished request.** `Request.applies_request_id`
+(default `None`) names a finished request of the dataset, and `plan_pipeline`,
+`submit_request`, `run_pipeline` and `plan_with_cleanup` take it. Every feature step
+that fits without a `model`, and every step one reads, is locked. It must match the
+named request's recipe in every field but its `id` and `after`: what it runs, its
+inputs, its `tracks` reference, its params as written and its run arguments. Each locked
+step that fits over its scope is pinned to the run its attempt recorded, and the apply
+reads the named request's tracks variant. The request records the field, the derived
+pins and variant, and `Request.locked`, and a step of it plans from them without reading
+the named request.
+Four new `RefusalReason` members refuse an apply before anything is written:
+`apply_request_missing`, `apply_request_unfinished`, `apply_step_changed` and
+`apply_tracks_changed`. Passing `pins` beside `applies_request_id` raises `ValueError`.
+`PlanWire.locked_steps` (default empty) lists the locked steps, outside the fingerprint.
+`save_request` leaves `applies_request_id` and `locked` out when unset. No run id moves.
+
+**The CLI and the MCP server take pins and an apply.** `mosaic pipeline plan`, `submit`
+and `run` take `--pin STEP=RUN_ID` (repeatable) and `--applies-request REQUEST_ID`, and
+the MCP tools `plan_recipe` and `submit_pipeline` take `pins` and `applies_request_id`.
+Both plan and submit with the same choices, so a reviewed plan fingerprints as its
+submission does. A malformed or repeated pin, or a pin beside an apply, exits 2 on the
+CLI and is an invalid argument in the MCP tools, which also refuse a step both bound and
+pinned. `mosaic pipeline run --request` refuses both options as it refuses
+`--tracks-run-id`. `pipeline plan` lists the locked steps, and the MCP `plan_recipe`
+result carries `locked_steps`. `MAX_SCHEMA_BYTES` rises from 8192 to 8448 so that the
+`plan_recipe` output schema fits. `mosaic run --graph-request` now refuses
+`--labels-run-id`, which it used to ignore: a step's labels are chosen in the recipe.
+
 **mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
 `variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,
 "")` and plans with `refuse=False`, so it reports the ambiguity as a problem at `tracks`

@@ -41,8 +41,10 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `request_rollup` reads it through `bound_attempt` unless its run-log records a
   refusal, so the verdict and a wait end. The held-out guard and `reach_findings`
   skip it, since it fits nothing.
-- `submit_request` plans once, with its `bind` (`plan_pipeline(bind=...)`), so the
-  returned plan, its fingerprint and an MCP `plan_recipe` given the same binds agree.
+- `submit_request` plans once, with the request it records before that has ids
+  (`planning_request`: the binds, the variant and the pins), so the returned plan, its
+  fingerprint and an MCP `plan_recipe` given the same choices agree. `plan_pipeline`
+  also takes each choice as an argument, and an unset one falls back to the request's.
   The request records the runs that plan leaves to compute (`computed_runs`), which a
   bound step is not among, in `computes/<rid>.json` (`save_computes`), under
   `submission_lock` and before the request file. The request file gains no key, so an
@@ -96,6 +98,34 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   is the plan's entries narrowed by its scope (`step_target`), and its identity,
   coverage, asked entries, stall and shortfall are measured over it. The fingerprint
   includes the step scopes only when there are any (`test_pipeline_step_scopes.py`).
+- `Request.pins` maps a step that fits over its scope (`fits` and `scope_dependent`)
+  to a finished run of its storage (`pins.py`). `plan_pipeline` merges the pins over
+  `recorded`, reads each pinned run from an unscoped inventory built once per plan, and
+  reads the step complete over any scope when `pinned_run_complete` holds. The step is
+  asked for no entries, and `execute_step` serves it from the cache under the pin, under
+  `overwrite` too. A pinned step is exempt from the held-out guard, the reach check and
+  the tracks variant check as a bound one is, a cleanup keeps a run another request pins
+  (`_RunLabels.record`), and a step reading it through `inputs` is a `Problem` at
+  `inputs`.
+  `refuse_unusable_pins` raises a `pin_*` `StepRefused` after the walk, whatever
+  `refuse` says, so `submit_request` writes nothing, and its plan and fingerprint are
+  those a step makes. `save_request` leaves `pins` out when empty, and the fingerprint
+  covers them only when there are any (`test_pipeline_pins.py`).
+- `Request.applies_request_id` names a finished request whose fit the request applies
+  (`apply.py`). `derive_applied_fit` locks every feature step that fits without a
+  `model` and every step it reads (`ancestors_of`), refuses a locked step that differs
+  from the named request's recipe in any field but `id` and `after`, params compared as
+  written (a key restated at its default is a change), pins each locked step that fits
+  over its scope to the run its attempt recorded, and takes the named request's tracks
+  variant. `plan_pipeline` derives the fit only when given `applies_request_id` as an
+  argument; given a request, it reads the recorded `pins`, `tracks_run_id` and
+  `locked`, so a step's re-plan never reads the named request. `submit_request`
+  derives once and records all four on the `Request` through `planning_request`.
+  `pins` beside `applies_request_id` as arguments raises `ValueError`, which the CLI
+  turns into a usage error and the MCP input models into an invalid argument before
+  they call. `Plan.locked` fills `PlanWire.locked_steps`, outside the fingerprint, and
+  `save_request` leaves `applies_request_id` and `locked` out when unset
+  (`test_pipeline_apply.py`).
 - `plan_with_cleanup` (`cleanup.py`) is the one planner of superseded feature runs,
   which the CLI's `pipeline plan`, the MCP tools and `submit_request` share.
   `plan_cleanup` only reads: no lock, no write (`test_planning_a_cleanup_writes_nothing`
@@ -146,13 +176,14 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   includes it only when it is set (`test_pipeline_plan_fingerprint.py`).
 - `refuse_mixed_schemas` (`step_preflight.py`) runs in `plan_pipeline` before the walk
   when `refuse` is set, and in `execute_step` for the starting step alone (`only`). With
-  no variant, a feature step reading `tracks` with no `tracks` reference and no bind
-  hashes every entry's variant, so over such a step both checks read the whole dataset
-  whatever the scope: mixed families raise `schema_family_mismatch`, and an entry of
-  two variants `variant_ambiguous`. Otherwise the family check reads the variant over
-  the scope, and two variants of one family pass a sweep. Under `refuse=False` the
-  ambiguity stays a `Problem` at `tracks` or `params.source_tracks_run_id`, so a step
-  recording its run keeps it (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
+  no variant, a feature step reading `tracks` with no `tracks` reference, no bind and
+  no pin hashes every entry's variant, so over such a step both checks read the whole
+  dataset whatever the scope: mixed families raise `schema_family_mismatch`, and an
+  entry of two variants `variant_ambiguous`. Otherwise the family check reads the
+  variant over the scope, and two variants of one family pass a sweep. Under
+  `refuse=False` the ambiguity stays a `Problem` at `tracks` or
+  `params.source_tracks_run_id`, so a step recording its run keeps it
+  (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
 - An op step's scope comes from the plan through `_op_scope`. An op with `scope_takes =
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a

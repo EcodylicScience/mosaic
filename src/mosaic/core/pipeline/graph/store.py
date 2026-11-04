@@ -145,9 +145,10 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
 def save_request(base_dir: Path | str, request: Request) -> Path:
     """Write one submission's request file, and return where it landed.
 
-    A request without step scopes, a tracks variant, a cleanup, or a cleanup
-    that retires no recipe is written without those keys, so its file is what
-    an older mosaic wrote and reads there.
+    A request without step scopes, a tracks variant, pins, an applied request,
+    locked steps, a cleanup, or a cleanup that retires no recipe is written
+    without those keys, so its file is what an older mosaic wrote and reads
+    there.
     """
     path = request_path(base_dir, request.request_id)
     exclude: dict[str, bool | dict[str, bool]] = {}
@@ -155,6 +156,12 @@ def save_request(base_dir: Path | str, request: Request) -> Path:
         exclude["step_scopes"] = True
     if request.tracks_run_id is None:
         exclude["tracks_run_id"] = True
+    if not request.pins:
+        exclude["pins"] = True
+    if request.applies_request_id is None:
+        exclude["applies_request_id"] = True
+    if not request.locked:
+        exclude["locked"] = True
     if request.cleanup is None:
         exclude["cleanup"] = True
     elif not request.cleanup.retired:
