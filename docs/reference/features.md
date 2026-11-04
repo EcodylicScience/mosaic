@@ -3,7 +3,7 @@
 
 # Features
 
-62 features are registered. Each one runs as
+63 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -581,6 +581,45 @@ Convert every length-bearing column into centimeters.
 | `mode` | `"derive"` \| `"convert"` | `"derive"` |  | derive emits only the scaled columns, each under its own name plus suffix, alongside the metadata. convert returns the whole table with every length column converted in place, under its own name. |
 | `suffix` | `string` | `"_cm"` |  | Appended to each scaled column's name in derive mode. Names nothing in convert mode, which refuses a non-default value. |
 | `columns` | list of `string` \| `None` | `null` |  | Replace the length-bearing classifier with exactly these columns, scaling every one whether or not it is length-bearing. A name absent from the table raises. In convert mode, naming a subset leaves the unnamed length columns in pixels inside a table whose other lengths are centimeters. |
+
+### `smooth-probabilities`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.smooth_probabilities.SmoothProbabilitiesFeature`
+
+Smooth a classifier's class probabilities along consecutive frames.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `method` | `"gaussian"` \| `"median"` \| `"none"` | `"gaussian"` |  | How each class probability is smoothed along consecutive frames: gaussian convolves it with a Gaussian of sigma frames, median takes the median of window frames, and none leaves it as it is. |
+| `sigma` | `number` | `2.0` | > `0.0` | The standard deviation, in frames, of the Gaussian that method gaussian smooths with. |
+| `window` | `integer` | `5` | >= `3` | The odd number of frames whose median method median takes, at least 3. |
+| `min_bout_frames` | `integer` | `1` | >= `1` | The fewest frames a run of one predicted class keeps, a shorter run taking the class of the neighbor run whose class has the higher mean probability over it; 1 merges nothing. |
+| `decision_threshold` | `number` \| `object` \| `ThresholdsArtifact` \| `None` | `null` |  | Unset, the predicted class is the class with the highest probability. A float applies one probability threshold to every class, and a mapping from class to threshold applies a per-class one. A probability under its class's threshold counts as 0, so a mapping that omits a class gives that class threshold 0, which it always clears. Any row where no class clears its threshold is assigned default_class. To predict the positive class of a binary problem from probability t up, give the other class threshold 1.0: {"0": 1.0, "1": t}. {"1": t} alone changes nothing for a t under 0.5, because class 0 still wins wherever its probability is the higher. A {step: <id>} reference names a tune-threshold step and applies the thresholds it saved, which keep default_class out of the competition for a row. Give default_class the value that step has. That step reads a classifier run, so a classifier cannot name its own tuning. |
+| `default_class` | `integer` | _required_ |  | The class assigned to a row where decision_threshold is set and no class clears its threshold. A mapping that omits a class gives it threshold 0, so only a class listed with a threshold above 0 can fail to claim a row. A row with no probabilities takes it too, whether or not decision_threshold is set. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+??? note "`ThresholdsArtifact`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"tune-threshold"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"thresholds.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
 ### `speed-angvel`
 

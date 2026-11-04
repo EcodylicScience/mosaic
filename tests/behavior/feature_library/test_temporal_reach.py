@@ -9,6 +9,7 @@ two are equal, and a feature that reached further than it declared would fail.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -24,6 +25,9 @@ from mosaic.behavior.feature_library.sequence_heads import (
     assemble_network,
     get_head,
     network_reach,
+)
+from mosaic.behavior.feature_library.smooth_probabilities import (
+    SmoothProbabilitiesFeature,
 )
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
@@ -139,6 +143,49 @@ def test_a_stack_declares_the_distance_it_reads(params: dict[str, object]) -> No
     measured = _farthest_change(feature.apply, _payload(), "f0")
 
     assert measured == feature.temporal_reach(feature.params)
+
+
+def _probabilities() -> pd.DataFrame:
+    """Three class probabilities per frame, the moved one the lowest of its column.
+
+    A median moves with an input only where the input crosses it, so the frame
+    that is moved starts below every other value of its column.
+    """
+    probs = np.random.default_rng(2).dirichlet(np.ones(3), size=N) + 0.01
+    probs[AT, 1] = 0.0
+    table = pd.DataFrame({"frame": np.arange(N), "group": "g", "sequence": "s"})
+    for column in range(3):
+        table[f"prob_{column}"] = probs[:, column]
+    return table
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"sigma": 2.0},
+        {"sigma": 5.5},
+        {"method": "median", "window": 5},
+        {"method": "median", "window": 11},
+    ],
+)
+def test_a_probability_smoothing_declares_the_distance_it_reads(
+    params: dict[str, object],
+) -> None:
+    feature = SmoothProbabilitiesFeature(
+        SmoothProbabilitiesFeature.Inputs((Result(feature="x"),)),
+        params={"default_class": 0, **params},
+    )
+    _ = feature.load_state(Path("unused"), {}, {})
+
+    measured = _farthest_change(feature.apply, _probabilities(), "prob_1")
+
+    assert measured == feature.temporal_reach(feature.params)
+
+
+def test_a_probability_smoothing_that_merges_bouts_declares_no_reach() -> None:
+    params = SmoothProbabilitiesFeature.Params(default_class=0, min_bout_frames=3)
+
+    assert SmoothProbabilitiesFeature.temporal_reach(params) is None
 
 
 @pytest.mark.parametrize(

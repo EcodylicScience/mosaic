@@ -87,6 +87,7 @@ from . import (
     sequence_classifier,
     sequence_heads,
     sequence_training,
+    smooth_probabilities,
     social_motion_summary,
     speed_angvel,
     temporal_stacking,
@@ -144,6 +145,7 @@ from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
 from .sequence_aggregate import SequenceAggregate
 from .sequence_classifier import SequenceClassifier
+from .smooth_probabilities import SmoothProbabilitiesFeature
 from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
 from .temporal_stacking import TemporalStackingFeature
@@ -241,6 +243,7 @@ __all__ = [
     "ScaleToCm",
     "SequenceAggregate",
     "SequenceClassifier",
+    "SmoothProbabilitiesFeature",
     "SocialMotionSummary",
     "SpeedAngvel",
     "TemporalStackingFeature",
@@ -307,6 +310,7 @@ __all__ = [
     "sequence_classifier",
     "sequence_heads",
     "sequence_training",
+    "smooth_probabilities",
     "social_motion_summary",
     "speed_angvel",
     "temporal_stacking",

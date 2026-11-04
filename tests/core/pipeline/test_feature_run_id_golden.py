@@ -743,6 +743,26 @@ CASES: tuple[Case, ...] = (
         inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
         params={"default_class": 0, "decision_threshold": {0: 1.0, 1: 0.2}},
     ),
+    # --- smoothing a classifier's probabilities ---
+    #
+    # A per-frame step over one classifier run, which hashes no scope.
+    Case(
+        case_id="smooth-probabilities/gaussian",
+        feature="smooth-probabilities",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={"default_class": 0},
+    ),
+    Case(
+        case_id="smooth-probabilities/median-min-bout",
+        feature="smooth-probabilities",
+        inputs=[{"feature": "xgboost", "run_id": "0.4-aaaaaaaaaa"}],
+        params={
+            "default_class": 0,
+            "method": "median",
+            "window": 7,
+            "min_bout_frames": 3,
+        },
+    ),
     # --- scoring against labels ---
     #
     # Both are scope-dependent: the entries scored, or the entries a label map

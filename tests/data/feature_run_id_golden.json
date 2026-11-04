@@ -91,6 +91,8 @@
   "sequence-classifier/templates": "0.2-59ad2f14c5",
   "sequence-classifier/transformer": "0.2-2d1b033312",
   "sequence-classifier/unet": "0.2-c769b4c19f",
+  "smooth-probabilities/gaussian": "0.1-76f6d050b5",
+  "smooth-probabilities/median-min-bout": "0.1-b26e7b896c",
   "social-motion-summary/default": "0.2-d100e039c5",
   "social-motion-summary/subgroups-group-size": "0.2-fd2a79e43d",
   "speed-angvel/default": "0.2-6ce34fc21e",

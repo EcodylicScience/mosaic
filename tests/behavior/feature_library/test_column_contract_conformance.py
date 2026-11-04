@@ -119,6 +119,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
     "sequence-aggregate": {"column": "X"},
+    "smooth-probabilities": {"default_class": 0},
     "tune-threshold": {"default_class": 0, "nested": False},
     "sequence-classifier": {
         "templates": {"step": "extract-labeled-templates"},
@@ -172,6 +173,7 @@ SOURCES: dict[str, tuple[str, ...]] = {
     "nn-delta-bins": ("nn-delta-response",),
     "pair-wavelet": ("pair-posedistance-pca",),
     "probability-ensemble": ("xgboost",),
+    "smooth-probabilities": ("xgboost",),
     "tune-threshold": ("xgboost",),
 }
 """Inputs a feature reads in place of the tracks or :data:`MEASUREMENTS`.
@@ -185,7 +187,7 @@ measures are all conditional, so ``speed-angvel`` guarantees the numeric payload
 that its declaration requires.
 """
 
-FOLD_TABLES = frozenset({"tune-threshold"})
+FOLD_TABLES = frozenset({"smooth-probabilities", "tune-threshold"})
 """The features that read their input's ``cv_folds.parquet``, which the fixture writes."""
 
 MEASUREMENTS = "speed-angvel"
