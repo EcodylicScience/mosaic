@@ -629,6 +629,22 @@ CASES: tuple[Case, ...] = (
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
     ),
     Case(
+        case_id="sequence-classifier/warm-start",
+        feature="sequence-classifier",
+        inputs=[{"feature": "global-scaler"}],
+        params={
+            "templates": _TEMPLATES_REF,
+            "labels": {"kind": "behavior"},
+            "default_class": 0,
+            "init_from": {
+                "feature": "sequence-classifier__from__global-scaler",
+                "run_id": "0.2-aaaaaaaaaa",
+            },
+        },
+        scope=(("train", "s1"), ("train", "s2")),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
         case_id="sequence-classifier/transformer",
         feature="sequence-classifier",
         inputs=[{"feature": "global-scaler"}],

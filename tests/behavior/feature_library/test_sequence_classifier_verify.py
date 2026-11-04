@@ -10,6 +10,7 @@ by less passes, which an exact feature would not.
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 import pandas as pd
@@ -36,73 +37,80 @@ SCOPES = {
 }
 
 
-def _recipe() -> Recipe:
+NETWORK = {
+    "labels": {"step": "labels"},
+    "default_class": 0,
+    "device": "cpu",
+    "head": "tcn",
+    "head_config": {"hidden": 8, "blocks": 2},
+    "steps": 12,
+    "batch_size": 4,
+    "crop_length": 60,
+    "learning_rate": 0.01,
+}
+
+LABELED = {"labels": {"step": "labels"}, "n_total": 200, "test_fraction": 0.0}
+
+
+def _recipe(*extra: Mapping[str, object]) -> Recipe:
     return Recipe.model_validate(
         {
             "schema_version": 1,
             "name": "sequence-network",
-            "steps": [
-                CONVERT_TRACKS_STEP,
-                CONVERT_LABELS_STEP,
-                {
-                    "id": "heading",
-                    "type": "feature",
-                    "feature": "heading",
-                    "inputs": ["tracks"],
-                    "tracks": {"step": "tracks"},
-                    "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
-                },
-                {
-                    "id": "pairs",
-                    "type": "feature",
-                    "feature": "pair-position",
-                    "inputs": ["tracks", {"step": "heading"}],
-                    "tracks": {"step": "tracks"},
-                },
-                {
-                    "id": "labeled",
-                    "type": "feature",
-                    "feature": "extract-labeled-templates",
-                    "inputs": [{"step": "pairs"}],
-                    "params": {
-                        "labels": {"step": "labels"},
-                        "n_total": 200,
-                        "test_fraction": 0.0,
-                    },
-                },
-                {
-                    "id": "classifier",
-                    "type": "feature",
-                    "feature": "sequence-classifier",
-                    "inputs": [{"step": "pairs"}],
-                    "params": {
-                        "templates": {"step": "labeled"},
-                        "labels": {"step": "labels"},
-                        "default_class": 0,
-                        "device": "cpu",
-                        "head": "tcn",
-                        "head_config": {"hidden": 8, "blocks": 2},
-                        "steps": 12,
-                        "batch_size": 4,
-                        "crop_length": 60,
-                        "learning_rate": 0.01,
-                        "cv_folds": 2,
-                    },
-                },
-                {
-                    "id": "evaluate",
-                    "type": "feature",
-                    "feature": "evaluate-labels",
-                    "inputs": [{"step": "classifier"}],
-                    "params": {
-                        "labels": {"step": "labels"},
-                        "perspective": 0,
-                        "average_over": [0, 1],
-                    },
-                },
-            ],
+            "steps": [*_steps(), *extra],
         }
     )
+
+
+def _steps() -> list[Mapping[str, object]]:
+    return [
+        CONVERT_TRACKS_STEP,
+        CONVERT_LABELS_STEP,
+        {
+            "id": "heading",
+            "type": "feature",
+            "feature": "heading",
+            "inputs": ["tracks"],
+            "tracks": {"step": "tracks"},
+            "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+        },
+        {
+            "id": "pairs",
+            "type": "feature",
+            "feature": "pair-position",
+            "inputs": ["tracks", {"step": "heading"}],
+            "tracks": {"step": "tracks"},
+        },
+        {
+            "id": "labeled",
+            "type": "feature",
+            "feature": "extract-labeled-templates",
+            "inputs": [{"step": "pairs"}],
+            "params": LABELED,
+        },
+        {
+            "id": "classifier",
+            "type": "feature",
+            "feature": "sequence-classifier",
+            "inputs": [{"step": "pairs"}],
+            "params": {
+                **NETWORK,
+                "templates": {"step": "labeled"},
+                "cv_folds": 2,
+            },
+        },
+        {
+            "id": "evaluate",
+            "type": "feature",
+            "feature": "evaluate-labels",
+            "inputs": [{"step": "classifier"}],
+            "params": {
+                "labels": {"step": "labels"},
+                "perspective": 0,
+                "average_over": [0, 1],
+            },
+        },
+    ]
 
 
 @pytest.fixture
@@ -181,3 +189,59 @@ def test_verifying_a_network_writes_nothing_under_the_dataset_or_beside_it(
     assert report.ok
     assert_tree_unchanged(study.base_dir, before)
     assert not list(scratch.glob("mosaic-verify-*"))
+
+
+# --- A warm start ---
+
+WARM_SCOPES = {
+    **SCOPES,
+    "tune_labeled": Scope(groups=["tune"]),
+    "finetune": Scope(groups=["tune"]),
+}
+
+
+def _warm_recipe() -> Recipe:
+    """The recipe, and a step fine-tuned from its classifier on the tune group."""
+    return _recipe(
+        {
+            "id": "tune_labeled",
+            "type": "feature",
+            "feature": "extract-labeled-templates",
+            "inputs": [{"step": "pairs"}],
+            "params": LABELED,
+        },
+        {
+            "id": "finetune",
+            "type": "feature",
+            "feature": "sequence-classifier",
+            "inputs": [{"step": "pairs"}],
+            "params": {
+                **NETWORK,
+                "templates": {"step": "tune_labeled"},
+                "init_from": {"step": "classifier"},
+            },
+        },
+    )
+
+
+def test_a_warm_started_network_fitted_again_reproduces_the_stored_run(
+    tmp_path: Path,
+) -> None:
+    ds = calms21_dataset(
+        tmp_path / "ds",
+        {
+            "train": {"a": {f"s{i}": 120 for i in range(1, 5)}},
+            "tune": {"a": {f"u{i}": 120 for i in range(1, 3)}},
+        },
+        seed=11,
+        n_classes=2,
+    )
+    _ = run_pipeline(ds, _warm_recipe(), step_scopes=WARM_SCOPES)
+    ds = open_dataset(ds.manifest_path, ensure_roots=False)
+
+    report = verify_plan(ds, plan_pipeline(ds, _warm_recipe(), step_scopes=WARM_SCOPES))
+
+    assert report.ok, report
+    finetune = next(s for s in report.steps if s.step == "finetune")
+    assert finetune.status == "ok"
+    assert finetune.max_abs_diff == 0.0

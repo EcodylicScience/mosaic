@@ -13,6 +13,7 @@ nothing of mosaic's, and a mosaic fit must give the same network.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import zlib
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -1248,6 +1249,7 @@ def _record_fit_runs(
         classes: list[int],
         fold: int | None,
         seed: int,
+        start: module.SequenceClassifierModel | None = None,
     ) -> module.SequenceClassifierModel:
         recorded.append(
             {
@@ -1257,7 +1259,7 @@ def _record_fit_runs(
                 for offset in range(len(run.y))
             }
         )
-        return original(self, runs, columns, classes, fold, seed)
+        return original(self, runs, columns, classes, fold, seed, start)
 
     monkeypatch.setattr(SequenceClassifier, "_fit_model", spy)
     return recorded
@@ -1790,3 +1792,423 @@ def test_the_network_trains_on_the_controlled_classes(
     bundle = _saved(fitted, tmp_path / "saved")
     assert bundle["classes"] == classes
     assert "prob_2" not in fitted.apply(tables[C]).columns
+
+
+# --- Warm start -------------------------------------------------------------------
+
+SOURCE_STORAGE = "sequence-classifier__from__temporal-stack"
+TEMPLATES_STORAGE = "extract-labeled-templates__from__temporal-stack"
+RunKey = tuple[str, str]
+OTHER: Sequence[Entry] = (("other", "x"),)
+
+
+def _templates_run(
+    features: Path, run_id: str, *, train: Sequence[Entry], test: Sequence[Entry] = ()
+) -> RunKey:
+    """Write the provenance of a templates run under *features*."""
+    root = features / TEMPLATES_STORAGE / run_id
+    root.mkdir(parents=True)
+    listed = [*train, *test]
+    pd.DataFrame(
+        {
+            "group": [g for g, _ in listed],
+            "sequence": [s for _, s in listed],
+            "split": ["train"] * len(train) + ["test"] * len(test),
+            "count": 1,
+            "proportion": 1.0,
+        }
+    ).to_parquet(root / "template_provenance.parquet")
+    return TEMPLATES_STORAGE, run_id
+
+
+def _source(
+    features: Path,
+    fitted: SequenceClassifier,
+    run_id: str,
+    *,
+    templates: RunKey,
+    init_from: RunKey | None = None,
+    input_run: RunKey | None = None,
+) -> RunKey:
+    """Store *fitted* as a sequence-classifier run whose params name its references."""
+    root = features / SOURCE_STORAGE / run_id
+    fitted.save_state(root)
+    named = {"templates": templates}
+    if init_from is not None:
+        named["init_from"] = init_from
+    resolved = [
+        {"where": f"params.{name}", "feature": storage, "run_id": run}
+        for name, (storage, run) in named.items()
+    ]
+    if input_run is not None:
+        resolved.append(
+            {"where": "inputs[0]", "feature": input_run[0], "run_id": input_run[1]}
+        )
+    document = {
+        "_params": {
+            name: {"feature": storage, "run_id": run}
+            for name, (storage, run) in named.items()
+        },
+        "_resolved": resolved,
+    }
+    (root / "params.json").write_text(json.dumps(document))
+    return SOURCE_STORAGE, run_id
+
+
+def _bundle_path(features: Path, source: RunKey) -> Path:
+    return features / source[0] / source[1] / "sequence_classifier_model.joblib"
+
+
+def _warm_feature(
+    study: TemplatesStudy, features: Path, source: RunKey, **overrides: object
+) -> SequenceClassifier:
+    """A warm start from *source*, loaded and ready to fit."""
+    feature = _feature(
+        init_from={"feature": source[0], "run_id": source[1]}, **overrides
+    )
+    assert not feature.load_state(
+        study.root / "warm",
+        {"templates": study.templates, "init_from": _bundle_path(features, source)},
+        {"labels": study.label_files},
+    )
+    return feature
+
+
+def _warm(
+    study: TemplatesStudy,
+    tables: dict[Entry, pd.DataFrame],
+    features: Path,
+    source: RunKey,
+    **overrides: object,
+) -> SequenceClassifier:
+    feature = _warm_feature(study, features, source, **overrides)
+    feature.fit(_stream(tables))
+    return feature
+
+
+def _pretrained(
+    tmp_path: Path, recorded: Sequence[Entry] = (A, B), **overrides: object
+) -> tuple[TemplatesStudy, dict[Entry, pd.DataFrame], Path, RunKey]:
+    """A study of A and B for training and C for testing, and a source fitted on A and B.
+
+    The source's templates run records *recorded* as its train entries, which a
+    fit under folds needs to be disjoint from A and B.
+    """
+    study, tables = _two_entries(tmp_path / "study")
+    features = tmp_path / "features"
+    templates = _templates_run(features, "t-source", train=recorded)
+    source = _source(
+        features,
+        _fit(study, tables, "run", **overrides),
+        "s-source",
+        templates=templates,
+    )
+    return study, tables, features, source
+
+
+def test_a_warm_start_standardizes_as_its_source_and_keeps_the_bundle_keys(
+    tmp_path: Path,
+) -> None:
+    study, tables, features, source = _pretrained(tmp_path, OTHER)
+    stored = SequenceClassifierModelArtifact().from_path(_bundle_path(features, source))
+    full = stored["models"][-1]
+
+    warm = _saved(_warm(study, tables, features, source, cv_folds=2), tmp_path / "warm")
+
+    assert len(warm["models"]) == 3
+    for model in warm["models"]:
+        assert model["mean"] == full["mean"]
+        assert model["std"] == full["std"]
+    fresh = _saved(_fit(study, tables, cv_folds=2), tmp_path / "fresh")
+    assert set(warm) == set(fresh)
+    assert set(warm["models"][0]) == set(fresh["models"][0])
+
+
+def _record_losses(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record the loss of each training step, and train as usual."""
+    from mosaic.behavior.feature_library import sequence_training
+
+    losses: list[float] = []
+    original = sequence_training.backpropagate
+
+    def spy(loss: torch.Tensor) -> None:
+        losses.append(float(loss.item()))
+        original(loss)
+
+    monkeypatch.setattr(sequence_training, "backpropagate", spy)
+    return losses
+
+
+def test_a_warm_start_begins_at_a_lower_loss_than_a_fresh_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, tables, features, source = _pretrained(tmp_path)
+    losses = _record_losses(monkeypatch)
+
+    _ = _fit(study, tables)
+    fresh = losses[0]
+    losses.clear()
+    _ = _warm(study, tables, features, source)
+
+    assert losses[0] < fresh
+
+
+def test_two_warm_starts_of_one_source_and_seed_are_equal(tmp_path: Path) -> None:
+    study, tables, features, source = _pretrained(tmp_path)
+
+    first = _saved(_warm(study, tables, features, source), tmp_path / "first")
+    second = _saved(_warm(study, tables, features, source), tmp_path / "second")
+
+    for name, values in _weights(first).items():
+        np.testing.assert_array_equal(values, _weights(second)[name])
+
+
+def test_each_model_of_a_warm_start_trains_from_the_sources_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    starts: list[dict[str, npt.NDArray[np.float32]]] = []
+    original = module.train_network
+
+    def spy(network: nn.Module, *args: Any, **kwargs: Any) -> None:
+        starts.append(
+            {
+                k: v.detach().cpu().numpy().copy()
+                for k, v in network.state_dict().items()
+            }
+        )
+        original(network, *args, **kwargs)
+
+    monkeypatch.setattr(module, "train_network", spy)
+    disjoint = _templates_run(features, "t-other", train=OTHER)
+    other = _source(
+        features,
+        _fit(study, tables, run="other"),
+        "s-other",
+        templates=disjoint,
+    )
+    starts.clear()
+
+    _ = _warm(study, tables, features, other, cv_folds=2)
+
+    stored = SequenceClassifierModelArtifact().from_path(_bundle_path(features, other))
+    assert len(starts) == 3
+    for start in starts:
+        for name, values in stored["models"][-1]["weights"].items():
+            np.testing.assert_array_equal(start[name], values)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"head": "tcn"}, "head 'gru'.*head 'tcn'"),
+        ({"head_config": {"hidden": 16, "layers": 1}}, "hidden"),
+        ({"head_config": {"hidden": 8, "layers": 1, "stages": 2}}, "stages"),
+        ({"columns": ["f0", "f1", "f2"]}, r"columns \['f0', 'f1', 'f2', 'f3'\]"),
+    ],
+    ids=["head", "hidden", "stages", "columns"],
+)
+def test_a_source_of_another_network_is_refused(
+    tmp_path: Path, change: dict[str, object], message: str
+) -> None:
+    study, tables, features, source = _pretrained(tmp_path)
+    feature = _warm_feature(study, features, source, **change)
+
+    with pytest.raises(ValueError, match=message):
+        feature.fit(_stream(tables))
+
+
+def test_a_source_of_another_dropout_fits(tmp_path: Path) -> None:
+    study, tables, features, source = _pretrained(tmp_path)
+
+    warm = _warm(
+        study,
+        tables,
+        features,
+        source,
+        head_config={"hidden": 8, "layers": 1, "dropout": 0.1},
+    )
+
+    assert _saved(warm, tmp_path / "warm")["head_config"]["dropout"] == 0.1
+
+
+def test_a_class_the_source_lacks_is_refused(tmp_path: Path) -> None:
+    study, tables, features, source = _pretrained(
+        tmp_path, labels={"kind": "behavior", "mask": [2]}
+    )
+    feature = _warm_feature(study, features, source)
+
+    with pytest.raises(ValueError, match=r"classes \[0, 1\].*class 2"):
+        feature.fit(_stream(tables))
+
+
+def _record_class_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]]:
+    """Record the class weights and the class index of each target of every fit."""
+    recorded: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]] = []
+    original = module.train_network
+
+    def spy(
+        network: nn.Module,
+        frames: npt.NDArray[np.float32],
+        classes: npt.NDArray[np.intp],
+        sampler: Sampler,
+        weights: npt.NDArray[np.float64],
+        **kwargs: Any,
+    ) -> None:
+        recorded.append((weights, classes.copy()))
+        original(network, frames, classes, sampler, weights, **kwargs)
+
+    monkeypatch.setattr(module, "train_network", spy)
+    return recorded
+
+
+@pytest.mark.parametrize("masked", [2, 1])
+@pytest.mark.parametrize("how", ["balanced", "sqrt", "none"])
+def test_a_warm_start_trains_on_a_subset_of_the_sources_classes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, how: str, masked: int
+) -> None:
+    study, tables, features, source = _pretrained(tmp_path)
+    recorded = _record_class_weights(monkeypatch)
+
+    warm = _warm(
+        study,
+        tables,
+        features,
+        source,
+        labels={"kind": "behavior", "mask": [masked]},
+        class_weight=how,
+    )
+
+    assert _saved(warm, tmp_path / "warm")["classes"] == [0, 1, 2]
+    assert {"prob_0", "prob_1", "prob_2"} <= set(warm.apply(tables[C]).columns)
+    assert len(recorded) == 1
+    weights, targets = recorded[0]
+    kept = [c for c in CLASSES if c != masked]
+    # Each class trains at its index in the source's class list.
+    assert sorted(np.unique(targets).tolist()) == kept
+    assert weights[masked] == 0.0
+    assert np.isfinite(weights).all()
+    assert (weights[kept] > 0).all()
+
+
+def test_a_subset_warm_start_under_folds_does_not_report_the_absent_class_as_thin(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    study, tables, features, source = _pretrained(tmp_path, OTHER)
+    caplog.set_level(logging.WARNING)
+
+    warm = _warm(
+        study,
+        tables,
+        features,
+        source,
+        labels={"kind": "behavior", "mask": [2]},
+        cv_folds=2,
+    )
+
+    folds = pd.read_parquet(_saved_folds(warm, tmp_path / "warm"))
+    assert folds["rows_2"].tolist() == [0, 0]
+    assert "give it probability 0 there" not in caplog.text
+
+
+def _saved_folds(feature: SequenceClassifier, root: Path) -> Path:
+    feature.save_state(root)
+    return root / "cv_folds.parquet"
+
+
+@pytest.mark.parametrize("cv_folds", [None, 2])
+def test_a_source_that_trained_on_a_test_entry_is_refused(
+    tmp_path: Path, cv_folds: int | None
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    seen = _templates_run(features, "t-seen", train=[A, C])
+    source = _source(features, _fit(study, tables), "s-seen", templates=seen)
+
+    with pytest.raises(ValueError, match=r"holds out: test/c"):
+        _ = _warm_feature(study, features, source, cv_folds=cv_folds)
+
+
+def test_under_folds_a_source_that_trained_on_a_train_entry_is_refused(
+    tmp_path: Path,
+) -> None:
+    study, _, features, source = _pretrained(tmp_path)
+
+    with pytest.raises(ValueError, match=r"train/a, train/b"):
+        _ = _warm_feature(study, features, source, cv_folds=2)
+
+
+def test_two_hops_back_a_source_that_trained_on_a_test_entry_is_refused(
+    tmp_path: Path,
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    fitted = _fit(study, tables)
+    seen = _templates_run(features, "t-seen", train=[C])
+    first = _source(features, fitted, "s-first", templates=seen)
+    other = _templates_run(features, "t-other", train=OTHER)
+    second = _source(features, fitted, "s-second", templates=other, init_from=first)
+
+    with pytest.raises(ValueError, match=r"holds out: test/c"):
+        _ = _warm_feature(study, features, second)
+
+
+def test_a_chain_whose_init_from_ancestor_is_unreadable_is_refused(
+    tmp_path: Path,
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    other = _templates_run(features, "t-other", train=OTHER)
+    missing = (SOURCE_STORAGE, "s-missing")
+    second = _source(
+        features, _fit(study, tables), "s-second", templates=other, init_from=missing
+    )
+
+    with pytest.raises(ValueError, match=r"s-missing.*params\.json is missing"):
+        _ = _warm_feature(study, features, second)
+
+
+def test_a_source_whose_templates_provenance_is_missing_is_refused(
+    tmp_path: Path,
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    source = _source(
+        features,
+        _fit(study, tables),
+        "s-lost",
+        templates=(TEMPLATES_STORAGE, "t-gone"),
+    )
+
+    with pytest.raises(ValueError, match=r"t-gone.*template_provenance\.parquet"):
+        _ = _warm_feature(study, features, source)
+
+
+def test_a_classifier_upstream_of_the_sources_input_that_trained_on_a_test_entry_is_refused(
+    tmp_path: Path,
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    fitted = _fit(study, tables)
+    seen = _templates_run(features, "t-seen", train=[C])
+    upstream = _source(features, fitted, "s-upstream", templates=seen)
+    other = _templates_run(features, "t-other", train=OTHER)
+    source = _source(features, fitted, "s-stacked", templates=other, input_run=upstream)
+
+    with pytest.raises(ValueError, match=r"holds out: test/c"):
+        _ = _warm_feature(study, features, source)
+
+
+def test_an_unreadable_run_upstream_of_the_sources_input_is_not_refused(
+    tmp_path: Path,
+) -> None:
+    study, tables, features, _ = _pretrained(tmp_path)
+    other = _templates_run(features, "t-other", train=OTHER)
+    source = _source(
+        features,
+        _fit(study, tables),
+        "s-input",
+        templates=other,
+        input_run=("temporal-stack", "unreadable"),
+    )
+
+    warm = _warm(study, tables, features, source)
+
+    assert _saved(warm, tmp_path / "warm")["classes"] == CLASSES

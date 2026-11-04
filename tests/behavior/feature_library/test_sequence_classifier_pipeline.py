@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pandas as pd
@@ -50,74 +51,83 @@ def _dataset(base: Path) -> Dataset:
     )
 
 
-def _recipe(**classifier: object) -> Recipe:
+NETWORK = {
+    "labels": {"step": "labels"},
+    "default_class": 0,
+    "device": "cpu",
+    "head": "tcn",
+    "head_config": {"hidden": 8, "blocks": 2},
+    "batch_size": 4,
+    "crop_length": 60,
+    "learning_rate": 0.01,
+}
+
+
+def _recipe(*extra: Mapping[str, object], **classifier: object) -> Recipe:
     return Recipe.model_validate(
         {
             "schema_version": 1,
             "name": "sequence-network",
-            "steps": [
-                CONVERT_TRACKS_STEP,
-                CONVERT_LABELS_STEP,
-                {
-                    "id": "heading",
-                    "type": "feature",
-                    "feature": "heading",
-                    "inputs": ["tracks"],
-                    "tracks": {"step": "tracks"},
-                    "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
-                },
-                {
-                    "id": "pairs",
-                    "type": "feature",
-                    "feature": "pair-position",
-                    "inputs": ["tracks", {"step": "heading"}],
-                    "tracks": {"step": "tracks"},
-                },
-                {
-                    "id": "labeled",
-                    "type": "feature",
-                    "feature": "extract-labeled-templates",
-                    "inputs": [{"step": "pairs"}],
-                    "params": {
-                        "labels": {"step": "labels"},
-                        "n_total": 300,
-                        "test_fraction": 0.0,
-                    },
-                },
-                {
-                    "id": "classifier",
-                    "type": "feature",
-                    "feature": "sequence-classifier",
-                    "inputs": [{"step": "pairs"}],
-                    "params": {
-                        "templates": {"step": "labeled"},
-                        "labels": {"step": "labels"},
-                        "default_class": 0,
-                        "device": "cpu",
-                        "head": "tcn",
-                        "head_config": {"hidden": 8, "blocks": 2},
-                        "steps": 30,
-                        "batch_size": 4,
-                        "crop_length": 60,
-                        "learning_rate": 0.01,
-                        "cv_folds": 3,
-                        **classifier,
-                    },
-                },
-                {
-                    "id": "evaluate",
-                    "type": "feature",
-                    "feature": "evaluate-labels",
-                    "inputs": [{"step": "classifier"}],
-                    "params": {
-                        "labels": {"step": "labels"},
-                        "perspective": 0,
-                        "average_over": [0, 1, 2],
-                    },
-                },
-            ],
+            "steps": [*_steps(**classifier), *extra],
         }
     )
+
+
+def _steps(**classifier: object) -> list[Mapping[str, object]]:
+    return [
+        CONVERT_TRACKS_STEP,
+        CONVERT_LABELS_STEP,
+        {
+            "id": "heading",
+            "type": "feature",
+            "feature": "heading",
+            "inputs": ["tracks"],
+            "tracks": {"step": "tracks"},
+            "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+        },
+        {
+            "id": "pairs",
+            "type": "feature",
+            "feature": "pair-position",
+            "inputs": ["tracks", {"step": "heading"}],
+            "tracks": {"step": "tracks"},
+        },
+        {
+            "id": "labeled",
+            "type": "feature",
+            "feature": "extract-labeled-templates",
+            "inputs": [{"step": "pairs"}],
+            "params": {
+                "labels": {"step": "labels"},
+                "n_total": 300,
+                "test_fraction": 0.0,
+            },
+        },
+        {
+            "id": "classifier",
+            "type": "feature",
+            "feature": "sequence-classifier",
+            "inputs": [{"step": "pairs"}],
+            "params": {
+                **NETWORK,
+                "templates": {"step": "labeled"},
+                "steps": 30,
+                "cv_folds": 3,
+                **classifier,
+            },
+        },
+        {
+            "id": "evaluate",
+            "type": "feature",
+            "feature": "evaluate-labels",
+            "inputs": [{"step": "classifier"}],
+            "params": {
+                "labels": {"step": "labels"},
+                "perspective": 0,
+                "average_over": [0, 1, 2],
+            },
+        },
+    ]
 
 
 def _root(
@@ -368,3 +378,72 @@ def test_the_blocks_are_the_same_run_over_a_wider_scope(tmp_path: Path) -> None:
     assert new == old
     assert _digest(new / "cv_folds.parquet") == folds
     assert (new / "test__t1.parquet").exists()
+
+
+# --- Warm start ---
+
+
+WARM_SCOPES = {
+    "labeled": TRAIN,
+    "classifier": TRAIN,
+    "evaluate": TRAIN,
+    "tune_labeled": TEST,
+    "finetune": TEST,
+}
+
+
+def _warm_recipe(*, warm: bool = True) -> Recipe:
+    """The screening recipe, and a step fine-tuned on templates of the test group."""
+    finetune: dict[str, object] = {
+        **NETWORK,
+        "templates": {"step": "tune_labeled"},
+        "steps": 20,
+    }
+    if warm:
+        finetune["init_from"] = {"step": "classifier"}
+    return _recipe(
+        {
+            "id": "tune_labeled",
+            "type": "feature",
+            "feature": "extract-labeled-templates",
+            "inputs": [{"step": "pairs"}],
+            "params": {
+                "labels": {"step": "labels"},
+                "n_total": 100,
+                "test_fraction": 0.0,
+            },
+        },
+        {
+            "id": "finetune",
+            "type": "feature",
+            "feature": "sequence-classifier",
+            "inputs": [{"step": "pairs"}],
+            "params": finetune,
+        },
+    )
+
+
+def test_a_step_fine_tuned_from_another_runs_after_it_and_names_it(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path / "ds")
+    recipe = _warm_recipe()
+
+    plan = plan_pipeline(ds, recipe, step_scopes=WARM_SCOPES)
+    order = [step.step_id for step in plan.steps]
+    run = run_pipeline(ds, recipe, step_scopes=WARM_SCOPES)
+
+    assert order.index("classifier") < order.index("finetune")
+    assert {o.state for o in run.outcomes} == {"ran"}
+    pretrained = next(o for o in run.outcomes if o.step_id == "classifier")
+    finetuned = next(o for o in run.outcomes if o.step_id == "finetune")
+    cold = plan_pipeline(ds, _warm_recipe(warm=False), step_scopes=WARM_SCOPES)
+    assert cold.step("finetune").run_id != finetuned.run_id
+    root = _root(ds, run, "finetune", WARM_SCOPES, recipe)
+    resolved = json.loads((root / "params.json").read_text())["_resolved"]
+    assert {
+        "where": "params.init_from",
+        "feature": plan.step("classifier").storage_name,
+        "run_id": pretrained.run_id,
+    } in resolved
+    assert (root / "sequence_classifier_model.joblib").exists()

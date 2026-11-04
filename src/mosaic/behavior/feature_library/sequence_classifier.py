@@ -42,6 +42,14 @@ that scores some of its rows, so a block-mode apply costs up to one pass per fol
 ``cv_folds.parquet`` then has one row per block, with its ``start`` and ``stop`` frames
 (half-open) beside ``fold``.
 
+**Warm start.** ``init_from`` names a ``sequence-classifier`` run whose full model
+every model of the fit starts from: its weights and the mean and standard deviation it
+standardizes by. The head, its options apart from ``dropout``, and the columns must be
+the source's. The labels may hold a subset of the source's classes, and the fit keeps
+every source class in its output, a class absent from the runs with weight 0. A source
+whose lineage trained on an entry this run holds out is refused: a test entry of the
+templates run, or under ``cv_folds`` a train entry.
+
 **Determinism.** The same params and inputs fit the same model on a CPU at one
 thread count. A GPU repeats on the same machine with the settings below, and is
 not promised to give the CPU's bytes. ``device`` is part of the run id for this
@@ -80,6 +88,15 @@ from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import HASH_EXCLUDE, Declared
+from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
+from mosaic.core.pipeline.inventory.params import (
+    RunKey,
+    RunParams,
+    features_roots,
+    named_references,
+    read_run_params,
+    upstream_runs,
+)
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -103,6 +120,7 @@ from mosaic.core.pipeline.types import (
     LabeledTemplatesRef,
     Result,
 )
+from mosaic.core.pipeline.storage_names import feature_slug_of
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.track_quality import consecutive_runs
 from mosaic.optional_dependency import OptionalModule, Prerequisite
@@ -220,6 +238,104 @@ def _training_runs(pieces: list[tuple[TrainingRun, int, int]]) -> list[TrainingR
     ]
 
 
+def _without_dropout(options: Mapping[str, object]) -> dict[str, object]:
+    """Return head options less ``dropout``, which a warm start may change."""
+    return {name: value for name, value in options.items() if name != "dropout"}
+
+
+def _head_options_of(bundle: SequenceClassifierBundle) -> dict[str, object]:
+    """Return the head options of *bundle* less ``dropout``, with the defaults it omits.
+
+    A bundle fitted before refinement stages existed holds no ``stages`` option.
+    """
+    config = get_head(bundle["head"]).config.model_validate(bundle["head_config"])
+    return _without_dropout(config.model_dump())
+
+
+# --- Warm-start lineage ---
+
+
+def _named_run(params: RunParams, field: str) -> RunKey | None:
+    """Return the run that the params field *field* of a run names, if it names one."""
+    pairs, _ = named_references({field: params.params.get(field)})
+    return next(iter(pairs), None)
+
+
+def _templates_train_entries(
+    roots: DatasetRoots, params: RunParams
+) -> list[tuple[str, str]] | str:
+    """Return the train entries of the templates run that a run of *params* fitted on.
+
+    Returns:
+        The entries, or why they are unknown.
+    """
+    templates = _named_run(params, "templates")
+    if templates is None:
+        return "its params.json names no templates run"
+    entries = entries_of_templates(
+        feature_run_root(roots, *templates) / "templates.parquet", "train"
+    )
+    if entries is None:
+        return (
+            f"its templates run {templates[0]}/{templates[1]} has no "
+            "template_provenance.parquet"
+        )
+    return entries
+
+
+def _lineage_train_entries(
+    feature: str, roots: DatasetRoots, source: RunKey
+) -> set[tuple[str, str]]:
+    """Return the entries that a ``sequence-classifier`` run and its lineage trained on.
+
+    The ``templates`` train entries of the run, of each run its ``init_from``
+    chain names, and of each ``sequence-classifier`` run upstream of them. A
+    run elsewhere upstream whose params or templates cannot be read ends that
+    branch of the walk.
+
+    Args:
+        feature: The name of the warm-started feature, for the message.
+        roots: The roots of the dataset that holds the runs.
+        source: The run, as its storage directory and run id.
+
+    Raises:
+        ValueError: A run on the ``init_from`` chain has no readable
+            ``params.json``, or its templates provenance cannot be read. It may
+            have trained on any entry.
+    """
+    cache: dict[RunKey, RunParams | None] = {}
+    seen: set[tuple[str, str]] = set()
+    chain: list[RunKey] = []
+    link: RunKey | None = source
+    while link is not None and link not in chain:
+        chain.append(link)
+        read = read_run_params(feature_run_root(roots, *link))
+        cache[link] = read.params
+        if read.params is None:
+            found: list[tuple[str, str]] | str = read.finding
+        else:
+            found = _templates_train_entries(roots, read.params)
+        if isinstance(found, str):
+            msg = (
+                f"[{feature}] the init_from chain holds the run {link[0]}/{link[1]}, "
+                f"and {found}, so the entries it trained on are unknown and may be "
+                "ones this run holds out"
+            )
+            raise ValueError(msg)
+        seen.update(found)
+        assert read.params is not None
+        link = _named_run(read.params, "init_from")
+    for run, params in upstream_runs(roots, chain, cache):
+        if run in chain or params is None:
+            continue
+        if feature_slug_of(run[0]) != feature:
+            continue
+        entries = _templates_train_entries(roots, params)
+        if not isinstance(entries, str):
+            seen.update(entries)
+    return seen
+
+
 # --- Model artifact ---
 
 
@@ -277,6 +393,13 @@ _TEMPLATES_DESCRIPTION = (
 _MODEL_DESCRIPTION = (
     "A pre-fitted SequenceClassifierModelArtifact to load instead of training. "
     "Mutually exclusive with templates."
+)
+
+_INIT_FROM_DESCRIPTION = (
+    "A sequence-classifier run whose network and standardization the fit starts "
+    "from, with the same head, options apart from dropout, and columns, labels "
+    "holding a subset of its classes, and no training on this run's held-out "
+    "entries in it or its own init_from."
 )
 
 _LABELS_DESCRIPTION = (
@@ -481,6 +604,9 @@ class SequenceClassifier(FitReporting):
         model: Annotated[
             SequenceClassifierModelArtifact | None, Declared(_MODEL_DESCRIPTION)
         ] = Field(default_factory=SequenceClassifierModelArtifact)
+        init_from: Annotated[
+            SequenceClassifierModelArtifact | None, Declared(_INIT_FROM_DESCRIPTION)
+        ] = None
         labels: Annotated[
             GroundTruthLabelsSource | None, Declared(_LABELS_DESCRIPTION)
         ] = None
@@ -595,6 +721,12 @@ class SequenceClassifier(FitReporting):
                     "train, and reads their labels from it"
                 )
                 raise ValueError(msg)
+            if self.model is not None and self.init_from is not None:
+                msg = (
+                    "init_from starts a fit from a stored network, and a run "
+                    "given a model fits nothing"
+                )
+                raise ValueError(msg)
             if self.model is not None and self.labels is not None:
                 msg = (
                     "labels is read when fitting from templates, and a run given "
@@ -619,14 +751,16 @@ class SequenceClassifier(FitReporting):
             A run that cross-validates by sequence, or not at all, has the identity it
             had before the block settings existed. ``check_cross_validation`` leaves
             them at their defaults then, so leaving them out loses nothing. A run of
-            one stage without label smoothing or ``cv_group_by`` has the identity it
-            had before those settings existed.
+            one stage without label smoothing, ``cv_group_by`` or ``init_from`` has
+            the identity it had before those settings existed.
             """
             dumped = drop_unused_cv_settings(
                 super().identity_dump(), self.cv_unit, self.cv_group_by
             )
             if self.label_smoothing == 0.0:
                 del dumped["label_smoothing"]
+            if self.init_from is None:
+                del dumped["init_from"]
             options = self.head_options()
             if options.stages == 1:
                 dumped["head_config"] = options.model_dump(exclude={"stages"})
@@ -662,6 +796,7 @@ class SequenceClassifier(FitReporting):
 
     def _reset(self) -> None:
         self._bundle: SequenceClassifierBundle | None = None
+        self._source: SequenceClassifierBundle | None = None
         self._fold_of: dict[tuple[str, str], int] = {}
         self._blocks: FoldLookup | None = None
         self._cv_table: pd.DataFrame | None = None
@@ -701,7 +836,62 @@ class SequenceClassifier(FitReporting):
                 raise ValueError(msg)
             self._train_entries = entries
             self._label_files = dependency_lookups.get("labels", {})
+            if self.params.init_from is not None:
+                self._source = self._warm_start_source(
+                    self.params.init_from,
+                    artifact_paths.get("init_from"),
+                    artifact_paths["templates"],
+                    entries,
+                )
         return False
+
+    def _warm_start_source(
+        self,
+        init_from: SequenceClassifierModelArtifact,
+        path: Path | None,
+        templates: Path,
+        train_entries: list[tuple[str, str]],
+    ) -> SequenceClassifierBundle:
+        """Read the bundle *init_from* resolved to, and refuse a source that saw held-out entries.
+
+        Raises:
+            FileNotFoundError: *init_from* resolved no file. A fit in its place
+                would be stored under an identifier that names the source.
+            ValueError: The source's lineage cannot be read, or trained on a
+                test entry of *templates* or, under ``cv_folds``, a train entry.
+        """
+        if path is None:
+            msg = (
+                f"[{self.name}] init_from {init_from.feature!r} run "
+                f"{init_from.run_id!r} holds no {init_from.pattern!r}, and a fit "
+                "in its place would be stored under an identifier that names it. "
+                "Run the source's fit first"
+            )
+            raise FileNotFoundError(msg)
+        source_root = path.parent
+        seen = _lineage_train_entries(
+            self.name,
+            features_roots(source_root),
+            (source_root.parent.name, source_root.name),
+        )
+        test = entries_of_templates(templates, "test") or []
+        held_out = [("test", test)]
+        if self.params.cv_folds is not None:
+            held_out.append(("train", train_entries))
+        for split, entries in held_out:
+            met = sorted(seen.intersection(entries))
+            if met:
+                named = ", ".join(f"{g}/{s}" for g, s in met[:5])
+                more = f" and {len(met) - 5} more" if len(met) > 5 else ""
+                msg = (
+                    f"[{self.name}] the init_from source, or a run it started "
+                    f"from, trained on {split} entries that this run holds out: "
+                    f"{named}{more}. Their scores "
+                    "would read as held out when they are not. Start from a "
+                    "source that did not train on them"
+                )
+                raise ValueError(msg)
+        return init_from.from_path(path)
 
     def _adopt(self, bundle: SequenceClassifierBundle, *, folds: bool) -> None:
         """Take a loaded bundle, and its folds when *folds* asks for them."""
@@ -738,7 +928,16 @@ class SequenceClassifier(FitReporting):
         p = self.params
 
         columns, runs, ranges = self._collect_runs(inputs)
-        classes = sorted({int(c) for run in runs for c in np.unique(run.y)})
+        found = sorted({int(c) for run in runs for c in np.unique(run.y)})
+        source = self._source
+        if source is not None:
+            self._check_source(source, columns, found)
+        classes = found if source is None else list(source["classes"])
+        start = (
+            None
+            if source is None
+            else next(m for m in source["models"] if m["fold"] is None)
+        )
         # The runs hold the labels themselves until here, and class indices after.
         index_of = {label: index for index, label in enumerate(classes)}
         runs = [
@@ -789,11 +988,14 @@ class SequenceClassifier(FitReporting):
                             classes,
                             fold,
                             sub_seed(p.random_state, "fold", fold),
+                            start,
                         )
                     )
                     self._after_fit(fold + 1, total)
             self._before_fit(total - 1, total, whole="all runs")
-            models.append(self._fit_model(runs, columns, classes, None, p.random_state))
+            models.append(
+                self._fit_model(runs, columns, classes, None, p.random_state, start)
+            )
             self._after_fit(total, total)
 
         bundle: SequenceClassifierBundle = {
@@ -876,6 +1078,40 @@ class SequenceClassifier(FitReporting):
         write_bundle(run_root / "sequence_classifier_model.joblib", self._bundle)
 
     # --- Fitting ---
+
+    def _check_source(
+        self, source: SequenceClassifierBundle, columns: list[str], classes: list[int]
+    ) -> None:
+        """Refuse a warm-start source whose network this fit cannot start from.
+
+        Raises:
+            ValueError: The source has another head, other head options apart
+                from ``dropout``, other columns or another order of them, or
+                lacks a class of the labels.
+        """
+        p = self.params
+        problem = ""
+        lacking = sorted(set(classes) - set(source["classes"]))
+        if source["head"] != p.head:
+            problem = f"head {source['head']!r}, and this run head {p.head!r}"
+        elif (stored := _head_options_of(source)) != (
+            options := _without_dropout(p.head_options().model_dump())
+        ):
+            problem = f"head_config {stored}, and this run {options} (dropout aside)"
+        elif source["columns"] != columns:
+            problem = f"columns {source['columns']}, and this run {columns}"
+        elif lacking:
+            problem = (
+                f"classes {source['classes']}, and the labels of this run hold "
+                f"class {', '.join(str(c) for c in lacking)} as well"
+            )
+        if problem:
+            msg = (
+                f"[{self.name}] the init_from source has {problem}. A warm start "
+                "needs the source's network, its columns in order and labels "
+                "among its classes"
+            )
+            raise ValueError(msg)
 
     def _collect_runs(
         self, inputs: InputStream
@@ -979,13 +1215,23 @@ class SequenceClassifier(FitReporting):
         classes: list[int],
         fold: int | None,
         seed: int,
+        start: SequenceClassifierModel | None = None,
     ) -> SequenceClassifierModel:
-        """Fit one network on *runs*, standardized by their own statistics."""
+        """Fit one network on *runs*, from *start* when it is given.
+
+        Without *start* the network starts from seeded weights and standardizes
+        by the statistics of *runs*. With it, the network starts from its
+        weights and standardizes by its statistics, which those weights learned.
+        """
         p = self.params
-        moments = RunningMoments(len(columns))
-        for run in runs:
-            moments.add(run.x.astype(np.float64))
-        mean, std = moments.standardizer(min_std=_MIN_STD)
+        if start is None:
+            moments = RunningMoments(len(columns))
+            for run in runs:
+                moments.add(run.x.astype(np.float64))
+            mean, std = moments.standardizer(min_std=_MIN_STD)
+        else:
+            mean = np.asarray(start["mean"], dtype=np.float64)
+            std = np.asarray(start["std"], dtype=np.float64)
         frames = np.concatenate(
             [standardize(r.x.astype(np.float64), mean, std, p.clip) for r in runs]
         ).astype(np.float32)
@@ -1004,6 +1250,13 @@ class SequenceClassifier(FitReporting):
             n_features=len(columns),
             n_classes=len(classes),
         )
+        if start is not None:
+            import torch
+
+            _ = network.load_state_dict(
+                {k: torch.as_tensor(v) for k, v in start["weights"].items()},
+                strict=True,
+            )
         train_network(
             network,
             frames,

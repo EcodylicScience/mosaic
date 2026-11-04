@@ -42,6 +42,7 @@ from mosaic.behavior.feature_library.sequence_training import (
     sub_seed,
 )
 from mosaic.core.pipeline.types import InputStream
+from tests.helpers import write_templates_study
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -686,6 +687,55 @@ def test_a_model_that_did_not_resolve_is_not_replaced_by_a_fit(tmp_path: Path) -
     assert feature.load_state(tmp_path, {}, {}) is False
     with pytest.raises(RuntimeError, match="did not resolve to a stored model"):
         feature.fit(InputStream(lambda: iter(()), n_entries=0))
+
+
+# --- A warm start ---------------------------------------------------------------
+
+SOURCE = {"feature": "sequence-classifier__from__speed-angvel", "run_id": "0.2-aaaa"}
+
+
+def test_no_warm_start_is_the_identity_without_one() -> None:
+    omitted = _params()
+
+    assert _params(init_from=None).identity_dump() == omitted.identity_dump()
+    assert "init_from" not in omitted.identity_dump()
+
+
+def test_a_warm_start_names_its_source_in_the_identity() -> None:
+    warm = _params(init_from=SOURCE)
+    spelled = _params(
+        init_from={**SOURCE, "pattern": "sequence_classifier_model.joblib"}
+    )
+    other = _params(init_from={**SOURCE, "run_id": "0.2-bbbb"})
+
+    dumped = warm.identity_dump()["init_from"]
+    assert isinstance(dumped, dict)
+    assert dumped["run_id"] == "0.2-aaaa"
+    assert spelled.identity_dump() == warm.identity_dump()
+    assert other.identity_dump() != warm.identity_dump()
+    assert warm.identity_dump() != _params().identity_dump()
+
+
+def test_a_warm_start_beside_a_model_is_refused() -> None:
+    with pytest.raises(ValueError, match="init_from.*model"):
+        SequenceClassifier.Params.from_overrides(
+            {
+                "model": {"feature": "sequence-classifier"},
+                "init_from": SOURCE,
+                "default_class": 0,
+            }
+        )
+
+
+def test_a_warm_start_that_did_not_resolve_is_refused_before_a_fit(
+    tmp_path: Path,
+) -> None:
+    inputs = SequenceClassifier.Inputs.model_validate([{"feature": "speed-angvel"}])
+    feature = SequenceClassifier(inputs, {**FIT, "init_from": SOURCE})
+    study = write_templates_study(tmp_path, {}, train=[("g", "a")])
+
+    with pytest.raises(FileNotFoundError, match=r"init_from .*0\.2-aaaa"):
+        _ = feature.load_state(tmp_path / "run", {"templates": study.templates}, {})
 
 
 # --- The batches ----------------------------------------------------------------
