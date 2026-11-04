@@ -214,6 +214,16 @@ CASES: tuple[Case, ...] = (
         params={"column": "SPEED"},
     ),
     Case(
+        case_id="sequence-aggregate/column-speed",
+        feature="sequence-aggregate",
+        params={"column": "SPEED"},
+    ),
+    Case(
+        case_id="individual-aggregate/column-speed",
+        feature="individual-aggregate",
+        params={"column": "SPEED"},
+    ),
+    Case(
         case_id="collective-motion-metrics/subgroups-alpha",
         feature="collective-motion-metrics",
         params={"subgroup_col": "event", "area_method": "alpha_shape", "alpha": 60.0},

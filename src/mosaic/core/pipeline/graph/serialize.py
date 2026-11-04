@@ -420,6 +420,7 @@ def _step_wire(
         workers=effective_parallel(
             default_parallel, parallelizable=planned.parallelizable
         ).workers,
+        pairs=planned.pairs,
     )
 
 

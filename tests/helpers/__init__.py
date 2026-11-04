@@ -21,7 +21,7 @@ What lives where:
 - ``latents`` names the frames at the centers of VAME's windows, and checks that
   a vame output table places a finite latent on each.
 - ``column_contract`` checks a feature's output against the columns that
-  validation predicts from its declaration.
+  validation predicts from its declaration, and a pair table's mirror rows.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``labels`` writes converted label files of events, and their index rows.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
@@ -109,7 +109,7 @@ from tests.helpers.annotations import (
     revision_file,
 )
 from tests.helpers.catalogs import catalog_without_contract
-from tests.helpers.column_contract import assert_writes_declared_columns
+from tests.helpers.column_contract import assert_writes_declared_columns, mirrored_rows
 from tests.helpers.cli import invoke_json, invoke_ok
 from tests.helpers.datasets import make_dataset
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
@@ -605,6 +605,7 @@ __all__ = [
     "make_sequence_df",
     "make_templates",
     "minimal_op_params",
+    "mirrored_rows",
     "model_reference",
     "missing_ffmpeg_tools",
     "module_tree",

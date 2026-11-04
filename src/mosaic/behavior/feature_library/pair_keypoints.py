@@ -215,6 +215,9 @@ class PairKeypoints:
             Conditional(Prefix("inter_dist__"), when_param="inter_distances"),
             *kept(C.seq_col, C.group_col),
         ),
+        # Both rows on every frame the two animals share. Only the diagonal
+        # inter_dist__a__a is symmetric, which no prefix names.
+        mirrored=True,
     )
 
     class Inputs(TrackInputs):

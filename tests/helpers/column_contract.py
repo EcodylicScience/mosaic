@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 
+import numpy as np
 import pandas as pd
 
 from mosaic.core.pipeline.graph import ColumnSet
@@ -50,3 +51,24 @@ def assert_writes_declared_columns(
         column for column in written - set(passed) if not predicted.admits(column)
     )
     assert not undeclared, f"{feature} wrote {undeclared}, which it does not declare"
+
+
+def mirrored_rows(output: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The perspective-0 and perspective-1 rows of a pair table, keyed alike.
+
+    Each is indexed by frame and the pair's lower and higher id, and sorted.
+    Asserts what ``Provides.mirrored`` declares: every pair row on a frame has
+    its mirror, the same pair with ``id1`` and ``id2`` swapped.
+    """
+    keyed = output.assign(
+        low=np.minimum(output["id1"], output["id2"]),
+        high=np.maximum(output["id1"], output["id2"]),
+    ).set_index(["frame", "low", "high"])
+    first = keyed[keyed["perspective"] == 0].sort_index()
+    second = keyed[keyed["perspective"] == 1].sort_index()
+    assert first.index.is_unique, "a pair holds two perspective-0 rows on a frame"
+    assert second.index.is_unique, "a pair holds two perspective-1 rows on a frame"
+    assert list(first.index) == list(second.index), "a pair row has no mirror"
+    np.testing.assert_array_equal(first["id1"], second["id2"])
+    np.testing.assert_array_equal(first["id2"], second["id1"])
+    return first, second

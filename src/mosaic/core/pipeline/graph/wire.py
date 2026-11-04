@@ -38,6 +38,7 @@ from pydantic import Field
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
 
+from ..column_contract import PairRead
 from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
 from ..types.feature import EmitsLevel
@@ -711,6 +712,9 @@ class PlannedStepWire(GraphModel):
         parallelizable: Whether a feature step can compute several entries at once.
         workers: How many entries the step would compute at once under the
             server's default settings, 1 for a step that is not parallelizable.
+        pairs: The rows of a pair table that an aggregate step's ``sum`` or
+            ``count`` reads, ``once`` or ``each_perspective``. ``None`` for any
+            other step.
     """
 
     step: str
@@ -734,6 +738,7 @@ class PlannedStepWire(GraphModel):
     superseded_omitted: int = 0
     parallelizable: bool = False
     workers: int = 1
+    pairs: PairRead | None = None
 
 
 class ParallelWire(GraphModel):

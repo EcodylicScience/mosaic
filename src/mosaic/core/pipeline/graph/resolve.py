@@ -50,6 +50,7 @@ if TYPE_CHECKING:
     from mosaic.core.params import Params
 
 from ..column_contract import (
+    PAIR_RULE_FIELD,
     Column,
     Provides,
     contract_fields,
@@ -528,8 +529,15 @@ def _feature_declaration(cls: type) -> Declaration:
         follows_ids=getattr(cls, "follows_ids", True) is True,
         temporal_reach=class_reach(cls),
         temporal_reach_by_option=tuple(class_reach_by_option(cls).items()),
+        pair_rule_column=_pair_rule_column(cls),
         unavailable=unmet(_prerequisites_of(cls)),
     )
+
+
+def _pair_rule_column(cls: type) -> str | None:
+    """The params field that names the column a feature's ``pairs`` rule is read of."""
+    declared: object = getattr(cls, "pair_rule_column", None)
+    return declared if isinstance(declared, str) and declared else None
 
 
 def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
@@ -1036,6 +1044,7 @@ def resolve_step_spec(
     *,
     entries: Scope | None = None,
     tracks_run_id: str | None = None,
+    pairs: Literal["once"] | None = None,
 ) -> StepSpec:
     """Substitute every reference in one step from what is already resolved.
 
@@ -1064,6 +1073,10 @@ def resolve_step_spec(
     A step that a submission binds to a run is resolved in *resolved* as that
     run, so a step reading it reads the pinned run. Its own spec is the one it
     would run, which is what the plan compares the bind's storage with.
+
+    *pairs* is the ``once`` that a plan resolved an aggregate's ``auto`` pair
+    rule to (:func:`~.validate.pair_rules`). It is written into the params of a
+    step left at ``auto``, and a step that writes its own rule keeps it.
     """
     step = recipe.step(step_id)
 
@@ -1106,6 +1119,8 @@ def resolve_step_spec(
         )
 
     params = dict(step.params)
+    if pairs is not None and params.get(PAIR_RULE_FIELD, "auto") == "auto":
+        params[PAIR_RULE_FIELD] = pairs
     labels_run_id: str | None = None
     for name, reference in params_step_refs(step.params).items():
         upstream = resolved.get(reference.step)

@@ -189,6 +189,8 @@ class ApproachAvoidance:
             Column(C.seq_col),
         ),
         conditional=kept(C.group_col),
+        # The union of both directions, written on both rows of the pair.
+        symmetric=(Column("aa_event"), Column("label_id")),
     )
 
     # A table of positions joined with heading's ANGLE, as on mosaic_v1 tracks

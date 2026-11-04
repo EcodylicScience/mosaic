@@ -564,4 +564,4 @@ def test_plan_recipe_gains_no_output_field_for_the_host_dependent_cautions() -> 
     assert spec is not None
     schema = spec.output_schema()
 
-    assert len(json.dumps(schema, separators=(",", ":"))) == 8212
+    assert len(json.dumps(schema, separators=(",", ":"))) == 8340

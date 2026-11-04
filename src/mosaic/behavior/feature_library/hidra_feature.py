@@ -450,6 +450,9 @@ HIDRA_PROVIDES: Final = Provides(
         Column("predicted_label"),
     ),
     conditional=kept(C.group_col),
+    # Both rows of every pair in every frame. The probabilities and calls are
+    # id1's action toward id2.
+    mirrored=True,
 )
 
 

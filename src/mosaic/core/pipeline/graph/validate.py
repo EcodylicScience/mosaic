@@ -56,7 +56,10 @@ from mosaic.core.narrowing import is_object_list, is_str_mapping
 
 from .._utils import ResolvedScope, hash_params
 from ..column_contract import (
+    PAIR_RULE_FIELD,
     NamedColumns,
+    PairRead,
+    PairRule,
     ParamValues,
     contract_fields,
     needs_of,
@@ -75,6 +78,7 @@ from .columns import (
     names_wire,
     need_status,
     output_columns,
+    pair_rule_read,
     provider_phrase,
     providers_of,
     tracks_columns,
@@ -145,6 +149,7 @@ __all__ = [
     "merge_cautions",
     "one_run_problems",
     "patch_validation_report",
+    "pair_rules",
     "read_recipe",
     "reject_unless_valid",
     "resolved_columns",
@@ -303,6 +308,8 @@ class _Walk:
     """The output columns of each feature step that checked out."""
     values: dict[str, ParamValues] = field(default_factory=dict)
     """The built params of each such step, every field its contract reads."""
+    pair_reads: dict[str, PairRead] = field(default_factory=dict[str, PairRead])
+    """The rows that each ``sum`` or ``count`` step with a pair rule reads."""
     cautions: list[Problem] = field(default_factory=list)
     unchecked: list[str] = field(default_factory=list)
     """The feature steps whose feature does not declare ``requires``, in walk order."""
@@ -680,6 +687,10 @@ def _column_problems(
     merged = walk.merged_columns(step)
     walk.values[step.id] = values
     walk.columns[step.id] = output_columns(declared.provides, merged, values)
+    if declared.pair_rule_column is not None:
+        read = _pair_read(merged, built, declared.pair_rule_column)
+        if read is not None:
+            walk.pair_reads[step.id] = read
     if not checked or declared.requires is None:
         return []
 
@@ -709,6 +720,59 @@ def _column_problems(
         )
         walk.cautions.append(Problem(step.id, "inputs", message))
     return problems
+
+
+_PAIR_RULE: Final[TypeAdapter[PairRule]] = TypeAdapter(PairRule)
+
+_AGG_FIELD: Final = "agg"
+_FILTER_FIELD: Final = "filter_expr"
+
+
+def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead | None:
+    """The rows that an aggregate built with *built* reads of pair rows.
+
+    ``None`` when it is neither a ``sum`` nor a ``count``, or when its params do
+    not hold the fields of a pair rule.
+    """
+    values = param_values(
+        built, (column_field, _AGG_FIELD, PAIR_RULE_FIELD, _FILTER_FIELD)
+    )
+    column = values.get(column_field)
+    agg = values.get(_AGG_FIELD)
+    pairs = values.get(PAIR_RULE_FIELD)
+    filter_expr = values.get(_FILTER_FIELD)
+    if not isinstance(column, str) or not isinstance(agg, str):
+        return None
+    try:
+        rule = _PAIR_RULE.validate_python(pairs, strict=True)
+    except ValidationError:
+        return None
+    return pair_rule_read(
+        merged,
+        column,
+        agg,
+        rule,
+        filter_expr if isinstance(filter_expr, str) else None,
+    )
+
+
+def pair_rules(
+    recipe: Recipe, catalog: DeclarationCatalog | None = None
+) -> dict[str, PairRead]:
+    """The rows that each ``sum`` or ``count`` step with a pair rule reads, by step id.
+
+    A step's ``auto`` reads ``once`` when its column is declared symmetric over
+    mirrored rows and it sets no ``filter_expr``
+    (:func:`~.columns.resolve_pair_rule`), and every row otherwise. A step that
+    writes ``once`` or ``each_perspective`` reads it. Read from the declarations
+    alone: the tracks hold no ``perspective``, and the columns a plan measures
+    of them do not change the answer. A step with another aggregation, or one
+    that did not check out, is left out.
+
+    Raises:
+        RecipeInvalid: The recipe has a cycle.
+    """
+    return dict(_walked(recipe, catalog).pair_reads)
 
 
 def _empty_input_problems(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:

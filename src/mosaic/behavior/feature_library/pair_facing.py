@@ -160,6 +160,8 @@ class PairFacing:
             Column("is_facing"),
         ),
         conditional=kept(C.group_col, C.seq_col),
+        # The head-to-head distance. The angles and is_facing are the focal's.
+        symmetric=(Column("distance"),),
     )
 
     class Inputs(TrackInputs):

@@ -19,6 +19,14 @@ own environments.
   registered feature against them. New code imports an optional package through its
   prerequisite (`OptionalModule.load()` in `src/mosaic/optional_dependency.py`), and
   the catalog and the run then name one extra.
+- **A pair feature declares `Provides.symmetric` and `Provides.mirrored`** from the code
+  that builds each perspective. `symmetric` names the columns with one value on both
+  rows of a pair in a frame, and `mirrored` says the feature writes both rows of every
+  pair on every frame where it writes one (`symmetric` implies it). A plan reads them
+  to count each pair once in a `sum` or `count` (`pairs` in `aggregate_common.py`), so
+  a change to either bumps the declaring feature's `version`: a downstream aggregate
+  then reads other rows. `test_each_pair_feature_declares_its_symmetric_columns` pins
+  each declaration, and `test_pair_symmetry.py` checks it on rows.
 - **Keypoints are optional in `mosaic_v1`.** A feature defined on them names them in
   `requires` or checks for them in `apply`, and refuses a table without them in an
   error naming the feature. A feature that only prefers them, such as `egocentric-crop`
@@ -100,7 +108,8 @@ own environments.
   reads each row alone: a feature that differences, smooths, windows or groups by `id`
   across frames, or labels a row by its ids (`labels_for_rows`), needs ids that name one
   animal over time, and the ids of tracks that carry no tracklets restart each frame.
-  `heading`, `collective-motion-metrics`, `frame-aggregate` and `feral` are `False`
+  `heading`, `collective-motion-metrics`, `frame-aggregate`, `sequence-aggregate` and
+  `feral` are `False`; `individual-aggregate` groups by `id` and is `True`
   (`test_the_spec_fixes_these_follows_ids`). The catalog's `Declaration.follows_ids` and
   `StepTypeDetail.follows_ids` carry the class value, and a feature that declares nothing
   reads `True`. It is not hashed.

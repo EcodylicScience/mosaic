@@ -36,6 +36,9 @@ from ..column_contract import (
     ColumnRef,
     Conditional,
     NamedColumns,
+    PAIR_COUNTING_AGGS,
+    PairRead,
+    PairRule,
     ParamValues,
     Prefix,
     Provides,
@@ -72,15 +75,23 @@ __all__ = [
     "names_wire",
     "need_status",
     "output_columns",
+    "pair_rule_read",
     "provided_wire",
     "provider_phrase",
     "providers_of",
     "requires_wire",
+    "resolve_pair_rule",
     "tracks_columns",
     "tracks_provides",
 ]
 
 _NO_NAMES: Final[frozenset[str]] = frozenset()
+
+_FAMILY_SEPARATOR: Final = "__"
+"""What joins a payload family's column to the rest of a member's name."""
+
+_PERSPECTIVE: Final = "perspective"
+"""The column that tells the two rows of a pair apart."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +110,12 @@ class ColumnSet:
             the tracks may.
         vocabulary: The columns that some declaration names literally. Their
             sources are declared, and an unlisted column is any other.
+        symmetric: Columns that hold one value on the two perspective rows of
+            a pair in a frame, as a declaration behind them states
+            (``Provides.symmetric``).
+        symmetric_prefixes: Column families whose every member is symmetric.
+        mirrored: Whether the rows hold both perspective rows of every pair
+            they hold. A fact of the rows, apart from any column's value.
     """
 
     guaranteed: frozenset[str] = _NO_NAMES
@@ -108,6 +125,9 @@ class ColumnSet:
     unbounded: bool = False
     unlisted: bool = False
     vocabulary: frozenset[str] = _NO_NAMES
+    symmetric: frozenset[str] = _NO_NAMES
+    symmetric_prefixes: frozenset[str] = _NO_NAMES
+    mirrored: bool = False
 
     def admits(self, column: str) -> bool:
         """Whether this set may contain *column*."""
@@ -117,9 +137,24 @@ class ColumnSet:
             return True
         return any(column.startswith(prefix) for prefix in self.possible_prefixes)
 
+    def is_symmetric(self, column: str) -> bool:
+        """Whether *column* holds one value on the two perspective rows of a pair."""
+        return column in self.symmetric or any(
+            column.startswith(prefix) for prefix in self.symmetric_prefixes
+        )
+
 
 UNKNOWN_COLUMNS: Final = ColumnSet(unbounded=True)
 """The output of an undeclared step, or of a step that did not check out."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Symmetry:
+    """The symmetric columns and families of a set, and whether its rows are mirrored."""
+
+    columns: frozenset[str] = _NO_NAMES
+    prefixes: frozenset[str] = _NO_NAMES
+    mirrored: bool = False
 
 
 def _column_set(
@@ -131,6 +166,7 @@ def _column_set(
     unbounded: bool,
     unlisted: bool,
     vocabulary: Iterable[str],
+    symmetry: _Symmetry = _Symmetry(),
 ) -> ColumnSet:
     """A set whose possible columns and prefixes include its guaranteed ones."""
     sure = frozenset(guaranteed)
@@ -143,6 +179,9 @@ def _column_set(
         unbounded=unbounded,
         unlisted=unlisted,
         vocabulary=frozenset(vocabulary),
+        symmetric=symmetry.columns,
+        symmetric_prefixes=symmetry.prefixes,
+        mirrored=symmetry.mirrored,
     )
 
 
@@ -229,6 +268,15 @@ def merged_input(
     input after a pair-level input 0 is named as the widening merge names it,
     each payload column as ``<column>__id1`` and ``<column>__id2``. The levels
     are read from the guaranteed sets, and the possible sets follow them.
+
+    A symmetric column keeps its symmetry under the name the merge gives it. A
+    widened column is not symmetric, because its two names hold two
+    individuals' values. Under *stack*, a column is symmetric when every input
+    declares it so. The merge is an inner join, so the rows are mirrored only
+    when every pair-level input's are: an input missing a mirror row drops that
+    row's partner from the join. A widened individual-level input drops a
+    pair's two rows together, since both need the same two individuals. A
+    stack is mirrored when every input is.
     """
     if not inputs:
         return ColumnSet()
@@ -241,18 +289,33 @@ def merged_input(
             unbounded=any(one.unbounded for one in inputs),
             unlisted=any(one.unlisted for one in inputs),
             vocabulary=(name for one in inputs for name in one.vocabulary),
+            symmetry=_Symmetry(
+                columns=_shared(one.symmetric for one in inputs),
+                prefixes=_shared(one.symmetric_prefixes for one in inputs),
+                mirrored=all(one.mirrored for one in inputs),
+            ),
         )
     first, *rest = inputs
     guaranteed = first.guaranteed
     possible = first.possible
+    symmetric = set(first.symmetric)
+    symmetric_prefixes = set(first.symmetric_prefixes)
     for position, incoming in enumerate(rest, start=1):
         widened = widen and widens(guaranteed, incoming.guaranteed)
         guaranteed = merge_naming(
             guaranteed, incoming.guaranteed, position, widen=widened
         ).columns
-        possible = merge_naming(
-            possible, incoming.possible, position, widen=widened
-        ).columns
+        naming = merge_naming(possible, incoming.possible, position, widen=widened)
+        possible = naming.columns
+        if widened:
+            continue
+        symmetric_prefixes.update(incoming.symmetric_prefixes)
+        for column in incoming.symmetric:
+            if column in naming.dropped:
+                continue
+            symmetric.add(naming.renamed.get(column, column))
+    pair_inputs = [one for one in inputs if one.admits(_PERSPECTIVE)]
+    input_prefixes = (prefix for one in inputs for prefix in one.possible_prefixes)
     return _column_set(
         guaranteed,
         possible,
@@ -261,6 +324,13 @@ def merged_input(
         unbounded=any(one.unbounded for one in inputs),
         unlisted=any(one.unlisted for one in inputs),
         vocabulary=(name for one in inputs for name in one.vocabulary),
+        symmetry=_Symmetry(
+            columns=frozenset(symmetric),
+            prefixes=_unshadowed(
+                symmetric_prefixes, possible, input_prefixes, symmetric
+            ),
+            mirrored=bool(pair_inputs) and all(one.mirrored for one in pair_inputs),
+        ),
     )
 
 
@@ -345,6 +415,17 @@ def output_columns(
     contain it. A family meets a payload requirement and makes a named column
     possible. It does not guarantee a named column.
 
+    A passthrough output keeps the input's symmetric columns, less those it
+    writes again, and a family named after a symmetric input column is a
+    symmetric family: ``temporal-stack`` groups pair rows by pair and
+    perspective, and ``global-scaler``, ``scale-to-cm`` and ``scale-to-bl``
+    scale a column by one value per run or entry. ``scale-to-cm`` and
+    ``scale-to-bl`` in derive mode, the default, write ``<column><suffix>``,
+    which is no member of the column's family, so a sum over it reads every row.
+    ``provides.symmetric`` adds its own. The rows are the input's, mirrored or
+    not, for a passthrough or a family writer, which keep every row, and
+    otherwise mirrored as ``provides`` declares.
+
     Args:
         provides: The step's declared output, ``None`` when undeclared.
         merged: The columns of the step's merged input.
@@ -367,13 +448,16 @@ def output_columns(
         maybe_prefixes.update(_payload_names(merged.possible))
         maybe_prefixes.update(merged.possible_prefixes)
         unbounded = unbounded or merged.unbounded
+    written: list[NamedColumns] = []
     for ref in provides.adds:
         named = resolve_names(ref, values)
+        written.append(named)
         unbounded = unbounded or named.unknown
         guaranteed.update(named.columns)
         sure_prefixes.update(named.prefixes)
     for conditional in provides.conditional:
         named = resolve_names(conditional.column, values)
+        written.append(named)
         unbounded = unbounded or named.unknown
         each, whole = _conditional_outcomes(
             conditional, len(named.columns), values, merged
@@ -395,12 +479,170 @@ def output_columns(
         unbounded=unbounded,
         unlisted=named_after.unlisted,
         vocabulary=named_after.vocabulary,
+        symmetry=_output_symmetry(provides, merged, values, start, written),
+    )
+
+
+def _output_symmetry(
+    provides: Provides,
+    merged: ColumnSet,
+    values: ParamValues,
+    start: ColumnSet,
+    written: Sequence[NamedColumns],
+) -> _Symmetry:
+    """The symmetric columns of a step's output, and whether its rows are mirrored.
+
+    Args:
+        provides: The step's declared output.
+        merged: The columns of the step's merged input.
+        values: The step's params.
+        start: What the output copies of *merged*: all of it for a passthrough,
+            nothing otherwise.
+        written: The columns that ``adds`` and ``conditional`` name.
+    """
+    rewritten = {column for named in written for column in named.columns}
+    rewritten_prefixes = {prefix for named in written for prefix in named.prefixes}
+    columns = {
+        column
+        for column in start.symmetric
+        if column not in rewritten
+        and not any(column.startswith(prefix) for prefix in rewritten_prefixes)
+    }
+    prefixes = {
+        prefix
+        for prefix in start.symmetric_prefixes
+        if not any(
+            prefix.startswith(other) or other.startswith(prefix)
+            for other in rewritten_prefixes
+        )
+    }
+    if provides.payload_families:
+        families = _symmetric_families(merged)
+        columns.update(families.columns)
+        prefixes.update(families.prefixes)
+    for ref in provides.symmetric:
+        named = resolve_names(ref, values)
+        columns.update(named.columns)
+        prefixes.update(named.prefixes)
+    keeps_rows = provides.passthrough or provides.payload_families
+    return _Symmetry(
+        columns=frozenset(columns),
+        prefixes=frozenset(prefixes),
+        mirrored=provides.is_mirrored or (keeps_rows and merged.mirrored),
+    )
+
+
+def _symmetric_families(merged: ColumnSet) -> _Symmetry:
+    """The families named after a symmetric payload column of *merged*.
+
+    A family is its column, the exact name, and the names under
+    ``<column>__`` (:data:`_FAMILY_SEPARATOR`), as ``temporal-stack`` writes
+    ``speed__pool_mean`` from ``speed``. A longer name that only begins with
+    the column's, such as ``distance_from_centroid`` beside ``distance``, is
+    no member. A family is left out when a column or family that *merged* may
+    contain falls under its prefix and is not symmetric, since its members
+    would share the prefix.
+    """
+    columns = set(merged.symmetric)
+    prefixes = set(merged.symmetric_prefixes)
+    for column in _payload_names(merged.possible):
+        if merged.is_symmetric(column):
+            columns.add(column)
+            prefixes.add(f"{column}{_FAMILY_SEPARATOR}")
+    return _Symmetry(
+        columns=frozenset(columns),
+        prefixes=_unshadowed(
+            prefixes, merged.possible, merged.possible_prefixes, columns
+        ),
+    )
+
+
+def _unshadowed(
+    prefixes: Iterable[str],
+    possible: Iterable[str],
+    possible_prefixes: Iterable[str],
+    symmetric: Collection[str],
+) -> frozenset[str]:
+    """The symmetric *prefixes* that no column or family outside them falls under.
+
+    A column under a prefix that is not itself symmetric, such as a widened
+    individual measurement, would read as symmetric by the prefix, and the
+    prefix is dropped. Dropping one leaves its members reading every row.
+    """
+    kept = frozenset(prefixes)
+    others = [
+        name
+        for name in (*possible, *possible_prefixes)
+        if name not in symmetric and name not in kept
+    ]
+    return frozenset(
+        prefix
+        for prefix in kept
+        if not any(other.startswith(prefix) for other in others)
     )
 
 
 def _payload_names(columns: Iterable[str]) -> list[str]:
     """The payload columns among *columns*: those outside ``NON_PAYLOAD_COLS``."""
     return [column for column in columns if column not in NON_PAYLOAD_COLS]
+
+
+def resolve_pair_rule(
+    merged: ColumnSet,
+    column: str,
+    agg: str,
+    pairs: PairRule,
+    filter_expr: str | None,
+) -> Literal["once"] | None:
+    """What an aggregate's ``auto`` pair rule reads: ``once``, or ``None`` for every row.
+
+    ``once`` when the rule is ``auto``, *agg* is ``sum`` or ``count``, no
+    *filter_expr* is set, *merged* may hold ``perspective``, its rows are
+    mirrored, and *column* is symmetric. A filter can keep one row of a pair
+    (on ``id1`` or ``perspective``, say), and ``once`` would then miss pairs.
+    An undeclared or unbounded input has no symmetric column, and its ``auto``
+    reads every row.
+
+    Args:
+        merged: The columns of the aggregate's merged input.
+        column: The column it aggregates.
+        agg: Its aggregation.
+        pairs: Its pair rule as written.
+        filter_expr: Its row filter, ``None`` or empty when unset.
+    """
+    if (
+        pairs == "auto"
+        and agg in PAIR_COUNTING_AGGS
+        and not filter_expr
+        and merged.admits(_PERSPECTIVE)
+        and merged.mirrored
+        and merged.is_symmetric(column)
+    ):
+        return "once"
+    return None
+
+
+def pair_rule_read(
+    merged: ColumnSet,
+    column: str,
+    agg: str,
+    pairs: PairRule,
+    filter_expr: str | None,
+) -> PairRead | None:
+    """The rows that an aggregate reads of pair rows, ``None`` unless a sum or count.
+
+    A rule written as ``once`` or ``each_perspective`` stands, and ``auto``
+    reads what :func:`resolve_pair_rule` resolves, else every row. The other
+    aggregations read every row whatever the rule, and the rule says nothing.
+    Arguments as :func:`resolve_pair_rule` takes them.
+    """
+    if agg not in PAIR_COUNTING_AGGS:
+        return None
+    if pairs != "auto":
+        return pairs
+    return resolve_pair_rule(merged, column, agg, pairs, filter_expr) or (
+        "each_perspective"
+    )
 
 
 def tracks_provides() -> Provides:

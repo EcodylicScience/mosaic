@@ -314,6 +314,14 @@ class Declaration:
     here and ``temporal_reach`` says only what the default head reads. Empty for a
     feature whose reach no single option decides.
     """
+    pair_rule_column: str | None = None
+    """The params field naming the column an aggregate reduces, beside its ``pairs``.
+
+    Read off the feature's optional ``pair_rule_column`` class attribute
+    (``"column"`` on ``frame-aggregate``). A plan resolves the ``pairs`` rule of
+    a step whose declaration names one (:func:`~.validate.pair_rules`).
+    ``None`` for an op and for a feature without a pair rule.
+    """
     unavailable: str | None = None
     """What this installation lacks to run the step, ``None`` when it lacks nothing.
 

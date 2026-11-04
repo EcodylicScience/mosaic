@@ -24,6 +24,7 @@ from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
+    Column,
     PAYLOAD_LABEL,
     NamedColumns,
     Payload,
@@ -50,6 +51,7 @@ from mosaic.core.pipeline.graph import (
     resolved_columns,
     validation_report,
 )
+from mosaic.core.pipeline.graph.validate import pair_rules
 from mosaic.core.pipeline.graph.columns import (
     merged_input,
     need_status,
@@ -1078,3 +1080,179 @@ def test_cautions_with_one_text_merge_into_one_naming_every_step() -> None:
         Problem("b", "inputs", "'y' may be missing"),
         Problem("d", "params", "'x' may be missing"),
     )
+
+
+# --- symmetric pair columns -----------------------------------------------------------
+
+_PAIR_KEYS = frozenset({"frame", "id1", "id2", "perspective"})
+
+_SYMMETRIC_PAIRS = Provides(
+    adds=(
+        *(Column(name) for name in sorted(_PAIR_KEYS)),
+        Column("dist"),
+        Column("heading"),
+    ),
+    symmetric=(Column("dist"),),
+)
+"""A pair feature whose ``dist`` holds one value on both rows of a pair."""
+
+
+def _pairs(*, symmetric: frozenset[str] = frozenset(), mirrored: bool) -> ColumnSet:
+    """Pair rows with a ``dist`` column, declared symmetric or not."""
+    columns = _PAIR_KEYS | {"dist"}
+    return ColumnSet(
+        guaranteed=columns, possible=columns, symmetric=symmetric, mirrored=mirrored
+    )
+
+
+def _pair_recipe(*steps: dict[str, JsonValue]) -> Recipe:
+    """``pair-position`` over the tracks, then *steps*."""
+    return read_recipe({"steps": [_over_tracks("pairs", "pair-position"), *steps]})
+
+
+def test_a_declared_symmetric_column_propagates_through_passthrough() -> None:
+    pairs = output_columns(_SYMMETRIC_PAIRS, ColumnSet(), {})
+    through = output_columns(
+        Provides(passthrough=True, adds=(Column("speed"),)), pairs, {}
+    )
+    rewritten = output_columns(
+        Provides(passthrough=True, adds=(Column("dist"),)), pairs, {}
+    )
+
+    assert pairs.is_symmetric("dist")
+    assert not pairs.is_symmetric("heading")
+    assert pairs.mirrored
+    assert through.is_symmetric("dist")
+    assert through.mirrored
+    assert not rewritten.is_symmetric("dist")
+    assert resolved_columns(_pair_recipe())["pairs"].is_symmetric("AB_dist")
+
+
+def test_a_payload_family_of_a_symmetric_column_is_symmetric() -> None:
+    stack: dict[str, JsonValue] = {
+        "id": "stack",
+        "type": "feature",
+        "feature": "temporal-stack",
+        "inputs": [{"step": "pairs"}],
+        "params": {},
+    }
+
+    columns = resolved_columns(_pair_recipe(stack))["stack"]
+
+    assert columns.is_symmetric("AB_dist__pool_mean")
+    assert not columns.is_symmetric("A_speed__pool_mean")
+    assert columns.mirrored
+
+
+def test_a_widened_column_is_not_symmetric() -> None:
+    individuals = ColumnSet(
+        guaranteed=frozenset({"frame", "id", "speed"}),
+        symmetric=frozenset({"speed"}),
+    )
+
+    widened = merged_input(
+        [_pairs(symmetric=frozenset({"dist"}), mirrored=True), individuals],
+        widen=True,
+    )
+
+    assert widened.is_symmetric("dist")
+    assert not widened.is_symmetric("speed__id1")
+    assert not widened.is_symmetric("speed__id2")
+    assert widened.mirrored
+
+
+def test_a_renamed_column_keeps_its_symmetry() -> None:
+    directional = _pairs(mirrored=True)
+    symmetric = _pairs(symmetric=frozenset({"dist"}), mirrored=True)
+
+    later = merged_input([directional, symmetric])
+    first = merged_input([symmetric, directional])
+
+    assert later.is_symmetric("dist__1")
+    assert not later.is_symmetric("dist")
+    assert first.is_symmetric("dist")
+    assert not first.is_symmetric("dist__1")
+
+
+def test_an_undeclared_input_has_no_symmetric_column() -> None:
+    pairs = output_columns(_SYMMETRIC_PAIRS, ColumnSet(), {})
+
+    undeclared = output_columns(None, pairs, {})
+    merged = merged_input([pairs, UNKNOWN_COLUMNS])
+
+    assert not undeclared.is_symmetric("dist")
+    assert not undeclared.mirrored
+    assert merged.is_symmetric("dist")
+    assert not merged.mirrored
+
+
+def test_a_merge_is_mirrored_only_when_every_pair_input_is() -> None:
+    mirrored = _pairs(mirrored=True)
+    unmirrored = _pairs(mirrored=False)
+    individuals = ColumnSet(guaranteed=frozenset({"frame", "id", "speed"}))
+
+    assert merged_input([mirrored, mirrored]).mirrored
+    assert not merged_input([mirrored, unmirrored]).mirrored
+    assert not merged_input([unmirrored, mirrored]).mirrored
+    assert merged_input([mirrored, individuals]).mirrored
+    assert merged_input([mirrored, mirrored], stack=True).mirrored
+    assert not merged_input([mirrored, unmirrored], stack=True).mirrored
+
+
+def test_a_family_writer_keeps_its_input_mirrored() -> None:
+    assert output_columns(_FAMILIES, _pairs(mirrored=True), {}).mirrored
+    assert not output_columns(_FAMILIES, _pairs(mirrored=False), {}).mirrored
+    assert not output_columns(
+        Provides(adds=(Column("frame"),)), _pairs(mirrored=True), {}
+    ).mirrored
+
+
+def test_a_family_of_a_symmetric_column_names_only_its_own_members() -> None:
+    """``distance`` is symmetric, and ``distance_from_centroid`` is another column.
+
+    A family is the column itself and the names under ``<column>__``, so a
+    widened individual measurement whose name begins with ``distance`` is no
+    member of it.
+    """
+    steps: list[JsonValue] = [
+        _over_tracks("facing", "pair-facing"),
+        {
+            "id": "first_stack",
+            "type": "feature",
+            "feature": "temporal-stack",
+            "inputs": [{"step": "facing"}],
+            "params": {},
+        },
+        _over_tracks("speed", "speed-angvel"),
+        {
+            "id": "groups",
+            "type": "feature",
+            "feature": "ffgroups-metrics",
+            "inputs": [TRACKS_INPUT, {"step": "speed"}],
+            "params": {},
+        },
+        {
+            "id": "second_stack",
+            "type": "feature",
+            "feature": "temporal-stack",
+            "inputs": [{"step": "first_stack"}, {"step": "groups"}],
+            "params": {},
+        },
+        {
+            "id": "total",
+            "type": "feature",
+            "feature": "frame-aggregate",
+            "inputs": [{"step": "second_stack"}],
+            "params": {
+                "column": "distance_from_centroid__id1__pool_mean",
+                "agg": "sum",
+            },
+        },
+    ]
+    recipe = read_recipe({"steps": steps})
+
+    stacked = resolved_columns(recipe)["second_stack"]
+
+    assert stacked.is_symmetric("distance__pool_mean")
+    assert not stacked.is_symmetric("distance_from_centroid__id1__pool_mean")
+    assert pair_rules(recipe) == {"total": "each_perspective"}

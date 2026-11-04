@@ -282,6 +282,12 @@ class PairInteractionFilter:
             Column("interaction_end"),
         ),
         conditional=kept(C.group_col, C.seq_col),
+        # One segment, written on both rows of the pair.
+        symmetric=(
+            Column("interaction_id"),
+            Column("interaction_start"),
+            Column("interaction_end"),
+        ),
     )
 
     class Inputs(Inputs[TrackInput | Result]):

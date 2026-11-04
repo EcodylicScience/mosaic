@@ -26,7 +26,7 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - `TOOLS` in `spec.py` declares each tool once, and a backend answers it through the
   `ToolBackend` method of the same name. The set contains at most 16 tools
   (`tests/meta/test_shared_tool_cap.py`), and each schema stays under
-  `MAX_SCHEMA_BYTES`.
+  `MAX_SCHEMA_BYTES`, 8448 bytes of compact JSON.
 - A tool wraps a library function and its wire model, which live beside their concept
   with a CLI verb printing the same model under `--json`. Compute in the library and
   keep the adapter to addressing, paging and the confirmation gate.

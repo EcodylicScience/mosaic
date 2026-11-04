@@ -55,6 +55,14 @@ def test_mean():
     out = _apply({"column": "value", "agg": "mean"}, df)
     assert list(out["frame"]) == [0, 1, 2]
     np.testing.assert_allclose(out["value_mean"], [2.0, 5.0, 20.0])
+    assert {name: str(dtype) for name, dtype in out.dtypes.items()} == {
+        "frame": "int64",
+        "time": "float64",
+        "value_mean": "float64",
+        "sequence": "str",
+        "group": "str",
+    }
+    assert list(out.columns) == ["frame", "time", "value_mean", "sequence", "group"]
 
 
 def test_median():
@@ -108,9 +116,9 @@ def test_threshold_mean():
 # ---------------------------------------------------------------------------
 
 
-def test_filter_expr_perspective_dedup():
-    """Pair-perspective duplication: sum without filter double-counts;
-    sum with filter_expr='perspective == 0' gives the right answer."""
+def test_filter_expr_perspective_dedup_gives_the_same_sum_as_once():
+    """``once`` keeps perspective 0, so the explicit filter is the same sum and is
+    not applied twice."""
     # 2 pairs (a,b) and (a,c) with mirrored perspectives, frame 0 only.
     df = pd.DataFrame(
         {
@@ -122,12 +130,101 @@ def test_filter_expr_perspective_dedup():
             "group": "G",
         }
     )
-    out_no_dedup = _apply({"column": "AB_dist", "agg": "sum"}, df)
-    out_dedup = _apply(
-        {"column": "AB_dist", "agg": "sum", "filter_expr": "perspective == 0"}, df
+    out_once = _apply({"column": "AB_dist", "agg": "sum", "pairs": "once"}, df)
+    out_filtered = _apply(
+        {
+            "column": "AB_dist",
+            "agg": "sum",
+            "pairs": "once",
+            "filter_expr": "perspective == 0",
+        },
+        df,
     )
-    assert float(out_no_dedup["AB_dist_sum"].iloc[0]) == pytest.approx(16.0)  # 2x
-    assert float(out_dedup["AB_dist_sum"].iloc[0]) == pytest.approx(8.0)
+    assert float(out_once["AB_dist_sum"].iloc[0]) == pytest.approx(8.0)
+    assert float(out_filtered["AB_dist_sum"].iloc[0]) == pytest.approx(8.0)
+
+
+def _pair_table() -> pd.DataFrame:
+    """Two pairs over two frames, each pair emitted once per perspective."""
+    rows: list[dict[str, float | int | str]] = []
+    for frame in (0, 1):
+        for perspective in (0, 1):
+            for base in (3.0, 5.0):
+                rows.append(
+                    {
+                        "frame": frame,
+                        "time": frame * 0.02,
+                        "perspective": perspective,
+                        "AB_dist": base + frame,
+                        "sequence": "S1",
+                        "group": "G",
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+def test_sum_over_pair_input_counts_each_pair_once():
+    out = _apply({"column": "AB_dist", "agg": "sum", "pairs": "once"}, _pair_table())
+    assert list(out["frame"]) == [0, 1]
+    # Each pair counts once: (3 + 5) at frame 0 and (4 + 6) at frame 1.
+    np.testing.assert_allclose(out["AB_dist_sum"], [8.0, 10.0])
+
+
+def test_count_over_pair_input_counts_each_pair_once():
+    out = _apply({"column": "AB_dist", "agg": "count", "pairs": "once"}, _pair_table())
+    np.testing.assert_allclose(out["AB_dist_count"], [2, 2])
+
+
+def test_auto_over_pair_input_reads_every_row():
+    """Outside a plan nothing resolves ``auto``, and it reads both perspectives."""
+    total = _apply({"column": "AB_dist", "agg": "sum"}, _pair_table())
+    count = _apply({"column": "AB_dist", "agg": "count"}, _pair_table())
+    np.testing.assert_allclose(total["AB_dist_sum"], [16.0, 20.0])
+    np.testing.assert_allclose(count["AB_dist_count"], [4, 4])
+
+
+def test_each_perspective_reads_every_row():
+    out = _apply(
+        {"column": "AB_dist", "agg": "sum", "pairs": "each_perspective"}, _pair_table()
+    )
+    np.testing.assert_allclose(out["AB_dist_sum"], [16.0, 20.0])
+
+
+def test_mean_over_pair_input_is_unchanged():
+    out = _apply({"column": "AB_dist", "agg": "mean"}, _pair_table())
+    np.testing.assert_allclose(out["AB_dist_mean"], [4.0, 5.0])
+
+
+@pytest.mark.parametrize(
+    "agg,expected",
+    [
+        ("median", [4.0, 5.0]),
+        ("min", [3.0, 4.0]),
+        ("max", [5.0, 6.0]),
+        ("std", [float(np.std([3.0, 3.0, 5.0, 5.0], ddof=1))] * 2),
+    ],
+)
+def test_the_other_aggregations_over_pair_input_read_every_row(
+    agg: str, expected: list[float]
+):
+    out = _apply({"column": "AB_dist", "agg": agg}, _pair_table())
+    np.testing.assert_allclose(out[f"AB_dist_{agg}"], expected)
+
+
+def test_input_without_perspective_is_unchanged():
+    df = _make_df({0: [1.0, 2.0, 3.0], 1: [4.0, 5.0, 6.0]})
+    out_sum = _apply({"column": "value", "agg": "sum"}, df)
+    out_count = _apply({"column": "value", "agg": "count"}, df)
+    np.testing.assert_allclose(out_sum["value_sum"], [6.0, 15.0])
+    np.testing.assert_allclose(out_count["value_count"], [3, 3])
+
+
+def test_a_pair_input_filtered_to_one_perspective_is_not_filtered_twice():
+    out = _apply(
+        {"column": "AB_dist", "agg": "sum", "filter_expr": "perspective == 0"},
+        _pair_table(),
+    )
+    np.testing.assert_allclose(out["AB_dist_sum"], [8.0, 10.0])
 
 
 def test_filter_expr_drops_rows():

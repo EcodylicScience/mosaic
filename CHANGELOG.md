@@ -161,6 +161,59 @@ The version moves to 0.2, so both of its golden run ids move from `0.1-` to `0.2
 the same digest. `entries_without_tracklets` is removed; `rows_without_tracklets` gives
 the same entries with their variants.
 
+**`frame-aggregate` 0.2 takes a `pairs` rule for `sum` and `count`.** A pair table holds
+each pair once per perspective, so 0.1 counted every pair twice unless the recipe set
+`filter_expr="perspective == 0"`. 0.2's `pairs` field reads `auto`, `once` or
+`each_perspective`, and only `sum` and `count` over an input with a `perspective` column
+read it. `once` keeps the `perspective == 0` rows after `filter_expr`, so each pair counts
+once, and `each_perspective` reads every ordered pair row. `auto`, the default, is
+resolved by a recipe's plan: the plan writes `once` into the step's params when the
+aggregated column is declared symmetric, the merged input's rows are declared mirrored and
+`filter_expr` is unset, and any other `auto` reads every row. A run outside a plan
+(`mosaic run --feature frame-aggregate`) has no input chain to resolve and reads every row
+under `auto`, as 0.1 did; set `pairs` to `once` there. `mean`, `median`, `min`, `max` and
+`std` read every row under any rule. The resolved rule enters the run id through the
+params, so two runs that read different rows have different ids, and a planned `auto`
+that reads every row shares its id with the direct run. The new field enters the identity
+of every 0.2 run, and the golden run id of `frame-aggregate/column-speed` moves from `0.1-`
+to `0.2-` with a new digest. The reduction lives in `feature_library/aggregate_common.py`
+(`AggregateParams`, `PairAggregateParams` and `reduce_column`), which the sequence and
+individual aggregates share.
+
+**`sequence-aggregate` and `individual-aggregate` 0.1 are new.** Both reduce one column with
+the parameters of `frame-aggregate` (`AggregateParams`), and both require `group` and
+`sequence` and copy them from the frame. `sequence-aggregate` emits `unidentified`: one row
+of `group`, `sequence` and the value per entry. It takes the `pairs` rule of
+`frame-aggregate`, which a recipe's plan resolves for it as for `frame-aggregate`
+(`Declaration.pair_rule_column` is `column`), and reads every row under `auto` outside a
+plan. `individual-aggregate` emits `individual`: one row of `group`, `sequence`, `id` and
+the value per individual. Pair input is grouped by the focal `id1`, written as `id`, over
+every perspective row for every aggregation, because each ordered pair row is one focal's
+view and `perspective == 0` would drop the rows whose focal is the higher id; its params
+have no `pairs` field. Both are scope-free and refuse overlap. `follows_ids` is `False` for
+`sequence-aggregate` and `True` for `individual-aggregate`. The registry grows from 60 to 62
+features, and no existing run id moves.
+
+**Symmetric and mirrored pair declarations.** `Provides.symmetric` names the output
+columns that hold one value on the two perspective rows of a pair in a frame, and
+`Provides.mirrored` says the feature writes both rows of every pair on every frame where it
+writes one (a non-empty `symmetric` implies it). The column walk propagates both through
+passthroughs, payload families, renaming merges and stacks; a widened column is not
+symmetric, and a merge is mirrored only when every pair-level input is. `approach-avoidance`
+(`aa_event`, `label_id`), `pair-position` and `pair-egocentric` (`AB_dist`,
+`rel_heading_cos`), `pair-facing` (`distance`) and `pair-interaction-filter`
+(`interaction_id`, `interaction_start`, `interaction_end`) declare symmetric columns;
+`pair-keypoints` and `hidra` declare `mirrored` alone. A declaration of these changes
+which rows a downstream `sum` or `count` reads, so a change to one bumps the feature's
+version. `Declaration.pair_rule_column` names the params field an aggregate reduces, and
+`validate.pair_rules` gives the rows each such step reads. The editor wire adds
+`PlannedStepWire.pairs`, `once` or `each_perspective` for an aggregate's `sum` or `count`
+and `null` for any other step. The MCP `plan_recipe` tool returns it too. The editor
+catalog's `CatalogEntry.declaration` gains `pair_rule_column`, `provides.symmetric` and
+`provides.mirrored`. A non-empty `symmetric` implies mirrored rows, so a reader takes
+`mirrored or symmetric`: the raw `mirrored` flag reads `false` on a feature that declares
+only symmetric columns.
+
 **mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
 `variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,
 "")` and plans with `refuse=False`, so it reports the ambiguity as a problem at `tracks`

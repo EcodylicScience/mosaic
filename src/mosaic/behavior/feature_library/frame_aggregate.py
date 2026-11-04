@@ -9,15 +9,21 @@ cases: ``transform="abs"`` for magnitudes, ``threshold=X`` with
 
 Composes naturally with pair-aware features: pointing FrameAggregate at
 ``PairPositionFeatures`` with ``column="AB_dist", agg="mean"`` yields mean
-pairwise distance per frame. Perspective duplication (A->B and B->A both
-emitted) does not affect mean/median/min/max/std; for sum/count, pass
-``filter_expr="perspective == 0"`` to dedupe explicitly.
+pairwise distance per frame. A pair table holds each pair once per
+perspective (A->B and B->A), and ``pairs`` says which rows sum and count read.
+``once`` keeps the ``perspective == 0`` rows, so each pair counts once, and
+``each_perspective`` reads every row. ``auto``, the default, is resolved by a
+recipe's plan: ``once`` when the column is declared symmetric over mirrored
+rows and ``filter_expr`` is unset, every row otherwise. A run outside a plan
+(``mosaic run --feature``) reads every row under ``auto``; set ``pairs="once"``
+there, or ``filter_expr="perspective == 0"``, to count each pair once.
+mean/median/min/max/std read every row under any rule.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, final
+from typing import ClassVar, final
 
 import pandas as pd
 
@@ -41,43 +47,9 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.params import Declared, Params
 
+from .aggregate_common import PairAggregateParams, reduce_column
 from .registry import register_feature
-
-
-_AGG_MODES = ("mean", "median", "min", "max", "std", "sum", "count")
-
-_COLUMN_DESCRIPTION = "The name of the column to aggregate."
-
-_AGG_DESCRIPTION = (
-    "The aggregation applied across ids within each frame. Known values "
-    "are mean, median, min, max, std, sum and count. Without threshold, "
-    "NaN values are skipped for every mode, and count counts non-null "
-    "values."
-)
-
-_OUTPUT_COLUMN_DESCRIPTION = (
-    "The name of the result column. Unset, it is column followed by agg, "
-    "joined with an underscore."
-)
-
-_FILTER_EXPR_DESCRIPTION = (
-    "A pandas DataFrame.query expression applied before aggregation, for "
-    "example to dedupe pair-perspective input or drop flagged frames."
-)
-
-_THRESHOLD_DESCRIPTION = (
-    "Aggregate the boolean column > threshold instead of the raw column. "
-    "Unset, the raw column is aggregated. With agg set to mean, the "
-    "result is the fraction of ids in the frame exceeding the threshold."
-)
-
-_TRANSFORM_DESCRIPTION = (
-    "A transform applied to the column before aggregation. Known values "
-    "are none and abs. abs aggregates the column's absolute value, useful "
-    "for a magnitude such as angular velocity."
-)
 
 
 @final
@@ -97,9 +69,16 @@ class FrameAggregate:
 
     Notes
     -----
-    Pair-perspective dedup is **not** needed for mean/median/min/max/std --
-    duplicate values per pair yield the same scalar. For sum/count, dedup
-    explicitly with ``filter_expr="perspective == 0"``.
+    A pair table holds each pair once per perspective. For sum/count,
+    ``pairs="once"`` keeps the ``perspective == 0`` rows when the input has a
+    ``perspective`` column, so each pair counts once, and
+    ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
+    plan writes ``once`` for a column that the features behind it declare
+    symmetric over mirrored rows, with no ``filter_expr``, and every other
+    ``auto`` reads every row. A run outside a plan (``mosaic run --feature``)
+    reads every row under ``auto``; set ``pairs="once"``, or
+    ``filter_expr="perspective == 0"``, to count each pair once there. For
+    mean/median/min/max/std every row is read under any rule.
 
     This feature does not filter ``bad_frame`` automatically. Either consume
     upstream output that has already filtered them, or pass
@@ -108,7 +87,7 @@ class FrameAggregate:
 
     category = "summary"
     name = "frame-aggregate"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -125,20 +104,10 @@ class FrameAggregate:
     class Inputs(Inputs[TrackInput | Result]):
         pass
 
-    class Params(Params):
-        column: Annotated[str, Declared(_COLUMN_DESCRIPTION)]
-        agg: Annotated[
-            Literal["mean", "median", "min", "max", "std", "sum", "count"],
-            Declared(_AGG_DESCRIPTION),
-        ] = "mean"
-        output_column: Annotated[str | None, Declared(_OUTPUT_COLUMN_DESCRIPTION)] = (
-            None
-        )
-        filter_expr: Annotated[str | None, Declared(_FILTER_EXPR_DESCRIPTION)] = None
-        threshold: Annotated[float | None, Declared(_THRESHOLD_DESCRIPTION)] = None
-        transform: Annotated[
-            Literal["none", "abs"], Declared(_TRANSFORM_DESCRIPTION)
-        ] = "none"
+    pair_rule_column: ClassVar[str] = "column"
+
+    class Params(PairAggregateParams):
+        pass
 
     def __init__(
         self,
@@ -170,40 +139,19 @@ class FrameAggregate:
         if df.empty:
             return pd.DataFrame()
 
-        p = self.params
         order_col = resolve_order_col(df)
-
-        if p.filter_expr:
-            df = df.query(p.filter_expr)
-            if df.empty:
-                return pd.DataFrame()
-
-        s = df[p.column]
-        if p.transform == "abs":
-            s = s.abs()
-        if p.threshold is not None:
-            s = (s > p.threshold).astype(float)
-
-        out_col = p.output_column or f"{p.column}_{p.agg}"
-
-        work = pd.DataFrame({order_col: df[order_col].to_numpy(), "_v": s.to_numpy()})
         # A table without frames is ordered by its time, which is then the group
         # key and is not aggregated beside it.
         has_time = "time" in df.columns and order_col != "time"
-        if has_time:
-            work["time"] = df["time"].to_numpy()
-
-        named = {out_col: pd.NamedAgg(column="_v", aggfunc=p.agg)}
-        if has_time:
-            named["time"] = pd.NamedAgg(column="time", aggfunc="first")
-        result = work.groupby(order_col, sort=True).agg(**named).reset_index()
-
-        # Reorder columns: frame, time (if present), value, then any metadata
-        cols = [order_col]
-        if has_time:
-            cols.append("time")
-        cols.append(out_col)
-        result = result[cols]
+        result = reduce_column(
+            df,
+            self.params,
+            keys=[order_col],
+            first=["time"] if has_time else [],
+            pairs=self.params.pair_read(),
+        )
+        if result.empty:
+            return pd.DataFrame()
 
         # Identity per frame, not from row 0. Constant per sequence, but with
         # overlap the input spans the neighbouring sequences and row 0 is the

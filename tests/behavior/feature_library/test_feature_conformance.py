@@ -21,6 +21,7 @@ import pytest
 from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
+from mosaic.core.pipeline.column_contract import Column, declared_provides
 
 EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
 """Spelled out rather than derived from the type alias, so a value silently
@@ -407,13 +408,15 @@ def test_every_feature_declares_whether_it_follows_ids(cls: type) -> None:
         ("heading", False),
         ("collective-motion-metrics", False),
         ("frame-aggregate", False),
+        ("sequence-aggregate", False),
+        ("individual-aggregate", True),
         ("feral", False),
         ("extract-labeled-templates", True),
         ("id-tag-columns", True),
     ],
 )
 def test_the_spec_fixes_these_follows_ids(slug: str, follows: bool) -> None:
-    """The six features whose answer the feature-pipelines spec states."""
+    """The features whose answer the feature-pipelines spec states."""
     by_slug = {cls.name: cls for cls in FEATURE_CLASSES}
     assert vars(by_slug[slug])["follows_ids"] is follows
 
@@ -516,3 +519,48 @@ def test_a_declared_temporal_reach_is_a_frame_count_or_unknown(cls: type) -> Non
     reach = class_reach(cls)
     assert reach != UNDECLARED
     assert reach == "unknown" or (isinstance(reach, int) and reach >= 0)
+
+
+PAIR_SYMMETRY: dict[str, tuple[tuple[str, ...], bool]] = {
+    "approach-avoidance": (("aa_event", "label_id"), True),
+    "pair-position": (("AB_dist", "rel_heading_cos"), True),
+    "pair-egocentric": (("AB_dist", "rel_heading_cos"), True),
+    "pair-facing": (("distance",), True),
+    "pair-interaction-filter": (
+        ("interaction_end", "interaction_id", "interaction_start"),
+        True,
+    ),
+    "pair-keypoints": ((), True),
+    "hidra": ((), True),
+}
+"""Each feature's symmetric columns and whether it writes both rows of every pair.
+
+Read from the code that builds each perspective, and checked on rows in
+``test_pair_symmetry.py``. A feature left out declares neither. A downstream
+``sum`` or ``count`` reads one perspective of a symmetric column over mirrored
+rows, so a change here bumps the feature's ``version``.
+"""
+
+
+def _symmetry(cls: type) -> tuple[tuple[str, ...], bool]:
+    """The symmetric column names and the mirror flag that *cls* declares."""
+    provides = declared_provides(cls)
+    if provides is None:
+        return (), False
+    names = sorted(
+        ref.name if isinstance(ref, Column) else repr(ref) for ref in provides.symmetric
+    )
+    return tuple(names), provides.is_mirrored
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_each_pair_feature_declares_its_symmetric_columns(cls: type) -> None:
+    expected = PAIR_SYMMETRY.get(str(getattr(cls, "name", "")), ((), False))
+    assert _symmetry(cls) == expected
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_only_pair_features_declare_symmetric_columns(cls: type) -> None:
+    symmetric, mirrored = _symmetry(cls)
+    if symmetric or mirrored:
+        assert getattr(cls, "emits", None) == "pair"

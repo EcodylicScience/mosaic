@@ -71,6 +71,10 @@ row per focal and neighbor, and `nn-delta-bins` maps either: where neighbors sit
 **The group as a whole.** `collective-motion-metrics` (polarization and rotation
 order parameters, and the discrete states they imply), `local-order-metrics`,
 `ffgroups` and `ffgroups-metrics`, `frame-aggregate`, `social-motion-summary`.
+`frame-aggregate`, `sequence-aggregate` and `individual-aggregate` reduce one column with
+a shared set of parameters: to one row per frame, per sequence or per individual. Over
+pair rows, `individual-aggregate` reduces every row of a focal `id1` to that individual's
+row.
 
 **A label sequence as a fingerprint.** `label-statistics` reduces labels to one row per
 individual: how much of the time each state occupies, how often it starts, how long its

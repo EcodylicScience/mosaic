@@ -35,12 +35,15 @@ from mosaic.core.pipeline.graph import (
     input_candidates,
     insert_candidates,
     params_reference_site,
+    plan_pipeline,
+    plan_wire,
     read_recipe,
     render_location,
     resolved_levels,
     step_type_detail,
     validation_report,
 )
+from tests.helpers import add_tracks_variant, make_dataset
 
 runner = CliRunner()
 
@@ -616,3 +619,57 @@ def test_validate_answers_an_unparseable_recipe_in_json(tmp_path: Path) -> None:
     assert payload["problems"] == [
         {"step": "tsne", "where": "feature", "message": "Field required"}
     ]
+
+
+# --- the plan ---------------------------------------------------------------------
+
+
+def test_the_plan_wire_states_each_aggregate_rule(tmp_path: Path) -> None:
+    """The editor shows the rows each sum reads, and nothing for other steps."""
+    dataset = make_dataset(tmp_path / "pairs")
+    add_tracks_variant(
+        dataset, "convert-trex.0.2-1111111111", "seq_a", std_format="mosaic_v1"
+    )
+
+    def total(step_id: str, column: str, agg: str) -> Document:
+        return {
+            "id": step_id,
+            "type": "feature",
+            "feature": "frame-aggregate",
+            "inputs": [{"step": "pairs"}],
+            "params": {"column": column, "agg": agg},
+        }
+
+    recipe = Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "heading",
+                    "type": "feature",
+                    "feature": "heading",
+                    "inputs": ["tracks"],
+                    "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+                },
+                {
+                    "id": "pairs",
+                    "type": "feature",
+                    "feature": "pair-position",
+                    "inputs": ["tracks", {"step": "heading"}],
+                },
+                total("distance", "AB_dist", "sum"),
+                total("speed", "A_speed", "count"),
+                total("mean", "AB_dist", "mean"),
+            ]
+        }
+    )
+
+    wire = plan_wire(plan_pipeline(dataset, recipe))
+
+    rules = {planned.step: planned.pairs for planned in wire.steps}
+    assert rules == {
+        "heading": None,
+        "pairs": None,
+        "distance": "once",
+        "speed": "each_perspective",
+        "mean": None,
+    }

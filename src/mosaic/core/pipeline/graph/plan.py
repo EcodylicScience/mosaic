@@ -59,6 +59,7 @@ from mosaic.core.helpers import resolve_frame_range
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
+from ..column_contract import PairRead
 from ..manifest import tracks_table_columns
 from ..tracks_index import AmbiguousTracksVariant, rows_without_tracklets
 from ..inventory.cache import InventoryCache
@@ -127,6 +128,7 @@ from .validate import (
     RecipeInvalid,
     check_recipe,
     one_run_problems,
+    pair_rules,
     reject_unless_valid,
 )
 from .wire import Problem
@@ -336,6 +338,10 @@ class PlannedStep:
             (:mod:`~.reach`), or ``undeclared``. The feature's class-level answer
             stands in for a step whose identity is unresolved. ``undeclared`` for
             an op, whose reach the gap check passes through unchanged.
+        pairs: The rows of a pair table that the step reads, ``once`` or
+            ``each_perspective`` (:func:`~.validate.pair_rules`). ``None`` for
+            a step without a pair rule, or whose ``agg`` is neither ``sum`` nor
+            ``count``.
     """
 
     step_id: str
@@ -364,6 +370,7 @@ class PlannedStep:
     scope_dependent: bool = False
     fits: bool = False
     temporal_reach: Reach = UNDECLARED
+    pairs: PairRead | None = None
 
     @property
     def is_complete(self) -> bool:
@@ -705,6 +712,7 @@ def plan_pipeline(
     """
     catalog = declaration_catalog() if catalog is None else catalog
     reject_unless_valid(recipe, catalog)
+    pair_reads = pair_rules(recipe, catalog)
 
     narrowing = scope
     if narrowing is None and request is not None:
@@ -797,6 +805,7 @@ def plan_pipeline(
             deferred_by=deferred_by,
             tracks_run_id=tracks_run_id,
             pinned_inv=pinned_inv if step.id in pins else None,
+            pair_read=pair_reads.get(step.id),
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
@@ -915,6 +924,7 @@ def _plan_step(
     deferred_by: str | None = None,
     tracks_run_id: str | None = None,
     pinned_inv: DatasetInventory | None = None,
+    pair_read: PairRead | None = None,
 ) -> PlannedStep:
     """Resolve one step against everything the walk has already established.
 
@@ -930,7 +940,10 @@ def _plan_step(
     the feature runs. The step reads complete over *target* when its pinned
     run has finished (:func:`~.pins.pinned_run_complete`), and is asked for
     no entries.
+    *pair_read* is the rows the step reads of a pair table, from
+    :func:`~.validate.pair_rules`. A resolved ``once`` enters its params.
     """
+    pairs: Literal["once"] | None = "once" if pair_read == "once" else None
     declared = catalog.entries[
         step.feature if isinstance(step, FeatureStepSpec) else step.kind
     ]
@@ -969,7 +982,12 @@ def _plan_step(
         # silently answers a question nobody asked.
         resolution = _Resolution(
             step=_unresolved(
-                step, target, recipe, resolved, tracks_run_id=tracks_run_id
+                step,
+                target,
+                recipe,
+                resolved,
+                tracks_run_id=tracks_run_id,
+                pairs=pairs,
             )
         )
         base = replace(resolution.step, reason=inherited)
@@ -1001,6 +1019,7 @@ def _plan_step(
             resolved=resolved,
             tracks_run_id=tracks_run_id,
             pinned=pinned_inv is not None,
+            pairs=pairs,
         )
         problems.extend(resolution.problems)
         base = replace(
@@ -1043,6 +1062,7 @@ def _plan_step(
         drift=view.drift,
         finished=view.finished,
         reason=_reason_for(base, parents, planned, view.coverage, view.status),
+        pairs=pair_read,
     )
 
 
@@ -1226,6 +1246,7 @@ def _unresolved(
     resolved: Mapping[str, ResolvedStep],
     *,
     tracks_run_id: str | None = None,
+    pairs: Literal["once"] | None = None,
 ) -> PlannedStep:
     """The record for a step whose identity nothing above it can supply.
 
@@ -1246,6 +1267,7 @@ def _unresolved(
         if isinstance(step, OpStepSpec)
         else Scope(),
         tracks_run_id=tracks_run_id,
+        pairs=pairs,
     )
     return PlannedStep(
         step_id=step.id,
@@ -1509,6 +1531,7 @@ def _resolve_feature_step(
     resolved: Mapping[str, ResolvedStep],
     tracks_run_id: str | None = None,
     pinned: bool = False,
+    pairs: Literal["once"] | None = None,
 ) -> _Resolution:
     """One feature step's identity, from its params plus what is above it.
 
@@ -1518,7 +1541,9 @@ def _resolve_feature_step(
     reference reads. A *pinned* step takes its identity from its pin, so an
     entry of two variants leaves it unnamed here and raises no problem.
     """
-    spec = resolve_step_spec(recipe, step.id, resolved, tracks_run_id=tracks_run_id)
+    spec = resolve_step_spec(
+        recipe, step.id, resolved, tracks_run_id=tracks_run_id, pairs=pairs
+    )
     shared = _shared_run_problems(recipe, step, resolved)
     if shared:
         # Before the feature is built, because its inputs model refuses a run

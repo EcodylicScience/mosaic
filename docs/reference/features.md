@@ -3,7 +3,7 @@
 
 # Features
 
-60 features are registered. Each one runs as
+62 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -795,17 +795,33 @@ Per-sequence summary of focal-individual group metrics.
 
 ### `frame-aggregate`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.frame_aggregate.FrameAggregate`
+Version `0.2` &middot; `mosaic.behavior.feature_library.frame_aggregate.FrameAggregate`
 
 Per-sequence feature reducing multi-id data to one row per frame.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `column` | `string` | _required_ |  | The name of the column to aggregate. |
-| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  | The aggregation applied across ids within each frame. Known values are mean, median, min, max, std, sum and count. Without threshold, NaN values are skipped for every mode, and count counts non-null values. |
+| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  | The aggregation applied across the rows that the feature reduces together: those of one frame, one entry or one id, as the feature groups them. Known values are mean, median, min, max, std, sum and count. Without threshold, NaN values are skipped for every mode, and count counts non-null values. |
 | `output_column` | `string` \| `None` | `null` |  | The name of the result column. Unset, it is column followed by agg, joined with an underscore. |
-| `filter_expr` | `string` \| `None` | `null` |  | A pandas DataFrame.query expression applied before aggregation, for example to dedupe pair-perspective input or drop flagged frames. |
-| `threshold` | `number` \| `None` | `null` |  | Aggregate the boolean column > threshold instead of the raw column. Unset, the raw column is aggregated. With agg set to mean, the result is the fraction of ids in the frame exceeding the threshold. |
+| `filter_expr` | `string` \| `None` | `null` |  | A pandas DataFrame.query expression applied before aggregation, for example to drop flagged frames. |
+| `threshold` | `number` \| `None` | `null` |  | Aggregate the boolean column > threshold instead of the raw column. Unset, the raw column is aggregated. With agg set to mean, the result is the fraction of the rows reduced together that exceed the threshold. |
+| `transform` | `"none"` \| `"abs"` | `"none"` |  | A transform applied to the column before aggregation. Known values are none and abs. abs aggregates the column's absolute value, useful for a magnitude such as angular velocity. |
+| `pairs` | `"auto"` \| `"once"` \| `"each_perspective"` | `"auto"` |  | Which rows of a pair table sum and count read, when the input has a perspective column; the other aggregations read every row. once reads perspective 0, each pair once, and each_perspective reads every ordered pair row. auto is resolved by a recipe's plan: once for a column declared symmetric over mirrored rows with no filter_expr, every row otherwise. A run outside a plan (mosaic run --feature) has no input chain to resolve and reads every row under auto, which never halves a value without a declaration. Set once there to count each pair once. |
+
+### `individual-aggregate`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.individual_aggregate.IndividualAggregate`
+
+Per-sequence feature reducing the rows of each individual to one row.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `column` | `string` | _required_ |  | The name of the column to aggregate. |
+| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  | The aggregation applied across the rows that the feature reduces together: those of one frame, one entry or one id, as the feature groups them. Known values are mean, median, min, max, std, sum and count. Without threshold, NaN values are skipped for every mode, and count counts non-null values. |
+| `output_column` | `string` \| `None` | `null` |  | The name of the result column. Unset, it is column followed by agg, joined with an underscore. |
+| `filter_expr` | `string` \| `None` | `null` |  | A pandas DataFrame.query expression applied before aggregation, for example to drop flagged frames. |
+| `threshold` | `number` \| `None` | `null` |  | Aggregate the boolean column > threshold instead of the raw column. Unset, the raw column is aggregated. With agg set to mean, the result is the fraction of the rows reduced together that exceed the threshold. |
 | `transform` | `"none"` \| `"abs"` | `"none"` |  | A transform applied to the column before aggregation. Known values are none and abs. abs aggregates the column's absolute value, useful for a magnitude such as angular velocity. |
 
 ### `label-statistics`
@@ -892,6 +908,22 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 | `end_time` | `number` \| `None` | `null` |  | Bin only rows whose time is before this. Read from the time column, which the input must then carry. Unset, to the end. [s] |
 | `nonfocal_flag_col` | `string` | `"Focal_fish"` |  | Name of the column flagging nonfocal animals, read only when focal_category_col is unset or absent from the table. |
 | `nonfocal_flag_value` | `boolean` | `false` |  | The value in nonfocal_flag_col marking an animal as nonfocal, read under the same condition as nonfocal_flag_col. |
+
+### `sequence-aggregate`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate`
+
+Per-sequence feature reducing every row of an entry to one row.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `column` | `string` | _required_ |  | The name of the column to aggregate. |
+| `agg` | `"mean"` \| `"median"` \| `"min"` \| `"max"` \| `"std"` \| `"sum"` \| `"count"` | `"mean"` |  | The aggregation applied across the rows that the feature reduces together: those of one frame, one entry or one id, as the feature groups them. Known values are mean, median, min, max, std, sum and count. Without threshold, NaN values are skipped for every mode, and count counts non-null values. |
+| `output_column` | `string` \| `None` | `null` |  | The name of the result column. Unset, it is column followed by agg, joined with an underscore. |
+| `filter_expr` | `string` \| `None` | `null` |  | A pandas DataFrame.query expression applied before aggregation, for example to drop flagged frames. |
+| `threshold` | `number` \| `None` | `null` |  | Aggregate the boolean column > threshold instead of the raw column. Unset, the raw column is aggregated. With agg set to mean, the result is the fraction of the rows reduced together that exceed the threshold. |
+| `transform` | `"none"` \| `"abs"` | `"none"` |  | A transform applied to the column before aggregation. Known values are none and abs. abs aggregates the column's absolute value, useful for a magnitude such as angular velocity. |
+| `pairs` | `"auto"` \| `"once"` \| `"each_perspective"` | `"auto"` |  | Which rows of a pair table sum and count read, when the input has a perspective column; the other aggregations read every row. once reads perspective 0, each pair once, and each_perspective reads every ordered pair row. auto is resolved by a recipe's plan: once for a column declared symmetric over mirrored rows with no filter_expr, every row otherwise. A run outside a plan (mosaic run --feature) has no input chain to resolve and reads every row under auto, which never halves a value without a declaration. Set once there to count each pair once. |
 
 ### `social-motion-summary`
 

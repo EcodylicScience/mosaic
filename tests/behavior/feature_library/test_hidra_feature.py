@@ -40,6 +40,7 @@ from tests.helpers import (
     add_tracks_variant,
     isolate_tool_location,
     make_dataset,
+    mirrored_rows,
     result_outputs,
     result_run_root,
     track_table,
@@ -345,6 +346,23 @@ def test_a_frame_missing_from_the_input_keeps_its_neighbors_values(
         rows["prob_sniff__ReflectiveManatee"].to_numpy(),
         fake_probability(rows["frame"].to_numpy() - 100, 1, 2),
     )
+
+
+@pytest.mark.parametrize("gaps", [False, True], ids=["every-frame", "missed-frames"])
+def test_each_pair_holds_both_perspective_rows(
+    fake: _FakePredict, placement: dict[str, object], gaps: bool
+) -> None:
+    """``mirrored`` holds on the rows, also when an animal misses frames."""
+    entry = _entry(3)
+    if gaps:
+        missing = ((entry["id"] == 1) & entry["frame"].between(103, 106)) | (
+            (entry["id"] == 2) & (entry["frame"] == 110)
+        )
+        entry = entry[~missing]
+
+    table = HidraFeature(params=_params(placement)).apply(entry)
+
+    _ = mirrored_rows(table)
 
 
 def test_each_arena_is_its_own_scene(

@@ -64,6 +64,7 @@ from . import (
     id_tag_columns,
     identity_embedding_model,
     identity_model,
+    individual_aggregate,
     individual_wavelet,
     kpms,
     local_order_metrics,
@@ -82,6 +83,7 @@ from . import (
     probability_ensemble,
     scale_to_bl,
     scale_to_cm,
+    sequence_aggregate,
     sequence_classifier,
     sequence_heads,
     sequence_training,
@@ -118,6 +120,7 @@ from .global_ward import GlobalWardClustering
 from .id_tag_columns import IdTagColumns
 from .identity_embedding_model import GlobalIdentityEmbedding
 from .identity_model import GlobalIdentityModel
+from .individual_aggregate import IndividualAggregate
 from .individual_wavelet import IndividualWavelet
 from .keypoint_kinematics import KeypointKinematics
 from .kpms import KpmsFeature
@@ -139,6 +142,7 @@ from .probability_ensemble import ProbabilityEnsembleFeature
 from .scale_to_bl import ScaleToBodyLength
 from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
+from .sequence_aggregate import SequenceAggregate
 from .sequence_classifier import SequenceClassifier
 from .social_motion_summary import SocialMotionSummary
 from .speed_angvel import SpeedAngvel
@@ -213,6 +217,7 @@ __all__ = [
     "GlobalTSNE",
     "GlobalWardClustering",
     "IdTagColumns",
+    "IndividualAggregate",
     "IndividualWavelet",
     "KeypointKinematics",
     "KpmsFeature",
@@ -234,6 +239,7 @@ __all__ = [
     "PairWavelet",
     "ScaleToBodyLength",
     "ScaleToCm",
+    "SequenceAggregate",
     "SequenceClassifier",
     "SocialMotionSummary",
     "SpeedAngvel",
@@ -278,6 +284,7 @@ __all__ = [
     "id_tag_columns",
     "identity_embedding_model",
     "identity_model",
+    "individual_aggregate",
     "individual_wavelet",
     "kpms",
     "local_order_metrics",
@@ -296,6 +303,7 @@ __all__ = [
     "probability_ensemble",
     "scale_to_bl",
     "scale_to_cm",
+    "sequence_aggregate",
     "sequence_classifier",
     "sequence_heads",
     "sequence_training",

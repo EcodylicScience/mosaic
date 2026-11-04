@@ -39,6 +39,7 @@ from mosaic.core.pipeline.graph import (
     LARGE_SCOPE_ENTRIES,
     IdentityUnresolved,
     Plan,
+    PlannedStep,
     PlanWire,
     Recipe,
     RecipeInvalid,
@@ -48,6 +49,7 @@ from mosaic.core.pipeline.graph import (
     plan_wire,
     recipe_digest,
     requests_matching,
+    resolved_columns,
     run_pipeline,
     submit_request,
 )
@@ -1304,3 +1306,140 @@ def test_inputs_that_resolve_to_one_run_only_here_are_a_dataset_problem(
     assert "'by_frame' and 'by_time' run speed-angvel" in problem.message
     assert "name one run on this dataset" in problem.message
     assert raised.value.plan.run_ids["aggregate"] is None
+
+
+# --- the pairs rule of a sum over pair rows --------------------------------------------
+
+_HEADING_STEP: Document = {
+    "id": "heading",
+    "type": "feature",
+    "feature": "heading",
+    "inputs": ["tracks"],
+    "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
+}
+
+_PAIRS_STEP: Document = {
+    "id": "pairs",
+    "type": "feature",
+    "feature": "pair-position",
+    "inputs": ["tracks", {"step": "heading"}],
+}
+
+
+def _pair_total(
+    params: Document, *, steps: tuple[Document, ...] = (), reads: str = "pairs"
+) -> Recipe:
+    """``heading`` and ``pair-position``, then *steps*, then a ``frame-aggregate``."""
+    total: Document = {
+        "id": "total",
+        "type": "feature",
+        "feature": "frame-aggregate",
+        "inputs": [{"step": reads}],
+        "params": {"agg": "sum", **params},
+    }
+    return Recipe.model_validate({"steps": [_HEADING_STEP, _PAIRS_STEP, *steps, total]})
+
+
+def _total(dataset: Dataset, recipe: Recipe) -> PlannedStep:
+    """The plan of *recipe*'s ``total`` step."""
+    plan = plan_pipeline(dataset, recipe)
+    return {planned.step_id: planned for planned in plan.steps}["total"]
+
+
+def test_a_sum_of_a_symmetric_pair_column_is_planned_once(tracked: Dataset) -> None:
+    planned = _total(tracked, _pair_total({"column": "AB_dist"}))
+    written = _total(tracked, _pair_total({"column": "AB_dist", "pairs": "once"}))
+
+    assert planned.pairs == "once"
+    assert planned.spec.params["pairs"] == "once"
+    assert planned.run_id is not None
+    assert planned.run_id == written.run_id
+
+
+def test_a_sum_of_a_directional_pair_column_reads_each_perspective(
+    tracked: Dataset,
+) -> None:
+    planned = _total(tracked, _pair_total({"column": "A_speed"}))
+    once = _total(tracked, _pair_total({"column": "A_speed", "pairs": "once"}))
+
+    assert planned.pairs == "each_perspective"
+    assert "pairs" not in planned.spec.params
+    assert planned.run_id is not None
+    assert planned.run_id != once.run_id
+
+
+def test_a_sum_through_temporal_stack_keeps_the_rule(tracked: Dataset) -> None:
+    stack: Document = {
+        "id": "stack",
+        "type": "feature",
+        "feature": "temporal-stack",
+        "inputs": [{"step": "pairs"}],
+    }
+    recipe = _pair_total(
+        {"column": "AB_dist__pool_mean"}, steps=(stack,), reads="stack"
+    )
+
+    assert _total(tracked, recipe).pairs == "once"
+
+
+def test_a_classifier_probability_reads_each_perspective(tracked: Dataset) -> None:
+    """A ``prob_`` column is id1's call toward id2, and no classifier declares it."""
+    classifier: Document = {
+        "id": "classifier",
+        "type": "feature",
+        "feature": "xgboost",
+        "inputs": [{"step": "pairs"}],
+        "params": {"model": {"run_id": "0.1-0000000000"}, "default_class": 0},
+    }
+    recipe = _pair_total({"column": "prob_1"}, steps=(classifier,), reads="classifier")
+
+    planned = _total(tracked, recipe)
+
+    assert not resolved_columns(recipe)["classifier"].is_symmetric("prob_1")
+    assert planned.pairs == "each_perspective"
+    assert "pairs" not in planned.spec.params
+
+
+def test_a_merge_with_an_unmirrored_input_reads_each_perspective(
+    tracked: Dataset,
+) -> None:
+    speed: Document = {
+        "id": "speed",
+        "type": "feature",
+        "feature": "speed-angvel",
+        "inputs": ["tracks"],
+    }
+    response: Document = {
+        "id": "response",
+        "type": "feature",
+        "feature": "neighbor-delta-response",
+        "inputs": ["tracks", {"step": "heading"}, {"step": "speed"}],
+    }
+    total: Document = {
+        "id": "total",
+        "type": "feature",
+        "feature": "frame-aggregate",
+        "inputs": [{"step": "pairs"}, {"step": "response"}],
+        "params": {"column": "AB_dist", "agg": "sum"},
+    }
+    recipe = Recipe.model_validate(
+        {"steps": [_HEADING_STEP, _PAIRS_STEP, speed, response, total]}
+    )
+
+    assert _total(tracked, recipe).pairs == "each_perspective"
+
+
+def test_a_filtered_sum_keeps_each_perspective(tracked: Dataset) -> None:
+    recipe = _pair_total({"column": "AB_dist", "filter_expr": "id1 < 3"})
+
+    planned = _total(tracked, recipe)
+
+    assert planned.pairs == "each_perspective"
+    assert "pairs" not in planned.spec.params
+
+
+def test_a_mean_keeps_auto(tracked: Dataset) -> None:
+    planned = _total(tracked, _pair_total({"column": "AB_dist", "agg": "mean"}))
+
+    assert planned.pairs is None
+    assert "pairs" not in planned.spec.params

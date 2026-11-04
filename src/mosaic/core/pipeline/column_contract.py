@@ -65,11 +65,15 @@ __all__ = [
     "NON_PAYLOAD_KEPT",
     "NamedColumns",
     "ORDER_COLUMN",
+    "PAIR_COUNTING_AGGS",
+    "PAIR_RULE_FIELD",
     "PAYLOAD_LABEL",
     "POSE_X",
     "POSE_Y",
     "ParamColumn",
     "ParamIs",
+    "PairRead",
+    "PairRule",
     "ParamValues",
     "Payload",
     "Prefix",
@@ -320,12 +324,25 @@ class Provides:
             column's name. ``temporal-stack`` writes ``speed__t+05`` and
             ``speed__pool_mean`` from ``speed``. Params and data decide the rest
             of each name. A family may include the input column.
+        symmetric: The output columns that hold one value on the two
+            perspective rows of a pair in a frame, such as a distance. A
+            ``Prefix`` declares a family. Only a pair feature declares them.
+        mirrored: Whether the feature writes both perspective rows of every
+            pair on every frame where it writes one. A non-empty *symmetric*
+            implies it (:attr:`is_mirrored`).
     """
 
     passthrough: bool = False
     adds: tuple[ColumnRef, ...] = ()
     conditional: tuple[Conditional, ...] = ()
     payload_families: bool = False
+    symmetric: tuple[ColumnRef, ...] = ()
+    mirrored: bool = False
+
+    @property
+    def is_mirrored(self) -> bool:
+        """Whether the output holds both perspective rows of every pair it holds."""
+        return self.mirrored or bool(self.symmetric)
 
     @property
     def is_empty(self) -> bool:
@@ -335,6 +352,25 @@ class Provides:
         entry is empty, and a step cannot read it through ``inputs``.
         """
         return self == Provides()
+
+
+type PairRule = Literal["auto", "once", "each_perspective"]
+"""Which rows of a pair table a ``sum`` or ``count`` reads, the aggregates' ``pairs``.
+
+``once`` reads the perspective-0 row of each pair, ``each_perspective`` every
+row, and ``auto`` leaves the choice to a plan, which resolves it from the
+``symmetric`` and ``mirrored`` declarations of the steps behind the aggregate.
+"""
+
+type PairRead = Literal["once", "each_perspective"]
+"""The rows that a ``sum`` or ``count`` over pair rows reads, its rule resolved."""
+
+PAIR_COUNTING_AGGS: Final[frozenset[str]] = frozenset({"sum", "count"})
+"""The aggregations whose value doubles over the two rows of a pair, which a
+:data:`PairRule` governs."""
+
+PAIR_RULE_FIELD: Final = "pairs"
+"""The params field of an aggregate that holds its :data:`PairRule`."""
 
 
 def kept(*names: str) -> tuple[Conditional, ...]:
@@ -483,6 +519,7 @@ def _references(
         yield conditional.column
         if conditional.when_present is not None:
             yield conditional.when_present
+    yield from provides.symmetric
 
 
 def contract_fields(

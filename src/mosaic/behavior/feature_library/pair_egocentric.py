@@ -107,6 +107,9 @@ PAIR_EGOCENTRIC_PROVIDES: Final = Provides(
         *(Column(name) for name in EGOCENTRIC_PAIR_COLUMNS),
     ),
     conditional=kept(C.group_col),
+    # One distance in both perspectives, and cos(-dth) = cos(dth). The rest swap
+    # roles or flip sign.
+    symmetric=(Column("AB_dist"), Column("rel_heading_cos")),
 )
 """The output of ``pair-egocentric`` and ``pair-position``.
 
