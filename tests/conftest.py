@@ -30,6 +30,7 @@ _os.environ.setdefault("OMP_NUM_THREADS", "1")
 import csv
 import importlib.metadata
 import importlib.util
+import itertools
 import os
 import shutil
 from collections.abc import Callable, Iterator, Mapping
@@ -60,6 +61,7 @@ from tests.helpers import (
     add_media_sequence,
     add_track_sequences,
     import_runner_program,
+    isolate_card_leases,
     make_dataset,
     missing_ffmpeg_tools,
     require_ffmpeg as _require_ffmpeg,
@@ -252,6 +254,30 @@ def requires_ffmpeg() -> None:
     directly. One answer, two shapes.
     """
     _require_ffmpeg()
+
+
+_CARD_LEASE_DIRECTORIES = itertools.count()
+"""Numbers each test's lease directory within this process's base temporary directory."""
+
+
+@pytest.fixture(autouse=True)
+def isolated_card_leases(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Keep every test off the real GPU cards of the machine that runs the suite.
+
+    The lease directory is the test's own, under the session's base temporary
+    directory, and is created only when a lease needs it. A test that wants cards
+    installs a fake ``nvidia-smi`` (``install_fake_nvidia_smi``).
+
+    The fixture patches through a monkeypatch of its own. Requesting the
+    ``monkeypatch`` fixture here would set it up before every fixture a test
+    names, and so undo it after them: a test's ``monkeypatch.setitem`` on a
+    registry that a fixture restores would then outlive the restore.
+    """
+    number = next(_CARD_LEASE_DIRECTORIES)
+    directory = tmp_path_factory.getbasetemp() / "gpu-leases" / str(number)
+    with pytest.MonkeyPatch.context() as patch:
+        isolate_card_leases(patch, directory)
+        yield
 
 
 @pytest.fixture

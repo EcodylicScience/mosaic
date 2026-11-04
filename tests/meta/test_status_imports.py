@@ -44,6 +44,7 @@ STATUS_IMPORTS = (
     "from mosaic.core.pipeline.graph import entry_errors_wire, EntryErrorsWire",
     "import mosaic.core.pipeline.graph.driver_lease",
     "from mosaic.core.pipeline.graph import driver_alive, read_driver_lease",
+    "import mosaic.core.pipeline.graph.gpu_lease",
     "import mosaic.core.pipeline.graph.liveness",
     "import mosaic.core.pipeline.graph.retirement",
     "import mosaic.core.pipeline.graph.saved",

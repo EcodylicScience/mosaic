@@ -324,10 +324,11 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   instant (`changed_at_or_after`). It skips a run-log last written before the
   instant, and `list_requests` then reads every request file.
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py`, `request_wait.py`,
-  `retirement.py`, `saved.py`, `expand.py` and `patch.py` (which `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the feature library
-  (`tests/meta/test_status_imports.py`). The editor wires in `wire.py` import the op
-  registry and the inventory, which do.
+  `claims.py`, `entry_errors.py`, `driver_lease.py`, `gpu_lease.py`, `liveness.py`,
+  `request_wait.py`, `retirement.py`, `saved.py`, `expand.py` and `patch.py` (which
+  `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the
+  feature library (`tests/meta/test_status_imports.py`). The editor wires in `wire.py`
+  import the op registry and the inventory, which do.
 
 ## Declarations and the registries
 

@@ -54,6 +54,8 @@ What lives where:
 - ``runner_programs`` imports a runner program under its bare name for one test,
   writes fake runners that serve a test's handlers over the runner wire, and
   checks that a runner program answers ``Ready`` and ``shutdown``.
+- ``gpu_cards`` stands in for ``nvidia-smi``, and keeps a test from leasing a
+  real GPU card.
 - ``index_locks`` probes from a child process whether an index's lock is held.
 - ``processes`` contains a child program that appends to a file, a sleeper
   command, checks of whether a process stopped writing to it or exited, the line
@@ -349,6 +351,11 @@ from tests.helpers.tracks import (
 )
 from tests.helpers.identity import run_id_digest
 from tests.helpers.index_locks import index_locked_out
+from tests.helpers.gpu_cards import (
+    TWO_CARDS,
+    install_fake_nvidia_smi,
+    isolate_card_leases,
+)
 from tests.helpers.inference import (
     FakeInference,
     FakePredictImages,
@@ -664,6 +671,9 @@ __all__ = [
     "updating_golden",
     "video_store_maker",
     "wait_for",
+    "TWO_CARDS",
+    "install_fake_nvidia_smi",
+    "isolate_card_leases",
     "write_reader_params",
     "window_centers",
     "track_sequences",
