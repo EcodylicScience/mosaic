@@ -7,6 +7,7 @@ a read that rewrites an index changes one. The assertion names each.
 
 A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 ``CLI_READS_OF_NOTHING`` when it succeeds on a dataset that holds nothing yet. A
+read that needs a finished fitting request joins ``CLI_READS_OF_A_FIT``. A
 read that names entries from the media index also joins ``MEDIA_READS``.
 ``reprobe-media`` needs indexed videos and ``media probe`` a store, and each has a
 test of its own. ``features list``, ``features describe``, ``pipeline catalog``,
@@ -40,6 +41,7 @@ from mosaic.core.pipeline.appearance import (
 from mosaic.core.pipeline.graph import (
     CleanupPolicy,
     FileFailureStore,
+    Recipe,
     entry_errors_wire,
     list_requests,
     load_request,
@@ -233,6 +235,55 @@ def unpopulated(tmp_path: Path) -> ReadDataset:
     return ReadDataset(dataset=dataset, recipe_path=_recipe_file(tmp_path))
 
 
+FIT_STEPS: list[dict[str, object]] = [
+    {"id": "speed", "type": "feature", "feature": "speed-angvel", "inputs": ["tracks"]},
+    {
+        "id": "templates",
+        "type": "feature",
+        "feature": "extract-templates",
+        "inputs": [{"step": "speed"}],
+        "params": {"n_templates": 4},
+    },
+]
+"""A recipe whose second step fits, so a later request can pin or apply it."""
+
+
+@dataclass(frozen=True)
+class FitDataset:
+    """A dataset holding the finished request that fit ``FIT_STEPS`` over its train group."""
+
+    dataset: Dataset
+    recipe_path: Path
+    request_id: str
+    templates_run_id: str
+
+
+@pytest.fixture
+def fitted(tmp_path: Path) -> FitDataset:
+    """Converted tracks of a train and a test group, and the fit over the train group."""
+    dataset = calms21_dataset(
+        tmp_path / "fitted",
+        {"train": {"a": {"s1": 40, "s2": 30}}, "test": {"a": {"s3": 30}}},
+        seed=5,
+    )
+    _ = dataset.convert_all_tracks()
+    recipe = Recipe.model_validate(
+        {"schema_version": 1, "name": "fit", "steps": FIT_STEPS}
+    )
+    done = run_pipeline(dataset, recipe, scope=Scope(groups=["train"]))
+    templates = next(o.run_id for o in done.outcomes if o.step_id == "templates")
+    assert templates
+    path = tmp_path / "fit.recipe.json"
+    _ = path.write_text(recipe.model_dump_json(), encoding="utf-8")
+    _strip_to_content(dataset.base_dir)
+    return FitDataset(
+        dataset=dataset,
+        recipe_path=path,
+        request_id=done.request_id,
+        templates_run_id=templates,
+    )
+
+
 def _other_recipe_file(fixture: ReadDataset) -> Path:
     """A recipe other than the one the fixture ran, which can retire it."""
     path = fixture.recipe_path.parent / "other.recipe.json"
@@ -270,6 +321,14 @@ CLI_READS: dict[str, CliArguments] = {
         f"@{f.recipe_path}",
         "--assume-added",
         "elsewhere",
+    ],
+    "pipeline plan --tracks-run-id": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--tracks-run-id",
+        VARIANT,
     ],
     "pipeline plan --cleanup superseded": lambda f: [
         "pipeline",
@@ -348,6 +407,32 @@ CLI_READS_OF_NOTHING = (
 )
 """The verbs of ``CLI_READS`` that succeed on a dataset holding nothing."""
 
+type FitArguments = Callable[[FitDataset], list[str]]
+
+CLI_READS_OF_A_FIT: dict[str, FitArguments] = {
+    "pipeline plan --pin": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--group",
+        "test",
+        "--pin",
+        f"templates={f.templates_run_id}",
+    ],
+    "pipeline plan --applies-request": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.recipe_path}",
+        "--group",
+        "test",
+        "--applies-request",
+        f.request_id,
+    ],
+}
+"""Each read's arguments over a finished fit, without ``--manifest`` and ``--json``."""
+
 
 CLI_READS_THAT_EXIT_ONE_WHEN_THERE_IS_NOTHING = frozenset({"pipeline verify"})
 """Verbs whose fixture recipe holds nothing to compare, so they report it with exit 1."""
@@ -372,6 +457,20 @@ def test_a_read_verb_writes_nothing(populated: ReadDataset, verb: str) -> None:
     _invoke_read(populated, verb)
 
     assert_tree_unchanged(populated.root, before)
+
+
+@pytest.mark.parametrize("verb", sorted(CLI_READS_OF_A_FIT))
+def test_a_read_of_a_fit_writes_nothing(fitted: FitDataset, verb: str) -> None:
+    root = fitted.dataset.base_dir
+    before = tree_snapshot(root)
+
+    manifest = str(fitted.dataset.manifest_path)
+    result = invoke_ok(
+        [*CLI_READS_OF_A_FIT[verb](fitted), "--manifest", manifest, "--json"]
+    )
+    json.loads(result.stdout)
+
+    assert_tree_unchanged(root, before)
 
 
 MEDIA_READS: dict[str, Callable[[ReadDataset], object]] = {

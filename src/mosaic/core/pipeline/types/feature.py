@@ -138,7 +138,8 @@ class Feature(Protocol):
     The four values, and which identity columns each one means:
 
     - ``"individual"`` -- one row per ``(frame, id)``, or per ``id`` for a
-      per-sequence summary. ``speed-angvel``, ``nearest-neighbor``.
+      per-sequence summary. ``speed-angvel``, ``nearest-neighbor``,
+      ``individual-aggregate``.
     - ``"pair"`` -- one row per **ordered** pair per frame: ``id1`` the focal,
       ``id2`` the other, and ``perspective`` saying which ordering, so the key is
       ``(frame, id1, id2, perspective)``. The ``pair-*`` family,
@@ -162,7 +163,7 @@ class Feature(Protocol):
       hold this.
     - ``"unidentified"`` -- no per-animal identity at all: a per-frame or
       per-chunk aggregate over everyone present. ``collective-motion-metrics``,
-      ``frame-aggregate``.
+      ``frame-aggregate``, ``sequence-aggregate``.
     - ``"as-input"`` -- whatever came in goes out. The global fitters augment
       the frame they were given rather than re-keying it, and ``temporal-stack``,
       ``feral`` and ``arhmm`` branch on whether their input carries a pair.
@@ -203,7 +204,8 @@ class Feature(Protocol):
     What closes it is a recorded comparison rather than an identifier: the tracks row
     already carries the source composition its table was converted from, and a
     feature row carries that value forward in ``consumed_tracks_composition``, so the
-    per-entry cache check compares the two. Declaring ``("tracks_raw",)`` would have
+    per-entry cache check compares the two. A feature that reads a feature's output
+    carries its upstream row's cell as well. Declaring ``("tracks_raw",)`` would have
     closed it by false invalidation instead, which is the wrong trade -- an honest
     miss beats a confident wrong value, but a *spurious* miss is neither.
     """

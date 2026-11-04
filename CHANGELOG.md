@@ -141,14 +141,14 @@ cell.
 **Every feature declares `follows_ids`.** The class attribute `follows_ids: bool` sits
 beside `emits`, outside the `Feature` protocol as `fits` and `relates` are, and
 `test_every_feature_declares_whether_it_follows_ids` fails on a feature that leaves it
-off. It is `True` unless `apply` reads each row alone: a feature that differences,
+off. A feature that reads each row alone declares `False`. One that differences,
 smooths, windows or groups by `id` across frames, or labels a row by its ids, needs ids
-that name one animal over time. `heading`, `collective-motion-metrics`, `frame-aggregate`
-and `feral` are `False`, and the nine label readers are `True`. `Declaration.follows_ids`
-and `StepTypeDetail.follows_ids` (default `False`) carry the class value, so a plan reads
-it without building the feature; the editor catalog's `CatalogEntry.declaration` carries
-it as part of `Declaration`. A class that declares nothing reads `True`; `tracks` and
-the ops read `False`. It enters no run id or feature version, and no run id moves.
+that name one animal over time and declares `True`; the catalog shows each feature's
+value. `Declaration.follows_ids` and `StepTypeDetail.follows_ids` (default `False`)
+carry the class value, so a plan reads it without building the feature; the editor
+catalog's `CatalogEntry.declaration` carries it as part of `Declaration`. A class that
+declares nothing reads `True`; `tracks` and the ops read `False`. It enters no run id or
+feature version, and no run id moves.
 
 **A plan refuses a step that follows ids over tracks without tracklets.** A feature step
 that reads `tracks` and declares `follows_ids` gets a `Problem` at `inputs` when the row
@@ -174,9 +174,9 @@ before `load_state`. On the frames of an entry whose row records false,
 all-id centroids of successive frames and writes NaN for `group_angvel` and
 `n_centroid_common`; under velocity headings `mean_heading`, `polarization`,
 `rotation`, `rotation_signed` and `n_ids_heading` are NaN too and `state` is
-`Undefined`, and under orientation headings they are unchanged. In a run that reads any
-entry without tracklets, `n_ids_heading` and `n_centroid_common` are floats on every
-entry; a run that reads none writes them as integers, and its output is that of 0.1.
+`Undefined`, and under orientation headings they are unchanged.
+`n_ids_heading` and `n_centroid_common` are float64 on every entry whatever the tracks
+carry, where 0.1 wrote integers; their values are those of 0.1.
 The version moves to 0.2, so both of its golden run ids move from `0.1-` to `0.2-` with
 the same digest. `entries_without_tracklets` is removed; `rows_without_tracklets` gives
 the same entries with their variants.

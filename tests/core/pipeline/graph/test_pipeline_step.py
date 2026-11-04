@@ -1252,7 +1252,7 @@ def test_run_graph_request_refuses_tracks_run_id(tracked: Dataset) -> None:
 
 
 def test_run_graph_request_refuses_labels_run_id(tracked: Dataset) -> None:
-    """A step's labels are chosen in the recipe, and the flag used to be ignored."""
+    """A step's labels are chosen in the recipe, so the flag is refused."""
     request = submit_request(tracked, Recipe.model_validate(_chain())).request
     result = runner.invoke(
         app,

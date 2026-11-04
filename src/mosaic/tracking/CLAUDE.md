@@ -51,7 +51,8 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
 - Set `output_schema` on the row. Its default is `trex_v1`, the legacy centimeter
   schema, and `test_tracker_conformance.py` does not check it.
 - Every tracker and inference op publishes through `publish_tracks_table`
-  (`common/bridge.py`) with the entry's `EntryAxis` and its `frames_read`. A bridge
+  (`common/bridge.py`) with the entry's `EntryAxis`, its `frames_read` and whether its ids
+  follow an animal (`carries_tracklets`). A bridge
   failure goes through `publish_or_record`, and the caller still writes the index row.
 
 ## The SLEAP embedding run

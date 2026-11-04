@@ -110,7 +110,7 @@ own environments.
   animal over time, and the ids of tracks that carry no tracklets restart each frame.
   `heading`, `collective-motion-metrics`, `frame-aggregate`, `sequence-aggregate` and
   `feral` are `False`; `individual-aggregate` groups by `id` and is `True`
-  (`test_the_spec_fixes_these_follows_ids`). The catalog's `Declaration.follows_ids` and
+  (`test_these_features_declare_follows_ids`). The catalog's `Declaration.follows_ids` and
   `StepTypeDetail.follows_ids` carry the class value, and a feature that declares nothing
   reads `True`. It is not hashed.
 - **A fitter that streams its inputs hashes its scope, unless it pins its fit set.**

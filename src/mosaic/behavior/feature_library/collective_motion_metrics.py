@@ -194,9 +194,9 @@ class CollectiveMotionMetrics:
       - ``n_at_centroid``: individuals sitting exactly at the centroid, where the
         radial direction is undefined
       - ``n_centroid_common``: individuals present in both this frame and the
-        previous one -- the divisor of the centroid velocity. NaN on a frame of
-        tracks without tracklets. Both counts are floats in a run that reads an
-        entry without tracklets
+        previous one -- the divisor of the centroid velocity. Both counts are
+        float64 on every entry, and NaN where the note on tracks without
+        tracklets says so
 
     Order parameters and state
       - ``polarization``: ``O_p = (1/N)|sum u_i|``, in [0, 1]
@@ -302,9 +302,8 @@ class CollectiveMotionMetrics:
         ``polarization``, ``rotation``, ``rotation_signed`` and ``n_ids_heading``
         are NaN and ``state`` is ``Undefined``, because a velocity heading is a
         per-id difference. Under orientation headings they are unchanged. An
-        entry whose tracks carry tracklets, or whose answer is unknown, computes
-        as before, except that in a run that reads any entry without tracklets
-        ``n_ids_heading`` and ``n_centroid_common`` are floats on every entry.
+        entry whose tracks carry tracklets, or whose answer is unknown, takes the
+        motion of each id between frames.
     """
 
     category = "summary"
@@ -777,17 +776,15 @@ class CollectiveMotionMetrics:
         if p.subgroup_col is not None:
             out[p.subgroup_col] = agg[p.subgroup_col].to_numpy()
         out["n_ids"] = agg["n_ids"].to_numpy()
-        # The counts turn float for every entry of a run whose map holds an
-        # entry without tracklets, so one run writes one dtype whichever frames
-        # an entry holds. Every worker of a run is handed the same map.
-        float_counts = any(flag is False for flag in self._tracklets.values())
-        n_heading_out = agg["n_ids_heading"].to_numpy()
-        n_common = agg["n_centroid_common"].to_numpy()
-        if float_counts:
-            n_heading_out = n_heading_out.astype(float)
-            n_common = np.where(untracked, np.nan, n_common.astype(float))
-            if resolved == "velocity":
-                n_heading_out = np.where(untracked, np.nan, n_heading_out)
+        # Both counts are float64 on every entry, whatever the tracklets map holds:
+        # the run id covers every scope, so a dtype that followed the entries a
+        # worker was handed would differ between the entries of one run.
+        n_heading_out = agg["n_ids_heading"].to_numpy().astype(float)
+        n_common = np.where(
+            untracked, np.nan, agg["n_centroid_common"].to_numpy().astype(float)
+        )
+        if resolved == "velocity":
+            n_heading_out = np.where(untracked, np.nan, n_heading_out)
         out["n_ids_heading"] = n_heading_out
         out["n_at_centroid"] = agg["n_at_centroid"].to_numpy()
         out["n_centroid_common"] = n_common

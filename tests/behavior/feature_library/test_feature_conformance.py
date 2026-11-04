@@ -415,8 +415,8 @@ def test_every_feature_declares_whether_it_follows_ids(cls: type) -> None:
         ("id-tag-columns", True),
     ],
 )
-def test_the_spec_fixes_these_follows_ids(slug: str, follows: bool) -> None:
-    """The features whose answer the feature-pipelines spec states."""
+def test_these_features_declare_follows_ids(slug: str, follows: bool) -> None:
+    """A feature that reads each row alone declares False, one that groups by id True."""
     by_slug = {cls.name: cls for cls in FEATURE_CLASSES}
     assert vars(by_slug[slug])["follows_ids"] is follows
 

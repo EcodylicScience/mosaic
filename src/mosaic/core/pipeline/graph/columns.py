@@ -80,7 +80,6 @@ __all__ = [
     "provider_phrase",
     "providers_of",
     "requires_wire",
-    "resolve_pair_rule",
     "tracks_columns",
     "tracks_provides",
 ]
@@ -587,41 +586,6 @@ def _payload_names(columns: Iterable[str]) -> list[str]:
     return [column for column in columns if column not in NON_PAYLOAD_COLS]
 
 
-def resolve_pair_rule(
-    merged: ColumnSet,
-    column: str,
-    agg: str,
-    pairs: PairRule,
-    filter_expr: str | None,
-) -> Literal["once"] | None:
-    """What an aggregate's ``auto`` pair rule reads: ``once``, or ``None`` for every row.
-
-    ``once`` when the rule is ``auto``, *agg* is ``sum`` or ``count``, no
-    *filter_expr* is set, *merged* may hold ``perspective``, its rows are
-    mirrored, and *column* is symmetric. A filter can keep one row of a pair
-    (on ``id1`` or ``perspective``, say), and ``once`` would then miss pairs.
-    An undeclared or unbounded input has no symmetric column, and its ``auto``
-    reads every row.
-
-    Args:
-        merged: The columns of the aggregate's merged input.
-        column: The column it aggregates.
-        agg: Its aggregation.
-        pairs: Its pair rule as written.
-        filter_expr: Its row filter, ``None`` or empty when unset.
-    """
-    if (
-        pairs == "auto"
-        and agg in PAIR_COUNTING_AGGS
-        and not filter_expr
-        and merged.admits(_PERSPECTIVE)
-        and merged.mirrored
-        and merged.is_symmetric(column)
-    ):
-        return "once"
-    return None
-
-
 def pair_rule_read(
     merged: ColumnSet,
     column: str,
@@ -631,18 +595,34 @@ def pair_rule_read(
 ) -> PairRead | None:
     """The rows that an aggregate reads of pair rows, ``None`` unless a sum or count.
 
-    A rule written as ``once`` or ``each_perspective`` stands, and ``auto``
-    reads what :func:`resolve_pair_rule` resolves, else every row. The other
-    aggregations read every row whatever the rule, and the rule says nothing.
-    Arguments as :func:`resolve_pair_rule` takes them.
+    A rule written as ``once`` or ``each_perspective`` stands. ``auto`` reads
+    ``once`` when no *filter_expr* is set, *merged* may hold ``perspective``,
+    its rows are mirrored, and *column* is symmetric, and every row
+    (``each_perspective``) otherwise. A filter can keep one row of a pair (on
+    ``id1`` or ``perspective``, say), and ``once`` would then miss pairs. An
+    undeclared or unbounded input has no symmetric column, and its ``auto``
+    reads every row. The other aggregations read every row whatever the rule,
+    and the rule says nothing.
+
+    Args:
+        merged: The columns of the aggregate's merged input.
+        column: The column it aggregates.
+        agg: Its aggregation.
+        pairs: Its pair rule as written.
+        filter_expr: Its row filter, ``None`` or empty when unset.
     """
     if agg not in PAIR_COUNTING_AGGS:
         return None
     if pairs != "auto":
         return pairs
-    return resolve_pair_rule(merged, column, agg, pairs, filter_expr) or (
-        "each_perspective"
-    )
+    if (
+        not filter_expr
+        and merged.admits(_PERSPECTIVE)
+        and merged.mirrored
+        and merged.is_symmetric(column)
+    ):
+        return "once"
+    return "each_perspective"
 
 
 def tracks_provides() -> Provides:

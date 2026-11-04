@@ -517,7 +517,7 @@ lists at most five runs, removable ones first, with the rest counted in
 
 A retirement applies to that one plan and submission, and the next plan judges as if
 nothing was retired. It needs `cleanup: superseded`. It reaches only runs a retired
-request wrote. A run that request only found already done, a run it pinned with `bind`,
+request wrote. A run that request only found already done, a run it bound with `bind` or pinned with `pins`,
 and a run that a call outside every request, such as a notebook, also used keep their
 protection. The other rules still apply to a retired run: a request's hold, a costly
 feature, a reader, the policy's age, and `keep_newest` for each storage, so with the

@@ -772,7 +772,7 @@ def pair_rules(
 
     A step's ``auto`` reads ``once`` when its column is declared symmetric over
     mirrored rows and it sets no ``filter_expr``
-    (:func:`~.columns.resolve_pair_rule`), and every row otherwise. A step that
+    (:func:`~.columns.pair_rule_read`), and every row otherwise. A step that
     writes ``once`` or ``each_perspective`` reads it. Read from the declarations
     alone: the tracks hold no ``perspective``, and the columns a plan measures
     of them do not change the answer. A step with another aggregation, or one

@@ -696,33 +696,28 @@ def test_only_the_frames_of_an_entry_without_tracklets_change() -> None:
     plain = _apply(df).set_index("frame")
     pd.testing.assert_frame_equal(
         out.loc[[0, 1]],
-        plain.loc[[0, 1]].astype({"n_centroid_common": float, "n_ids_heading": float}),
+        plain.loc[[0, 1]],
         check_exact=True,
     )
     assert np.isnan(out.loc[[2, 3], "polarization"].to_numpy(dtype=float)).all()
     assert _cell(out, 2, "centroid_speed") == pytest.approx(1.0)
 
 
-def test_the_count_columns_are_float_whenever_the_run_has_an_entry_without_tracklets() -> (
-    None
-):
-    """The dtype follows the run's map, so every entry of one run writes one dtype."""
+def test_the_count_columns_are_float_whatever_the_tracklets_map_holds() -> None:
+    """Both counts are float64 on every entry, so one run id writes one dtype."""
     df = pd.concat(
         [_square([0.0] * 4, frame=0), _square([0.0] * 4, frame=1)], ignore_index=True
     )
-    feature = CollectiveMotionMetrics(params={"fps": 1.0})
-    feature.set_tracklets({("G", "S1"): True, ("G", "other"): False})
-    out = feature.apply(df)
-    plain = _apply(df)
-    assert plain.dtypes["n_centroid_common"] == np.int64
-    assert plain.dtypes["n_ids_heading"] == np.int64
-    assert out.dtypes["n_centroid_common"] == np.float64
-    assert out.dtypes["n_ids_heading"] == np.float64
-    pd.testing.assert_frame_equal(
-        out,
-        plain.astype({"n_centroid_common": float, "n_ids_heading": float}),
-        check_exact=True,
-    )
+    for tracklets in (
+        {},
+        {("G", "S1"): True},
+        {("G", "S1"): True, ("G", "other"): False},
+    ):
+        feature = CollectiveMotionMetrics(params={"fps": 1.0})
+        feature.set_tracklets(tracklets)
+        out = feature.apply(df)
+        assert out.dtypes["n_centroid_common"] == np.float64
+        assert out.dtypes["n_ids_heading"] == np.float64
 
 
 def test_without_tracklets_each_subgroup_differences_its_own_centroid() -> None:
