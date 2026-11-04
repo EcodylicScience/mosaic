@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.pipeline.graph import gpu_lease
-from mosaic.core.pipeline.graph.gpu_lease import (
+from mosaic.core.pipeline import gpu_lease
+from mosaic.core.pipeline.gpu_lease import (
     GPU_CARD_VAR,
     LEASE_DIR_VAR,
     LEASE_FDS_VAR,
@@ -59,7 +59,7 @@ def _no_lease(result: LeasableCards) -> bool:
 def test_the_module_imports_the_standard_library_alone() -> None:
     assert (
         modules_loaded_by(
-            "import mosaic.core.pipeline.graph.gpu_lease",
+            "import mosaic.core.pipeline.gpu_lease",
             ("pydantic", "psutil", "numpy"),
         )
         == []

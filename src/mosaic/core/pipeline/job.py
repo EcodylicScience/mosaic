@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, TypeAlias
 from mosaic import runlog
 
 from ._utils import new_execution_id
-from .graph.gpu_lease import leased_card
+from .gpu_lease import leased_card
 from .markers import current_boot_id, current_pid_namespace
 from .progress import NullProgressCallback, ProgressCallback
 from .refusal import Refusal

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final
 
-from ..error_kind import ClassifiedError, ErrorKind
+from .error_kind import ClassifiedError, ErrorKind
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence

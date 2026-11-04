@@ -386,7 +386,7 @@ def _check_gpu_cards(settings: ServerConfig) -> None:
     """
     if settings.gpu_cards is None:
         return
-    from mosaic.core.pipeline.graph.gpu_lease import (
+    from mosaic.core.pipeline.gpu_lease import (
         GpuCardsRefused,
         card_warning,
         leasable_cards,

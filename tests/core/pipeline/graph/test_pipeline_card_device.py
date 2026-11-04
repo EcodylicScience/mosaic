@@ -21,7 +21,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph import cpu_fit_advice
 from mosaic.core.pipeline.graph.cpu_fit_advice import card_device_cautions
-from mosaic.core.pipeline.graph.gpu_lease import (
+from mosaic.core.pipeline.gpu_lease import (
     GPU_CARD_VAR,
     leases_cards_here,
     names_another_card,

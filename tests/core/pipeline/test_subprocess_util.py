@@ -33,7 +33,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.pipeline.graph.gpu_lease import (
+from mosaic.core.pipeline.gpu_lease import (
     LEASE_FDS_VAR,
     GpuCard,
     step_environment,

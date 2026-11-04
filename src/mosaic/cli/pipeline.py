@@ -978,7 +978,7 @@ def _run_request(
         run_request,
         start_detached_driver,
     )
-    from mosaic.core.pipeline.graph.gpu_lease import leasable_cards
+    from mosaic.core.pipeline.gpu_lease import leasable_cards
     from mosaic.core.pipeline.job import CancelToken, install_signal_handler
 
     ds = load_dataset(manifest)

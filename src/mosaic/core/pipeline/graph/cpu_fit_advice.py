@@ -13,10 +13,11 @@ presence of the package and from the environment and device files that name a
 GPU.
 
 **A GPU step whose ``device`` names another card.** On a host whose drivers lease
-cards (:func:`~.gpu_lease.leases_cards_here`), a step on a GPU lane has one card,
-which index ``0`` names, and its preflight refuses another index or a list. The
-plan says so first. It is a caution for the same reasons: the host may not be the
-one that runs the step, and it changes neither the fingerprint nor the lane.
+cards (:func:`~mosaic.core.pipeline.gpu_lease.leases_cards_here`), a step on a GPU
+lane has one card, which index ``0`` names, and its preflight refuses another index
+or a list. The plan says so first. It is a caution for the same reasons: the host
+may not be the one that runs the step, and it changes neither the fingerprint nor
+the lane.
 
 Imports the standard library, :mod:`mosaic.optional_dependency` and the lease and
 lane modules of this package only.
@@ -30,7 +31,7 @@ from typing import TYPE_CHECKING, Final
 
 from mosaic.optional_dependency import OptionalModule
 
-from .gpu_lease import leases_cards_here, names_another_card
+from ..gpu_lease import leases_cards_here, names_another_card
 from .lanes import GPU_INFER_LANE, GPU_TRAIN_LANE
 from .wire import Problem
 

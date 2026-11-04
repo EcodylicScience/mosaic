@@ -52,7 +52,7 @@ from ..ops import run_op
 from ..parallelism import ParallelSettings, effective_parallel
 from ..run import run_feature
 from .claims import FileFailureStore
-from .gpu_lease import leased_card
+from ..gpu_lease import leased_card
 from .model import COMPLETE_STATUSES, FeatureStepSpec
 from .plan import (
     MISSING_SAMPLE,
@@ -792,8 +792,8 @@ def _record_terminal(
     the run-log format rules out.
 
     *gpu_card* is the card of the process that makes the record
-    (:func:`~.gpu_lease.leased_card`). A driver recording a step it did not run
-    names none.
+    (:func:`~mosaic.core.pipeline.gpu_lease.leased_card`). A driver recording a step
+    it did not run names none.
 
     Every fact is written *before* the terminal event. A queue projects an attempt
     the moment it sees one, so anything appended after it is a fact that exists on

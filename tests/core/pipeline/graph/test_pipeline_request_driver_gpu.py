@@ -36,9 +36,9 @@ from mosaic.core.pipeline.graph import (
     run_request,
     submit_request,
 )
-from mosaic.core.pipeline.graph import gpu_lease
+from mosaic.core.pipeline import gpu_lease
 from mosaic.core.pipeline.graph import run as graph_run
-from mosaic.core.pipeline.graph.gpu_lease import (
+from mosaic.core.pipeline.gpu_lease import (
     GPU_CARD_VAR,
     LEASE_FDS_VAR,
     GpuCard,

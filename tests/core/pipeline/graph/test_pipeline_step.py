@@ -58,7 +58,7 @@ from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
-from mosaic.core.pipeline.graph.gpu_lease import GPU_CARD_VAR
+from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
 from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 from tests.helpers import (
     FakeTrainer,

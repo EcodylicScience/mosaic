@@ -76,7 +76,7 @@ from ..error_kind import ClassifiedError, ErrorKind
 from ..job import Cancelled, CancelToken
 from ..parallelism import ParallelSettings, parallel_flags
 from ..subprocess_util import terminate_group
-from . import gpu_lease
+from .. import gpu_lease
 from .driver_lease import (
     LeaseKeeper,
     driver_log_path,
@@ -87,7 +87,7 @@ from .driver_lease import (
     take_driver_lease,
 )
 from .cleanup import run_cleanup
-from .gpu_lease import (
+from ..gpu_lease import (
     CardLease,
     LeasableCards,
     LeaseDirectoryUnusable,
@@ -590,11 +590,11 @@ def run_request(
     each step the driver checks that it still holds the lease.
 
     A step on a GPU lane (:func:`step_lane`) takes one GPU card
-    (:mod:`~.gpu_lease`). Before it takes its lease, the driver lists the cards it
-    may lease once, when *gpu_cards* is given or a step it will run is on a GPU
-    lane. When nothing can be leased, it writes one warning to the log and GPU
-    steps start with its own environment. With every allowed card held, the
-    driver waits for one, as :func:`_run_step` describes.
+    (:mod:`~mosaic.core.pipeline.gpu_lease`). Before it takes its lease, the driver
+    lists the cards it may lease once, when *gpu_cards* is given or a step it will
+    run is on a GPU lane. When nothing can be leased, it writes one warning to the
+    log and GPU steps start with its own environment. With every allowed card held,
+    the driver waits for one, as :func:`_run_step` describes.
 
     Args:
         ds: The dataset the request was submitted against.
@@ -1006,8 +1006,8 @@ def _take_card(
 
     The wait is named in the driver's lease
     (:meth:`~.driver_lease.LeaseKeeper.record_gpu_wait`) and written to the log
-    once. Every :data:`~.gpu_lease.LEASE_RETRY_SECONDS` the driver checks *token*,
-    checks that it still holds its lease and tries again.
+    once. Every :data:`~mosaic.core.pipeline.gpu_lease.LEASE_RETRY_SECONDS` the
+    driver checks *token*, checks that it still holds its lease and tries again.
 
     Returns:
         The lease, or ``None`` when *token* fired during the wait or the lease
@@ -1065,12 +1065,12 @@ def _run_step(
     Given *cards* to lease, the step on a GPU lane first takes one
     (:func:`_take_card`), waiting while every one is held. The step's process
     starts with the card's environment
-    (:func:`~.gpu_lease.step_environment`) and the lock's descriptor, and the
-    driver closes its own copy once the process has started, so the lock lives
-    as long as the step and the tools it supervises. Every other step starts with
-    the driver's environment, less the lease variables. A cancel during the wait
-    starts no process and leaves the step unrecorded, so the driver records it
-    ``cancelled`` with the other steps that have not started.
+    (:func:`~mosaic.core.pipeline.gpu_lease.step_environment`) and the lock's
+    descriptor, and the driver closes its own copy once the process has started,
+    so the lock lives as long as the step and the tools it supervises. Every other
+    step starts with the driver's environment, less the lease variables. A cancel
+    during the wait starts no process and leaves the step unrecorded, so the driver
+    records it ``cancelled`` with the other steps that have not started.
 
     Returns:
         The status, or ``None`` when a cancel during the wait for a card came

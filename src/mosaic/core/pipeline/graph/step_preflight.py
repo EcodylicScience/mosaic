@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
-from .gpu_lease import leased_card, names_another_card
+from ..gpu_lease import leased_card, names_another_card
 from .plan import (
     MISSING_SAMPLE,
     Plan,

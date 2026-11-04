@@ -18,7 +18,7 @@ import pytest
 
 import mosaic.runlog as runlog
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
-from mosaic.core.pipeline.graph.gpu_lease import GPU_CARD_VAR
+from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import (
     CancelToken,

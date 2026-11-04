@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.pipeline.graph import gpu_lease
+from mosaic.core.pipeline import gpu_lease
 
 TWO_CARDS: tuple[str, ...] = (
     "0, GPU-11111111-1111-1111-1111-111111111111, NVIDIA RTX A4000, Disabled",

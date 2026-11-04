@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO, ClassVar, Final, TypedDict
 
-from .graph.gpu_lease import inherited_lease_fds
+from .gpu_lease import inherited_lease_fds
 
 _PR_SET_PDEATHSIG = 1  # from <sys/prctl.h>
 

@@ -277,8 +277,8 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   driver stops with `LeaseNotRefreshed` before a step once its lease has gone
   unrefreshed for half the grace.
 - `run_request` leases one GPU card to each step on a GPU lane (`step_lane`) through
-  `gpu_lease.py`. It hands the lock's descriptor to the step's process and closes its
-  own copy after `Popen`, so the driver holds no card. The step's
+  `core/pipeline/gpu_lease.py`. It hands the lock's descriptor to the step's process
+  and closes its own copy after `Popen`, so the driver holds no card. The step's
   `CUDA_VISIBLE_DEVICES` is narrowed to the card's UUID, and every other step keeps
   the driver's and loses the lease variables. With every allowed card held the
   driver waits, named in its lease (`gpu_wait_step`) and not in a status
@@ -331,11 +331,11 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   instant (`changed_at_or_after`). It skips a run-log last written before the
   instant, and `list_requests` then reads every request file.
 - `__init__.py` binds every public name on access, and `status.py`, `store.py`,
-  `claims.py`, `entry_errors.py`, `driver_lease.py`, `gpu_lease.py`, `liveness.py`,
-  `request_wait.py`, `retirement.py`, `saved.py`, `expand.py` and `patch.py` (which
-  `agent/mcp/spec.py` imports) import nothing that loads pandas, cv2, av or the
-  feature library (`tests/meta/test_status_imports.py`). The editor wires in `wire.py`
-  import the op registry and the inventory, which do.
+  `claims.py`, `entry_errors.py`, `driver_lease.py`, `liveness.py`, `request_wait.py`,
+  `retirement.py`, `saved.py`, `expand.py` and `patch.py` (which `agent/mcp/spec.py`
+  imports), and `core/pipeline/gpu_lease.py`, import nothing that loads pandas, cv2, av
+  or the feature library (`tests/meta/test_status_imports.py`). The editor wires in
+  `wire.py` import the op registry and the inventory, which do.
 
 ## Declarations and the registries
 
