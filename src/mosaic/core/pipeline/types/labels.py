@@ -12,7 +12,11 @@ from mosaic.core.pipeline._loaders import (
     NpzLoadSpec,
 )
 from mosaic.core.helpers import UNLABELED
-from mosaic.core.pipeline.label_controls import LabelMask, LabelRemap
+from mosaic.core.pipeline.label_controls import (
+    LABEL_CONTROL_FIELDS,
+    LabelMask,
+    LabelRemap,
+)
 from mosaic.core.params import Declared, NestedParams
 from mosaic.core.pipeline.types.results import ResultColumn
 
@@ -115,7 +119,7 @@ class GroundTruthLabelsSource(LabelsSource[str]):
         run of every labels-consuming feature keeps its identifier.
         """
         dumped = self.model_dump()
-        for name in ("remap", "mask"):
+        for name in LABEL_CONTROL_FIELDS:
             if dumped[name] is None:
                 del dumped[name]
         return dumped

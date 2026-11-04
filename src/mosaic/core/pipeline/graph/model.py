@@ -45,7 +45,6 @@ from .expand import expand_repeats
 __all__ = [
     "BOUND_STATUS",
     "COMPLETE_STATUSES",
-    "LABEL_CONTROL_FIELDS",
     "REQUEST_HOLD_FLOOR_HOURS",
     "BoundRef",
     "CleanupMode",
@@ -178,12 +177,6 @@ class ParamsStepRef(StepRef):
 
     remap: LabelRemap = None
     mask: LabelMask = None
-
-
-LABEL_CONTROL_FIELDS: Final = tuple(
-    name for name in ParamsStepRef.model_fields if name not in StepRef.model_fields
-)
-"""The keys of a params reference that only a labels field takes."""
 
 
 class StepRun(GraphModel):

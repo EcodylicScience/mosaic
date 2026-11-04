@@ -7,7 +7,7 @@ without loading the pipeline type library.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, TypeAlias
+from typing import Annotated, Final, TypeAlias
 
 from pydantic import Field
 
@@ -20,6 +20,9 @@ _REMAP_DESCRIPTION = (
 _MASK_DESCRIPTION = (
     "Class ids whose frames are unlabeled, so no step trains on or scores them."
 )
+
+LABEL_CONTROL_FIELDS: Final = ("remap", "mask")
+"""The keys a labels source takes beside its kind: ``remap`` and ``mask``."""
 
 LabelId: TypeAlias = Annotated[int, Field(ge=0)]
 """A class id of a label file, 0 or more."""

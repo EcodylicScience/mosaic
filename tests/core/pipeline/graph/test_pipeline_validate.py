@@ -910,14 +910,26 @@ def test_a_label_control_must_hold_class_ids(control: Document) -> None:
         _ = Recipe.model_validate(_labels_recipe(_controlled("labeled", reference)))
 
 
-def test_the_label_control_fields_are_the_keys_a_params_reference_adds() -> None:
-    from mosaic.core.pipeline.graph.model import (
+def test_the_label_control_fields_are_the_keys_a_labels_field_adds() -> None:
+    from typing import get_args
+
+    from mosaic.core.pipeline.graph.model import ParamsStepRef, StepRef
+    from mosaic.core.pipeline.label_controls import (
         LABEL_CONTROL_FIELDS,
-        ParamsStepRef,
-        StepRef,
+        LabelMask,
+        LabelRemap,
     )
+    from mosaic.core.pipeline.types.labels import GroundTruthLabelsSource
+
+    control_types = {get_args(LabelRemap)[0], get_args(LabelMask)[0]}
+    source_controls = {
+        name
+        for name, field in GroundTruthLabelsSource.model_fields.items()
+        if field.annotation in control_types
+    }
 
     assert set(LABEL_CONTROL_FIELDS) == {"remap", "mask"}
     assert set(LABEL_CONTROL_FIELDS) == set(ParamsStepRef.model_fields) - set(
         StepRef.model_fields
     )
+    assert set(LABEL_CONTROL_FIELDS) == source_controls

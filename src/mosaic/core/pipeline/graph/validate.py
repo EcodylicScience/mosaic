@@ -96,7 +96,6 @@ from .compatibility import (
 from .digest import recipe_digest
 from .expand import RepeatInvalid, expand_repeats
 from .model import (
-    LABEL_CONTROL_FIELDS,
     TRACKS_INPUT,
     FeatureStepSpec,
     OpStepSpec,
@@ -130,6 +129,7 @@ from .wire import (
     render_location,
 )
 from ..preprocess_layout import PREPROCESS_KIND
+from mosaic.core.pipeline.label_controls import LABEL_CONTROL_FIELDS
 from mosaic.core.pipeline.types import ArtifactSpec
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope

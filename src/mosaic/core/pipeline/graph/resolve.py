@@ -63,6 +63,7 @@ from ..column_contract import (
     declared_requires,
 )
 from ..error_kind import ClassifiedError, ErrorKind
+from ..label_controls import LABEL_CONTROL_FIELDS
 from ..refusal import ToolUnavailable
 from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
@@ -79,7 +80,6 @@ from .compatibility import (
 from .lanes import lane_for
 from .reach import class_reach, class_reach_by_option
 from .model import (
-    LABEL_CONTROL_FIELDS,
     TRACKS_INPUT,
     OpStepSpec,
     Recipe,
