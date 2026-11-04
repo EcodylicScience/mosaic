@@ -10,9 +10,9 @@ without titles or class docstrings.
 from __future__ import annotations
 
 import json
-
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Annotated
 
 import pandas as pd
 import pytest
@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.core.json_value import JsonValue
-from mosaic.core.params import Params
+from mosaic.core.params import Declared, DeclaredModel, Params
 from mosaic.core.pipeline.graph import (
     StepTypeDetail,
     StepTypeNotFound,
@@ -31,6 +31,7 @@ from mosaic.core.pipeline.graph import (
     param_rows,
     step_type_detail,
 )
+from mosaic.core.pipeline.graph.param_table import description_text
 from mosaic.core.pipeline.types.feature import (
     DependencyLookup,
     EmitsLevel,
@@ -250,6 +251,36 @@ def test_a_required_field_and_a_factory_default_are_told_apart() -> None:
     assert (rows["built"].required, rows["built"].constructed) == (False, True)
     assert (rows["plain"].required, rows["plain"].constructed) == (False, False)
     assert rows["plain"].default == 3
+
+
+class _Inner(DeclaredModel):
+    depth: Annotated[int, Declared("how deep the inner model reaches")] = 1
+
+
+class _WithUnwired(Params):
+    used: Annotated[int, Declared("a field some code reads")] = 1
+    inert: Annotated[
+        _Inner, Declared("a field no code reads", unwired="nothing reads it")
+    ] = _Inner()
+    kept: Annotated[_Inner, Declared("a model some code reads")] = _Inner()
+
+
+def test_the_rows_leave_out_an_unwired_field_and_the_rows_of_its_model() -> None:
+    schema = _WithUnwired.model_json_schema()
+
+    paths = [row.path for row in param_rows(schema)]
+
+    assert paths == ["used", "kept", "kept.depth"]
+    properties = schema["properties"]
+    assert properties["inert"]["x-mosaic-unwired"] == "nothing reads it"
+
+
+def test_the_reference_text_of_an_unwired_field_keeps_its_note() -> None:
+    schema = _WithUnwired.model_json_schema()
+
+    text = description_text(schema["properties"]["inert"])
+
+    assert text == "a field no code reads Unwired: nothing reads it."
 
 
 def test_an_unknown_name_is_not_found() -> None:

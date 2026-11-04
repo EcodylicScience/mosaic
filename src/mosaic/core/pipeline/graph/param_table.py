@@ -4,14 +4,17 @@ A params model's JSON Schema answers what a client may send, and it is long: the
 largest dumps to tens of kilobytes, most of it ``title`` keywords that repeat the
 field names and class docstrings copied into ``$defs``. A person choosing a value,
 or a model writing a recipe, needs each field's path, type, default, constraints
-and meaning. :func:`param_rows` gives one row per field, nested models flattened
-to dotted paths, and :func:`compact_params_schema` gives the schema without what
-repeats.
+and meaning. :func:`param_rows` gives one row per wired field, nested models
+flattened to dotted paths, and :func:`compact_params_schema` gives the schema
+without what repeats.
 
 The docs generator (``scripts/gen_docs_reference.py``) renders its parameter
 tables with the same helpers, passing :data:`MARKDOWN` where this package passes
 :data:`PLAIN`, so the reference pages and the catalog describe a type in one
-vocabulary.
+vocabulary. A step type's parameter table leaves out the unwired fields, which no
+code reads and whose row would only say not to set them. The reference pages keep
+them, each with its note, and the params JSON Schema keeps them with their
+marker.
 
 Standard library only, at module scope. The MCP tool contract imports
 :func:`strip_schema_keywords`, and its import budget excludes pandas and the op
@@ -202,9 +205,10 @@ def description_text(spec: Mapping[str, JsonValue], *, markup: Markup = PLAIN) -
     how it renders a union. A field declared `NEEDS_DESCRIPTION` renders an empty
     cell, which is what it has to say.
 
-    `x-mosaic-unwired` is rendered because a parameter table is what a reader
+    `x-mosaic-unwired` is rendered because a reference page is what a reader
     consults before setting a parameter. Printing the prose alone would describe
-    a control that changes nothing and say nothing about it.
+    a control that changes nothing and say nothing about it. A step type's
+    parameter table (:func:`param_rows`) leaves such a field out instead.
     """
     description = str(spec.get("description", "") or "").strip()
     unit = str(spec.get("x-mosaic-unit", "") or "").strip()
@@ -332,7 +336,9 @@ def param_rows(
     A field holding a model, or ``None`` and a model, is listed and followed by
     a row per field of that model, ``fit.perplexity``, to at most
     :data:`MAX_PARAM_DEPTH` components. A list, a map or a union of models is
-    one row, typed by its model's name, and the schema describes it.
+    one row, typed by its model's name, and the schema describes it. A field
+    whose schema carries ``x-mosaic-unwired`` has no row, nor do the fields of
+    the model it holds.
 
     Args:
         schema: A params model's JSON Schema.
@@ -363,6 +369,8 @@ def param_rows(
         required = _required_names(model)
         for name, raw in properties.items():
             spec: Mapping[str, JsonValue] = raw if isinstance(raw, dict) else {}
+            if "x-mosaic-unwired" in spec:
+                continue
             path = f"{prefix}{name}"
             is_result = depth == 1 and references.get(name) == "result"
             rows.append(
