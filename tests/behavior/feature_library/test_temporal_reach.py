@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.individual_wavelet import IndividualWavelet
+from mosaic.behavior.feature_library.label_predictions import LabelPredictions
 from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
 from mosaic.behavior.feature_library.sequence_heads import (
@@ -33,6 +34,7 @@ from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.behavior.feature_library.trajectory_smooth import TrajectorySmooth
 from mosaic.core.pipeline.types import Result
+from tests.helpers import write_predictions
 
 N = 800
 AT = 400
@@ -186,6 +188,37 @@ def test_a_probability_smoothing_that_merges_bouts_declares_no_reach() -> None:
     params = SmoothProbabilitiesFeature.Params(default_class=0, min_bout_frames=3)
 
     assert SmoothProbabilitiesFeature.temporal_reach(params) is None
+
+
+def test_a_bridged_prediction_reaches_only_its_own_frame(tmp_path: Path) -> None:
+    """Moving the prediction of frame ``AT`` changes the row of that frame alone."""
+    rng = np.random.default_rng(4)
+    labels = rng.integers(0, 2, size=N)
+    first = rng.uniform(size=N)
+    rows = _payload()[["frame", "group", "sequence"]]
+
+    def applied(moved: bool) -> np.ndarray:
+        predicted = labels.copy()
+        probability = first.copy()
+        if moved:
+            predicted[AT] = 1 - predicted[AT]
+            probability[AT] = 1.0 - probability[AT]
+        path = write_predictions(
+            tmp_path / f"{moved}.npz",
+            [(frame, -1, -1, int(predicted[frame])) for frame in range(N)],
+            probabilities=np.column_stack([probability, 1.0 - probability]).tolist(),
+        )
+        feature = LabelPredictions()
+        _ = feature.load_state(
+            tmp_path / "run", {}, {"predictions": {("g", "s"): path}}
+        )
+        out = feature.apply(rows)
+        return out[["predicted_label", "prob_0", "prob_1"]].to_numpy(dtype=float)
+
+    changed = np.flatnonzero((applied(False) != applied(True)).any(axis=1))
+
+    assert changed.tolist() == [AT]
+    assert LabelPredictions.temporal_reach == 0
 
 
 @pytest.mark.parametrize(

@@ -125,6 +125,7 @@ from .individual_aggregate import IndividualAggregate
 from .individual_wavelet import IndividualWavelet
 from .keypoint_kinematics import KeypointKinematics
 from .kpms import KpmsFeature
+from .label_predictions import LabelPredictions
 from .label_statistics import LabelStatistics
 from .local_order_metrics import LocalOrderMetrics
 from .nearestneighbor import NearestNeighbor
@@ -224,6 +225,7 @@ __all__ = [
     "KeypointKinematics",
     "KpmsFeature",
     "LabelMapRef",
+    "LabelPredictions",
     "LabelStatistics",
     "LocalOrderMetrics",
     "NearestNeighbor",

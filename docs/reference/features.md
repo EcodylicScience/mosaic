@@ -3,7 +3,7 @@
 
 # Features
 
-63 features are registered. Each one runs as
+64 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -191,6 +191,54 @@ Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
 | `distances` | list of (tuple of (`integer` \| `string`, `integer` \| `string`)) | _constructed_ |  | Keypoint pairs, by index or by name, whose separation is reported on every row as dist__{a}__{b}. Euclidean over the table's two or three axes, and measured on the unsmoothed positions. |
 | `normalize_by` | tuple of (`integer` \| `string`, `integer` \| `string`) \| `None` | `null` |  | A keypoint pair whose median separation over each individual's rows in the sequence divides every distance, speed, vertical velocity, acceleration, own-frame velocity and own-frame position, making them independent of body size. Unset, they stay in the table's units. An individual on which the pair is never seen reports NaN throughout. |
 | `heading` | tuple of (`integer` \| `string`, `integer` \| `string`) \| `None` | `null` |  | A keypoint pair (neck, tail base), by index or by name, that sets each row's body frame: the heading points from tail base to neck, and the body center is their midpoint. Set, every reported keypoint also gets vx__{kp} and vy__{kp}, its velocity along the heading and along the heading's left-hand normal, and ego_x__{kp} and ego_y__{kp}, its position from the body center along the same two axes. Positive y is 90 degrees counterclockwise from the heading in a y-up frame. On a 3D table the heading is projected on the XY plane and the rotation is about Z; vz__{kp} stays the vertical velocity. The four columns are NaN on a row where either keypoint of the pair is missing or the two coincide in the plane. Unset, none of them is written. |
+
+### `label-predictions`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.label_predictions.LabelPredictions`
+
+Read a label kind of predictions onto the rows of one input.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `predictions` | `GroundTruthLabelsSource` | _constructed_ |  | The label kind of predictions read onto the rows, resolved from labels/<kind>/index.csv, where a {step: <id>} reference names a convert-labels step and pins the variant it writes. |
+| `missing_predictions` | `"null"` \| `"error"` | `"null"` |  | What an entry without a file of the variant writes: null writes its rows without a prediction, and error fails the entry. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`NpzLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ### `local-order-metrics`
 

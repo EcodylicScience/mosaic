@@ -112,6 +112,107 @@ def add_labels(
     return path
 
 
+PREDICTIONS_VARIANT = "convert-labels-predictions_table.0.1-dddddddddd"
+"""The labels variant :func:`add_predictions` files its tables under."""
+
+
+def write_predictions(
+    path: Path,
+    events: Sequence[Event],
+    *,
+    classes: Sequence[int] = (0, 1),
+    probabilities: Sequence[Sequence[float]] | None = None,
+    folds: Sequence[int] | None = None,
+    blocks: Sequence[int] | None = None,
+) -> Path:
+    """Write a ``predictions`` file of *events* at *path*, as ``predictions_table`` writes one.
+
+    Args:
+        path: The ``.npz`` to write. Its directory is created.
+        events: The events, in file order, each predicting its label.
+        classes: The class ids, which name the probability columns.
+        probabilities: One row per event, one column per class, or ``None``
+            for a file without probabilities.
+        folds: The fold of each event, ``-1`` in sample, or ``None`` for a
+            file without folds.
+        blocks: The block of each event beside *folds*, or ``None``.
+
+    Returns:
+        *path*.
+    """
+    payload: dict[str, np.ndarray] = {
+        "label_format": np.array("individual_pair_v1"),
+        "frames": np.array([e[0] for e in events], dtype=np.int64),
+        "individual_ids": np.array(
+            [[e[1], e[2]] for e in events], dtype=np.int32
+        ).reshape(-1, 2),
+        "labels": np.array([e[3] for e in events], dtype=np.int32),
+        "label_ids": np.array(list(classes), dtype=np.int64),
+        "label_names": np.array([str(c) for c in classes], dtype=object),
+        "background_id": np.array(-1, dtype=np.int32),
+    }
+    if probabilities is not None:
+        payload["pred_classes"] = np.array(list(classes), dtype=np.int64)
+        payload["pred_probabilities"] = np.array(
+            probabilities, dtype=np.float64
+        ).reshape(len(events), len(classes))
+    if folds is not None:
+        payload["pred_fold"] = np.array(list(folds), dtype=np.int64)
+    if blocks is not None:
+        payload["pred_block"] = np.array(list(blocks), dtype=np.int64)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, allow_pickle=True, **payload)
+    return path
+
+
+def add_predictions(
+    ds: Dataset,
+    group: str,
+    sequence: str,
+    events: Sequence[Event],
+    *,
+    classes: Sequence[int] = (0, 1),
+    probabilities: Sequence[Sequence[float]] | None = None,
+    folds: Sequence[int] | None = None,
+) -> Path:
+    """Write the ``predictions`` file of one entry and its index row.
+
+    Args:
+        ds: The dataset.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        events: The entry's events.
+        classes: As :func:`write_predictions` takes it.
+        probabilities: As :func:`write_predictions` takes it.
+        folds: As :func:`write_predictions` takes it.
+
+    Returns:
+        The written file.
+    """
+    path = write_predictions(
+        ds.get_root("labels")
+        / "predictions"
+        / PREDICTIONS_VARIANT
+        / f"{make_entry_key(group, sequence)}.npz",
+        events,
+        classes=classes,
+        probabilities=probabilities,
+        folds=folds,
+    )
+    write_labels_row(
+        ds,
+        run_id=PREDICTIONS_VARIANT,
+        group=group,
+        sequence=sequence,
+        out_path=path,
+        producer="convert-labels-predictions_table",
+        label_kind="predictions",
+        label_format="individual_pair_v1",
+        n_frames=len(events),
+    )
+    return path
+
+
 def write_lineage_run(
     features: Path,
     storage: str,

@@ -839,6 +839,15 @@ CASES: tuple[Case, ...] = (
         scope=(("train", "s1"), ("train", "s2")),
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
     ),
+    # --- predictions read onto rows ---
+    #
+    # The bridge reads the tracks by default and names the predictions variant it
+    # reads, so a conversion with other params moves its identifier.
+    Case(
+        case_id="label-predictions/default",
+        feature="label-predictions",
+        labels_variants=("convert-labels-predictions_table.0.1-dddddddddd",),
+    ),
     # --- the resolved tracks variant (item 3.3) ---
     #
     # ``speed-angvel/default`` above is the same feature with no variants

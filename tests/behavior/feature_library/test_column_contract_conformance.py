@@ -73,6 +73,7 @@ from tests.helpers import (
     make_dataset,
     require_ffmpeg,
     write_h264_mp4,
+    write_predictions,
 )
 
 PARAMS: dict[str, dict[str, JsonValue]] = {
@@ -352,6 +353,22 @@ LABELS: dict[str, Callable[[Path], Path]] = {
 """The labels file that a feature reads, where it is not the ``id_tags`` one."""
 
 
+def _predictions(directory: Path) -> Path:
+    """One predictions file with probabilities: classes 0 and 1 in turn, ten frames each."""
+    labels = (np.arange(FRAMES) // 10) % 2
+    return write_predictions(
+        directory / "predictions.npz",
+        [(frame, -1, -1, int(label)) for frame, label in enumerate(labels)],
+        probabilities=np.column_stack([1 - labels, labels]).astype(float).tolist(),
+    )
+
+
+PREDICTIONS: dict[str, Callable[[Path], Path]] = {
+    "label-predictions": _predictions,
+}
+"""The predictions file that a feature reads through its ``predictions`` field."""
+
+
 # --- the chain ------------------------------------------------------------------------
 
 
@@ -557,6 +574,9 @@ def _run(
             feature.bind_dataset(dataset)
         labels = LABELS.get(step.feature, _labels)(directory)
         lookups: dict[str, DependencyLookup] = {"labels": {(GROUP, SEQUENCE): labels}}
+        if step.feature in PREDICTIONS:
+            predictions = PREDICTIONS[step.feature](directory)
+            lookups["predictions"] = {(GROUP, SEQUENCE): predictions}
         if step.feature in FOLD_TABLES:
             lookups["_input_0"] = _fold_lookup(directory / step.id / "classifier")
         state = _state(directory, step.id)
