@@ -33,6 +33,12 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.pipeline.graph.gpu_lease import (
+    LEASE_FDS_VAR,
+    GpuCard,
+    step_environment,
+    try_lease,
+)
 from mosaic.core.pipeline.subprocess_util import (
     IdleTimeoutExpired,
     ProcessCancelled,
@@ -686,3 +692,166 @@ def test_close_kills_what_an_exited_child_left_in_its_group(
 
     assert child.exit_code == 0, "the child exited at the end of its input"
     assert_stopped_writing(ticks, "the grandchild went on writing after close()")
+
+
+# --- the GPU card a tool holds ------------------------------------------------
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows takes no GPU card lease"
+)
+
+# Prints whether the descriptor named by the first argument is open in the tool.
+REPORTS_A_DESCRIPTOR = (
+    "import os, sys\n"
+    "try:\n"
+    "    os.fstat(int(sys.argv[1]))\n"
+    "except OSError:\n"
+    "    print('closed')\n"
+    "else:\n"
+    "    print('open')\n"
+)
+
+# A tool that outlives the SIGTERM a dead parent leaves it on Linux. It writes its
+# pid to the ready file (the first argument) and runs until the release file (the
+# second) exists.
+IGNORES_SIGTERM_UNTIL_RELEASED = (
+    "import os, signal, sys, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "ready, release = sys.argv[1], sys.argv[2]\n"
+    "with open(ready + '.part', 'w') as part:\n"
+    "    part.write(str(os.getpid()))\n"
+    "os.replace(ready + '.part', ready)\n"
+    "deadline = time.monotonic() + 60\n"
+    "while not os.path.exists(release) and time.monotonic() < deadline:\n"
+    "    time.sleep(0.05)\n"
+)
+
+# A stand-in for a step: it runs the tool given as its arguments and waits for it.
+RUNS_ITS_ARGUMENTS_SUPERVISED = (
+    "import sys\n"
+    "from mosaic.core.pipeline.subprocess_util import run_supervised\n"
+    "run_supervised([sys.executable, '-c', *sys.argv[1:]])\n"
+)
+
+CARD = GpuCard(
+    index=0,
+    uuid="GPU-11111111-1111-1111-1111-111111111111",
+    name="NVIDIA RTX A4000",
+    mig_enabled=False,
+)
+
+
+def _tool_sees_descriptor(fd: int) -> bool:
+    stdout, _stderr, rc = run_supervised(
+        [*_argv(REPORTS_A_DESCRIPTOR), str(fd)], poll_interval=0.05
+    )
+    assert rc == 0
+    return stdout.strip() == "open"
+
+
+def _card_is_free() -> bool:
+    lease = try_lease([CARD])
+    if lease is None:
+        return False
+    lease.close()
+    return True
+
+
+@posix_only
+def test_a_tool_receives_the_descriptor_that_the_lease_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fd = os.open(tmp_path / "lock", os.O_RDWR | os.O_CREAT)
+    try:
+        status = os.fstat(fd)
+        monkeypatch.setenv(LEASE_FDS_VAR, f"{fd}:{status.st_dev}:{status.st_ino}")
+
+        assert _tool_sees_descriptor(fd), "the leased descriptor reaches the tool"
+    finally:
+        os.close(fd)
+
+
+@posix_only
+@pytest.mark.parametrize("case", ["unset", "closed", "another file"])
+def test_a_tool_receives_no_descriptor_the_lease_does_not_name(
+    case: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fd = os.open(tmp_path / "lock", os.O_RDWR | os.O_CREAT)
+    status = os.fstat(fd)
+    named = {
+        "unset": None,
+        "closed": f"{fd}:{status.st_dev}:{status.st_ino}",
+        "another file": f"{fd}:{status.st_dev}:{status.st_ino + 1}",
+    }[case]
+    if named is None:
+        monkeypatch.delenv(LEASE_FDS_VAR, raising=False)
+    else:
+        monkeypatch.setenv(LEASE_FDS_VAR, named)
+    if case == "closed":
+        os.close(fd)
+    try:
+        assert not _tool_sees_descriptor(fd), (
+            f"a descriptor that is {case} is not passed to the tool"
+        )
+    finally:
+        if case != "closed":
+            os.close(fd)
+
+
+@posix_only
+def test_a_tool_keeps_the_card_after_its_step_is_killed(tmp_path: Path) -> None:
+    """The card stays leased while the tool runs, whatever happens to its step.
+
+    The step stand-in holds the lease the way a driver's step does, through a
+    descriptor it inherited, and runs a tool that ignores SIGTERM. Killing the
+    stand-in with SIGKILL leaves the tool as the only holder.
+    """
+    lease = try_lease([CARD])
+    assert lease is not None
+    ready = tmp_path / "tool.pid"
+    release = tmp_path / "release"
+    with (tmp_path / "stand_in.log").open("wb") as log:
+        stand_in = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                RUNS_ITS_ARGUMENTS_SUPERVISED,
+                IGNORES_SIGTERM_UNTIL_RELEASED,
+                str(ready),
+                str(release),
+            ],
+            env=step_environment(os.environ, lease),
+            pass_fds=(lease.fd,),
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+        )
+    lease.close()
+    tool_pid = 0
+    try:
+        wait_for(
+            lambda: ready.exists() or stand_in.poll() is not None,
+            60,
+            "the tool never wrote its ready file",
+        )
+        assert ready.exists(), (
+            "the stand-in ended before its tool started: "
+            + (tmp_path / "stand_in.log").read_text()
+        )
+        tool_pid = int(ready.read_text())
+
+        stand_in.kill()
+        _ = stand_in.wait()
+
+        assert not _card_is_free(), "the tool lost the card with its step"
+        _ = release.write_text("")
+        wait_for(_card_is_free, 30, "the card stayed leased after the tool exited")
+    finally:
+        _ = release.write_text("")
+        if stand_in.poll() is None:
+            stand_in.kill()
+            _ = stand_in.wait()
+        if tool_pid:
+            try:
+                os.kill(tool_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

@@ -30,6 +30,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import IO, ClassVar, Final, TypedDict
 
+from .graph.gpu_lease import inherited_lease_fds
+
 _PR_SET_PDEATHSIG = 1  # from <sys/prctl.h>
 
 _COMMAND_HEAD: Final = 6
@@ -266,6 +268,11 @@ def run_supervised(
 ) -> tuple[str, str, int]:
     """Run *argv* in a new, killable process group and return its output.
 
+    While it runs, the child holds the GPU card leased to this process. It
+    receives the lease's lock descriptor (:func:`inherited_lease_fds`), so the
+    card stays leased until the child exits, also when this process is killed
+    first.
+
     Args:
         argv: The command and its arguments.
         env: The child's whole environment. ``None`` inherits the parent's.
@@ -306,6 +313,7 @@ def run_supervised(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
+        pass_fds=inherited_lease_fds(),
         **supervised_popen_kwargs(),
     )
 
