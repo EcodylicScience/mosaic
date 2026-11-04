@@ -33,7 +33,6 @@ from typing import (
     NotRequired,
     Protocol,
     TypedDict,
-    cast,
 )
 
 import numpy as np
@@ -42,6 +41,7 @@ from pydantic import AfterValidator, Field
 
 from mosaic.core.entry import Entry, entry_token, parse_entry_tokens
 from mosaic.core.evaluation import CountScores, pool_entry_counts
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.inventory.params import read_run_params
@@ -1734,11 +1734,10 @@ def _refuse_other_input(
         return
     recorded: list[tuple[str, str | None]] = []
     for item in read.params.inputs:
-        if not isinstance(item, dict) or "feature" not in item:
+        if not is_str_mapping(item) or "feature" not in item:
             return
-        record = cast("dict[str, object]", item)
-        run = record.get("run_id")
-        recorded.append((str(record["feature"]), None if run is None else str(run)))
+        run = item.get("run_id")
+        recorded.append((str(item["feature"]), None if run is None else str(run)))
     applied = [(r.feature, r.run_id) for r in inputs.feature_inputs]
     if recorded == applied:
         return

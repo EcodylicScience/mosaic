@@ -37,7 +37,7 @@ from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Final, Literal
 
 from pydantic import (
     BaseModel,
@@ -49,6 +49,7 @@ from pydantic import (
 )
 
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 
 __all__ = [
@@ -285,11 +286,10 @@ class RunParams(BaseModel):
 
 def _named_run(value: object) -> RunKey | None:
     """The ``(feature, run_id)`` that a recorded ``{feature, run_id}`` names."""
-    if not isinstance(value, dict):
+    if not is_str_mapping(value):
         return None
-    named = cast("dict[str, object]", value)
-    feature = named.get("feature")
-    run_id = named.get("run_id")
+    feature = value.get("feature")
+    run_id = value.get("run_id")
     if not isinstance(feature, str) or not feature:
         return None
     return feature, run_id if isinstance(run_id, str) else ""
