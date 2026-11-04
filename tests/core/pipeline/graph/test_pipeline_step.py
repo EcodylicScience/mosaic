@@ -58,7 +58,8 @@ from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
-from mosaic.runlog import read_run, run_log_dir
+from mosaic.core.pipeline.graph.gpu_lease import GPU_CARD_VAR
+from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 from tests.helpers import (
     FakeTrainer,
     add_tracks_variant,
@@ -429,6 +430,68 @@ def test_a_scope_dependent_step_refuses_a_short_upstream(tracked: Dataset) -> No
     assert raised.value.reason == "coverage_shortfall"
     assert raised.value.covered == 2
     assert raised.value.target == 3
+
+
+def test_a_step_attempt_reads_the_card_its_run_log_records(tracked: Dataset) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    with JsonlRunLog(
+        run_log_path(tracked.base_dir, request.execution_of("speed")),
+        request.execution_of("speed"),
+    ) as log:
+        log.started(kind="feature", target="speed", gpu_card="1:GPU-abc")
+    with JsonlRunLog(
+        run_log_path(tracked.base_dir, request.execution_of("templates")),
+        request.execution_of("templates"),
+    ) as log:
+        log.started(kind="feature", target="templates")
+
+    rollup = request_rollup(tracked.base_dir, request)
+
+    assert [(step.step_id, step.gpu_card) for step in rollup.steps] == [
+        ("speed", "1:GPU-abc"),
+        ("templates", ""),
+    ]
+
+
+def test_an_unstarted_step_attempt_reads_no_card(tracked: Dataset) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+
+    rollup = request_rollup(tracked.base_dir, request)
+
+    assert [step.gpu_card for step in rollup.steps] == ["", ""]
+
+
+def test_a_step_that_runs_nothing_records_the_card_of_its_process(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = submit_request(tracked, Recipe.model_validate(_chain())).request
+    _ = execute_step(tracked, first, "speed")
+    second = submit_request(tracked, Recipe.model_validate(_chain())).request
+    monkeypatch.setenv(GPU_CARD_VAR, "0:GPU-abc")
+
+    cached = execute_step(tracked, second, "speed")
+
+    assert cached.state == "cached"
+    (speed, _templates) = request_rollup(tracked.base_dir, second).steps
+    assert speed.gpu_card == "0:GPU-abc"
+
+
+def test_a_step_a_driver_records_ended_names_no_card(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    monkeypatch.setenv(GPU_CARD_VAR, "0:GPU-abc")
+
+    record_step_ended(
+        tracked,
+        request.execution_of("speed"),
+        step_id="speed",
+        owner="",
+        status="cancelled",
+    )
+
+    (speed, _templates) = request_rollup(tracked.base_dir, request).steps
+    assert (speed.status, speed.gpu_card) == ("cancelled", "")
 
 
 def test_a_refusal_is_recorded_as_a_failed_attempt_carrying_its_reason(

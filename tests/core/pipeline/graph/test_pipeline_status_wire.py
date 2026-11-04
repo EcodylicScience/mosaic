@@ -418,3 +418,68 @@ def test_a_terminal_or_orphaned_request_has_no_poll_after() -> None:
 
     assert poll_after_seconds(_rollup(finished, status="finished"), "finished") is None
     assert poll_after_seconds(_rollup(_running(60)), "orphaned", now=NOW) is None
+
+
+def test_the_leased_card_reaches_the_run_and_the_step_reports(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed", gpu_card="1:GPU-abc")
+    with _log(tmp_path, "E2") as log:
+        log.started(kind="feature", target="templates")
+
+    run = run_status_wire(tmp_path, "E1")
+    report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
+    unstarted = request_status_wire(tmp_path, _request(speed="E1", later="E3"))
+
+    assert run is not None and run.gpu_card == "1:GPU-abc"
+    assert [step.gpu_card for step in report.steps] == ["1:GPU-abc", ""]
+    assert unstarted.steps[1].gpu_card == ""
+    other = run_status_wire(tmp_path, "E2")
+    assert other is not None and other.gpu_card == ""
+
+
+def test_a_step_a_live_driver_waits_to_start_for_a_card_is_waiting_for_a_gpu(
+    tmp_path: Path,
+) -> None:
+    _ = write_driver_lease(tmp_path, "R1", stale=False, gpu_wait_step="templates")
+    request = _request(speed="E1", templates="E2")
+
+    report = request_status_wire(tmp_path, request)
+
+    assert [(step.step, step.waiting_for_gpu) for step in report.steps] == [
+        ("speed", False),
+        ("templates", True),
+    ]
+
+
+def test_a_stale_lease_does_not_wait_for_a_gpu(tmp_path: Path) -> None:
+    _ = write_driver_lease(tmp_path, "R1", stale=True, gpu_wait_step="templates")
+
+    report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
+
+    assert [step.waiting_for_gpu for step in report.steps] == [False, False]
+
+
+def test_a_request_with_no_lease_waits_for_no_gpu(tmp_path: Path) -> None:
+    report = request_status_wire(tmp_path, _request(speed="E1"))
+
+    assert [step.waiting_for_gpu for step in report.steps] == [False]
+
+
+def test_a_brief_report_lists_the_step_waiting_for_a_gpu_and_counts_one_fewer_pending(
+    tmp_path: Path,
+) -> None:
+    _ = write_driver_lease(tmp_path, "R1", stale=False, gpu_wait_step="templates")
+    request = _request(speed="E1", templates="E2", report="E3")
+
+    waiting = request_status_wire(tmp_path, request, brief=True)
+    idle = request_status_wire(
+        tmp_path, _request(speed="E1", other="E4", report="E3"), brief=True
+    )
+
+    assert [(step.step, step.outcome) for step in waiting.steps] == [
+        ("templates", "pending")
+    ]
+    assert waiting.steps[0].waiting_for_gpu
+    assert waiting.omitted_pending == 2
+    assert idle.steps == ()
+    assert idle.omitted_pending == 3

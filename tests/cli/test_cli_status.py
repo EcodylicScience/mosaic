@@ -25,7 +25,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.runlog import JsonlRunLog, run_log_path
-from tests.helpers import invoke_json, invoke_ok
+from tests.helpers import invoke_json, invoke_ok, write_driver_lease
 
 RECIPE: dict[str, object] = {
     "schema_version": 1,
@@ -137,6 +137,41 @@ def test_pipeline_status_prints_phase_and_liveness(
     (row,) = [line for line in result.stdout.splitlines() if line.startswith("speed")]
     assert row.split()[-2:] == ["fit", "alive"]
     assert "note: poll again in 10 s" in result.stderr
+
+
+def test_pipeline_status_prints_the_card_of_a_step_and_the_step_waiting_for_one(
+    dataset: tuple[Path, Dataset],
+) -> None:
+    manifest, ds = dataset
+    request = submit_request(ds, Recipe.model_validate(RECIPE)).request
+    execution_id = request.execution_of("speed")
+    command = [
+        "pipeline",
+        "status",
+        "-m",
+        str(manifest),
+        "--request",
+        request.request_id,
+    ]
+    _ = write_driver_lease(
+        ds.base_dir, request.request_id, stale=False, gpu_wait_step="speed"
+    )
+
+    waiting = invoke_ok(command)
+
+    (row,) = [line for line in waiting.stdout.splitlines() if line.startswith("speed")]
+    assert "waiting for a GPU" in row
+    assert "pending" not in row
+
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        log.started(kind="feature", target="speed", gpu_card="1:GPU-abc")
+    _ = write_driver_lease(ds.base_dir, request.request_id, stale=False)
+
+    running = invoke_ok(command)
+
+    (row,) = [line for line in running.stdout.splitlines() if line.startswith("speed")]
+    assert "1:GPU-abc" in row
+    assert "waiting for a GPU" not in row
 
 
 def test_pipeline_status_brief_leaves_out_the_steps_that_have_not_started(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -245,6 +246,36 @@ def test_the_lease_names_the_running_step_until_it_is_cleared(
     assert named is not None and (named.step_id, named.step_pid) == ("speed", 4242)
     assert named.same_holder(lease)
     assert cleared is not None and (cleared.step_id, cleared.step_pid) == ("", 0)
+
+
+def test_the_lease_names_the_step_the_driver_waits_for_a_card_until_a_step_starts(
+    tmp_path: Path,
+) -> None:
+    lease = take_driver_lease(tmp_path, "R1")
+    keeper = LeaseKeeper(tmp_path, lease)
+
+    keeper.record_gpu_wait("train")
+    waiting = read_driver_lease(tmp_path, "R1")
+    keeper.record_step("train", 4242)
+    started = read_driver_lease(tmp_path, "R1")
+
+    assert waiting is not None and waiting.same_holder(lease)
+    assert (waiting.gpu_wait_step, waiting.step_id) == ("train", "")
+    assert started is not None
+    assert (started.gpu_wait_step, started.step_id) == ("", "train")
+
+
+def test_a_lease_file_without_the_wait_reads_no_wait(tmp_path: Path) -> None:
+    lease = take_driver_lease(tmp_path, "R1")
+    path = driver_lease_path(tmp_path, "R1")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    del document["gpu_wait_step"]
+    _ = path.write_text(json.dumps(document), encoding="utf-8")
+
+    read = read_driver_lease(tmp_path, "R1")
+
+    assert read == lease
+    assert read is not None and read.gpu_wait_step == ""
 
 
 def test_a_stalled_driver_does_not_overwrite_the_lease_that_replaced_its_own(

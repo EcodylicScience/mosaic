@@ -514,6 +514,49 @@ def test_the_started_event_records_boot_namespace_and_interval(
     )
 
 
+def test_the_started_event_records_the_leased_card(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t", gpu_card="1:GPU-abc")
+
+    snap = runlog.read_run(run_log_dir(tmp_path), "E1")
+
+    assert snap is not None
+    assert snap["gpu_card"] == "1:GPU-abc"
+
+
+def test_a_run_log_without_a_card_reads_an_empty_one(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+    path = run_log_path(tmp_path, "E1")
+
+    snap = runlog.read_run(run_log_dir(tmp_path), "E1")
+
+    assert snap is not None
+    assert snap["gpu_card"] == ""
+    assert "gpu_card" not in path.read_text(encoding="utf-8")
+
+
+def test_a_resumed_attempt_takes_the_card_of_its_last_started(tmp_path: Path) -> None:
+    path = _write_lines(
+        tmp_path,
+        "E1",
+        {"t": "2026-01-01T00:00:00+00:00", "ev": "started", "gpu_card": "0:GPU-a"},
+        {"t": "2026-01-01T00:05:00+00:00", "ev": "started", "gpu_card": "1:GPU-b"},
+    )
+    resumed_elsewhere = _write_lines(
+        tmp_path,
+        "E2",
+        {"t": "2026-01-01T00:00:00+00:00", "ev": "started", "gpu_card": "0:GPU-a"},
+        {"t": "2026-01-01T00:05:00+00:00", "ev": "started", "host": "h"},
+    )
+
+    snap = runlog.reduce_run_log(path)
+    cleared = runlog.reduce_run_log(resumed_elsewhere)
+
+    assert snap is not None and cleared is not None
+    assert (snap["gpu_card"], cleared["gpu_card"]) == ("1:GPU-b", "")
+
+
 def test_a_later_started_without_liveness_clears_it(tmp_path: Path) -> None:
     path = _write_lines(
         tmp_path,

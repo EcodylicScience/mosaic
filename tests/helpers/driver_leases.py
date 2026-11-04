@@ -19,6 +19,7 @@ def write_driver_lease(
     step_id: str = "",
     step_pid: int = 0,
     host: str = "",
+    gpu_wait_step: str = "",
 ) -> DriverLease:
     """Write a lease for *request_id*, and return it.
 
@@ -26,7 +27,8 @@ def write_driver_lease(
     names *pid*, or this process for 0. A lease refreshed now and naming an
     exited process is stale too, as a killed driver leaves it. *step_id* and
     *step_pid* name the step process that the lease's driver left running. The
-    lease names *host*, or this host for ``""``.
+    lease names *host*, or this host for ``""``, and *gpu_wait_step* as the step
+    its driver waits to start for a card.
     """
     refreshed = datetime.datetime.now(datetime.UTC)
     if stale:
@@ -39,6 +41,7 @@ def write_driver_lease(
         refreshed_at=refreshed.isoformat(),
         step_id=step_id,
         step_pid=step_pid,
+        gpu_wait_step=gpu_wait_step,
     )
     path = driver_lease_path(base_dir, request_id)
     path.parent.mkdir(parents=True, exist_ok=True)

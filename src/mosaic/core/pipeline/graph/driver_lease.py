@@ -128,6 +128,10 @@ class DriverLease(BaseModel):
             own pid, and a cancel signals the running step and records the
             others itself, because no driver forwards it. A reader that predates
             the field drops it.
+        gpu_wait_step: The step the driver waits to start for a GPU card,
+            ``""`` when it waits for none. It is cleared once the driver names
+            the step it runs (:meth:`LeaseKeeper.record_step`). A reader that
+            predates the field drops it.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True, extra="ignore")
@@ -140,6 +144,7 @@ class DriverLease(BaseModel):
     step_id: str = ""
     step_pid: int = 0
     in_process: bool = False
+    gpu_wait_step: str = ""
 
     def same_holder(self, other: DriverLease) -> bool:
         """Return whether *other* was taken by the same driver as this lease.
@@ -541,9 +546,17 @@ class LeaseKeeper:
         """Name the step whose process runs, or clear it with ``("", 0)``.
 
         The process is the step's own, or this process for an in-process run.
+        Either clears :attr:`DriverLease.gpu_wait_step`. A write that raises is
+        reported as a refresh's is.
+        """
+        _ = self._try_rewrite(step_id=step_id, step_pid=pid, gpu_wait_step="")
+
+    def record_gpu_wait(self, step_id: str) -> None:
+        """Name the step that the driver waits to start for a GPU card.
+
         A write that raises is reported as a refresh's is.
         """
-        _ = self._try_rewrite(step_id=step_id, step_pid=pid)
+        _ = self._try_rewrite(gpu_wait_step=step_id)
 
     def _refresh_until_stopped(self) -> None:
         """Rewrite the lease every interval while this process holds it."""

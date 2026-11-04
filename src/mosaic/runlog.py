@@ -172,8 +172,12 @@ class RunLogSnapshot(TypedDict):
     ``boot_id``, ``pid_ns`` and ``liveness_interval`` are what the last
     ``started`` event recorded of the process's host: its boot, its pid namespace
     and the seconds between the ``alive`` events it promises (0 for a writer that
-    promises none, as every writer before them). ``phase`` is the last phase the
-    attempt declared since that ``started``, ``""`` before one.
+    promises none, as every writer before them). ``gpu_card`` is the card the
+    process was leased, ``<index>:<uuid>``, and ``""`` for a process that was leased
+    none or wrote its ``started`` before the field existed. It names a card by its
+    index and uuid and is apart from the fit environment's ``gpu``, the card's model
+    name. ``phase`` is the last phase the attempt declared since that ``started``,
+    ``""`` before one.
 
     The run-log is the only report a queued attempt makes, because a queue starts
     ``mosaic run`` with its standard output and standard error discarded. A writer
@@ -207,6 +211,7 @@ class RunLogSnapshot(TypedDict):
     boot_id: str
     pid_ns: str
     liveness_interval: float
+    gpu_card: str
     phase: str
     workers: int
     parallel_mode: str
@@ -601,21 +606,25 @@ class JsonlRunLog:
         boot_id: str = "",
         pid_ns: str = "",
         liveness_interval: float = 0.0,
+        gpu_card: str = "",
     ) -> None:
         """Bracket the start of the attempt (kind/target/owner/host/pid).
 
         *boot_id*, *pid_ns* and *liveness_interval* describe the process for a
-        reader judging whether it still runs. Each is written only when set, so
+        reader judging whether it still runs. *gpu_card* names the card the
+        process was leased, ``<index>:<uuid>``. Each is written only when set, so
         a record of a process that runs nothing (a refusal, a cache hit) reads as
         before.
         """
-        liveness: dict[str, Any] = {}
+        process: dict[str, Any] = {}
         if boot_id:
-            liveness["boot_id"] = boot_id
+            process["boot_id"] = boot_id
         if pid_ns:
-            liveness["pid_ns"] = pid_ns
+            process["pid_ns"] = pid_ns
         if liveness_interval > 0:
-            liveness["liveness_interval"] = liveness_interval
+            process["liveness_interval"] = liveness_interval
+        if gpu_card:
+            process["gpu_card"] = gpu_card
         self._emit(
             "started",
             kind=kind,
@@ -624,7 +633,7 @@ class JsonlRunLog:
             host=host,
             pid=pid,
             created_at=created_at or now_iso(),
-            **liveness,
+            **process,
         )
 
     def set_run_id(self, run_id: str) -> None:
@@ -1061,6 +1070,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "boot_id": "",
         "pid_ns": "",
         "liveness_interval": 0.0,
+        "gpu_card": "",
         "phase": "",
         "workers": 0,
         "parallel_mode": "",
@@ -1090,6 +1100,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["boot_id"] = _record_text(rec, "boot_id")
             snap["pid_ns"] = _record_text(rec, "pid_ns")
             snap["liveness_interval"] = _record_seconds(rec, "liveness_interval")
+            snap["gpu_card"] = _record_text(rec, "gpu_card")
         elif ev == "phase":
             snap["phase"] = _record_text(rec, "phase")
         elif ev == "run_id":

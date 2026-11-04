@@ -38,7 +38,13 @@ from mosaic.agent.mcp.spec import (
 )
 from mosaic.core.pipeline import preview
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
-from mosaic.core.pipeline.graph import OpenDuplicate, Recipe, describe_duplicates
+from mosaic.core.pipeline.graph import (
+    OpenDuplicate,
+    Recipe,
+    RequestStatusWire,
+    StepStatusWire,
+    describe_duplicates,
+)
 from tests.helpers import modules_loaded_by
 
 BUDGET_MODULES = (
@@ -368,6 +374,49 @@ def test_a_summary_names_an_open_request_as_the_refusal_does() -> None:
     duplicate = OpenDuplicate(submitted.duplicates[0].request_id, steps=("step_0",))
 
     assert describe_duplicates([duplicate]) in summarize(submitted)
+
+
+def _pending_step(
+    step: str, *, gpu_card: str = "", waiting: bool = False
+) -> StepStatusWire:
+    return StepStatusWire(
+        step=step,
+        execution_id=f"E-{step}",
+        status="",
+        run_id="",
+        entries_failed=0,
+        error_json="",
+        entries_written=0,
+        cache_hit=False,
+        outcome="pending",
+        progress_done=0,
+        progress_total=0,
+        progress_fraction=None,
+        error=None,
+        failed_entries=(),
+        failed_entries_has_more=False,
+        gpu_card=gpu_card,
+        waiting_for_gpu=waiting,
+    )
+
+
+def test_a_request_summary_names_a_step_waiting_for_a_gpu() -> None:
+    status = RequestStatusWire(
+        request_id="R1",
+        status="running",
+        terminal=False,
+        verdict="running",
+        steps=(
+            _pending_step("train", waiting=True),
+            _pending_step("speed", gpu_card="1:GPU-abc"),
+        ),
+    )
+
+    text = summarize(status)
+
+    assert "train pending, waiting for a GPU" in text
+    assert "speed pending" in text
+    assert "speed pending, waiting" not in text
 
 
 def test_a_refusal_never_names_a_flag_the_call_already_set() -> None:

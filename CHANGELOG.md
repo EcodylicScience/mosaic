@@ -34,6 +34,22 @@ no `device`, they stay on `feature-compute`. No run id moves: `device` was hashe
 `gpu_when` is a new field of `Declaration` in the editor catalog (`null` for every other
 step type). A caller of `lane_for_step` passes the submission's params to follow it.
 
+**A run-log records the card its process was leased.** A `started` event gains `gpu_card`,
+`<index>:<uuid>` as `MOSAIC_GPU_CARD` holds it, written only when the process was leased a
+card, so a log without it reads as before. `RunLogSnapshot` and `RunStatusWire` gain
+`gpu_card` (`""` when unrecorded), folded from the last `started` like `boot_id`, and
+`StepStatusWire` gains `gpu_card` with a default of `""`. It is apart from the fit
+environment's `gpu`, the card's model name. `runlog.TERMINAL_STATUSES` is unchanged. A
+step that runs nothing (a refusal, a cache hit, a stall, a bound step) records the card of
+the process that recorded it, and one a driver records ended names none.
+
+**A step waiting for a card is reported.** `DriverLease` gains `gpu_wait_step`, the step
+its driver waits to start for a GPU, `""` otherwise. A reader that predates it drops the
+key, and a lease file without it reads `""`. `StepStatusWire` gains `waiting_for_gpu`,
+true for that step while the lease is live. A brief report lists the waiting step instead
+of counting it in `omitted_pending`. `mosaic pipeline status` prints `waiting for a GPU`
+as its status and adds a `gpu_card` column when a step recorded one.
+
 ## Unreleased: duplicate requests compared by run
 
 **A submission is a duplicate of an open request that computes one of its runs, of any

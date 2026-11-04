@@ -883,9 +883,9 @@ class GetRequestStatusInput(ToolInput):
         default=True,
         description=(
             "List only the steps that are running, failed, cancelled or partial, "
-            "and those that ended during the wait. Steps that finished cleanly "
-            "and steps not started are counted in omitted_finished and "
-            "omitted_pending. false lists every step."
+            "those that ended during the wait and a step waiting for a GPU. "
+            "Steps that finished cleanly and other steps not started are counted "
+            "in omitted_finished and omitted_pending. false lists every step."
         ),
     )
 

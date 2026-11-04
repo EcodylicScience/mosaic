@@ -365,6 +365,7 @@ def _request_status(status: RequestStatusWire) -> str:
     steps = [
         f"{step.step} {step.outcome}"
         + (f" ({step.liveness})" if step.liveness in ("dead", "unknown") else "")
+        + (", waiting for a GPU" if step.waiting_for_gpu else "")
         for step in status.steps
     ]
     poll = (

@@ -1232,28 +1232,24 @@ def status_command(
 def _render_request_status(report: RequestStatusWire) -> None:
     """Print a request's verdict and a table of its steps."""
     typer.echo(f"request {report.request_id}: {report.verdict}")
+    columns = ["step", "execution_id", "status", "run_id", "entries_failed"]
+    if any(step.gpu_card for step in report.steps):
+        columns.append("gpu_card")
     render_table(
         [
             {
                 "step": step.step,
                 "execution_id": step.execution_id,
-                "status": step.outcome,
+                "status": "waiting for a GPU" if step.waiting_for_gpu else step.outcome,
                 "run_id": step.run_id or "-",
                 "entries_failed": step.entries_failed,
+                "gpu_card": step.gpu_card or "-",
                 "phase": step.phase or "-",
                 "liveness": step.liveness or "-",
             }
             for step in report.steps
         ],
-        [
-            "step",
-            "execution_id",
-            "status",
-            "run_id",
-            "entries_failed",
-            "phase",
-            "liveness",
-        ],
+        [*columns, "phase", "liveness"],
     )
     if report.omitted_finished or report.omitted_pending:
         log(

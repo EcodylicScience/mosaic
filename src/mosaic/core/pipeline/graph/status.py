@@ -55,6 +55,7 @@ from .rollup import RequestStatus, request_rollup, request_verdict
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from .driver_lease import DriverLease
     from .model import Request
     from .rollup import RequestRollup, StepAttempt
 
@@ -208,6 +209,7 @@ class RunStatusWire(GraphModel):
     boot_id: str
     pid_ns: str
     liveness_interval: float
+    gpu_card: str
     phase: str
     workers: int
     parallel_mode: str
@@ -263,6 +265,10 @@ class StepStatusWire(GraphModel):
         total_memory_bytes: The host's physical memory, 0 before it reports.
         liveness: Whether its process may still be running (:mod:`~.liveness`),
             ``None`` before it writes a run-log and for a bound step.
+        gpu_card: The card its process was leased, ``<index>:<uuid>``, ``""``
+            when it was leased none or has not started.
+        waiting_for_gpu: Whether a live driver waits to start the step for a
+            GPU card.
     """
 
     step: str
@@ -290,6 +296,8 @@ class StepStatusWire(GraphModel):
     min_available_bytes: int = 0
     total_memory_bytes: int = 0
     liveness: AttemptLiveness | None = None
+    gpu_card: str = ""
+    waiting_for_gpu: bool = False
 
 
 class CleanupRunWire(GraphModel):
@@ -527,7 +535,8 @@ def request_status_wire(
         now: The current instant that liveness and the poll interval are judged
             at. ``None`` reads the clock.
         brief: List only the steps that are running, failed, cancelled or
-            ``partial``, and those that ended during the wait. The others are
+            ``partial``, those that ended during the wait and the one waiting
+            for a GPU card (:attr:`StepStatusWire.waiting_for_gpu`). The others are
             counted in ``omitted_finished`` and ``omitted_pending``.
         wait_seconds: The longest to wait, at most :data:`MAX_WAIT_SECONDS`.
         sleep: How the wait pauses, a seam for tests.
@@ -549,8 +558,10 @@ def request_status_wire(
             sleep=sleep,
             monotonic=monotonic,
         )
-    verdict = request_verdict_of(base_dir, rollup, now=now)
-    attempts = _brief_attempts(rollup, ended) if brief else None
+    lease = read_driver_lease(base_dir, rollup.request_id)
+    verdict = _verdict_under_lease(rollup, lease, now=now)
+    waiting = _gpu_wait_step(lease, now=now)
+    attempts = _brief_attempts(rollup, ended, waiting) if brief else None
     listed = rollup.steps if attempts is None else attempts[0]
     logs = run_log_dir(base_dir)
     return RequestStatusWire(
@@ -558,7 +569,10 @@ def request_status_wire(
         status=rollup.status,
         terminal=rollup.is_terminal,
         verdict=verdict,
-        steps=tuple(_step_status(logs, attempt, now=now) for attempt in listed),
+        steps=tuple(
+            _step_status(logs, attempt, now=now, waiting=attempt.step_id == waiting)
+            for attempt in listed
+        ),
         poll_after_seconds=poll_after_seconds(rollup, verdict, now=now),
         cleanup=cleanup_status_wire(base_dir, request, rollup),
         omitted_finished=0 if attempts is None else attempts[1],
@@ -616,14 +630,24 @@ def _wait_for_change(
     return rollup, frozenset()
 
 
+def _gpu_wait_step(lease: DriverLease | None, *, now: datetime.datetime | None) -> str:
+    """The step that the live driver holding *lease* waits to start for a card, or ``""``.
+
+    A stale lease names a wait that is not happening.
+    """
+    if lease is None or not lease_is_live(lease, now=now):
+        return ""
+    return lease.gpu_wait_step
+
+
 def _brief_attempts(
-    rollup: RequestRollup, ended: frozenset[str]
+    rollup: RequestRollup, ended: frozenset[str], waiting: str
 ) -> tuple[tuple[StepAttempt, ...], int, int]:
     """The steps of *rollup* a brief report lists, and the counts it leaves out.
 
     A step is listed when it is running, failed, cancelled or finished having
-    lost entries, or is in *ended*. A step that finished cleanly, or has not
-    started, is counted.
+    lost entries, or is in *ended*, or is the step *waiting* for a GPU card. A
+    step that finished cleanly, or has not started, is counted.
 
     Returns:
         The listed steps in the request's order, how many steps finished
@@ -633,7 +657,11 @@ def _brief_attempts(
     finished = pending = 0
     for attempt in rollup.steps:
         outcome = attempt_outcome(attempt.status, attempt.entries_failed)
-        if attempt.step_id in ended or outcome not in ("finished", "pending"):
+        if (
+            attempt.step_id in ended
+            or attempt.step_id == waiting
+            or outcome not in ("finished", "pending")
+        ):
             listed.append(attempt)
         elif outcome == "finished":
             finished += 1
@@ -763,6 +791,22 @@ def request_verdict_of(
     if rollup.is_terminal:
         return rollup_verdict(rollup)
     lease = read_driver_lease(base_dir, rollup.request_id)
+    return _verdict_under_lease(rollup, lease, now=now)
+
+
+def _verdict_under_lease(
+    rollup: RequestRollup,
+    lease: DriverLease | None,
+    *,
+    now: datetime.datetime | None,
+) -> RequestVerdict:
+    """Return the verdict of *rollup* given the request's driver *lease*.
+
+    :func:`request_verdict_of` documents the rules. A request that is over reads
+    as its rollup does, whatever the lease.
+    """
+    if rollup.is_terminal:
+        return rollup_verdict(rollup)
     if lease is None:
         unended = [
             attempt
@@ -843,7 +887,11 @@ def rollup_verdict(
 
 
 def _step_status(
-    logs: Path, attempt: StepAttempt, *, now: datetime.datetime | None = None
+    logs: Path,
+    attempt: StepAttempt,
+    *,
+    now: datetime.datetime | None = None,
+    waiting: bool = False,
 ) -> StepStatusWire:
     """One step's report, from its attempt's rollup record."""
     failed, has_more = _failed_entries(
@@ -879,6 +927,8 @@ def _step_status(
         liveness=step_liveness(attempt, now=now)
         if attempt.started and not attempt.bound
         else None,
+        gpu_card=attempt.gpu_card,
+        waiting_for_gpu=waiting,
     )
 
 

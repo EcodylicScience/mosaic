@@ -93,6 +93,8 @@ class StepAttempt:
         pid_ns: The pid namespace of that process, ``""`` when unrecorded.
         liveness_interval: The seconds between the ``alive`` events that the
             process promised, 0 for none.
+        gpu_card: The card its process was leased, ``<index>:<uuid>``, ``""`` when
+            unrecorded.
         phase: The last phase the attempt declared, ``""`` before one.
         target: What the run-log names as its target: the storage name under
             ``features/`` for a feature step, ``""`` before it started.
@@ -125,6 +127,7 @@ class StepAttempt:
     boot_id: str = ""
     pid_ns: str = ""
     liveness_interval: float = 0.0
+    gpu_card: str = ""
     phase: str = ""
     target: str = ""
     workers: int = 0
@@ -303,6 +306,7 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         boot_id=snapshot["boot_id"],
         pid_ns=snapshot["pid_ns"],
         liveness_interval=snapshot["liveness_interval"],
+        gpu_card=snapshot["gpu_card"],
         phase=snapshot["phase"],
         target=snapshot["target"],
         workers=snapshot["workers"],

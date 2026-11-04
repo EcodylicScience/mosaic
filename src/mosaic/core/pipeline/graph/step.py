@@ -52,6 +52,7 @@ from ..ops import run_op
 from ..parallelism import ParallelSettings, effective_parallel
 from ..run import run_feature
 from .claims import FileFailureStore
+from .gpu_lease import leased_card
 from .model import COMPLETE_STATUSES, FeatureStepSpec
 from .plan import (
     MISSING_SAMPLE,
@@ -220,6 +221,7 @@ def execute_step(
             target=step_id,
             owner=owner,
             error_json=refusal.error_json(),
+            gpu_card=leased_card(),
         )
         raise
 
@@ -687,6 +689,7 @@ def _cached(
         run_id=planned.run_id or "",
         cache_hit=True,
         entries_written=covered,
+        gpu_card=leased_card(),
     )
     return StepOutcome(
         step_id=planned.step_id,
@@ -718,6 +721,7 @@ def _bound(
         owner=owner,
         run_id=run_id,
         cache_hit=True,
+        gpu_card=leased_card(),
     )
     return StepOutcome(
         step_id=planned.step_id,
@@ -750,6 +754,7 @@ def _stalled(
         owner=owner,
         run_id=planned.run_id or "",
         entries_written=len(planned.coverage.covered),
+        gpu_card=leased_card(),
     )
     return StepOutcome(
         step_id=planned.step_id,
@@ -775,6 +780,7 @@ def _record_terminal(
     cache_hit: bool = False,
     entries_written: int = 0,
     cancelled: bool = False,
+    gpu_card: str = "",
 ) -> None:
     """Write a whole attempt record for a step that runs nothing itself.
 
@@ -785,13 +791,23 @@ def _record_terminal(
     brackets an attempt that *does* work, and a second writer on one file is what
     the run-log format rules out.
 
+    *gpu_card* is the card of the process that makes the record
+    (:func:`~.gpu_lease.leased_card`). A driver recording a step it did not run
+    names none.
+
     Every fact is written *before* the terminal event. A queue projects an attempt
     the moment it sees one, so anything appended after it is a fact that exists on
     disk and never reaches the ledger.
     """
     log = JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id)
     try:
-        log.started(kind=kind, target=target, owner=owner, host=socket.gethostname())
+        log.started(
+            kind=kind,
+            target=target,
+            owner=owner,
+            host=socket.gethostname(),
+            gpu_card=gpu_card,
+        )
         if run_id:
             log.set_run_id(run_id)
         if cache_hit:

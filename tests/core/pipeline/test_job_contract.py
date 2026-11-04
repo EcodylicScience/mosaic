@@ -18,6 +18,7 @@ import pytest
 
 import mosaic.runlog as runlog
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
+from mosaic.core.pipeline.graph.gpu_lease import GPU_CARD_VAR
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.job import (
     CancelToken,
@@ -786,6 +787,34 @@ def test_a_job_declares_its_liveness_interval_and_boot(tmp_path: Path) -> None:
     assert snap["liveness_interval"] == runlog.LIVENESS_INTERVAL_SECONDS
     assert snap["boot_id"] == current_boot_id()
     assert snap["pid_ns"] == current_pid_namespace()
+
+
+def test_a_job_records_the_card_it_was_leased(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path)
+    monkeypatch.setenv(GPU_CARD_VAR, "1:GPU-abc")
+    with job_context(ds, kind="feature", target="t") as ctx:
+        pass
+
+    snap = read_run(run_log_dir(ds.base_dir), ctx.execution_id)
+    assert snap is not None
+    assert snap["gpu_card"] == "1:GPU-abc"
+
+
+def test_a_job_without_a_lease_records_no_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path)
+    monkeypatch.delenv(GPU_CARD_VAR, raising=False)
+    with job_context(ds, kind="feature", target="t") as ctx:
+        pass
+
+    path = run_log_path(ds.base_dir, ctx.execution_id)
+    snap = read_run(run_log_dir(ds.base_dir), ctx.execution_id)
+    assert snap is not None
+    assert snap["gpu_card"] == ""
+    assert "gpu_card" not in path.read_text(encoding="utf-8")
 
 
 def test_a_feature_fit_records_its_fit_and_apply_phases(tmp_path: Path) -> None:
