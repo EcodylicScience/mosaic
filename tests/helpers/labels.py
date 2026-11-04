@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from fnmatch import fnmatchcase
 from pathlib import Path
+from typing import Annotated, ClassVar, override
 
 import numpy as np
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.label_converter import LabelConverter, LabelConvertParams, LabelEntry
+from mosaic.core.params import Declared
 from mosaic.core.pipeline.labels_index import write_labels_row
 
 CALMS21_NAMES: tuple[str, ...] = ("attack", "investigation", "mount", "other")
@@ -25,6 +29,9 @@ LABELS_VARIANT = "convert-labels-calms21_npy.0.3-aaaaaaaaaa"
 
 Event = tuple[int, int, int, int]
 """One label event: ``(frame, id1, id2, label)``."""
+
+LISTED_FRAMES: tuple[int, ...] = (0, 3)
+"""The event frames :class:`ListedEntries` gives each entry it lists."""
 
 
 def write_sparse_labels(
@@ -137,3 +144,89 @@ def write_lineage_run(
     }
     _ = (root / "params.json").write_text(json.dumps(document))
     return root
+
+
+class ListedEntriesParams(LabelConvertParams):
+    """The files a :class:`ListedEntries` conversion selects."""
+
+    name: Annotated[
+        str, Declared("The file-name pattern of the files that convert.")
+    ] = "*"
+
+
+class ListedEntries(LabelConverter[ListedEntriesParams]):
+    """The entries a ``.npy`` of ``(group, sequence)`` rows lists, in its row order.
+
+    Each entry has one ``individual_pair_v1`` event of the pair ``(0, 1)`` at
+    each of :data:`LISTED_FRAMES`, labeled with the entry's row position. A file
+    converts when its name matches the ``name`` pattern.
+    """
+
+    src_format: ClassVar[str] = "listed_entries_test_npy"
+    label_kind: ClassVar[str] = "behavior"
+    label_format: ClassVar[str] = "individual_pair_v1"
+    Params: ClassVar[type[LabelConvertParams]] = ListedEntriesParams
+
+    @override
+    def selects(
+        self, raw_row: Mapping[str, object], params: ListedEntriesParams
+    ) -> bool:
+        return fnmatchcase(Path(str(raw_row["abs_path"])).name, params.name)
+
+    @override
+    def convert(
+        self,
+        src_path: Path,
+        params: ListedEntriesParams,
+        raw_row: Mapping[str, object],
+    ) -> list[LabelEntry]:
+        rows = np.load(src_path).reshape(-1, 2).tolist()
+        frames = np.array(LISTED_FRAMES, dtype=np.int64)
+        return [
+            LabelEntry(
+                group=str(group),
+                sequence=str(sequence),
+                payload={
+                    "label_format": self.label_format,
+                    "frames": frames,
+                    "labels": np.full(len(frames), position, dtype=np.int32),
+                    "individual_ids": np.tile([0, 1], (len(frames), 1)),
+                    "label_ids": np.arange(len(rows), dtype=np.int64),
+                    "background_id": np.int32(-1),
+                },
+                n_frames=int(frames.max()) + 1,
+            )
+            for position, (group, sequence) in enumerate(rows)
+        ]
+
+
+class SharedKeyRefusingEntries(ListedEntries):
+    """:class:`ListedEntries` refusing one entry key from two converted entries."""
+
+    src_format: ClassVar[str] = "shared_key_refusing_test_npy"
+    refuses_shared_entry_keys: ClassVar[bool] = True
+
+
+class TracksAxisEntries(ListedEntries):
+    """:class:`ListedEntries` whose frames are the tracks table's frames."""
+
+    src_format: ClassVar[str] = "tracks_axis_test_npy"
+    frames_on_tracks_axis: ClassVar[bool] = True
+
+
+def write_listed_entries(
+    directory: Path, files: Mapping[str, Sequence[tuple[str, str]]]
+) -> Path:
+    """Write one ``.npy`` per file stem of *files*, listing its ``(group, sequence)`` rows.
+
+    Args:
+        directory: Where the files go. Created if absent.
+        files: Each file stem mapped to the entries the file lists.
+
+    Returns:
+        *directory*.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    for stem, entries in files.items():
+        np.save(directory / f"{stem}.npy", np.array(entries, dtype=str).reshape(-1, 2))
+    return directory

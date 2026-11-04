@@ -23,7 +23,8 @@ What lives where:
 - ``column_contract`` checks a feature's output against the columns that
   validation predicts from its declaration, and a pair table's mirror rows.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
-- ``labels`` writes converted label files of events, and their index rows.
+- ``labels`` writes converted label files of events, and their index rows, and
+  holds the label converters that the conversion tests register.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
   ``run_info.json`` records and its frames-index row, and reads back the files
   of a dataset's one frames row.
@@ -306,9 +307,15 @@ from tests.helpers.documents import dotted_values
 from tests.helpers.labels import (
     CALMS21_NAMES,
     LABELS_VARIANT,
+    LISTED_FRAMES,
     Event,
+    ListedEntries,
+    ListedEntriesParams,
+    SharedKeyRefusingEntries,
+    TracksAxisEntries,
     add_labels,
     write_lineage_run,
+    write_listed_entries,
     write_sparse_labels,
 )
 from tests.helpers.lightning_action import (
@@ -471,7 +478,10 @@ __all__ = [
     "LA_PAD",
     "LA_WINDOW",
     "LABELS_VARIANT",
+    "LISTED_FRAMES",
     "LightningActionRecorder",
+    "ListedEntries",
+    "ListedEntriesParams",
     "StudyEntry",
     "TemplatesStudy",
     "LineChildren",
@@ -496,6 +506,7 @@ __all__ = [
     "ScopedFeature",
     "SeparatedEnvironment",
     "SeparatedTool",
+    "SharedKeyRefusingEntries",
     "SleapInput",
     "SleapTrackCall",
     "SlpWrite",
@@ -503,6 +514,7 @@ __all__ = [
     "StubInstance",
     "StubSavedLabels",
     "TESTS_ROOT",
+    "TracksAxisEntries",
     "ULTRALYTICS_KEYPOINTS",
     "ULTRALYTICS_PROTOCOL",
     "ULTRALYTICS_TOOL",
@@ -689,6 +701,7 @@ __all__ = [
     "write_calms21_npy",
     "write_dlc_csv",
     "write_lineage_run",
+    "write_listed_entries",
     "write_sparse_labels",
     "write_templates_study",
     "write_driver_lease",

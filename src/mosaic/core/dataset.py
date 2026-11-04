@@ -463,6 +463,32 @@ def _label_variant_id(
     return labels_run_id(label_converter_op(cls.src_format), cls.version, payload)
 
 
+def _refuse_shared_entry_key(
+    sources: dict[str, Path], key: str, entry: str, source: Path
+) -> None:
+    """Record *source* as the file of entry *key*, refusing a key seen before.
+
+    Args:
+        sources: The file of each entry key converted so far, updated in place.
+        key: The converted entry's key.
+        entry: The entry's token, which the refusal names.
+        source: The raw file the entry was converted from.
+
+    Raises:
+        ValueError: *key* was already converted, naming both files.
+    """
+    first = sources.get(key)
+    if first is None:
+        sources[key] = source
+        return
+    msg = (
+        f"two converted entries are the entry {entry!r}, from {first} and from "
+        f"{source}. Select one of the files, or give each entry its own group "
+        "or sequence."
+    )
+    raise ValueError(msg)
+
+
 def _stem_as_sequence(stem: str) -> str:
     """One file is one sequence, and the stem names it.
 
@@ -9431,7 +9457,7 @@ class Dataset:
         """
         params = params or {}
         kind = str(kind or "").lower()
-        src_format = source_format or params.get("source_format", "calms21_npy")
+        src_format = str(source_format or params.get("source_format", "calms21_npy"))
 
         # A missing pair is a caller error -- a typo, or a converter module
         # nothing imported -- and the resolver says so with the registered pairs
@@ -9439,28 +9465,19 @@ class Dataset:
         # membership test read the registry before anything had filled it, and
         # then reported that no format exists.
         converter = get_label_converter(src_format, kind)
+        overrides = {**params, **kwargs}
         conv_params = self._label_converter_params(
-            converter, {**params, **kwargs}, src_format=src_format
+            converter, overrides, src_format=src_format
         )
-
-        # The source side is labels_raw, not tracks_raw: a label file is a label
-        # source even when the same physical file is also a track source (item
-        # 9.3). Read the labels_raw index and filter to this converter's format.
-        raw_idx = self.get_root("labels_raw") / "index.csv"
-        if not raw_idx.exists():
-            raise FileNotFoundError(
-                "labels_raw/index.csv not found; run index_labels_raw first."
-            )
-        # keep_default_na=False so an empty group cell stays "" rather than
-        # becoming a float NaN that stringifies to "nan" and reaches an entry key.
-        df_raw = pd.read_csv(raw_idx, keep_default_na=False, dtype=str)
-        if "src_format" not in df_raw.columns:
-            raise ValueError("labels_raw/index.csv missing 'src_format' column.")
-        df_raw = df_raw[df_raw["src_format"].astype(str) == str(src_format)]
+        df_raw = self.label_rows_to_convert(kind, src_format, overrides)
         if df_raw.empty:
-            raise ValueError(
-                f"No rows in labels_raw/index.csv with src_format='{src_format}'."
-            )
+            message = f"No rows in labels_raw/index.csv with src_format='{src_format}'"
+            if not self._label_raw_rows(src_format).empty:
+                message += (
+                    " that the converter selects with the params "
+                    f"{conv_params.identity_dump()}"
+                )
+            raise ValueError(f"{message}.")
 
         # Mint the label variant once -- params-only and scope-free, so one value
         # names one recipe across every sequence it covers -- and place its .npz
@@ -9475,6 +9492,7 @@ class Dataset:
         # Every entry is converted and placed before the first file is written,
         # so a refused entry leaves no part of the variant on disk.
         converted: list[tuple[LabelEntry, Path, Path, str]] = []
+        sources: dict[str, Path] = {}
         skipped = 0
         total = int(len(df_raw))
         for done, (_, raw_row) in enumerate(df_raw.iterrows(), start=1):
@@ -9483,9 +9501,12 @@ class Dataset:
             src_path = self.resolve_path(raw_row["abs_path"])
             source_md5 = str(raw_row.get("md5", "") or "")
             for entry in converter.convert(src_path, conv_params, raw_row):
-                out_path = (
-                    variant_root / f"{make_entry_key(entry.group, entry.sequence)}.npz"
-                )
+                key = make_entry_key(entry.group, entry.sequence)
+                if converter.refuses_shared_entry_keys:
+                    _refuse_shared_entry_key(
+                        sources, key, entry_token(entry.group, entry.sequence), src_path
+                    )
+                out_path = variant_root / f"{key}.npz"
                 if out_path.exists() and not overwrite:
                     skipped += 1
                     continue
@@ -9507,12 +9528,15 @@ class Dataset:
         pending: list[tuple[LabelEntry, Mapping[str, object], Path, Path, str]] = []
         for entry, out_path, src_path, source_md5 in converted:
             # A division's events are numbered from its first frame and move to
-            # it. Every other entry's stay where the converter numbered them.
+            # it, unless the converter numbers them on the tracks table's axis.
+            # Every other entry's stay where the converter numbered them.
             division = divisions.get((entry.group, entry.sequence))
             payload = place_label_payload(
                 entry.payload,
                 first_frame=0
-                if division is None or division.first_frame is None
+                if converter.frames_on_tracks_axis
+                or division is None
+                or division.first_frame is None
                 else division.first_frame,
                 sequence_start=starts.get((entry.group, entry.sequence), 0),
                 entry=entry_token(entry.group, entry.sequence),
@@ -9575,6 +9599,62 @@ class Dataset:
             f"variant {variant} using {src_format} (overwrite={overwrite})."
         )
         return LabelConversionOutcome(variant=variant, written=written, skipped=skipped)
+
+    def label_rows_to_convert(
+        self,
+        kind: str,
+        source_format: str,
+        params: Mapping[str, object] | None = None,
+    ) -> pd.DataFrame:
+        """The ``labels_raw/index.csv`` rows that a conversion would convert.
+
+        The rows of *source_format* that the converter selects under *params*,
+        read without writing anything, so a planner can check a selection before
+        the conversion runs.
+
+        Args:
+            kind: The label kind, such as ``"behavior"``.
+            source_format: The registered label converter's ``src_format``.
+            params: Converter overrides, as :meth:`convert_all_labels` takes
+                them.
+
+        Returns:
+            The selected rows, every cell a string, empty when none is selected.
+
+        Raises:
+            FileNotFoundError: ``labels_raw/index.csv`` is absent.
+            ValueError: No converter is registered for the pair, the params do
+                not build, or the index lacks its ``src_format`` column.
+        """
+        label_kind = str(kind or "").lower()
+        converter = get_label_converter(source_format, label_kind)
+        conv_params = self._label_converter_params(
+            converter, dict(params or {}), src_format=source_format
+        )
+        rows = self._label_raw_rows(source_format)
+        selected = [
+            converter.selects(
+                {str(key): value for key, value in record.items()}, conv_params
+            )
+            for record in rows.to_dict(orient="records")
+        ]
+        return rows[pd.Series(selected, index=rows.index, dtype=bool)]
+
+    def _label_raw_rows(self, source_format: str) -> pd.DataFrame:
+        """The ``labels_raw/index.csv`` rows of *source_format*, every cell a string."""
+        # The source side is labels_raw, not tracks_raw: a label file is a label
+        # source even when the same physical file is also a track source.
+        raw_idx = self.get_root("labels_raw") / "index.csv"
+        if not raw_idx.exists():
+            raise FileNotFoundError(
+                "labels_raw/index.csv not found; run index_labels_raw first."
+            )
+        # keep_default_na=False so an empty group cell stays "" rather than
+        # becoming a float NaN that stringifies to "nan" and reaches an entry key.
+        df_raw = pd.read_csv(raw_idx, keep_default_na=False, dtype=str)
+        if "src_format" not in df_raw.columns:
+            raise ValueError("labels_raw/index.csv missing 'src_format' column.")
+        return df_raw[df_raw["src_format"].astype(str) == str(source_format)]
 
     def _labels_variant(
         self,

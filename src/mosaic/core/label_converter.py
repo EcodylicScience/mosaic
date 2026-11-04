@@ -48,6 +48,7 @@ __all__ = [
     "LabelConverter",
     "LabelEntry",
     "ensure_label_converters_registered",
+    "entry_group",
     "get_label_converter",
     "register_label_converter",
     "registered_label_formats",
@@ -139,6 +140,12 @@ class LabelConverter(Generic[P]):
             identity across an unrelated release.
         Params: The parameter model. Everything in it determines the labels
             except fields marked ``HASH_EXCLUDE``.
+        refuses_shared_entry_keys: Whether a conversion refuses two converted
+            entries of one entry key, from two files or from one, before it
+            writes anything. Left ``False``, the last entry of a key is written.
+        frames_on_tracks_axis: Whether the payload's frames are already the
+            frames of the entry's tracks table, so a division's events are not
+            moved by its first frame.
     """
 
     src_format: ClassVar[str]
@@ -146,6 +153,21 @@ class LabelConverter(Generic[P]):
     label_format: ClassVar[str] = ""
     version: ClassVar[str] = "0.1"
     Params: ClassVar[type[LabelConvertParams]] = LabelConvertParams
+    refuses_shared_entry_keys: ClassVar[bool] = False
+    frames_on_tracks_axis: ClassVar[bool] = False
+
+    def selects(self, raw_row: Mapping[str, object], params: P) -> bool:
+        """Whether the raw file of *raw_row* converts under *params*.
+
+        Args:
+            raw_row: The ``labels_raw/index.csv`` row of the file.
+            params: Typed conversion parameters.
+
+        Returns:
+            ``True`` unless the converter's params leave the file out.
+        """
+        _ = raw_row, params
+        return True
 
     def convert(
         self, src_path: Path, params: P, raw_row: Mapping[str, object]
@@ -166,6 +188,24 @@ class LabelConverter(Generic[P]):
     def get_metadata(self) -> dict[str, object]:
         """Format-specific metadata for ``dataset.meta['labels'][kind]`` (optional)."""
         return {}
+
+
+def entry_group(group_from: str, raw_row: Mapping[str, object], infile: str) -> str:
+    """The group of an entry that a raw file records under the group *infile*.
+
+    Args:
+        group_from: The conversion's ``group_from`` policy.
+        raw_row: The ``labels_raw/index.csv`` row of the file.
+        infile: The group that the file itself records for the entry.
+
+    Returns:
+        The raw row's group under ``filename`` or ``both`` when the row names
+        one, and *infile* otherwise.
+    """
+    raw_group = str(raw_row.get("group", "") or "")
+    if group_from in {"filename", "both"} and raw_group:
+        return raw_group
+    return infile
 
 
 LABEL_CONVERTERS: dict[tuple[str, str], type[LabelConverter[LabelConvertParams]]] = {}

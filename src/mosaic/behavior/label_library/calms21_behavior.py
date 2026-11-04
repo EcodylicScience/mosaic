@@ -13,6 +13,7 @@ from mosaic.core.label_converter import (
     LabelConvertParams,
     LabelConverter,
     LabelEntry,
+    entry_group,
 )
 from mosaic.core.params import Declared
 from mosaic.core.track_library.calms21 import calms21_entry_name
@@ -93,16 +94,11 @@ class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):
         label_ids = np.array(list(BEHAVIOR_LABEL_MAP.keys()), dtype=int)
         label_names = np.array(list(BEHAVIOR_LABEL_MAP.values()), dtype=object)
 
-        raw_group_hint = str(raw_row.get("group", "") or "")
         group_from = params.group_from
 
         for group_name, seqs in nested.items():
             group_val_infile = str(group_name or "")
-
-            if group_from in {"filename", "both"} and raw_group_hint:
-                group_val = raw_group_hint
-            else:
-                group_val = group_val_infile
+            group_val = entry_group(group_from, raw_row, group_val_infile)
 
             for seq_key, seq_dict in seqs.items():
                 if "annotations" not in seq_dict:

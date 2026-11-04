@@ -17,8 +17,10 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest, open_dataset
+from mosaic.core.label_converter import LABEL_CONVERTERS
 from mosaic.core.manifest import MediaDivision, MediaScanSource
 from mosaic.core.pipeline.manifest import build_manifest
+from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import TracksRawIndexScope
@@ -31,9 +33,12 @@ from mosaic.core.track_converter import (
 )
 from tests.helpers import (
     DIVISION_CREATED_UTC,
+    LISTED_FRAMES,
+    TracksAxisEntries,
     install_fake_pose_inference,
     pose_per_frame,
     video_store_maker,
+    write_listed_entries,
 )
 
 pytestmark = [pytest.mark.media, pytest.mark.slow]
@@ -254,6 +259,43 @@ def test_an_inference_table_lands_at_each_divisions_first_frame(
         )
     )
     assert found == [(0, 0, 9), (10, 10, 19), (20, 20, 21)]
+
+
+def label_frames(dataset: Dataset, source_format: str) -> list[int]:
+    """The event frames of the one entry that *source_format* converted."""
+    rows = read_labels_index(dataset, "behavior")
+    (path,) = rows.loc[rows["run_id"].str.contains(source_format), "abs_path"]
+    with np.load(dataset.resolve_path(str(path)), allow_pickle=True) as npz:
+        return np.asarray(npz["frames"], dtype=np.int64).tolist()
+
+
+def test_labels_on_the_tracks_axis_keep_their_frames_and_others_move(
+    tmp_path: Path, requires_ffmpeg: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both conversions label the second division, which starts at frame 10."""
+    monkeypatch.setitem(
+        LABEL_CONVERTERS, (TracksAxisEntries.src_format, "behavior"), TracksAxisEntries
+    )
+    dataset = divided_dataset(tmp_path, (5, 5, 5, 5, 2))
+    sequence, first_frame, _ = divisions(dataset)[1]
+    on_tracks = write_listed_entries(
+        tmp_path / "tracks_axis", {"predictions": [(RECORDING, sequence)]}
+    )
+    calms21 = tmp_path / "calms21"
+    calms21.mkdir()
+    annotations = {RECORDING: {sequence: {"annotations": [0, 1, 2]}}}
+    np.save(calms21 / "labels.npy", np.array(annotations, dtype=object))
+    dataset.index_labels_raw(
+        [on_tracks], patterns=["*.npy"], src_format=TracksAxisEntries.src_format
+    )
+    dataset.index_labels_raw([calms21], patterns=["*.npy"], src_format="calms21_npy")
+
+    for source_format in (TracksAxisEntries.src_format, "calms21_npy"):
+        _ = dataset.convert_all_labels(kind="behavior", source_format=source_format)
+
+    assert first_frame == 10
+    assert label_frames(dataset, TracksAxisEntries.src_format) == list(LISTED_FRAMES)
+    assert label_frames(dataset, "calms21_npy") == [10, 11, 12]
 
 
 def neighbors(dataset: Dataset) -> list[tuple[str, str]]:

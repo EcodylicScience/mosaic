@@ -22,6 +22,7 @@ from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistance
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.json_value import JsonValue
+from mosaic.core.label_converter import LABEL_CONVERTERS
 from mosaic.core.pipeline.graph import (
     MISSING_SAMPLE,
     BoundRef,
@@ -47,10 +48,12 @@ from mosaic.core.scope import Scope
 from mosaic.core.track_library.calms21 import Calms21Converter
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
+    ListedEntries,
     add_tracks_variant,
     calms21_dataset,
     guppies_recipe,
     make_dataset,
+    write_listed_entries,
 )
 
 runner = CliRunner()
@@ -388,6 +391,73 @@ def test_a_convert_step_with_no_raw_rows_of_its_format_is_a_problem(
     dataset.scan_labels()
     plan = plan_pipeline(dataset, recipe)
     assert plan.step("convert").run_id
+
+
+def _listed_conversion(params: dict[str, JsonValue]) -> Recipe:
+    """A ``convert-labels`` step of :class:`ListedEntries` without a ``kind``."""
+    return read_recipe(
+        {
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [
+                {
+                    "id": "convert",
+                    "type": "op",
+                    "kind": "convert-labels",
+                    "params": {
+                        "source_format": ListedEntries.src_format,
+                        "params": params,
+                    },
+                }
+            ],
+        }
+    )
+
+
+def test_a_convert_labels_step_whose_selection_takes_no_row_is_a_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The step names no kind, and its converter is registered for ``behavior``."""
+    monkeypatch.setitem(
+        LABEL_CONVERTERS, (ListedEntries.src_format, "behavior"), ListedEntries
+    )
+    dataset = make_dataset(tmp_path / "ds")
+    uploads = write_listed_entries(tmp_path / "uploads", {"f1": [("g", "s1")]})
+    dataset.index_labels_raw(
+        [uploads], patterns=["*.npy"], src_format=ListedEntries.src_format
+    )
+
+    with pytest.raises(RecipeRefused) as refused:
+        _ = plan_pipeline(dataset, _listed_conversion({"name": "none*"}))
+
+    (problem,) = refused.value.problems
+    assert (problem.step, problem.where) == ("convert", "params.params")
+    assert "'name': 'none*'" in problem.message
+    assert (
+        plan_pipeline(dataset, _listed_conversion({"name": "f1*"}))
+        .step("convert")
+        .run_id
+    )
+
+
+def test_a_convert_labels_step_whose_converter_params_do_not_build_is_a_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(
+        LABEL_CONVERTERS, (ListedEntries.src_format, "behavior"), ListedEntries
+    )
+    dataset = make_dataset(tmp_path / "ds")
+    uploads = write_listed_entries(tmp_path / "uploads", {"f1": [("g", "s1")]})
+    dataset.index_labels_raw(
+        [uploads], patterns=["*.npy"], src_format=ListedEntries.src_format
+    )
+
+    with pytest.raises(RecipeRefused) as refused:
+        _ = plan_pipeline(dataset, _listed_conversion({"name": ["f1*"]}))
+
+    (problem,) = refused.value.problems
+    assert (problem.step, problem.where) == ("convert", "params.params")
+    assert "name" in problem.message
 
 
 # --- a step that follows ids over tracks without tracklets --------------------------

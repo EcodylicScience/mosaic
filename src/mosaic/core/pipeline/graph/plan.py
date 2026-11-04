@@ -55,6 +55,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
+
 from mosaic.core.helpers import resolve_frame_range
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
@@ -854,7 +855,11 @@ def plan_pipeline(
                 if lacking:
                     findings.problems.append(_without_tracklets_problem(step, lacking))
         else:
-            findings.problems.extend(_conversion_source_problems(ds, step))
+            findings.problems.extend(
+                _conversion_source_problems(
+                    ds, step, identified=step_plan.run_id is not None
+                )
+            )
             findings.problems.extend(
                 _untranscoded_media_problems(
                     ds, recipe, step, step_plan, catalog=catalog, planned=planned
@@ -1833,6 +1838,23 @@ def _resolve_op_step(
             ),
             problems=(problem,),
         )
+    except ValueError as exc:
+        if step.kind != "convert-labels":
+            raise
+        # The variant is minted from the converter's own params, which the
+        # step's params name and which only build here.
+        problem = Problem(step.id, "params.params", str(exc))
+        return _Resolution(
+            step=PlannedStep(
+                step_id=step.id,
+                kind="op",
+                runs=step.kind,
+                spec=spec,
+                run_id=None,
+                reason=IdentityUnresolved(step=step.id, because=problem.message),
+            ),
+            problems=(problem,),
+        )
     return _Resolution(
         step=PlannedStep(
             step_id=step.id,
@@ -1912,12 +1934,17 @@ _CONVERSION_ROOTS: Final[dict[str, str]] = {
 """The raw root each conversion op reads its format's rows from."""
 
 
-def _conversion_source_problems(ds: Dataset, step: OpStepSpec) -> list[Problem]:
-    """A problem at a conversion step whose format has no raw row to convert.
+def _conversion_source_problems(
+    ds: Dataset, step: OpStepSpec, *, identified: bool
+) -> list[Problem]:
+    """A problem at a conversion step that would find no raw row to convert.
 
     A conversion reads the rows a scan recorded, and an unscanned dataset would
-    plan cleanly and fail when the step runs. Reads the raw index and writes
-    nothing.
+    plan cleanly and fail when the step runs. A ``convert-labels`` step whose
+    converter selects none of its format's rows fails the same way. Its
+    selection is checked only when the step's identity resolved (*identified*),
+    because converter params that do not build are already a problem there.
+    Reads the raw index and writes nothing.
     """
     root = _CONVERSION_ROOTS.get(step.kind)
     if root is None:
@@ -1925,14 +1952,32 @@ def _conversion_source_problems(ds: Dataset, step: OpStepSpec) -> list[Problem]:
     source_format = step.params.get("source_format")
     if not isinstance(source_format, str) or not source_format:
         return []
-    if source_format in _raw_formats(ds, root):
+    if source_format not in _raw_formats(ds, root):
+        message = (
+            f"{root}/index.csv has no row of source format {source_format!r}; "
+            f"scan the dataset's sources first (mosaic scan), or name the format "
+            f"the scan recorded"
+        )
+        return [Problem(step.id, "params.source_format", message)]
+    if step.kind == "convert-labels" and identified:
+        return _label_selection_problems(ds, step)
+    return []
+
+
+def _label_selection_problems(ds: Dataset, step: OpStepSpec) -> list[Problem]:
+    """A problem at a ``convert-labels`` step whose converter selects no raw row."""
+    from ..convert_ops import ConvertLabelsParams
+
+    params = ConvertLabelsParams.model_validate(step.params)
+    rows = ds.label_rows_to_convert(params.kind, params.source_format, params.params)
+    if not rows.empty:
         return []
     message = (
-        f"{root}/index.csv has no row of source format {source_format!r}; scan "
-        f"the dataset's sources first (mosaic scan), or name the format the "
-        f"scan recorded"
+        f"the {params.source_format!r} label converter selects no row of "
+        f"labels_raw/index.csv with the params {dict(params.params)}; name a "
+        f"selection that matches a scanned file"
     )
-    return [Problem(step.id, "params.source_format", message)]
+    return [Problem(step.id, "params.params", message)]
 
 
 def _raw_formats(ds: Dataset, root: str) -> set[str]:

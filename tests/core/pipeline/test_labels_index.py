@@ -30,6 +30,8 @@ from mosaic.core.pipeline.labels_index import (
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
 from tests.helpers import (
+    ListedEntries,
+    SharedKeyRefusingEntries,
     add_track_sequences,
     add_tracks_table,
     calms21_dataset,
@@ -38,6 +40,8 @@ from tests.helpers import (
     names_read,
     source_tree,
     track_table,
+    tree_snapshot,
+    write_listed_entries,
     write_painted_recording,
 )
 
@@ -253,6 +257,198 @@ def test_load_labels_resolves_and_reads(tmp_path: Path) -> None:
     data = ds.load_labels("g", "s1", "behavior")
     assert data["labels"].tolist() == [0, 1, 2, 3, 0]
     assert ds.get_label_map("behavior")[0] == "attack"
+
+
+# --- the rows a converter selects, and one entry key from two sources --------
+
+
+def _listed_dataset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    converter: type[ListedEntries],
+    files: Mapping[str, list[tuple[str, str]]],
+) -> Dataset:
+    """A dataset whose ``uploads`` directory holds *files*, indexed for *converter*."""
+    monkeypatch.setitem(LABEL_CONVERTERS, (converter.src_format, "behavior"), converter)
+    ds = make_dataset(tmp_path / "ds")
+    uploads = write_listed_entries(tmp_path / "uploads", files)
+    ds.index_labels_raw([uploads], patterns=["*.npy"], src_format=converter.src_format)
+    return ds
+
+
+def _written_labels(ds: Dataset) -> dict[str, bytes]:
+    root = ds.get_root("labels") / "behavior"
+    return {path.name: path.read_bytes() for path in sorted(root.rglob("*.npz"))}
+
+
+def test_a_converter_s_selection_names_the_rows_it_converts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _listed_dataset(
+        tmp_path,
+        monkeypatch,
+        ListedEntries,
+        {"f1": [("g", "s1")], "f2": [("g", "s2")]},
+    )
+    before = tree_snapshot(ds.base_dir)
+
+    rows = ds.label_rows_to_convert(
+        "behavior", ListedEntries.src_format, {"name": "f2.npy"}
+    )
+
+    assert [Path(str(path)).name for path in rows["abs_path"]] == ["f2.npy"]
+    assert tree_snapshot(ds.base_dir) == before
+
+
+def test_a_selection_of_no_row_is_refused_naming_its_params(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _listed_dataset(tmp_path, monkeypatch, ListedEntries, {"f1": [("g", "s1")]})
+
+    with pytest.raises(
+        ValueError,
+        match=r"No rows in labels_raw/index\.csv with src_format='listed_entries_test_npy'.*'name': 'none\*'",
+    ):
+        _ = ds.convert_all_labels(
+            kind="behavior",
+            source_format=ListedEntries.src_format,
+            params={"name": "none*"},
+        )
+
+    assert _written_labels(ds) == {}
+
+
+def test_a_selection_converts_only_the_rows_it_selects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _listed_dataset(
+        tmp_path,
+        monkeypatch,
+        ListedEntries,
+        {"f1": [("g", "s1")], "f2": [("g", "s2")]},
+    )
+
+    outcome = ds.convert_all_labels(
+        kind="behavior", source_format=ListedEntries.src_format, params={"name": "f1*"}
+    )
+
+    assert outcome.written == 1
+    assert list(_written_labels(ds)) == ["g__s1.npz"]
+
+
+def test_one_entry_key_from_two_files_is_refused_naming_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _listed_dataset(
+        tmp_path,
+        monkeypatch,
+        SharedKeyRefusingEntries,
+        {"f1": [("g", "s1")], "f2": [("g", "s1")]},
+    )
+
+    with pytest.raises(ValueError, match=r"'g:s1'.*f1\.npy.*f2\.npy"):
+        _ = ds.convert_all_labels(
+            kind="behavior", source_format=SharedKeyRefusingEntries.src_format
+        )
+
+    assert _written_labels(ds) == {}
+    assert read_labels_index(ds, "behavior").empty
+
+
+def test_one_entry_key_twice_in_one_file_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _listed_dataset(
+        tmp_path,
+        monkeypatch,
+        SharedKeyRefusingEntries,
+        {"f1": [("g", "s2"), ("g", "s1"), ("g", "s1")]},
+    )
+
+    with pytest.raises(ValueError, match=r"'g:s1'.*f1\.npy.*f1\.npy"):
+        _ = ds.convert_all_labels(
+            kind="behavior", source_format=SharedKeyRefusingEntries.src_format
+        )
+
+    assert _written_labels(ds) == {}
+
+
+def test_one_entry_key_is_refused_when_its_first_entry_is_already_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _listed_dataset(
+        tmp_path, monkeypatch, SharedKeyRefusingEntries, {"f1": [("g", "s1")]}
+    )
+    _ = ds.convert_all_labels(
+        kind="behavior", source_format=SharedKeyRefusingEntries.src_format
+    )
+    written = _written_labels(ds)
+    uploads = write_listed_entries(tmp_path / "uploads", {"f2": [("g", "s1")]})
+    ds.index_labels_raw(
+        [uploads], patterns=["*.npy"], src_format=SharedKeyRefusingEntries.src_format
+    )
+
+    with pytest.raises(ValueError, match=r"'g:s1'.*f1\.npy.*f2\.npy"):
+        _ = ds.convert_all_labels(
+            kind="behavior", source_format=SharedKeyRefusingEntries.src_format
+        )
+
+    assert list(written) == ["g__s1.npz"]
+    assert _written_labels(ds) == written
+
+
+def test_a_converter_left_at_the_default_writes_one_entry_key_from_its_last_file(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    for name, sequence_labels in (("f1", [0, 0]), ("f2", [1, 2, 3])):
+        np.save(
+            uploads / f"{name}.npy",
+            np.array({"g": {"s1": {"annotations": sequence_labels}}}, dtype=object),
+            allow_pickle=True,
+        )
+    ds.index_labels_raw([uploads], patterns=["*.npy"], src_format="calms21_npy")
+
+    outcome = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
+
+    assert outcome.written == 2
+    assert outcome.variant == "convert-labels-calms21_npy.0.3-66b4fd96be"
+    (path,) = read_labels_index(ds, "behavior")["abs_path"].tolist()
+    with np.load(ds.resolve_path(str(path)), allow_pickle=True) as npz:
+        assert np.asarray(npz["labels"]).tolist() == [1, 2, 3]
+
+
+@pytest.mark.parametrize("group_from", ["filename", "both"])
+def test_calms21_labels_take_the_raw_row_s_group_under_group_from(
+    tmp_path: Path, group_from: str
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    np.save(
+        uploads / "f1.npy",
+        np.array({"infile": {"s1": {"annotations": [0, 1]}}}, dtype=object),
+        allow_pickle=True,
+    )
+    ds.index_labels_raw(
+        [uploads],
+        patterns=["*.npy"],
+        src_format="calms21_npy",
+        group_from_path=lambda _path: "scanned",
+    )
+
+    _ = ds.convert_all_labels(
+        kind="behavior", source_format="calms21_npy", params={"group_from": group_from}
+    )
+
+    index = read_labels_index(ds, "behavior")
+    assert index[["group", "sequence"]].values.tolist() == [["scanned", "s1"]]
+    with np.load(
+        ds.resolve_path(str(index["abs_path"].iloc[0])), allow_pickle=True
+    ) as npz:
+        assert str(npz["source_group"]) == "infile"
 
 
 # --- the registry a caller has no reason to know they must fill ---------------

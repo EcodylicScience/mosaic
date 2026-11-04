@@ -11,10 +11,11 @@ converter and its params, and that minting reads no index, so a plan names the
 variant before the conversion runs. A downstream ``tracks`` or ``labels``
 reference then pins it.
 
-**A conversion reads every raw row of its format.** Neither op takes a scope.
-What a dataset converts is decided by its scan sources, which stay with the
-user, and the plan refuses a format that ``tracks_raw`` or ``labels_raw`` holds
-no row of.
+**A conversion reads the raw rows of its format that its converter selects.**
+Neither op takes a scope. What a dataset converts is decided by its scan
+sources, which stay with the user, and by a label converter's selection under
+its params. The plan refuses a format that ``tracks_raw`` or ``labels_raw``
+holds no row of, and a label selection of none.
 
 **A file that fails is reported and then fails the attempt**, as
 ``resample-tracks`` does: each failure is an ``entry_error`` on the run-log, and

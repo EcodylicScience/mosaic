@@ -1,6 +1,7 @@
 import math
 import warnings
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Optional, Tuple, cast
 
@@ -228,25 +229,29 @@ def _rows_of_filter(
     return rows.astype(np.int64, copy=False)
 
 
-def _match_events(
+def _matching_events(
     feature_frames: np.ndarray,
     row_ids: np.ndarray,
     frames: np.ndarray,
-    labels: np.ndarray,
     event_ids: np.ndarray,
-) -> np.ndarray:
-    """Each row's label from the events at its frame that match its individuals.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each row's last matching event at its frame, and how many events match it.
 
-    ``-1`` is a wildcard on either side: event ``(e1, e2)`` labels row
+    ``-1`` is a wildcard on either side: event ``(e1, e2)`` matches row
     ``(r1, r2)`` at its frame iff ``e1`` is ``-1`` or ``r1`` or equals it, and
-    likewise for the second id. So a scene event ``(-1, -1)`` labels every row, an
-    individual event ``(i, -1)`` labels every pair row focal on ``i``, and a
-    directed pair event labels only the row of that direction. The last matching
-    event in file order wins. A row nothing matches is :data:`_NO_MATCH`.
+    likewise for the second id. So a scene event ``(-1, -1)`` matches every row, an
+    individual event ``(i, -1)`` every pair row focal on ``i``, and a directed pair
+    event only the row of that direction.
+
+    Returns:
+        Two int64 arrays, one value per row: the position in the file of the last
+        matching event in file order (``-1`` for none), and the count of matching
+        events.
     """
-    result = np.full(len(feature_frames), _NO_MATCH, dtype=np.int64)
+    positions = np.full(len(feature_frames), -1, dtype=np.int64)
+    matches = np.zeros(len(feature_frames), dtype=np.int64)
     if len(feature_frames) == 0 or len(frames) == 0:
-        return result
+        return positions, matches
     rows = pd.DataFrame(
         {
             "row": np.arange(len(feature_frames)),
@@ -261,7 +266,6 @@ def _match_events(
             "frame": frames,
             "e1": event_ids[:, 0],
             "e2": event_ids[:, 1],
-            "label": labels,
         }
     )
     joined = rows.merge(events, on="frame", how="inner")
@@ -269,15 +273,130 @@ def _match_events(
     second = (
         (joined["e2"] == -1) | (joined["r2"] == -1) | (joined["e2"] == joined["r2"])
     )
-    matched = (
-        joined.loc[first & second]
-        .sort_values(["row", "order"])
-        .drop_duplicates("row", keep="last")
+    per_row = joined.loc[first & second].groupby("row")["order"].agg(["max", "size"])
+    matched_rows = per_row.index.to_numpy(dtype=np.int64)
+    positions[matched_rows] = per_row["max"].to_numpy(dtype=np.int64)
+    matches[matched_rows] = per_row["size"].to_numpy(dtype=np.int64)
+    return positions, matches
+
+
+def _frame_events(
+    feature_frames: np.ndarray,
+    frames: np.ndarray,
+    event_ids: np.ndarray,
+    *,
+    deduplicate_symmetric: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Each row's last event at its frame, and how many events are at that frame.
+
+    The rule for rows that name no individual. With *deduplicate_symmetric*, a
+    pair event with ``id1 > id2`` is dropped first, as the second direction of a
+    pair stored both ways. An individual or scene event, with a ``-1`` side, is
+    never a duplicate.
+
+    Returns:
+        Two int64 arrays, one value per row: the position in the file of the last
+        remaining event at the row's frame (``-1`` for none), and the count of
+        events remaining at that frame.
+    """
+    positions = np.full(len(feature_frames), -1, dtype=np.int64)
+    matches = np.zeros(len(feature_frames), dtype=np.int64)
+    kept = np.arange(len(frames), dtype=np.int64)
+    if deduplicate_symmetric:
+        first, second = event_ids[:, 0], event_ids[:, 1]
+        kept = kept[(first <= second) | (first < 0) | (second < 0)]
+    if len(feature_frames) == 0 or len(kept) == 0:
+        return positions, matches
+    # A stable sort keeps file order within a frame, so a frame's last entry is
+    # its last event in the file.
+    kept = kept[np.argsort(frames[kept], kind="stable")]
+    unique, starts, counts = np.unique(
+        frames[kept], return_index=True, return_counts=True
     )
-    result[matched["row"].to_numpy(dtype=np.int64)] = matched["label"].to_numpy(
-        dtype=np.int64
-    )
-    return result
+    slot = np.minimum(np.searchsorted(unique, feature_frames), len(unique) - 1)
+    found = unique[slot] == feature_frames
+    positions[found] = kept[starts + counts - 1][slot[found]]
+    matches[found] = counts[slot[found]]
+    return positions, matches
+
+
+@dataclass(frozen=True)
+class RowEvents:
+    """The event of a label file that labels each row, one value per row.
+
+    Attributes:
+        positions: The position in the file of the row's event, ``-1`` for none.
+            A dense file's position is the row's frame.
+        matches: The count of events matching the row. A row with ``matches``
+            of 2 or more takes the last of them.
+        labels: The row's label: its event's label, or the background of the
+            file (:func:`label_background_id`) for a row with no event. Label
+            controls are not applied.
+    """
+
+    positions: np.ndarray
+    matches: np.ndarray
+    labels: np.ndarray
+
+
+def _row_events(
+    path: Path,
+    feature_frames: np.ndarray,
+    individual_filter: "Tuple[int, int] | np.ndarray | None",
+    *,
+    default_label: int | None,
+    deduplicate_symmetric: bool,
+) -> RowEvents:
+    """The event labeling each frame of *feature_frames* in the file at *path*.
+
+    :func:`load_labels_for_feature_frames` documents the arguments.
+    """
+    with np.load(path, allow_pickle=True) as npz:
+        fmt = detect_label_format(npz)
+        if fmt == "individual_pair_v1":
+            frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
+            event_labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
+            event_ids = _event_ids(npz)
+            if individual_filter is not None:
+                row_ids = _rows_of_filter(individual_filter, len(feature_frames))
+                positions, matches = _matching_events(
+                    feature_frames, row_ids, frames, event_ids
+                )
+            else:
+                positions, matches = _frame_events(
+                    feature_frames,
+                    frames,
+                    event_ids,
+                    deduplicate_symmetric=deduplicate_symmetric,
+                )
+            matched = positions >= 0
+            labels = np.empty(len(feature_frames), dtype=np.int64)
+            labels[matched] = event_labels[positions[matched]]
+            if not matched.all():
+                labels[~matched] = (
+                    label_background_id(path, npz)
+                    if default_label is None
+                    else default_label
+                )
+            return RowEvents(positions=positions, matches=matches, labels=labels)
+
+        if "labels" in _npz_keys(npz):
+            dense = np.asarray(npz["labels"], dtype=np.int64).ravel()
+            # Every frame inside a dense file is labeled, so a frame outside it is
+            # outside the annotation.
+            inside = (feature_frames >= 0) & (feature_frames < len(dense))
+            positions = np.where(inside, feature_frames, -1).astype(np.int64)
+            labels = np.full(
+                len(feature_frames),
+                UNLABELED if default_label is None else default_label,
+                dtype=np.int64,
+            )
+            labels[inside] = dense[feature_frames[inside]]
+            return RowEvents(
+                positions=positions, matches=inside.astype(np.int64), labels=labels
+            )
+
+        raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
 
 
 def detect_label_format(npz_data: "dict[str, object] | np.lib.npyio.NpzFile") -> str:
@@ -646,64 +765,49 @@ def load_labels_for_feature_frames(
     ``default_label``). For frames with multiple labeled events, the last one
     wins.
     """
-    from pathlib import Path
+    return _row_events(
+        Path(path),
+        np.asarray(feature_frames, dtype=np.int64).ravel(),
+        individual_filter,
+        default_label=default_label,
+        deduplicate_symmetric=deduplicate_symmetric,
+    ).labels
 
-    path = Path(path)
-    feature_frames = np.asarray(feature_frames, dtype=np.int64).ravel()
 
-    with np.load(path, allow_pickle=True) as npz:
-        fmt = detect_label_format(npz)
+def events_for_frames(
+    path: "str | Path",
+    feature_frames: np.ndarray,
+    individual_filter: "Tuple[int, int] | np.ndarray | None" = None,
+) -> RowEvents:
+    """The event labeling each row, by the rule of :func:`load_labels_for_feature_frames`.
 
-        if fmt == "individual_pair_v1":
-            frames = np.asarray(npz["frames"], dtype=np.int64).ravel()
-            labels = np.asarray(npz["labels"], dtype=np.int64).ravel()
-            individual_ids = _event_ids(npz)
+    A row with individuals takes the last event matching them, and a row without
+    takes the last event of its frame once reverse pair events are dropped. A
+    reader gathers any other per-event column from ``positions``, so a row's
+    label and that column come from one event. A dense file gives each frame
+    inside it its own position and a count of 1.
 
-            if individual_filter is not None:
-                row_ids = _rows_of_filter(individual_filter, len(feature_frames))
-                result = _match_events(
-                    feature_frames, row_ids, frames, labels, individual_ids
-                )
-            else:
-                if deduplicate_symmetric:
-                    # Drops the second direction of a pair only. An individual
-                    # or scene event, with a -1 side, is never a duplicate.
-                    first, second = individual_ids[:, 0], individual_ids[:, 1]
-                    mask = (first <= second) | (first < 0) | (second < 0)
-                    frames = frames[mask]
-                    labels = labels[mask]
-                # Frame -> label (last event wins if multiple per frame)
-                frame_to_label = dict(zip(frames.tolist(), labels.tolist()))
-                result = np.array(
-                    [frame_to_label.get(f, _NO_MATCH) for f in feature_frames.tolist()],
-                    dtype=np.int64,
-                )
+    Args:
+        path: The ``.npz`` label file.
+        feature_frames: The frame of each row.
+        individual_filter: Each row's ``(id1, id2)``, or one pair for every row,
+            as :func:`load_labels_for_feature_frames` takes it. ``None`` matches
+            by frame alone.
 
-            unmatched = result == _NO_MATCH
-            if unmatched.any():
-                result[unmatched] = (
-                    label_background_id(path, npz)
-                    if default_label is None
-                    else default_label
-                )
-            return result
+    Returns:
+        The rows' event positions, match counts and labels. An unmatched row
+        takes the file's background class. Label controls are not applied.
 
-        elif "labels" in (npz.files if hasattr(npz, "files") else npz):
-            # Dense format - direct indexing
-            dense = np.asarray(npz["labels"], dtype=np.int64).ravel()
-
-            # A frame outside a dense file is outside the annotation
-            result = np.full(
-                len(feature_frames),
-                UNLABELED if default_label is None else default_label,
-                dtype=np.int64,
-            )
-            valid_mask = (feature_frames >= 0) & (feature_frames < len(dense))
-            result[valid_mask] = dense[feature_frames[valid_mask]]
-            return result
-
-        else:
-            raise ValueError(f"Cannot load labels from {path}: unknown format '{fmt}'")
+    Raises:
+        ValueError: The file is of no known label format.
+    """
+    return _row_events(
+        Path(path),
+        np.asarray(feature_frames, dtype=np.int64).ravel(),
+        individual_filter,
+        default_label=None,
+        deduplicate_symmetric=True,
+    )
 
 
 def chunk_sequence(

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 import pandas as pd
 
-from ..helpers import load_labels_for_feature_frames
+from ..helpers import RowEvents, events_for_frames, load_labels_for_feature_frames
 from ..scope import Scope
 from ._loaders import JoblibLoadSpec, LoadSpec, ParquetLoadSpec
 from .parquet_reader import read_parquet_column_names
@@ -652,20 +652,49 @@ def labels_for_rows(
     Raises:
         ValueError: *df* has no ``frame`` column.
     """
-    if COLUMNS.frame_col not in df.columns:
-        raise ValueError(
-            f"labels align to rows by their {COLUMNS.frame_col!r} column, which "
-            f"these rows lack"
-        )
     aligned = load_labels_for_feature_frames(
         path,
-        df[COLUMNS.frame_col].to_numpy(),
+        _row_frames(df),
         default_label=default_label,
         individual_filter=row_individual_pairs(df),
     )
     if isinstance(labels, GroundTruthLabelsSource):
         return labels.relabel(aligned)
     return aligned
+
+
+def events_for_rows(path: Path, df: pd.DataFrame) -> RowEvents:
+    """The event of the label file at *path* that labels each row of *df*.
+
+    Rows are matched as :func:`labels_for_rows` matches them, so
+    ``events_for_rows(path, df).labels`` is its result before label controls.
+    A reader gathers any other per-event column of the file from the rows'
+    ``positions``, and ``matches`` counts the events each row matched.
+
+    Args:
+        path: The ``.npz`` label file of the rows' entry.
+        df: Rows with a ``frame`` column.
+
+    Returns:
+        Each row's event position, match count and label
+        (:class:`~mosaic.core.helpers.RowEvents`).
+
+    Raises:
+        ValueError: *df* has no ``frame`` column.
+    """
+    return events_for_frames(
+        path, _row_frames(df), individual_filter=row_individual_pairs(df)
+    )
+
+
+def _row_frames(df: pd.DataFrame) -> np.ndarray:
+    """The ``frame`` column of *df*, which aligns its rows to a label file."""
+    if COLUMNS.frame_col not in df.columns:
+        raise ValueError(
+            f"labels align to rows by their {COLUMNS.frame_col!r} column, which "
+            f"these rows lack"
+        )
+    return df[COLUMNS.frame_col].to_numpy()
 
 
 def resolve_sequence_identity(
