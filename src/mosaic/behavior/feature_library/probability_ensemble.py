@@ -60,7 +60,7 @@ import json
 import math
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, ClassVar, Final, Literal, Self, cast, final
+from typing import Annotated, ClassVar, Final, Literal, Self, final
 
 import numpy as np
 import numpy.typing as npt
@@ -78,7 +78,6 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
-from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.types import (
     DependencyLookup,
@@ -100,13 +99,13 @@ from .classifier_common import (
     TunedDecisionThreshold,
     assemble_prediction,
     pooled_class_scores,
-    input_run_root,
+    input_fold_table_path,
     label_controls_in_play,
     probability_classes,
     refuse_unpredicted_classes,
     read_fold_table,
-    read_thresholds,
     refuse_entries_outside_scope,
+    tuned_threshold,
 )
 from .helpers import ensure_columns, entry_identity
 from .registry import register_feature
@@ -363,7 +362,13 @@ class ProbabilityEnsembleFeature:
         self._report = None
         self._label_files = {}
         self._controls_in_play = False
-        self._threshold = self._resolved_threshold(artifact_paths)
+        self._threshold = tuned_threshold(
+            self.name,
+            self.params.decision_threshold,
+            artifact_paths,
+            self.params.default_class,
+            self.inputs,
+        )
         self._cv_table = self._members_fold_table(dependency_lookups)
 
         cached = run_root / "ensemble.json"
@@ -435,77 +440,6 @@ class ProbabilityEnsembleFeature:
             lambda temporary: temporary.write_text(state.model_dump_json()),
         )
 
-    def _resolved_threshold(
-        self, artifact_paths: dict[str, Path]
-    ) -> float | Mapping[int, float] | None:
-        """Return the ``decision_threshold`` to apply, reading a named run's file.
-
-        Raises:
-            FileNotFoundError: ``decision_threshold`` names a ``tune-threshold``
-                run that holds no ``thresholds.parquet``. The step does not
-                fall back to the highest probability in its place.
-        """
-        named = self.params.decision_threshold
-        if not isinstance(named, ThresholdsArtifact):
-            return named
-        path = artifact_paths.get("decision_threshold")
-        if path is None:
-            msg = (
-                f"[{self.name}] decision_threshold names the {named.feature!r} run "
-                f"{named.run_id!r}, which holds no {named.pattern!r}. Run that "
-                "step first"
-            )
-            raise FileNotFoundError(msg)
-        self._refuse_other_input(path, named.run_id)
-        thresholds = read_thresholds(path)
-        # The tuned rule gives its default class threshold 1.0, so a default_class
-        # that the step tuned would be applied to a rule it was not scored under.
-        limit = thresholds.get(self.params.default_class)
-        if limit is not None and limit != 1.0:
-            msg = (
-                f"[{self.name}] default_class {self.params.default_class} has the "
-                f"tuned threshold {limit} in {path.name}. The step tuned it as a "
-                "class, so its default_class is another. Give this step the "
-                "default_class of the tune-threshold step"
-            )
-            raise ValueError(msg)
-        return thresholds
-
-    def _refuse_other_input(self, thresholds: Path, run_id: str | None) -> None:
-        """Refuse thresholds that were tuned on another input than this step blends.
-
-        The tuning report's estimates describe the output of the run it read.
-        Applied to the blend of other runs, the thresholds were never scored on
-        what they now cut. The run's ``params.json`` records the input it read; a
-        run that records none is not checked, because nothing says what it read.
-
-        Raises:
-            ValueError: The tuned run read other runs than this step's inputs.
-        """
-        read = read_run_params(thresholds.parent)
-        if read.params is None:
-            return
-        recorded: list[tuple[str, str | None]] = []
-        for item in read.params.inputs:
-            if not isinstance(item, dict) or "feature" not in item:
-                return
-            record = cast("dict[str, object]", item)
-            run = record.get("run_id")
-            recorded.append((str(record["feature"]), None if run is None else str(run)))
-        blended = [(r.feature, r.run_id) for r in self.inputs.feature_inputs]
-        if recorded == blended:
-            return
-        names = ", ".join(f"{feature} {run}" for feature, run in blended)
-        tuned = ", ".join(f"{feature} {run}" for feature, run in recorded)
-        msg = (
-            f"[{self.name}] decision_threshold names the tune-threshold run "
-            f"{run_id!r}, which tuned the thresholds on {tuned}, and this step "
-            f"blends {names}. The thresholds were scored on the output of what "
-            "they were tuned on. Apply them to that run alone, or tune the "
-            "blend"
-        )
-        raise ValueError(msg)
-
     # --- Folds ---
 
     def _members_fold_table(
@@ -527,13 +461,13 @@ class ProbabilityEnsembleFeature:
         tables: list[pd.DataFrame | None] = []
         unresolved: list[str] = []
         for position in range(self._members):
-            root = input_run_root(dependency_lookups.get(f"_input_{position}", {}))
-            if root is None:
+            lookup = dependency_lookups.get(f"_input_{position}", {})
+            if not lookup:
                 unresolved.append(str(position))
                 tables.append(None)
                 continue
-            path = root / "cv_folds.parquet"
-            tables.append(read_fold_table(path) if path.exists() else None)
+            path = input_fold_table_path(lookup)
+            tables.append(None if path is None else read_fold_table(path))
         if unresolved and fitting:
             msg = (
                 f"[{self.name}] inputs {', '.join(unresolved)} resolved no output "

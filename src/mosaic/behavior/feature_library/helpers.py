@@ -46,6 +46,7 @@ __all__ = [
     "entry_identity",
     "farthest_first",
     "feature_columns",
+    "gaussian_radius",
     "finite_keypoints",
     "finite_rows",
     "iter_series",
@@ -69,6 +70,11 @@ __all__ = [
     "unwrap_diff",
     "wrap_angle",
 ]
+
+
+def gaussian_radius(sigma: float, truncate: float) -> int:
+    """Frames on each side that ``gaussian_filter1d`` reads: ``int(truncate * sigma + 0.5)``."""
+    return int(truncate * sigma + 0.5)
 
 
 def apply_exclude_cols(

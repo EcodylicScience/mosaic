@@ -33,6 +33,7 @@ from typing import (
     NotRequired,
     Protocol,
     TypedDict,
+    cast,
 )
 
 import numpy as np
@@ -43,11 +44,13 @@ from mosaic.core.entry import Entry, entry_token, parse_entry_tokens
 from mosaic.core.evaluation import CountScores, pool_entry_counts
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.label_lineage import lineage_label_controls
 from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
     GroundTruthLabelsSource,
+    InputsLike,
     ParquetArtifact,
     ParquetLoadSpec,
 )
@@ -115,6 +118,7 @@ __all__ = [
     "fold_rows",
     "fold_table",
     "held_out_frames",
+    "input_fold_table_path",
     "input_run_root",
     "input_run_roots",
     "label_controls_in_play",
@@ -129,6 +133,7 @@ __all__ = [
     "scoring_folds",
     "standardize",
     "stored_folds",
+    "tuned_threshold",
     "write_bundle",
 ]
 
@@ -1638,6 +1643,111 @@ def input_run_roots(dependency_lookups: Mapping[str, DependencyLookup]) -> list[
         if root is not None:
             roots.append(root)
     return roots
+
+
+def input_fold_table_path(lookup: DependencyLookup) -> Path | None:
+    """The ``cv_folds.parquet`` beside one input's outputs.
+
+    Returns ``None`` for a lookup that resolved no output, and for an input that
+    writes no fold table.
+    """
+    root = input_run_root(lookup)
+    if root is None:
+        return None
+    path = root / "cv_folds.parquet"
+    return path if path.exists() else None
+
+
+def tuned_threshold(
+    feature: str,
+    named: float | Mapping[int, float] | ThresholdsArtifact | None,
+    artifact_paths: Mapping[str, Path],
+    default_class: int,
+    inputs: InputsLike,
+) -> float | Mapping[int, float] | None:
+    """Return the ``decision_threshold`` to apply, reading a named run's file.
+
+    A float, a mapping or ``None`` is returned as it is. A ``tune-threshold`` run
+    named by *named* gives its ``thresholds.parquet``, found under
+    ``artifact_paths["decision_threshold"]``.
+
+    The tuning report's estimates describe the output of the run it read, so
+    thresholds tuned on another input than *inputs* were never scored on what
+    they now cut. The tuned run's ``params.json`` records the input it read; a run
+    that records none is not checked, because nothing says what it read.
+
+    Args:
+        feature: The feature that applies the thresholds, which a refusal names.
+        named: The step's ``decision_threshold``.
+        artifact_paths: The step's resolved artifacts.
+        default_class: The step's ``default_class``.
+        inputs: The step's inputs.
+
+    Raises:
+        FileNotFoundError: *named* names a run that holds no
+            ``thresholds.parquet``. The step does not fall back to the highest
+            probability in its place.
+        ValueError: The tuned run read other runs than *inputs*, or tuned
+            *default_class* as a class.
+    """
+    if not isinstance(named, ThresholdsArtifact):
+        return named
+    path = artifact_paths.get("decision_threshold")
+    if path is None:
+        msg = (
+            f"[{feature}] decision_threshold names the {named.feature!r} run "
+            f"{named.run_id!r}, which holds no {named.pattern!r}. Run that "
+            "step first"
+        )
+        raise FileNotFoundError(msg)
+    _refuse_other_input(feature, path, named.run_id, inputs)
+    thresholds = read_thresholds(path)
+    # The tuned rule gives its default class threshold 1.0, so a default_class
+    # that the step tuned would be applied to a rule it was not scored under.
+    limit = thresholds.get(default_class)
+    if limit is not None and limit != 1.0:
+        msg = (
+            f"[{feature}] default_class {default_class} has the "
+            f"tuned threshold {limit} in {path.name}. The step tuned it as a "
+            "class, so its default_class is another. Give this step the "
+            "default_class of the tune-threshold step"
+        )
+        raise ValueError(msg)
+    return thresholds
+
+
+def _refuse_other_input(
+    feature: str, thresholds: Path, run_id: str | None, inputs: InputsLike
+) -> None:
+    """Refuse thresholds that were tuned on another input than *inputs*.
+
+    Raises:
+        ValueError: The tuned run read other runs than *inputs*.
+    """
+    read = read_run_params(thresholds.parent)
+    if read.params is None:
+        return
+    recorded: list[tuple[str, str | None]] = []
+    for item in read.params.inputs:
+        if not isinstance(item, dict) or "feature" not in item:
+            return
+        record = cast("dict[str, object]", item)
+        run = record.get("run_id")
+        recorded.append((str(record["feature"]), None if run is None else str(run)))
+    applied = [(r.feature, r.run_id) for r in inputs.feature_inputs]
+    if recorded == applied:
+        return
+    names = ", ".join(f"{name} {run}" for name, run in applied)
+    tuned = ", ".join(f"{name} {run}" for name, run in recorded)
+    reads = "blends" if len(applied) > 1 else "reads"
+    msg = (
+        f"[{feature}] decision_threshold names the tune-threshold run "
+        f"{run_id!r}, which tuned the thresholds on {tuned}, and this step "
+        f"{reads} {names}. The thresholds were scored on the output of what "
+        "they were tuned on. Apply them to that run alone, or tune this "
+        "step's input"
+    )
+    raise ValueError(msg)
 
 
 def label_controls_in_play(

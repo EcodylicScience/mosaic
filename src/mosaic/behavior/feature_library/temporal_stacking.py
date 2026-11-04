@@ -31,7 +31,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import chosen_payload_columns, meta_columns
+from .helpers import chosen_payload_columns, gaussian_radius, meta_columns
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
@@ -159,11 +159,6 @@ def _pool_window(sigma: float, fps: float, win_sec: float) -> tuple[float, float
     win_frames = max(1, int(round(win_sec * fps)))
     truncate = max(1.0, win_frames / (2.0 * sigma)) if sigma > 0 else 4.0
     return sigma, truncate
-
-
-def _gaussian_radius(sigma: float, truncate: float) -> int:
-    """Frames on each side that ``gaussian_filter1d`` reads: ``int(truncate * sigma + 0.5)``."""
-    return int(truncate * sigma + 0.5)
 
 
 def _pooled_stats(
@@ -355,7 +350,7 @@ class TemporalStackingFeature:
         reach = 0
         if params.use_temporal_stack:
             smoothing = (
-                _gaussian_radius(params.sigma_stack, 4.0)
+                gaussian_radius(params.sigma_stack, 4.0)
                 if params.sigma_stack > 0
                 else 0
             )
@@ -366,7 +361,7 @@ class TemporalStackingFeature:
             sigma, truncate = _pool_window(
                 params.sigma_pool, params.fps, params.win_sec
             )
-            reach = max(reach, _gaussian_radius(sigma, truncate))
+            reach = max(reach, gaussian_radius(sigma, truncate))
         return reach
 
     def load_state(

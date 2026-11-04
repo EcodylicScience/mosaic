@@ -106,7 +106,7 @@ from .classifier_common import (
     assemble_prediction,
     pooled_class_scores,
     predicted_labels,
-    input_run_root,
+    input_fold_table_path,
     label_controls_in_play,
     probability_classes,
     refuse_unpredicted_classes,
@@ -569,13 +569,8 @@ class TuneThresholdFeature:
         self, dependency_lookups: dict[str, DependencyLookup]
     ) -> pd.DataFrame | None:
         """Return the input's ``cv_folds.parquet``, ``None`` when it writes none."""
-        root = input_run_root(dependency_lookups.get("_input_0", {}))
-        if root is None:
-            return None
-        path = root / "cv_folds.parquet"
-        if not path.exists():
-            return None
-        return read_fold_table(path)
+        path = input_fold_table_path(dependency_lookups.get("_input_0", {}))
+        return None if path is None else read_fold_table(path)
 
     # --- Tuning ---
 

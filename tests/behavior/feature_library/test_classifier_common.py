@@ -20,6 +20,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from mosaic.behavior.feature_library.classifier_common import (
+    input_fold_table_path,
     input_run_roots,
     label_controls_in_play,
     refuse_unpredicted_classes,
@@ -49,7 +50,10 @@ from mosaic.behavior.feature_library.classifier_common import (
     standardize,
     write_bundle,
 )
-from mosaic.behavior.feature_library.helpers import iter_series_positions
+from mosaic.behavior.feature_library.helpers import (
+    gaussian_radius,
+    iter_series_positions,
+)
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.pipeline.types import GroundTruthLabelsSource
@@ -932,3 +936,20 @@ def test_controls_are_in_play_from_the_step_or_from_its_inputs(
     )
     assert label_controls_in_play(plain, lookups)
     assert label_controls_in_play(None, lookups)
+
+
+def test_the_fold_table_of_an_input_is_the_one_beside_its_outputs(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "features" / "xgboost" / "0.4-aaaaaaaaaa"
+    run.mkdir(parents=True)
+    lookup = {("g", "s"): run / "g__s.parquet"}
+    assert input_fold_table_path(lookup) is None
+    (run / "cv_folds.parquet").write_bytes(b"")
+    assert input_fold_table_path(lookup) == run / "cv_folds.parquet"
+    assert input_fold_table_path({}) is None
+
+
+@pytest.mark.parametrize(("sigma", "radius"), [(0.1, 0), (1.0, 4), (2.0, 8), (2.6, 10)])
+def test_the_gaussian_radius_is_the_one_scipy_reads(sigma: float, radius: int) -> None:
+    assert gaussian_radius(sigma, 4.0) == radius
