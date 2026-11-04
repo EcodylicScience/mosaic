@@ -661,6 +661,15 @@ def test_a_saved_run_is_a_cache_that_applies_the_same_thresholds(
     pd.testing.assert_frame_equal(again.apply(table), feature.apply(table))
 
 
+def test_apply_refuses_an_input_without_probabilities(tmp_path: Path) -> None:
+    study = _Study(tmp_path)
+    feature, _ = _tuned(study)
+    bare = study.tables[(GROUP, "s0")].drop(columns=["prob_0", "prob_1"])
+
+    with pytest.raises(ValueError, match="no prob_<class> columns"):
+        feature.apply(bare)
+
+
 def test_apply_refuses_an_input_with_other_classes(tmp_path: Path) -> None:
     study = _Study(tmp_path)
     feature, _ = _tuned(study)

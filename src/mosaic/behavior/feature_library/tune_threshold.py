@@ -67,7 +67,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal, Self, final
@@ -107,6 +106,7 @@ from .classifier_common import (
     assemble_prediction,
     pooled_class_scores,
     predicted_labels,
+    probability_classes,
     read_fold_table,
     read_thresholds,
     refuse_entries_outside_scope,
@@ -156,7 +156,10 @@ DEFAULT_GRID: Final[tuple[float, ...]] = (
 )
 """The thresholds tried when ``grid`` is not set: fine below 0.1, where a rare class lives."""
 
-_PROBABILITY_COLUMN: Final = re.compile(r"^prob_(-?[0-9]+)$")
+_NO_PROBABILITIES: Final = (
+    "[tune-threshold] the input has no prob_<class> columns. Its input is "
+    "a classifier run or an ensemble of them"
+)
 
 _CAVEAT: Final = (
     "The probabilities are out of fold, but the models that wrote them had their "
@@ -237,28 +240,6 @@ def _edge_warnings(
             f"The best threshold may lie {bound} it. Widen grid before reading "
             "this as a tuned value"
         )
-    return found
-
-
-def _classes_of(columns: Sequence[object]) -> list[int]:
-    """Return the classes of the ``prob_<class>`` columns, ascending.
-
-    Raises:
-        ValueError: *columns* hold no ``prob_<class>`` column.
-    """
-    found = sorted(
-        {
-            int(match[1])
-            for name in columns
-            if (match := _PROBABILITY_COLUMN.match(str(name))) is not None
-        }
-    )
-    if not found:
-        msg = (
-            "[tune-threshold] the input has no prob_<class> columns. Its input is "
-            "a classifier run or an ensemble of them"
-        )
-        raise ValueError(msg)
     return found
 
 
@@ -544,7 +525,9 @@ class TuneThresholdFeature:
             msg = f"[{self.name}] no thresholds -- call fit() or load_state() first"
             raise RuntimeError(msg)
         ensure_columns(df, ["frame"])
-        classes = _classes_of(list(df.columns))
+        classes = probability_classes(df.columns)
+        if not classes:
+            raise ValueError(_NO_PROBABILITIES)
         if classes != sorted(self._thresholds):
             msg = (
                 f"[{self.name}] the thresholds were tuned for classes "
@@ -617,7 +600,9 @@ class TuneThresholdFeature:
                 continue
             ensure_columns(df, ["frame"])
             if classes is None:
-                classes = _classes_of(list(df.columns))
+                classes = probability_classes(df.columns)
+                if not classes:
+                    raise ValueError(_NO_PROBABILITIES)
             perspective = self.params.perspective
             if perspective is not None:
                 ensure_columns(df, ["perspective"])

@@ -14,6 +14,7 @@ can use it without one.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from collections.abc import (
     Callable,
@@ -68,6 +69,7 @@ __all__ = [
     "CV_SEED_DESCRIPTION",
     "DECISION_THRESHOLD_DESCRIPTION",
     "DEFAULT_CLASS_DESCRIPTION",
+    "PROBABILITY_COLUMN",
     "THRESHOLDS_FILE",
     "TUNED_DECISION_THRESHOLD_DESCRIPTION",
     "CV_BLOCKS_PER_SEQUENCE_DESCRIPTION",
@@ -109,6 +111,7 @@ __all__ = [
     "note_labeled_range",
     "pooled_class_scores",
     "predicted_labels",
+    "probability_classes",
     "read_fold_table",
     "read_thresholds",
     "refuse_entries_outside_scope",
@@ -119,6 +122,24 @@ __all__ = [
 ]
 
 log = logging.getLogger(__name__)
+
+PROBABILITY_COLUMN: Final = re.compile(r"^prob_(-?[0-9]+)$")
+"""The name of a class probability column, ``prob_<class>``."""
+
+
+def probability_classes(columns: Iterable[object]) -> list[int]:
+    """Return the classes of the ``prob_<class>`` columns of *columns*, ascending.
+
+    A member column of an input merge, ``prob_<class>__<i>``, does not match.
+    Returns ``[]`` when no column matches.
+    """
+    return sorted(
+        {
+            int(match[1])
+            for name in columns
+            if (match := PROBABILITY_COLUMN.match(str(name))) is not None
+        }
+    )
 
 
 # --- Parameters ---

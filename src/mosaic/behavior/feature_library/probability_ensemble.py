@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal, Self, cast, final
@@ -101,6 +100,7 @@ from .classifier_common import (
     TunedDecisionThreshold,
     assemble_prediction,
     pooled_class_scores,
+    probability_classes,
     read_fold_table,
     read_thresholds,
     refuse_entries_outside_scope,
@@ -113,14 +113,16 @@ __all__ = [
     "ProbabilityEnsembleFeature",
     "member_probabilities",
     "member_probability_column",
-    "merged_classes",
     "simplex_grid",
 ]
 
 MAX_GRID_POINTS: Final = 20_000
 """The most weight vectors that ``weights="fit"`` searches."""
 
-_PROBABILITY_COLUMN: Final = re.compile(r"^prob_(-?[0-9]+)$")
+_NO_PROBABILITIES: Final = (
+    "[probability-ensemble] the inputs have no prob_<class> columns. "
+    "Its inputs are classifier runs"
+)
 
 _WEIGHTS_DESCRIPTION = (
     "How the members' probabilities are combined. uniform averages them. A "
@@ -161,28 +163,6 @@ def member_probability_column(label: int, position: int) -> str:
     merge of the step's inputs.
     """
     return f"prob_{label}" if position == 0 else f"prob_{label}__{position}"
-
-
-def merged_classes(columns: Sequence[str]) -> list[int]:
-    """Return the classes of the first input, from the ``prob_<class>`` columns.
-
-    Raises:
-        ValueError: *columns* hold no ``prob_<class>`` column.
-    """
-    found = sorted(
-        {
-            int(match[1])
-            for name in columns
-            if (match := _PROBABILITY_COLUMN.match(name)) is not None
-        }
-    )
-    if not found:
-        msg = (
-            "[probability-ensemble] the inputs have no prob_<class> columns. "
-            "Its inputs are classifier runs"
-        )
-        raise ValueError(msg)
-    return found
 
 
 def member_probabilities(
@@ -413,7 +393,9 @@ class ProbabilityEnsembleFeature:
             msg = f"[{self.name}] no thresholds -- call load_state() first"
             raise RuntimeError(msg)
         ensure_columns(df, ["frame"])
-        classes = merged_classes([str(c) for c in df.columns])
+        classes = probability_classes(df.columns)
+        if not classes:
+            raise ValueError(_NO_PROBABILITIES)
         probs = member_probabilities(df, classes, self._members)
         active = self._weights > 0.0
         # A member with no weight does not decide a row, whatever it holds.
@@ -620,7 +602,9 @@ class ProbabilityEnsembleFeature:
                 continue
             ensure_columns(df, ["frame"])
             if classes is None:
-                classes = merged_classes([str(c) for c in df.columns])
+                classes = probability_classes(df.columns)
+                if not classes:
+                    raise ValueError(_NO_PROBABILITIES)
             probs = member_probabilities(df, classes, self._members)
             labels = labels_for_rows(label_file, df)
             keep = (

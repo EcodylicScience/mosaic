@@ -40,6 +40,7 @@ from mosaic.behavior.feature_library.classifier_common import (
     fold_table,
     held_out_frames,
     predicted_labels,
+    probability_classes,
     read_fold_table,
     refuse_entries_outside_scope,
     standardize,
@@ -117,6 +118,20 @@ def test_the_prediction_carries_the_identity_of_the_rows_it_describes() -> None:
     assert result["perspective"].tolist() == [0, 0, 1, 1]
     assert result["predicted_label"].tolist() == [0, 2, 5, 0]
     assert result["prob_2"].tolist() == [0.05, 0.8, 0.2, 0.2]
+
+
+def test_the_classes_of_the_probability_columns_are_listed_ascending() -> None:
+    columns = ["frame", "prob_2", "prob_0", "prob_-1", "prob_0__1", "prob_a", "xprob_1"]
+
+    assert probability_classes(columns) == [-1, 0, 2]
+
+
+def test_the_classes_do_not_repeat_and_are_read_from_any_column_labels() -> None:
+    assert probability_classes(pd.Index(["prob_1", 3, "prob_1"])) == [1]
+
+
+def test_a_table_without_probability_columns_has_no_classes() -> None:
+    assert probability_classes(["frame", "X"]) == []
 
 
 # --- Parameters ---

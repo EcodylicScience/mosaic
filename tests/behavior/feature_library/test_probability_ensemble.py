@@ -22,9 +22,9 @@ from mosaic.behavior.feature_library.probability_ensemble import (
     MAX_GRID_POINTS,
     ProbabilityEnsembleFeature,
     member_probability_column,
-    merged_classes,
     simplex_grid,
 )
+from mosaic.behavior.feature_library.classifier_common import probability_classes
 from mosaic.core.evaluation import classification_scores
 from mosaic.core.pipeline.loading import load_entry_data
 from mosaic.core.pipeline.types import (
@@ -118,7 +118,7 @@ def test_the_columns_of_a_merge_are_the_ones_the_helper_names(tmp_path: Path) ->
 
     merged = _merged(members, tmp_path)
 
-    assert merged_classes([str(c) for c in merged.columns]) == CLASSES
+    assert probability_classes(merged.columns) == CLASSES
     for position in range(3):
         for label in CLASSES:
             assert member_probability_column(label, position) in merged.columns
@@ -126,9 +126,11 @@ def test_the_columns_of_a_merge_are_the_ones_the_helper_names(tmp_path: Path) ->
     assert "predicted_label__2" in merged.columns
 
 
-def test_a_table_without_probabilities_is_refused() -> None:
+def test_a_table_without_probabilities_is_refused(tmp_path: Path) -> None:
+    feature = _fitted(_feature(2), tmp_path)
+
     with pytest.raises(ValueError, match="no prob_<class> columns"):
-        merged_classes(["frame", "X", "prob_a"])
+        feature.apply(pd.DataFrame({"frame": [0, 1], "X": [0.0, 1.0]}))
 
 
 # --- Apply ----------------------------------------------------------------------
