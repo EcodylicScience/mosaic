@@ -142,7 +142,7 @@ from .helpers import (
     iter_series,
     iter_series_positions,
     refuse_repeated_series_rows,
-    train_entries_of_templates,
+    entries_of_templates,
 )
 from .registry import register_feature
 from .sequence_heads import (
@@ -691,7 +691,7 @@ class SequenceClassifier(FitReporting):
             return True
 
         if self.params.templates is not None and "templates" in artifact_paths:
-            entries = train_entries_of_templates(artifact_paths["templates"])
+            entries = entries_of_templates(artifact_paths["templates"], "train")
             if entries is None:
                 msg = (
                     f"[{self.name}] the templates run left no "

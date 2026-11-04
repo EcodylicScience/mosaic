@@ -125,7 +125,7 @@ from .helpers import (
     iter_series,
     iter_series_positions,
     refuse_repeated_series_rows,
-    train_entries_of_templates,
+    entries_of_templates,
 )
 from .registry import register_feature
 from .sequence_training import sub_seed
@@ -634,7 +634,7 @@ class LightningActionFeature(FitReporting):
 
         # Branch 3: the entries of the templates run to fit on
         if self.params.templates is not None and "templates" in artifact_paths:
-            train_entries = train_entries_of_templates(artifact_paths["templates"])
+            train_entries = entries_of_templates(artifact_paths["templates"], "train")
             if train_entries is None:
                 msg = (
                     f"[{self.name}] the templates run left no "

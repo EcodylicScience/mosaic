@@ -11,7 +11,7 @@ import hashlib
 import json
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import pandas as pd
@@ -43,6 +43,7 @@ __all__ = [
     "cv_fold_assignment",
     "ego_rotate",
     "ensure_columns",
+    "entries_of_templates",
     "entry_identity",
     "farthest_first",
     "feature_columns",
@@ -65,7 +66,6 @@ __all__ = [
     "series_columns",
     "smooth_1d",
     "sort_nan_last",
-    "train_entries_of_templates",
     "train_labeled_frames_of_templates",
     "unwrap_diff",
     "wrap_angle",
@@ -472,17 +472,20 @@ def refuse_unlabeled_templates(templates: pd.DataFrame, feature: str) -> None:
         raise ValueError(msg)
 
 
-def train_entries_of_templates(templates_path: Path) -> list[tuple[str, str]] | None:
-    """Return the train entries of the run that wrote *templates_path*.
+def entries_of_templates(
+    templates_path: Path, split: Literal["train", "test"]
+) -> list[tuple[str, str]] | None:
+    """Return the entries of one split of the run that wrote *templates_path*.
 
     The provenance lists every entry the run saw, one that drew no template row
     included, which is why a fit that deals the entries reads it and not the rows.
 
     Args:
         templates_path: The ``templates.parquet`` of an ``extract-labeled-templates`` run.
+        split: The split whose entries to return.
 
     Returns:
-        The ``(group, sequence)`` of each entry the run assigned to ``train``, or
+        The ``(group, sequence)`` of each entry the run assigned to *split*, or
         ``None`` when the run left no ``template_provenance.parquet`` beside the
         templates.
     """
@@ -490,8 +493,8 @@ def train_entries_of_templates(templates_path: Path) -> list[tuple[str, str]] | 
     if not path.exists():
         return None
     provenance = pd.read_parquet(path)
-    train = provenance[provenance["split"] == "train"]
-    return [(str(g), str(s)) for g, s in zip(train["group"], train["sequence"])]
+    rows = provenance[provenance["split"] == split]
+    return [(str(g), str(s)) for g, s in zip(rows["group"], rows["sequence"])]
 
 
 def train_labeled_frames_of_templates(

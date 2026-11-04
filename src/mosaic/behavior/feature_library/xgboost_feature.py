@@ -81,7 +81,7 @@ from .helpers import (
     feature_columns,
     finite_rows,
     refuse_unlabeled_templates,
-    train_entries_of_templates,
+    entries_of_templates,
     train_labeled_frames_of_templates,
 )
 from .registry import register_feature
@@ -444,8 +444,8 @@ class XgboostFeature(FitReporting):
             )
             self._feature_columns = feature_columns(self._templates)
             if self.params.cv_folds is not None:
-                self._train_entries = train_entries_of_templates(
-                    artifact_paths["templates"]
+                self._train_entries = entries_of_templates(
+                    artifact_paths["templates"], "train"
                 )
                 if self.params.cv_unit == "block":
                     self._labeled_frames = train_labeled_frames_of_templates(
