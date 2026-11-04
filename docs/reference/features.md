@@ -694,7 +694,7 @@ Per-frame visibility between individuals, by 2-D ray casting.
 
 ### `collective-motion-metrics`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics`
+Version `0.2` &middot; `mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics`
 
 Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 

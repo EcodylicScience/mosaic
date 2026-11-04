@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, ClassVar
 
@@ -32,8 +33,10 @@ from mosaic.core.scope import Scope
 from mosaic.core.dataset import Dataset
 from tests.helpers import (
     MockDataset,
+    ParallelFeature,
     add_track_sequences,
     add_tracks_table,
+    add_tracks_variant,
     make_dataset,
     result_run_root,
     set_tracks_cell,
@@ -1166,3 +1169,96 @@ def test_an_upstream_of_unknown_variant_refuses_a_member_with_two_variants(
         _ = build_manifest(ds, inputs)
 
     _ = build_manifest(ds, inputs, tracks_run_id="convert.v1")
+
+
+# --- The tracklets hook ---------------------------------------------------------
+
+_TRACKLETS_VARIANT = "convert-trex.0.2-2222222222"
+
+
+class _TrackletsEcho(ParallelFeature):
+    """Writes on each row what its entry's tracklets flag was handed as."""
+
+    name = "test-tracklets-echo"
+
+    def __init__(
+        self, inputs: Inputs | None = None, params: dict[str, object] | None = None
+    ) -> None:
+        super().__init__(inputs, params)
+        self.tracklets: dict[tuple[str, str], bool | None] = {}
+        self.hook_calls = 0
+
+    def set_tracklets(self, by_entry: Mapping[tuple[str, str], bool | None]) -> None:
+        self.tracklets = dict(by_entry)
+        self.hook_calls += 1
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        entry = (str(df["group"].iloc[0]), str(df["sequence"].iloc[0]))
+        flag = self.tracklets.get(entry, "absent")
+        return pd.DataFrame(
+            {
+                "frame": df["frame"],
+                "id": df["id"],
+                "group": df["group"],
+                "sequence": df["sequence"],
+                "tracklets": str(flag),
+            }
+        )
+
+
+def _echoed(ds: Dataset, result: Result) -> dict[str, str]:
+    root = result_run_root(ds, result)
+    found: dict[str, str] = {}
+    for path in sorted(root.glob("*.parquet")):
+        table = pd.read_parquet(path)
+        found[str(table["sequence"].iloc[0])] = str(table["tracklets"].iloc[0])
+    return found
+
+
+@pytest.mark.parametrize("mode", ["thread", "process"])
+def test_run_feature_passes_each_entrys_tracklets_to_the_hook(
+    tmp_path: Path, mode: str
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    for sequence, flag in (("s_false", False), ("s_true", True), ("s_unknown", None)):
+        add_tracks_variant(
+            ds,
+            _TRACKLETS_VARIANT,
+            sequence,
+            std_format="mosaic_v1",
+            carries_tracklets=flag,
+        )
+    feature = _TrackletsEcho()
+
+    result = run_feature(ds, feature, parallel_workers=2, parallel_mode=mode)
+
+    assert feature.hook_calls == 1
+    assert feature.tracklets == {
+        ("", "s_false"): False,
+        ("", "s_true"): True,
+        ("", "s_unknown"): None,
+    }
+    assert _echoed(ds, result) == {
+        "s_false": "False",
+        "s_true": "True",
+        "s_unknown": "None",
+    }
+
+
+def test_run_feature_passes_an_empty_map_over_a_feature_input(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_tracks_variant(
+        ds,
+        _TRACKLETS_VARIANT,
+        "s_false",
+        std_format="mosaic_v1",
+        carries_tracklets=False,
+    )
+    upstream = run_feature(ds, ParallelFeature())
+    feature = _TrackletsEcho(Inputs((upstream,)))
+
+    result = run_feature(ds, feature)
+
+    assert feature.hook_calls == 1
+    assert feature.tracklets == {}
+    assert _echoed(ds, result) == {"s_false": "absent"}

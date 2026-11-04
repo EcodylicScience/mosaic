@@ -56,7 +56,7 @@ def _apply(df: pd.DataFrame, **params: object) -> pd.DataFrame:
     return CollectiveMotionMetrics(params=base).apply(df)
 
 
-def _cell(out: pd.DataFrame, key: int, column: str) -> float:
+def _cell(out: pd.DataFrame, key: int | tuple[int, int], column: str) -> float:
     """One float cell of a frame-indexed result."""
     return float(out[column].loc[key])
 
@@ -533,3 +533,206 @@ def test_an_all_nan_frame_emits_no_warning() -> None:
         out = _apply(df)
     assert out.iloc[0]["n_ids"] == 0
     assert out.iloc[0]["state"] == "Undefined"
+
+
+# --- tracks without tracklets -------------------------------------------------
+
+
+def _apply_flagged(
+    df: pd.DataFrame, flag: bool | None, **params: object
+) -> pd.DataFrame:
+    """Apply with the tracklets hook answering *flag* for the entry ``(G, S1)``."""
+    base: dict[str, object] = {"fps": 1.0}
+    base.update(params)
+    feature = CollectiveMotionMetrics(params=base)
+    feature.set_tracklets({("G", "S1"): flag})
+    return feature.apply(df)
+
+
+def _restarting_ids() -> pd.DataFrame:
+    """Three animals shifted by (1, 0) and a fourth appearing, ids reassigned.
+
+    Frame 0 holds ids 0-2 at (0, 0), (4, 0) and (0, 4). In frame 1 the same three
+    sit one unit to the right, and an animal appears at (8, 8). The ids restart:
+    id 1 names the newcomer and id 3 the animal that was id 1.
+    """
+    rows: list[dict[str, object]] = []
+    for frame, placed in (
+        (0, [(0, 0.0, 0.0), (1, 4.0, 0.0), (2, 0.0, 4.0)]),
+        (1, [(0, 1.0, 0.0), (1, 8.0, 8.0), (2, 1.0, 4.0), (3, 5.0, 0.0)]),
+    ):
+        for i, px, py in placed:
+            rows.append(
+                {
+                    "frame": frame,
+                    "id": i,
+                    "X": px,
+                    "Y": py,
+                    "ANGLE": 0.0,
+                    "sequence": "S1",
+                    "group": "G",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_without_tracklets_the_centroid_speed_is_the_all_id_difference() -> None:
+    out = _apply_flagged(_restarting_ids(), False).set_index("frame")
+    dx = (1.0 + 8.0 + 1.0 + 5.0) / 4 - (0.0 + 4.0 + 0.0) / 3
+    dy = (0.0 + 8.0 + 4.0 + 0.0) / 4 - (0.0 + 0.0 + 4.0) / 3
+    assert _cell(out, 1, "centroid_speed") == pytest.approx(np.hypot(dx, dy))
+    assert _cell(out, 1, "centroid_heading") == pytest.approx(np.arctan2(dy, dx))
+    assert np.isnan(_cell(out, 0, "centroid_speed"))
+    assert np.isnan(_cell(out, 1, "n_centroid_common"))
+
+
+def test_without_tracklets_the_centroid_speed_divides_by_the_frame_step() -> None:
+    gapped = pd.concat(
+        [_square([0.0] * 4, frame=0), _square([0.0] * 4, frame=2, offset=(2.0, 0.0))],
+        ignore_index=True,
+    )
+    out = _apply_flagged(gapped, False).set_index("frame")
+    assert _cell(out, 2, "centroid_speed") == pytest.approx(1.0)
+
+    capped = _apply_flagged(gapped, False, max_frame_gap=1).set_index("frame")
+    assert np.isnan(_cell(capped, 2, "centroid_speed"))
+
+
+def test_without_tracklets_group_angvel_is_nan() -> None:
+    theta = 0.1
+    frames: list[pd.DataFrame] = []
+    for frame in (0, 1):
+        square = _square([0.0] * 4, frame=frame)
+        dx = square["X"] - 1.0
+        dy = square["Y"] - 1.0
+        rot = theta * frame
+        square["X"] = 1.0 + dx * np.cos(rot) - dy * np.sin(rot)
+        square["Y"] = 1.0 + dx * np.sin(rot) + dy * np.cos(rot)
+        frames.append(square)
+    df = pd.concat(frames, ignore_index=True)
+    assert np.isfinite(
+        _cell(_apply_flagged(df, True).set_index("frame"), 1, "group_angvel")
+    )
+    out = _apply_flagged(df, False).set_index("frame")
+    assert np.isnan(out["group_angvel"].to_numpy(dtype=float)).all()
+
+
+_ORDER_PARAMETERS = ("polarization", "mean_heading", "rotation", "rotation_signed")
+
+
+def test_without_tracklets_velocity_headings_leave_the_order_parameters_nan() -> None:
+    df = pd.concat(
+        [_square(None, frame=0), _square(None, frame=1, offset=(1.0, 0.0))],
+        ignore_index=True,
+    )
+    out = _apply_flagged(df, False).set_index("frame")
+    assert (out["heading_source"] == "velocity").all()
+    for column in _ORDER_PARAMETERS:
+        assert np.isnan(out[column].to_numpy(dtype=float)).all(), column
+    assert np.isnan(out["n_ids_heading"].to_numpy(dtype=float)).all()
+    assert (out["state"] == "Undefined").all()
+    assert _cell(out, 1, "centroid_speed") == pytest.approx(1.0)
+
+
+def test_without_tracklets_orientation_order_parameters_are_unchanged() -> None:
+    df = pd.concat(
+        [_square(MILLING_ANGLES, frame=0), _square(MILLING_ANGLES, frame=1)],
+        ignore_index=True,
+    )
+    flagged = _apply_flagged(df, False)
+    plain = _apply(df)
+    assert (flagged["heading_source"] == "orientation").all()
+    pd.testing.assert_frame_equal(
+        flagged[[*_ORDER_PARAMETERS, "state"]],
+        plain[[*_ORDER_PARAMETERS, "state"]],
+        check_exact=True,
+    )
+    assert (flagged["state"] == "Milling").all()
+
+
+@pytest.mark.parametrize("flag", [True, None])
+def test_an_unknown_flag_computes_as_before(flag: bool | None) -> None:
+    for df, params in (
+        (_restarting_ids(), {}),
+        (
+            pd.concat(
+                [_square(None, frame=0), _square(None, frame=1, offset=(1.0, 0.0))],
+                ignore_index=True,
+            ),
+            {},
+        ),
+        (
+            pd.concat(
+                [_two_subgroups(frame=0), _two_subgroups(frame=1)], ignore_index=True
+            ),
+            {"subgroup_col": "event"},
+        ),
+    ):
+        pd.testing.assert_frame_equal(
+            _apply_flagged(df, flag, **params), _apply(df, **params), check_exact=True
+        )
+
+
+def test_only_the_frames_of_an_entry_without_tracklets_change() -> None:
+    """Under overlap one input spans two sequences, and each frame keeps its own."""
+    before = pd.concat(
+        [
+            _square(None, frame=0, seq="S0"),
+            _square(None, frame=1, offset=(1.0, 0.0), seq="S0"),
+        ],
+        ignore_index=True,
+    )
+    after = pd.concat(
+        [
+            _square(None, frame=2, offset=(2.0, 0.0)),
+            _square(None, frame=3, offset=(3.0, 0.0)),
+        ],
+        ignore_index=True,
+    )
+    df = pd.concat([before, after], ignore_index=True)
+    feature = CollectiveMotionMetrics(params={"fps": 1.0})
+    feature.set_tracklets({("G", "S0"): True, ("G", "S1"): False})
+    out = feature.apply(df).set_index("frame")
+    plain = _apply(df).set_index("frame")
+    pd.testing.assert_frame_equal(
+        out.loc[[0, 1]],
+        plain.loc[[0, 1]].astype({"n_centroid_common": float, "n_ids_heading": float}),
+        check_exact=True,
+    )
+    assert np.isnan(out.loc[[2, 3], "polarization"].to_numpy(dtype=float)).all()
+    assert _cell(out, 2, "centroid_speed") == pytest.approx(1.0)
+
+
+def test_the_count_columns_are_float_whenever_the_run_has_an_entry_without_tracklets() -> (
+    None
+):
+    """The dtype follows the run's map, so every entry of one run writes one dtype."""
+    df = pd.concat(
+        [_square([0.0] * 4, frame=0), _square([0.0] * 4, frame=1)], ignore_index=True
+    )
+    feature = CollectiveMotionMetrics(params={"fps": 1.0})
+    feature.set_tracklets({("G", "S1"): True, ("G", "other"): False})
+    out = feature.apply(df)
+    plain = _apply(df)
+    assert plain.dtypes["n_centroid_common"] == np.int64
+    assert plain.dtypes["n_ids_heading"] == np.int64
+    assert out.dtypes["n_centroid_common"] == np.float64
+    assert out.dtypes["n_ids_heading"] == np.float64
+    pd.testing.assert_frame_equal(
+        out,
+        plain.astype({"n_centroid_common": float, "n_ids_heading": float}),
+        check_exact=True,
+    )
+
+
+def test_without_tracklets_each_subgroup_differences_its_own_centroid() -> None:
+    first = _two_subgroups(frame=0)
+    second = _two_subgroups(frame=1)
+    second.loc[second["event"] == 0, "X"] += 3.0
+    second.loc[second["event"] == 1, "Y"] += 2.0
+    df = pd.concat([first, second], ignore_index=True)
+    out = _apply_flagged(df, False, subgroup_col="event").set_index(["frame", "event"])
+    assert _cell(out, (1, 0), "centroid_speed") == pytest.approx(3.0)
+    assert _cell(out, (1, 0), "centroid_heading") == pytest.approx(0.0)
+    assert _cell(out, (1, 1), "centroid_speed") == pytest.approx(2.0)
+    assert _cell(out, (1, 1), "centroid_heading") == pytest.approx(np.pi / 2)

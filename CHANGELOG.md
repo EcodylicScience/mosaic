@@ -102,11 +102,11 @@ unanswered one. `read_carries_tracklets` reads the cell and, for a blank, answer
 `producer` where the producer settles it (`infer-pose`, `infer-points` and
 `infer-localizer` false; `trex`, `ultralytics` and `litpose` true), so a row written
 before the cell takes its producer's answer, and the plan refuses an older inference
-row too. `entries_without_tracklets` lists the entries whose resolved row records
-false. An index written before the column reads blank and is widened on its next
-write. A mosaic 0.17 worker that rewrites the
-tracks index drops the column, because its `adopt_legacy_columns` drops off-schema
-columns; the rows then read blank and are answered from `producer`. No run id moves.
+row too. `rows_without_tracklets` lists each entry whose resolved row records false,
+with its variant. An index written before the column reads blank and is widened on its
+next write. A mosaic 0.17 worker that rewrites the tracks index drops the column,
+because its `adopt_legacy_columns` drops off-schema columns; the rows then read blank
+and are answered from `producer`. No run id moves.
 
 **Every tracker and op writes the answer.** `write_tracks_row` and `publish_tracks_table`
 now take `carries_tracklets` without a default, so no row is blank by omission. The
@@ -133,7 +133,7 @@ the ops read `False`. It enters no run id or feature version, and no run id move
 **A plan refuses a step that follows ids over tracks without tracklets.** A feature step
 that reads `tracks` and declares `follows_ids` gets a `Problem` at `inputs` when the row
 of any entry it is asked for, in the variant it reads, records `carries_tracklets` as
-false (`entries_without_tracklets`). The message names the feature, the variant, up to
+false (`rows_without_tracklets`). The message names the feature, each variant, up to
 five of the entries and that the step needs ids that name one animal over time. A blank
 cell is not refused, and neither is a step bound or pinned, a step that reads another
 step's output, or one that does not follow ids, such as `heading`. It is a `Problem`, so
@@ -142,6 +142,24 @@ a submit raises `RecipeRefused` and a step's own plan refuses with `recipe_refus
 now refuse a `speed-angvel`, as every row whose converter or tracker declared no
 tracklets does. A test that registers a feature without `follows_ids` reads `True` and
 needs the attribute set to `False` to plan over such rows. No run id moves.
+
+**`collective-motion-metrics` 0.2 computes over tracks without tracklets.** A feature
+may define the optional hook `set_tracklets(by_entry)` (`SetsTracklets`), which
+`run_feature` calls once per run after `set_scope` with each entry's
+`read_carries_tracklets` answer from the rows of the tracks variants the run reads
+(`tracklets_by_entry`), and an empty map when the run reads no `tracks` input.
+`process_apply_worker` takes the map as its `tracklets` argument and calls the hook
+before `load_state`. On the frames of an entry whose row records false,
+`collective-motion-metrics` takes `centroid_speed` and `centroid_heading` from the
+all-id centroids of successive frames and writes NaN for `group_angvel` and
+`n_centroid_common`; under velocity headings `mean_heading`, `polarization`,
+`rotation`, `rotation_signed` and `n_ids_heading` are NaN too and `state` is
+`Undefined`, and under orientation headings they are unchanged. In a run that reads any
+entry without tracklets, `n_ids_heading` and `n_centroid_common` are floats on every
+entry; a run that reads none writes them as integers, and its output is that of 0.1.
+The version moves to 0.2, so both of its golden run ids move from `0.1-` to `0.2-` with
+the same digest. `entries_without_tracklets` is removed; `rows_without_tracklets` gives
+the same entries with their variants.
 
 **mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
 `variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,

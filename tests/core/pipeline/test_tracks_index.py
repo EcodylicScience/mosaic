@@ -41,8 +41,8 @@ from mosaic.core.pipeline.tracks_index import (
     adopt_legacy_columns,
     consumed_roots_for,
     encode_source_roots,
-    entries_without_tracklets,
     rows_without_tracklets,
+    tracklets_by_entry,
     legacy_view,
     read_tracks_index,
     row_in_scope,
@@ -1839,7 +1839,7 @@ def test_a_recorded_tracklets_cell_outranks_the_producer(tmp_path: Path) -> None
     assert read_carries_tracklets(frame.loc["b"]) is True
 
 
-def test_entries_without_tracklets_lists_only_false_rows(tmp_path: Path) -> None:
+def test_rows_without_tracklets_lists_only_false_rows(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     _tracklets_row(ds, "z-false", carries_tracklets=False)
     _tracklets_row(ds, "a-false", carries_tracklets=False)
@@ -1848,36 +1848,40 @@ def test_entries_without_tracklets_lists_only_false_rows(tmp_path: Path) -> None
     _tracklets_row(ds, "from-producer", producer="infer-pose")
     _tracklets_row(ds, "trex-blank", producer="trex")
     entries = [
-        (g, s)
-        for g, s in [
-            ("", "z-false"),
-            ("", "a-false"),
-            ("", "true"),
-            ("", "unknown"),
-            ("", "from-producer"),
-            ("", "trex-blank"),
-        ]
+        ("", "z-false"),
+        ("", "a-false"),
+        ("", "true"),
+        ("", "unknown"),
+        ("", "from-producer"),
+        ("", "trex-blank"),
     ]
+    variant = "convert-x.0.1-aaaaaaaaaa"
 
-    found = entries_without_tracklets(ds, None, entries)
+    found = rows_without_tracklets(ds, None, entries)
 
-    assert found == (("", "a-false"), ("", "from-producer"), ("", "z-false"))
-    assert entries_without_tracklets(ds, None, [("", "true"), ("", "unknown")]) == ()
-    assert entries_without_tracklets(ds, None, [("", "a-false")]) == (("", "a-false"),)
+    assert found == (
+        (("", "a-false"), variant),
+        (("", "from-producer"), variant),
+        (("", "z-false"), variant),
+    )
+    assert rows_without_tracklets(ds, None, [("", "true"), ("", "unknown")]) == ()
+    assert rows_without_tracklets(ds, None, [("", "a-false")]) == (
+        (("", "a-false"), variant),
+    )
 
 
-def test_entries_without_tracklets_reads_the_named_variant(tmp_path: Path) -> None:
+def test_rows_without_tracklets_reads_the_named_variant(tmp_path: Path) -> None:
     ds = _dataset(tmp_path)
     _tracklets_row(ds, "s", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
     _tracklets_row(ds, "s", carries_tracklets=True, run_id="trex.0.1-bbbbbbbbbb")
 
-    assert entries_without_tracklets(ds, "convert-x.0.1-aaaaaaaaaa", [("", "s")]) == (
-        ("", "s"),
+    assert rows_without_tracklets(ds, "convert-x.0.1-aaaaaaaaaa", [("", "s")]) == (
+        (("", "s"), "convert-x.0.1-aaaaaaaaaa"),
     )
-    assert entries_without_tracklets(ds, "trex.0.1-bbbbbbbbbb", [("", "s")]) == ()
+    assert rows_without_tracklets(ds, "trex.0.1-bbbbbbbbbb", [("", "s")]) == ()
 
 
-def test_entries_without_tracklets_leaves_an_ambiguous_entry_to_the_planner(
+def test_rows_without_tracklets_leaves_an_ambiguous_entry_to_the_planner(
     tmp_path: Path,
 ) -> None:
     """Two variants and no named one is refused as ``variant_ambiguous`` elsewhere."""
@@ -1885,7 +1889,43 @@ def test_entries_without_tracklets_leaves_an_ambiguous_entry_to_the_planner(
     _tracklets_row(ds, "s", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
     _tracklets_row(ds, "s", carries_tracklets=False, run_id="trex.0.1-bbbbbbbbbb")
 
-    assert entries_without_tracklets(ds, None, [("", "s")]) == ()
+    assert rows_without_tracklets(ds, None, [("", "s")]) == ()
+
+
+def test_tracklets_by_entry_reads_each_entrys_row_of_the_variants(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "b", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
+    _tracklets_row(ds, "a", carries_tracklets=True, run_id="trex.0.1-bbbbbbbbbb")
+    _tracklets_row(ds, "c", producer="infer-pose", run_id="trex.0.1-bbbbbbbbbb")
+    _tracklets_row(ds, "d", run_id="trex.0.1-bbbbbbbbbb")
+    _tracklets_row(ds, "e", carries_tracklets=False, run_id="other.0.1-cccccccccc")
+    variants = ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb")
+    entries = [("", "a"), ("", "b"), ("", "c"), ("", "d"), ("", "e")]
+
+    found = tracklets_by_entry(ds, variants, entries)
+
+    assert found == {
+        ("", "a"): True,
+        ("", "b"): False,
+        ("", "c"): False,
+        ("", "d"): None,
+    }
+    assert list(found) == sorted(found)
+    assert tracklets_by_entry(ds, variants, [("", "b")]) == {("", "b"): False}
+    assert tracklets_by_entry(ds, (), entries) == {}
+
+
+def test_tracklets_by_entry_reads_none_where_two_variants_disagree(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    _tracklets_row(ds, "s", carries_tracklets=False, run_id="convert-x.0.1-aaaaaaaaaa")
+    _tracklets_row(ds, "s", carries_tracklets=True, run_id="trex.0.1-bbbbbbbbbb")
+    variants = ("convert-x.0.1-aaaaaaaaaa", "trex.0.1-bbbbbbbbbb")
+
+    assert tracklets_by_entry(ds, variants, [("", "s")]) == {("", "s"): None}
 
 
 def test_rows_without_tracklets_pairs_each_entry_with_its_variant(

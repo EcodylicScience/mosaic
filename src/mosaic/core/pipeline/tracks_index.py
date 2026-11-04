@@ -1178,16 +1178,32 @@ def rows_without_tracklets(
     )
 
 
-def entries_without_tracklets(
-    ds: Dataset, tracks_run_id: str | None, entries: Collection[Entry] | None
-) -> tuple[Entry, ...]:
-    """Return the entries whose tracks row records no tracklets, sorted.
+def tracklets_by_entry(
+    ds: Dataset, variants: Sequence[str], entries: Collection[Entry]
+) -> dict[Entry, bool | None]:
+    """Return each entry's :func:`read_carries_tracklets` under *variants*, sorted.
 
-    The entries of :func:`rows_without_tracklets`.
+    The rows read are those whose ``run_id`` is one of *variants* and whose entry
+    is one of *entries*. An entry without such a row is left out. An entry whose
+    rows of two variants answer differently reads ``None``, so the answer does
+    not depend on the order of the index.
     """
-    return tuple(
-        entry for entry, _ in rows_without_tracklets(ds, tracks_run_id, entries)
-    )
+    if not variants or not entries:
+        return {}
+    index = read_tracks_index(ds)
+    wanted_variants = set(variants)
+    wanted_entries = set(entries)
+    answers: dict[Entry, set[bool | None]] = {}
+    for _, row in index.iterrows():
+        if text_cell(row.get("run_id")) not in wanted_variants:
+            continue
+        entry = (text_cell(row.get("group")), text_cell(row.get("sequence")))
+        if entry in wanted_entries:
+            answers.setdefault(entry, set()).add(read_carries_tracklets(row))
+    return {
+        entry: (next(iter(found)) if len(found) == 1 else None)
+        for entry, found in sorted(answers.items())
+    }
 
 
 def recorded_first_frames(ds: Dataset, run_id: str) -> dict[tuple[str, str], int]:

@@ -13,6 +13,7 @@ same order parameters to a neighborhood around each focal individual.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, ClassVar, Self, final
 
@@ -20,6 +21,8 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.entry import Entry
+from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
@@ -191,7 +194,9 @@ class CollectiveMotionMetrics:
       - ``n_at_centroid``: individuals sitting exactly at the centroid, where the
         radial direction is undefined
       - ``n_centroid_common``: individuals present in both this frame and the
-        previous one -- the divisor of the centroid velocity
+        previous one -- the divisor of the centroid velocity. NaN on a frame of
+        tracks without tracklets. Both counts are floats in a run that reads an
+        entry without tracklets
 
     Order parameters and state
       - ``polarization``: ``O_p = (1/N)|sum u_i|``, in [0, 1]
@@ -284,11 +289,27 @@ class CollectiveMotionMetrics:
         group read context. They must be numbered on one frame axis, or the run
         is refused. Any other sequence reads only its own frames and keeps NaN
         on its first frame.
+
+        **Tracks without tracklets.** Where the tracks index says an entry's ids
+        restart each frame (``carries_tracklets`` false, handed over by
+        ``set_tracklets``), an id matched across two frames is not one animal.
+        On that entry's frames the centroid's motion is the all-id centroid's:
+        ``centroid_speed`` and ``centroid_heading`` come from the backward
+        difference of successive frames' centroids over every id, divided by the
+        same ``dt`` and within the same ``max_frame_gap``, so they move whenever
+        the count of detections changes. ``group_angvel`` and
+        ``n_centroid_common`` are NaN. Under velocity headings ``mean_heading``,
+        ``polarization``, ``rotation``, ``rotation_signed`` and ``n_ids_heading``
+        are NaN and ``state`` is ``Undefined``, because a velocity heading is a
+        per-id difference. Under orientation headings they are unchanged. An
+        entry whose tracks carry tracklets, or whose answer is unknown, computes
+        as before, except that in a run that reads any entry without tracklets
+        ``n_ids_heading`` and ``n_centroid_common`` are floats on every entry.
     """
 
     category = "summary"
     name = "collective-motion-metrics"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-blind"
@@ -391,6 +412,11 @@ class CollectiveMotionMetrics:
     ):
         self.inputs = inputs
         self.params: CollectiveMotionMetrics.Params = self.Params.from_overrides(params)
+        self._tracklets: dict[Entry, bool | None] = {}
+
+    def set_tracklets(self, by_entry: Mapping[Entry, bool | None]) -> None:
+        """Take each entry's ``carries_tracklets`` answer, read from the tracks index."""
+        self._tracklets = dict(by_entry)
 
     # --- State protocol (stateless per-sequence feature) ---
 
@@ -435,6 +461,71 @@ class CollectiveMotionMetrics:
             else:
                 area[pos] = hull_area(pts)
         return area, n_tri
+
+    def _without_tracklets(self, agg: pd.DataFrame) -> np.ndarray:
+        """Per output row, whether its entry's tracks carry no tracklets."""
+        m = len(agg)
+        if not self._tracklets or not {C.group_col, C.seq_col} <= set(agg.columns):
+            return np.zeros(m, dtype=bool)
+        return np.fromiter(
+            (
+                self._tracklets.get((text_cell(group), text_cell(sequence))) is False
+                for group, sequence in zip(
+                    agg[C.group_col].to_numpy(), agg[C.seq_col].to_numpy(), strict=True
+                )
+            ),
+            dtype=bool,
+            count=m,
+        )
+
+    def _all_id_centroid_motion(
+        self, agg: pd.DataFrame, order_col: str
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Speed and heading of each row's all-id centroid since the previous frame.
+
+        The previous frame is the one before in order, of the same subgroup when
+        ``subgroup_col`` is set, and ``dt`` follows :func:`backward_dt`.
+        """
+        p = self.params
+        m = len(agg)
+        if p.subgroup_col is None:
+            codes = np.zeros(m, dtype=np.int64)
+        else:
+            codes = pd.factorize(agg[p.subgroup_col], sort=True)[0]
+        order = agg[order_col].to_numpy(dtype=float)
+        perm = np.lexsort((order, codes))
+        sorted_order = order[perm]
+        same, dstep = step_masks(codes[perm], sorted_order)
+        time = (
+            agg[C.time_col].to_numpy(dtype=float)[perm]
+            if C.time_col in agg.columns
+            else None
+        )
+        dt = backward_dt(
+            sorted_order,
+            order_col == C.frame_col,
+            time,
+            p.fps,
+            same,
+            dstep,
+            p.max_frame_gap,
+        )
+        cx = agg["centroid_x"].to_numpy(dtype=float)[perm]
+        cy = agg["centroid_y"].to_numpy(dtype=float)[perm]
+        vx = np.full(m, np.nan, dtype=float)
+        vy = np.full(m, np.nan, dtype=float)
+        if m >= 2:
+            vx[1:] = (cx[1:] - cx[:-1]) / dt[1:]
+            vy[1:] = (cy[1:] - cy[:-1]) / dt[1:]
+        speed_sorted = np.hypot(vx, vy)
+        heading_sorted = np.where(
+            speed_sorted > p.min_group_speed, np.arctan2(vy, vx), np.nan
+        )
+        speed = np.empty(m, dtype=float)
+        heading = np.empty(m, dtype=float)
+        speed[perm] = speed_sorted
+        heading[perm] = heading_sorted
+        return speed, heading
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -646,6 +737,20 @@ class CollectiveMotionMetrics:
 
         group_angvel = agg["group_angvel"].to_numpy(dtype=float)
 
+        # Tracks without tracklets: a matched id is not one animal, so nothing
+        # that differences an id across frames is a measurement.
+        untracked = self._without_tracklets(agg)
+        if untracked.any():
+            speed, heading = self._all_id_centroid_motion(agg, order_col)
+            centroid_speed = np.where(untracked, speed, centroid_speed)
+            centroid_heading = np.where(untracked, heading, centroid_heading)
+            group_angvel = np.where(untracked, np.nan, group_angvel)
+            if resolved == "velocity":
+                pol = np.where(untracked, np.nan, pol)
+                mean_heading = np.where(untracked, np.nan, mean_heading)
+                rotation = np.where(untracked, np.nan, rotation)
+                rotation_signed = np.where(untracked, np.nan, rotation_signed)
+
         # Below min_individuals the relational metrics are not measurements. The
         # centroid and the counts are never nulled: the centroid is exactly what
         # it claims even for one individual, and the counts are the evidence.
@@ -672,9 +777,20 @@ class CollectiveMotionMetrics:
         if p.subgroup_col is not None:
             out[p.subgroup_col] = agg[p.subgroup_col].to_numpy()
         out["n_ids"] = agg["n_ids"].to_numpy()
-        out["n_ids_heading"] = agg["n_ids_heading"].to_numpy()
+        # The counts turn float for every entry of a run whose map holds an
+        # entry without tracklets, so one run writes one dtype whichever frames
+        # an entry holds. Every worker of a run is handed the same map.
+        float_counts = any(flag is False for flag in self._tracklets.values())
+        n_heading_out = agg["n_ids_heading"].to_numpy()
+        n_common = agg["n_centroid_common"].to_numpy()
+        if float_counts:
+            n_heading_out = n_heading_out.astype(float)
+            n_common = np.where(untracked, np.nan, n_common.astype(float))
+            if resolved == "velocity":
+                n_heading_out = np.where(untracked, np.nan, n_heading_out)
+        out["n_ids_heading"] = n_heading_out
         out["n_at_centroid"] = agg["n_at_centroid"].to_numpy()
-        out["n_centroid_common"] = agg["n_centroid_common"].to_numpy()
+        out["n_centroid_common"] = n_common
         out["polarization"] = pol
         out["mean_heading"] = mean_heading
         out["rotation"] = rotation

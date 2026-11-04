@@ -88,8 +88,10 @@ from .fit_scope import derive_fit_scope, write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition, read_entry_compositions
-from .tracks_index import tracks_compositions
+from .tracks_index import tracklets_by_entry, tracks_compositions
 from .types.data_config import META_COLS
+from .types.feature import SetsTracklets
+from mosaic.core.entry import Entry
 from .types import (
     ArtifactSpec,
     ClosesResources,
@@ -344,6 +346,12 @@ def _close_feature(feature: Feature) -> None:
 # --- Process worker ---
 
 
+def _hand_tracklets(feature: object, tracklets: Mapping[Entry, bool | None]) -> None:
+    """Call ``set_tracklets`` with a copy of *tracklets* when *feature* declares it."""
+    if isinstance(feature, SetsTracklets):
+        feature.set_tracklets(dict(tracklets))
+
+
 def process_apply_worker(
     module_name: str,
     class_name: str,
@@ -354,6 +362,7 @@ def process_apply_worker(
     dependency_lookups: dict[str, DependencyLookup],
     df: pd.DataFrame,
     ds_manifest_path: str | None = None,
+    tracklets: Mapping[Entry, bool | None] | None = None,
 ) -> pd.DataFrame:
     """Reconstruct a feature in a worker process, run apply, then close it.
 
@@ -364,6 +373,10 @@ def process_apply_worker(
     ``'NoneType' object has no attribute 'resolve_media'`` because the
     main-process bind at ``run_feature`` doesn't propagate across process
     workers. Features without ``bind_dataset`` are unaffected.
+
+    A feature that declares ``set_tracklets`` is handed *tracklets*, the map
+    ``run_feature`` built once for the run, before ``load_state``. ``None``
+    hands it an empty map.
 
     The worker builds its instance for this one call, and only this call refers
     to it. The worker therefore closes the instance itself. ``run_feature``
@@ -382,6 +395,7 @@ def process_apply_worker(
 
             ds_local = Dataset(manifest_path=Path(ds_manifest_path)).load()
             feature.bind_dataset(ds_local)
+        _hand_tracklets(feature, tracklets if tracklets is not None else {})
         feature.load_state(
             Path(run_root_str),
             {k: Path(v) for k, v in artifact_paths_str.items()},
@@ -1593,6 +1607,13 @@ def _run_feature_impl(
     if hasattr(feature, "set_scope"):
         feature.set_scope(resolved)
 
+    # Read once here, before any apply, so thread workers share one fixed map and
+    # process workers are handed the same one. Empty when the run reads no tracks.
+    tracklets: dict[Entry, bool | None] = {}
+    if isinstance(feature, SetsTracklets):
+        tracklets = tracklets_by_entry(ds, resolved.tracks_variants, resolved.entries)
+    _hand_tracklets(feature, tracklets)
+
     # Resolve dependencies
     artifact_paths, dependency_lookups = _resolve_dependencies(
         ds, feature, labels_run_id
@@ -2063,6 +2084,7 @@ def _run_feature_impl(
                             dependency_lookups,
                             df,
                             str(ds.manifest_path),
+                            tracklets,
                         )
                     ] = (meta, selector)
                 else:

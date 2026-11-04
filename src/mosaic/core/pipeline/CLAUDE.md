@@ -111,8 +111,9 @@ are in `graph/CLAUDE.md`.
   an animal. `read_carries_tracklets` is the only reader. It answers a blank from
   `producer` where the producer settles it and otherwise returns `None`, which no plan
   refuses. A converter declares it (`TrackConverter.carries_tracklets`), SLEAP through
-  the user's `tracks_named`. `entries_without_tracklets` lists the entries whose row says
-  false, and `rows_without_tracklets` pairs each with its variant
+  the user's `tracks_named`. `rows_without_tracklets` lists each entry whose row says
+  false with its variant, and `tracklets_by_entry` gives each entry's answer under the
+  variants a run reads, which `run_feature` hands to a feature's `set_tracklets`
   (`tests/core/pipeline/test_tracks_index.py`).
 - `write_tracks_row` requires `carries_tracklets`. A tracker passes its own answer to
   `publish_tracks_table`. An op that derives a variant from another copies

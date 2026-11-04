@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Literal, Protocol, final, runtime_checkable
 
 import pandas as pd
 
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline.types.inputs import InputsLike
 from mosaic.core.params import Params
 
@@ -76,6 +77,7 @@ class Feature(Protocol):
       (crops, overlay) in addition to the table that the feature is handed.
     - ``set_scope(resolved)``: passes the run's chosen tracks variant to a
       feature that resolves tracks itself.
+    - ``set_tracklets(by_entry)``: see :class:`SetsTracklets`.
     - ``progress_callback`` and ``cancel_token``: attributes that a trainer sets
       at construction. ``run_feature`` replaces each with the progress sink and
       cancel token of the attempt. A fit's epoch-level progress then enters the
@@ -224,6 +226,22 @@ class Feature(Protocol):
     def save_state(self, run_root: Path) -> None: ...
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame: ...
+
+
+@runtime_checkable
+class SetsTracklets(Protocol):
+    """Declares the ``set_tracklets`` hook of a feature that reads whether ids follow animals.
+
+    ``run_feature`` calls it once per run, after ``set_scope`` and before any
+    ``apply``, with each entry's ``carries_tracklets`` answer read from the rows
+    of the tracks variants the run reads (``tracklets_by_entry``). ``False``
+    means the entry's ids restart each frame, and ``None`` that no row says. A
+    run that reads no ``tracks`` input passes an empty map.
+    ``process_apply_worker`` calls it on the instance it builds, with the same
+    map. The map stays fixed for the run, so thread workers share it.
+    """
+
+    def set_tracklets(self, by_entry: Mapping[Entry, bool | None]) -> None: ...
 
 
 @runtime_checkable
