@@ -533,6 +533,21 @@ StepEntries = Annotated[
 ]
 """The scopes narrowing single steps of a plan or a submission."""
 
+PlanTracksRunId = Annotated[
+    str | None,
+    Field(
+        min_length=1,
+        description=(
+            "The tracks variant that each feature step reading the tracks without "
+            "a 'tracks' reference reads, as list_sequences names it. Needed when "
+            "an entry holds two variants, which is otherwise refused with "
+            "'variant_ambiguous'. Pass it to plan_recipe and again to "
+            "submit_pipeline. Null leaves each entry's one variant."
+        ),
+    ),
+]
+"""The tracks variant a plan or a submission reads."""
+
 
 class ToolInput(StrictModel):
     """The arguments of one tool call. Each tool's input model subclasses it."""
@@ -786,6 +801,7 @@ class PlanRecipeInput(ToolInput):
     )
     retire: RetireDigests = Field(default_factory=list)
     assume_added: AssumeAdded = Field(default_factory=list)
+    tracks_run_id: PlanTracksRunId = None
     limit: PageSize | None = Field(
         default=None,
         description=(
@@ -831,6 +847,7 @@ class SubmitPipelineInput(ToolInput):
         ),
     )
     retire: RetireDigests = Field(default_factory=list)
+    tracks_run_id: PlanTracksRunId = None
     workers: int | None = Field(
         default=None,
         ge=1,

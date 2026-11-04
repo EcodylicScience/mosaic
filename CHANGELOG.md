@@ -8,6 +8,43 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: request pins, tracklets and the aggregates
+
+**A request names the tracks variant its steps read.** `Request.tracks_run_id` (default
+`None`) is the variant that each feature step reading `tracks` without a `tracks`
+reference reads. `plan_pipeline`, `submit_request`, `run_pipeline` and
+`plan_with_cleanup` take it, and the plan's entries are those of that variant. A step of
+such a request gets the run id that `run_feature(..., tracks_run_id=...)` gets over the
+same params and scope, so each serves the other's cache. `save_request` leaves the key
+out when it is `None`, so a request without it reads in mosaic 0.17, and the plan
+fingerprint covers it only when it is set. No run id moves.
+
+**`variant_ambiguous` is a new `RefusalReason`.** A feature step that reads `tracks` with
+neither a `tracks` reference nor the request's variant is refused when any entry of the
+dataset holds two variants, whatever the request's scope, because its identity reads
+every entry. `plan_pipeline` with `refuse` set raises it as a `StepRefused` before any
+step resolves, `submit_request` through that call, and `execute_step` for the starting
+step alone, so a sibling that reads no unpinned tracks still runs. It was a `Problem` at
+`tracks` (`RecipeRefused` at submit, `recipe_refused` at a step's start), and a plan with
+`refuse=False` still lists that problem. Over such a step the schema-family check reads
+the whole dataset too; with a variant or without such a step it reads the variant over
+the scope. `refuse_mixed_schemas` takes `recipe=`, `tracks_run_id=`, `scope=` and
+`only=`, and `submit_request` no longer calls it before planning, so a malformed recipe, a
+duplicate and a retirement refusal now come before a schema refusal.
+
+**The CLI and the MCP server take the variant.** `mosaic pipeline plan`, `submit` and
+`run` take `--tracks-run-id`, and the MCP tools `plan_recipe` and `submit_pipeline` take
+`tracks_run_id`. `mosaic run --graph-request` and `mosaic pipeline run --request` refuse
+`--tracks-run-id`, since a request records its variant at submit. The first used to
+ignore it. The MCP `list_sequences` envelope for an entry of two variants now reads
+`variant_ambiguous` where it read `ambiguous_tracks_variant`, with the kind `invalid`.
+
+**mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
+`variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,
+"")` and plans with `refuse=False`, so it reports the ambiguity as a problem at `tracks`
+until it passes `recipe=`, `scope=` and the variant to `refuse_mixed_schemas` and answers
+409 `dataset_refused` at plan.
+
 ## Unreleased: visual-network feature
 
 **A new pair feature, `visual-network`.** It writes one row per ordered pair per frame

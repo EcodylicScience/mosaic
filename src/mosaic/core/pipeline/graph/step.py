@@ -246,8 +246,16 @@ def _execute(
     # Before planning, because resolving the identity of a feature reading
     # unpinned tracks against a dataset of mixed schemas already fails -- and
     # failing there is an exception out of the middle of a hash rather than a
-    # refusal naming the schemas.
-    refuse_mixed_schemas(ds, step_id)
+    # refusal naming the schemas. Only this step's reading refuses it.
+    refuse_mixed_schemas(
+        ds,
+        step_id,
+        recipe=recipe,
+        tracks_run_id=request.tracks_run_id,
+        scope=request.scope,
+        only=step_id,
+        bound=request.bind.keys(),
+    )
 
     held = InventoryCache(ds) if inventory is None else inventory
     excluded = set(store.exclusions(request.request_id).entries)

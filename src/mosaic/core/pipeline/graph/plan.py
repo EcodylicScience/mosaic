@@ -409,6 +409,9 @@ class Plan:
             declares no reach or one no params bound (:func:`~.reach.reach_findings`).
             Their problems are in ``problems``. Not part of the wire or the
             fingerprint.
+        tracks_run_id: The tracks variant that each feature step without a
+            ``tracks`` reference reads, ``None`` for each entry's one variant.
+            The fingerprint covers it when it is set.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -432,6 +435,7 @@ class Plan:
     reach_cautions: tuple[Problem, ...] = ()
     bound: frozenset[str] = frozenset()
     request_scope: Scope | None = None
+    tracks_run_id: str | None = None
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -607,6 +611,7 @@ def plan_pipeline(
     refuse: bool = True,
     step_scopes: Mapping[str, Scope] | None = None,
     bind: Mapping[str, BoundRef] | None = None,
+    tracks_run_id: str | None = None,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -637,6 +642,8 @@ def plan_pipeline(
         refuse: Whether a problem this dataset finds with the recipe raises.
             Unset, the problems are recorded on the returned plan. A step that
             runs plans this way and refuses only the problems at its step.
+            Set, the tracks tables are checked before any step resolves
+            (:func:`~.step_preflight.refuse_mixed_schemas`).
         step_scopes: Narrow single steps, keyed by step id. ``None`` falls
             back to the request's. A step's target is the graph's narrowed by
             its scope, and a step reading another's entries through ``inputs``
@@ -647,6 +654,10 @@ def plan_pipeline(
             that run. A bind of an op step, of a storage other than the step's
             own, or of a run this dataset does not hold is a problem at
             ``bind.<id>``, and one naming no step a problem at ``bind``.
+        tracks_run_id: The tracks variant that each feature step reading the
+            tracks without a ``tracks`` reference reads. ``None`` falls back to
+            the request's, and then to each entry's one variant. It also
+            decides the entries the plan covers.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -656,6 +667,10 @@ def plan_pipeline(
             reporting every problem found rather than the first.
         RecipeRefused: The recipe validates and this dataset cannot run it, with
             every problem found. Raised only when *refuse* is set.
+        StepRefused: The tracks tables in reach are of mixed schema families
+            (``schema_family_mismatch``), or a step reads the tracks with no
+            variant named while an entry holds two (``variant_ambiguous``).
+            Raised before any step resolves, and only when *refuse* is set.
         ScopeRefused: An op step's scope is one that op's declaration does not
             accept. Raised on the first such step rather than collected,
             because it takes the dataset to enumerate the selector against and
@@ -667,6 +682,22 @@ def plan_pipeline(
     narrowing = scope
     if narrowing is None and request is not None:
         narrowing = request.scope
+    if tracks_run_id is None and request is not None:
+        tracks_run_id = request.tracks_run_id
+    if bind is None:
+        bind = request.bind if request is not None else {}
+    if refuse:
+        # Imported here, because step_preflight imports this module.
+        from .step_preflight import refuse_mixed_schemas
+
+        refuse_mixed_schemas(
+            ds,
+            "",
+            recipe=recipe,
+            tracks_run_id=tracks_run_id,
+            scope=narrowing,
+            bound=bind.keys(),
+        )
     # A converter of raw files takes no scope and writes whatever entries its
     # files hold, which need not be what there is media for, so it does not
     # make the media universe the target the way a tracker does.
@@ -679,6 +710,7 @@ def plan_pipeline(
         ds,
         recipe,
         narrowing,
+        tracks_run_id=tracks_run_id,
         produces_tracks=[
             name
             for name, declared in catalog.entries.items()
@@ -695,8 +727,6 @@ def plan_pipeline(
     _ = held.revalidate()
     inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
 
-    if bind is None:
-        bind = request.bind if request is not None else {}
     resolved: dict[str, ResolvedStep] = {}
     planned: dict[str, PlannedStep] = {}
     steps: list[PlannedStep] = []
@@ -718,6 +748,7 @@ def plan_pipeline(
             recorded=recorded or {},
             problems=findings.problems,
             deferred_by=deferred_by,
+            tracks_run_id=tracks_run_id,
         )
         if isinstance(step, FeatureStepSpec):
             findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
@@ -792,6 +823,7 @@ def plan_pipeline(
         reach_cautions=reached.cautions,
         bound=frozenset(bind),
         request_scope=narrowing,
+        tracks_run_id=tracks_run_id,
     )
     if refuse and plan.problems:
         raise RecipeRefused(plan)
@@ -812,11 +844,14 @@ def _plan_step(
     recorded: Mapping[str, str],
     problems: list[Problem],
     deferred_by: str | None = None,
+    tracks_run_id: str | None = None,
 ) -> PlannedStep:
     """Resolve one step against everything the walk has already established.
 
     What resolving its identity refuses in the step is added to *problems*.
     A feature step that *bind* names is the run it pins (:func:`_bound_step`).
+    *tracks_run_id* is the variant a feature step reads when it reads the
+    tracks without a ``tracks`` reference.
     *deferred_by* names the conversion step that writes the dataset's first
     tracks, when this graph has one. The entries of a step whose identity
     covers its scope are not known before that step runs, so such a step is
@@ -858,7 +893,9 @@ def _plan_step(
         # input from whatever the dataset happens to hold -- the first raises out
         # of a path that has nothing to do with this graph, and the second
         # silently answers a question nobody asked.
-        resolution = _Resolution(step=_unresolved(step, target, recipe, resolved))
+        resolution = _Resolution(
+            step=_unresolved(step, target, recipe, resolved, tracks_run_id=tracks_run_id)
+        )
         base = replace(resolution.step, reason=inherited)
         if isinstance(step, FeatureStepSpec):
             # What the class declares, since the feature is not built: a fitter
@@ -885,7 +922,12 @@ def _plan_step(
         base = resolution.step
     else:
         resolution = _resolve_feature_step(
-            ds, recipe, step, target=target, resolved=resolved
+            ds,
+            recipe,
+            step,
+            target=target,
+            resolved=resolved,
+            tracks_run_id=tracks_run_id,
         )
         problems.extend(resolution.problems)
         base = replace(
@@ -1053,6 +1095,8 @@ def _unresolved(
     target: frozenset[Entry],
     recipe: Recipe,
     resolved: Mapping[str, ResolvedStep],
+    *,
+    tracks_run_id: str | None = None,
 ) -> PlannedStep:
     """The record for a step whose identity nothing above it can supply.
 
@@ -1072,6 +1116,7 @@ def _unresolved(
         entries=_op_scope(step.kind, target)
         if isinstance(step, OpStepSpec)
         else Scope(),
+        tracks_run_id=tracks_run_id,
     )
     return PlannedStep(
         step_id=step.id,
@@ -1333,13 +1378,16 @@ def _resolve_feature_step(
     *,
     target: frozenset[Entry],
     resolved: Mapping[str, ResolvedStep],
+    tracks_run_id: str | None = None,
 ) -> _Resolution:
     """One feature step's identity, from its params plus what is above it.
 
     A problem that :func:`_feature_problems` finds leaves the identity
-    unresolved, and :func:`plan_pipeline` reports it.
+    unresolved, and :func:`plan_pipeline` reports it. *tracks_run_id* is the
+    request's variant, which a step reading the tracks without a ``tracks``
+    reference reads.
     """
-    spec = resolve_step_spec(recipe, step.id, resolved)
+    spec = resolve_step_spec(recipe, step.id, resolved, tracks_run_id=tracks_run_id)
     shared = _shared_run_problems(recipe, step, resolved)
     if shared:
         # Before the feature is built, because its inputs model refuses a run

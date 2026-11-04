@@ -153,6 +153,19 @@ RetireOption = Annotated[
     ),
 ]
 
+TracksRunIdOption = Annotated[
+    str | None,
+    typer.Option(
+        "--tracks-run-id",
+        help=(
+            "The tracks variant that each feature step reading the tracks without "
+            "a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. "
+            "Needed when an entry holds two variants. Recorded on the request a "
+            "submission makes: give it to the plan and again to the submission."
+        ),
+    ),
+]
+
 AssumeAddedOption = Annotated[
     list[str] | None,
     typer.Option(
@@ -328,13 +341,18 @@ def plan_command(
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
     assume_added: AssumeAddedOption = None,
+    tracks_run_id: TracksRunIdOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Resolve a recipe against a dataset: identities, coverage, what is left.
 
     Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
-    printed with its problems. The requests of the recipe over an overlapping
-    scope that have not ended, running or orphaned, are listed with it.
+    printed with its problems. A ``schema_family_mismatch`` or
+    ``variant_ambiguous`` refusal prints the error envelope with its reason
+    instead of the plan, and also exits 1. The requests of the recipe over an
+    overlapping scope that have not ended, running or orphaned, are listed with
+    it. ``--tracks-run-id`` names the tracks variant that the steps reading the
+    tracks read, which an entry of two variants requires.
     ``--step-scope`` narrows one step, as a train/test split narrows the fit
     to the training groups and the scoring to the test groups.
     ``--cleanup superseded`` also reports the superseded runs of the recipe's
@@ -368,6 +386,7 @@ def plan_command(
                 scope=scope,
                 step_scopes=step_scopes,
                 retire=retire or (),
+                tracks_run_id=tracks_run_id,
             )
     except RecipeRefused as refusal:
         if as_json:
@@ -748,6 +767,7 @@ def run_command(
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
+    tracks_run_id: TracksRunIdOption = None,
     expect_plan: Annotated[
         str | None,
         typer.Option(
@@ -822,12 +842,13 @@ def run_command(
             or owner
             or cleanup != "none"
             or retire
+            or tracks_run_id is not None
             or expect_plan is not None
         ):
             fail(
                 "--entry, --group, --step-scope, --allow-partial, --owner, "
-                "--cleanup, --retire and --expect-plan are recorded on a request "
-                "at submit, and are not used with --request."
+                "--cleanup, --retire, --tracks-run-id and --expect-plan are "
+                "recorded on a request at submit, and are not used with --request."
             )
         _run_request(
             manifest,
@@ -868,6 +889,7 @@ def run_command(
                 expect_plan=expect_plan,
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                 retire=retire or (),
+                tracks_run_id=tracks_run_id,
             )
             submitted = recorded.request
             _warn_duplicates(recorded.duplicates)
@@ -1102,6 +1124,7 @@ def submit_command(
     keep_newest: KeepNewestOption = 1,
     min_age_hours: MinAgeOption = 24.0,
     retire: RetireOption = None,
+    tracks_run_id: TracksRunIdOption = None,
     as_json: JsonOption = False,
 ) -> None:
     """Record a submission of a recipe, and print the command for every step.
@@ -1142,6 +1165,7 @@ def submit_command(
                 step_scopes=step_scopes,
                 cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
                 retire=retire or (),
+                tracks_run_id=tracks_run_id,
             )
     except ClassifiedError as error:
         fail_unrunnable(error, as_json=as_json)

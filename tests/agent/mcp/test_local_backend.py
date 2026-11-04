@@ -51,6 +51,7 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     ValidationReport,
     catalog_index,
+    load_request,
     request_path,
     run_pipeline,
     search_catalog,
@@ -824,6 +825,90 @@ def test_plan_recipe_lists_an_unpinned_reader_of_two_variants_as_a_problem(
     )
 
     assert [problem.where for problem in plan.problems] == ["tracks"]
+
+
+def test_plan_and_submit_take_a_tracks_variant(dataset: Dataset) -> None:
+    """The variant answers the choice an entry of two variants leaves open."""
+    add_tracks_variant(dataset, "trex.0.1-2222222222", "seq_a", std_format="mosaic_v1")
+    starter = RecordingStarter()
+    backend = LocalBackend([dataset.manifest_path], warm=False, start_driver=starter)
+    uuid = _uuid(dataset)
+
+    refused = _refusal(
+        backend, "submit_pipeline", dataset=uuid, recipe=SPEED_RECIPE, confirm=True
+    )
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=SPEED_RECIPE,
+        tracks_run_id="trex.0.1-2222222222",
+    )
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=SPEED_RECIPE,
+        tracks_run_id="trex.0.1-2222222222",
+        plan_fingerprint=plan.fingerprint,
+        confirm=True,
+    )
+
+    assert refused.reason == "variant_ambiguous"
+    assert plan.problems == ()
+    assert plan.steps[0].coverage.target == 1
+    assert submitted.plan_fingerprint == plan.fingerprint
+    request = load_request(dataset.base_dir, submitted.request_id)
+    assert request.tracks_run_id == "trex.0.1-2222222222"
+
+
+def test_a_cleaning_submission_plans_both_times_over_the_tracks_variant(
+    dataset: Dataset,
+) -> None:
+    """The cleanup path plans through ``plan_with_cleanup`` as well as submit."""
+    add_tracks_variant(dataset, "trex.0.1-2222222222", "seq_a", std_format="mosaic_v1")
+    backend = LocalBackend(
+        [dataset.manifest_path],
+        warm=False,
+        start_driver=RecordingStarter(),
+        allow_cleanup=frozenset({"feature-runs"}),
+    )
+    uuid = _uuid(dataset)
+    plan = _call(
+        backend,
+        "plan_recipe",
+        PlanWire,
+        dataset=uuid,
+        recipe=SPEED_RECIPE,
+        cleanup="superseded",
+        tracks_run_id="trex.0.1-2222222222",
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=uuid,
+        recipe=SPEED_RECIPE,
+        cleanup="superseded",
+        tracks_run_id="trex.0.1-2222222222",
+        plan_fingerprint=plan.fingerprint,
+        confirm=True,
+    )
+
+    assert submitted.plan_fingerprint == plan.fingerprint
+
+
+def test_list_sequences_names_an_ambiguous_variant_by_the_refusal_reason(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    add_tracks_variant(dataset, "trex.0.1-2222222222", "seq_a", std_format="mosaic_v1")
+
+    refused = _refusal(backend, "list_sequences", dataset=_uuid(dataset))
+
+    assert (refused.kind, refused.reason) == ("invalid", "variant_ambiguous")
 
 
 def test_a_submitted_request_runs_detached_and_its_output_is_previewed(

@@ -379,3 +379,36 @@ def test_a_retirement_must_be_the_one_the_plan_was_reviewed_with(
 
     assert submitted.request.cleanup is not None
     assert submitted.request.cleanup.retired == (retire if reviewed_with else [])
+
+
+def test_a_plan_without_a_variant_keeps_its_fingerprint(tracked: Dataset) -> None:
+    """No variant adds no key, so a plan's fingerprint is what it was."""
+    from mosaic.core.pipeline.graph.digest import document_digest
+    from mosaic.core.pipeline.graph.serialize import (
+        _step_fingerprint,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    plan = plan_pipeline(tracked, speed_recipe())
+    legacy = document_digest(
+        {
+            "dataset": plan.dataset_uuid,
+            "recipe": plan.recipe_digest,
+            "steps": [
+                _step_fingerprint(planned, plan)
+                for planned in sorted(plan.steps, key=lambda step: step.step_id)
+            ],
+        }
+    )
+
+    assert plan.tracks_run_id is None
+    assert plan_fingerprint(plan) == legacy
+
+
+def test_a_request_variant_enters_the_fingerprint(tracked: Dataset) -> None:
+    """The same runs read through a named variant are a plan of their own."""
+    unnamed = plan_pipeline(tracked, speed_recipe())
+    named = plan_pipeline(tracked, speed_recipe(), tracks_run_id=VARIANT)
+
+    assert named.tracks_run_id == VARIANT
+    assert named.run_ids == unnamed.run_ids
+    assert plan_fingerprint(named) != plan_fingerprint(unnamed)

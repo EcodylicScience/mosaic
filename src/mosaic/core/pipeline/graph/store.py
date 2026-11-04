@@ -145,14 +145,16 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
 def save_request(base_dir: Path | str, request: Request) -> Path:
     """Write one submission's request file, and return where it landed.
 
-    A request without step scopes, a cleanup, or a cleanup that retires no
-    recipe is written without those keys, so its file is what an older mosaic
-    wrote and reads there.
+    A request without step scopes, a tracks variant, a cleanup, or a cleanup
+    that retires no recipe is written without those keys, so its file is what
+    an older mosaic wrote and reads there.
     """
     path = request_path(base_dir, request.request_id)
     exclude: dict[str, bool | dict[str, bool]] = {}
     if not request.step_scopes:
         exclude["step_scopes"] = True
+    if request.tracks_run_id is None:
+        exclude["tracks_run_id"] = True
     if request.cleanup is None:
         exclude["cleanup"] = True
     elif not request.cleanup.retired:

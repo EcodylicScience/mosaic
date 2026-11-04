@@ -470,7 +470,7 @@ class LocalBackend:
             raise ToolFailure(
                 ErrorEnvelope(
                     kind="invalid",
-                    reason="ambiguous_tracks_variant",
+                    reason="variant_ambiguous",
                     message=str(error),
                     detail={"field": "tracks_variant"},
                 )
@@ -846,6 +846,7 @@ class LocalBackend:
                 step_scopes=_step_scopes(args.step_entries),
                 retire=args.retire,
                 bind=args.bind,
+                tracks_run_id=args.tracks_run_id,
             )
         # Read outside the lock: it reads request files and run-logs only.
         unended = requests_matching(
@@ -921,6 +922,7 @@ class LocalBackend:
                 step_scopes=step_scopes,
                 retire=args.retire,
                 bind=args.bind,
+                tracks_run_id=args.tracks_run_id,
             )
             found = plan_fingerprint(plan)
             if args.plan_fingerprint is not None and found != args.plan_fingerprint:
@@ -948,6 +950,7 @@ class LocalBackend:
                 step_scopes=step_scopes,
                 cleanup=cleanup,
                 retire=args.retire,
+                tracks_run_id=args.tracks_run_id,
             )
         request = submitted.request
         start = self._start_driver or start_detached_driver

@@ -247,6 +247,7 @@ def test_a_request_written_while_planning_refuses_the_submission(
         catalog: DeclarationCatalog | None = None,
         step_scopes: Mapping[str, Scope] | None = None,
         bind: Mapping[str, BoundRef] | None = None,
+        tracks_run_id: str | None = None,
     ) -> Plan:
         monkeypatch.setattr(request_module, "plan_pipeline", plan_pipeline)
         written.append(submit_request(dataset, recipe).request.request_id)
@@ -258,6 +259,7 @@ def test_a_request_written_while_planning_refuses_the_submission(
             catalog=catalog,
             step_scopes=step_scopes,
             bind=bind,
+            tracks_run_id=tracks_run_id,
         )
 
     monkeypatch.setattr(request_module, "plan_pipeline", plan_while_another_submits)

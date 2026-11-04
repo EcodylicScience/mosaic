@@ -61,6 +61,7 @@ type RefusalReason = Literal[
     "recipe_refused",
     "undecodable_codec",
     "gpu_card_not_leased",
+    "variant_ambiguous",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -77,7 +78,9 @@ tool's environment does not decode, inside a step or in a run outside any
 pipeline. A tracker raises it when it reaches that entry, and an inference op
 before any entry runs. ``gpu_card_not_leased`` is a step that was leased one GPU
 card and whose ``device`` names another, or several; a leased step sees one card,
-which index ``0`` names.
+which index ``0`` names. ``variant_ambiguous`` is a request whose feature step
+reads the tracks with neither a ``tracks`` reference nor the request's
+``tracks_run_id``, over a dataset where an entry holds two variants.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

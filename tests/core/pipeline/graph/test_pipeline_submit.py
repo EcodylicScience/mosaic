@@ -638,3 +638,42 @@ def test_a_bound_submission_accepts_the_fingerprint_of_the_bound_plan(
     )
 
     assert plan_fingerprint(submitted.plan) == reviewed
+
+
+# --- the tracks variant -----------------------------------------------------------
+
+
+def test_a_request_without_a_variant_writes_no_tracks_key(tracked: Dataset) -> None:
+    """Left out when unset, so an older mosaic reads the file."""
+    submitted = submit_request(tracked, Recipe.model_validate(CHAIN))
+
+    written = json.loads(submitted.request_path.read_text())
+
+    assert "tracks_run_id" not in written
+
+
+def test_a_request_with_a_variant_records_it(tracked: Dataset) -> None:
+    submitted = submit_request(
+        tracked, Recipe.model_validate(CHAIN), tracks_run_id=VARIANT
+    )
+
+    written = json.loads(submitted.request_path.read_text())
+
+    assert written["tracks_run_id"] == VARIANT
+    loaded = load_request(tracked.base_dir, submitted.request.request_id)
+    assert loaded.tracks_run_id == VARIANT
+
+
+def test_a_request_document_without_the_field_loads(tmp_path: Path) -> None:
+    path = save_request(tmp_path, _request(cleanup=False))
+    assert "tracks_run_id" not in path.read_text()
+
+    loaded = load_request(tmp_path, "R2")
+
+    assert loaded.tracks_run_id is None
+
+
+@pytest.mark.parametrize("blank", ["", "  "])
+def test_a_request_refuses_a_blank_variant(blank: str) -> None:
+    with pytest.raises(ValueError, match="names no variant"):
+        _ = Request(request_id="R", recipe_digest="0" * 16, tracks_run_id=blank)

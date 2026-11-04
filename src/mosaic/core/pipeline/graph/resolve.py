@@ -1010,6 +1010,7 @@ def resolve_step_spec(
     resolved: Mapping[str, ResolvedStep],
     *,
     entries: Scope | None = None,
+    tracks_run_id: str | None = None,
 ) -> StepSpec:
     """Substitute every reference in one step from what is already resolved.
 
@@ -1020,7 +1021,9 @@ def resolve_step_spec(
     - an ``inputs`` reference becomes ``{feature, run_id}`` naming the upstream's
       *storage* name, which is what a ``Result`` carries;
     - the step-level ``tracks`` reference becomes the upstream's tracks
-      **variant**, which is a different identifier from its run id;
+      **variant**, which is a different identifier from its run id. A step
+      reading the tracks without one reads *tracks_run_id*, the request's
+      variant, and ``None`` leaves each entry's one variant;
     - a params field declared as a ``Result`` or ``ArtifactSpec`` becomes
       ``{feature, run_id}`` plus the reference's pattern when it gave one;
     - a params field declared as a plain ``str`` becomes the bare identifier,
@@ -1103,12 +1106,14 @@ def resolve_step_spec(
         else:
             params[name] = upstream.run_id or ""
 
-    tracks_run_id: str | None = None
+    read_variant: str | None = None
     if step.tracks is not None:
         upstream = resolved.get(step.tracks.step)
         # The variant, never the op run id. They coincide today only because the
         # tracker variant payload is an unwrapped passthrough of the settings.
-        tracks_run_id = upstream.tracks_variant if upstream else None
+        read_variant = upstream.tracks_variant if upstream else None
+    elif TRACKS_INPUT in step.inputs:
+        read_variant = tracks_run_id
 
     return StepSpec(
         step_id=step_id,
@@ -1116,7 +1121,7 @@ def resolve_step_spec(
         feature=step.feature,
         inputs=tuple(inputs),
         params=params,
-        tracks_run_id=tracks_run_id,
+        tracks_run_id=read_variant,
         labels_run_id=labels_run_id,
         entries=entries if entries is not None else Scope(),
         filter_start_frame=step.run.filter_start_frame,

@@ -567,6 +567,14 @@ class Request(GraphModel):
     in an older mosaic.
     """
 
+    tracks_run_id: str | None = None
+    """The tracks variant that each feature step without a ``tracks`` reference reads.
+
+    ``None`` leaves each entry's one variant to the step, which refuses an entry
+    of two. Left out of the request file when ``None``, so a request without one
+    reads in an older mosaic.
+    """
+
     cleanup: CleanupSpec | None = None
     """The superseded runs to remove after every step finished, or ``None``.
 
@@ -585,6 +593,15 @@ class Request(GraphModel):
                     f"step_scopes[{step_id!r}] names cameras. A step scope "
                     f"narrows the (group, sequence) entries a step covers."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _tracks_variant_is_named(self) -> Self:
+        if self.tracks_run_id is not None and not self.tracks_run_id.strip():
+            raise ValueError(
+                "tracks_run_id names no variant; leave it unset to read each "
+                "entry's one variant"
+            )
         return self
 
     @model_validator(mode="after")

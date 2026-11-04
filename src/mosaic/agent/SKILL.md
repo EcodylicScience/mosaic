@@ -254,8 +254,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   to `run_feature` (`--tracks-run-id` on `mosaic run`), or `run_id=` to `load_tracks`
   and `drop_entries`. `""` names tables converted before mosaic recorded variants.
   A tracker sweep holds such entries, and its op steps run because they read no tracks.
-  In a recipe, a feature that reads tracks on such an entry is a plan problem until it
-  is pinned with `"tracks": {"step": <id>}`. Add the step that produced the variant if
+  In a recipe, a feature that reads tracks with no `"tracks": {"step": <id>}` is
+  refused with `variant_ambiguous` while any entry of the dataset has two variants,
+  even outside the request's scope. Name the variant for the whole request with
+  `tracks_run_id=` (`submit_request`, `run_pipeline`; `--tracks-run-id` on `mosaic
+  pipeline plan`, `submit` and `run`; `tracks_run_id` on `plan_recipe` and
+  `submit_pipeline`), or pin the step to the step that produced it. Add that step if
   the recipe lacks it, since a step whose output exists is complete. `resample-tracks`
   and `assign-arenas` take `source_tracks_run_id`.
 - A run that loses some entries finishes as `partial` and names them in

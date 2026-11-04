@@ -217,6 +217,7 @@ def plan_with_cleanup(
     now: datetime.datetime | None = None,
     retire: Iterable[str] = (),
     bind: Mapping[str, BoundRef] | None = None,
+    tracks_run_id: str | None = None,
 ) -> Plan:
     """Plan *recipe*, and report its superseded runs when *cleanup* is given.
 
@@ -243,6 +244,7 @@ def plan_with_cleanup(
             (:func:`~.retirement.validate_retirement` lists what is refused).
             It needs *cleanup*, and it belongs to this plan alone.
         bind: As for :func:`~.plan.plan_pipeline`.
+        tracks_run_id: As for :func:`~.plan.plan_pipeline`.
 
     Returns:
         The plan, with ``cleanup`` set when *cleanup* was given.
@@ -274,6 +276,7 @@ def plan_with_cleanup(
         refuse=refuse,
         step_scopes=step_scopes,
         bind=bind,
+        tracks_run_id=tracks_run_id,
     )
     if cleanup is None:
         return plan

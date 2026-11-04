@@ -30,6 +30,13 @@ from typing import TYPE_CHECKING
 from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
 from ..gpu_lease import leased_card, names_another_card
+from .model import (
+    BOUND_STATUS,
+    COMPLETE_STATUSES,
+    TRACKS_INPUT,
+    FeatureStepSpec,
+    Recipe,
+)
 from .plan import (
     MISSING_SAMPLE,
     Plan,
@@ -38,13 +45,16 @@ from .plan import (
     step_target,
 )
 from .resolve import build_step_feature
-from .model import BOUND_STATUS, COMPLETE_STATUSES
 
 if TYPE_CHECKING:
+    from collections.abc import Collection, Sequence
+
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
+    from mosaic.core.scope import Scope
 
+    from ..tracks_index import AmbiguousTracksVariant
     from .wire import Problem
 
 
@@ -143,30 +153,115 @@ def preflight(
         refuse_shortfall(plan, planned)
 
 
-def refuse_mixed_schemas(ds: Dataset, step_id: str) -> None:
-    """Refuse a dataset whose tracks tables are of incompatible schemas.
+def refuse_mixed_schemas(
+    ds: Dataset,
+    step_id: str,
+    *,
+    recipe: Recipe | None = None,
+    tracks_run_id: str | None = None,
+    scope: Scope | None = None,
+    only: str | None = None,
+    bound: Collection[str] = (),
+) -> None:
+    """Refuse tracks tables a recipe would read that it cannot read as one.
 
     ``trex_v1``'s spatial columns are centimetres and its ``X`` is a head
     position, so mixing one with a ``mosaic_v1`` table is mixing units and
     landmarks. The predicate is the loader's own, called here so the refusal
     arrives before the work rather than partway through it.
 
-    **Asked of the whole dataset, and before planning rather than after.** The
-    term a feature identifier carries for the tables it reads is deliberately
-    scope-free -- a scope-free feature must get one identifier for every scope --
-    so resolving the identity of a feature reading unpinned tracks against a mixed
-    dataset already fails. Running the check first is what turns that into a
-    refusal naming the schemas, instead of an exception out of the middle of a
-    hash.
+    **An unpinned reader is asked of the whole dataset.** A feature step that
+    reads the tracks with neither a ``tracks`` reference nor *tracks_run_id*
+    hashes every entry's variant, whatever its scope: the term a feature
+    identifier carries for the tables it reads is scope-free, so that a
+    scope-free feature gets one identifier for every scope. Over such a
+    reader both checks read every entry. A mixture of families raises
+    ``schema_family_mismatch`` here instead of an exception out of the middle
+    of a hash, and an entry of two variants raises ``variant_ambiguous``,
+    because no identity of the reader is defined. Without such a reader, or
+    given a variant, the family check reads *tracks_run_id* over *scope* alone.
 
-    **Two variants of one entry are not a mixture.** Which of them to read is a
-    question for the step that reads tracks, and the plan reports a step that
-    leaves it open. A step that reads none, such as a tracker, has no such question.
+    **Two variants of one entry are not a mixture.** A step that reads no
+    tracks, such as a tracker, or one that names its variant, has no question
+    to answer, so a tracker sweep of one family passes.
+
+    Args:
+        ds: The dataset whose tracks index to read.
+        step_id: The step that refuses, empty for a submission. An empty one
+            names the first unpinned reader in a ``variant_ambiguous`` refusal.
+        recipe: The recipe whose feature steps read the tracks. ``None`` checks
+            the families of the whole dataset and no variant.
+        tracks_run_id: The request's variant, ``None`` for none.
+        scope: What the request covers, ``None`` for everything.
+        only: Ask about this step's reading alone, as a step does at its start.
+        bound: The steps a request binds to a run. A bound step is the run
+            it names and is never executed, so it reads no tracks.
+
+    Raises:
+        StepRefused: ``schema_family_mismatch`` or ``variant_ambiguous``.
     """
+    readers = (
+        _unpinned_readers(recipe, only, bound)
+        if recipe is not None and tracks_run_id is None
+        else ()
+    )
     try:
-        refuse_mixed_track_schemas(ds)
+        if readers:
+            refuse_mixed_track_schemas(ds)
+        else:
+            refuse_mixed_track_schemas(ds, tracks_run_id=tracks_run_id, scope=scope)
     except ValueError as exc:
         raise StepRefused("schema_family_mismatch", step_id, str(exc)) from exc
+    if not readers:
+        return
+    from ..tracks_index import (
+        AmbiguousTracksVariant,
+        read_tracks_index,
+        select_variant_rows,
+    )
+
+    try:
+        _ = select_variant_rows(read_tracks_index(ds), None)
+    except AmbiguousTracksVariant as ambiguous:
+        raise _variant_ambiguous(step_id or readers[0], readers, ambiguous) from None
+
+
+def _unpinned_readers(
+    recipe: Recipe, only: str | None, bound: Collection[str]
+) -> tuple[str, ...]:
+    """The unbound feature steps of *recipe* reading the tracks with no variant."""
+    return tuple(
+        step.id
+        for step in recipe.steps
+        if isinstance(step, FeatureStepSpec)
+        and TRACKS_INPUT in step.inputs
+        and step.tracks is None
+        and step.id not in bound
+        and (only is None or step.id == only)
+    )
+
+
+def _variant_ambiguous(
+    step_id: str, readers: Sequence[str], ambiguous: AmbiguousTracksVariant
+) -> StepRefused:
+    group, sequence = ambiguous.entry
+    listing = ", ".join(repr(variant) for variant in ambiguous.variants)
+    steps = ", ".join(repr(reader) for reader in readers)
+    named = f"step {steps} reads" if len(readers) == 1 else f"steps {steps} read"
+    return StepRefused(
+        "variant_ambiguous",
+        step_id,
+        f"{named} the tracks without naming a variant, and the "
+        f"dataset holds {len(ambiguous.variants)} of (group={group!r}, "
+        f"sequence={sequence!r}): {listing}. Name one for the request with "
+        f"tracks_run_id (--tracks-run-id), or pin the step to the step that "
+        f'produces it with "tracks": {{"step": <id>}}.',
+        {
+            "entry": [group, sequence],
+            "variants": list(ambiguous.variants),
+            "steps": list(readers),
+        },
+    )
 
 
 def refuse_shortfall(plan: Plan, planned: PlannedStep) -> None:

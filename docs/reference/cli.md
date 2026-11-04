@@ -1102,8 +1102,12 @@ $ mosaic pipeline validate [OPTIONS]
 Resolve a recipe against a dataset: identities, coverage, what is left.
 
 Exits 1 when the dataset refuses the recipe. Under ``--json`` the plan is
-printed with its problems. The requests of the recipe over an overlapping
-scope that have not ended, running or orphaned, are listed with it.
+printed with its problems. A ``schema_family_mismatch`` or
+``variant_ambiguous`` refusal prints the error envelope with its reason
+instead of the plan, and also exits 1. The requests of the recipe over an
+overlapping scope that have not ended, running or orphaned, are listed with
+it. ``--tracks-run-id`` names the tracks variant that the steps reading the
+tracks read, which an entry of two variants requires.
 ``--step-scope`` narrows one step, as a train/test split narrows the fit
 to the training groups and the scoring to the test groups.
 ``--cleanup superseded`` also reports the superseded runs of the recipe's
@@ -1131,6 +1135,7 @@ $ mosaic pipeline plan [OPTIONS]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
 * `--assume-added GROUP`: Assume this group joins the dataset (repeatable) and note which steps of the plan would refit and which would only re-score, as the same scope covers it. It changes nothing else.
+* `--tracks-run-id <str>`: The tracks variant that each feature step reading the tracks without a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. Needed when an entry holds two variants. Recorded on the request a submission makes: give it to the plan and again to the submission.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1243,6 +1248,7 @@ $ mosaic pipeline submit [OPTIONS]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
+* `--tracks-run-id <str>`: The tracks variant that each feature step reading the tracks without a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. Needed when an entry holds two variants. Recorded on the request a submission makes: give it to the plan and again to the submission.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1296,6 +1302,7 @@ $ mosaic pipeline run [OPTIONS]
 * `--keep-newest <int range>`: With --cleanup, keep this many superseded runs per storage, newest first.  [default: 1; x>=0]
 * `--min-age-hours <float range>`: With --cleanup, keep every run younger than this many hours.  [default: 24.0; x>=0]
 * `--retire <str>`: With --cleanup superseded, also judge the runs that this saved recipe's requests wrote, in any storage (repeatable; a recipe digest, which 'pipeline plan --cleanup superseded' lists). It applies to this plan or submission only: give it to the plan and again to the submission.
+* `--tracks-run-id <str>`: The tracks variant that each feature step reading the tracks without a 'tracks' reference reads, e.g. 'convert-trex.0.2-abc123def0'. Needed when an entry holds two variants. Recorded on the request a submission makes: give it to the plan and again to the submission.
 * `--expect-plan <str>`: With --recipe, the fingerprint that 'mosaic pipeline plan' printed. Refuses the run, writing nothing, when the plan has changed since. Required with --cleanup.
 * `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.

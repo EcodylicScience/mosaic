@@ -139,10 +139,20 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   nothing. A `scope_dependent` step's entries come from `intended_scope` (`scope.py`).
 - `resolve_feature_identity` (`core/pipeline/run.py`) decides a step's `run_id` for the
   planner and the live `Pipeline` alike (`test_the_live_pipeline_and_the_planner_agree`).
-- `refuse_mixed_schemas` compares families and chooses no variant. A step that reads
-  tracks and leaves an ambiguous entry open is a `Problem` at that step, at `tracks` or
-  `params.source_tracks_run_id`, so its siblings run and a step recording its run keeps
-  it (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
+- `Request.tracks_run_id` is the variant a feature step reading `tracks` without a
+  `tracks` reference reads (`resolve_step_spec`), and the variant `intended_scope`
+  measures the plan's entries against. A step with a `tracks` reference keeps its
+  upstream's. `save_request` leaves the key out when it is `None`, and the fingerprint
+  includes it only when it is set (`test_pipeline_plan_fingerprint.py`).
+- `refuse_mixed_schemas` (`step_preflight.py`) runs in `plan_pipeline` before the walk
+  when `refuse` is set, and in `execute_step` for the starting step alone (`only`). With
+  no variant, a feature step reading `tracks` with no `tracks` reference and no bind
+  hashes every entry's variant, so over such a step both checks read the whole dataset
+  whatever the scope: mixed families raise `schema_family_mismatch`, and an entry of
+  two variants `variant_ambiguous`. Otherwise the family check reads the variant over
+  the scope, and two variants of one family pass a sweep. Under `refuse=False` the
+  ambiguity stays a `Problem` at `tracks` or `params.source_tracks_run_id`, so a step
+  recording its run keeps it (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
 - An op step's scope comes from the plan through `_op_scope`. An op with `scope_takes =
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a

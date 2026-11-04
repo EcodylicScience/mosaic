@@ -309,6 +309,8 @@ def plan_fingerprint(plan: Plan) -> str:
     enter it only when there are any, which leaves the fingerprint of a plan
     without them unchanged. They are needed while a conversion defers every
     step's entries, when the counts above cannot tell two narrowings apart.
+    The request's tracks variant enters it only when there is one, for the
+    same reason.
 
     A plan asked for a cleanup (:func:`~.cleanup.plan_with_cleanup`) adds the
     policy and the runs it may remove, so a submission removes only the runs
@@ -330,6 +332,8 @@ def plan_fingerprint(plan: Plan) -> str:
             step_id: _scope_document(narrowed)
             for step_id, narrowed in sorted(plan.step_scopes.items())
         }
+    if plan.tracks_run_id is not None:
+        document["tracks_run_id"] = plan.tracks_run_id
     if plan.cleanup is not None:
         policy = plan.cleanup.policy
         removable = sorted((run.storage, run.run_id) for run in plan.cleanup.removable)

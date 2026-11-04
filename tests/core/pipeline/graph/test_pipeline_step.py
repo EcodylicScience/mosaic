@@ -26,12 +26,11 @@ import mosaic.core.pipeline.parallelism as parallelism
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import (
+    BoundRef,
     CoverageShortfall,
     Plan,
     PlannedStep,
     Recipe,
-    RecipeRefused,
-    RecipeRefusedAtStep,
     Request,
     StepAttempt,
     StepRefused,
@@ -65,6 +64,7 @@ from tests.helpers import (
     add_tracks_variant,
     chain_with_sibling_recipe,
     make_dataset,
+    run_speed,
     write_data_yaml,
     write_driver_lease,
     recipe_saved_by_0_17,
@@ -581,6 +581,7 @@ def test_a_mixed_dataset_cannot_be_submitted_either(tmp_path: Path) -> None:
 
 
 OTHER_VARIANT = "convert-other.0.1-2222222222"
+VARIANT_B = "convert-old.0.1-3333333333"
 
 
 def _sweep(*speeds: float) -> Recipe:
@@ -698,17 +699,70 @@ def test_a_row_without_its_table_does_not_count_as_a_family(tracked: Dataset) ->
 def test_an_unpinned_reader_of_an_ambiguous_entry_is_refused_at_submit(
     tracked: Dataset,
 ) -> None:
-    """The refusal names the step and the variants, and says how a recipe answers."""
+    """The refusal names the entry and its variants, and how a request answers."""
     add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
 
-    with pytest.raises(RecipeRefused) as raised:
+    with pytest.raises(StepRefused) as raised:
         _ = submit_request(tracked, Recipe.model_validate(_chain()))
 
-    [problem] = raised.value.problems
+    assert raised.value.reason == "variant_ambiguous"
+    assert raised.value.step_id == "speed"
+    assert raised.value.detail == {
+        "entry": ["", "seq_a"],
+        "variants": sorted([VARIANT, OTHER_VARIANT]),
+        "steps": ["speed"],
+    }
+    assert "tracks_run_id" in str(raised.value)
+    assert "--tracks-run-id" in str(raised.value)
+    assert '"tracks": {"step":' in str(raised.value)
+
+
+def test_plan_pipeline_refuses_an_ambiguous_entry_before_any_step_resolves(
+    tracked: Dataset,
+) -> None:
+    """Refused before the walk; a plan that records its problems keeps the step's."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(_chain())
+
+    with pytest.raises(StepRefused) as raised:
+        _ = plan_pipeline(tracked, recipe, refuse=True)
+
+    assert raised.value.reason == "variant_ambiguous"
+    [problem] = plan_pipeline(tracked, recipe, refuse=False).problems
     assert (problem.step, problem.where) == ("speed", "tracks")
-    assert VARIANT in problem.message
-    assert OTHER_VARIANT in problem.message
-    assert '"tracks": {"step":' in problem.message
+
+
+def test_an_ambiguous_entry_outside_the_scope_still_refuses_an_unpinned_reader(
+    tracked: Dataset,
+) -> None:
+    """A reader with no variant hashes every entry's, whatever the scope."""
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(_chain())
+    elsewhere = Scope(entries=[("", "seq_b")])
+
+    with pytest.raises(StepRefused) as raised:
+        _ = submit_request(tracked, recipe, scope=elsewhere)
+
+    assert raised.value.reason == "variant_ambiguous"
+    assert raised.value.detail["entry"] == ["", "seq_a"]
+    submitted = submit_request(tracked, recipe, scope=elsewhere, tracks_run_id=VARIANT)
+    assert submitted.request.tracks_run_id == VARIANT
+
+
+def test_a_scoped_reader_over_a_mixed_family_dataset_is_refused(
+    tracked: Dataset,
+) -> None:
+    """Without a variant the family check reads every entry, as the identity does."""
+    add_tracks_variant(tracked, VARIANT_B, "seq_b", std_format="trex_v1")
+
+    with pytest.raises(StepRefused) as raised:
+        _ = submit_request(
+            tracked,
+            Recipe.model_validate(_chain()),
+            scope=Scope(entries=[("", "seq_a")]),
+        )
+
+    assert raised.value.reason == "schema_family_mismatch"
 
 
 def test_an_unpinned_reader_refuses_itself_when_the_ambiguity_arrives_later(
@@ -718,11 +772,14 @@ def test_an_unpinned_reader_refuses_itself_when_the_ambiguity_arrives_later(
     request = submit_request(tracked, Recipe.model_validate(_chain())).request
     add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
 
-    with pytest.raises(RecipeRefusedAtStep) as raised:
+    with pytest.raises(StepRefused) as raised:
         _ = execute_step(tracked, request, "speed")
 
-    assert raised.value.reason == "recipe_refused"
-    assert [problem.where for problem in raised.value.problems] == ["tracks"]
+    assert raised.value.reason == "variant_ambiguous"
+    logged = read_run(run_log_dir(tracked.base_dir), request.execution_of("speed"))
+    assert logged is not None
+    assert logged["status"] == "failed"
+    assert json.loads(logged["error_json"])["reason"] == "variant_ambiguous"
 
 
 def test_an_unresolved_reader_keeps_what_its_guards_read(tracked: Dataset) -> None:
@@ -777,6 +834,171 @@ def test_only_the_unpinned_reader_is_refused(
     assert ran == ["trex"]
 
 
+# --- the tracks variant a request names --------------------------------------
+
+
+def _speed_only() -> Recipe:
+    """One ``speed-angvel`` step reading the tracks, with no ``tracks`` reference."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "params": {"step_size": 1},
+                }
+            ],
+        }
+    )
+
+
+def test_a_request_variant_plans_submits_and_runs_one_entry_of_two_variants(
+    tracked: Dataset,
+) -> None:
+    """The request answers the choice that the recipe leaves open."""
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+    from mosaic.core.pipeline.run import resolve_feature_identity
+
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    submitted = submit_request(tracked, _speed_only(), tracks_run_id=OTHER_VARIANT)
+    outcome = execute_step(tracked, submitted.request, "speed")
+
+    expected, _ = resolve_feature_identity(
+        tracked,
+        SpeedAngvel(params={"step_size": 1}),
+        scope=Scope(entries=[("", "seq_a")]),
+        tracks_run_id=OTHER_VARIANT,
+    )
+    assert submitted.request.tracks_run_id == OTHER_VARIANT
+    assert submitted.plan.scope == frozenset({("", "seq_a")})
+    assert outcome.run_id == expected
+    assert outcome.covered == 1
+    logged = read_run(
+        run_log_dir(tracked.base_dir), submitted.request.execution_of("speed")
+    )
+    assert logged is not None
+    assert logged["tracks_variant"] == OTHER_VARIANT
+
+
+def test_a_request_variant_names_the_run_a_single_feature_run_names(
+    tracked: Dataset,
+) -> None:
+    """A step and a single run over one variant serve each other's cache."""
+    from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+    from mosaic.core.pipeline.run import run_feature
+
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+    single = run_feature(
+        tracked,
+        SpeedAngvel(params={"step_size": 1}),
+        scope=Scope(entries=[("", "seq_a")]),
+        tracks_run_id=OTHER_VARIANT,
+    )
+
+    submitted = submit_request(tracked, _speed_only(), tracks_run_id=OTHER_VARIANT)
+
+    assert submitted.plan.step("speed").run_id == single.run_id
+    assert submitted.plan.step("speed").status == "complete"
+
+
+def test_a_deferred_feature_step_carries_the_request_variant(tmp_path: Path) -> None:
+    """A step whose identity waits on a conversion still knows which tables it reads."""
+    from tests.helpers import calms21_dataset, converting_recipe
+
+    dataset = calms21_dataset(
+        tmp_path / "ds", {"train": {"a": {"s1": 40}}}, seed=3, n_classes=2
+    )
+    variant = dataset.track_conversion_variant("calms21_npy")
+    recipe = converting_recipe(
+        {
+            "id": "pca",
+            "type": "feature",
+            "feature": "pair-posedistance-pca",
+            "inputs": ["tracks"],
+            "after": ["tracks"],
+        },
+    )
+
+    plan = plan_pipeline(
+        dataset, recipe, request=_request_naming(variant), refuse=False
+    )
+
+    pca = plan.step("pca")
+    assert pca.run_id is None
+    assert pca.spec.tracks_run_id == variant
+
+
+def _request_naming(variant: str) -> Request:
+    return Request(request_id="R", recipe_digest="0" * 16, tracks_run_id=variant)
+
+
+def test_a_resample_then_read_recipe_runs_and_resubmits(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A feature pinned to an op's tracks needs no request variant, then or after.
+
+    ``run_op`` is stubbed to write the variant the plan minted for every entry,
+    as the op does, because the fixture's tables carry no frame times to
+    re-grid.
+    """
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "steps": [
+                {
+                    "id": "regrid",
+                    "type": "op",
+                    "kind": "resample-tracks",
+                    "params": {"target_fps": 15.0},
+                },
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                    "tracks": {"step": "regrid"},
+                    "params": {"step_size": 1},
+                },
+            ],
+        }
+    )
+
+    first = submit_request(tracked, recipe)
+    regrid = first.plan.step("regrid")
+    resampled = regrid.tracks_variant
+    assert resampled
+
+    def _resample(*args: object, **kwargs: object) -> str:
+        add_tracks_variant(
+            tracked,
+            resampled,
+            "seq_a",
+            "seq_b",
+            std_format="mosaic_v1",
+            producer_run_id=regrid.run_id or "",
+        )
+        return regrid.run_id or ""
+
+    monkeypatch.setattr(step_module, "run_op", _resample)
+    _ = execute_step(tracked, first.request, "regrid")
+    speed = execute_step(tracked, first.request, "speed")
+
+    logged = read_run(
+        run_log_dir(tracked.base_dir), first.request.execution_of("speed")
+    )
+    assert logged is not None
+    assert logged["tracks_variant"] == resampled
+    assert speed.covered == 2
+
+    again = submit_request(tracked, recipe)
+    assert execute_step(tracked, again.request, "regrid").run_id
+    assert execute_step(tracked, again.request, "speed").run_id == speed.run_id
+
+
 def test_a_chained_op_with_no_source_is_a_problem_on_an_ambiguous_entry(
     tracked: Dataset,
 ) -> None:
@@ -825,6 +1047,23 @@ def test_a_pinned_feature_and_its_reader_run_on_a_multi_variant_dataset(
 
     assert execute_step(tracked, request, "speed").covered == 2
     assert execute_step(tracked, request, "templates").covered >= 1
+
+
+def test_a_bound_tracks_reader_is_not_refused_on_an_ambiguous_entry(
+    tracked: Dataset,
+) -> None:
+    """A bound step is the run it names, so it reads no tracks to choose."""
+    older = run_speed(tracked, 3)
+    bind = {"speed": BoundRef(feature="speed-angvel__from__tracks", run_id=older)}
+    recipe = Recipe.model_validate(_chain())
+    request = submit_request(tracked, recipe, bind=bind).request
+    add_tracks_variant(tracked, OTHER_VARIANT, "seq_a", std_format="mosaic_v1")
+
+    plan = plan_pipeline(tracked, recipe, request=request, refuse=True)
+
+    assert plan.step("speed").status == "bound"
+    assert plan.step("speed").spec.tracks_run_id is None
+    assert execute_step(tracked, request, "speed").run_id == older
 
 
 def test_a_finished_unpinned_parent_keeps_its_run_under_a_later_variant(
@@ -919,6 +1158,29 @@ def test_the_cli_refuses_a_scope_flag_on_a_step(tracked: Dataset, flag: str) -> 
     assert result.exit_code == 1
     assert flag in result.output
     assert "A step covers the entries its plan resolved" in result.output
+
+
+def test_run_graph_request_refuses_tracks_run_id(tracked: Dataset) -> None:
+    """A request records its variant at submit, and a step reads it from there."""
+    request = submit_request(tracked, Recipe.model_validate(_chain())).request
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(tracked.manifest_path),
+            "--graph-request",
+            request.request_id,
+            "--step",
+            "speed",
+            "--tracks-run-id",
+            VARIANT,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--tracks-run-id" in result.output
+    assert "mosaic pipeline submit --tracks-run-id" in result.output
 
 
 # --- what an op step hands its op --------------------------------------------

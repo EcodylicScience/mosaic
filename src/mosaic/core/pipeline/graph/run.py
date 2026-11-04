@@ -237,6 +237,7 @@ def run_pipeline(
     cancel_token: CancelToken | None = None,
     step_scopes: Mapping[str, Scope] | None = None,
     parallel: ParallelSettings | None = None,
+    tracks_run_id: str | None = None,
 ) -> PipelineRun:
     """Run every step of *recipe* against *ds*, in order, in this process.
 
@@ -288,6 +289,9 @@ def run_pipeline(
         parallel: How many entries a feature step computes at once, and how
             (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
             computes them in turn.
+        tracks_run_id: The tracks variant that each feature step reading the
+            tracks without a ``tracks`` reference reads. Recorded on the
+            request that is submitted, and ignored when *request* is given.
 
     Returns:
         One :class:`~mosaic.core.pipeline.graph.step.StepOutcome` per step, in
@@ -320,6 +324,7 @@ def run_pipeline(
             inventory=inventory,
             catalog=catalog,
             step_scopes=step_scopes,
+            tracks_run_id=tracks_run_id,
         ).request
     elif allow_partial and not submitted.allow_partial:
         submitted = submitted.model_copy(update={"allow_partial": True})

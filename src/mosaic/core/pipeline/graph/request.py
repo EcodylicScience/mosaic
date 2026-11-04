@@ -44,7 +44,7 @@ from .model import (
 )
 from .plan import Plan, plan_pipeline, takes_no_entries
 from .serialize import plan_fingerprint
-from .step_preflight import StepRefused, refuse_mixed_schemas
+from .step_preflight import StepRefused
 from .resolve import declared_version
 from .recipe_store import read_recipe_document, recipe_path
 from .retirement import validate_retirement
@@ -247,6 +247,7 @@ def submit_request(
     step_scopes: Mapping[str, Scope] | None = None,
     cleanup: CleanupPolicy | None = None,
     retire: Iterable[str] = (),
+    tracks_run_id: str | None = None,
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -292,6 +293,9 @@ def submit_request(
             (:func:`~.retirement.validate_retirement`). *expect_plan* must be the
             fingerprint of a plan reviewed with the same recipes. The request
             records them in ``cleanup.retired``, for this submission alone.
+        tracks_run_id: The tracks variant that each feature step reading the
+            tracks without a ``tracks`` reference reads, recorded on the
+            request. ``None`` leaves each entry's one variant.
 
     Returns:
         The request, the plan, the paths of both documents, and the open
@@ -304,8 +308,9 @@ def submit_request(
         DuplicateRequest: *refuse_duplicates* is set and an open request
             computes a run of the plan. Neither the recipe nor the request is
             written.
-        StepRefused: The dataset's tracks tables are of incompatible schemas, so
-            no feature reading unpinned tracks resolves against it at all.
+        StepRefused: The tracks tables the recipe reads are of incompatible
+            schemas, or a step reads the tracks with no variant named while
+            an entry holds two (:func:`~.step_preflight.refuse_mixed_schemas`).
         CleanupNeedsPlan: *cleanup* is given without *expect_plan*.
         CleanupOnManagedDataset: *cleanup* is given and a service manages the
             dataset.
@@ -314,16 +319,11 @@ def submit_request(
         RetireOwnRecipe: A digest is *recipe*'s own.
         RetireOpenRecipe: A retired recipe has a request that has not ended.
     """
-    # Before planning, and again at each step's own start. Resolving the identity
-    # of a feature reading unpinned tracks against a dataset of mixed schemas
-    # already fails; checking first is what makes that a refusal naming the
-    # schemas rather than an exception out of the middle of a hash.
     if cleanup is not None:
         if expect_plan is None:
             raise CleanupNeedsPlan()
         if ds.manifest.is_managed:
             raise CleanupOnManagedDataset(ds.manifest.managed_by)
-    refuse_mixed_schemas(ds, "")
     narrowing = scope if scope is not None else Scope()
     digest = recipe_digest(recipe)
     retired = validate_retirement(
@@ -344,6 +344,7 @@ def submit_request(
         catalog=catalog,
         step_scopes=narrowed_steps,
         bind=bind or {},
+        tracks_run_id=tracks_run_id,
     )
     if cleanup is not None and inventory is not None and catalog is not None:
         # What plan_with_cleanup does, with the plan_pipeline of this module.
@@ -387,6 +388,7 @@ def submit_request(
         allow_partial=allow_partial,
         max_concurrent_steps=max_concurrent_steps,
         step_scopes=narrowed_steps,
+        tracks_run_id=tracks_run_id,
         step_executions={step.id: new_execution_id() for step in ordered},
         step_versions={
             step.id: declared_version(

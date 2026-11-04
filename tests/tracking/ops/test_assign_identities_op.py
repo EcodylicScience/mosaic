@@ -18,7 +18,7 @@ from mosaic.core.pipeline.appearance import appearance_columns
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.graph import (
     Recipe,
-    RecipeRefused,
+    StepRefused,
     execute_step,
     plan_pipeline,
     submit_request,
@@ -677,22 +677,22 @@ def test_a_recipe_relabels_and_reads_one_of_three_variants(tmp_path: Path) -> No
     assert plan.step("speed").spec.tracks_run_id == _variant(_params())
 
 
-def test_an_unpinned_reader_after_a_relabeling_is_a_problem_at_its_step(
+def test_an_unpinned_reader_after_a_relabeling_is_refused_by_name(
     tmp_path: Path,
 ) -> None:
-    """Every variant is named, and the relabeling step is not refused with it."""
+    """Every variant is named, and the refusal names the reader, not the relabeling."""
     ds = make_dataset(tmp_path / "ds")
     _two_runs_of_each_entry(ds)
     _ = _run(ds, _params())
     recipe = _recipe(_assign_step(SOURCE), _speed_step(None))
 
-    with pytest.raises(RecipeRefused) as raised:
+    with pytest.raises(StepRefused) as raised:
         _ = submit_request(ds, recipe)
 
-    [problem] = raised.value.problems
-    assert (problem.step, problem.where) == ("speed", "tracks")
+    assert raised.value.reason == "variant_ambiguous"
+    assert raised.value.detail["steps"] == ["speed"]
     for variant in (SOURCE, KEYPOINT_VARIANT, _variant(_params())):
-        assert variant in problem.message
+        assert variant in str(raised.value)
 
 
 def test_a_step_reference_names_the_variant_the_tracker_step_writes(
