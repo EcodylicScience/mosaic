@@ -669,10 +669,12 @@ def run_request(
     gpu_steps = frozenset(
         step_id
         for step_id in order
-        if step_id not in request.bind
+        if step_id not in request.stand_ins
         and (
             computed is None
-            or not computed.isdisjoint(ancestors_of(recipe, step_id, cut=request.bind))
+            or not computed.isdisjoint(
+                ancestors_of(recipe, step_id, cut=request.stand_ins)
+            )
         )
         and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
         and step_lane(recipe, step_id) in GPU_LANES

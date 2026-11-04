@@ -690,6 +690,15 @@ class Request(GraphModel):
         """The scope narrowing *step_id*, or ``None`` when only ``scope`` does."""
         return self.step_scopes.get(step_id)
 
+    @property
+    def stand_ins(self) -> frozenset[str]:
+        """The steps that a run stands in for: bound (``bind``) or pinned (``pins``).
+
+        Neither is executed, so a step below one reads that run and nothing above
+        it. A walk over the graph's failures stops at them (``cut``).
+        """
+        return frozenset(self.bind) | frozenset(self.pins)
+
     def execution_of(self, step_id: str) -> str:
         """Which attempt *step_id* is, or ``KeyError``.
 

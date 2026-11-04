@@ -340,7 +340,7 @@ def _before_run(
         tracks_run_id=request.tracks_run_id,
         scope=request.scope,
         only=step_id,
-        bound=request.bind.keys() | request.pins.keys(),
+        bound=request.stand_ins,
     )
 
     held = InventoryCache(ds) if inventory is None else inventory
@@ -568,19 +568,20 @@ def _pinned_parents(
     and so on. Planning an ancestor from a prediction while pinning a parent from
     a fact would give this step an identifier neither of them agrees with.
 
-    A step the request binds to a run is the pinned run and stands for nothing
-    above it, so neither it nor what is only above it is read (``cut``), and a
-    bound step pins nothing.
+    A step the request binds or pins to a run is that run and stands for
+    nothing above it, so neither it nor what is only above it is read
+    (``cut``), and such a step pins nothing.
 
     An ancestor with no run-log contributes nothing and is resolved normally --
     that is a step served from an earlier request's cache, which is the ordinary
     state of a partly built graph, not a fault.
     """
-    if step_id in request.bind:
+    if step_id in request.stand_ins:
         return {}
     logs = run_log_dir(ds.base_dir)
     pinned: dict[str, str] = {}
-    for ancestor in sorted(ancestors_of(recipe, step_id, cut=request.bind) - {step_id}):
+    above = ancestors_of(recipe, step_id, cut=request.stand_ins) - {step_id}
+    for ancestor in sorted(above):
         step = recipe.step(ancestor)
         if not isinstance(step, FeatureStepSpec):
             continue

@@ -29,8 +29,8 @@ step alone, so a sibling that reads no unpinned tracks still runs. It was a `Pro
 `refuse=False` still lists that problem. Over such a step the schema-family check reads
 the whole dataset too; with a variant or without such a step it reads the variant over
 the scope. `refuse_mixed_schemas` takes `recipe=`, `tracks_run_id=`, `scope=` and
-`only=`, and `submit_request` no longer calls it before planning, so a malformed recipe, a
-duplicate and a retirement refusal now come before a schema refusal.
+`only=`, and `submit_request` no longer calls it before planning, so a malformed recipe and
+a retirement refusal now come before a schema refusal.
 
 **The CLI and the MCP server take the variant.** `mosaic pipeline plan`, `submit` and
 `run` take `--tracks-run-id`, and the MCP tools `plan_recipe` and `submit_pipeline` take
@@ -45,22 +45,21 @@ that fits over its scope (`fits` and `scope_dependent`: a template step, or `arh
 storage. `plan_pipeline`, `submit_request`, `run_pipeline` and `plan_with_cleanup` take
 `pins`. The pinned step is not executed: it reads complete over any scope, is served
 from the cache under the pin, under `overwrite` too, and the steps below it derive their
-identity from the run. It is exempt from the held-out guard and from the tracks variant
-check, as a bound step is, and a step reading it through `inputs` is a problem at
-`inputs`. A cleanup keeps a run that another request pins, as it keeps a bound one. Four
+identity from the run. A failure above it does not block or refuse the steps below it,
+and it is exempt from the held-out guard and from the tracks variant check, as a bound
+step is (`Request.stand_ins` names both kinds). A step reading it through `inputs` is a
+problem at `inputs`. A cleanup keeps a run that another request pins, as it keeps a bound one. Four
 new `RefusalReason` members refuse a pin before anything is written: `pin_unknown_step`,
 `pin_not_fitted`, `pin_run_missing` and `pin_run_unfinished`. `Request` refuses an empty
 pin and a step both bound and pinned. `save_request` leaves the key out when it is
 empty, and the plan fingerprint covers the pins only when there are any. No run id
 moves.
 
-**A submission plans with its binds.** `submit_request` plans with a request carrying
-the submission's `bind`, variant and pins (`planning_request`), as each of its steps
-plans, and a cleanup it judges keeps the bound runs as `bound`. A bound tracks reader
-over an entry of two variants is therefore submitted, where it was refused at submit and
-ran at its step. A bound submission's fingerprint can change. The MCP `plan_recipe`
-takes `bind`, and both it and `submit_pipeline` plan with it, so a plan reviewed with
-the bind fingerprints as the bound submission does. No run id moves.
+**A submission plans with its variant and pins.** `submit_request` plans with
+`planning_request`, a request carrying the variant and the pins beside the binds, as each
+of its steps plans, so its plan and fingerprint are the ones a step makes. A cleanup it
+judges keeps the bound runs through that request (`own_request`) instead of by filtering
+the approved runs. No run id moves.
 
 **A request applies the fit of a finished request.** `Request.applies_request_id`
 (default `None`) names a finished request of the dataset, and `plan_pipeline`,

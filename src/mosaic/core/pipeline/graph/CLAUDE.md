@@ -35,9 +35,10 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `where` as is. `execute_step` plans a bound step, so the same check refuses a bind
   that a request submitted before it holds, and otherwise records a cache hit of the
   pinned run (outcome `bound`). Both drivers call it in their own process and start no
-  step process for one. `ancestors_of` and `descendants_of` take `cut=request.bind`,
-  so `_pinned_parents` and `blocked_by` neither enter a bound step nor walk past it,
-  and a bound step pins nothing: a failure above it does not reach the steps below.
+  step process for one. `ancestors_of` and `descendants_of` take
+  `cut=request.stand_ins`, the bound and pinned steps, so `_pinned_parents`,
+  `blocked_by` and the driver's GPU lease neither enter such a step nor walk past it,
+  and it pins nothing: a failure above it does not reach the steps below.
   `request_rollup` reads it through `bound_attempt` unless its run-log records a
   refusal, so the verdict and a wait end. The held-out guard and `reach_findings`
   skip it, since it fits nothing.

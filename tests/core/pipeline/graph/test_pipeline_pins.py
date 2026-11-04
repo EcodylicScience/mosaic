@@ -26,14 +26,18 @@ from mosaic.core.pipeline.graph import (
     load_request,
     plan_fingerprint,
     plan_pipeline,
+    record_step_ended,
+    request_rollup,
     requests_root,
     run_pipeline,
+    run_request,
     submit_request,
 )
 from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.scope import Scope
-from tests.helpers import calms21_dataset
+from mosaic.runlog import read_run, run_log_dir
+from tests.helpers import calms21_dataset, write_driver_lease
 
 TRAIN = Scope(groups=["train"])
 TEST = Scope(groups=["test"])
@@ -336,3 +340,89 @@ def test_a_request_refuses_a_step_both_bound_and_pinned() -> None:
             bind={"templates": BoundRef(feature="extract-templates", run_id="0.3-a")},
             pins={"templates": "0.3-b"},
         )
+
+
+# --- a failure above a pinned step -------------------------------------------------
+
+
+def _guarded_clusters() -> Recipe:
+    """Clusters of ``other`` over the pinned ``templates``, which a ``pre`` precedes.
+
+    ``pre`` is above ``templates`` through ``speed``, and above nothing else.
+    """
+    return _recipe(
+        {
+            "id": "pre",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+            "params": {"step_size": 2},
+        },
+        {**SPEED, "after": ["pre"]},
+        TEMPLATES,
+        {
+            "id": "other",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": ["tracks"],
+            "params": {"step_size": 3},
+        },
+        {**KMEANS, "inputs": [{"step": "other"}]},
+    )
+
+
+def _pinned_clusters_with_a_failed_pre(ds: Dataset) -> Request:
+    """Submit the clusters with ``templates`` pinned, run ``other``, and record
+    ``pre`` failed."""
+    pin = _fit_templates(ds)
+    request = submit_request(
+        ds, _guarded_clusters(), scope=TEST, pins={"templates": pin}
+    ).request
+    record_step_ended(
+        ds,
+        request.execution_of("pre"),
+        step_id="pre",
+        owner="",
+        status="failed",
+        error_json='{"type": "ValueError", "message": "bad"}',
+    )
+    _ = execute_step(ds, request, "other")
+    return request
+
+
+def test_a_failure_above_a_pinned_step_does_not_refuse_the_step_below(
+    split: Dataset,
+) -> None:
+    request = _pinned_clusters_with_a_failed_pre(split)
+
+    outcome = execute_step(split, request, "kmeans")
+
+    assert outcome.state == "ran"
+
+
+def test_a_failure_above_a_pinned_step_leaves_the_request_running_under_its_lease(
+    split: Dataset,
+) -> None:
+    """``kmeans`` reads the pinned ``templates``. It can start after ``pre`` failed,
+    and ``other``, which nothing failed above, has finished."""
+    request = _pinned_clusters_with_a_failed_pre(split)
+    _ = write_driver_lease(split.base_dir, request.request_id, stale=False)
+
+    assert request_rollup(split.base_dir, request).status == "running"
+
+
+def test_a_resumed_driver_runs_the_step_below_a_pinned_step_whose_ancestor_failed(
+    split: Dataset,
+) -> None:
+    """``pre`` failed and its driver was killed. On resume the failure blocks
+    ``speed`` alone, and ``kmeans`` runs over the pinned ``templates``."""
+    request = _pinned_clusters_with_a_failed_pre(split)
+    _ = write_driver_lease(split.base_dir, request.request_id, stale=True)
+
+    done = run_request(split, request)
+
+    assert done.blocked == ("speed",)
+    assert "kmeans" in done.ran
+    record = read_run(run_log_dir(split.base_dir), request.execution_of("kmeans"))
+    assert record is not None
+    assert record["status"] == "finished"

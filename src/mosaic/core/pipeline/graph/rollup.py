@@ -227,10 +227,10 @@ def request_rollup(
 def blocked_by(recipe: Recipe, request: Request, step_id: str) -> frozenset[str]:
     """Return the descendants of *step_id*, which its failure keeps from running.
 
-    A step that *request* binds to a run reads nothing above it. The walk
-    neither enters it nor passes through it.
+    A step that *request* binds or pins to a run reads nothing above it. The
+    walk neither enters it nor passes through it.
     """
-    return descendants_of(recipe, step_id, cut=request.bind) - {step_id}
+    return descendants_of(recipe, step_id, cut=request.stand_ins) - {step_id}
 
 
 def _may_start_a_step(

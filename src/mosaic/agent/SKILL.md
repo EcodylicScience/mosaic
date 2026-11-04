@@ -285,10 +285,10 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - To reuse a fit over other sequences, pin its step to the finished run:
   `pins={"<step id>": "<run id>"}` on `submit_request` or `run_pipeline`
   (`--pin STEP=RUN_ID`, repeatable, on `mosaic pipeline plan`, `submit` and `run`;
-  `pins` on `plan_recipe` and `submit_pipeline`). The pinned step does not run, and the
-  steps below it read that run. Only a step that fits over its scope takes a pin: a
-  template step, or `arhmm`, `kpms`, `vame` or `pair-posedistance-pca` without a
-  `model`. A pin is refused before anything is written with `pin_unknown_step` (no
+  `pins` on `plan_recipe` and `submit_pipeline`). The pinned step does not run, the
+  steps below it read that run, and a failure above it does not block them. Only a step
+  that fits over its scope takes a pin: a template step, or `arhmm`, `kpms`, `vame` or
+  `pair-posedistance-pca` without a `model`. A pin is refused before anything is written with `pin_unknown_step` (no
   feature step of the recipe has that id),
   `pin_not_fitted` (pin the template step that the fitter reads instead, or leave the
   step unpinned), `pin_run_missing` (the step's storage holds no such run; check the run
