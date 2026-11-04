@@ -92,6 +92,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.strict_model import StrictModel
 
 from .classifier_common import (
+    FOLD_TABLE_FILE,
     DERIVED_FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     FoldLookup,
@@ -427,7 +428,7 @@ class ProbabilityEnsembleFeature:
             return
         run_root.mkdir(parents=True, exist_ok=True)
         if self._cv_table is not None:
-            _ = write_parquet_atomic(self._cv_table, run_root / "cv_folds.parquet")
+            _ = write_parquet_atomic(self._cv_table, run_root / FOLD_TABLE_FILE)
         report = json.dumps(self._report, indent=2)
         atomic_write(
             run_root / "ensemble_report.json",

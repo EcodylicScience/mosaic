@@ -93,6 +93,7 @@ from mosaic.optional_dependency import (
 )
 
 from .classifier_common import (
+    FOLD_TABLE_FILE,
     FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     CvBlocksPerSequence,
@@ -812,7 +813,7 @@ class LightningActionFeature(FitReporting):
                     shutil.rmtree(dest)
                 shutil.copytree(self._model_dir / name, dest)
         if self._cv_table is not None:
-            _ = write_parquet_atomic(self._cv_table, run_root / "cv_folds.parquet")
+            _ = write_parquet_atomic(self._cv_table, run_root / FOLD_TABLE_FILE)
 
         # Save metadata bundle
         bundle: LightningActionModelBundle = {

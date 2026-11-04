@@ -70,6 +70,7 @@ from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.track_quality import consecutive_runs
 
 from .classifier_common import (
+    FOLD_TABLE_FILE,
     DEFAULT_CLASS_DESCRIPTION,
     FoldLookup,
     ThresholdsArtifact,
@@ -92,8 +93,6 @@ __all__ = ["SmoothProbabilitiesFeature"]
 
 _TRUNCATE: Final = 4.0
 """The standard deviations at which the Gaussian kernel is cut, scipy's default."""
-
-_FOLD_TABLE: Final = "cv_folds.parquet"
 
 _NO_PROBABILITIES: Final = (
     "[smooth-probabilities] the input has no prob_<class> columns. Its input is "
@@ -328,7 +327,7 @@ class SmoothProbabilitiesFeature:
             return True
         self._fold_table = pd.read_parquet(path)
         self._folds = FoldLookup.from_table(self._fold_table)
-        return (run_root / _FOLD_TABLE).exists()
+        return (run_root / FOLD_TABLE_FILE).exists()
 
     def fit(self, inputs: InputStream) -> None:
         """Read nothing: the step learns nothing, and only copies the fold table."""
@@ -399,7 +398,7 @@ class SmoothProbabilitiesFeature:
         if self._fold_table is None:
             return
         run_root.mkdir(parents=True, exist_ok=True)
-        _ = write_parquet_atomic(self._fold_table, run_root / _FOLD_TABLE)
+        _ = write_parquet_atomic(self._fold_table, run_root / FOLD_TABLE_FILE)
 
     # --- Smoothing ---
 

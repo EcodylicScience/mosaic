@@ -80,6 +80,7 @@ __all__ = [
     "DECISION_THRESHOLD_DESCRIPTION",
     "DEFAULT_CLASS_DESCRIPTION",
     "PROBABILITY_COLUMN",
+    "FOLD_TABLE_FILE",
     "THRESHOLDS_FILE",
     "TUNED_DECISION_THRESHOLD_DESCRIPTION",
     "CV_BLOCKS_PER_SEQUENCE_DESCRIPTION",
@@ -205,6 +206,9 @@ TUNED_DECISION_THRESHOLD_DESCRIPTION: Final = (
 
 THRESHOLDS_FILE: Final = "thresholds.parquet"
 """What ``tune-threshold`` calls the thresholds it saves, one row per class."""
+
+FOLD_TABLE_FILE: Final = "cv_folds.parquet"
+"""What a classifier calls the fold table it saves beside its output."""
 
 CV_SEED_DESCRIPTION: Final = (
     "The seed that deals the training sequences into folds. It changes the "
@@ -1655,7 +1659,7 @@ def input_fold_table_path(lookup: DependencyLookup) -> Path | None:
     root = input_run_root(lookup)
     if root is None:
         return None
-    path = root / "cv_folds.parquet"
+    path = root / FOLD_TABLE_FILE
     return path if path.exists() else None
 
 

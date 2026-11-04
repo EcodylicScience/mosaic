@@ -48,6 +48,7 @@ from mosaic.core.pipeline.graph.compatibility import GpuWhen
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .classifier_common import (
+    FOLD_TABLE_FILE,
     DEFAULT_CLASS_DESCRIPTION,
     CvBlock,
     CvBlocksPerSequence,
@@ -1067,7 +1068,7 @@ class XgboostFeature(FitReporting):
             summary = pd.DataFrame(self._metrics).T
             summary.to_csv(run_root / "summary.csv")
         if self._cv_table is not None:
-            _ = write_parquet_atomic(self._cv_table, run_root / "cv_folds.parquet")
+            _ = write_parquet_atomic(self._cv_table, run_root / FOLD_TABLE_FILE)
 
         bundle: XgboostModelBundle = {
             "model": self._model,

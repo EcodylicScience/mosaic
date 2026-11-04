@@ -127,6 +127,7 @@ from mosaic.core.track_quality import consecutive_runs
 from mosaic.optional_dependency import OptionalModule, Prerequisite
 
 from .classifier_common import (
+    FOLD_TABLE_FILE,
     FIT_SCOPE_REMEDY,
     DEFAULT_CLASS_DESCRIPTION,
     CvBlocksPerSequence,
@@ -1073,7 +1074,7 @@ class SequenceClassifier(FitReporting):
             return
         run_root.mkdir(parents=True, exist_ok=True)
         if self._cv_table is not None:
-            _ = write_parquet_atomic(self._cv_table, run_root / "cv_folds.parquet")
+            _ = write_parquet_atomic(self._cv_table, run_root / FOLD_TABLE_FILE)
         write_bundle(run_root / "sequence_classifier_model.joblib", self._bundle)
 
     # --- Fitting ---
