@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Final
 from mosaic.optional_dependency import OptionalModule
 
 from ..gpu_lease import leases_cards_here, names_another_card
-from .lanes import GPU_INFER_LANE, GPU_TRAIN_LANE
+from .lanes import GPU_LANES
 from .wire import Problem
 
 if TYPE_CHECKING:
@@ -139,6 +139,6 @@ def card_device_cautions(steps: Sequence[PlannedStep]) -> tuple[Problem, ...]:
             "index is refused. Set device to 0 or 'cuda'",
         )
         for planned in steps
-        if planned.lane in (GPU_TRAIN_LANE, GPU_INFER_LANE)
+        if planned.lane in GPU_LANES
         and names_another_card(planned.spec.params.get("device"))
     )

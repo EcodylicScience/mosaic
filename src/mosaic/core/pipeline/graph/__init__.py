@@ -118,6 +118,7 @@ if TYPE_CHECKING:
     from .lanes import (
         DEFAULT_LANE as DEFAULT_LANE,
         GPU_INFER_LANE as GPU_INFER_LANE,
+        GPU_LANES as GPU_LANES,
         GPU_TRAIN_LANE as GPU_TRAIN_LANE,
         TRANSCODE_LANE as TRANSCODE_LANE,
         lane_for as lane_for,
@@ -484,6 +485,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "StepFailureKey": ".failures",
     "DEFAULT_LANE": ".lanes",
     "GPU_INFER_LANE": ".lanes",
+    "GPU_LANES": ".lanes",
     "GPU_TRAIN_LANE": ".lanes",
     "TRANSCODE_LANE": ".lanes",
     "lane_for": ".lanes",
@@ -766,6 +768,7 @@ __all__ = [
     "EXCLUDED_KINDS",
     "FAILED_ENTRY_SAMPLE",
     "GPU_INFER_LANE",
+    "GPU_LANES",
     "GPU_TRAIN_LANE",
     "LARGE_SCOPE_ENTRIES",
     "MAX_EXPANDED_ITEMS",

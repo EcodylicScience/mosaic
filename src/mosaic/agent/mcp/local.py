@@ -1856,8 +1856,7 @@ def _submission_findings(
 ) -> list[ConfirmationFinding]:
     """Return each confirmation condition that submitting *plan* meets."""
     from mosaic.core.pipeline.graph import (
-        GPU_INFER_LANE,
-        GPU_TRAIN_LANE,
+        GPU_LANES,
         computed_runs,
         describe_duplicates,
         open_duplicates,
@@ -1868,7 +1867,7 @@ def _submission_findings(
 
     findings: list[ConfirmationFinding] = []
     for planned in plan.steps:
-        if planned.lane in (GPU_TRAIN_LANE, GPU_INFER_LANE):
+        if planned.lane in GPU_LANES:
             findings.append(
                 ConfirmationFinding(
                     "gpu_lane", f"step {planned.step_id!r} runs on lane {planned.lane}"

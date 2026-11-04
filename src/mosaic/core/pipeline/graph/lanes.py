@@ -33,6 +33,7 @@ from .compatibility import Declaration
 __all__ = [
     "DEFAULT_LANE",
     "GPU_INFER_LANE",
+    "GPU_LANES",
     "GPU_TRAIN_LANE",
     "TRANSCODE_LANE",
     "lane_for",
@@ -48,6 +49,9 @@ GPU_TRAIN_LANE: Final = "gpu-train"
 
 GPU_INFER_LANE: Final = "gpu-infer"
 """Inference and anything else wanting a GPU. Shares the ``gpu`` class with training."""
+
+GPU_LANES: Final = frozenset({GPU_TRAIN_LANE, GPU_INFER_LANE})
+"""The lanes of GPU work, whose steps a local driver leases a card to."""
 
 TRANSCODE_LANE: Final = "transcode"
 """Media work bound by ffmpeg: transcodes and the joined and store exports.

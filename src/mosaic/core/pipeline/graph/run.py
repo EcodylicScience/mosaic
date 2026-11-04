@@ -97,7 +97,7 @@ from ..gpu_lease import (
     step_environment,
     try_lease,
 )
-from .lanes import DEFAULT_LANE, GPU_INFER_LANE, GPU_TRAIN_LANE, lane_for_step
+from .lanes import DEFAULT_LANE, GPU_LANES, lane_for_step
 from .model import OpStepSpec
 from .plan import plan_pipeline
 from .request import load_recipe_for_request, step_argv, submit_request
@@ -173,9 +173,6 @@ only the branch below it.
 
 _POLL_SECONDS: Final = 0.2
 """How often a driver checks its cancel token while a step runs or waits for a card."""
-
-_GPU_LANES: Final = frozenset({GPU_TRAIN_LANE, GPU_INFER_LANE})
-"""The lanes whose steps the driver leases a GPU card to."""
 
 _DETACHED: list[subprocess.Popen[bytes]] = []
 """The detached drivers that this process started and that are still running.
@@ -649,7 +646,7 @@ def run_request(
         for step_id in order
         if step_id not in request.bind
         and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
-        and step_lane(recipe, step_id) in _GPU_LANES
+        and step_lane(recipe, step_id) in GPU_LANES
     )
     cards = leasable_cards(gpu_cards) if gpu_cards is not None or gpu_steps else None
     token = CancelToken() if cancel_token is None else cancel_token
