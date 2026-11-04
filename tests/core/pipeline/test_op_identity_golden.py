@@ -50,6 +50,7 @@ import pytest
 from mosaic_media import CHROME_149
 from mosaic_media.transcode import ANALYSIS_ENCODING
 
+from mosaic.behavior.label_library.predictions_table import PredictionsTableParams
 from mosaic.core.annotations.keypoint_map import KeypointMap, resolve_keypoint_map
 from mosaic.core.annotations.model import KeypointSchema
 from mosaic.core.pipeline._utils import hash_params
@@ -927,6 +928,17 @@ def _labels_convert_variant() -> str:
     )
 
 
+def _labels_predictions_table_variant() -> str:
+    params = PredictionsTableParams(
+        files="labels_raw/predictions/xgb-oof/*", class_ids={"other": 0, "attack": 1}
+    )
+    return labels_run_id(
+        label_converter_op("predictions_table"),
+        "0.1",
+        label_convert_variant_payload("predictions", params.identity_dump()),
+    )
+
+
 def _labels_raw_two_files() -> str:
     # Byte-identical members to composition/tracks-raw-two-files, and it MUST mint
     # a different digest: source_composition_payload separates the two roots by
@@ -1232,6 +1244,7 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/resample-variant-other-upstream": _resample_variant_other_upstream,
     "tracks/assign-arenas-variant": _assign_arenas_variant,
     "labels/convert-variant": _labels_convert_variant,
+    "labels/predictions-table-variant": _labels_predictions_table_variant,
     "trex/run-id-settings": _trex_run_id_settings,
     "trex/conversion-run-id": _trex_conversion_run_id,
     "sleap/run-id-settings": _sleap_run_id_settings,

@@ -261,9 +261,11 @@ def test_an_inference_table_lands_at_each_divisions_first_frame(
     assert found == [(0, 0, 9), (10, 10, 19), (20, 20, 21)]
 
 
-def label_frames(dataset: Dataset, source_format: str) -> list[int]:
+def label_frames(
+    dataset: Dataset, source_format: str, kind: str = "behavior"
+) -> list[int]:
     """The event frames of the one entry that *source_format* converted."""
-    rows = read_labels_index(dataset, "behavior")
+    rows = read_labels_index(dataset, kind)
     (path,) = rows.loc[rows["run_id"].str.contains(source_format), "abs_path"]
     with np.load(dataset.resolve_path(str(path)), allow_pickle=True) as npz:
         return np.asarray(npz["frames"], dtype=np.int64).tolist()
@@ -272,7 +274,7 @@ def label_frames(dataset: Dataset, source_format: str) -> list[int]:
 def test_labels_on_the_tracks_axis_keep_their_frames_and_others_move(
     tmp_path: Path, requires_ffmpeg: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both conversions label the second division, which starts at frame 10."""
+    """Every conversion labels the second division, which starts at frame 10."""
     monkeypatch.setitem(
         LABEL_CONVERTERS, (TracksAxisEntries.src_format, "behavior"), TracksAxisEntries
     )
@@ -285,17 +287,34 @@ def test_labels_on_the_tracks_axis_keep_their_frames_and_others_move(
     calms21.mkdir()
     annotations = {RECORDING: {sequence: {"annotations": [0, 1, 2]}}}
     np.save(calms21 / "labels.npy", np.array(annotations, dtype=object))
+    predictions = tmp_path / "predictions"
+    predictions.mkdir()
+    pd.DataFrame(
+        {
+            "group": [RECORDING] * 2,
+            "sequence": [sequence] * 2,
+            "frame": [12, 15],
+            "predicted_label": [0, 1],
+        }
+    ).to_csv(predictions / "own.csv", index=False)
     dataset.index_labels_raw(
         [on_tracks], patterns=["*.npy"], src_format=TracksAxisEntries.src_format
     )
     dataset.index_labels_raw([calms21], patterns=["*.npy"], src_format="calms21_npy")
+    dataset.index_labels_raw(
+        [predictions], patterns=["*.csv"], src_format="predictions_table"
+    )
 
     for source_format in (TracksAxisEntries.src_format, "calms21_npy"):
         _ = dataset.convert_all_labels(kind="behavior", source_format=source_format)
+    _ = dataset.convert_all_labels(
+        kind="predictions", source_format="predictions_table"
+    )
 
     assert first_frame == 10
     assert label_frames(dataset, TracksAxisEntries.src_format) == list(LISTED_FRAMES)
     assert label_frames(dataset, "calms21_npy") == [10, 11, 12]
+    assert label_frames(dataset, "predictions_table", "predictions") == [12, 15]
 
 
 def neighbors(dataset: Dataset) -> list[tuple[str, str]]:

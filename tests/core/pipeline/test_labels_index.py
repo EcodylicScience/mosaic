@@ -509,6 +509,7 @@ assert "mosaic.behavior" not in sys.modules, "the label library was already impo
 formats = registered_label_formats()
 assert "calms21_npy" in formats, formats
 assert "boris_aggregated_csv" in formats, formats
+assert "predictions_table" in formats, formats
 print("OK")
 """
 

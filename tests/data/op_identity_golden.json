@@ -25,6 +25,7 @@
   "infer-pose/model": "040dbc86f1",
   "infer-pose/run-id-media": "infer-pose.0.5-e600f10a01",
   "labels/convert-variant": "convert-labels-calms21_npy.0.1-66b4fd96be",
+  "labels/predictions-table-variant": "convert-labels-predictions_table.0.1-4853732a3b",
   "litpose/run-id-settings": "litpose.2.3-0bef161dde",
   "litpose/run-id-settings-media": "litpose.2.3-55d5614760",
   "litpose/single-model": "feac95ad89",

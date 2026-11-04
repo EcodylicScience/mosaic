@@ -13,7 +13,7 @@ and need the name and the knobs.
 | [Ops](ops.md) | 28 registered ops -- trackers, training, inference, frame extraction and media |
 | [Media steps](media-steps.md) | 7 steps a `preprocess` run applies to make a media variant, with their parameters |
 | [CLI](cli.md) | Every `mosaic` command and flag |
-| [Track formats](track-formats.md) | 8 track converters, 4 schemas, 3 label converters |
+| [Track formats](track-formats.md) | 8 track converters, 4 schemas, 4 label converters |
 
 These five pages are generated from the registries themselves by
 `scripts/gen_docs_reference.py`. Continuous integration regenerates them and

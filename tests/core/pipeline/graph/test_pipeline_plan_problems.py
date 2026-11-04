@@ -14,6 +14,7 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -458,6 +459,49 @@ def test_a_convert_labels_step_whose_converter_params_do_not_build_is_a_problem(
     (problem,) = refused.value.problems
     assert (problem.step, problem.where) == ("convert", "params.params")
     assert "name" in problem.message
+
+
+def _predictions_conversion(files: str) -> Recipe:
+    """A ``convert-labels`` step of ``predictions_table`` selecting *files*."""
+    return read_recipe(
+        {
+            "schema_version": 1,
+            "name": "convert",
+            "steps": [
+                {
+                    "id": "predictions",
+                    "type": "op",
+                    "kind": "convert-labels",
+                    "params": {
+                        "kind": "predictions",
+                        "source_format": "predictions_table",
+                        "params": {"files": files},
+                    },
+                }
+            ],
+        }
+    )
+
+
+def test_a_predictions_table_step_whose_files_match_no_row_is_a_problem(
+    tmp_path: Path,
+) -> None:
+    dataset = make_dataset(tmp_path / "ds")
+    root = dataset.get_root("labels_raw") / "predictions" / "own"
+    root.mkdir(parents=True)
+    pd.DataFrame({"frame": [0], "predicted_label": [1]}).to_csv(
+        root / "s1.csv", index=False
+    )
+    dataset.index_labels_raw([root], patterns=["*.csv"], src_format="predictions_table")
+
+    with pytest.raises(RecipeRefused) as refused:
+        _ = plan_pipeline(dataset, _predictions_conversion("labels_raw/other/*"))
+
+    (problem,) = refused.value.problems
+    assert (problem.step, problem.where) == ("predictions", "params.params")
+    assert "labels_raw/other/*" in problem.message
+    plan = plan_pipeline(dataset, _predictions_conversion("labels_raw/predictions/*"))
+    assert plan.step("predictions").run_id
 
 
 # --- a step that follows ids over tracks without tracklets --------------------------

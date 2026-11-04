@@ -4,7 +4,7 @@
 # Track formats, schemas and label formats
 
 8 track converters read a tracker's output into one of
-4 registered schemas, and 3 label
+4 registered schemas, and 4 label
 converters read manual annotations. A converter declares the schema it emits,
 in one place, and that declaration is what validation and the tracks index
 both read.
@@ -307,3 +307,4 @@ Applied by `mosaic convert-labels --kind <label_kind>`.
 | `boris_aggregated_csv` | `behavior` | Convert BORIS Aggregated Events CSV/TSV to behavior dataset format. |
 | `boris_pandas_pickle` | `behavior` | Convert BORIS Pandas DataFrame pickle to behavior dataset format. |
 | `calms21_npy` | `behavior` | Convert CalMS21 npy/json behavior annotations to the behavior format. |
+| `predictions_table` | `predictions` | Read a per-frame table of predictions, with optional probabilities and folds. |
