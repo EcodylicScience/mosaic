@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: label controls and probability smoothing
+## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, and classifiers smooth their probabilities
+
+### Label controls and probability smoothing
 
 **`remap` and `mask` on a labels source.** `labels` gains `remap`, a map from a class id
 of the label file to the id every step reads, and `mask`, a list of class ids whose
@@ -50,7 +52,7 @@ became `entries_of_templates(templates_path, split)`, with `split` `"train"` or
 No run id moves and no feature's `version` changes. A run that omits `remap`, `mask` and
 `init_from` has the identity it had.
 
-## Unreleased: request pins, tracklets and the aggregates
+### Request pins, tracklets and the aggregates
 
 **A request names the tracks variant its steps read.** `Request.tracks_run_id` (default
 `None`) is the variant that each feature step reading `tracks` without a `tracks`
@@ -293,7 +295,7 @@ until it passes `recipe=`, `scope=` and the variant to `refuse_mixed_schemas` an
 (`tests/helpers/pipelines.py` and `tests/helpers/tracks_tables.py`) must pass
 `carries_tracklets`, which is now required.
 
-## Unreleased: visual-network feature
+### The `visual-network` feature
 
 **A new pair feature, `visual-network`.** It writes one row per ordered pair per frame
 in which `id1` sees `id2`, by 2-D ray casting from the eyes (Davidson et al. 2021), with
@@ -301,7 +303,7 @@ in which `id1` sees `id2`, by 2-D ray casting from the eyes (Davidson et al. 202
 `features/visual-network__from__tracks/`. No existing run id, op identity or tracks
 variant moves.
 
-## Unreleased: GPU card leases
+### GPU card leases
 
 **A local request leases a GPU card to each step on a GPU lane.** The driver of a local
 request, which `mosaic pipeline run --request [--detach]` runs and `mosaic agent serve`
@@ -376,7 +378,7 @@ host does not show. `start_detached_driver`, `run_request`, `LocalBackend`,
 `DriverStarter` takes the card limit, `tuple[str, ...] | None`, as a fourth argument
 after the three it took. The limit is part of no recipe, request or run id.
 
-## Unreleased: duplicate requests compared by run
+### Duplicate requests compared by run
 
 **A submission is a duplicate of an open request that computes one of its runs, of any
 recipe.** A submission writes `.mosaic/pipelines/computes/<request_id>.json`: the
@@ -399,7 +401,7 @@ the rest, as the refusal, the warning and the confirmation question do.
 The check runs once, after planning, under the submission lock, since it needs the
 plan. No run id moves.
 
-## Unreleased: validation says each caution once
+### Validation says each caution once
 
 **A listing of cautions says a repeated caution once.** `mosaic pipeline validate` and
 the MCP `validate_recipe` merge the cautions of one location and text: the first step
@@ -421,7 +423,7 @@ is unchanged.
   every schema requires them (`mosaic_v1` makes keypoints optional), and a recipe is
   validated with no dataset. A plan reads the tables and does.
 
-## Unreleased: a bound step is the run it names
+### A bound step is the run it names
 
 **A step that a submission binds is never executed.** `bind` maps a step id to a run
 (`BoundRef`: `feature`, `run_id`), and the step is that run: its `run_id` is the pinned
@@ -462,7 +464,7 @@ other step finished, its rollup is already terminal, so the bind is never re-che
 
 No run id moves for a request without binds.
 
-## Unreleased: a request reads failed once no step it has left can start
+### A request reads failed once no step it has left can start
 
 **A request with a failed step reads `failed` as soon as no unstarted step can
 start.** Before, a failed request with an unstarted step read `running` while its
@@ -485,7 +487,7 @@ under its lease.
 - The recipe readers move from `store.py` to a leaf, `recipe_store.py`, which the
   rollup imports without the request listing and status wires above it.
 
-## Unreleased: lightning-action cross-validation
+### `lightning-action` cross-validation
 
 **`lightning-action` takes `cv_folds`.** With it, and the `cv_seed`, `cv_unit`,
 `cv_blocks_per_sequence`, `cv_gap_frames` and `cv_group_by` settings that `xgboost` and
@@ -497,7 +499,7 @@ without it loads as before. A training entry is scored by its fold's model, so t
 probabilities a `probability-ensemble` blend or `tune-threshold` reads are out of fold.
 Unset, none of the settings enters the run id. No run id moves.
 
-## Unreleased: sharded embedding labels
+### Sharded embedding labels
 
 **`prepare-embedding-data` writes shards, in bounded memory.** Version 0.2 writes
 `models/prepare-embedding-data/<run id>/labels/train/shard-NNNNN.slp` and
@@ -518,7 +520,7 @@ and readable under their own ids.
 The fingerprint of such labels covers every shard in order. Neither the fingerprint of a
 `.slp` nor any `train-sleap` run id moves.
 
-## Unreleased: sequence-classifier training options
+### `sequence-classifier` training options
 
 **`sequence-classifier` predicts on its `device`.** `apply_device` is now `auto`,
 `cpu` or `cuda`, default `auto`: a network predicts on `device` where CUDA exists and on
@@ -571,7 +573,7 @@ The step's `temporal_reach` is the bound
 `(4 * (kernel_size // 2) + 1) * (2 ** depth - 1)` frames, 135 by default, plus 63 per
 refinement stage. No run id moves.
 
-## Unreleased: per-keypoint body-frame features and individual wavelets
+### Per-keypoint body-frame features and individual wavelets
 
 **`keypoint-kinematics` measures in the animal's own frame.** A new `heading` param names
 a (neck, tail base) pair. Set, each reported keypoint gains `vx__{kp}` and `vy__{kp}`,
@@ -606,7 +608,7 @@ adds `individual-wavelet/default` (`0.1-0fbf2d766d`) and
 under the same params, each under its own feature's directory. `pair-wavelet/*` lines do
 not move.
 
-## Unreleased: one-call submission from an agent
+### One-call submission from an agent
 
 **A recipe file as a recipe argument.** The MCP server's recipe arguments also take
 `{"path": "<file>"}`, a JSON file inside the `recipe_roots` of the server's
@@ -636,7 +638,7 @@ inline JSON forms are unchanged.
 SCOPE`, each scope checked as a `STEP=SCOPE` token's is. A step named twice across the
 tokens and the file is refused.
 
-## Unreleased: individual results joined onto pair rows
+### Individual results joined onto pair rows
 
 **A pair consumer reads per-individual inputs.** A feature whose `emits` is `as-input`
 or `pair` takes an individual-level input after a pair-level input 0. The merge joins
@@ -652,7 +654,7 @@ refusal.
 **What moved: nothing.** These inputs were refused before, so no run id, digest or
 stored output moves, and no line of `feature_run_id_golden.json` changes.
 
-## Unreleased: agent reads and waiting
+### Agent reads and waiting
 
 **A smaller `describe_step_types` search.** A search lists each step type of its
 page by category, name to summary, in `listing`, and no longer returns index rows
@@ -673,7 +675,7 @@ or after it. `list_runs` and `list_requests` take it as `changed_since`.
 `parse_instant` moved from `core/pipeline/markers.py` to `mosaic.runlog`. No
 identifier moves.
 
-## Unreleased: recipe, scoring and verification fixes
+### Recipe, scoring and verification fixes
 
 **`pair-posedistance-pca` reports its explained variance.** A fit writes
 `explained_variance.json` beside `model.joblib`: the share of variance each component keeps,
@@ -722,7 +724,7 @@ names at least one zipped name, and beside a `repeat` the zip is one more axis o
 product. The expanded recipe, its digest and every run id are those of the steps written
 out in full, so no existing recipe changes.
 
-## Unreleased: appearance re-identification with SLEAP embedding models
+### Appearance re-identification with SLEAP embedding models
 
 **`train-sleap` trains an embedding model.** `head` gains `embedding`, a network that
 maps the crop of each detection to an appearance vector. It needs sleap-nn 0.3.5 or
@@ -817,7 +819,7 @@ stale directory, and mosaic registered the stale one.
 columns and the provenance recorded in a variant's `params.json` are not part of any
 identifier.
 
-## Unreleased: two tracks variants of one entry through the graph
+### Two tracks variants of one entry through the graph
 
 **No identifier moves.**
 
@@ -834,7 +836,7 @@ identifier.
 - `select_variant_rows` raises `AmbiguousTracksVariant`, a `ValueError` with the same
   message that carries `entry` and `variants`.
 
-## Unreleased: the `hidra` feature
+### The `hidra` feature
 
 **No identifier moves.** The feature run id golden gains `hidra/default`.
 
@@ -849,7 +851,7 @@ identifier.
 - A new `hidra` pytest marker and CI job run the feature against the real program. The
   job installs HiDRA unpinned and also runs weekly.
 
-## Unreleased: arena layouts, the `assign-arenas` op, and pairs within one arena
+### Arena layouts, the `assign-arenas` op, and pairs within one arena
 
 **No identifier moves.** Run ids, entry keys, compositions and paths of existing
 artifacts are unchanged. The op golden gains `tracks/assign-arenas-variant`, and the
@@ -914,7 +916,7 @@ artifacts are unchanged. The op golden gains `tracks/assign-arenas-variant`, and
   (`tracking/ops/chained_tracks.py`). `write_tracks_row` takes `consumed_composition`
   to record in place of the composition of its source roots.
 
-## Unreleased: training splits by recording, and the group and recording of an annotated frame
+### Training splits by recording, and the group and recording of an annotated frame
 
 **Every `prepare-training-data` run id minted without `split_by` moves.** `split_by`
 gains `"recording"` and defaults to it, and the dumped default enters the run id. The
@@ -964,7 +966,7 @@ saves the bytes it had, and an existing revision keeps its digest.
   that records a group is refused. A frame that no frames run extracted takes the
   group its revision records, so its sequence key and unit name `(group, sequence)`.
 
-## Unreleased: a recording's calibration, wall-clock labels and division summary
+### A recording's calibration, wall-clock labels and division summary
 
 **No identifier moves.** Run ids, entry keys, compositions and paths are unchanged.
 
@@ -1000,7 +1002,7 @@ saves the bytes it had, and an existing revision keeps its digest.
   `first_frame`, `frame_count`, `start_utc` and `follows_gap`, `null` unless the
   entry is a division of a store.
 
-## Unreleased: dividing an imgstore at scan and import, and manifest version 4
+### Dividing an imgstore at scan and import, and manifest version 4
 
 **Manifest version 4, written only by a dataset that divides a store.** A media
 source gains `division` (`MediaDivision`: `frames`, `identity` `store` or `camera`,
@@ -1067,7 +1069,7 @@ manifest. Reading a version-3 manifest changes nothing in memory.
   store's listing.
 - Undivided datasets keep their manifests, indexes, compositions and run ids.
 
-## Unreleased: one media index row per division of a store, and reads of a division's chunks
+### One media index row per division of a store, and reads of a division's chunks
 
 **Seven trailing media index columns.** `media_raw/index.csv` gains `chunk_first`,
 `chunk_last`, `first_frame`, `start_utc`, `start_source`, `follows_gap` and
@@ -1116,7 +1118,7 @@ plan.
 - Undivided rows keep their keys, compositions, uuids and run ids. Golden corpora
   do not change.
 
-## Unreleased: the division of a store recording, planned from its chunks
+### The division of a store recording, planned from its chunks
 
 **`core/media/store_division.py`.** `plan_division` divides a recording's stores
 into sequences of whole chunks under a `DivisionRule` (frames a multiple of the
@@ -1135,7 +1137,7 @@ Indexes, manifests, run ids, compositions and frame reads do not change.
 
 - `validate_entry_name` moves from `mosaic.core.helpers` to `mosaic.core.entry`.
 
-## Unreleased: an imgstore export at the store's frame rate, a probe of a store, and measured store facts
+### An imgstore export at the store's frame rate, a probe of a store, and measured store facts
 
 **`export-store` 0.2 to 0.3.** A store whose chunks are H.264 was copied at the
 rate its chunk files declare. Motif declares 25 fps on every chunk. A store
@@ -1200,7 +1202,7 @@ take the measurements, `NativeStore.frame_times` returns the frame times, and
   verdict, compositions and run ids do not move. A store is still probed on every
   write, without the probe cache.
 
-## Unreleased: neighbor maps over every neighbor, and body lengths as a unit
+### Neighbor maps over every neighbor, and body lengths as a unit
 
 **`nn-delta-bins` 0.1 to 0.2.** The two-dimensional output gained an `occupancy`
 metric: the count of neighbor positions per bin, unmirrored, with `value` the fraction
@@ -1226,7 +1228,7 @@ divides every length column `scale-to-cm` would scale by one length per sequence
 median over individuals, from an explicit `length` or a referenced `body-length` run.
 `BodyLengthResult` joins `mosaic.core.pipeline.types`.
 
-## Unreleased: frame predictions, scores, hold-outs and selections, mosaic-media 0.3.5 and the conda install line without an `av` pin
+### Frame predictions, scores, hold-outs and selections, mosaic-media 0.3.5 and the conda install line without an `av` pin
 
 **A model predicts on extracted frames, the predictions are scored against annotations,
 a hold-out stays out of training, and frames are selected from tracks.** Three ops are
