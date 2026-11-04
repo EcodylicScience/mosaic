@@ -16,14 +16,21 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.inventory import params as params_module
 from mosaic.core.pipeline.inventory.params import (
     REPORT_MAX_CHARS,
     ReportTooLarge,
+    RunKey,
     RunParams,
+    RunParamsRead,
     TracksVariantWalk,
+    features_roots,
+    named_references,
     read_run_params,
     read_run_report,
     run_tracks_variants,
+    upstream_runs,
 )
 
 from tests.helpers import inside_a_virtualenv, runs_in_an_external_environment
@@ -315,6 +322,173 @@ def test_a_walk_reads_a_known_run_from_its_known_params(tmp_path: Path) -> None:
 
     assert walk("down", "r2") == frozenset({"on-disk"})
     assert TracksVariantWalk(roots, {("down", "r2"): None})("down", "r2") is None
+
+
+def _counting_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Count every ``params.json`` the walks read, by run root."""
+    reads: list[Path] = []
+
+    def counted(run_root: Path) -> RunParamsRead:
+        reads.append(run_root)
+        return read_run_params(run_root)
+
+    monkeypatch.setattr(params_module, "read_run_params", counted)
+    return reads
+
+
+def test_two_walks_of_one_walker_read_a_shared_upstream_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One walk built for a whole inventory reads each upstream once."""
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "up", "r1", _edge("inputs[tracks]", "tracks", "v1"))
+    _feature_run(roots, "a", "ra", _edge("inputs[0]", "up", "r1"))
+    _feature_run(roots, "b", "rb", _edge("inputs[0]", "up", "r1"))
+    reads = _counting_reads(monkeypatch)
+
+    walk = TracksVariantWalk(roots)
+
+    assert walk("a", "ra") == frozenset({"v1"})
+    assert walk("b", "rb") == frozenset({"v1"})
+    up_root = roots.get_root("features") / "up" / "r1"
+    assert reads.count(up_root) == 1
+
+
+# --- every run upstream of a run ----------------------------------------------
+
+
+def _walked(
+    roots: _FeatureRoots, *starts: RunKey
+) -> list[tuple[RunKey, RunParams | None]]:
+    return list(upstream_runs(roots, starts))
+
+
+def test_a_diamonds_shared_upstream_is_yielded_once_after_the_starts(
+    tmp_path: Path,
+) -> None:
+    """Each run once per call, the starts first, the tracks and labels edges
+    left unfollowed."""
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "up", "r1", _edge("inputs[tracks]", "tracks", "v1"))
+    _feature_run(roots, "a", "ra", _edge("inputs[0]", "up", "r1"))
+    _feature_run(roots, "b", "rb", _edge("inputs[0]", "up", "r1"))
+    _feature_run(
+        roots,
+        "down",
+        "rd",
+        _edge("inputs[0]", "a", "ra"),
+        _edge("inputs[1]", "b", "rb"),
+        _edge("inputs[labels]", "labels", "l1"),
+    )
+
+    keys = [key for key, _ in _walked(roots, ("down", "rd"), ("a", "ra"))]
+
+    assert keys[:2] == [("down", "rd"), ("a", "ra")]
+    assert sorted(keys) == sorted(
+        [("down", "rd"), ("a", "ra"), ("b", "rb"), ("up", "r1")]
+    )
+
+
+def test_the_walk_follows_a_templates_reference_and_an_input(tmp_path: Path) -> None:
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "extract-templates", "rt")
+    _feature_run(roots, "up", "r1")
+    _feature_run(
+        roots,
+        "down",
+        "rd",
+        _edge("inputs[0]", "up", "r1"),
+        _edge("params[templates]", "extract-templates", "rt"),
+        _edge("params[model]", "unpinned", None),
+    )
+
+    keys = {key for key, _ in _walked(roots, ("down", "rd"))}
+
+    assert keys == {("down", "rd"), ("up", "r1"), ("extract-templates", "rt")}
+
+
+def test_a_run_with_unreadable_params_is_yielded_and_not_followed(
+    tmp_path: Path,
+) -> None:
+    roots = _FeatureRoots(tmp_path)
+    broken = roots.get_root("features") / "up" / "r1"
+    broken.mkdir(parents=True)
+    (broken / "params.json").write_text("{not json")
+    _feature_run(roots, "down", "rd", _edge("inputs[0]", "up", "r1"))
+
+    walked = _walked(roots, ("down", "rd"))
+
+    assert [key for key, _ in walked] == [("down", "rd"), ("up", "r1")]
+    assert walked[1][1] is None
+
+
+def test_a_file_without_resolved_is_followed_through_its_literal_references(
+    tmp_path: Path,
+) -> None:
+    """Only the references that carry a run id are followed."""
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "up", "r1")
+    _feature_run(roots, "extract-templates", "rt")
+    _ = _write(
+        roots.get_root("features") / "down" / "rd",
+        {
+            "_inputs": [{"feature": "up", "run_id": "r1"}, "tracks"],
+            "_params": {
+                "templates": {"feature": "extract-templates", "run_id": "rt"},
+                "model": {"feature": "unpinned", "run_id": None},
+                "window": 5,
+            },
+        },
+    )
+
+    keys = {key for key, _ in _walked(roots, ("down", "rd"))}
+
+    assert keys == {("down", "rd"), ("up", "r1"), ("extract-templates", "rt")}
+
+
+def test_a_cache_given_to_the_walk_answers_its_next_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = _FeatureRoots(tmp_path)
+    _feature_run(roots, "up", "r1")
+    _feature_run(roots, "down", "rd", _edge("inputs[0]", "up", "r1"))
+    reads = _counting_reads(monkeypatch)
+    cache: dict[RunKey, RunParams | None] = {}
+
+    first = list(upstream_runs(roots, [("down", "rd")], cache))
+    second = list(upstream_runs(roots, [("down", "rd")], cache))
+
+    assert first == second
+    assert set(cache) == {("down", "rd"), ("up", "r1")}
+    assert len(reads) == 2
+
+
+def test_named_references_split_pinned_runs_from_storages() -> None:
+    pairs, storages = named_references(
+        {
+            "inputs[0]": {"feature": "up", "run_id": "r1"},
+            "templates": {"feature": "extract-templates", "run_id": None},
+            "window": 5,
+            "label": {"feature": ""},
+        }
+    )
+
+    assert pairs == frozenset({("up", "r1")})
+    assert storages == frozenset({"extract-templates"})
+
+
+def test_features_roots_resolve_a_sibling_run_and_refuse_other_roots(
+    tmp_path: Path,
+) -> None:
+    """A feature's ``load_state`` holds its run root and no dataset."""
+    features = tmp_path / "features"
+    _ = _write(features / "up" / "r1", {"_resolved": []})
+    roots = features_roots(features / "down" / "rd")
+
+    assert roots.get_root("features") == features
+    assert read_run_params(feature_run_root(roots, "up", "r1")).state == "present"
+    with pytest.raises(KeyError, match="media"):
+        _ = roots.get_root("media")
 
 
 # --- and it is the only reader -----------------------------------------------

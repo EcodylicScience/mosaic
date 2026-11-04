@@ -66,7 +66,7 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal
 
 from mosaic.core.entry import Entry
 
@@ -1424,7 +1424,6 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
     that has not named its run is read by this rule as well. A cleanup during
     an attempt on a shortened storage keeps every superseded run.
     """
-    from ..inventory.params import LABELS_EDGE, TRACKS_EDGE
     from .resolve import run_reference_fields
 
     via: frozenset[tuple[str, str]] = (
@@ -1437,26 +1436,8 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
             chain=chain,
             everything=bool(run_reference_fields(slug)) or SHORTENED_MARKER in chain,
         )
-    pairs: set[tuple[str, str]] = set(via)
-    storages: set[str] = set()
-    if params.records_resolutions:
-        for ref in params.resolved:
-            if ref.where in (TRACKS_EDGE, LABELS_EDGE) or not ref.feature:
-                continue
-            if ref.run_id:
-                pairs.add((ref.feature, ref.run_id))
-            else:
-                storages.add(ref.feature)
-    else:
-        named = _literal_reads(
-            {
-                **{f"inputs[{i}]": item for i, item in enumerate(params.inputs)},
-                **params.params,
-            }
-        )
-        pairs.update(named.pairs)
-        storages.update(named.storages)
-    return _Reads(pairs=frozenset(pairs), storages=frozenset(storages))
+    pairs, storages = params.upstream_references()
+    return _Reads(pairs=via | pairs, storages=storages)
 
 
 def _literal_reads(values: Mapping[str, object]) -> _Reads:
@@ -1465,29 +1446,10 @@ def _literal_reads(values: Mapping[str, object]) -> _Reads:
     A reference without a run id reads every run of its storage, as it resolves
     to whichever run is current when its step runs.
     """
-    pairs: set[tuple[str, str]] = set()
-    storages: set[str] = set()
-    for value in values.values():
-        named = _named_run(value)
-        if named is None:
-            continue
-        if named[1]:
-            pairs.add(named)
-        else:
-            storages.add(named[0])
-    return _Reads(pairs=frozenset(pairs), storages=frozenset(storages))
+    from ..inventory.params import named_references
 
-
-def _named_run(value: object) -> tuple[str, str] | None:
-    """The ``(feature, run_id)`` that a recorded ``{feature, run_id}`` names."""
-    if not isinstance(value, dict):
-        return None
-    named = cast("dict[str, object]", value)
-    feature = named.get("feature")
-    run_id = named.get("run_id")
-    if not isinstance(feature, str) or not feature:
-        return None
-    return feature, run_id if isinstance(run_id, str) else ""
+    pairs, storages = named_references(values)
+    return _Reads(pairs=pairs, storages=storages)
 
 
 # --- helpers -------------------------------------------------------------------

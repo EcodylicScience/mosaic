@@ -33,10 +33,11 @@ drifts from the fields silently.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from pydantic import (
     BaseModel,
@@ -60,9 +61,12 @@ __all__ = [
     "REPORT_MAX_CHARS",
     "ReportTooLarge",
     "TracksVariantWalk",
+    "features_roots",
+    "named_references",
     "read_run_params",
     "read_run_report",
     "run_tracks_variants",
+    "upstream_runs",
 ]
 
 ParamsState = Literal["present", "absent", "unreadable"]
@@ -73,6 +77,9 @@ TRACKS_EDGE: Final = "inputs[tracks]"
 
 LABELS_EDGE: Final = "inputs[labels]"
 """The synthetic ``_resolved`` edge naming the label variants a run consumed."""
+
+type RunKey = tuple[str, str]
+"""A feature run: its storage directory and its run id."""
 
 
 class ResolvedRef(BaseModel):
@@ -245,6 +252,69 @@ class RunParams(BaseModel):
             for ref in self.resolved
             if ref.run_id is not None and (ref.run_id or ref.where == TRACKS_EDGE)
         )
+
+    def upstream_references(self) -> tuple[frozenset[RunKey], frozenset[str]]:
+        """The feature runs this run read, as ``(pairs, storages)``.
+
+        ``pairs`` holds the runs named with a run id, and ``storages`` the
+        storages of references without one, which resolve to whichever run of
+        the storage is current. A file with ``_resolved`` names them in its
+        entries, the tracks and labels edges excluded. A file written before
+        ``_resolved`` existed (:attr:`records_resolutions`) names them as the
+        :func:`named_references` among its inputs and top-level params.
+        """
+        if not self.records_resolutions:
+            return named_references(
+                {
+                    **{f"inputs[{i}]": item for i, item in enumerate(self.inputs)},
+                    **self.params,
+                }
+            )
+        pairs: set[RunKey] = set()
+        storages: set[str] = set()
+        for ref in self.resolved:
+            if ref.where in (TRACKS_EDGE, LABELS_EDGE) or not ref.feature:
+                continue
+            if ref.run_id:
+                pairs.add((ref.feature, ref.run_id))
+            else:
+                storages.add(ref.feature)
+        return frozenset(pairs), frozenset(storages)
+
+
+def _named_run(value: object) -> RunKey | None:
+    """The ``(feature, run_id)`` that a recorded ``{feature, run_id}`` names."""
+    if not isinstance(value, dict):
+        return None
+    named = cast("dict[str, object]", value)
+    feature = named.get("feature")
+    run_id = named.get("run_id")
+    if not isinstance(feature, str) or not feature:
+        return None
+    return feature, run_id if isinstance(run_id, str) else ""
+
+
+def named_references(
+    values: Mapping[str, object],
+) -> tuple[frozenset[RunKey], frozenset[str]]:
+    """The ``{feature, run_id}`` references among the values of *values*.
+
+    Returns:
+        ``(pairs, storages)``: the runs named by references with a run id, and
+        the storages of references without one, which resolve to whichever run
+        of the storage is current.
+    """
+    pairs: set[RunKey] = set()
+    storages: set[str] = set()
+    for value in values.values():
+        named = _named_run(value)
+        if named is None:
+            continue
+        if named[1]:
+            pairs.add(named)
+        else:
+            storages.add(named[0])
+    return frozenset(pairs), frozenset(storages)
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,10 +501,6 @@ def read_run_params(run_root: Path) -> RunParamsRead:
                 return RunParamsRead("unreadable", None, str(exc))
 
 
-type RunKey = tuple[str, str]
-"""A feature run: its storage directory and its run id."""
-
-
 class TracksVariantWalk:
     """The tracks variants that feature runs read, reading each ``params.json`` once.
 
@@ -472,31 +538,79 @@ class TracksVariantWalk:
             ``_resolved`` block (:attr:`RunParams.records_resolutions`).
         """
         variants: set[str] = set()
-        seen: set[RunKey] = set()
-        pending = [(storage_name, run_id)]
-        while pending:
-            node = pending.pop()
-            if node in seen:
-                continue
-            seen.add(node)
-            params = self._params_of(node)
+        start = (storage_name, run_id)
+        for _, params in upstream_runs(self._ds, [start], self._params):
             if params is None or not params.records_resolutions:
                 return None
-            for ref in params.resolved:
-                if ref.run_id is None or ref.where == LABELS_EDGE:
-                    continue
-                if ref.where == TRACKS_EDGE:
-                    variants.add(ref.run_id)
-                elif ref.feature and ref.run_id:
-                    pending.append((ref.feature, ref.run_id))
+            variants.update(
+                ref.run_id
+                for ref in params.resolved
+                if ref.where == TRACKS_EDGE and ref.run_id is not None
+            )
         return frozenset(variants)
 
-    def _params_of(self, node: RunKey) -> RunParams | None:
-        """Return the params of *node*, reading its ``params.json`` on first use."""
-        if node not in self._params:
-            root = feature_run_root(self._ds, *node)
-            self._params[node] = read_run_params(root).params
-        return self._params[node]
+
+def upstream_runs(
+    ds: DatasetRoots,
+    starts: Iterable[RunKey],
+    cache: dict[RunKey, RunParams | None] | None = None,
+) -> Iterator[tuple[RunKey, RunParams | None]]:
+    """Yield each run of *starts* and every feature run upstream of them, once.
+
+    The starts come first, then their upstreams breadth first, each with the
+    params :func:`read_run_params` reads: ``None`` when its ``params.json`` is
+    absent or unreadable. A run leads to the runs named in its
+    :meth:`RunParams.upstream_references`, in sorted order, and a run whose
+    params are ``None`` is yielded and not followed. A step bound to an earlier
+    run is that run, because its downstream recorded the bound run's id.
+
+    Args:
+        ds: The dataset whose ``features`` root holds the runs.
+        starts: The runs to walk from.
+        cache: Params already read, read and filled in place, so a caller that
+            walks many times reads each ``params.json`` once. Without one the
+            call keeps its own.
+
+    Yields:
+        ``(run, params)`` for each run reached.
+    """
+    params_of: dict[RunKey, RunParams | None] = {} if cache is None else cache
+    seen: set[RunKey] = set()
+    pending: deque[RunKey] = deque(starts)
+    while pending:
+        node = pending.popleft()
+        if node in seen:
+            continue
+        seen.add(node)
+        if node not in params_of:
+            params_of[node] = read_run_params(feature_run_root(ds, *node)).params
+        params = params_of[node]
+        yield node, params
+        if params is not None:
+            pending.extend(sorted(params.upstream_references()[0]))
+
+
+@dataclass(frozen=True, slots=True)
+class _FeaturesRoot:
+    """A dataset's ``features`` root, and no other root."""
+
+    features: Path
+
+    def get_root(self, key: str, /) -> Path:
+        """Return the ``features`` root, and raise ``KeyError`` for any other."""
+        if key != "features":
+            raise KeyError(f"only the features root is known here, not {key!r}")
+        return self.features
+
+
+def features_roots(run_root: Path) -> DatasetRoots:
+    """The roots of the dataset holding the feature run at *run_root*.
+
+    For a caller that holds a run root and no dataset, such as a feature's
+    ``load_state``. The ``features`` root is ``run_root.parent.parent``, and
+    every other root raises ``KeyError``.
+    """
+    return _FeaturesRoot(run_root.parent.parent)
 
 
 def run_tracks_variants(
