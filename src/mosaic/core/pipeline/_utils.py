@@ -92,6 +92,12 @@ class ResolvedScope:
     for consumers that place coordinates on video, which must ask the space of
     the table they were handed rather than of whichever row an index lookup
     meets first. Never hashed."""
+    input_tracks_compositions: Mapping[tuple[str, str], str] | None = None
+    """Per entry, the tracks compositions a run with a feature input read: each
+    input's cell joined with ``+`` in input order, ``""`` when every part is
+    blank. A feature input's cell is its upstream row's
+    ``consumed_tracks_composition``. ``None`` when no input is a feature, where
+    the tracks variants' own compositions are the cell. Never hashed."""
 
     def composition_of(self, entry: tuple[str, str], root: str) -> str:
         """*root*'s recorded composition for *entry*, or ``""`` when none is.

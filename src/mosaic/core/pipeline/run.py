@@ -1720,9 +1720,14 @@ def _run_feature_impl(
     )
     # The same question for tracks, which no feature declares as a root: the tracks
     # row records what its table was converted from, so the comparison is two index
-    # reads rather than a new digest.
+    # reads rather than a new digest. A run with a feature input reads, beside it,
+    # what each upstream row recorded, joined in input order by the manifest.
     prior_tracks = recorded_tracks_reads(ds, storage_feature_name, run_id)
-    tracks_now_by_entry = tracks_compositions(ds, resolved.tracks_variants)
+    tracks_now_by_entry = (
+        resolved.input_tracks_compositions
+        if resolved.input_tracks_compositions is not None
+        else tracks_compositions(ds, resolved.tracks_variants)
+    )
     # An overlapped entry also read its neighbors, and their keys and tracks
     # compositions are compared the same way. The run id leaves them out.
     # Declaring a group, adding a sequence to it or converting a neighbor again

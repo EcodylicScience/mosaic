@@ -137,6 +137,13 @@ are in `graph/CLAUDE.md`.
   sources therefore recomputes (`tests/core/pipeline/test_tracks_source_staleness.py`).
   `tracks_compositions` adds a tracks row's `first_frame` past 0 to its composition,
   so a table published again at a moved first frame recomputes its features.
+- A run with a feature input compares instead
+  `ResolvedScope.input_tracks_compositions` (`build_manifest`): per entry, its inputs'
+  cells joined with `+` in input order, a feature input's cell being its upstream
+  row's `consumed_tracks_composition`. An entry therefore recomputes after its
+  upstream entry recomputes under the same run id. A run whose only input is `tracks`
+  leaves it `None` and records the tracks rows' cell, and a row written without the
+  upstream part recomputes once.
 - At `overlap_frames > 0` the row's `consumed_neighbors` (`neighbor_compositions`,
   `run.py`) names the entry keys of the sequences before and after the entry with
   their tracks compositions, and is compared the same way. The cell is then always

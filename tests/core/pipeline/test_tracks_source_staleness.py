@@ -31,8 +31,10 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
+    feature_index_path,
     recorded_tracks_reads,
 )
+from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.run import cached_entry_disposition, run_feature
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.index_csv import index_records
@@ -43,7 +45,8 @@ from mosaic.core.pipeline.tracks_index import (
     write_tracks_row,
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
-from mosaic.core.pipeline.types import Feature
+from mosaic.core.pipeline.types import Feature, Inputs, Result
+from mosaic.core.pipeline.types.feature import EmitsLevel
 from tests.helpers import (
     CropLike,
     PlainFeature,
@@ -370,3 +373,140 @@ class TestTheFirstFrameATableWasNumberedFrom:
 
         assert at_30 != at_40
         assert cached_entry_disposition(at_30, at_40) == "recompute"
+
+
+class _Upstream(PlainFeature):
+    """A per-entry feature over tracks whose output another feature reads."""
+
+    name = "prov-upstream"
+    accepts_overlap = False
+    emits: EmitsLevel = "as-input"
+
+
+class _Reader(_Upstream):
+    """A per-entry feature that reads the inputs it is given, a feature's among them."""
+
+    name = "prov-reader"
+
+
+def _convert(ds: Dataset, *sequences: str, n: int = 8) -> None:
+    """Convert *sequences* from raw files of *n* frames, recording their composition."""
+    for sequence in sequences:
+        write_trex_npz(ds.get_root("tracks_raw") / f"{sequence}.npz", n=n)
+    _ = ds.index_tracks_raw(
+        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
+    )
+    add_tracks_variant(ds, VARIANT, *sequences)
+
+
+def _tracks_cell(ds: Dataset, sequence: str) -> str:
+    return tracks_compositions(ds, (VARIANT,))[("", sequence)]
+
+
+def _recorded_cell(ds: Dataset, result: Result, sequence: str) -> str:
+    assert result.run_id is not None
+    return recorded_tracks_reads(ds, result.feature, result.run_id)[
+        ("", sequence)
+    ].composition
+
+
+def _recomputed(err: str) -> set[str]:
+    """The sequences a run refused to serve from its cache."""
+    return {
+        sequence
+        for sequence in ("seq_a", "seq_b")
+        if f"cannot serve cached output for (,{sequence})" in err
+    }
+
+
+class TestTracksProvenanceThroughFeatureInputs:
+    """A run reading a feature's output compares the tracks its input rows read."""
+
+    def test_a_reader_recomputes_after_its_upstream_recomputes_under_one_run_id(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        reader = _Reader(
+            Inputs((Result(feature=upstream.feature, run_id=upstream.run_id),))
+        )
+        _ = run_feature(ds, reader)
+        before = _tracks_cell(ds, "seq_a")
+
+        _convert(ds, "seq_a", n=9)
+        assert _tracks_cell(ds, "seq_a") != before
+        again = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        assert again.run_id == upstream.run_id
+        _ = capsys.readouterr()
+
+        _ = run_feature(ds, reader)
+
+        assert _recomputed(capsys.readouterr().err) == {"seq_a"}
+
+    def test_a_reader_row_records_its_inputs_compositions_in_input_order(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        upstream_read = _tracks_cell(ds, "seq_a")
+        # Converted again without running the upstream, so its row and the
+        # tracks row record different compositions and the order shows.
+        _convert(ds, "seq_a", n=9)
+        tracks_now = _tracks_cell(ds, "seq_a")
+        assert tracks_now != upstream_read
+        result_input = Result(feature=upstream.feature, run_id=upstream.run_id)
+
+        upstream_first = run_feature(
+            ds, _Reader(Inputs((result_input, "tracks"))), tracks_run_id=VARIANT
+        )
+        tracks_first = run_feature(
+            ds, _Reader(Inputs(("tracks", result_input))), tracks_run_id=VARIANT
+        )
+
+        assert (
+            _recorded_cell(ds, upstream_first, "seq_a")
+            == f"{upstream_read}+{tracks_now}"
+        )
+        assert (
+            _recorded_cell(ds, tracks_first, "seq_a") == f"{tracks_now}+{upstream_read}"
+        )
+
+    def test_a_reader_row_written_before_the_change_recomputes_once(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        reader = _Reader(
+            Inputs((Result(feature=upstream.feature, run_id=upstream.run_id),))
+        )
+        written = run_feature(ds, reader)
+        # A row written before feature inputs carried their tracks composition
+        # recorded none for a reader of feature output.
+        index_path = feature_index_path(ds, written.feature)
+        rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+        rows["consumed_tracks_composition"] = ""
+        rows.to_csv(index_path, index=False)
+        _ = capsys.readouterr()
+
+        _ = run_feature(ds, reader)
+        first = capsys.readouterr().err
+        _ = run_feature(ds, reader)
+        second = capsys.readouterr().err
+
+        assert _recomputed(first) == {"seq_a", "seq_b"}
+        assert _recomputed(second) == set()
+
+    def test_a_tracks_only_run_records_the_cell_as_before(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+
+        result = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        _, resolved = build_manifest(ds, Inputs(("tracks",)), tracks_run_id=VARIANT)
+
+        assert resolved.input_tracks_compositions is None
+        assert _recorded_cell(ds, result, "seq_a") == _tracks_cell(ds, "seq_a")

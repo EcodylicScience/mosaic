@@ -167,7 +167,9 @@ class FeatureIndexRow(RunIndexRowBase):
     # before this existed read as one-side-known, hence stale, and force a full
     # recompute of every tracks-consuming feature on every dataset. Empty here means
     # "predates the column" and is served with a warning, so only rows written from
-    # now on are checkable.
+    # now on are checkable. A run with a feature input records its inputs' cells
+    # joined with ``+`` in input order, a feature input's cell being its upstream
+    # row's own (``build_manifest``).
     consumed_tracks_composition: str = ""
     # The neighbors an overlapped run read for this entry, each by entry key with
     # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at

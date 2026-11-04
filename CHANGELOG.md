@@ -214,6 +214,16 @@ catalog's `CatalogEntry.declaration` gains `pair_rule_column`, `provides.symmetr
 `mirrored or symmetric`: the raw `mirrored` flag reads `false` on a feature that declares
 only symmetric columns.
 
+**A feature reading a feature's output compares the tracks its input read.** A run with a
+feature input records on each row's `consumed_tracks_composition` its inputs' tracks
+compositions joined with `+` in input order: a feature input's cell is its upstream row's
+own, and a `tracks` input's is the tracks rows'. The cached entry is compared on it as a
+run over tracks is, so an entry recomputes when its upstream entry recomputes under the
+same run id after a re-conversion, where it used to be served. A run whose only input is
+`tracks` records the cell as before. After upgrading, a cached entry of a run with a
+feature input recomputes once where its upstream recorded a tracks composition, because
+its row recorded the cell without its upstream's part. No run id moves.
+
 **mosaic-api's follow-up.** Its submit answers 409 `dataset_refused` with
 `variant_ambiguous` through `submit_request`. Its plan calls `refuse_mixed_schemas(dataset,
 "")` and plans with `refuse=False`, so it reports the ambiguity as a problem at `tracks`
