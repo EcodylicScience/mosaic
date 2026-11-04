@@ -23,6 +23,7 @@ from mosaic.behavior.feature_library.classifier_common import (
     input_fold_table_path,
     input_run_roots,
     label_controls_in_play,
+    pooled_class_scores,
     refuse_unpredicted_classes,
     CvBlock,
     CvGroupBy,
@@ -54,6 +55,7 @@ from mosaic.behavior.feature_library.helpers import (
     gaussian_radius,
     iter_series_positions,
 )
+from mosaic.core.evaluation import classification_scores
 from mosaic.core.pipeline.job import Cancelled, CancelToken
 from mosaic.core.pipeline.progress import NullProgressCallback
 from mosaic.core.pipeline.types import GroundTruthLabelsSource
@@ -973,3 +975,26 @@ def test_the_fold_table_of_an_input_is_the_one_beside_its_outputs(
 @pytest.mark.parametrize(("sigma", "radius"), [(0.1, 0), (1.0, 4), (2.0, 8), (2.6, 10)])
 def test_the_gaussian_radius_is_the_one_scipy_reads(sigma: float, radius: int) -> None:
     assert gaussian_radius(sigma, 4.0) == radius
+
+
+def test_pooled_class_scores_give_the_kappa_of_the_rows() -> None:
+    rng = np.random.default_rng(4)
+    labels = [3, 5, 8]
+    truth = rng.integers(0, 3, size=500).astype(np.intp)
+    predicted = np.where(
+        rng.random(500) < 0.6, truth, rng.integers(0, 3, size=500)
+    ).astype(np.intp)
+
+    pooled = pooled_class_scores(truth, predicted, labels, None)
+
+    rows = classification_scores(
+        np.asarray(labels)[truth], np.asarray(labels)[predicted], classes=labels
+    )
+    assert pooled["kappa"] == rows["kappa"]
+    assert 0.0 < pooled["kappa"] < 1.0
+
+
+def test_pooled_class_scores_of_one_shared_class_have_no_kappa() -> None:
+    truth = np.zeros(4, dtype=np.intp)
+
+    assert np.isnan(pooled_class_scores(truth, truth, [3, 5], None)["kappa"])

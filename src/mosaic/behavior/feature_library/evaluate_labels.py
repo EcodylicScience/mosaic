@@ -32,6 +32,15 @@ entry that two inputs both hold is refused, because it would count twice. Other
 steps join several inputs column-wise instead, and this one declares
 ``stacks_inputs``.
 
+**The bootstrap.** With ``bootstrap`` above 0 the report also holds the
+percentile intervals of accuracy, macro F1, kappa and each class's F1, from
+:func:`~mosaic.core.evaluation.bootstrap_sequences` over the entries that scored
+a row, sorted by ``(group, sequence)`` so the draws do not depend on the order
+the entries arrive in. The entry is the resampled unit, and divisions of one
+recording are resampled as separate entries. In ``clusters`` mode it needs a
+``label_map``, because the majority map is fitted on the scored rows and a
+resample of entries does not refit it.
+
 The labels come from the run's dependency lookup, so a ``labels`` reference to a
 ``convert-labels`` step scores against the variant that step wrote.
 
@@ -49,17 +58,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, final
+from typing import Annotated, ClassVar, Literal, Self, final, override
 
 import numpy as np
 import pandas as pd
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.evaluation import (
+    ClassificationScores,
     ClassScore,
     EvaluationReport,
     LabelMapSource,
+    SequenceBootstrap,
+    bootstrap_sequences,
     classification_scores,
     cluster_contingency,
     cluster_label_scores,
@@ -91,6 +103,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
+from mosaic.core.resample import check_bootstrap_settings
 
 from .classifier_common import (
     label_controls_in_play,
@@ -161,6 +174,17 @@ _CLASSES_DESCRIPTION = (
 _AVERAGE_OVER_DESCRIPTION = (
     "The classes macro_f1 averages over, such as every behavior but other. "
     "Unset averages over every class a scored row holds."
+)
+_BOOTSTRAP_DESCRIPTION = (
+    "The number of resamples of entries behind the report's intervals on "
+    "accuracy, macro F1, kappa and per-class F1, with 0 computing none."
+)
+_BOOTSTRAP_SEED_DESCRIPTION = (
+    "The random seed of the bootstrap, left at 0 when bootstrap is 0."
+)
+_BOOTSTRAP_CONFIDENCE_DESCRIPTION = (
+    "The width of the bootstrap intervals, between 0 and 1 exclusive, left at "
+    "0.95 when bootstrap is 0."
 )
 _LABEL_MAP_DESCRIPTION = (
     "In clusters mode, a cluster to class map fitted on other entries by "
@@ -245,6 +269,47 @@ class EvaluateLabels:
         label_map: Annotated[LabelMapRef | None, Declared(_LABEL_MAP_DESCRIPTION)] = (
             None
         )
+        bootstrap: Annotated[int, Declared(_BOOTSTRAP_DESCRIPTION)] = Field(
+            default=0, ge=0
+        )
+        bootstrap_seed: Annotated[int, Declared(_BOOTSTRAP_SEED_DESCRIPTION)] = 0
+        bootstrap_confidence: Annotated[
+            float, Declared(_BOOTSTRAP_CONFIDENCE_DESCRIPTION)
+        ] = 0.95
+
+        @model_validator(mode="after")
+        def _bootstrap_settings_apply(self) -> Self:
+            if self.bootstrap == 0:
+                if self.bootstrap_seed != 0 or self.bootstrap_confidence != 0.95:
+                    msg = (
+                        "bootstrap_seed and bootstrap_confidence apply only when "
+                        "bootstrap is above 0."
+                    )
+                    raise ValueError(msg)
+                return self
+            check_bootstrap_settings(self.bootstrap, self.bootstrap_confidence)
+            if self.mode == "clusters" and self.label_map is None:
+                msg = (
+                    "bootstrap in clusters mode needs a label_map: without one the "
+                    "majority map is fitted on the scored rows, and a resample of "
+                    "entries does not refit it."
+                )
+                raise ValueError(msg)
+            return self
+
+        @override
+        def identity_dump(self) -> dict[str, object]:
+            """The hashed params, less the bootstrap settings a run leaves unused.
+
+            A run without a bootstrap has the identity it had before the settings
+            existed. The validator leaves the seed and the confidence at their
+            defaults then, so leaving them out loses nothing.
+            """
+            dumped = super().identity_dump()
+            if self.bootstrap == 0:
+                for name in ("bootstrap", "bootstrap_seed", "bootstrap_confidence"):
+                    del dumped[name]
+            return dumped
 
     def __init__(
         self, inputs: EvaluateLabels.Inputs, params: dict[str, object] | None = None
@@ -296,6 +361,7 @@ class EvaluateLabels:
                 raise RuntimeError(msg)
         true: list[np.ndarray] = []
         pred: list[np.ndarray] = []
+        scored_entries: list[tuple[str, str, np.ndarray, np.ndarray]] = []
         n_entries = n_unlabeled = n_missing = n_conflicting = 0
         input_classes: set[int] = set()
         for _key, df in inputs():
@@ -310,6 +376,8 @@ class EvaluateLabels:
             n_conflicting += conflicting
             true.append(frame["_label"].to_numpy(dtype=np.int32))
             pred.append(frame["_prediction"].to_numpy(dtype=np.int32))
+            group, sequence = entry_identity(df)
+            scored_entries.append((group, sequence, true[-1], pred[-1]))
         y_true = np.concatenate(true) if true else np.empty(0, dtype=np.int32)
         y_pred = np.concatenate(pred) if pred else np.empty(0, dtype=np.int32)
         if self._controls_in_play and input_classes:
@@ -324,6 +392,10 @@ class EvaluateLabels:
             n_missing=n_missing,
             n_conflicting=n_conflicting,
         )
+        if self.params.bootstrap > 0:
+            self._report = self._report.model_copy(
+                update={"bootstrap": self._bootstrap(self._report, scored_entries)}
+            )
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if self._report is None:
@@ -343,13 +415,11 @@ class EvaluateLabels:
         if scored is not None:
             frame, unlabeled, _, _ = scored
             y_true = frame["_label"].to_numpy(dtype=np.int64)
-            y_pred = self._mapped(frame["_prediction"].to_numpy(dtype=np.int64))
+            y_pred = frame["_prediction"].to_numpy(dtype=np.int64)
             row["n_unlabeled"] = unlabeled
         # Every entry names the report's classes, so the rows stack into one table.
         classes = self._report.classes
-        scores = classification_scores(
-            y_true, y_pred, classes=classes, average_over=self.params.average_over
-        )
+        scores = self._entry_scores(y_true, y_pred, classes)
         row["n_scored"] = scores["n_samples"]
         if scores["n_samples"]:
             row["accuracy"] = scores["accuracy"]
@@ -423,6 +493,51 @@ class EvaluateLabels:
         )
         return out, int(unlabeled.sum()), int(missing.sum()), selected.n_conflicting
 
+    def _entry_scores(
+        self, y_true: np.ndarray, y_pred: np.ndarray, classes: list[int]
+    ) -> ClassificationScores:
+        """One entry's scores over the report's *classes*, its predictions mapped."""
+        return classification_scores(
+            y_true,
+            self._mapped(y_pred),
+            classes=classes,
+            average_over=self.params.average_over,
+        )
+
+    def _bootstrap(
+        self,
+        report: EvaluationReport,
+        entries: list[tuple[str, str, np.ndarray, np.ndarray]],
+    ) -> SequenceBootstrap | None:
+        """The bootstrap over the entries that scored a row, ``None`` with none.
+
+        The entries are sorted by ``(group, sequence)``, so the draws do not
+        depend on the order the entries arrive in.
+        """
+        rows: list[dict[str, object]] = []
+        for group, sequence, y_true, y_pred in sorted(entries, key=lambda e: e[:2]):
+            if y_true.size == 0:
+                continue
+            scores = self._entry_scores(y_true, y_pred, report.classes)
+            rows.append(
+                {
+                    C.group_col: group,
+                    C.seq_col: sequence,
+                    **entry_counts(scores, report.classes),
+                }
+            )
+        if not rows:
+            return None
+        return SequenceBootstrap.of(
+            bootstrap_sequences(
+                pd.DataFrame(rows),
+                random_state=self.params.bootstrap_seed,
+                n_boot=self.params.bootstrap,
+                confidence=self.params.bootstrap_confidence,
+                average_over=report.average_over,
+            )
+        )
+
     def _mapped(self, predictions: np.ndarray) -> np.ndarray:
         """*predictions* as classes: unchanged for a classifier, mapped for clusters."""
         if self.params.mode == "classifier" or self._label_map is None:
@@ -478,6 +593,7 @@ class EvaluateLabels:
             perspective=self.params.perspective,
             accuracy=scores["accuracy"],
             macro_f1=scores["macro_f1"],
+            kappa=None if np.isnan(scores["kappa"]) else scores["kappa"],
             average_over=scores["average_over"],
             classes=listed,
             per_class=[

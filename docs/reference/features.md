@@ -768,6 +768,9 @@ Score a run's predictions or clusters against ground-truth labels.
 | `classes` | list of `integer` \| `None` | `null` |  | The classes to report, in order. Unset reports every class a row holds or is predicted as. |
 | `average_over` | list of `integer` \| `None` | `null` |  | The classes macro_f1 averages over, such as every behavior but other. Unset averages over every class a scored row holds. |
 | `label_map` | `LabelMapRef` \| `None` | `null` |  | In clusters mode, a cluster to class map fitted on other entries by fit-label-map, as {step: <id>}. |
+| `bootstrap` | `integer` | `0` | >= `0` | The number of resamples of entries behind the report's intervals on accuracy, macro F1, kappa and per-class F1, with 0 computing none. |
+| `bootstrap_seed` | `integer` | `0` |  | The random seed of the bootstrap, left at 0 when bootstrap is 0. |
+| `bootstrap_confidence` | `number` | `0.95` |  | The width of the bootstrap intervals, between 0 and 1 exclusive, left at 0.95 when bootstrap is 0. |
 
 ??? note "`GroundTruthLabelsSource`"
 

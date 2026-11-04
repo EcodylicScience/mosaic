@@ -1418,6 +1418,9 @@ $ mosaic pipeline score [OPTIONS]
 * `--average-over <int>`: A class the macro F1 averages over (repeatable). Unset: every class.
 * `--classes <int>`: A class to report (repeatable), in order.
 * `--prediction-column <str>`: The column holding each row's predicted class.
+* `--bootstrap <int>`: The number of resamples of the entries behind an interval of each score. Unset: the evaluation's own default, none.
+* `--bootstrap-seed <int>`: The seed of the resamples.
+* `--bootstrap-confidence <float>`: The width of the intervals, between 0 and 1 (exclusive).
 * `--step-scope <str>`: Narrow one step to part of the request's scope, as STEP=SCOPE where SCOPE is a JSON selector such as {"groups": ["train"]} or {"entries": [["g", "s"]]}, or @file.json (repeatable). A bare @file.json holds a JSON object of STEP: SCOPE for several steps.
 * `--expect-plan <str>`: The plan_fingerprint that a --dry-run printed. Refuses the run, writing nothing more, when the scoring plan has changed since.
 * `--expect-md5 <str>`: The MD5 of the held-out file. Refuses an incomplete copy before anything is done. A file only.

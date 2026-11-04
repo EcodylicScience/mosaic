@@ -13,6 +13,7 @@
   "collective-motion-metrics/subgroups-alpha": "0.2-4bd3f8f29a",
   "egocentric-crop/center-mode-xy": "0.3-08ada24d03",
   "egocentric-crop/default": "0.3-b9ad2c4c3e",
+  "evaluate-labels/bootstrap": "0.2-7ca9b557bd",
   "evaluate-labels/classifier": "0.2-0ef7fefa45",
   "evaluate-labels/clusters-label-map": "0.2-a9563e494e",
   "evaluate-labels/label-mask": "0.2-09629c53c7",

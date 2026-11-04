@@ -288,6 +288,80 @@ def test_a_stored_score_that_was_changed_fails(study: Dataset) -> None:
     assert _verdict(report, "clf").status == "ok"
 
 
+def _stored_metrics(study: Dataset) -> tuple[Path, dict[str, object]]:
+    path = _root(study, "score") / "metrics.json"
+    return path, json.loads(path.read_text())
+
+
+def test_a_stored_report_without_the_keys_a_later_version_added_is_verified(
+    study: Dataset,
+) -> None:
+    """A run written before a report key existed is still vouched for, and the key is named."""
+    path, metrics = _stored_metrics(study)
+    added = [key for key in ("kappa", "bootstrap") if key in metrics]
+    assert "kappa" in added
+    for key in added:
+        del metrics[key]
+    _ = path.write_text(json.dumps(metrics))
+
+    report = verify_plan(study, _plan(study))
+
+    score = _verdict(report, "score")
+    assert (score.role, score.status) == ("evaluation", "ok")
+    assert score.state
+    assert score.state[0].status == "ok"
+    for key in added:
+        assert f".{key}" in score.state[0].detail
+        assert f".{key}" in (score.reason or "")
+    assert report.ok
+
+
+def test_a_stored_report_without_a_new_key_still_fails_on_a_changed_score(
+    study: Dataset,
+) -> None:
+    path, metrics = _stored_metrics(study)
+    del metrics["kappa"]
+    accuracy = metrics["accuracy"]
+    assert isinstance(accuracy, float)
+    metrics["accuracy"] = accuracy - 0.05
+    _ = path.write_text(json.dumps(metrics))
+
+    report = verify_plan(study, _plan(study))
+
+    score = _verdict(report, "score")
+    assert score.status == "differs"
+    assert score.scores and score.scores[0].startswith(".accuracy")
+
+
+def test_a_stored_report_with_a_key_the_fresh_report_lacks_is_a_mismatch(
+    study: Dataset,
+) -> None:
+    path, metrics = _stored_metrics(study)
+    metrics["unknown_key"] = 1.0
+    _ = path.write_text(json.dumps(metrics))
+
+    report = verify_plan(study, _plan(study))
+
+    score = _verdict(report, "score")
+    assert score.status == "differs"
+    assert score.scores == [".: keys differ"]
+
+
+def test_a_stored_report_that_records_the_new_key_is_compared_on_it(
+    study: Dataset,
+) -> None:
+    path, metrics = _stored_metrics(study)
+    assert isinstance(metrics["kappa"], float)
+    metrics["kappa"] = metrics["kappa"] - 0.05
+    _ = path.write_text(json.dumps(metrics))
+
+    report = verify_plan(study, _plan(study))
+
+    score = _verdict(report, "score")
+    assert score.status == "differs"
+    assert score.scores and score.scores[0].startswith(".kappa")
+
+
 def test_a_stored_state_file_that_was_changed_fails(study: Dataset) -> None:
     path = _root(study, "clf") / "reports.json"
     reports = json.loads(path.read_text())

@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.metrics import cohen_kappa_score  # pyright: ignore[reportUnknownVariableType]
 
 from mosaic.behavior.feature_library import evaluate_labels as module
 from mosaic.behavior.feature_library.evaluate_labels import (
@@ -27,6 +28,8 @@ from mosaic.behavior.feature_library.evaluate_labels import (
 )
 from mosaic.core.evaluation import (
     EvaluationReport,
+    SequenceBootstrap,
+    bootstrap_sequences,
     cluster_label_scores,
     pool_entry_counts,
     pool_reports,
@@ -538,6 +541,7 @@ def test_runs_over_disjoint_entries_pool_to_the_run_over_all_of_them(
     pooled = pool_reports([_report_of(tmp_path / f"fold{i}") for i in (0, 1)])
     whole = _report_of(tmp_path / "all")
     assert pooled.macro_f1 == whole.macro_f1
+    assert pooled.kappa == whole.kappa
     assert pooled.confusion == whole.confusion
     assert pooled.per_class == whole.per_class
     assert (pooled.n_entries, pooled.n_scored) == (whole.n_entries, whole.n_scored)
@@ -578,10 +582,97 @@ def test_runs_that_miss_a_cluster_of_the_map_pool_with_those_rows_as_wrong(
     whole = _report_of(tmp_path / "all")
     assert pooled.accuracy == whole.accuracy == 0.5
     assert pooled.macro_f1 == whole.macro_f1
+    assert pooled.kappa == whole.kappa == pytest.approx(1 / 3)
     assert pooled.confusion == whole.confusion == [[10, 0], [0, 0]]
     assert pooled.per_class == whole.per_class
     assert (pooled.n_scored, pooled.label_map_source) == (20, "fit-label-map")
     assert pooled.label_map == whole.label_map == {7: 0}
+
+
+# --- Cohen's kappa -----------------------------------------------------------------
+
+
+def test_a_classifier_report_carries_the_kappa_of_its_rows(tmp_path: Path) -> None:
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz")}
+
+    outputs = _run(
+        _feature({"perspective": 0}),
+        {("g", "s"): _rows("g", "s", GOOD)},
+        lookup,
+        tmp_path / "run",
+    )
+
+    expected = cohen_kappa_score([0] * 5 + [1] * 5, GOOD)
+    assert _report_of(tmp_path / "run").kappa == pytest.approx(expected, abs=1e-12)
+    assert "kappa" not in outputs[0].columns
+
+
+def test_a_cluster_report_carries_the_kappa_of_the_mapped_rows(tmp_path: Path) -> None:
+    """Cluster 9 is outside the map, so its rows are wrong whatever class they stand for."""
+    rows = _rows("g", "s", [7] * 5 + [9] * 5).rename(
+        columns={"predicted_label": "cluster"}
+    )
+    label_map = tmp_path / "label_map.parquet"
+    pd.DataFrame({"cluster": [7], "label": [0], "n_rows": [5]}).to_parquet(label_map)
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz")}
+
+    _ = _run(
+        _feature(_cluster_params(label_map={"feature": "fit-label-map"})),
+        {("g", "s"): rows},
+        lookup,
+        tmp_path / "run",
+        artifacts={"label_map": label_map},
+    )
+
+    mapped = [0] * 5 + [-2] * 5
+    expected = cohen_kappa_score([0] * 5 + [1] * 5, mapped)
+    assert _report_of(tmp_path / "run").kappa == pytest.approx(expected, abs=1e-12)
+
+
+def test_a_cluster_report_without_a_map_carries_the_kappa_of_the_majority_mapped_rows(
+    tmp_path: Path,
+) -> None:
+    rows = _rows("g", "s", [3] * 4 + [4] * 6).rename(
+        columns={"predicted_label": "cluster"}
+    )
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz")}
+
+    _ = _run(_feature(_cluster_params()), {("g", "s"): rows}, lookup, tmp_path / "run")
+
+    mapped = [0] * 4 + [1] * 6
+    expected = cohen_kappa_score([0] * 5 + [1] * 5, mapped)
+    assert _report_of(tmp_path / "run").kappa == pytest.approx(expected, abs=1e-12)
+
+
+def test_a_report_of_one_class_on_both_sides_has_no_kappa(tmp_path: Path) -> None:
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz", first=0, second=0)}
+
+    _ = _run(
+        _feature({"perspective": 0}),
+        {("g", "s"): _rows("g", "s", [0] * FRAMES)},
+        lookup,
+        tmp_path / "run",
+    )
+
+    report = _report_of(tmp_path / "run")
+    assert report.accuracy == 1.0
+    assert report.kappa is None
+    assert '"kappa": null' in (tmp_path / "run" / METRICS_FILE).read_text()
+
+
+def test_a_run_that_scores_no_row_has_no_kappa(tmp_path: Path) -> None:
+    lookup = {("g", "s"): write_sparse_labels(tmp_path / "labels.npz", [])}
+
+    _ = _run(
+        _feature({"perspective": 0}),
+        {("g", "s"): _rows("g", "s", GOOD)},
+        lookup,
+        tmp_path / "run",
+    )
+
+    report = _report_of(tmp_path / "run")
+    assert report.n_scored == 0
+    assert report.kappa is None
 
 
 # --- what the map was fitted over ------------------------------------------------
@@ -980,3 +1071,228 @@ def test_without_controls_a_class_the_input_lacks_scores_as_misses(
     assert report.classes == [0, 1, 2]
     two = next(score for score in report.per_class if score.label == 2)
     assert (two.support, two.predicted) == (5, 0)
+
+
+# --- the sequence bootstrap ------------------------------------------------------
+
+
+def _bootstrap_entries(
+    tmp_path: Path,
+) -> tuple[dict[tuple[str, str], pd.DataFrame], dict[tuple[str, str], Path]]:
+    rng = np.random.default_rng(5)
+    entries: dict[tuple[str, str], pd.DataFrame] = {}
+    lookup: dict[tuple[str, str], Path] = {}
+    for index, name in enumerate("abcde"):
+        group = "g1" if index < 3 else "g0"
+        entries[(group, name)] = _rows(group, name, rng.integers(0, 3, FRAMES).tolist())
+        lookup[(group, name)] = _labels(
+            tmp_path / f"{name}.npz", first=index % 2, second=2
+        )
+    return entries, lookup
+
+
+_BOOTSTRAP: dict[str, object] = {
+    "perspective": 0,
+    "bootstrap": 200,
+    "bootstrap_seed": 3,
+}
+
+
+def test_the_bootstrap_is_the_bootstrap_of_the_run_s_rows_sorted_by_entry(
+    tmp_path: Path,
+) -> None:
+    entries, lookup = _bootstrap_entries(tmp_path)
+    params: dict[str, object] = {**_BOOTSTRAP, "bootstrap_confidence": 0.9}
+
+    outputs = _run(_feature(params), entries, lookup, tmp_path / "run")
+
+    report = _report_of(tmp_path / "run")
+    table = pd.concat(outputs, ignore_index=True).sort_values(["group", "sequence"])
+    expected = SequenceBootstrap.of(
+        bootstrap_sequences(
+            table,
+            random_state=3,
+            n_boot=200,
+            confidence=0.9,
+            average_over=report.average_over,
+        )
+    )
+    assert report.bootstrap == expected
+    assert report.bootstrap is not None
+    assert (report.bootstrap.n_entries, report.bootstrap.n_boot) == (5, 200)
+    assert report.bootstrap.kappa is not None
+
+
+def test_entries_arriving_in_another_order_write_an_equal_report(
+    tmp_path: Path,
+) -> None:
+    entries, lookup = _bootstrap_entries(tmp_path)
+    reverse = dict(reversed(entries.items()))
+
+    _ = _run(_feature(_BOOTSTRAP), entries, lookup, tmp_path / "forward")
+    _ = _run(_feature(_BOOTSTRAP), reverse, lookup, tmp_path / "backward")
+
+    forward = (tmp_path / "forward" / METRICS_FILE).read_text()
+    assert forward == (tmp_path / "backward" / METRICS_FILE).read_text()
+    assert '"bootstrap": {' in forward
+
+
+def test_one_scored_entry_gives_intervals_equal_to_the_estimate(
+    tmp_path: Path,
+) -> None:
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz")}
+
+    _ = _run(
+        _feature(_BOOTSTRAP),
+        {("g", "s"): _rows("g", "s", GOOD)},
+        lookup,
+        tmp_path / "run",
+    )
+
+    report = _report_of(tmp_path / "run")
+    assert report.bootstrap is not None
+    assert report.bootstrap.n_entries == 1
+    for interval in (report.bootstrap.accuracy, report.bootstrap.macro_f1):
+        assert interval.lower == interval.estimate == interval.upper
+    assert report.bootstrap.accuracy.estimate == report.accuracy
+    assert report.bootstrap.macro_f1.estimate == report.macro_f1
+    assert report.bootstrap.kappa is not None
+    assert report.bootstrap.kappa.estimate == report.kappa
+
+
+def test_entries_that_score_no_row_leave_the_bootstrap_out(tmp_path: Path) -> None:
+    unlabeled = write_sparse_labels(tmp_path / "labels.npz", [])
+    scored = _labels(tmp_path / "scored.npz")
+
+    _ = _run(
+        _feature(_BOOTSTRAP),
+        {("g", "empty"): _rows("g", "empty", GOOD), ("g", "s"): _rows("g", "s", GOOD)},
+        {("g", "empty"): unlabeled, ("g", "s"): scored},
+        tmp_path / "run",
+    )
+    _ = _run(
+        _feature(_BOOTSTRAP),
+        {("g", "empty"): _rows("g", "empty", GOOD)},
+        {("g", "empty"): unlabeled},
+        tmp_path / "none",
+    )
+
+    with_one = _report_of(tmp_path / "run")
+    assert with_one.bootstrap is not None
+    assert with_one.bootstrap.n_entries == 1
+    assert _report_of(tmp_path / "none").bootstrap is None
+
+
+def test_without_a_bootstrap_the_report_has_none(tmp_path: Path) -> None:
+    entries, lookup = _bootstrap_entries(tmp_path)
+
+    _ = _run(_feature({"perspective": 0}), entries, lookup, tmp_path / "run")
+
+    assert _report_of(tmp_path / "run").bootstrap is None
+
+
+@pytest.mark.parametrize(
+    ("params", "message"),
+    [
+        ({"bootstrap_seed": 1}, "bootstrap_seed"),
+        ({"bootstrap_confidence": 0.9}, "bootstrap_confidence"),
+        ({"bootstrap": -1}, "bootstrap"),
+        ({"bootstrap": 10, "bootstrap_confidence": 1.0}, "confidence must lie"),
+        ({"bootstrap": 10, "bootstrap_confidence": 0.0}, "confidence must lie"),
+        (
+            {"bootstrap": 10, "mode": "clusters", "prediction_column": "cluster"},
+            "majority map",
+        ),
+    ],
+    ids=[
+        "seed",
+        "confidence",
+        "negative",
+        "confidence-one",
+        "confidence-zero",
+        "clusters-without-map",
+    ],
+)
+def test_a_bootstrap_setting_that_cannot_apply_is_refused_at_validation(
+    params: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _ = EvaluateLabels.Params.from_overrides(params)
+
+
+def test_a_bootstrap_of_clusters_is_allowed_through_a_fitted_map() -> None:
+    params = EvaluateLabels.Params.from_overrides(
+        _cluster_params(
+            bootstrap=10, label_map={"feature": "fit-label-map"}, bootstrap_seed=2
+        )
+    )
+
+    assert params.bootstrap == 10
+
+
+def test_a_bootstrap_of_clusters_resamples_the_classes_their_map_gives(
+    tmp_path: Path,
+) -> None:
+    """Clusters 7 and 9 stand for classes 0 and 1, so no raw cluster id is scored."""
+    rng = np.random.default_rng(11)
+    entries: dict[tuple[str, str], pd.DataFrame] = {}
+    lookup: dict[tuple[str, str], Path] = {}
+    for index, name in enumerate("abcd"):
+        group = "g1" if index < 2 else "g0"
+        entries[(group, name)] = _rows(
+            group, name, rng.choice([7, 9], FRAMES).tolist()
+        ).rename(columns={"predicted_label": "cluster"})
+        lookup[(group, name)] = _labels(tmp_path / f"{name}.npz")
+    label_map = tmp_path / "label_map.parquet"
+    pd.DataFrame({"cluster": [7, 9], "label": [0, 1], "n_rows": [5, 5]}).to_parquet(
+        label_map
+    )
+    params = _cluster_params(
+        label_map={"feature": "fit-label-map"},
+        bootstrap=200,
+        bootstrap_seed=4,
+    )
+
+    outputs = _run(
+        _feature(params),
+        entries,
+        lookup,
+        tmp_path / "run",
+        artifacts={"label_map": label_map},
+    )
+
+    report = _report_of(tmp_path / "run")
+    table = pd.concat(outputs, ignore_index=True).sort_values(["group", "sequence"])
+    expected = SequenceBootstrap.of(
+        bootstrap_sequences(
+            table,
+            random_state=4,
+            n_boot=200,
+            confidence=0.95,
+            average_over=report.average_over,
+        )
+    )
+    assert report.label_map == {7: 0, 9: 1}
+    assert report.bootstrap == expected
+    assert report.bootstrap is not None
+    assert report.bootstrap.n_entries == 4
+    assert report.bootstrap.accuracy.estimate == report.accuracy
+
+
+def test_the_bootstrap_settings_enter_the_identity_only_when_they_are_used() -> None:
+    plain = EvaluateLabels.Params.from_overrides({}).identity_dump()
+    stated = EvaluateLabels.Params.from_overrides(
+        {"bootstrap": 0, "bootstrap_seed": 0, "bootstrap_confidence": 0.95}
+    ).identity_dump()
+    used = EvaluateLabels.Params.from_overrides({"bootstrap": 200}).identity_dump()
+    reseeded = EvaluateLabels.Params.from_overrides(
+        {"bootstrap": 200, "bootstrap_seed": 1}
+    ).identity_dump()
+    wider = EvaluateLabels.Params.from_overrides(
+        {"bootstrap": 200, "bootstrap_confidence": 0.99}
+    ).identity_dump()
+
+    assert plain == stated
+    assert not {"bootstrap", "bootstrap_seed", "bootstrap_confidence"} & plain.keys()
+    assert used != plain
+    assert len({str(plain), str(used), str(reseeded), str(wider)}) == 4

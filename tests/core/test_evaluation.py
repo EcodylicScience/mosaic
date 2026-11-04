@@ -16,12 +16,15 @@ import pandas as pd
 
 from mosaic.core.dataset import Dataset
 import pytest
+from sklearn.metrics import cohen_kappa_score  # pyright: ignore[reportUnknownVariableType]
 
 from mosaic.core.evaluation import (
     LABEL_COLUMN,
     PREDICTION_COLUMN,
     ClassScore,
     EvaluationReport,
+    ScoreInterval,
+    SequenceBootstrap,
     aggregate_reports,
     align_predictions_to_labels,
     bootstrap_sequences,
@@ -35,6 +38,7 @@ from mosaic.core.evaluation import (
     pool_reports,
     select_scored_rows,
 )
+from mosaic.core.helpers import UNLABELED
 from mosaic.core.pipeline.types import ResultColumn
 from tests.helpers import (
     PairClusterFeature,
@@ -331,6 +335,7 @@ def _report(
         classes=scores["classes"],
         per_class=[ClassScore(**row) for row in scores["per_class"]],
         confusion=scores["confusion"].tolist(),
+        kappa=None if np.isnan(scores["kappa"]) else scores["kappa"],
     )
 
 
@@ -747,3 +752,265 @@ def test_a_bootstrap_needs_entries_and_a_sensible_confidence() -> None:
         _ = bootstrap_sequences(table, n_boot=10, random_state=0, confidence=1.0)
     with pytest.raises(ValueError, match="n_boot"):
         _ = bootstrap_sequences(table, n_boot=0, random_state=0)
+
+
+# --- Cohen's kappa ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("seed", "unlabeled"), [(0, False), (1, False), (2, True)], ids=str
+)
+def test_kappa_equals_the_one_sklearn_computes(seed: int, unlabeled: bool) -> None:
+    true, pred = _noisy(seed, 400, n_classes=4, error=0.4)
+    if unlabeled:
+        true = np.where(np.arange(true.size) % 7 == 0, UNLABELED, true)
+    kept = true != UNLABELED
+
+    scores = classification_scores(true, pred)
+
+    expected = float(cohen_kappa_score(true[kept], pred[kept]))
+    assert scores["kappa"] == pytest.approx(expected, abs=1e-12)
+
+
+def test_kappa_is_one_for_rows_that_agree_and_below_zero_for_rows_that_disagree() -> (
+    None
+):
+    assert (
+        classification_scores(np.array([0, 1, 0, 1]), np.array([0, 1, 0, 1]))["kappa"]
+        == 1.0
+    )
+    assert classification_scores(np.array([0, 1, 0, 1]), np.array([1, 0, 1, 0]))[
+        "kappa"
+    ] == pytest.approx(-1.0)
+
+
+def test_kappa_counts_a_class_listed_with_no_row_as_adding_nothing() -> None:
+    true, pred = _noisy(5, 300, n_classes=3)
+
+    plain = classification_scores(true, pred)
+    listed = classification_scores(true, pred, classes=[0, 1, 2, 3, 4])
+
+    assert listed["kappa"] == plain["kappa"]
+
+
+def test_kappa_is_undefined_for_no_scored_row_and_for_one_shared_class() -> None:
+    empty = np.empty(0, dtype=np.int64)
+
+    assert np.isnan(classification_scores(empty, empty)["kappa"])
+    assert np.isnan(
+        classification_scores(np.array([UNLABELED, UNLABELED]), np.array([0, 1]))[
+            "kappa"
+        ]
+    )
+    assert np.isnan(
+        classification_scores(np.array([2, 2, 2]), np.array([2, 2, 2]))["kappa"]
+    )
+
+
+def test_a_pooled_kappa_is_taken_from_integer_sums() -> None:
+    """Past 2**53 rows a float64 square of the total would round before the division."""
+    big = 2**40
+    table = pd.DataFrame(
+        [
+            {"tp_0": big, "fp_0": 0, "fn_0": 1, "tp_1": big, "fp_1": 1, "fn_1": 0},
+        ]
+    )
+    hits = [big, big]
+    supports = [big + 1, big]
+    predicted = [big, big + 1]
+    n = sum(supports)
+    p_o = sum(hits) / n
+    p_e = sum(s * q for s, q in zip(supports, predicted, strict=True)) / n**2
+
+    assert pool_entry_counts(table)["kappa"] == (p_o - p_e) / (1 - p_e)
+
+
+def test_pooling_counts_gives_the_kappa_of_the_pooled_rows_bit_for_bit() -> None:
+    true, pred = _noisy(7, 900, n_classes=5, error=0.45)
+    classes = [0, 1, 2, 3, 4]
+
+    pooled = pool_entry_counts(
+        _entry_table(true, pred, [100, 250, 50, 300, 200], classes)
+    )
+
+    assert (
+        pooled["kappa"] == classification_scores(true, pred, classes=classes)["kappa"]
+    )
+
+
+def test_pooling_counts_of_one_shared_class_gives_no_kappa() -> None:
+    table = pd.DataFrame(
+        [{"tp_0": 4, "fp_0": 0, "fn_0": 0, "tp_1": 0, "fp_1": 0, "fn_1": 0}]
+    )
+
+    assert np.isnan(pool_entry_counts(table)["kappa"])
+    assert np.isnan(pool_entry_counts(table.iloc[0:0].astype(np.int64))["kappa"])
+
+
+def test_pooled_reports_carry_the_kappa_of_one_run_over_all_their_entries() -> None:
+    folds = [_noisy(1, 300), _noisy(2, 200, n_classes=3), _noisy(3, 250, n_classes=5)]
+
+    pooled = pool_reports([_report(*fold) for fold in folds])
+
+    whole = classification_scores(
+        np.concatenate([fold[0] for fold in folds]),
+        np.concatenate([fold[1] for fold in folds]),
+    )
+    assert pooled.kappa == whole["kappa"]
+
+
+def test_pooled_reports_of_one_shared_class_have_no_kappa_and_others_do() -> None:
+    one_class = _report(np.array([1, 1]), np.array([1, 1]))
+
+    assert one_class.kappa is None
+    assert pool_reports([one_class, one_class]).kappa is None
+    assert pool_reports([one_class, _report(*_noisy(4, 100))]).kappa is not None
+
+
+def test_a_report_written_before_kappa_reads_it_as_none() -> None:
+    old = _report(np.array([0, 1]), np.array([0, 1])).model_dump(mode="json")
+    del old["kappa"]
+
+    assert EvaluationReport.model_validate_json(json.dumps(old)).kappa is None
+
+
+def test_a_bootstrap_gives_kappa_an_interval_around_the_pooled_one() -> None:
+    table = _bootstrap_table()
+
+    result = bootstrap_sequences(table, n_boot=300, random_state=2, confidence=0.8)
+
+    replicates = result["replicates"]["kappa"]
+    assert replicates.shape == (300,)
+    assert result["kappa"]["estimate"] == pool_entry_counts(table)["kappa"]
+    assert result["kappa"]["lower"] == np.quantile(replicates, 0.1)
+    assert result["kappa"]["upper"] == np.quantile(replicates, 0.9)
+    assert (
+        result["kappa"]["lower"]
+        <= result["kappa"]["estimate"]
+        <= result["kappa"]["upper"]
+    )
+
+
+def test_a_bootstrap_scores_each_resample_with_the_one_kappa_formula() -> None:
+    """Two entries, one right and one wrong: a resample of two has kappa NaN, 0 or 1/3."""
+    table = _hit_or_miss_table()
+
+    result = bootstrap_sequences(table, n_boot=200, random_state=0)
+
+    assert result["kappa"]["estimate"] == pool_entry_counts(table)["kappa"]
+    replicates = result["replicates"]["kappa"]
+    assert np.isnan(replicates).any()
+    defined = np.unique(replicates[~np.isnan(replicates)])
+    assert defined.tolist() == pytest.approx([0.0, 1 / 3])
+
+
+def test_a_bootstrap_leaves_the_replicates_without_a_kappa_out_of_its_interval() -> (
+    None
+):
+    """Resamples of two entries: one that agrees on class 0 and one that is all class 1."""
+    table = pd.DataFrame(
+        [
+            {"tp_0": 5, "fp_0": 0, "fn_0": 0, "tp_1": 0, "fp_1": 0, "fn_1": 0},
+            {"tp_0": 0, "fp_0": 0, "fn_0": 0, "tp_1": 3, "fp_1": 0, "fn_1": 0},
+        ]
+    )
+
+    result = bootstrap_sequences(table, n_boot=200, random_state=1)
+
+    replicates = result["replicates"]["kappa"]
+    assert np.isnan(replicates).any()
+    kept = replicates[~np.isnan(replicates)]
+    assert result["kappa"]["lower"] == np.quantile(kept, 0.025)
+    assert result["kappa"]["upper"] == np.quantile(kept, 0.975)
+
+
+def test_a_bootstrap_whose_kappa_is_undefined_everywhere_gives_a_nan_interval() -> None:
+    table = pd.DataFrame(
+        [{"tp_0": 5, "fp_0": 0, "fn_0": 0, "tp_1": 0, "fp_1": 0, "fn_1": 0}]
+    )
+
+    result = bootstrap_sequences(table, n_boot=20, random_state=0)
+
+    assert np.isnan(result["replicates"]["kappa"]).all()
+    assert all(np.isnan(result["kappa"][key]) for key in ("estimate", "lower", "upper"))
+    assert result["macro_f1"]["estimate"] == 1.0
+
+
+def test_aggregating_reports_gives_the_spread_of_the_kappas_that_exist() -> None:
+    reports = [_report(*_noisy(seed, 150, error=0.2 + 0.1 * seed)) for seed in range(3)]
+    undefined = _report(np.array([1, 1]), np.array([1, 1]))
+
+    spread = aggregate_reports([*reports, undefined])
+
+    values = [report.kappa for report in reports if report.kappa is not None]
+    assert len(values) == 3
+    assert spread["kappa"]["mean"] == pytest.approx(np.mean(values))
+    assert spread["kappa"]["sd"] == pytest.approx(np.std(values, ddof=1))
+
+
+def test_aggregating_reports_without_a_kappa_gives_nan_and_no_warning() -> None:
+    old = _report(np.array([0, 1]), np.array([0, 1])).model_copy(update={"kappa": None})
+
+    spread = aggregate_reports([old, old])
+
+    assert np.isnan(spread["kappa"]["mean"])
+    assert np.isnan(spread["kappa"]["sd"])
+
+
+def test_aggregating_one_report_with_a_kappa_has_no_sd() -> None:
+    spread = aggregate_reports([_report(*_noisy(3, 100))])
+
+    assert not np.isnan(spread["kappa"]["mean"])
+    assert np.isnan(spread["kappa"]["sd"])
+
+
+# --- the bootstrap in a report -----------------------------------------------------
+
+
+def test_a_sequence_bootstrap_keeps_the_intervals_and_drops_the_replicates() -> None:
+    table = _bootstrap_table()
+    scores = bootstrap_sequences(table, n_boot=100, random_state=4, confidence=0.9)
+
+    kept = SequenceBootstrap.of(scores)
+
+    assert (kept.n_entries, kept.n_boot) == (12, 100)
+    assert (kept.confidence, kept.random_state) == (0.9, 4)
+    assert kept.accuracy == ScoreInterval(**scores["accuracy"])
+    assert kept.macro_f1 == ScoreInterval(**scores["macro_f1"])
+    assert kept.kappa == ScoreInterval(**scores["kappa"])
+    assert [
+        (row.label, row.f1.estimate, row.f1.lower, row.f1.upper)
+        for row in kept.per_class
+    ] == [
+        (row["label"], row["f1"]["estimate"], row["f1"]["lower"], row["f1"]["upper"])
+        for row in scores["per_class"]
+    ]
+    assert "replicates" not in kept.model_dump()
+
+
+def test_a_sequence_bootstrap_without_a_kappa_records_none() -> None:
+    table = pd.DataFrame(
+        [{"tp_0": 4, "fp_0": 0, "fn_0": 0, "tp_1": 0, "fp_1": 0, "fn_1": 0}] * 3
+    )
+
+    kept = SequenceBootstrap.of(bootstrap_sequences(table, n_boot=20, random_state=0))
+
+    assert kept.kappa is None
+    assert kept.accuracy == ScoreInterval(estimate=1.0, lower=1.0, upper=1.0)
+
+
+def test_a_report_has_no_bootstrap_unless_one_is_set_and_pooling_leaves_it_out() -> (
+    None
+):
+    plain = _report(*_noisy(5, 100))
+    assert plain.bootstrap is None
+    kept = SequenceBootstrap.of(
+        bootstrap_sequences(_bootstrap_table(), n_boot=20, random_state=0)
+    )
+    with_interval = plain.model_copy(update={"bootstrap": kept})
+
+    pooled = pool_reports([with_interval, with_interval])
+
+    assert pooled.bootstrap is None
+    again = EvaluationReport.model_validate_json(with_interval.model_dump_json())
+    assert again.bootstrap == kept

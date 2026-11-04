@@ -5,7 +5,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from mosaic.core.evaluation import EvaluationReport
+from mosaic.core.evaluation import EvaluationReport, pool_entry_counts
 from mosaic.core.pipeline.graph.score import pooled_group_scores
 
 
@@ -85,3 +85,24 @@ def test_a_class_the_whole_group_lacks_scores_zero_in_the_macro_f1() -> None:
     [score] = pooled_group_scores(ENTRIES, _report([0, 1, 2])).values()
 
     assert score.macro_f1 == pytest.approx((2 / 3 + 4 / 5 + 0.0) / 3)
+
+
+def test_a_group_kappa_is_that_of_its_pooled_counts() -> None:
+    [score] = pooled_group_scores(ENTRIES, _report([0, 1])).values()
+
+    # 14 rows: 10 hits; labeled 6 and 8 of the two classes; predicted 6 and 7.
+    observed, expected = 10 / 14, (6 * 6 + 8 * 7) / 14**2
+    assert score.kappa == pytest.approx((observed - expected) / (1 - expected))
+    pooled = pool_entry_counts(
+        pd.concat(ENTRIES["g"], ignore_index=True), average_over=[0, 1]
+    )
+    assert score.kappa == pooled["kappa"]
+
+
+def test_a_group_kappa_is_none_when_the_pooled_counts_leave_it_undefined() -> None:
+    # Every row is labeled and predicted as class 0, so chance agreement is 1.
+    entries = {"g": [_entry({0: (5, 0, 0), 1: (0, 0, 0), 2: (0, 0, 0)})]}
+
+    [score] = pooled_group_scores(entries, _report([0, 1])).values()
+
+    assert score.kappa is None

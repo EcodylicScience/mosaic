@@ -175,6 +175,27 @@ def score_command(
             "--prediction-column", help="The column holding each row's predicted class."
         ),
     ] = None,
+    bootstrap: Annotated[
+        int | None,
+        typer.Option(
+            "--bootstrap",
+            help=(
+                "The number of resamples of the entries behind an interval of each "
+                "score. Unset: the evaluation's own default, none."
+            ),
+        ),
+    ] = None,
+    bootstrap_seed: Annotated[
+        int | None,
+        typer.Option("--bootstrap-seed", help="The seed of the resamples."),
+    ] = None,
+    bootstrap_confidence: Annotated[
+        float | None,
+        typer.Option(
+            "--bootstrap-confidence",
+            help="The width of the intervals, between 0 and 1 (exclusive).",
+        ),
+    ] = None,
     step_scope: StepScopeOption = None,
     expect_plan: Annotated[
         str | None,
@@ -257,6 +278,9 @@ def score_command(
             average_over=average_over,
             classes=classes,
             prediction_column=prediction_column,
+            bootstrap=bootstrap,
+            bootstrap_seed=bootstrap_seed,
+            bootstrap_confidence=bootstrap_confidence,
         )
     except ValidationError as error:
         fail(f"invalid scoring options: {terse(error)}")

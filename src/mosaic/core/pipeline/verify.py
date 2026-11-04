@@ -61,6 +61,7 @@ import numpy.typing as npt
 import pandas as pd
 
 from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.scope import Scope
 from mosaic.core.strict_model import StrictModel
 from mosaic.user_paths import user_path
@@ -984,6 +985,22 @@ def _overlay(frame: pd.DataFrame, fresh: pd.DataFrame) -> pd.DataFrame | None:
     return merged
 
 
+def _without_added_keys(stored: object, fresh: object, found: _Found) -> object:
+    """*fresh* without the top-level keys that *stored* predates.
+
+    A report written before a version of the feature added a key cannot be
+    compared on it. Each such key is left out and named as unchecked in
+    *found*. A key that *stored* holds and *fresh* lacks stays in the walk,
+    which reports it as differing keys.
+    """
+    if not is_str_mapping(stored) or not is_str_mapping(fresh):
+        return fresh
+    added = [key for key in fresh if key not in stored]
+    for key in added:
+        found.skip(f".{key}", "the stored report predates it")
+    return {key: value for key, value in fresh.items() if key not in added}
+
+
 def _verify_scores(
     ds: Dataset,
     planned: PlannedStep,
@@ -1048,9 +1065,10 @@ def _verify_scores(
             }
         )
     found = _Found()
+    stored_report: object = json.loads(old.read_text())
     _walk(
-        json.loads(old.read_text()),
-        json.loads(new.read_text()),
+        stored_report,
+        _without_added_keys(stored_report, json.loads(new.read_text()), found),
         "",
         found,
         exact_models=True,

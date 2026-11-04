@@ -539,7 +539,8 @@ def pooled_class_scores(
 
     Returns:
         The result of :func:`~mosaic.core.evaluation.pool_entry_counts` over the
-        rows: ``macro_f1``, ``accuracy`` and ``per_class`` with each class's ``f1``.
+        rows: ``macro_f1``, ``accuracy``, ``kappa`` (NaN where undefined) and
+        ``per_class`` with each class's ``f1``.
     """
     size = len(labels)
     confusion = np.bincount(truth * size + predicted, minlength=size * size).reshape(

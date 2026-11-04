@@ -9,6 +9,7 @@ classifier it scores is the one the study holds.
 from __future__ import annotations
 
 import json
+import statistics
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,8 @@ import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
-from mosaic.core.dataset import Dataset
+from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.evaluation import EvaluationReport
 from mosaic.core.pipeline.graph import (
     Recipe,
     ScoreAnswers,
@@ -146,6 +148,108 @@ def test_a_held_out_file_is_scored_on_a_copy_and_the_study_is_left_alone(
     assert json.loads((out / SCORES_JSON).read_text())["models"] == report["models"]
     assert "[final]" in (out / SCORES_TXT).read_text()
     assert not (study.base_dir / SCORES_JSON).exists()
+
+
+HELD = ["--multi-sequences-per-file", "--group-from", "filename"]
+
+
+def _evaluation_params(out: Path) -> dict[str, Any]:
+    """The params of the first ``evaluate-labels`` step of the scoring recipe."""
+    recipe = json.loads((out / "scoring" / "scoring-recipe.json").read_text())
+    [first, *_] = [s for s in recipe["steps"] if s["id"].startswith("test__")]
+    return first["params"]
+
+
+def _stored_report(out: Path, study: Dataset, run_id: str) -> EvaluationReport:
+    """The ``metrics.json`` that the evaluation run *run_id* wrote into the copy."""
+    copy = open_dataset(out / study.manifest_path.name)
+    [path] = copy.get_root("features").glob(f"*/{run_id}/metrics.json")
+    return EvaluationReport.model_validate_json(path.read_text())
+
+
+def test_the_scores_carry_cohens_kappa_and_no_interval_without_a_bootstrap(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "scored"
+
+    result = _score(
+        study, tmp_path, "--heldout", str(heldout), *HELD, "--out", str(out)
+    )
+
+    assert result.exit_code == 0, result.stderr
+    report = json.loads(result.stdout)
+    [model] = report["models"]
+    kappas = [member["kappa"] for member in model["members"]]
+    for member in model["members"]:
+        stored = _stored_report(out, study, member["run_id"])
+        assert member["kappa"] == stored.kappa
+        assert member["bootstrap"] is None
+        assert member["per_group"]["test"]["kappa"] == member["kappa"]
+    assert model["kappa_mean"] == pytest.approx(statistics.mean(kappas))
+    assert model["kappa_sd"] == pytest.approx(statistics.stdev(kappas))
+    [mean_row] = [
+        line for line in report["table"].splitlines() if line.startswith("mean ± sd")
+    ]
+    macro_cell = f"{model['macro_f1_mean']:.4f}±{model['macro_f1_sd']:.4f}"
+    kappa_cell = f"{model['kappa_mean']:.4f}±{model['kappa_sd']:.4f}"
+    assert mean_row.removeprefix("mean ± sd").split()[:2] == [macro_cell, kappa_cell]
+    [header, *_] = report["table"].splitlines()[1:]
+    assert header.split()[:4] == ["model", "step", "macro", "F1"]
+    assert "kappa" in header
+    assert header.index("macro F1") < header.index("kappa")
+    assert "interval" not in report["table"]
+    assert {"bootstrap", "bootstrap_seed", "bootstrap_confidence"}.isdisjoint(
+        _evaluation_params(out)
+    )
+
+
+def test_a_bootstrap_is_passed_to_the_evaluations_and_shown_in_the_table(
+    study: Dataset, heldout: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "scored"
+    plain = _score(
+        study, tmp_path, "--heldout", str(heldout), *HELD, "--out", str(tmp_path / "p")
+    )
+    assert plain.exit_code == 0, plain.stderr
+
+    result = _score(
+        study,
+        tmp_path,
+        "--heldout",
+        str(heldout),
+        *HELD,
+        "--bootstrap",
+        "50",
+        "--bootstrap-seed",
+        "3",
+        "--bootstrap-confidence",
+        "0.9",
+        "--out",
+        str(out),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert _evaluation_params(out) | {
+        "bootstrap": 50,
+        "bootstrap_seed": 3,
+        "bootstrap_confidence": 0.9,
+    } == _evaluation_params(out)
+    report = json.loads(result.stdout)
+    [model] = report["models"]
+    for member in model["members"]:
+        stored = _stored_report(out, study, member["run_id"])
+        assert stored.bootstrap is not None
+        assert stored.bootstrap.n_boot == 50
+        assert stored.bootstrap.random_state == 3
+        assert stored.bootstrap.confidence == 0.9
+        assert member["bootstrap"] == stored.bootstrap.model_dump(mode="json")
+        interval = stored.bootstrap.macro_f1
+        assert f"[{interval.lower:.4f}, {interval.upper:.4f}]" in report["table"]
+    [header, *_] = report["table"].splitlines()[1:]
+    assert "macro F1 interval" in header
+    assert "kappa" in header
+    plain_ids = {m["run_id"] for m in json.loads(plain.stdout)["models"][0]["members"]}
+    assert plain_ids.isdisjoint(m["run_id"] for m in model["members"])
 
 
 def test_every_held_out_group_is_scored_from_its_pooled_counts(

@@ -792,6 +792,19 @@ CASES: tuple[Case, ...] = (
         labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
     ),
     Case(
+        case_id="evaluate-labels/bootstrap",
+        feature="evaluate-labels",
+        inputs=[{"feature": "xgboost"}],
+        params={
+            "perspective": 0,
+            "average_over": [0, 1, 2],
+            "bootstrap": 200,
+            "bootstrap_seed": 1,
+        },
+        scope=(("test", "s3"),),
+        labels_variants=("convert-labels-calms21_npy.0.3-dddddddddd",),
+    ),
+    Case(
         case_id="evaluate-labels/label-mask",
         feature="evaluate-labels",
         inputs=[{"feature": "xgboost"}],

@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 from pydantic import field_validator
 
+from mosaic.core.evaluation import SequenceBootstrap
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
 from mosaic.core.splits import HELD_OUT_ROLES, role_of
@@ -169,12 +170,19 @@ class ScoreProtocol(StrictModel):
         average_over: The classes the macro F1 averages over.
         classes: The classes to report, in order.
         prediction_column: The column holding each row's predicted class.
+        bootstrap: The number of entry resamples behind the interval of each
+            score. Unset or 0 computes none.
+        bootstrap_seed: The seed of the resamples.
+        bootstrap_confidence: The width of the intervals, between 0 and 1.
     """
 
     perspective: int | Literal["pooled", "mean_probabilities"] | None = None
     average_over: list[int] | None = None
     classes: list[int] | None = None
     prediction_column: str | None = None
+    bootstrap: int | None = None
+    bootstrap_seed: int | None = None
+    bootstrap_confidence: float | None = None
 
     def evaluation_params(self, labels_step: str) -> dict[str, JsonValue]:
         """The params of one ``evaluate-labels`` step scored under this protocol."""
@@ -187,6 +195,12 @@ class ScoreProtocol(StrictModel):
             params["classes"] = list(self.classes)
         if self.prediction_column is not None:
             params["prediction_column"] = self.prediction_column
+        if self.bootstrap is not None:
+            params["bootstrap"] = self.bootstrap
+        if self.bootstrap_seed is not None:
+            params["bootstrap_seed"] = self.bootstrap_seed
+        if self.bootstrap_confidence is not None:
+            params["bootstrap_confidence"] = self.bootstrap_confidence
         return params
 
 
@@ -248,6 +262,7 @@ class GroupScore(StrictModel):
         n_scored: Rows scored.
         accuracy: The share of scored rows predicted correctly.
         macro_f1: Mean F1 over the protocol's classes.
+        kappa: Cohen's kappa of the pooled counts, ``None`` where it is undefined.
         per_class_f1: The F1 of each class, by the class's name or number.
     """
 
@@ -255,6 +270,7 @@ class GroupScore(StrictModel):
     n_scored: int
     accuracy: float | None
     macro_f1: float | None
+    kappa: float | None
     per_class_f1: dict[str, float | None]
 
 
@@ -268,7 +284,10 @@ class MemberScore(StrictModel):
         n_scored: Rows scored.
         accuracy: The share of scored rows predicted correctly.
         macro_f1: Mean F1 over the protocol's classes.
+        kappa: Cohen's kappa, ``None`` where it is undefined.
         per_class_f1: The F1 of each class, by the class's name or number.
+        bootstrap: The report's sequence-bootstrap intervals, ``None`` unless the
+            protocol asked for a bootstrap.
         per_group: The same scores for each group alone, by the group's name,
             pooled from the counts of its entries.
     """
@@ -279,21 +298,26 @@ class MemberScore(StrictModel):
     n_scored: int
     accuracy: float | None
     macro_f1: float | None
+    kappa: float | None
     per_class_f1: dict[str, float | None]
+    bootstrap: SequenceBootstrap | None = None
     per_group: dict[str, GroupScore] = {}
 
 
 class ModelScore(StrictModel):
     """One name of the answers: its members, and their mean and spread.
 
-    ``macro_f1_sd`` and the spreads of ``per_class_sd`` are ``None`` for a name
-    with one member.
+    ``macro_f1_sd``, ``kappa_sd`` and the spreads of ``per_class_sd`` are ``None``
+    for a name with one member. ``kappa_mean`` and ``kappa_sd`` are over the
+    members with a kappa.
     """
 
     name: str
     members: list[MemberScore]
     macro_f1_mean: float | None
     macro_f1_sd: float | None
+    kappa_mean: float | None
+    kappa_sd: float | None
     per_class_mean: dict[str, float | None]
     per_class_sd: dict[str, float | None]
 
@@ -760,6 +784,7 @@ def pooled_group_scores(
             n_scored=pooled["n_samples"],
             accuracy=_finite(pooled["accuracy"]),
             macro_f1=_finite(pooled["macro_f1"]),
+            kappa=_finite(pooled["kappa"]),
             per_class_f1={
                 names.get(row["label"], str(row["label"])): _finite(row["f1"])
                 for row in pooled["per_class"]
@@ -804,9 +829,11 @@ def _member(
         n_scored=report.n_scored,
         accuracy=_finite(report.accuracy),
         macro_f1=_finite(report.macro_f1),
+        kappa=report.kappa,
         per_class_f1={
             row.name or str(row.label): _finite(row.f1) for row in report.per_class
         },
+        bootstrap=report.bootstrap,
         per_group=per_group,
     )
 
@@ -826,6 +853,7 @@ def _model(name: str, members: list[MemberScore]) -> ModelScore:
     macro_mean, macro_sd = _mean_sd(
         [m.macro_f1 for m in members if m.macro_f1 is not None]
     )
+    kappa_mean, kappa_sd = _mean_sd([m.kappa for m in members if m.kappa is not None])
     means: dict[str, float | None] = {}
     spreads: dict[str, float | None] = {}
     for label in classes:
@@ -837,6 +865,8 @@ def _model(name: str, members: list[MemberScore]) -> ModelScore:
         members=members,
         macro_f1_mean=macro_mean,
         macro_f1_sd=macro_sd,
+        kappa_mean=kappa_mean,
+        kappa_sd=kappa_sd,
         per_class_mean=means,
         per_class_sd=spreads,
     )
@@ -848,17 +878,39 @@ def _cell(mean: float | None, sd: float | None) -> str:
     return f"{mean:.4f}" if sd is None else f"{mean:.4f}±{sd:.4f}"
 
 
+_INTERVAL_WIDTH: Final = 20
+
+
+def _interval_cell(bootstrap: SequenceBootstrap | None) -> str:
+    """The macro F1 interval of a bootstrap as ``[lower, upper]``, ``-`` without one."""
+    if bootstrap is None:
+        return "-"
+    interval = bootstrap.macro_f1
+    return f"[{interval.lower:.4f}, {interval.upper:.4f}]"
+
+
 def _table(models: list[ModelScore]) -> str:
-    """The scores as one block per name: a row per step, then mean and spread."""
+    """The scores as one block per name: a row per step, then mean and spread.
+
+    A name with a bootstrapped member has a macro F1 interval column after kappa.
+    """
     lines: list[str] = []
     for model in models:
         classes = list(model.per_class_mean)
+        shows_interval = any(member.bootstrap is not None for member in model.members)
         lines.append(f"[{model.name}]")
-        header = f"{'model step':<24}{'macro F1':>15}"
+        header = f"{'model step':<24}{'macro F1':>15}{'kappa':>15}"
+        if shows_interval:
+            header += f"{'macro F1 interval':>{_INTERVAL_WIDTH}}"
         header += "".join(f"{label:>15}" for label in classes) + f"{'rows':>10}"
         lines.append(header)
         for member in model.members:
-            row = f"{member.step:<24}{_cell(member.macro_f1, None):>15}"
+            row = (
+                f"{member.step:<24}{_cell(member.macro_f1, None):>15}"
+                f"{_cell(member.kappa, None):>15}"
+            )
+            if shows_interval:
+                row += f"{_interval_cell(member.bootstrap):>{_INTERVAL_WIDTH}}"
             row += "".join(
                 f"{_cell(member.per_class_f1.get(label), None):>15}"
                 for label in classes
@@ -867,7 +919,10 @@ def _table(models: list[ModelScore]) -> str:
         if len(model.members) > 1:
             row = (
                 f"{'mean ± sd':<24}{_cell(model.macro_f1_mean, model.macro_f1_sd):>15}"
+                f"{_cell(model.kappa_mean, model.kappa_sd):>15}"
             )
+            if shows_interval:
+                row += " " * _INTERVAL_WIDTH
             row += "".join(
                 f"{_cell(model.per_class_mean[label], model.per_class_sd[label]):>15}"
                 for label in classes
@@ -889,7 +944,7 @@ def _group_lines(model: ModelScore, classes: list[str]) -> list[str]:
     if len(groups) < 2:
         return []
     lines = [f"[{model.name}] by group"]
-    header = f"{'group':<16}{'model step':<24}{'macro F1':>15}"
+    header = f"{'group':<16}{'model step':<24}{'macro F1':>15}{'kappa':>15}"
     lines.append(
         header + "".join(f"{label:>15}" for label in classes) + f"{'rows':>10}"
     )
@@ -898,7 +953,10 @@ def _group_lines(model: ModelScore, classes: list[str]) -> list[str]:
             score = member.per_group.get(group)
             if score is None:
                 continue
-            row = f"{group:<16}{member.step:<24}{_cell(score.macro_f1, None):>15}"
+            row = (
+                f"{group:<16}{member.step:<24}{_cell(score.macro_f1, None):>15}"
+                f"{_cell(score.kappa, None):>15}"
+            )
             row += "".join(
                 f"{_cell(score.per_class_f1.get(label), None):>15}" for label in classes
             )

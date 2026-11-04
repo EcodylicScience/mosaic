@@ -30,6 +30,7 @@ use them, so importing this module stays cheap.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, TypedDict
@@ -58,6 +59,7 @@ __all__ = [
     "LABEL_COLUMN",
     "AlignedLabels",
     "BootstrapScores",
+    "ClassF1Interval",
     "ClassInterval",
     "ClassScore",
     "ClassScoreRow",
@@ -70,7 +72,9 @@ __all__ = [
     "Perspective",
     "ReportAggregate",
     "Replicates",
+    "ScoreInterval",
     "ScoredRows",
+    "SequenceBootstrap",
     "Weighting",
     "aggregate_reports",
     "align_predictions_to_labels",
@@ -330,6 +334,7 @@ class ClassificationScores(TypedDict):
     n_unlabeled: int
     accuracy: float
     macro_f1: float
+    kappa: float
     average_over: list[int]
     classes: list[int]
     per_class: list[ClassScoreRow]
@@ -353,6 +358,41 @@ def _class_row(label: int, *, hit: int, support: int, predicted: int) -> ClassSc
         "support": support,
         "predicted": predicted,
     }
+
+
+def _kappa(
+    hits: Sequence[int], supports: Sequence[int], predicted: Sequence[int]
+) -> float:
+    """Cohen's kappa of the rows that per-class counts describe.
+
+    With ``N`` the sum of *supports*, ``p_o`` is the sum of *hits* over ``N`` and
+    ``p_e`` the sum of each class's support times its predicted count over
+    ``N**2``. Kappa is ``(p_o - p_e) / (1 - p_e)``, NaN when ``N`` is 0 or
+    ``p_e`` is 1 (both sides give every row one class).
+
+    The counts are converted to Python integers and summed before the single
+    division, so kappa pooled from counts equals the kappa of the pooled rows
+    to the last bit.
+
+    Args:
+        hits: Rows labeled and predicted as the class, one value per class.
+        supports: Rows labeled as the class, in the same order.
+        predicted: Rows predicted as the class, in the same order.
+
+    Returns:
+        The kappa, or NaN where it is undefined.
+    """
+    total = sum(int(value) for value in supports)
+    if total == 0:
+        return float("nan")
+    agreed = sum(int(value) for value in hits) / total
+    expected = (
+        sum(int(s) * int(q) for s, q in zip(supports, predicted, strict=True))
+        / total**2
+    )
+    if expected == 1.0:
+        return float("nan")
+    return (agreed - expected) / (1 - expected)
 
 
 def _macro_f1(rows: Sequence[ClassScoreRow], averaged: Sequence[int]) -> float:
@@ -386,8 +426,9 @@ def classification_scores(
             behavior but ``other``. Unset, every class a labeled row holds.
 
     Returns:
-        ``n_samples``, ``n_unlabeled``, ``accuracy``, ``macro_f1``,
-        ``average_over``, ``classes``, ``per_class`` (one row per class of
+        ``n_samples``, ``n_unlabeled``, ``accuracy``, ``macro_f1``, ``kappa``
+        (Cohen's kappa, NaN where undefined), ``average_over``, ``classes``,
+        ``per_class`` (one row per class of
         ``label``, ``precision``, ``recall``, ``f1``, ``support`` and
         ``predicted``) and ``confusion`` (rows the true classes, columns the
         predicted ones, both in ``classes`` order).
@@ -426,6 +467,11 @@ def classification_scores(
         "n_unlabeled": n_unlabeled,
         "accuracy": float((true == pred).mean()) if true.size else 0.0,
         "macro_f1": _macro_f1(per_class, averaged),
+        "kappa": _kappa(
+            [int(value) for value in np.diag(confusion)],
+            [int(value) for value in confusion.sum(axis=1)],
+            [int(value) for value in confusion.sum(axis=0)],
+        ),
         "average_over": averaged,
         "classes": order,
         "per_class": per_class,
@@ -579,6 +625,78 @@ class ClassScore(StrictModel):
     predicted: int
 
 
+class ScoreInterval(StrictModel):
+    """A score and its percentile interval over resampled entries."""
+
+    estimate: float
+    lower: float
+    upper: float
+
+
+class ClassF1Interval(StrictModel):
+    """One class's F1 interval in a :class:`SequenceBootstrap`."""
+
+    label: int
+    f1: ScoreInterval
+
+
+class SequenceBootstrap(StrictModel):
+    """The intervals :func:`bootstrap_sequences` gave over a run's entries.
+
+    The unit resampled is the entry, so divisions of one recording are
+    resampled as separate entries. The replicates are not stored.
+
+    Attributes:
+        n_entries: Entries that scored a row and were resampled.
+        n_boot: How many resamples were drawn.
+        confidence: The width of the intervals.
+        random_state: The seed of the draws.
+        accuracy: The accuracy interval.
+        macro_f1: The macro F1 interval.
+        kappa: The kappa interval over the resamples that define it, ``None``
+            when none does.
+        per_class: Each class's F1 interval, in the report's class order.
+    """
+
+    n_entries: int
+    n_boot: int
+    confidence: float
+    random_state: int
+    accuracy: ScoreInterval
+    macro_f1: ScoreInterval
+    kappa: ScoreInterval | None
+    per_class: list[ClassF1Interval]
+
+    @classmethod
+    def of(cls, scores: BootstrapScores) -> SequenceBootstrap:
+        """The intervals of *scores*, without its replicates.
+
+        Args:
+            scores: What :func:`bootstrap_sequences` returned.
+
+        Returns:
+            The bootstrap, with ``kappa`` ``None`` for an undefined interval.
+        """
+        kappa = scores["kappa"]
+        return cls(
+            n_entries=scores["n_entries"],
+            n_boot=scores["n_boot"],
+            confidence=scores["confidence"],
+            random_state=scores["random_state"],
+            accuracy=ScoreInterval(**scores["accuracy"]),
+            macro_f1=ScoreInterval(**scores["macro_f1"]),
+            kappa=None
+            if math.isnan(kappa["estimate"])
+            or math.isnan(kappa["lower"])
+            or math.isnan(kappa["upper"])
+            else ScoreInterval(**kappa),
+            per_class=[
+                ClassF1Interval(label=row["label"], f1=ScoreInterval(**row["f1"]))
+                for row in scores["per_class"]
+            ],
+        )
+
+
 class EvaluationReport(StrictModel):
     """What ``evaluate-labels`` measured, over every entry it scored.
 
@@ -595,6 +713,9 @@ class EvaluationReport(StrictModel):
         accuracy: The share of scored rows predicted correctly. In clusters
             mode, after the label map, or the majority mapping without one.
         macro_f1: Mean F1 over ``average_over``.
+        kappa: Cohen's kappa of the scored rows, ``None`` where it is undefined
+            (no scored row, or both sides give every row one class) and in a
+            report saved before the field existed.
         average_over: The classes ``macro_f1`` averages over.
         classes: Every class reported, in confusion order.
         per_class: One score per class in ``classes``.
@@ -615,6 +736,9 @@ class EvaluationReport(StrictModel):
             only ``"fit-label-map"`` measures how well the clusters predict
             behavior on other entries. ``""`` in a report saved before the field
             existed, which cannot say.
+        bootstrap: The sequence-bootstrap intervals, ``None`` when the run asked
+            for none, when no entry scored a row, and in a pooled report, because
+            intervals do not pool.
     """
 
     mode: Literal["classifier", "clusters"]
@@ -626,6 +750,7 @@ class EvaluationReport(StrictModel):
     perspective: int | Literal["pooled", "mean_probabilities"] | None = None
     accuracy: float
     macro_f1: float
+    kappa: float | None = None
     average_over: list[int]
     classes: list[int]
     per_class: list[ClassScore]
@@ -633,6 +758,7 @@ class EvaluationReport(StrictModel):
     clusters: dict[str, float | int | bool] = {}
     label_map: dict[int, int] = {}
     label_map_source: LabelMapSource = ""
+    bootstrap: SequenceBootstrap | None = None
 
 
 _PAIR_KEY = ["group", "sequence", "frame", "_low", "_high"]
@@ -730,6 +856,7 @@ class CountScores(TypedDict):
     n_samples: int
     accuracy: float
     macro_f1: float
+    kappa: float
     average_over: list[int]
     classes: list[int]
     per_class: list[ClassScoreRow]
@@ -797,6 +924,11 @@ def _score_totals(
         "n_samples": n_samples,
         "accuracy": hits / n_samples if n_samples else 0.0,
         "macro_f1": _macro_f1(per_class, averaged),
+        "kappa": _kappa(
+            [int(value) for value in totals[:, 0]],
+            [row["support"] for row in per_class],
+            [row["predicted"] for row in per_class],
+        ),
         "average_over": averaged,
         "classes": [int(value) for value in classes],
         "per_class": per_class,
@@ -823,8 +955,9 @@ def pool_entry_counts(
             to match a run that set it.
 
     Returns:
-        ``n_samples``, ``accuracy``, ``macro_f1``, ``average_over``, ``classes``
-        and ``per_class`` (see :class:`ClassScoreRow`).
+        ``n_samples``, ``accuracy``, ``macro_f1``, ``kappa`` (NaN where
+        undefined), ``average_over``, ``classes`` and ``per_class`` (see
+        :class:`ClassScoreRow`).
 
     Raises:
         ValueError: *table* holds no count columns, only some of a class's, or
@@ -847,6 +980,7 @@ class Replicates(TypedDict):
 
     accuracy: np.ndarray
     macro_f1: np.ndarray
+    kappa: np.ndarray
     f1: np.ndarray
 
 
@@ -860,6 +994,7 @@ class BootstrapScores(TypedDict):
     average_over: list[int]
     accuracy: Interval
     macro_f1: Interval
+    kappa: Interval
     per_class: list[ClassInterval]
     replicates: Replicates
 
@@ -897,10 +1032,12 @@ def bootstrap_sequences(
 
     Returns:
         ``n_entries`` (those resampled), the arguments, ``average_over``,
-        ``accuracy`` and ``macro_f1`` as an :class:`Interval`, ``per_class``
-        (each class's F1 interval) and ``replicates``: ``accuracy`` and
-        ``macro_f1`` with one value per resample, and ``f1`` with a column per
-        class of ``per_class``.
+        ``accuracy``, ``macro_f1`` and ``kappa`` as an :class:`Interval`,
+        ``per_class`` (each class's F1 interval) and ``replicates``:
+        ``accuracy``, ``macro_f1`` and ``kappa`` with one value per resample
+        (``kappa`` NaN where a resample leaves it undefined), and ``f1`` with a
+        column per class of ``per_class``. The ``kappa`` interval leaves the
+        undefined replicates out and is NaN throughout when every one is.
 
     Raises:
         ValueError: *n_boot* is below 1, *confidence* is outside (0, 1), *table*
@@ -940,6 +1077,18 @@ def bootstrap_sequences(
     accuracy = np.divide(
         hit.sum(axis=1), labeled, out=np.zeros(n_boot), where=labeled > 0
     )
+    # Each resample's kappa is taken from integers, as the pooled one is.
+    kappa = np.array(
+        [
+            _kappa(
+                resample[:, 0].tolist(),
+                (resample[:, 0] + resample[:, 2]).tolist(),
+                (resample[:, 0] + resample[:, 1]).tolist(),
+            )
+            for resample in pooled
+        ],
+        dtype=np.float64,
+    )
 
     return {
         "n_entries": n_entries,
@@ -949,6 +1098,7 @@ def bootstrap_sequences(
         "average_over": averaged,
         "accuracy": percentile_interval(point["accuracy"], accuracy, confidence),
         "macro_f1": percentile_interval(point["macro_f1"], macro, confidence),
+        "kappa": _kappa_interval(point["kappa"], kappa, confidence),
         "per_class": [
             {
                 "label": row["label"],
@@ -956,8 +1106,24 @@ def bootstrap_sequences(
             }
             for index, row in enumerate(point["per_class"])
         ],
-        "replicates": {"accuracy": accuracy, "macro_f1": macro, "f1": f1},
+        "replicates": {
+            "accuracy": accuracy,
+            "macro_f1": macro,
+            "kappa": kappa,
+            "f1": f1,
+        },
     }
+
+
+def _kappa_interval(
+    estimate: float, replicates: np.ndarray, confidence: float
+) -> Interval:
+    """The percentile interval of the replicates with a kappa, NaN when none has one."""
+    defined = replicates[~np.isnan(replicates)]
+    if defined.size == 0:
+        nan = float("nan")
+        return {"estimate": nan, "lower": nan, "upper": nan}
+    return percentile_interval(estimate, defined, confidence)
 
 
 def pool_reports(reports: Sequence[EvaluationReport]) -> EvaluationReport:
@@ -1033,6 +1199,11 @@ def pool_reports(reports: Sequence[EvaluationReport]) -> EvaluationReport:
         for index, value in enumerate(classes)
     ]
     n_scored = sum(report.n_scored for report in reports)
+    kappa = _kappa(
+        [int(confusion[index, index]) for index in range(len(classes))],
+        support.tolist(),
+        predicted.tolist(),
+    )
     shared = all(report.average_over == first.average_over for report in reports)
     averaged = (
         list(first.average_over)
@@ -1053,6 +1224,7 @@ def pool_reports(reports: Sequence[EvaluationReport]) -> EvaluationReport:
         perspective=first.perspective,
         accuracy=int(np.trace(confusion)) / n_scored if n_scored else 0.0,
         macro_f1=_macro_f1(rows, averaged),
+        kappa=None if np.isnan(kappa) else kappa,
         average_over=averaged,
         classes=classes,
         per_class=[ClassScore(name=names.get(row["label"], ""), **row) for row in rows],
@@ -1086,6 +1258,7 @@ class ReportAggregate(TypedDict):
     n_reports: int
     accuracy: MetricSpread
     macro_f1: MetricSpread
+    kappa: MetricSpread
     per_class: list[ClassSpread]
 
 
@@ -1094,6 +1267,14 @@ def _spread(values: Sequence[float]) -> MetricSpread:
     array = np.asarray(values, dtype=np.float64)
     sd = float(np.std(array, ddof=1)) if array.size > 1 else float("nan")
     return {"mean": float(array.mean()), "sd": sd}
+
+
+def _kappa_spread(values: Sequence[float | None]) -> MetricSpread:
+    """The spread of the kappas that exist, NaN throughout when none does."""
+    held = [value for value in values if value is not None]
+    if not held:
+        return {"mean": float("nan"), "sd": float("nan")}
+    return _spread(held)
 
 
 def aggregate_reports(reports: Sequence[EvaluationReport]) -> ReportAggregate:
@@ -1111,8 +1292,9 @@ def aggregate_reports(reports: Sequence[EvaluationReport]) -> ReportAggregate:
         reports: The reports to summarize.
 
     Returns:
-        The spread of ``accuracy`` and ``macro_f1``, and of the precision,
-        recall and F1 of each class, the classes ascending.
+        The spread of ``accuracy``, ``macro_f1`` and ``kappa``, and of the
+        precision, recall and F1 of each class, the classes ascending. ``kappa``
+        is taken over the reports that have one, and is NaN when none does.
 
     Raises:
         ValueError: *reports* is empty.
@@ -1128,6 +1310,7 @@ def aggregate_reports(reports: Sequence[EvaluationReport]) -> ReportAggregate:
         "n_reports": len(reports),
         "accuracy": _spread([report.accuracy for report in reports]),
         "macro_f1": _spread([report.macro_f1 for report in reports]),
+        "kappa": _kappa_spread([report.kappa for report in reports]),
         "per_class": [
             {
                 "label": label,
