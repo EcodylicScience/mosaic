@@ -8926,7 +8926,7 @@ class Dataset:
 
     def _converter_params(
         self,
-        converter: TrackConverter[TrackConvertParams],
+        converter: TrackConverter[Any],
         overrides: Optional[Mapping[str, Any]],
         src_format: str = "",
     ) -> TrackConvertParams:

@@ -36,7 +36,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Annotated, ClassVar, Generic
+from typing import Annotated, Any, ClassVar, Generic
 
 import pandas as pd
 from typing_extensions import TypeVar
@@ -250,12 +250,10 @@ class TrackConverter(Generic[P]):
         return stem
 
 
-TRACK_CONVERTERS: dict[str, type[TrackConverter[TrackConvertParams]]] = {}
+TRACK_CONVERTERS: dict[str, type[TrackConverter[Any]]] = {}
 
 
-def register_track_converter(
-    cls: type[TrackConverter[TrackConvertParams]],
-) -> type[TrackConverter[TrackConvertParams]]:
+def register_track_converter[C: type[TrackConverter[Any]]](cls: C) -> C:
     """Register a converter class under its declared ``src_format``."""
     src_format = getattr(cls, "src_format", "")
     if not src_format:

@@ -31,7 +31,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Annotated, ClassVar, Generic
+from typing import Annotated, Any, ClassVar, Generic
 
 from pydantic import Field
 from typing_extensions import TypeVar
@@ -208,12 +208,10 @@ def entry_group(group_from: str, raw_row: Mapping[str, object], infile: str) -> 
     return infile
 
 
-LABEL_CONVERTERS: dict[tuple[str, str], type[LabelConverter[LabelConvertParams]]] = {}
+LABEL_CONVERTERS: dict[tuple[str, str], type[LabelConverter[Any]]] = {}
 
 
-def register_label_converter(
-    cls: type[LabelConverter[LabelConvertParams]],
-) -> type[LabelConverter[LabelConvertParams]]:
+def register_label_converter[C: type[LabelConverter[Any]]](cls: C) -> C:
     """Register a converter under its ``(src_format, label_kind)`` pair.
 
     Keyed on the pair, not ``src_format`` alone, because one raw format can be a
