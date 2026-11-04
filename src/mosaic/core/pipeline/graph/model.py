@@ -612,10 +612,9 @@ class Request(GraphModel):
     pins: dict[str, str] = Field(default_factory=dict)
     """The run each pinned step serves, keyed by step id.
 
-    A pin names a finished run of a step that fits over its scope, and keeps
-    the step's inputs, which ``bind`` replaces. The pinned step is not
-    executed, reads complete over any scope, and the steps below it derive
-    their identity from the run. Left out of the request file when empty, so a
+    A pin names a finished run of a step that fits over its scope. The pinned
+    step is not executed, reads complete over any scope, and the steps below
+    it derive their identity from the run. Left out of the request file when empty, so a
     request without one reads in an older mosaic.
     """
 
