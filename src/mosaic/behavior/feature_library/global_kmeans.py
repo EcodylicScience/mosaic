@@ -45,6 +45,7 @@ from mosaic.core.pipeline.types import (
     TemplatesRef,
 )
 from mosaic.core.params import Declared
+from mosaic.core.pipeline.graph.compatibility import GpuWhen
 
 from .helpers import ensure_columns, finite_rows
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
@@ -75,8 +76,9 @@ _N_INIT_DESCRIPTION = (
 _MAX_ITER_DESCRIPTION = "The maximum number of iterations for one k-means run."
 
 _DEVICE_DESCRIPTION = (
-    "The compute device. cuda uses cuML's GPU-accelerated k-means when "
-    "available, falling back to scikit-learn otherwise."
+    "The compute device. cuda places the step on a GPU lane and uses cuML's "
+    "GPU-accelerated k-means when available, falling back to scikit-learn "
+    "otherwise."
 )
 
 _LABEL_ARTIFACT_POINTS_DESCRIPTION = (
@@ -161,6 +163,7 @@ class GlobalKMeansClustering:
     category = "global"
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
+    gpu_when = GpuWhen(field="device", values=("cuda",))  # a GPU lane only on cuda
     name: str = "global-kmeans"
     version: str = "0.4"
     parallelizable = False

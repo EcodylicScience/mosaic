@@ -54,6 +54,7 @@ __all__ = [
     "Declaration",
     "DeclarationCatalog",
     "EntityLevel",
+    "GpuWhen",
     "ProducerDecl",
     "Reach",
     "TRACKS_DECLARATION",
@@ -194,6 +195,19 @@ class ConsumerDecl:
 
 
 @dataclass(frozen=True, slots=True)
+class GpuWhen:
+    """The param whose value makes a feature GPU work.
+
+    Attributes:
+        field: The name of a field of the feature's params model.
+        values: The values of that field that mean a GPU.
+    """
+
+    field: str
+    values: tuple[JsonValue, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class Declaration:
     """One step type, from both sides.
 
@@ -221,6 +235,13 @@ class Declaration:
     otherwise need the feature registry -- and deciding a lane is one of the read
     paths that must not pay for it.
     """
+    gpu_when: GpuWhen | None = None
+    """The param that makes the step GPU work, ``None`` when its class is fixed.
+
+    A feature that fits on a GPU only for some values of a param, such as
+    ``device="cuda"``, declares it here in place of ``resource_class``, and the
+    lane follows the step's params (:func:`~.lanes.lane_for`).
+    """
     scope_takes: ScopeTakes | Literal[""] = ""
     """How much scope an op accepts, or ``""`` for a step that is not an op.
 
@@ -241,11 +262,12 @@ class Declaration:
     param_defaults: Mapping[str, JsonValue] = field(
         default_factory=dict[str, JsonValue]
     )
-    """The default of every params field that ``requires`` or ``provides`` reads.
+    """The default of each params field that a declaration reads.
 
-    A reference resolves to it for a step that does not set the field. It is
-    read off the params model when the catalog is built, and a reader of the
-    declaration resolves a reference without the registry.
+    The fields are those of ``requires``, ``provides`` and ``gpu_when``. A
+    reference, and the lane, resolve to the default for a step that does not
+    set the field. It is read off the params model when the catalog is built,
+    and a reader of the declaration resolves a reference without the registry.
     """
     costly_fit: bool = False
     """Whether a run of this feature is costly to fit again: a GPU, or hours.

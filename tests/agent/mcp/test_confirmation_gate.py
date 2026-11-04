@@ -62,6 +62,7 @@ from tests.helpers import (
     RecordingStarter,
     add_tracks_variant,
     calms21_dataset,
+    classifier_recipe,
     make_dataset,
     named_recipe,
     run_id_of,
@@ -444,6 +445,26 @@ def test_training_asks_to_confirm_and_is_polled_less_often(
     assert _conditions(refused) == {"gpu_lane", "training_op"}
     assert isinstance(confirmed, SubmittedPipeline), confirmed
     assert confirmed.poll_after_seconds == 60
+
+
+def test_a_classifier_fitted_on_cuda_meets_the_gpu_lane_and_on_cpu_does_not(
+    tmp_path: Path, starter: RecordingStarter
+) -> None:
+    ds = calms21_dataset(tmp_path / "classified", {"train": {"a": {"s1": 90}}})
+    backend = LocalBackend([ds.manifest_path], warm=False, start_driver=starter)
+
+    def classifier(device: str) -> dict[str, object]:
+        document = classifier_recipe("clf").model_dump(mode="json")
+        for step in document["steps"]:
+            if step["id"] == "clf":
+                step["params"]["device"] = device
+        return document
+
+    on_cuda = _submit(backend, ds, classifier("cuda"))
+    on_cpu = _submit(backend, ds, classifier("cpu"))
+
+    assert "gpu_lane" in _conditions(on_cuda)
+    assert isinstance(on_cpu, SubmittedPipeline), on_cpu
 
 
 def test_a_whole_dataset_submission_asks_nothing_and_its_plan_cautions_it(

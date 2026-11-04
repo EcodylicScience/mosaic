@@ -8,6 +8,22 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: GPU card leases
+
+**A step's lane follows one declared param.** `lane_for(declared, params=None)` and
+`lane_for_step(name, params=None)` take the step's params as a `Mapping[str, object]`,
+which accepts a recipe step's params and a submission's. A declaration that names a GPU
+param, `Declaration.gpu_when` (`GpuWhen(field, values)`), is GPU work when
+`params[field]`, or the field's default where `params` lacks it, is among the values.
+Without `params` the answer is the one for the defaults, which is what
+`step_type_lane` and the editor catalog list.
+
+`xgboost` and `global-kmeans` declare `gpu_when` on `device="cuda"`, so a step with
+`device: cuda` reaches `gpu-train` and raises the `gpu_lane` confirmation. With `cpu`, or
+no `device`, they stay on `feature-compute`. No run id moves: `device` was hashed already.
+`gpu_when` is a new field of `Declaration` in the editor catalog (`null` for every other
+step type). A caller of `lane_for_step` passes the submission's params to follow it.
+
 ## Unreleased: duplicate requests compared by run
 
 **A submission is a duplicate of an open request that computes one of its runs, of any

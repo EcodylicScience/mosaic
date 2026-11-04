@@ -14,6 +14,10 @@ assign a lane the rule has to be here. The lane *vocabulary* stays owned by
 mosaic-queue, which is why the return is a plain string rather than a closed
 type: constraining it belongs upstream, beside the queues it names.
 
+A lane may follow one declared param. A feature that fits on a GPU only for some
+values of a param, such as ``device="cuda"``, declares ``gpu_when`` in place of
+``resource_class``, and :func:`lane_for` reads the step's params.
+
 Decided from a :class:`~...compatibility.Declaration` rather than from the
 registries, so this is one more read path that does not pay for importing the
 feature library.
@@ -21,6 +25,7 @@ feature library.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Final
 
 from .compatibility import Declaration
@@ -59,13 +64,32 @@ def resource_class_of(declared: Declaration) -> str:
     Read straight off the declaration, which read it off what the feature or op
     itself says. A new heavy step routes correctly by declaring
     ``resource_class``; nothing here needs editing, and there is no per-step name
-    list to keep current.
+    list to keep current. A lane may follow one declared param
+    (``Declaration.gpu_when``), which this answer does not read: it is the class
+    the declaration states, and :func:`lane_for` reads the params.
     """
     return declared.resource_class or "cpu"
 
 
-def lane_for(declared: Declaration) -> str:
+def _wants_gpu(declared: Declaration, params: Mapping[str, object] | None) -> bool:
+    """Whether the declared GPU param, or its default, holds a GPU value."""
+    gpu_when = declared.gpu_when
+    if gpu_when is None:
+        return False
+    if params is not None and gpu_when.field in params:
+        value: object = params[gpu_when.field]
+    else:
+        value = declared.param_defaults.get(gpu_when.field)
+    return any(value == gpu_value for gpu_value in gpu_when.values)
+
+
+def lane_for(declared: Declaration, params: Mapping[str, object] | None = None) -> str:
     """Which lane *declared*'s work is offered to.
+
+    A step whose declaration names a GPU param (``gpu_when``) is GPU work when
+    *params* set that field to one of its values, or leave it at a default that is
+    one. Without *params* the answer is the one for the defaults, which is what a
+    catalog lists.
 
     GPU work splits into training and everything else: an op of category
     ``train``, or a GPU feature of category ``global`` (which fits a model), is
@@ -75,7 +99,9 @@ def lane_for(declared: Declaration) -> str:
     by ffmpeg -- the ``transcode`` category, or a declared ``heavy`` class -- has a
     lane of its own. Everything else is ``feature-compute``.
     """
-    resource_class = resource_class_of(declared)
+    resource_class = (
+        "gpu" if _wants_gpu(declared, params) else resource_class_of(declared)
+    )
     if resource_class == "gpu":
         fits = (
             declared.category == "train"
@@ -88,8 +114,11 @@ def lane_for(declared: Declaration) -> str:
     return DEFAULT_LANE
 
 
-def lane_for_step(name: str) -> str:
+def lane_for_step(name: str, params: Mapping[str, object] | None = None) -> str:
     """The lane a step named *name* -- a feature slug or an op kind -- is offered to.
+
+    *params* are the step's, as :func:`lane_for` reads them: a recipe step's or a
+    submission's.
 
     The by-name entry point, for a caller that holds a submitted job rather than a
     declaration. It reads the declaration catalog, and so pays the feature-library
@@ -105,4 +134,4 @@ def lane_for_step(name: str) -> str:
     if declared is None:
         message = f"no feature or op named {name!r} is registered"
         raise KeyError(message)
-    return lane_for(declared)
+    return lane_for(declared, params)

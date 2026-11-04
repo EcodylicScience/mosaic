@@ -18,12 +18,14 @@ from mosaic.core.pipeline.graph import (
     Declaration,
     DeclarationCatalog,
     EditorCatalog,
+    GpuWhen,
     ProducerDecl,
     can_connect,
     can_join,
     compatible_consumers,
     compatible_producers,
     declaration_catalog,
+    describe_step_type,
     editor_catalog,
     possible_connections,
     resolve_emits,
@@ -527,6 +529,85 @@ def test_a_submitted_job_finds_its_lane_by_name() -> None:
     assert lane_for_step("speed-angvel") == "feature-compute"
     with pytest.raises(KeyError, match="train-poze"):
         _ = lane_for_step("train-poze")
+
+
+@pytest.mark.parametrize("name", ["xgboost", "global-kmeans"])
+@pytest.mark.parametrize(
+    ("params", "lane"),
+    [
+        ({"device": "cpu"}, "feature-compute"),
+        ({"device": "cuda"}, "gpu-train"),
+        ({}, "feature-compute"),
+    ],
+    ids=["cpu", "cuda", "default"],
+)
+def test_a_lane_follows_the_param_that_a_declaration_names(
+    name: str, params: dict[str, str], lane: str
+) -> None:
+    from mosaic.core.pipeline.graph import lane_for
+
+    declared = declaration_catalog().get(name)
+    assert declared is not None
+    assert declared.resource_class == "cpu"
+    assert lane_for(declared, params) == lane
+
+
+def test_a_lane_without_params_is_the_lane_of_the_defaults() -> None:
+    from mosaic.core.pipeline.graph import lane_for
+
+    declared = declaration_catalog().get("xgboost")
+    assert declared is not None
+    assert declared.param_defaults["device"] == "cpu"
+    assert lane_for(declared) == "feature-compute"
+
+
+def test_a_submitted_job_finds_its_lane_by_name_and_params() -> None:
+    from mosaic.core.pipeline.graph import lane_for_step
+
+    assert lane_for_step("xgboost", {"device": "cuda"}) == "gpu-train"
+    assert lane_for_step("xgboost", {"device": "cpu"}) == "feature-compute"
+    assert lane_for_step("xgboost") == "feature-compute"
+    assert lane_for_step("global-kmeans", {"device": "cuda"}) == "gpu-train"
+
+
+def test_a_param_changes_the_lane_only_where_a_declaration_names_it() -> None:
+    from mosaic.core.pipeline.graph import lane_for
+
+    catalog = declaration_catalog()
+    for name in catalog.names():
+        declared = catalog.get(name)
+        assert declared is not None
+        if declared.gpu_when is None:
+            assert lane_for(declared, {"device": "cuda"}) == lane_for(declared), name
+
+
+def test_xgboost_and_global_kmeans_are_the_declarations_with_a_gpu_param() -> None:
+    catalog = declaration_catalog()
+    named = {
+        name: declared.gpu_when
+        for name in catalog.names()
+        if (declared := catalog.get(name)) is not None and declared.gpu_when
+    }
+
+    assert named == {
+        "xgboost": GpuWhen(field="device", values=("cuda",)),
+        "global-kmeans": GpuWhen(field="device", values=("cuda",)),
+    }
+
+
+def test_a_gpu_param_is_a_field_of_its_features_params() -> None:
+    catalog = declaration_catalog()
+    for name in catalog.names():
+        declared = catalog.get(name)
+        assert declared is not None
+        if declared.gpu_when is None:
+            continue
+        schema = describe_step_type(name).params_schema
+        assert schema is not None
+        properties = schema["properties"]
+        assert isinstance(properties, dict)
+        assert declared.gpu_when.field in properties, name
+        assert declared.gpu_when.field in declared.param_defaults, name
 
 
 def test_trex_takes_a_gpu_lane_from_its_own_declaration() -> None:

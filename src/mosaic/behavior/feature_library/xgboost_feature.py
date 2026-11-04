@@ -44,6 +44,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import HASH_EXCLUDE, Declared
+from mosaic.core.pipeline.graph.compatibility import GpuWhen
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .classifier_common import (
@@ -163,10 +164,9 @@ _N_JOBS_DESCRIPTION = (
 
 _DEVICE_DESCRIPTION = (
     "Which device fits the model. cpu fits on the processor. cuda fits on the "
-    "GPU and fails where XGBoost has no CUDA device. The step stays on a CPU "
-    "worker either way, so cuda runs only where the run is placed on a GPU "
-    "machine. A fitted model predicts on the CPU, so a model fitted on cuda "
-    "applies anywhere."
+    "GPU and fails where XGBoost has no CUDA device. cuda places the step on a "
+    "GPU lane, where it takes a card of its own. A fitted model predicts on the "
+    "CPU, so a model fitted on cuda applies anywhere."
 )
 
 
@@ -262,6 +262,7 @@ class XgboostFeature(FitReporting):
     category = "global"
     costly_fit = True  # a superseded-run cleanup keeps its runs
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
+    gpu_when = GpuWhen(field="device", values=("cuda",))  # a GPU lane only on cuda
     name = "xgboost"
     # 0.2: ``nn_id`` and ``attention_target_id``, track ids, are no longer
     # fitted, from templates written before ``extract-labeled-templates``

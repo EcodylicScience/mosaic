@@ -913,7 +913,7 @@ def _plan_step(
         parents=parents,
         status_parents=_status_parents(step, parents),
         stacked_parents=_stacked_parents(step, declared),
-        lane=lane_for(declared),
+        lane=lane_for(declared, step.params),
         spec=replace(
             base.spec,
             entries=_entries_for(step, resolution, target, view.coverage, view.status),
@@ -955,7 +955,7 @@ def _bound_step(
         kind="feature",
         runs=step.feature,
         spec=spec,
-        lane=lane_for(declared),
+        lane=lane_for(declared, step.params),
         parents=parents,
         status_parents=_status_parents(step, parents),
         stacked_parents=_stacked_parents(step, declared),

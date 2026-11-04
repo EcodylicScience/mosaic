@@ -65,6 +65,7 @@ from .compatibility import (
     ConsumerDecl,
     Declaration,
     DeclarationCatalog,
+    GpuWhen,
     ProducerDecl,
     resolve_emits,
 )
@@ -456,6 +457,11 @@ def _feature_declaration(cls: type) -> Declaration:
     emits: EmitsLevel = declared if declared in _EMITS_LEVELS else "as-input"  # pyright: ignore[reportAssignmentType]
     requires = declared_requires(cls)
     provides = declared_provides(cls)
+    declared_gpu_when: object = getattr(cls, "gpu_when", None)
+    gpu_when = declared_gpu_when if isinstance(declared_gpu_when, GpuWhen) else None
+    default_fields = contract_fields(requires, provides)
+    if gpu_when is not None:
+        default_fields |= {gpu_when.field}
 
     accepts_tracks = inputs_cls is not None and _accepts(inputs_cls, [TRACKS_INPUT])
     accepts_features = inputs_cls is not None and _accepts(
@@ -490,9 +496,10 @@ def _feature_declaration(cls: type) -> Declaration:
         # Optional on a feature and defaulted to cpu, which is what every
         # feature but a declared-heavy one is.
         resource_class=str(getattr(cls, "resource_class", "") or "cpu"),
+        gpu_when=gpu_when,
         requires=requires,
         provides=provides,
-        param_defaults=_param_defaults(cls, contract_fields(requires, provides)),
+        param_defaults=_param_defaults(cls, default_fields),
         costly_fit=getattr(cls, "costly_fit", False) is True,
         fits=getattr(cls, "fits", False) is True,
         temporal_reach=class_reach(cls),

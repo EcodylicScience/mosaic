@@ -4,7 +4,8 @@
 stays ``cpu`` because a GPU histogram build need not give the model a CPU one
 does. On many entries that is slow, and the plan can tell the person submitting
 it. The advice is a caution and nothing more: it is not part of the fingerprint,
-it changes no param, and it never moves a step to another lane.
+it changes no param, and it never moves a step to another lane. Setting
+``device: 'cuda'`` is what moves the step to a GPU lane.
 
 Whether the host has a GPU is read without importing ``torch``, from the
 presence of the package and from the environment and device files that name a
@@ -94,8 +95,8 @@ def cpu_fit_cautions(
             planned.step_id,
             "params.device",
             f"fits on the CPU over {asked[planned.step_id]} entries, and this host "
-            "has a GPU. Set device to 'cuda' to fit on it. The step stays on its "
-            "lane either way",
+            "has a GPU. Set device to 'cuda' to fit on it, which moves the step to a "
+            "GPU lane",
         )
         for planned in large
     )

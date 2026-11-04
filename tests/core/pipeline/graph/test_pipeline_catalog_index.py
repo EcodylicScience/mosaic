@@ -18,12 +18,14 @@ from mosaic.core.pipeline.graph import (
     EXCLUDED_KINDS,
     TRACKS_INPUT,
     CatalogEntry,
+    GpuWhen,
     StepTypeNotFound,
     catalog_index,
     declaration_catalog,
     describe_step_type,
     editor_catalog,
     lane_for_step,
+    step_type_lane,
 )
 from mosaic.core.pipeline.ops import OPS
 from mosaic.tracking import register_ops
@@ -141,6 +143,23 @@ def test_the_declaration_carries_fits(name: str, fits: bool) -> None:
 
     assert entry.declaration.fits is fits
     assert served.declaration.fits is fits
+
+
+def test_the_declaration_carries_the_param_that_makes_a_step_gpu_work() -> None:
+    entry = describe_step_type("xgboost")
+    served = CatalogEntry.model_validate_json(entry.model_dump_json())
+
+    assert entry.declaration.gpu_when == GpuWhen(field="device", values=("cuda",))
+    assert served.declaration.gpu_when == entry.declaration.gpu_when
+    assert json.loads(entry.model_dump_json())["declaration"]["gpu_when"] == {
+        "field": "device",
+        "values": ["cuda"],
+    }
+    assert describe_step_type("speed-angvel").declaration.gpu_when is None
+
+
+def test_the_catalog_lane_of_a_step_that_follows_a_param_is_the_default_lane() -> None:
+    assert step_type_lane(describe_step_type("xgboost")) == "feature-compute"
 
 
 @pytest.mark.parametrize("name", ["no-such-step", *sorted(EXCLUDED_KINDS)])

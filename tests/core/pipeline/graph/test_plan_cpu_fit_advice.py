@@ -108,6 +108,31 @@ def test_the_advice_changes_neither_the_fingerprint_nor_the_lane(
 
 
 @pytest.mark.parametrize(
+    ("device", "lane"), [("cuda", "gpu-train"), ("cpu", "feature-compute")]
+)
+def test_a_classifier_plans_the_lane_of_its_device(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch, device: str, lane: str
+) -> None:
+    _on_gpu_host(monkeypatch, True)
+
+    plan = plan_pipeline(dataset, _recipe(device=device), refuse=False)
+
+    [classifier] = [step for step in plan.steps if step.step_id == "clf"]
+    assert classifier.lane == lane
+
+
+def test_the_caution_says_that_cuda_moves_the_step_to_a_gpu_lane(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _on_gpu_host(monkeypatch, True)
+
+    [caution] = _advice(dataset, _recipe())
+
+    assert "GPU lane" in caution
+    assert "stays on its lane" not in caution
+
+
+@pytest.mark.parametrize(
     ("visible", "device_present", "expected"),
     [
         ("0", False, True),
