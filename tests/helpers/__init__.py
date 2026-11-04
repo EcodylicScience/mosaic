@@ -24,7 +24,8 @@ What lives where:
   validation predicts from its declaration, and a pair table's mirror rows.
 - ``kpms`` contains the params of a kpms feature on three named keypoints.
 - ``labels`` writes converted label files of events, and their index rows, and
-  holds the label converters that the conversion tests register.
+  holds the label converters that the conversion tests register. It also writes
+  raw predictions tables and scans them as a labels source.
 - ``extracted_frames`` writes an entry camera of a frames run: its PNGs, its
   ``run_info.json`` records and its frames-index row, and reads back the files
   of a dataset's one frames row.
@@ -316,6 +317,7 @@ from tests.helpers.labels import (
     TracksAxisEntries,
     add_labels,
     add_predictions,
+    scan_predictions_tables,
     write_lineage_run,
     write_listed_entries,
     write_predictions,
@@ -544,6 +546,7 @@ __all__ = [
     "UPDATE_GOLDEN_ENV",
     "add_labels",
     "add_predictions",
+    "scan_predictions_tables",
     "add_media_sequence",
     "add_media_variant",
     "add_track_sequences",

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Annotated, ClassVar, override
 
 import numpy as np
+import pandas as pd
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
@@ -211,6 +212,38 @@ def add_predictions(
         n_frames=len(events),
     )
     return path
+
+
+def scan_predictions_tables(ds: Dataset, tables: Mapping[str, pd.DataFrame]) -> None:
+    """Write each table as a predictions file, declare their source and scan it.
+
+    Each table is written to ``labels_raw/predictions/<set>/predictions.parquet``,
+    so a ``files`` pattern of ``labels_raw/predictions/<set>/*`` converts that
+    set alone. The source reads every set as ``predictions_table`` files of
+    several sequences, and its raw rows name no group, so each row's ``group``
+    cell names its entry's.
+
+    Args:
+        ds: The dataset.
+        tables: Each set's name, mapped to its predictions table.
+    """
+    from mosaic.core.manifest import LabelsScanSource
+
+    root = ds.get_root("labels_raw") / "predictions"
+    for name, table in tables.items():
+        directory = root / name
+        directory.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(directory / "predictions.parquet", index=False)
+    ds.add_scan_source(
+        LabelsScanSource(
+            id="predictions",
+            path=str(root),
+            patterns=("*.parquet",),
+            src_format="predictions_table",
+            multi_sequences_per_file=True,
+        )
+    )
+    _ = ds.scan_labels()
 
 
 def write_lineage_run(
