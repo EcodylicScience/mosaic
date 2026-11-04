@@ -419,6 +419,10 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `coverage_shortfall` is answered with `--allow-partial` (`allow_partial=True`), and
   only once the user accepts results over fewer entries. Details:
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
+- Reason `gpu_card_not_leased`: a GPU step of a local request is given one card, and its
+  `device` names another (`1`, `cuda:1`) or several (`0,1`). Set `device` to `0` or
+  `cuda`, or leave it unset. `0` names the card the step was given. `--allow-partial`
+  does not answer it.
 - A step given a fitted `model` (`arhmm`, `kpms`, `vame`, the identity models,
   `lightning-action`) applies it to each entry alone, so its scope is not in its run id
   and a wider request is the same run. The crop identity models only load it: their

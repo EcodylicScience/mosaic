@@ -13,7 +13,10 @@ passes the locked descriptor to the step's process and closes its own copy, so
 the lock lives exactly as long as the processes that hold the descriptor.
 :func:`step_environment` narrows the step's ``CUDA_VISIBLE_DEVICES`` to the card
 and records the lease in two variables, which :func:`leased_card` and
-:func:`inherited_lease_fds` read back inside the step.
+:func:`inherited_lease_fds` read back inside the step. A leased step has one card,
+which its ``device`` index ``0`` names, so :func:`names_another_card` tells a
+``device`` that asks for another card or several, and :func:`leases_cards_here`
+tells a plan whether the host is one that leases.
 
 Imports the standard library alone. ``fcntl`` is imported where a lock is taken,
 and Windows takes no lease.
@@ -53,6 +56,8 @@ __all__ = [
     "leasable_cards",
     "lease_directory",
     "leased_card",
+    "leases_cards_here",
+    "names_another_card",
     "query_cards",
     "step_environment",
     "try_lease",
@@ -82,6 +87,7 @@ _QUERY_FIELDS: Final = "index,uuid,name,mig.mode.current"
 _MIG_STATES: Final = {"Enabled": True, "Disabled": False, "[N/A]": False}
 _NONE_VISIBLE: Final = frozenset({"", "-1"})
 _PCI_BUS_ORDER: Final = "PCI_BUS_ID"
+_INDEX_PREFIXES: Final = ("cuda:", "gpu:")
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +496,37 @@ def step_environment(
 def leased_card(environ: Mapping[str, str] = os.environ) -> str:
     """Return the card this process was leased, as :attr:`GpuCard.label`, or ``""``."""
     return environ.get(GPU_CARD_VAR, "")
+
+
+def names_another_card(device: object) -> bool:
+    """Whether *device* asks for a card other than the one a leased step has.
+
+    A leased step sees one card, and a ``device`` index counts within the cards it
+    sees, so ``0`` names that card. A ``device`` is another card when each of its
+    comma-separated tokens is an integer, ``cuda:<integer>`` or ``gpu:<integer>``,
+    and it is not the single token ``0``, ``cuda:0`` or ``gpu:0``. ``0,1`` and
+    ``0,0`` are lists, so they count. ``None``, ``cpu``, ``cuda``, ``gpu``,
+    ``auto``, ``mps``, any other text and anything that is not a string do not.
+    """
+    if not isinstance(device, str):
+        return False
+    tokens = [token.strip() for token in device.split(",")]
+    indexes: list[str] = []
+    for token in tokens:
+        index = token.split(":", 1)[1] if token.startswith(_INDEX_PREFIXES) else token
+        if not index.isdigit():
+            return False
+        indexes.append(index)
+    return len(tokens) > 1 or int(indexes[0]) != 0
+
+
+def leases_cards_here() -> bool:
+    """Whether this host is one whose drivers lease cards, without querying them.
+
+    True on POSIX with ``nvidia-smi`` on ``PATH``, which is cheap enough for a plan
+    to ask. The driver's own query still decides which cards, if any, it leases.
+    """
+    return sys.platform != "win32" and _nvidia_smi() is not None
 
 
 def inherited_lease_fds(environ: Mapping[str, str] = os.environ) -> tuple[int, ...]:

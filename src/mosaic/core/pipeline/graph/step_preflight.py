@@ -18,9 +18,9 @@ A refusal is an ordinary failure carrying a reason, not a new terminal status;
 
 **``allow_partial`` answers exactly one of these.** A shortfall is a question
 about *how much*, and a person may decide to proceed over less. A digest that
-does not match, a version that moved, a variant that disagrees and an upstream
-that produced nothing are not questions about how much, and no flag here unlocks
-them.
+does not match, a version that moved, a variant that disagrees, an upstream
+that produced nothing and a ``device`` that names a card the step was not
+leased are not questions about how much, and no flag here unlocks them.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
+from .gpu_lease import leased_card, names_another_card
 from .plan import (
     MISSING_SAMPLE,
     Plan,
@@ -135,6 +136,7 @@ def preflight(
         StepRefused: Carrying the reason and the numbers behind it.
     """
     planned = plan.step(step_id)
+    _refuse_card_device(planned)
     _refuse_empty_upstream(plan, planned)
     _refuse_variant_disagreement(ds, plan, planned)
     if not allow_partial:
@@ -275,6 +277,28 @@ def _answers_for_target(step: PlannedStep) -> bool:
     if step.status == BOUND_STATUS:
         return step.coverage.covers_all or not step.coverage.missing
     return step.status in COMPLETE_STATUSES
+
+
+def _refuse_card_device(planned: PlannedStep) -> None:
+    """Refuse a leased step whose ``device`` names a card other than its own.
+
+    A step that holds a card sees only that card, so its ``device`` index counts
+    within it and ``0`` names it. Another index, or a list, would reach a card the
+    step was not leased or fail inside the tool. A wrong card is not a shortfall,
+    so no flag answers it.
+    """
+    card = leased_card()
+    device = planned.spec.params.get("device")
+    if not card or not names_another_card(device):
+        return
+    raise StepRefused(
+        "gpu_card_not_leased",
+        planned.step_id,
+        f"step {planned.step_id!r} was leased GPU {card} alone, but its device is "
+        f"{device!r}. Under a lease, device 0 names that card. Set device to 0, "
+        f"'cuda' or leave it unset.",
+        {"card": card, "device": device},
+    )
 
 
 def _refuse_empty_upstream(plan: Plan, planned: PlannedStep) -> None:

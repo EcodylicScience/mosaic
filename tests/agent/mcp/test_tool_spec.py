@@ -507,3 +507,12 @@ def test_the_plan_and_submit_descriptions_leave_the_fingerprint_optional() -> No
         assert spec is not None
         assert "requires" not in spec.description.lower(), name
         assert "fingerprint" in spec.description, name
+
+
+def test_plan_recipe_gains_no_output_field_for_the_host_dependent_cautions() -> None:
+    """Cautions ride the existing ``cautions`` list, and the schema is near its cap."""
+    spec = tool_spec("plan_recipe")
+    assert spec is not None
+    schema = spec.output_schema()
+
+    assert len(json.dumps(schema, separators=(",", ":"))) == 8154

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Final, cast
 
-from .cpu_fit_advice import cpu_fit_cautions
+from .cpu_fit_advice import card_device_cautions, cpu_fit_cautions
 from .digest import document_digest
 from .heldout import deferred_fit_cautions, listed
 from .plan import (
@@ -252,6 +252,7 @@ def _plan_cautions(
     cautions.extend(
         cpu_fit_cautions(plan.steps, {step.step: step.asked for step in steps})
     )
+    cautions.extend(card_device_cautions(plan.steps))
     for step in steps:
         if step.asked > LARGE_SCOPE_ENTRIES:
             cautions.append(

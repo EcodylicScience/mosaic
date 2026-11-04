@@ -60,6 +60,7 @@ type RefusalReason = Literal[
     "digest_mismatch",
     "recipe_refused",
     "undecodable_codec",
+    "gpu_card_not_leased",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -74,7 +75,9 @@ shape that a refused submission lists. ``undecodable_codec`` is a
 tracker's or an inference op's refusal to hand its tool a file whose codec the
 tool's environment does not decode, inside a step or in a run outside any
 pipeline. A tracker raises it when it reaches that entry, and an inference op
-before any entry runs.
+before any entry runs. ``gpu_card_not_leased`` is a step that was leased one GPU
+card and whose ``device`` names another, or several; a leased step sees one card,
+which index ``0`` names.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

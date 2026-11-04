@@ -10,6 +10,16 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: GPU card leases
 
+**A new refusal reason, `gpu_card_not_leased`.** A step that holds a leased GPU card
+(`MOSAIC_GPU_CARD` set) and whose `device` names another card or several, such as `1`,
+`cuda:1`, `gpu:1` or `0,1`, is refused in its preflight before any coverage check, so
+`allow_partial` does not answer it. `0`, `cuda:0`, `cuda`, `cpu`, `auto` and an unset
+`device` pass. `RefusalReason` gains the member, so the `reason` of `error_json` and the
+`mosaic run` payload (exit code 65) can carry it; its detail is `{"card", "device"}`. A
+plan on a host with `nvidia-smi` adds a caution at `params.device` for such a GPU-lane
+step. The caution is not part of the fingerprint, and `plan_recipe` gains no field. Every
+tracker's `device` description gains a sentence saying so.
+
 **A step's lane follows one declared param.** `lane_for(declared, params=None)` and
 `lane_for_step(name, params=None)` take the step's params as a `Mapping[str, object]`,
 which accepts a recipe step's params and a submission's. A declaration that names a GPU

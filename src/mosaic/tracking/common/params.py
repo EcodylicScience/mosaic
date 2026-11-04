@@ -26,7 +26,9 @@ __all__ = ["PhasedTrackerOpParams", "TrackerOpParams", "refuse_unphased_fields"]
 
 DEVICE_INDEX_NOTE = (
     " A GPU index counts within the GPUs the run may use: under a queue worker "
-    "pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given."
+    "pinned to one GPU, or a cluster allocation, 0 is the first GPU it was given. "
+    "A GPU step of a local request is given one card, which 0 names, and another "
+    "index is refused."
 )
 """Appended to every ``device`` description that takes a GPU index.
 
