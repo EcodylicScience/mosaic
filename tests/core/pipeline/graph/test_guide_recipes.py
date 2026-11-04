@@ -15,10 +15,12 @@ import pandas as pd
 import pytest
 
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline, run_pipeline
+from mosaic.core.pipeline.graph.validate import check_recipe
 from tests.helpers import (
     LA_WINDOW,
     guide_blocks,
     guide_dataset,
+    guide_recipe,
     install_lightning_action_stub,
     run_ids,
     step_scopes,
@@ -283,3 +285,7 @@ def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(
     # One resident-focal run of each of the six training sequences, and no test group.
     assert package.trainings == 1
     assert len(package.trained) == 6
+
+
+def test_the_external_predictions_recipe_validates_as_written() -> None:
+    assert check_recipe(guide_recipe("external-predictions")) == ()

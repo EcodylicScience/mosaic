@@ -197,8 +197,9 @@ _LABEL_MAP_DESCRIPTION = (
 class EvaluateLabels:
     """Score a run's predictions or clusters against ground-truth labels.
 
-    Writes ``metrics.json`` (accuracy, macro F1, per-class precision, recall
-    and F1, and the clustering scores in clusters mode) and
+    Writes ``metrics.json`` (accuracy, macro F1, Cohen's kappa, per-class
+    precision, recall and F1, the bootstrap intervals when ``bootstrap`` is
+    above 0, and the clustering scores in clusters mode) and
     ``confusion.parquet`` over every entry it scored, ``cluster_confusion.parquet``
     in clusters mode, and one row per entry with its score and its per-class
     counts. Several inputs stack: their entries are unioned, and an entry held by

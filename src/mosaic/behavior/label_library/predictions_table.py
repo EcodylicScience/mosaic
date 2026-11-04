@@ -11,11 +11,11 @@ holds one prediction per row. Its columns:
 - ``id``, or ``id1`` and ``id2`` (integers, at least 0, optional): the
   individual of an individual row, or the focal and the other individual of a
   pair row. A row without ids is a scene-level row.
-- ``predicted_label``: the predicted class, an integer id, or a name of
-  ``class_ids``. Without the column, a row predicts the class of its highest
-  probability, the lowest class id on a tie.
+- ``predicted_label``: the predicted class, an integer id, or with
+  ``class_ids`` a name it lists. Without the column, a row predicts the class
+  of its highest probability, the lowest class id on a tie.
 - ``prob_<class>`` (float in [0, 1] or NaN): the probability of a class, named
-  by its id, or by a name of ``class_ids``.
+  by its id, or with ``class_ids`` by a name it lists.
 - ``fold`` (integer, at least -1, or empty): the fold whose model predicted the
   row out of fold. ``-1`` or empty marks a row predicted in sample.
 - ``block`` (integer, at least 0, or empty, only beside ``fold``): the row's

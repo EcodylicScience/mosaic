@@ -179,11 +179,14 @@ mosaic pipeline run -m dataset.yaml --recipe @supervised.json \
   format has no scanned file is refused.
 
 `evaluate-labels` writes `metrics.json` in its run directory: accuracy, a macro F1 over
-`average_over` (here every class but `other`), precision, recall and F1 per class, and
-a confusion matrix, which is also `confusion.parquet`. Each of its output rows is one
-entry's own score, with its true positives, false positives and false negatives per class
-(`tp_<class>`, `fp_<class>`, `fn_<class>`). A row no label covers is left out and counted
-in `n_unlabeled`.
+`average_over` (here every class but `other`), `kappa` (Cohen's kappa of the scored
+rows, `null` where it is undefined), precision, recall and F1 per class, and a confusion
+matrix, which is also `confusion.parquet`. With `bootstrap` above 0, the report also
+holds percentile intervals of the accuracy, the macro F1, kappa and each class's F1 from
+that many resamples of the entries, drawn with `bootstrap_seed` and as wide as
+`bootstrap_confidence`. Each of its output rows is one entry's own score, with its true
+positives, false positives and false negatives per class (`tp_<class>`, `fp_<class>`,
+`fn_<class>`). A row no label covers is left out and counted in `n_unlabeled`.
 `perspective` chooses which rows of a pair output are scored: one perspective, both
 (`"pooled"`), or the mean of a pair's two probability vectors
 (`"mean_probabilities"`). It refuses pair rows of both perspectives unless it is set.
@@ -874,6 +877,85 @@ name the entries that the blend's weights were chosen on.
   over the test groups. It reports their union, with the pooled counts of a single run
   over all of them. An entry that two inputs hold is refused, because it would count
   twice, and the plan refuses it first.
+
+## Score predictions made outside mosaic
+
+A model that ran elsewhere, or a second annotator, can be scored with the metrics of
+this page. Its predictions enter as the label kind `predictions`, and the
+`label-predictions` feature reads them onto the rows of a tracks table or of a pair
+feature. `evaluate-labels`, `tune-threshold` and `probability-ensemble` take that step as
+they take a classifier.
+
+- **The file** is a `.parquet` file, or a `.csv` file with a header row, with one
+  prediction per row. `frame` is the frame of the entry's tracks table. `sequence` (and
+  `group`, when the raw source does not give it) names the entry, so one file may hold
+  several. `id` marks an individual row, `id1` and `id2` a pair row with `id1` the focal
+  individual, and a row without ids applies to the scene. `predicted_label` is the class,
+  and `prob_<class>` columns give its probabilities. Without `predicted_label`, a row
+  takes the class of its highest probability, the lowest id on a tie. Names in place of
+  ids need `class_ids`, a map from each name to its id.
+- **The scan source** has format `predictions_table`, and its `patterns` name `*.parquet`
+  beside `*.csv`, because the default patterns skip parquet files. Leave out
+  `multi_sequences_per_file` for a file with a `sequence` column.
+
+  ```bash
+  mosaic sources add -m dataset.yaml --kind labels \
+      --path labels_raw/predictions/own-model --patterns '*.parquet,*.csv' \
+      --src-format predictions_table
+  mosaic scan -m dataset.yaml --kind labels
+  ```
+
+- **The recipe** converts the labels and the predictions in two steps, reads the
+  predictions onto the tracks, and scores them. `files` selects the files of one set of
+  predictions when a source holds several, and a conversion with other params is another
+  variant. One entry may come from one file only: two files for the same entry are
+  refused before anything is written.
+
+  ```json
+  {
+    "schema_version": 1,
+    "name": "external-predictions",
+    "steps": [
+      {"id": "tracks", "type": "op", "kind": "convert-tracks",
+       "params": {"source_format": "calms21_npy"}},
+      {"id": "labels", "type": "op", "kind": "convert-labels",
+       "params": {"source_format": "calms21_npy"}},
+      {"id": "predictions", "type": "op", "kind": "convert-labels",
+       "params": {"kind": "predictions", "source_format": "predictions_table",
+                  "params": {"files": "labels_raw/predictions/own-model/*"}}},
+      {"id": "own", "type": "feature", "feature": "label-predictions",
+       "inputs": ["tracks"], "tracks": {"step": "tracks"},
+       "params": {"predictions": {"step": "predictions"}}},
+      {"id": "score", "type": "feature", "feature": "evaluate-labels",
+       "inputs": [{"step": "own"}],
+       "params": {"labels": {"step": "labels"}, "bootstrap": 2000}}
+    ]
+  }
+  ```
+
+  An entry without a file in the variant has its rows written without a prediction, and
+  `score` counts them in `n_missing_prediction`. `missing_predictions: "error"` fails the
+  entry instead. A row that two events of the file match is refused, since its prediction
+  would depend on their order. `mosaic pipeline score` takes a recipe with one
+  `convert-labels` step, so it does not score this one, which converts twice. To score
+  the test groups, narrow the `score` step to them with `--step-scope`, as above.
+
+- **Folds.** A `fold` column marks the rows that the model of fold `k` predicted out of
+  fold, with `-1` or an empty cell for a row predicted in sample. The `label-predictions`
+  run then writes `cv_folds.parquet`, which `tune-threshold` and `probability-ensemble`
+  read as they read a classifier's. A `block` column beside `fold` names the
+  cross-validation block of each row and gives block folds. Write every frame of each
+  block, and the `block` column: without it, neighboring blocks of one fold merge, and a
+  blend of this run with a block-validated classifier refuses the pair, because their
+  folds differ.
+- **Agreement between annotators.** Write the second annotator's classes as a
+  `predictions_table` file with `predicted_label` and no probabilities, and score it
+  against the first annotator's labels. Rows the first annotator left unlabeled are
+  counted in `n_unlabeled`, and rows the second left unlabeled in
+  `n_missing_prediction`. The scores cover the rows both labeled. Accuracy and kappa stay
+  the same when the two annotators swap, per-class precision and recall exchange, and
+  per-class F1 stays. For CalMS21, write the pair as `id1` 0 and `id2` 1: each frame is
+  then scored once, on the resident's row.
 
 ## Read the predictions
 

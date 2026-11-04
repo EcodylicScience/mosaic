@@ -566,6 +566,13 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `"mean_probabilities"`), and `average_over` to leave a catch-all class such as
   `other` out of the macro F1. It writes `metrics.json` in its run directory
   (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+- To score predictions made outside mosaic, or one annotator against another, convert a
+  per-frame file with `convert-labels` (`source_format: "predictions_table"`, kind
+  `predictions`) and read it onto rows with `label-predictions`, which `evaluate-labels`,
+  `tune-threshold` and `probability-ensemble` take as input. A `fold` column marks
+  out-of-fold rows, and `evaluate-labels` reports `kappa` and, with `bootstrap`, intervals
+  over sequences
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/#score-predictions-made-outside-mosaic).
 - For a clustering, `fit-label-map` on the training groups fits the cluster to
   behavior map that `evaluate-labels` applies to the test groups through
   `label_map`. Without one, its accuracy is the purity of the scored rows, and the

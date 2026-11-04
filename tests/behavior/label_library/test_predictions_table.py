@@ -738,6 +738,25 @@ def test_two_files_naming_one_sequence_are_refused_naming_both(
     assert written(ds) == []
 
 
+def test_a_second_file_for_a_converted_sequence_is_refused_naming_both(
+    tmp_path: Path,
+) -> None:
+    ds = predictions_dataset(tmp_path, {"a/first.csv": scene("s1", 0)})
+    _ = ds.convert_all_labels(kind="predictions", source_format="predictions_table")
+    before = written(ds)
+    root = ds.get_root("labels_raw") / "predictions"
+    _ = write_table(root / "b", "second.csv", scene("s1", 1))
+    ds.index_labels_raw(
+        [root], patterns=["*.parquet", "*.csv"], src_format="predictions_table"
+    )
+
+    with pytest.raises(ValueError, match=r"'s1'.*first\.csv.*second\.csv"):
+        _ = ds.convert_all_labels(kind="predictions", source_format="predictions_table")
+
+    assert len(before) == 1
+    assert written(ds) == before
+
+
 def test_one_file_naming_one_entry_key_twice_is_refused(tmp_path: Path) -> None:
     table: Table = {
         "group": ["a", "", "a"],

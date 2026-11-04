@@ -14,7 +14,7 @@ media_raw/            the originals index -- rows may point outside the dataset
 media/                transcodes, extracted frames
 tracks_raw/           raw tracker output as uploaded
 tracks/<variant>/     standardized <group>__<sequence>.parquet, one dir per recipe
-labels/<kind>/        converted manual annotations
+labels/<kind>/        converted annotations and external predictions
 features/<name>/<run_id>/   one directory per feature run
 models/<name>/<run_id>/     one directory per trained model
 ```

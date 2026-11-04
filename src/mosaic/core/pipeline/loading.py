@@ -667,9 +667,10 @@ def events_for_rows(path: Path, df: pd.DataFrame) -> RowEvents:
     """The event of the label file at *path* that labels each row of *df*.
 
     Rows are matched as :func:`labels_for_rows` matches them, so
-    ``events_for_rows(path, df).labels`` is its result before label controls.
-    A reader gathers any other per-event column of the file from the rows'
-    ``positions``, and ``matches`` counts the events each row matched.
+    ``events_for_rows(path, df).labels`` is its result with ``default_label``
+    unset, before label controls. A reader gathers any other per-event column of
+    the file from the rows' ``positions``, and ``matches`` counts the events each
+    row matched.
 
     Args:
         path: The ``.npz`` label file of the rows' entry.

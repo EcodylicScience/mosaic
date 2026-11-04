@@ -124,8 +124,9 @@ class LabelConverter(Generic[P]):
     """Convert one raw label file into per-sequence :class:`LabelEntry` records.
 
     Subclass, declare ``src_format`` / ``label_kind`` / ``label_format`` /
-    ``Params``, implement ``convert``. The ``(src_format, label_kind)`` pair is
-    the registry key: one raw format can feed two kinds.
+    ``Params``, implement ``convert``, and override ``selects`` to convert only
+    some of the format's raw files. The ``(src_format, label_kind)`` pair is the
+    registry key: one raw format can feed two kinds.
 
     Class variables:
         src_format: The raw format this reads, matched against the

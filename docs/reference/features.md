@@ -200,7 +200,7 @@ Read a label kind of predictions onto the rows of one input.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `predictions` | `GroundTruthLabelsSource` | _constructed_ |  | The label kind of predictions read onto the rows, resolved from labels/<kind>/index.csv, where a {step: <id>} reference names a convert-labels step and pins the variant it writes. |
+| `predictions` | `GroundTruthLabelsSource` | _constructed_ |  | The label kind of predictions read onto the rows, predictions unless set, resolved from labels/<kind>/index.csv, where a {step: <id>} reference names a convert-labels step and pins the variant it writes. |
 | `missing_predictions` | `"null"` \| `"error"` | `"null"` |  | What an entry without a file of the variant writes: null writes its rows without a prediction, and error fails the entry. |
 
 ??? note "`GroundTruthLabelsSource`"

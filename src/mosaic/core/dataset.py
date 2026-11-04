@@ -9435,7 +9435,10 @@ class Dataset:
         Raises
         ------
         ValueError
-            If no converter is registered for (source_format, kind) combination
+            If no converter is registered for (source_format, kind), the
+            converter params do not build, no labels_raw row of the format is
+            selected, or, for a converter that refuses shared entry keys, two
+            converted entries share an entry key.
         FileNotFoundError
             If labels_raw/index.csv is missing
 

@@ -329,9 +329,11 @@ class RowEvents:
             A dense file's position is the row's frame.
         matches: The count of events matching the row. A row with ``matches``
             of 2 or more takes the last of them.
-        labels: The row's label: its event's label, or the background of the
-            file (:func:`label_background_id`) for a row with no event. Label
-            controls are not applied.
+        labels: The row's label: its event's label, or, for a row with no
+            event, *default_label* when given and otherwise the file's
+            background class (:func:`label_background_id`) for an event file and
+            :data:`UNLABELED` for a frame outside a dense file. Label controls
+            are not applied.
     """
 
     positions: np.ndarray
@@ -796,7 +798,8 @@ def events_for_frames(
 
     Returns:
         The rows' event positions, match counts and labels. An unmatched row
-        takes the file's background class. Label controls are not applied.
+        of an event file takes the file's background class, and a frame outside
+        a dense file is :data:`UNLABELED`. Label controls are not applied.
 
     Raises:
         ValueError: The file is of no known label format.

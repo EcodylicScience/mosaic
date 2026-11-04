@@ -1,4 +1,6 @@
-"""Converted label files and their index rows, written as a converter writes them.
+"""Converted label and prediction files and their index rows, written as a converter
+writes them, the label converters the conversion tests register, and raw predictions
+tables scanned as a labels source.
 
 A label file is ``individual_pair_v1``: one row per ``(frame, id1, id2, label)``
 event. The default vocabulary is CalMS21's, whose every class is a behavior, so

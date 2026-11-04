@@ -89,9 +89,9 @@ __all__ = ["LabelPredictions", "PredictedEntry", "prediction_fold_table"]
 _NAME: Final = "label-predictions"
 
 _PREDICTIONS_DESCRIPTION = (
-    "The label kind of predictions read onto the rows, resolved from "
-    "labels/<kind>/index.csv, where a {step: <id>} reference names a "
-    "convert-labels step and pins the variant it writes."
+    "The label kind of predictions read onto the rows, predictions unless "
+    "set, resolved from labels/<kind>/index.csv, where a {step: <id>} "
+    "reference names a convert-labels step and pins the variant it writes."
 )
 
 _MISSING_PREDICTIONS_DESCRIPTION = (

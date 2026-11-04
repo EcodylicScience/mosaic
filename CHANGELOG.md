@@ -8,6 +8,39 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: external predictions and agreement
+
+**Predictions made outside mosaic are a label kind.** The `predictions_table` label
+converter reads a `.parquet` or `.csv` file of per-frame predictions, with optional
+probabilities, folds and blocks, and `convert-labels` with `kind: "predictions"` writes
+them under `labels/predictions/<variant>/`. A later edit of the source file leaves every
+run as it is. The new feature `label-predictions` reads a label kind of any format onto
+the rows of a tracks table or a pair feature, as `predicted_label` and `prob_<class>`, and
+writes `cv_folds.parquet` when the file marks out-of-fold rows, so `evaluate-labels`,
+`tune-threshold` and `probability-ensemble` take it as they take a classifier.
+`predictions_table` refuses two files that give one entry, before anything is written. A
+`files` pattern that matches no raw file is a plan problem. Existing label converters
+convert as before, and a label converter now reports params that do not build as a plan
+problem. A recipe with two `convert-labels` steps is not scored by `pipeline score`, which
+takes one.
+
+**Agreement.** The `metrics.json` of `evaluate-labels` gains `kappa`, Cohen's kappa of the
+scored rows, and `bootstrap`, the percentile intervals of the accuracy, kappa, the macro
+F1 and each class's F1 over resamples of the sequences, `null` unless the run asked for
+one. A run's `params.json` records the three new `evaluate-labels` fields, `bootstrap`,
+`bootstrap_seed` and `bootstrap_confidence`, which leave the run id at their defaults.
+`mosaic pipeline score` takes `--bootstrap`, `--bootstrap-seed` and
+`--bootstrap-confidence` (the `ScoreProtocol` fields of the same names), and its tables
+show `kappa` and the interval. `verify_plan` leaves a `kappa` or `bootstrap` key that a
+report written before this change lacks out of its comparison and names it.
+
+`EvaluationReport` refuses unknown keys, so an older toolkit refuses a `metrics.json`
+written with `kappa` or `bootstrap`.
+
+No run id of an existing feature moves, `evaluate-labels` stays at version 0.2, and every
+identifier stays. The new plugins, `label-predictions` and the `predictions_table`
+converter, start at version 0.1.
+
 ## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, and classifiers smooth their probabilities
 
 ### Label controls and probability smoothing

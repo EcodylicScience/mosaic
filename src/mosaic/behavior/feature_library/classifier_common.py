@@ -1774,10 +1774,11 @@ def refuse_unpredicted_classes(
 ) -> None:
     """Refuse truth classes that the input writes no ``prob_<class>`` column for.
 
-    A ``remap`` or ``mask`` given to a classifier's labels and not to the step
-    that scores it leaves such classes. A step calls this only where label
-    controls are in play (:func:`label_controls_in_play`). Without them a class
-    the classifier never trained on is scored as a miss.
+    A ``remap`` or ``mask`` given to a classifier's labels, or to the predictions
+    a ``label-predictions`` step reads, and not to the step that scores it leaves
+    such classes. A step calls this only where label controls are in play
+    (:func:`label_controls_in_play`). Without them a class the classifier never
+    trained on is scored as a miss.
 
     Args:
         feature: The feature, which the refusal names.

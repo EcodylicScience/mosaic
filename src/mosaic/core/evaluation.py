@@ -368,7 +368,7 @@ def _kappa(
     With ``N`` the sum of *supports*, ``p_o`` is the sum of *hits* over ``N`` and
     ``p_e`` the sum of each class's support times its predicted count over
     ``N**2``. Kappa is ``(p_o - p_e) / (1 - p_e)``, NaN when ``N`` is 0 or
-    ``p_e`` is 1 (both sides give every row one class).
+    ``p_e`` is 1 (both sides give every row the same single class).
 
     The counts are converted to Python integers and summed before the single
     division, so kappa pooled from counts equals the kappa of the pooled rows
@@ -714,8 +714,8 @@ class EvaluationReport(StrictModel):
             mode, after the label map, or the majority mapping without one.
         macro_f1: Mean F1 over ``average_over``.
         kappa: Cohen's kappa of the scored rows, ``None`` where it is undefined
-            (no scored row, or both sides give every row one class) and in a
-            report saved before the field existed.
+            (no scored row, or both sides give every row the same single
+            class) and in a report saved before the field existed.
         average_over: The classes ``macro_f1`` averages over.
         classes: Every class reported, in confusion order.
         per_class: One score per class in ``classes``.

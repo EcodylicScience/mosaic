@@ -5,9 +5,9 @@
 
 8 track converters read a tracker's output into one of
 4 registered schemas, and 4 label
-converters read manual annotations. A converter declares the schema it emits,
-in one place, and that declaration is what validation and the tracks index
-both read.
+converters read manual annotations and external predictions. A converter
+declares the schema it emits, in one place, and that declaration is what
+validation and the tracks index both read.
 
 ## Track converters
 
