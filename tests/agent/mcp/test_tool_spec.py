@@ -559,9 +559,26 @@ def test_the_plan_and_submit_descriptions_leave_the_fingerprint_optional() -> No
 
 
 def test_plan_recipe_gains_no_output_field_for_the_host_dependent_cautions() -> None:
-    """Cautions ride the existing ``cautions`` list, and the schema is near its cap."""
+    """Cautions ride the existing ``cautions`` list, and the schema is near its cap.
+
+    The length is counted without ``"additionalProperties": false``, which pydantic
+    2.14 adds to the schema of a dataclass and 2.13 leaves out.
+    """
     spec = tool_spec("plan_recipe")
     assert spec is not None
     schema = spec.output_schema()
 
-    assert len(json.dumps(schema, separators=(",", ":"))) == 8340
+    assert len(json.dumps(_open(schema), separators=(",", ":"))) == 7876
+
+
+def _open(schema: object) -> object:
+    """*schema* without the ``"additionalProperties": false`` of each object."""
+    if isinstance(schema, dict):
+        return {
+            key: _open(value)
+            for key, value in schema.items()
+            if not (key == "additionalProperties" and value is False)
+        }
+    if isinstance(schema, list):
+        return [_open(value) for value in schema]
+    return schema
