@@ -323,6 +323,12 @@ Restart it after installing an extra or building a tool's environment.
   dataset. Keeping the labels outside the dataset until `mosaic pipeline score` adds them
   to a copy is the stronger protection.
 
+A fingerprint goes stale while another request that computes one of the plan's steps
+runs or finishes, as in a sweep of one param run in parallel. `submit_pipeline` then
+refuses with `conflict`. The agent then plans again and shows you the new plan. It can
+also submit without a fingerprint, which plans in the same call and asks about the same
+conditions.
+
 `manage_dataset` asks to confirm creating a dataset (`create_dataset`), and declaring
 or removing a source (`add_source`).
 

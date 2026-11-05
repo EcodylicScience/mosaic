@@ -663,13 +663,17 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `mosaic sources add` and `mosaic scan` instead. Never try to change `splits`.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
-  more than 100 entries) and wait for their approval, then pass its fingerprint to
-  `submit_pipeline`. Once the user approved a series of runs of a recipe, such as a
+  more than 100 entries) and wait for their approval, then you may pass its fingerprint
+  to `submit_pipeline`. Once the user approved a series of runs of a recipe, such as a
   sweep of one param, submit each change without `plan_fingerprint`: `submit_pipeline`
   then plans it in the same call, and still refuses with `confirmation_required` when a
-  condition applies. A cleanup always needs the reviewed plan's fingerprint. The result
-  counts the steps by status and lists the first three to compute (`first_steps`);
-  `get_request_status` with `brief: false` lists every step.
+  condition applies. While another request runs or finishes a step that this plan
+  shares, such as another run of a sweep, a reviewed fingerprint goes stale and
+  `submit_pipeline` returns `conflict`. Plan again and show the user the new plan, or
+  submit without a fingerprint, which plans in the same call. A cleanup always needs
+  the reviewed plan's fingerprint. The result counts the steps by status and lists the
+  first three to compute (`first_steps`); `get_request_status` with `brief: false`
+  lists every step.
 - A plan of about 40 steps or more is over the read limit. Plan it with `limit` (about
   25) and then `cursor`, the previous page's `next_cursor`, until `next_cursor` is
   empty, and show the user every page. Every page carries the whole plan's fingerprint;
