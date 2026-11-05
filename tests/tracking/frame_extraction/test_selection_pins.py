@@ -2,7 +2,9 @@
 
 The fixtures decode to the pixels that were written. The videos are lossless H.264, and
 the stores hold raw arrays. Each read then computes the same k-means features, and the
-picks recorded here repeat.
+picks recorded here repeat on every platform as long as no two distances between frames
+tie. A tie is broken by the float32 kernel that BLAS picks for the CPU, so the coded
+frames carry a noise of their own.
 """
 
 from __future__ import annotations
@@ -117,26 +119,37 @@ def _flat_level(frame: int) -> npt.NDArray[np.uint8]:
     return np.full((48, 64, 3), LEVELS[frame], np.uint8)
 
 
+def _noisy_code(frame: int) -> npt.NDArray[np.uint8]:
+    """Frame *frame*'s code, with a noise seeded by the frame that breaks every tie.
+
+    The cells of a code are two levels, so the distance between two frames counts the
+    cells they differ in, and many pairs of frames lie at the same distance.
+    """
+    noise = np.random.default_rng(1000 + frame).integers(-12, 13, size=(48, 64, 1))
+    return np.clip(paint_frame_code(frame) + noise, 0, 255).astype(np.uint8)
+
+
 def _second_clip(frame: int) -> npt.NDArray[np.uint8]:
-    return paint_frame_code(16 + frame)
+    return _noisy_code(16 + frame)
 
 
 @pytest.fixture(scope="module")
 def media(tmp_path_factory: pytest.TempPathFactory) -> Media:
     """Write ``coded.mp4``, ``levels.mp4`` and two clips of one coded sequence.
 
-    Each of the 30 frames of ``coded.mp4`` spells its index in a grid of cells. The two
+    Each of the 30 frames of ``coded.mp4`` spells its index in a grid of cells, under a
+    noise of its own (:func:`_noisy_code`). The two
     clips hold the same 30 codes, 16 in the first and 14 in the second. ``levels.mp4``
     is flat at :data:`LEVELS`.
     """
     require_ffmpeg()
     root = tmp_path_factory.mktemp("pinned-media")
     coded = root / "coded.mp4"
-    write_h264_mp4(coded, frames=30, paint=paint_frame_code, lossless=True)
+    write_h264_mp4(coded, frames=30, paint=_noisy_code, lossless=True)
     levels = root / "levels.mp4"
     write_h264_mp4(levels, frames=len(LEVELS), paint=_flat_level, lossless=True)
     first, second = root / "clip0.mp4", root / "clip1.mp4"
-    write_h264_mp4(first, frames=16, paint=paint_frame_code, lossless=True)
+    write_h264_mp4(first, frames=16, paint=_noisy_code, lossless=True)
     write_h264_mp4(second, frames=14, paint=_second_clip, lossless=True)
     return Media(root=root, coded=coded, levels=levels, clips=(first, second))
 
@@ -245,13 +258,13 @@ SINGLE_FILE_PINS = [
         id="uniform-in-range",
     ),
     pytest.param(
-        Pin("kmeans", 5, [11, 12, 17, 18, 21], kmeans_record(1, 30)), id="kmeans"
+        Pin("kmeans", 5, [4, 11, 17, 18, 29], kmeans_record(1, 30)), id="kmeans"
     ),
     pytest.param(
         Pin(
             "kmeans",
             4,
-            [0, 4, 8, 12],
+            [0, 4, 8, 28],
             kmeans_record(4, 8, max_candidates=8),
             crop=(0, 0, 32, 48),
             kmeans_max_candidates=8,
@@ -276,7 +289,7 @@ MULTI_FILE_PINS = [
         Pin(
             "kmeans",
             5,
-            [4, 10, 16, 18, 28],
+            [6, 10, 20, 24, 28],
             kmeans_record(2, 15),
             candidate_step=2,
         ),
@@ -343,7 +356,7 @@ def test_imgstore_sequence_picks_are_pinned(
 
 @pytest.mark.media
 def test_a_single_file_manifest_is_pinned_whole(media: Media, tmp_path: Path) -> None:
-    selected = [11, 12, 17, 18, 21]
+    selected = [4, 11, 17, 18, 29]
     result = extract_frames(
         media.coded, n_frames=5, method="kmeans", run_id="pinned", output_dir=tmp_path
     )
