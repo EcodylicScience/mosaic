@@ -28,6 +28,7 @@ import os as _os
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import csv
+import gc
 import importlib.metadata
 import importlib.util
 import itertools
@@ -236,6 +237,41 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(skip)
 
 
+_FREEZE_INTERVAL = 100
+"""How many tests run between two freezes of the objects that outlive them."""
+
+_tests_since_freeze = 0
+
+
+def _freeze_survivors() -> None:
+    """Collect the garbage, then exempt every live object from later collections.
+
+    ``run_feature`` calls ``gc.collect()`` after every entry, and a full collection
+    walks every tracked object in the process. In a worker that holds the collected
+    test items, the imported libraries and the caches of the tests before, one
+    collection takes about 60 ms, and a pipeline test of a few hundred tiny entries
+    spent most of its time there. Frozen objects are skipped, so a collection walks
+    only what the current test made. Collecting first keeps garbage from being
+    frozen with them.
+    """
+    gc.collect()
+    gc.freeze()
+
+
+def pytest_collection_finish() -> None:
+    """Freeze the objects that collection left, the bulk of a worker's heap."""
+    _freeze_survivors()
+
+
+def pytest_runtest_teardown() -> None:
+    """Freeze again every :data:`_FREEZE_INTERVAL` tests, for what tests imported."""
+    global _tests_since_freeze
+    _tests_since_freeze += 1
+    if _tests_since_freeze >= _FREEZE_INTERVAL:
+        _tests_since_freeze = 0
+        _freeze_survivors()
+
+
 @pytest.fixture
 def requires_ffmpeg() -> None:
     """Skip a test that needs the ffmpeg toolchain when it is not on ``PATH``.
@@ -278,6 +314,26 @@ def isolated_card_leases(tmp_path_factory: pytest.TempPathFactory) -> Iterator[N
     with pytest.MonkeyPatch.context() as patch:
         isolate_card_leases(patch, directory)
         yield
+
+
+@pytest.fixture
+def fresh_catalogs() -> Iterator[None]:
+    """Build both memoized step catalogs again on entry and on exit.
+
+    ``declaration_catalog`` keeps what each feature's prerequisites answered when
+    a process first built it. A test that installs a package stub or changes a
+    registry would otherwise read a catalog another test built in the same
+    worker, and leave its own behind for the next.
+    """
+    from mosaic.core.pipeline.graph.resolve import declaration_catalog, editor_catalog
+
+    declaration_catalog.cache_clear()
+    editor_catalog.cache_clear()
+    try:
+        yield
+    finally:
+        declaration_catalog.cache_clear()
+        editor_catalog.cache_clear()
 
 
 @pytest.fixture
