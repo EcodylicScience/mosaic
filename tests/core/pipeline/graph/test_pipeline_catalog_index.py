@@ -8,7 +8,6 @@ limits use supplies the entry's license note, which ``kpms`` declares.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 
 import pytest
 
@@ -21,7 +20,6 @@ from mosaic.core.pipeline.graph import (
     GpuWhen,
     StepTypeNotFound,
     catalog_index,
-    declaration_catalog,
     describe_step_type,
     editor_catalog,
     lane_for_step,
@@ -29,18 +27,6 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.ops import OPS
 from mosaic.tracking import register_ops
-
-
-@pytest.fixture
-def fresh_catalogs() -> Iterator[None]:
-    """Both memoized catalogs are rebuilt inside the test and after it."""
-    declaration_catalog.cache_clear()
-    editor_catalog.cache_clear()
-    try:
-        yield
-    finally:
-        declaration_catalog.cache_clear()
-        editor_catalog.cache_clear()
 
 
 def test_the_index_has_a_row_per_registered_step_type(fresh_catalogs: None) -> None:

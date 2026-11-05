@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -1858,19 +1857,6 @@ def test_the_worker_count_is_not_part_of_a_steps_identity(tracked: Dataset) -> N
 # --- a worker without the tool ------------------------------------------------
 
 
-@pytest.fixture
-def fresh_catalog() -> Iterator[None]:
-    """Build the declaration catalog again on entry and on exit.
-
-    ``declaration_catalog`` caches what each feature's prerequisites answered when
-    it was first built, so a test that changes the installation builds it afresh
-    and leaves none of it behind.
-    """
-    declaration_catalog.cache_clear()
-    yield
-    declaration_catalog.cache_clear()
-
-
 def _tool_recipe(feature: str) -> Recipe:
     """``speed-angvel`` beside a step that needs a tool, both reading the tracks."""
     tool_step: Document
@@ -1951,7 +1937,7 @@ def _terminal_events(dataset: Dataset, execution_id: str) -> list[str]:
     return [event for event in events if event in TERMINAL_STATUSES]
 
 
-@pytest.mark.usefixtures("fresh_catalog")
+@pytest.mark.usefixtures("fresh_catalogs")
 def test_kpms_without_its_license_exits_65(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1970,7 +1956,7 @@ def test_kpms_without_its_license_exits_65(
     assert recorded["step"] == "tool"
 
 
-@pytest.mark.usefixtures("fresh_catalog")
+@pytest.mark.usefixtures("fresh_catalogs")
 def test_lightning_action_not_installed_exits_65(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1989,7 +1975,7 @@ def test_lightning_action_not_installed_exits_65(
     assert (recorded["tool"], recorded["cause"]) == ("lightning-action", "environment")
 
 
-@pytest.mark.usefixtures("fresh_catalog")
+@pytest.mark.usefixtures("fresh_catalogs")
 def test_a_sibling_step_runs_on_a_worker_without_the_tool(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2009,7 +1995,7 @@ def test_a_sibling_step_runs_on_a_worker_without_the_tool(
         _ = plan_pipeline(tracked, _tool_recipe("kpms"))
 
 
-@pytest.mark.usefixtures("fresh_catalog")
+@pytest.mark.usefixtures("fresh_catalogs")
 def test_a_refusal_before_the_run_log_records_the_step_ended(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2057,7 +2043,7 @@ def test_a_tracker_codec_refusal_leaves_one_terminal_event(
     assert _recorded_error(tracked, request, "regrid")["reason"] == "undecodable_codec"
 
 
-@pytest.mark.usefixtures("fresh_catalog")
+@pytest.mark.usefixtures("fresh_catalogs")
 def test_a_tool_unavailable_from_fit_leaves_one_terminal_event(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:

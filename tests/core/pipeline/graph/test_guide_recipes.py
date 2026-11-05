@@ -269,6 +269,7 @@ def test_the_smoothed_thresholds_are_chosen_on_the_smoothed_train_groups_and_app
     )
 
 
+@pytest.mark.usefixtures("fresh_catalogs")
 def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

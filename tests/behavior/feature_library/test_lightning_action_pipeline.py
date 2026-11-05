@@ -36,7 +36,10 @@ TEST_FRAMES = {"t1": 45, "t2": 73}
 
 
 @pytest.fixture(autouse=True)
-def package(monkeypatch: pytest.MonkeyPatch) -> LightningActionRecorder:
+def package(
+    monkeypatch: pytest.MonkeyPatch, fresh_catalogs: None
+) -> LightningActionRecorder:
+    """The stub, with a catalog built where the package is installed."""
     return install_lightning_action_stub(monkeypatch)
 
 
