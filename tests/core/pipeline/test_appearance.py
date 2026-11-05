@@ -160,7 +160,7 @@ def _no_sequence(table: pd.DataFrame, tracks: pd.DataFrame) -> pd.DataFrame:
 
 
 def _tracks_without_id(table: pd.DataFrame, tracks: pd.DataFrame) -> pd.DataFrame:
-    tracks.drop(columns=["id"], inplace=True)
+    del tracks["id"]
     return table
 
 
