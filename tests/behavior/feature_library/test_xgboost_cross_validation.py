@@ -557,7 +557,9 @@ class TestHeldOut:
     def test_the_fold_models_do_not_memorise_a_sequence(self, tmp_path: Path) -> None:
         """Features are a constant per sequence and the label a random class per sequence.
 
-        In sample, a model recalls every sequence. Held out, it can only guess.
+        In sample, a model recalls every sequence. Held out, it can only guess. The
+        in-sample model has the trees to recall all 60: with the 8 of `PARAMS` it
+        recalls 0.97 of the rows on macOS and 0.92 on Linux.
         """
         rng = np.random.default_rng(3)
         entries = {("g", f"s{i:02d}"): {int(rng.integers(0, 3)): 6} for i in range(60)}
@@ -565,7 +567,7 @@ class TestHeldOut:
             tmp_path / "templates", entries, constant_per_entry=True, n_features=5
         )
         feature, state = fitted(world, tmp_path / "run", cv_folds=5, n_estimators=20)
-        in_sample, _ = fitted(world, tmp_path / "plain")
+        in_sample, _ = fitted(world, tmp_path / "plain", n_estimators=50)
 
         truth = np.concatenate([world.labels[e] for e in entries])
         held_out = pd.concat(
