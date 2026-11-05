@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: external predictions and agreement
+## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, classifiers smooth their probabilities, and predictions made outside mosaic are scored
+
+### External predictions and agreement
 
 **A request id is a ULID.** An id of any other form, such as `../x` given to
 `--applies-request` or to `pipeline status`, `pipeline run`, `wait` or `cancel_request`,
@@ -65,8 +67,6 @@ written with `kappa` or `bootstrap`.
 No other run id of an existing feature moves than those of `pair-wavelet` and the steps
 that read it (above). `evaluate-labels` stays at version 0.2. The new plugins,
 `label-predictions` and the `predictions_table` converter, start at version 0.1.
-
-## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, and classifiers smooth their probabilities
 
 ### Label controls and probability smoothing
 
