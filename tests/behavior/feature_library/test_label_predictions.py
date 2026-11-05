@@ -34,10 +34,12 @@ from mosaic.behavior.feature_library.pair_position import PairPositionFeatures
 from mosaic.core.dataset import Dataset
 from mosaic.core.evaluation import EvaluationReport
 from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.graph import step_type_detail
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import InputStream, Result
 from tests.helpers import (
+    REPO_ROOT,
     add_labels,
     add_predictions,
     add_tracks_table,
@@ -629,3 +631,34 @@ def test_fit_reads_no_input(tmp_path: Path) -> None:
         "sequence": ["s"],
         "fold": [0],
     }
+
+
+def test_the_default_kind_is_predictions_where_the_run_reads_it() -> None:
+    params = LabelPredictions.Params()
+
+    assert params.predictions.kind == "predictions"
+    assert LabelPredictions(params={}).params.predictions.kind == "predictions"
+    assert (
+        LabelPredictions(
+            params={"predictions": {"kind": "behavior"}}
+        ).params.predictions.kind
+        == "behavior"
+    )
+
+
+def test_the_step_detail_shows_predictions_as_the_default_kind() -> None:
+    rows = {row.path: row for row in step_type_detail("label-predictions").params}
+
+    assert rows["predictions"].constructed
+    assert rows["predictions.kind"].default == "predictions"
+
+
+def test_the_reference_page_shows_predictions_as_the_default_kind() -> None:
+    page = (REPO_ROOT / "docs" / "reference" / "features.md").read_text("utf-8")
+    section = page.split("### `label-predictions`", 1)[1].split("\n### ", 1)[0]
+    model = section.split('??? note "`PredictionsLabelsSource`"', 1)[1]
+    kind_row = next(
+        line for line in model.splitlines() if line.startswith("    | `kind` |")
+    )
+
+    assert '| `string` | `"predictions"` |' in kind_row

@@ -84,7 +84,12 @@ from .classifier_common import (
 from .helpers import ensure_columns, entry_identity, meta_columns
 from .registry import register_feature
 
-__all__ = ["LabelPredictions", "PredictedEntry", "prediction_fold_table"]
+__all__ = [
+    "LabelPredictions",
+    "PredictedEntry",
+    "PredictionsLabelsSource",
+    "prediction_fold_table",
+]
 
 _NAME: Final = "label-predictions"
 
@@ -94,10 +99,24 @@ _PREDICTIONS_DESCRIPTION = (
     "reference names a convert-labels step and pins the variant it writes."
 )
 
+_PREDICTIONS_KIND_DESCRIPTION = (
+    "Which labels/<kind> subdirectory the predictions resolve to. Defaults to "
+    "predictions; another kind resolves the same way, through "
+    "labels/<kind>/index.csv."
+)
+
 _MISSING_PREDICTIONS_DESCRIPTION = (
     "What an entry without a file of the variant writes: null writes its rows "
     "without a prediction, and error fails the entry."
 )
+
+
+class PredictionsLabelsSource(GroundTruthLabelsSource):
+    """The label source of ``label-predictions``, which reads ``predictions`` unless set."""
+
+    kind: Annotated[
+        str, Field(min_length=1), Declared(_PREDICTIONS_KIND_DESCRIPTION)
+    ] = "predictions"
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,8 +360,8 @@ class LabelPredictions:
 
     class Params(Params):
         predictions: Annotated[
-            GroundTruthLabelsSource, Declared(_PREDICTIONS_DESCRIPTION)
-        ] = Field(default_factory=lambda: GroundTruthLabelsSource(kind="predictions"))
+            PredictionsLabelsSource, Declared(_PREDICTIONS_DESCRIPTION)
+        ] = Field(default_factory=PredictionsLabelsSource)
         missing_predictions: Annotated[
             Literal["null", "error"], Declared(_MISSING_PREDICTIONS_DESCRIPTION)
         ] = "null"
