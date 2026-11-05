@@ -27,12 +27,22 @@ from tests.helpers import (
     write_driver_lease,
 )
 
+FINISHED = "01JC0000000000000000000001"
+FAILED = "01JC0000000000000000000002"
+RUNNING = "01JC0000000000000000000003"
+DAMAGED = "01JC0000000000000000000009"
+UNKNOWN = "01JC0000000000000000000099"
+
 
 @pytest.fixture
 def dataset(tmp_path: Path) -> Dataset:
     """Three requests of one step each: finished, failed and running."""
     ds = make_dataset(tmp_path / "ds")
-    for request_id, ending in (("R1", "finished"), ("R2", "failed"), ("R3", None)):
+    for request_id, ending in (
+        (FINISHED, "finished"),
+        (FAILED, "failed"),
+        (RUNNING, None),
+    ):
         execution_id = f"E{request_id}"
         _ = save_request(
             ds.base_dir,
@@ -60,22 +70,22 @@ def _wait(dataset: Dataset, *arguments: str) -> tuple[int, str]:
 
 
 def test_a_finished_request_exits_zero_with_its_verdict(dataset: Dataset) -> None:
-    code, stdout = _wait(dataset, "R1", "--json")
+    code, stdout = _wait(dataset, FINISHED, "--json")
     waited = RequestWaitWire.model_validate(json.loads(stdout))
 
     assert code == 0
     assert waited.outcome == "finished"
     assert [(report.request_id, report.verdict) for report in waited.requests] == [
-        ("R1", "finished")
+        (FINISHED, "finished")
     ]
 
 
 def test_a_failed_request_exits_one(dataset: Dataset) -> None:
-    code, stdout = _wait(dataset, "R1", "R2")
+    code, stdout = _wait(dataset, FINISHED, FAILED)
 
     assert code == 1
-    assert "request R1: finished" in stdout
-    assert "request R2: failed" in stdout
+    assert f"request {FINISHED}: finished" in stdout
+    assert f"request {FAILED}: failed" in stdout
 
 
 def test_a_failed_request_whose_driver_can_start_no_step_exits_one_at_once(
@@ -106,14 +116,14 @@ def test_a_failed_request_whose_driver_can_start_no_step_exits_one_at_once(
 
 
 def test_any_exits_with_the_first_request_that_ended(dataset: Dataset) -> None:
-    code, stdout = _wait(dataset, "R3", "R1", "--until", "any", "--timeout", "0")
+    code, stdout = _wait(dataset, RUNNING, FINISHED, "--until", "any", "--timeout", "0")
 
     assert code == 0
-    assert "request R3: running" in stdout
+    assert f"request {RUNNING}: running" in stdout
 
 
 def test_a_wait_that_runs_out_exits_with_its_own_code(dataset: Dataset) -> None:
-    code, stdout = _wait(dataset, "R1", "R3", "--timeout", "0", "--json")
+    code, stdout = _wait(dataset, FINISHED, RUNNING, "--timeout", "0", "--json")
     waited = RequestWaitWire.model_validate(json.loads(stdout))
 
     assert code == WAIT_TIMED_OUT_EXIT_CODE
@@ -122,17 +132,17 @@ def test_a_wait_that_runs_out_exits_with_its_own_code(dataset: Dataset) -> None:
 
 
 def test_an_unknown_request_is_refused(dataset: Dataset) -> None:
-    code, _ = _wait(dataset, "R1", "NOPE")
+    code, _ = _wait(dataset, FINISHED, UNKNOWN)
 
     assert code == 2
 
 
 def test_an_unreadable_request_is_refused_naming_its_file(dataset: Dataset) -> None:
-    damaged = request_path(dataset.base_dir, "R9")
+    damaged = request_path(dataset.base_dir, DAMAGED)
     _ = damaged.write_text('{"bad": 1}')
 
     result = CliRunner().invoke(
-        app, ["wait", "R1", "R9", "--manifest", str(dataset.manifest_path)]
+        app, ["wait", FINISHED, DAMAGED, "--manifest", str(dataset.manifest_path)]
     )
 
     assert result.exit_code == 2

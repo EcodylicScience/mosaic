@@ -51,6 +51,7 @@ from .recipe_store import read_recipe_document, recipe_path
 from .retirement import validate_retirement
 from .store import (
     OpenDuplicate,
+    check_request_id,
     describe_duplicate,
     open_duplicates,
     save_computes,
@@ -309,7 +310,7 @@ def submit_request(
         max_concurrent_steps: How many of this request's steps may run at once.
             Recorded for whatever schedules the work; nothing here enforces it.
         owner: Free-form attribution recorded on the request.
-        request_id: Reuse an externally minted id. Empty mints one.
+        request_id: Reuse an externally minted ULID. Empty mints one.
         inventory: A held inventory to plan against.
         catalog: The declarations to resolve against.
         expect_plan: The :func:`~.serialize.plan_fingerprint` of the plan that
@@ -353,6 +354,8 @@ def submit_request(
         requests that compute a run of the plan.
 
     Raises:
+        RequestIdMalformed: *request_id* is given and is not a ULID. Nothing
+            is written.
         RecipeInvalid: The recipe is malformed.
         PlanChanged: *expect_plan* differs from the fingerprint of the plan
             resolved here. The dataset is left unwritten.
@@ -374,6 +377,8 @@ def submit_request(
         RetireOwnRecipe: A digest is *recipe*'s own.
         RetireOpenRecipe: A retired recipe has a request that has not ended.
     """
+    if request_id:
+        _ = check_request_id(request_id)
     if cleanup is not None:
         if expect_plan is None:
             raise CleanupNeedsPlan()

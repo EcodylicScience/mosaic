@@ -193,6 +193,22 @@ def test_an_apply_of_a_missing_request_is_refused(split: Dataset) -> None:
     assert (refused.reason, refused.step_id) == ("apply_request_missing", "")
 
 
+def test_an_apply_does_not_read_a_request_file_outside_the_requests(
+    split: Dataset,
+) -> None:
+    """``../x`` is not a request id, so a request file at ``pipelines/x.json`` stays unread.
+
+    Read, the planted request would be refused as unfinished instead.
+    """
+    unrun = submit_request(split, FIT, scope=TRAIN).request
+    planted = requests_root(split.base_dir).parent / "x.json"
+    _ = planted.write_bytes(request_path(split.base_dir, unrun.request_id).read_bytes())
+
+    refused = _refused(split, FIT, "../x")
+
+    assert (refused.reason, refused.step_id) == ("apply_request_missing", "")
+
+
 def test_an_apply_of_an_unfinished_request_is_refused(split: Dataset) -> None:
     unrun = submit_request(split, FIT, scope=TRAIN).request
 

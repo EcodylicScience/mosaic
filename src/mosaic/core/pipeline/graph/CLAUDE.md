@@ -381,6 +381,13 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   is true when any entity that the attempt lost is quarantined, listed or not. Every
   lost entity also leaves the run short for a `scope_dependent` consumer
   (`test_pipeline_entry_errors.py`).
+- A request id is a ULID (`REQUEST_ID_PATTERN`, `store.py`). `request_path` and
+  `computes_path` raise `RequestIdMalformed` for any other id, so an id cannot name a
+  file outside `requests/`, and `load_request` reads a malformed id as no request.
+  A request file whose `request_id` is not its file name does not read, because
+  that id is joined into the computes and driver-lease paths. `request_ids` leaves
+  out a file whose name is not a ULID, and cleanup still counts one as unreadable
+  (`test_pipeline_request_ids.py`).
 - `list_requests` (`store.py`) and `list_runs` (`mosaic.runlog`) sort file names, which
   are ULIDs, newest first, and read only the page that they return
   (`test_pipeline_request_listing.py`, `tests/core/test_runlog_readers.py`).

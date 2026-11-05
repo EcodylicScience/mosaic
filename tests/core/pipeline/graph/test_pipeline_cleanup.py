@@ -590,16 +590,20 @@ def test_a_managed_dataset_removes_nothing(dataset: Dataset) -> None:
     assert _reasons(cleanup) == {old: "managed_dataset"}
 
 
-def test_an_unreadable_request_file_removes_nothing(dataset: Dataset) -> None:
+@pytest.mark.parametrize("name", ["01JC0000000000000000000000", "broken"])
+def test_an_unreadable_request_file_removes_nothing(
+    dataset: Dataset, name: str
+) -> None:
+    """A file whose name is not a request id holds every run too."""
     old = run_speed(dataset, 1)
     requests = dataset.base_dir / ".mosaic" / "pipelines" / "requests"
     requests.mkdir(parents=True)
-    _ = (requests / "broken.json").write_text("{")
+    _ = (requests / f"{name}.json").write_text("{")
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2))
 
     assert _reasons(cleanup) == {old: "request_unreadable"}
-    assert "broken" in cleanup.runs[0].detail
+    assert name in cleanup.runs[0].detail
 
 
 # --- a read ---------------------------------------------------------------------------

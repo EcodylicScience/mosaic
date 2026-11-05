@@ -483,7 +483,7 @@ def test_saving_a_recipe_is_idempotent_and_addressed_by_digest(
 
 def test_a_request_round_trips(tmp_path: Path, worked: Recipe) -> None:
     request = Request(
-        request_id="req-1",
+        request_id="01JC0000000000000000000000",
         recipe_digest=recipe_digest(worked),
         owner="jacob",
         scope=Scope(entries=[("", "seq_a")]),
@@ -492,7 +492,7 @@ def test_a_request_round_trips(tmp_path: Path, worked: Recipe) -> None:
         step_versions={"speed": "0.3", "trex": "0.2"},
     )
     _ = save_request(tmp_path, request)
-    read_back = load_request(tmp_path, "req-1")
+    read_back = load_request(tmp_path, "01JC0000000000000000000000")
     assert read_back == request
     assert read_back.scope == Scope(entries=[("", "seq_a")])
     assert read_back.execution_of("speed") == "01ABC"

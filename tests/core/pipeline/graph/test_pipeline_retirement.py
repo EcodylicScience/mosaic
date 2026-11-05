@@ -293,7 +293,11 @@ def test_an_unended_request_marks_its_recipe_open(dataset: Dataset) -> None:
 def test_a_request_file_that_does_not_read_is_skipped(dataset: Dataset) -> None:
     _, old = _ran(dataset, 1, "old")
     _ = (
-        dataset.base_dir / ".mosaic" / "pipelines" / "requests" / "ZZZ.json"
+        dataset.base_dir
+        / ".mosaic"
+        / "pipelines"
+        / "requests"
+        / "ZZZZZZZZZZZZZZZZZZZZZZZZZZ.json"
     ).write_text("{broken")
 
     listed, _ = retirable_recipes(dataset.base_dir)

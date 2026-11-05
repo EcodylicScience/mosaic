@@ -69,6 +69,9 @@ SPEED_STORAGE = "speed-angvel__from__tracks"
 VARIANT = "convert-trex.0.2-1111111111"
 SEQ_A = Scope(entries=[("", "seq_a")])
 SEQ_B = Scope(entries=[("", "seq_b")])
+LEGACY = "0000000000000000000000000A"
+"""An older request id, which sorts before every one minted now."""
+MISSING = "0000000000000000000000000B"
 
 runner = CliRunner()
 
@@ -393,12 +396,12 @@ def test_a_request_saved_under_the_legacy_digest_is_open_for_its_recipe(
     name = document_digest(cast("JsonValue", legacy))
     _ = recipe_path(tracked.base_dir, name).write_text(json.dumps(legacy))
     older = submitted.request.model_copy(
-        update={"request_id": "00-legacy", "recipe_digest": name}
+        update={"request_id": LEGACY, "recipe_digest": name}
     )
     _ = save_request(tracked.base_dir, older)
 
     assert name != submitted.request.recipe_digest
-    assert _open(tracked, recipe) == (submitted.request.request_id, "00-legacy")
+    assert _open(tracked, recipe) == (submitted.request.request_id, LEGACY)
 
 
 def test_a_request_whose_recipe_file_is_missing_is_not_a_duplicate(
@@ -407,7 +410,7 @@ def test_a_request_whose_recipe_file_is_missing_is_not_a_duplicate(
     """A request that recorded no runs is matched by its recipe, which is gone."""
     submitted = submit_request(tracked, speed_recipe())
     orphan = submitted.request.model_copy(
-        update={"request_id": "00-missing", "recipe_digest": "0" * 16}
+        update={"request_id": MISSING, "recipe_digest": "0" * 16}
     )
     _ = save_request(tracked.base_dir, orphan)
 

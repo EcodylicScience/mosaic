@@ -22,6 +22,7 @@ from mosaic.core.pipeline.graph import (
     Recipe,
     Request,
     load_request,
+    request_path,
     requests_root,
     run_pipeline,
 )
@@ -239,6 +240,25 @@ def test_pins_beside_an_apply_are_a_usage_error(
     assert result.exit_code == 2
     assert "--pin" in result.output
     assert "--applies-request" in result.output
+    assert _request_count(split) == before
+
+
+@pytest.mark.parametrize("verb", ["plan", "submit", "run"])
+def test_an_apply_of_a_path_reads_no_file_outside_the_requests(
+    split: Dataset, fit: tuple[Request, dict[str, str]], tmp_path: Path, verb: str
+) -> None:
+    """``../x`` names no request, though a finished request sits at ``pipelines/x.json``."""
+    named, _ = fit
+    planted = requests_root(split.base_dir).parent / "x.json"
+    _ = planted.write_bytes(request_path(split.base_dir, named.request_id).read_bytes())
+    before = _request_count(split)
+
+    result = runner.invoke(
+        app, [*_args(verb, split, tmp_path, "--applies-request", "../x"), "--json"]
+    )
+
+    assert result.exit_code != 0, result.output
+    assert "apply_request_missing" in result.output
     assert _request_count(split) == before
 
 

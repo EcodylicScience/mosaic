@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import re
 import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -63,8 +64,11 @@ if TYPE_CHECKING:
 __all__ = [
     "DUPLICATE_STEP_SAMPLE",
     "OpenDuplicate",
+    "REQUEST_ID_PATTERN",
     "describe_duplicate",
+    "RequestIdMalformed",
     "RequestUnreadable",
+    "check_request_id",
     "computes_path",
     "computes_root",
     "current_digest",
@@ -81,6 +85,53 @@ __all__ = [
     "save_request",
     "submission_lock",
 ]
+
+
+REQUEST_ID_PATTERN: Final = r"^[0-9A-HJKMNP-TV-Z]{26}$"
+"""A request id: a ULID, 26 characters of Crockford's base32.
+
+``submit_request`` mints one with :func:`~mosaic.runlog.new_execution_id`, and
+an externally minted id has the same form. An id names a file under
+:func:`requests_root`, and the pattern keeps it from naming a file elsewhere.
+"""
+
+_REQUEST_ID: Final = re.compile(REQUEST_ID_PATTERN)
+
+
+class RequestIdMalformed(ClassifiedError, ValueError):
+    """A request id that is not a ULID.
+
+    Attributes:
+        request_id: The id given.
+    """
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
+
+    def __init__(self, request_id: str) -> None:
+        super().__init__(
+            f"{request_id!r} is not a request id; a request id is a ULID, "
+            f"26 characters of Crockford's base32"
+        )
+        self.request_id: str = request_id
+
+    def error_reason(self) -> str:
+        """Return ``request_id_malformed``."""
+        return "request_id_malformed"
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the id given."""
+        return {"request_id": self.request_id}
+
+
+def check_request_id(request_id: str) -> str:
+    """Return *request_id* when it is a ULID.
+
+    Raises:
+        RequestIdMalformed: *request_id* does not match :data:`REQUEST_ID_PATTERN`.
+    """
+    if _REQUEST_ID.fullmatch(request_id) is None:
+        raise RequestIdMalformed(request_id)
+    return request_id
 
 
 class RequestUnreadable(ClassifiedError, ValueError):
@@ -118,13 +169,21 @@ def computes_root(base_dir: Path | str) -> Path:
 
 
 def computes_path(base_dir: Path | str, request_id: str) -> Path:
-    """Where the runs that one submission computes are recorded."""
-    return computes_root(base_dir) / f"{request_id}.json"
+    """Where the runs that one submission computes are recorded.
+
+    Raises:
+        RequestIdMalformed: *request_id* is not a ULID.
+    """
+    return computes_root(base_dir) / f"{check_request_id(request_id)}.json"
 
 
 def request_path(base_dir: Path | str, request_id: str) -> Path:
-    """Where one submission's request file sits."""
-    return requests_root(base_dir) / f"{request_id}.json"
+    """Where one submission's request file sits.
+
+    Raises:
+        RequestIdMalformed: *request_id* is not a ULID.
+    """
+    return requests_root(base_dir) / f"{check_request_id(request_id)}.json"
 
 
 def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
@@ -149,6 +208,9 @@ def save_request(base_dir: Path | str, request: Request) -> Path:
     locked steps, a cleanup, or a cleanup that retires no recipe is written
     without those keys, so its file is what an older mosaic wrote and reads
     there.
+
+    Raises:
+        RequestIdMalformed: The request's id is not a ULID.
     """
     path = request_path(base_dir, request.request_id)
     exclude: dict[str, bool | dict[str, bool]] = {}
@@ -184,6 +246,9 @@ def save_computes(
     from a request that has no such file. Nothing removes the file. One whose
     request file is gone is never read, since :func:`open_duplicates` reads it
     by the id of a request file.
+
+    Raises:
+        RequestIdMalformed: *request_id* is not a ULID.
     """
     path = computes_path(base_dir, request_id)
     _write_json(path, _COMPUTED_RUNS.dump_python(list(runs), mode="json"))
@@ -195,6 +260,9 @@ def load_computes(base_dir: Path | str, request_id: str) -> list[ComputedRun] | 
 
     ``None`` for a request submitted before mosaic recorded them, and for a
     file that does not read, with a ``UserWarning`` naming it.
+
+    Raises:
+        RequestIdMalformed: *request_id* is not a ULID.
     """
     path = computes_path(base_dir, request_id)
     if not path.is_file():
@@ -212,12 +280,22 @@ def load_request(base_dir: Path | str, request_id: str) -> Request:
     """Read one submission's request file.
 
     Raises:
-        FileNotFoundError: There is no request file *request_id*.
-        RequestUnreadable: The file is not valid JSON or not a valid request.
+        FileNotFoundError: There is no request file *request_id*, or
+            *request_id* is not a ULID and so names none.
+        RequestUnreadable: The file is not valid JSON or not a valid request,
+            or names a request other than *request_id*.
     """
-    path = request_path(base_dir, request_id)
     try:
-        return Request.model_validate(read_json(path, "request"))
+        path = request_path(base_dir, request_id)
+    except RequestIdMalformed as malformed:
+        raise FileNotFoundError(
+            f"no request {request_id!r}; a request id is a ULID, "
+            f"26 characters of Crockford's base32"
+        ) from malformed
+    try:
+        return _named_by_its_file(
+            path, Request.model_validate(read_json(path, "request"))
+        )
     except ValueError as error:
         raise RequestUnreadable(request_id, path, str(error)) from error
 
@@ -557,12 +635,28 @@ def _request_document(path: Path) -> dict[str, JsonValue] | None:
 def _validated(path: Path, document: dict[str, JsonValue]) -> Request | None:
     """*document* as a request, or ``None`` with a ``UserWarning`` naming *path*."""
     try:
-        return Request.model_validate(document)
+        return _named_by_its_file(path, Request.model_validate(document))
     except ValueError as error:
         warnings.warn(
             f"skipped request file {path}: {error}", UserWarning, stacklevel=4
         )
         return None
+
+
+def _named_by_its_file(path: Path, request: Request) -> Request:
+    """*request*, read from *path*, when its id is the file's name.
+
+    The id read from a file is joined into other paths (its computed runs, its
+    driver lease), so it is held to the name that :func:`request_path` checked.
+
+    Raises:
+        ValueError: *request* names a request other than the file's.
+    """
+    if request.request_id != path.stem:
+        raise ValueError(
+            f"its request_id {request.request_id!r} is not its file name {path.stem!r}"
+        )
+    return request
 
 
 def current_digest(
@@ -596,13 +690,14 @@ def submission_lock(base_dir: Path | str) -> Generator[None]:
 def request_ids(base_dir: Path | str) -> list[str]:
     """Return the ids of a dataset's request files in descending order.
 
-    A request id minted by ``submit_request`` is a ULID, so that order is creation
-    time descending for those ids. A caller-supplied id sorts by its text.
+    A request id is a ULID, so that order is creation time descending. A file
+    whose name is not a ULID is not a request file and is left out.
     """
     root = requests_root(base_dir)
     if not root.is_dir():
         return []
-    return sorted((path.stem for path in root.glob("*.json")), reverse=True)
+    stems = (path.stem for path in root.glob("*.json"))
+    return sorted((stem for stem in stems if _REQUEST_ID.fullmatch(stem)), reverse=True)
 
 
 def _write_json(path: Path, payload: object) -> None:

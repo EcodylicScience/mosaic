@@ -10,6 +10,16 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: external predictions and agreement
 
+**A request id is a ULID.** An id of any other form, such as `../x` given to
+`--applies-request` or to `pipeline status`, `pipeline run`, `wait` or `cancel_request`,
+is read as no such request instead of naming a file outside `requests/`.
+`submit_request` refuses an externally minted `request_id` that is not a ULID with
+`RequestIdMalformed` before it writes anything. A file under `.mosaic/pipelines/requests/`
+whose name is not a ULID is no longer listed as a request, and a request file whose
+`request_id` differs from its file name reads as unreadable. `REQUEST_ID_PATTERN`
+(`mosaic.core.pipeline.graph.store`) is the pattern, for a caller that checks an id
+before calling mosaic.
+
 **The classifier guide is a short recipe page with four reference pages.** The reference
 pages cover cross-validation, thresholds and blends, sequence networks, and scoring and
 evaluation.

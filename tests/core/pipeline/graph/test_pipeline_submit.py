@@ -28,6 +28,7 @@ from mosaic.core.pipeline.graph import (
     PlanChanged,
     Recipe,
     Request,
+    RequestIdMalformed,
     RetireNeedsCleanup,
     RetireUnknownRecipe,
     declared_version,
@@ -38,6 +39,7 @@ from mosaic.core.pipeline.graph import (
     recipe_digest,
     recipe_path,
     request_path,
+    requests_root,
     run_pipeline,
     save_request,
     step_argv,
@@ -109,6 +111,13 @@ def test_submitting_writes_the_recipe_and_the_request(tracked: Dataset) -> None:
     read_back = load_request(tracked.base_dir, submitted.request.request_id)
     assert read_back == submitted.request
     assert read_back.owner == "jacob"
+
+
+def test_an_external_id_that_is_not_a_ulid_writes_nothing(tracked: Dataset) -> None:
+    with pytest.raises(RequestIdMalformed):
+        _ = submit_request(tracked, Recipe.model_validate(CHAIN), request_id="../x")
+
+    assert not (tracked.base_dir / ".mosaic" / "pipelines").exists()
 
 
 def test_every_step_is_assigned_its_own_attempt(tracked: Dataset) -> None:
@@ -349,7 +358,7 @@ def test_cleanup_requires_an_expected_plan(tracked: Dataset) -> None:
         _ = submit_request(tracked, speed_recipe_stepping(2), cleanup=LOOSE)
 
     assert raised.value.error_kind == "invalid"
-    assert not request_path(tracked.base_dir, "x").parent.exists()
+    assert not requests_root(tracked.base_dir).exists()
 
 
 def test_cleanup_is_refused_on_a_managed_dataset(tracked: Dataset) -> None:
@@ -467,6 +476,10 @@ _CLEANUP_BODY = """,
 }"""
 
 
+CLEANING = "01JC0000000000000000000001"
+PLAIN = "01JC0000000000000000000002"
+
+
 def _request(*, retired: list[str] | None = None, cleanup: bool = True) -> Request:
     spec = (
         CleanupSpec(
@@ -479,7 +492,7 @@ def _request(*, retired: list[str] | None = None, cleanup: bool = True) -> Reque
         else None
     )
     return Request(
-        request_id="R1" if cleanup else "R2",
+        request_id=CLEANING if cleanup else PLAIN,
         recipe_digest="0123456789abcdef",
         created_at="2026-10-18T00:00:00Z",
         step_executions={"speed": "E1"},
@@ -495,8 +508,8 @@ def test_a_request_without_a_retirement_is_written_as_an_older_mosaic_wrote_it(
     plain = save_request(tmp_path, _request(cleanup=False))
     cleaning = save_request(tmp_path, _request())
 
-    assert plain.read_text() == (_FILE_HEAD % "R2") + "\n}"
-    assert cleaning.read_text() == (_FILE_HEAD % "R1") + (_CLEANUP_BODY % "")
+    assert plain.read_text() == (_FILE_HEAD % PLAIN) + "\n}"
+    assert cleaning.read_text() == (_FILE_HEAD % CLEANING) + (_CLEANUP_BODY % "")
 
 
 def test_a_retirement_is_written_and_read_back(tmp_path: Path) -> None:
@@ -504,10 +517,10 @@ def test_a_retirement_is_written_and_read_back(tmp_path: Path) -> None:
 
     path = save_request(tmp_path, request)
 
-    assert path.read_text() == (_FILE_HEAD % "R1") + (
+    assert path.read_text() == (_FILE_HEAD % CLEANING) + (
         _CLEANUP_BODY % ',\n    "retired": [\n      "51b2573baa1b4a84"\n    ]'
     )
-    loaded = load_request(tmp_path, "R1")
+    loaded = load_request(tmp_path, CLEANING)
     assert loaded.cleanup is not None
     assert loaded.cleanup.retired == ["51b2573baa1b4a84"]
     assert loaded == request
@@ -551,7 +564,7 @@ def test_a_submission_that_retires_without_a_cleanup_is_refused(
             tracked, speed_recipe_stepping(2), retire=[ran.recipe_digest]
         )
 
-    assert list(request_path(tracked.base_dir, "x").parent.glob("*.json")) == [
+    assert list(requests_root(tracked.base_dir).glob("*.json")) == [
         request_path(tracked.base_dir, ran.request_id)
     ]
 
@@ -571,7 +584,7 @@ def test_a_submission_that_retires_an_unknown_recipe_writes_nothing(
             retire=["0123456789abcdef"],
         )
 
-    assert not request_path(tracked.base_dir, "x").parent.exists()
+    assert not requests_root(tracked.base_dir).exists()
     assert not recipe_path(tracked.base_dir, recipe_digest(recipe)).exists()
 
 
@@ -668,7 +681,7 @@ def test_a_request_document_without_the_field_loads(tmp_path: Path) -> None:
     path = save_request(tmp_path, _request(cleanup=False))
     assert "tracks_run_id" not in path.read_text()
 
-    loaded = load_request(tmp_path, "R2")
+    loaded = load_request(tmp_path, PLAIN)
 
     assert loaded.tracks_run_id is None
 

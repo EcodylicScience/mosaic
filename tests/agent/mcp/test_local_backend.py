@@ -53,6 +53,7 @@ from mosaic.core.pipeline.graph import (
     catalog_index,
     load_request,
     request_path,
+    requests_root,
     run_pipeline,
     search_catalog,
     submit_request,
@@ -1277,6 +1278,29 @@ def test_submit_takes_pins_and_an_apply(split: Dataset) -> None:
     assert applied_request.locked == ["speed", "templates"]
 
 
+def test_an_apply_of_a_path_reads_no_file_outside_the_requests(split: Dataset) -> None:
+    """``../x`` names no request, though a finished request sits at ``pipelines/x.json``."""
+    named, _ = _fit_over_train(split)
+    planted = requests_root(split.base_dir).parent / "x.json"
+    _ = planted.write_bytes(
+        (requests_root(split.base_dir) / f"{named}.json").read_bytes()
+    )
+    backend = LocalBackend(
+        [split.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+
+    refused = _refusal(
+        backend,
+        "plan_recipe",
+        dataset=_uuid(split),
+        recipe=SPLIT_RECIPE,
+        entries={"groups": ["test"]},
+        applies_request_id="../x",
+    )
+
+    assert refused.reason == "apply_request_missing"
+
+
 def test_a_cleaning_apply_plans_both_times_with_the_apply(split: Dataset) -> None:
     """The cleanup path plans through ``plan_with_cleanup`` as well as submit."""
     named, _ = _fit_over_train(split)
@@ -1659,24 +1683,31 @@ def test_activity_since_a_page_lists_only_what_changed_after_it(
     assert requests.as_of >= first.as_of
 
 
+DAMAGED_REQUEST = "01JC0000000000000000000000"
+
+
 def test_a_damaged_request_file_is_reported_by_every_tool_that_reads_it(
     backend: LocalBackend, dataset: Dataset
 ) -> None:
-    damaged = request_path(dataset.base_dir, "R0")
+    damaged = request_path(dataset.base_dir, DAMAGED_REQUEST)
     damaged.parent.mkdir(parents=True)
     _ = damaged.write_text('{"bad": 1}')
     uuid = _uuid(dataset)
 
     refusals = [
         _refusal(backend, "list_activity", dataset=uuid),
-        _refusal(backend, "get_request_status", dataset=uuid, request_id="R0"),
-        _refusal(backend, "cancel_request", dataset=uuid, request_id="R0"),
-        _refusal(backend, "diagnose_failures", dataset=uuid, request_id="R0"),
+        _refusal(
+            backend, "get_request_status", dataset=uuid, request_id=DAMAGED_REQUEST
+        ),
+        _refusal(backend, "cancel_request", dataset=uuid, request_id=DAMAGED_REQUEST),
+        _refusal(
+            backend, "diagnose_failures", dataset=uuid, request_id=DAMAGED_REQUEST
+        ),
     ]
 
     for refused in refusals:
         assert (refused.kind, refused.reason) == ("unavailable", "request_unreadable")
-        assert refused.detail == {"request_id": "R0", "path": str(damaged)}
+        assert refused.detail == {"request_id": DAMAGED_REQUEST, "path": str(damaged)}
 
 
 @pytest.mark.parametrize(
