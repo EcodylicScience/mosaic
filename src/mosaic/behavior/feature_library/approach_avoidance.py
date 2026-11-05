@@ -582,8 +582,6 @@ class ApproachAvoidance:
         for col in (C.seq_col, C.group_col):
             if col in gseq.columns:
                 out[col] = gseq[col].iloc[0]
-            elif col in orig_df.columns:
-                out[col] = orig_df[col].iloc[0]
 
         return out
 

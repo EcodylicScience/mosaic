@@ -99,7 +99,7 @@ class PairWavelet:
 
     category = "per-frame"
     name = "pair-wavelet"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -192,9 +192,10 @@ class PairWavelet:
                 block["id1"] = g["id1"].iloc[0]
                 block["id2"] = g["id2"].iloc[0]
 
+            # Per row: under overlap the series spans the neighboring entries.
             for col in (C.seq_col, C.group_col):
-                if col in df.columns:
-                    block[col] = df[col].iloc[0]
+                if col in g.columns:
+                    block[col] = g[col].to_numpy()
 
             out_blocks.append(block)
 

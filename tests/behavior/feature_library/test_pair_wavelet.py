@@ -19,7 +19,9 @@ import pytest
 import pywt
 
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
+from mosaic.core.pipeline.manifest import CoreSelector
 from mosaic.core.pipeline.types import Result
+from mosaic.core.pipeline.writers import trim_feature_output
 
 type FloatArray = npt.NDArray[np.float64]
 type Float32Array = npt.NDArray[np.float32]
@@ -320,3 +322,42 @@ def test_twenty_frequencies_give_twenty_columns_per_input_column() -> None:
     _assert_bit_for_bit(
         out, _reference(table, ["PC0", "PC1"], fps=FPS, band=Band(n_freq=20))
     )
+
+
+def _segment(first_frame: int, sequence: str, group: str, *, seed: int) -> pd.DataFrame:
+    """The pairs of ``_pairs`` on frames from *first_frame*, named as one entry."""
+    table = _pairs(seed=seed, fps=FPS)
+    table["frame"] += first_frame
+    table["sequence"] = sequence
+    table["group"] = group
+    return table
+
+
+def test_overlapped_rows_carry_the_entry_of_their_own_frames() -> None:
+    """Context rows of the neighbors do not name the entry's output rows.
+
+    Under overlap the frame handed to ``apply`` starts with the previous entry's
+    rows and ends with the next entry's. The rows kept for the entry name the
+    entry, and the pair and perspective of their own series.
+    """
+    previous = _segment(0, "seg1", "grp", seed=11)
+    own = _segment(N_FRAMES, "seg2", "grp", seed=12)
+    following = _segment(2 * N_FRAMES, "seg3", "grp", seed=13)
+    table = pd.concat([previous, own, following], ignore_index=True)
+    selector = CoreSelector(
+        order_col="frame",
+        first=N_FRAMES,
+        last=2 * N_FRAMES - 1,
+        entry_key="grp__seg2",
+    )
+
+    out = trim_feature_output(_feature().apply(table), selector)
+
+    assert out is not None
+    assert len(out) == len(own)
+    assert out["sequence"].eq("seg2").all()
+    assert out["group"].eq("grp").all()
+    expected = own[["id1", "id2", "perspective", "frame"]].sort_values(
+        ["id1", "id2", "perspective", "frame"], ignore_index=True
+    )
+    assert out[["id1", "id2", "perspective", "frame"]].equals(expected)

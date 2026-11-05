@@ -286,6 +286,28 @@ def test_a_scope_free_fitter_declares_fits_and_narrows_it_per_instance(
     )
 
 
+def _names_identity(expression: str) -> bool:
+    """Whether *expression* names the ``group`` or ``sequence`` column."""
+    return "seq_col" in expression or "group_col" in expression
+
+
+def _identity_loop_names(node: ast.AST) -> set[str]:
+    """Names a ``for`` loop under *node* binds to the ``group`` or ``sequence`` column.
+
+    ``for col in (C.seq_col, C.group_col): ... df[col].iloc[0]`` reads the
+    identity through a name that does not say so.
+    """
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if not (isinstance(child, ast.For) and isinstance(child.target, ast.Name)):
+            continue
+        if not isinstance(child.iter, ast.Tuple | ast.List):
+            continue
+        if any(_names_identity(ast.unparse(item)) for item in child.iter.elts):
+            names.add(child.target.id)
+    return names
+
+
 def _reads_row_zero_of(node: ast.AST, frame_name: str) -> list[str]:
     """Identity columns read as ``<frame_name>[...].iloc[0]`` under *node*.
 
@@ -295,6 +317,7 @@ def _reads_row_zero_of(node: ast.AST, frame_name: str) -> list[str]:
     per-frame group is correct and is how a feature that accepts overlap has to
     get its identity, since identity is constant within a frame.
     """
+    loop_names = _identity_loop_names(node)
     found: list[str] = []
     for child in ast.walk(node):
         if not isinstance(child, ast.Subscript):
@@ -312,7 +335,7 @@ def _reads_row_zero_of(node: ast.AST, frame_name: str) -> list[str]:
         if not (isinstance(base, ast.Name) and base.id == frame_name):
             continue
         column = ast.unparse(inner.slice)
-        if "seq_col" in column or "group_col" in column:
+        if _names_identity(column) or column in loop_names:
             found.append(column)
     return found
 

@@ -570,7 +570,7 @@ Egocentric and kinematic features of every pair, from position and heading.
 
 ### `pair-wavelet`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet`
 
 CWT spectrograms of numeric columns of pair rows. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. It is the spectral stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper.
 

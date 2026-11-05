@@ -20,6 +20,17 @@ whose name is not a ULID is no longer listed as a request, and a request file wh
 (`mosaic.core.pipeline.graph.store`) is the pattern, for a caller that checks an id
 before calling mosaic.
 
+**`pair-wavelet` 0.2 names each row by its own entry under overlap.** 0.1 copied
+`sequence` and `group` onto every output row from the first row of its input, which under
+`overlap_frames > 0` belongs to the previous sequence, so an overlapped run wrote the
+neighbor's `sequence` on every row. Its `group` was right, because the neighbors of an
+entry share its continuous group. Each row now keeps the `sequence` and `group` of its own
+input row. A run without overlap writes the same rows as 0.1. Every `pair-wavelet` run id
+moves from `0.1-` to `0.2-` with the same digest, so an overlapped 0.1 run is not served
+in place of a corrected one. The run id of every step that reads a `pair-wavelet` run
+moves with it, so a dataset recomputes `pair-wavelet` and the steps below it once. The old
+runs stay on disk.
+
 **The classifier guide is a short recipe page with four reference pages.** The reference
 pages cover cross-validation, thresholds and blends, sequence networks, and scoring and
 evaluation.
@@ -51,9 +62,9 @@ report written before this change lacks out of its comparison and names it.
 `EvaluationReport` refuses unknown keys, so an older toolkit refuses a `metrics.json`
 written with `kappa` or `bootstrap`.
 
-No run id of an existing feature moves, `evaluate-labels` stays at version 0.2, and every
-identifier stays. The new plugins, `label-predictions` and the `predictions_table`
-converter, start at version 0.1.
+No other run id of an existing feature moves than those of `pair-wavelet` and the steps
+that read it (above). `evaluate-labels` stays at version 0.2. The new plugins,
+`label-predictions` and the `predictions_table` converter, start at version 0.1.
 
 ## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, and classifiers smooth their probabilities
 
