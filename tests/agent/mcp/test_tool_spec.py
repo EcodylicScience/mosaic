@@ -36,6 +36,7 @@ from mosaic.agent.mcp.spec import (
     result_too_large,
     tool_spec,
 )
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline import preview
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
@@ -571,7 +572,7 @@ def test_plan_recipe_gains_no_output_field_for_the_host_dependent_cautions() -> 
     assert len(json.dumps(_open(schema), separators=(",", ":"))) == 7876
 
 
-def _open(schema: object) -> object:
+def _open(schema: JsonValue) -> JsonValue:
     """*schema* without the ``"additionalProperties": false`` of each object."""
     if isinstance(schema, dict):
         return {

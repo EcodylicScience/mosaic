@@ -60,14 +60,11 @@ from mosaic.core.params import Declared
 
 __all__ = ["PredictionsTableConverter", "PredictionsTableParams"]
 
-_ROUND_TRIP_CSV: dict[str, str] = (
-    {}
-    if tuple(int(part) for part in pd.__version__.split(".")[:2]) >= (3, 1)
-    else {"float_precision": "round_trip"}
-)
-"""What ``read_csv`` needs to read back the float a file holds, exactly.
+_PANDAS_VERSION = tuple(int(part) for part in pd.__version__.split(".")[:2])
+_EXACT_FLOATS_BY_DEFAULT = _PANDAS_VERSION >= (3, 1)
+"""Whether ``read_csv`` reads back the float a file holds without being asked.
 
-pandas 3.1 parses floats exactly by default and deprecates the argument.
+pandas 3.1 parses floats exactly by default and deprecates ``float_precision``.
 """
 
 _FILES_DESCRIPTION = (
@@ -175,7 +172,11 @@ def _read(path: Path, text_columns: tuple[str, ...]) -> pd.DataFrame:
                 table[column] = [_text(value) for value in table[column].tolist()]
         return table
     if suffix == ".csv":
-        table = pd.read_csv(path, **_ROUND_TRIP_CSV)
+        table = (
+            pd.read_csv(path)
+            if _EXACT_FLOATS_BY_DEFAULT
+            else pd.read_csv(path, float_precision="round_trip")
+        )
         present = [column for column in text_columns if column in table.columns]
         if present:
             text = pd.read_csv(path, usecols=present, dtype=str, keep_default_na=False)
