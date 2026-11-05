@@ -200,19 +200,8 @@ Read a label kind of predictions onto the rows of one input.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `predictions` | `GroundTruthLabelsSource` | _constructed_ |  | The label kind of predictions read onto the rows, predictions unless set, resolved from labels/<kind>/index.csv, where a {step: <id>} reference names a convert-labels step and pins the variant it writes. |
+| `predictions` | `PredictionsLabelsSource` | _constructed_ |  | The label kind of predictions read onto the rows, predictions unless set, resolved from labels/<kind>/index.csv, where a {step: <id>} reference names a convert-labels step and pins the variant it writes. |
 | `missing_predictions` | `"null"` \| `"error"` | `"null"` |  | What an entry without a file of the variant writes: null writes its rows without a prediction, and error fails the entry. |
-
-??? note "`GroundTruthLabelsSource`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
-    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
-    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ??? note "`JoblibLoadSpec`"
 
@@ -239,6 +228,17 @@ Read a label kind of predictions onto the rows of one input.
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
     | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+
+??? note "`PredictionsLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | `"predictions"` | min length `1` | Which labels/<kind> subdirectory the predictions resolve to. Defaults to predictions; another kind resolves the same way, through labels/<kind>/index.csv. |
+    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
+    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
+    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ### `local-order-metrics`
 

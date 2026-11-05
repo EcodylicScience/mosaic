@@ -43,7 +43,7 @@ def _latest_log(ds: Dataset) -> Path:
     return max(logs, key=lambda path: path.stat().st_mtime)
 
 
-def record_open_attempt(ds: Dataset, run_id: str, *, target: str = "x") -> str:
+def record_open_attempt(ds: Dataset, run_id: str, *, target: str) -> str:
     """Record a feature attempt of this process that has named *run_id*, unended.
 
     Its process is this one, so the attempt reads ``alive`` while the test runs.

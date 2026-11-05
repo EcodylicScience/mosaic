@@ -133,7 +133,7 @@ def test_an_approved_run_that_became_reachable_is_kept_and_reported(
     old = run_speed(dataset, 1)
     request = _submit(dataset, speed_recipe_stepping(2))
     write_reader_params(dataset, "frame-aggregate", "0.1-reader0000", (STORAGE, old))
-    _ = record_open_attempt(dataset, "0.1-reader0000")
+    _ = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
 
     run = run_pipeline(dataset, speed_recipe_stepping(2), request=request)
 
@@ -403,12 +403,73 @@ def test_a_run_a_request_submitted_during_the_cleanup_binds_is_kept(
     assert [(kept[1], kept[2]) for kept in outcome.kept] == [(old, "held_by_request")]
 
 
+def test_an_attempt_of_another_storage_with_the_same_run_id_does_not_keep_a_run(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+
+    def attempt_elsewhere() -> None:
+        _ = record_open_attempt(dataset, old, target=HEADING)
+
+    _during_cleanup(monkeypatch, attempt_elsewhere)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert outcome.status == "finished"
+    assert not _exists(dataset, old)
+    assert outcome.kept == ()
+
+
+def test_a_request_submitted_during_the_cleanup_recording_the_id_in_another_storage(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = run_speed(dataset, 1)
+    request = _submit(dataset, speed_recipe_stepping(2))
+    _run_steps(dataset, request)
+    heading_only = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "other",
+            "steps": [
+                {
+                    "id": "heading",
+                    "type": "feature",
+                    "feature": "heading",
+                    "inputs": ["tracks"],
+                    "params": {},
+                }
+            ],
+        }
+    )
+
+    def record_old_under_heading() -> None:
+        other = submit_request(dataset, heading_only).request
+        execution_id = other.execution_of("heading")
+        with JsonlRunLog(
+            run_log_path(dataset.base_dir, execution_id), execution_id
+        ) as log:
+            log.started(kind="feature", target=HEADING, host="somewhere", pid=4242)
+            log.set_run_id(old)
+            log.entries_written(2)
+            log.finished()
+
+    _during_cleanup(monkeypatch, record_old_under_heading)
+
+    outcome = run_cleanup(dataset, request, token=CancelToken())
+
+    assert outcome.status == "finished"
+    assert not _exists(dataset, old)
+    assert outcome.kept == ()
+
+
 def test_an_interrupted_removal_is_not_finished_under_an_open_attempt(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Rows dropped and files left, then an attempt writing that run again."""
     request, old = _interrupted(dataset, monkeypatch)
-    _ = record_open_attempt(dataset, old)
+    _ = record_open_attempt(dataset, old, target=STORAGE)
 
     outcome = run_cleanup(dataset, request, token=CancelToken())
 

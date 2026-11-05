@@ -261,7 +261,7 @@ def test_reads_are_followed_transitively_to_a_fixpoint(dataset: Dataset) -> None
     write_reader_params(
         dataset, "frame-aggregate", "0.1-reader0000", (TEMPLATES, first["templates"])
     )
-    _ = record_open_attempt(dataset, "0.1-reader0000")
+    _ = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
 
     cleanup = _cleanup(dataset, _chain(2), now=LATER)
 
@@ -278,7 +278,7 @@ def test_reads_are_followed_transitively_to_a_fixpoint(dataset: Dataset) -> None
 def test_a_run_an_open_attempt_reads_is_kept(dataset: Dataset) -> None:
     old = run_speed(dataset, 1)
     write_reader_params(dataset, "frame-aggregate", "0.1-reader0000", (STORAGE, old))
-    _ = record_open_attempt(dataset, "0.1-reader0000")
+    _ = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2))
 
@@ -547,12 +547,56 @@ def test_the_own_requests_binds_are_kept(dataset: Dataset) -> None:
 
 def test_a_run_an_unended_attempt_names_is_kept(dataset: Dataset) -> None:
     old = run_speed(dataset, 1)
-    execution_id = record_open_attempt(dataset, old)
+    execution_id = record_open_attempt(dataset, old, target=STORAGE)
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2))
 
     assert _reasons(cleanup) == {old: "attempt_open"}
     assert execution_id in cleanup.runs[0].detail
+
+
+def test_an_open_attempt_of_another_storage_with_the_same_run_id_keeps_nothing(
+    dataset: Dataset,
+) -> None:
+    """Run ids leave out the feature, so two storages can hold one id."""
+    old = run_speed(dataset, 1)
+    _ = record_open_attempt(dataset, old, target=HEADING)
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2))
+
+    assert _reasons(cleanup) == {old: "superseded"}
+
+
+def test_an_open_attempt_reads_only_the_run_of_the_storage_it_writes(
+    dataset: Dataset,
+) -> None:
+    """Another storage's run of the attempt's id is not the run the attempt reads from."""
+    old = run_speed(dataset, 1)
+    write_reader_params(dataset, "frame-aggregate", old, (STORAGE, old))
+    _ = record_open_attempt(dataset, old, target=HEADING)
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2))
+
+    assert _reasons(cleanup) == {old: "superseded"}
+
+
+def test_a_run_id_another_recipe_recorded_in_another_storage_holds_nothing(
+    dataset: Dataset,
+) -> None:
+    old = run_speed(dataset, 1)
+    request = submit_request(
+        dataset, named_recipe(speed_recipe_stepping(5), "other")
+    ).request
+    execution_id = request.execution_of("speed")
+    with JsonlRunLog(run_log_path(dataset.base_dir, execution_id), execution_id) as log:
+        log.started(kind="feature", target=HEADING, host="somewhere", pid=4242)
+        log.set_run_id(old)
+        log.entries_written(2)
+        log.finished()
+
+    cleanup = _cleanup(dataset, speed_recipe_stepping(2), now=LATER)
+
+    assert _reasons(cleanup) == {old: "superseded"}
 
 
 def test_a_run_holding_entries_its_replacement_lacks_is_kept(dataset: Dataset) -> None:
@@ -787,7 +831,7 @@ def test_an_abbreviated_reader_of_unknown_params_keeps_its_upstream_runs(
         _ = (
             feature_run_root(dataset, reader, "0.1-reader0000") / "params.json"
         ).write_text("[")
-        _ = record_open_attempt(dataset, "0.1-reader0000")
+        _ = record_open_attempt(dataset, "0.1-reader0000", target=reader)
 
     cleanup = _cleanup(dataset, speed_recipe_stepping(2))
 
@@ -896,7 +940,7 @@ def test_a_retired_run_a_kept_run_reads_is_kept(dataset: Dataset) -> None:
     write_reader_params(
         dataset, "frame-aggregate", "0.1-reader0000", (HEADING, heading)
     )
-    _ = record_open_attempt(dataset, "0.1-reader0000")
+    _ = record_open_attempt(dataset, "0.1-reader0000", target="frame-aggregate")
 
     cleanup = _cleanup(dataset, _new(), now=LATER, retire=[ran.recipe_digest])
 

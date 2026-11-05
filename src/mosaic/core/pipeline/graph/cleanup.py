@@ -795,9 +795,6 @@ class _Watch:
     ) -> tuple[str, str] | None:
         from mosaic.runlog import TERMINAL_STATUSES, reduce_run_log
 
-        from ..fit_scope import read_fit_scope
-        from ..inventory.params import read_run_params
-
         features = ds.get_root("features")
         for path in sorted(self._runs.glob("*.jsonl")):
             name = path.stem
@@ -821,17 +818,12 @@ class _Watch:
                         f"attempt {name} has not named its run and may read it",
                     )
                 continue
-            if run_id == key[1]:
+            storage = snapshot["target"]
+            if (storage, run_id) == key:
                 return ("attempt_open", f"attempt {name} writes run {run_id}")
-            for params_path in features.glob(f"*/{run_id}/params.json"):
-                run_root = params_path.parent
-                reads = _reads_of(
-                    run_root.parent.name,
-                    read_run_params(run_root).params,
-                    read_fit_scope(run_root),
-                )
-                if reads.covers(*key):
-                    return ("attempt_open", f"attempt {name} reads it")
+            reads = _attempt_reads(features, storage, run_id)
+            if reads is not None and reads.covers(*key):
+                return ("attempt_open", f"attempt {name} reads it")
         return None
 
     def _request_holding(self, key: tuple[str, str]) -> tuple[str, str] | None:
@@ -855,7 +847,7 @@ class _Watch:
             ):
                 return ("held_by_request", f"{label} pins it")
             rollup = request_rollup(self._base, request)
-            if any(attempt.run_id == key[1] for attempt in rollup.steps):
+            if any((attempt.target, attempt.run_id) == key for attempt in rollup.steps):
                 return ("held_by_request", f"{label} recorded it")
             for step in recipe.steps:
                 if not isinstance(step, FeatureStepSpec):
@@ -931,7 +923,7 @@ def _bound_pairs(request: Request | None) -> frozenset[tuple[str, str]]:
 
 @dataclass(slots=True)
 class _RunLabels:
-    """Runs by ``(storage, run_id)`` or by run id, each with its request's label."""
+    """Runs by ``(storage, run_id)`` or, for a pin, by run id, with a request's label."""
 
     pairs: dict[tuple[str, str], str] = field(
         default_factory=dict[tuple[str, str], str]
@@ -948,8 +940,9 @@ class _RunLabels:
     ) -> None:
         """Record the runs that *request*'s attempts recorded, its binds and its pins.
 
-        A pin names a run id without its storage, so it is held by run id, as
-        an attempt is, and is held before any attempt has named it.
+        A pin names a run id without its storage, so it is held by run id and
+        before any attempt has named it. Run ids leave out the feature, so an
+        attempt holds the run of the storage it wrote, and no other.
 
         Args:
             request: The request.
@@ -960,7 +953,7 @@ class _RunLabels:
         """
         for attempt in rollup.steps:
             if attempt.run_id and (attempt.target, attempt.run_id) not in skip:
-                _ = self.run_ids.setdefault(attempt.run_id, label)
+                _ = self.pairs.setdefault((attempt.target, attempt.run_id), label)
         for bound in request.bind.values():
             if (bound.feature, bound.run_id) not in skip:
                 _ = self.pairs.setdefault((bound.feature, bound.run_id), label)
@@ -1139,18 +1132,19 @@ def _whole_plan_hold(ds: Dataset, holds: _Holds) -> tuple[str, str] | None:
 
 def _open_attempts(
     base_dir: Path, *, now: datetime.datetime
-) -> tuple[dict[str, str], dict[str, str]]:
+) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     """The attempts that may still run: by the run each names, and those naming none.
 
     An attempt that has not ended is open while its process may still run
-    (:func:`_may_still_run`). One that names its run is returned by that run id
-    with its execution id. A feature attempt that names none yet is returned by
-    its execution id with the storage it writes, which tells what its inputs
-    are: it is resolving them, and may read any run of theirs.
+    (:func:`_may_still_run`). One that names its run is returned by that run, as
+    ``(storage, run_id)``, with its execution id. A feature attempt that names
+    none yet is returned by its execution id with the storage it writes, which
+    tells what its inputs are: it is resolving them, and may read any run of
+    theirs.
     """
     from mosaic.runlog import TERMINAL_STATUSES, list_runs, run_log_dir
 
-    opened: dict[str, str] = {}
+    opened: dict[tuple[str, str], str] = {}
     unnamed: dict[str, str] = {}
     for snapshot in list_runs(run_log_dir(base_dir))["items"]:
         if snapshot["status"] in TERMINAL_STATUSES:
@@ -1158,7 +1152,8 @@ def _open_attempts(
         if not _may_still_run(snapshot, now=now):
             continue
         if snapshot["run_id"]:
-            _ = opened.setdefault(snapshot["run_id"], snapshot["execution_id"])
+            key = (snapshot["target"], snapshot["run_id"])
+            _ = opened.setdefault(key, snapshot["execution_id"])
         elif snapshot["kind"] == FEATURE_ATTEMPT_KIND and snapshot["target"]:
             unnamed[snapshot["execution_id"]] = snapshot["target"]
     return opened, unnamed
@@ -1185,7 +1180,7 @@ def _first_reason(
     keeper: _Keeper | None,
     bound: frozenset[tuple[str, str]],
     catalog: DeclarationCatalog,
-    opened: Mapping[str, str],
+    opened: Mapping[tuple[str, str], str],
     holds: _Holds,
     short: bool,
     fit: FitScope | None,
@@ -1223,8 +1218,8 @@ def _first_reason(
             f"its params.json is {record.params_state}, so it could not be "
             f"computed again",
         )
-    if record.run_id in opened:
-        return ("attempt_open", f"attempt {opened[record.run_id]} may still run")
+    if key in opened:
+        return ("attempt_open", f"attempt {opened[key]} may still run")
     held = (
         holds.runs.get(key) or holds.slugs.get(slug) or holds.storages.get(record.name)
     )
@@ -1341,7 +1336,7 @@ def _keep_what_is_read(
     ds: Dataset,
     records: Iterable[AnyRecord],
     decided: dict[tuple[str, str], tuple[str, str]],
-    opened: Mapping[str, str],
+    opened: Mapping[tuple[str, str], str],
     unnamed: Mapping[str, str],
     fits: Mapping[tuple[str, str], FitScope | None],
     plan: Plan,
@@ -1356,7 +1351,6 @@ def _keep_what_is_read(
     and params name.
     """
     from ..fit_scope import read_fit_scope
-    from ..inventory.params import read_run_params
 
     readers: dict[tuple[str, str], _Reads] = {}
     for planned in plan.steps:
@@ -1385,13 +1379,10 @@ def _keep_what_is_read(
             _reads_of(storage, None, None)
         )
     features = ds.get_root("features")
-    for run_id in opened:
-        for params_path in features.glob(f"*/{run_id}/params.json"):
-            run_root = params_path.parent
-            key = (run_root.parent.name, run_id)
-            readers[key] = _reads_of(
-                key[0], read_run_params(run_root).params, read_fit_scope(run_root)
-            )
+    for key in opened:
+        reads = _attempt_reads(features, *key)
+        if reads is not None:
+            readers[key] = reads
 
     changed = True
     while changed:
@@ -1407,6 +1398,22 @@ def _keep_what_is_read(
                     name = f"run {reader[0]}/{reader[1]}" if reader[1] else reader[0]
                     decided[key] = ("read_by", f"{name} reads it")
                     changed = True
+
+
+def _attempt_reads(features: Path, storage: str, run_id: str) -> _Reads | None:
+    """What run *run_id* of *storage*, which an open attempt writes, reads.
+
+    ``None`` when the run has no ``params.json`` yet, as an attempt that has named
+    its run and not written it.
+    """
+    from ..fit_scope import read_fit_scope
+    from ..inventory.params import read_run_params
+
+    run_root = features / storage / run_id
+    read = read_run_params(run_root)
+    if not storage or read.state == "absent":
+        return None
+    return _reads_of(storage, read.params, read_fit_scope(run_root))
 
 
 def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _Reads:
