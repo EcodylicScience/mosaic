@@ -10,6 +10,10 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: external predictions and agreement
 
+**The classifier guide is a short recipe page with four reference pages.** The reference
+pages cover cross-validation, thresholds and blends, sequence networks, and scoring and
+evaluation.
+
 **Predictions made outside mosaic are a label kind.** The `predictions_table` label
 converter reads a `.parquet` or `.csv` file of per-frame predictions, with optional
 probabilities, folds and blocks, and `convert-labels` with `kind: "predictions"` writes

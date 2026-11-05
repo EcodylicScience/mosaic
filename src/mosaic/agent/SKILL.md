@@ -212,6 +212,7 @@ A dataset is a directory with `dataset.yaml` and named roots
   `social-motion-summary`, `attention-target`, `nn-delta-response` and
   `nn-delta-bins` on an entry of several arenas
   (https://ecodylicscience.github.io/mosaic/concepts/features/#arenas).
+- Classifiers: https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 
 ## Track tables
@@ -387,7 +388,7 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   such as a keypoint the tracker lost) blanks each frequency for half its wavelet's
   support on each side: about 40 s at 0.2 Hz and 1.6 s at 5 Hz with the default wavelet.
   Raising `f_min` shortens it
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-sequence-networks/).
 - A label of `-1` means unlabeled: no annotation covers the row. Templates leave it
   out and scoring drops and counts it. Never read it as a class. A pair row takes the
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
@@ -560,19 +561,19 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   step that reads the labels, as a classifier's templates and `evaluate-labels` do. When
   they are set, `tune-threshold`, a fitted-weight `probability-ensemble` and
   `evaluate-labels` refuse a truth class their input has no `prob_<class>` column for
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-score-and-evaluate/).
 - Score a classifier or a clustering with an `evaluate-labels` step, narrowed to the
   held-out groups. Set `perspective` on pair output (`0`, `"pooled"` or
   `"mean_probabilities"`), and `average_over` to leave a catch-all class such as
   `other` out of the macro F1. It writes `metrics.json` in its run directory
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-score-and-evaluate/).
 - To score predictions made outside mosaic, or one annotator against another, convert a
   per-frame file with `convert-labels` (`source_format: "predictions_table"`, kind
   `predictions`) and read it onto rows with `label-predictions`, which `evaluate-labels`,
   `tune-threshold` and `probability-ensemble` take as input. A `fold` column marks
   out-of-fold rows, and `evaluate-labels` reports `kappa` and, with `bootstrap`, intervals
   over sequences
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/#score-predictions-made-outside-mosaic).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-score-and-evaluate/#score-predictions-made-outside-mosaic).
 - For a clustering, `fit-label-map` on the training groups fits the cluster to
   behavior map that `evaluate-labels` applies to the test groups through
   `label_map`. Without one, its accuracy is the purity of the scored rows, and the
@@ -592,7 +593,7 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   the stored model, so refit on purpose by changing a parameter. `fit_scope.json` lists
   the entries of the templates run, not of the request. The score is not nested, and a
   fold is whole sequences unless `cv_unit` is `block`
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-cross-validation/).
 - When several training sequences come from one animal, session or recording, set
   `cv_group_by` on `xgboost`, `sequence-classifier` or `lightning-action`: a mapping
   from an entry (`group:sequence`, or a bare sequence) to a tie key or a list of them.
@@ -615,14 +616,14 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   and `warnings` when a cut is the lowest or highest `grid` value, which is the edge of what
   was tried and not a tuned value. The default class takes threshold 1.0, and a class left
   out of `classes` has 0
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-thresholds-and-blends/).
 - `smooth-probabilities` smooths a classifier's `prob_<class>` over consecutive frames
   (`method` `gaussian`, `median` or `none`) and merges bouts shorter than
   `min_bout_frames`. It keeps the input's folds and refuses a frame step other than 1.
   Tuned thresholds apply only with `method: "none"`, over the step they were tuned on:
   classifier, smoothing, `tune-threshold` over the smoothing step, then a `method:
   "none"` step over the smoothing step with `decision_threshold: {"step": "<tune>"}`
-  (https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/).
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-thresholds-and-blends/).
 - Each output row of `evaluate-labels` carries `tp_<class>`, `fp_<class>` and
   `fn_<class>`. `mosaic.core.evaluation` pools them (`pool_entry_counts`), bootstraps
   over sequences from them (`bootstrap_sequences`, with a required `random_state`),

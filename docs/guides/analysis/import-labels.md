@@ -64,7 +64,7 @@ labels that step writes, even where the dataset holds another conversion of them
 
 All three produce the `behavior` label kind. `predictions_table` reads a model's or a
 second annotator's per-frame predictions into the `predictions` kind instead: see
-[score predictions made outside mosaic](train-a-classifier.md#score-predictions-made-outside-mosaic).
+[score predictions made outside mosaic](classifier-score-and-evaluate.md#score-predictions-made-outside-mosaic).
 If your annotation tool is not here, the label converter registry works the same way the
 track converter registry does.
 

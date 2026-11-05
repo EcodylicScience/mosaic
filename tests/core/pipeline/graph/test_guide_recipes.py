@@ -1,7 +1,7 @@
-"""The recipes of docs/guides/analysis/train-a-classifier.md run as written.
+"""The recipes of the classifier guide run as written.
 
-The guide's JSON and shell blocks are read from the page itself, so a recipe that no
-longer validates, plans or runs fails here before a reader copies it.
+The guide's JSON and shell blocks are read from its pages. A recipe that no longer
+validates, plans or runs fails here before a reader copies it.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from mosaic.core.pipeline.graph.validate import check_recipe
 from tests.helpers import (
     LA_WINDOW,
     guide_blocks,
+    guide_commands,
     guide_dataset,
     guide_recipe,
     install_lightning_action_stub,
@@ -136,18 +137,27 @@ def smoothed(block_validated: dict[str, Any]) -> dict[str, Any]:
     return recipe
 
 
-@pytest.fixture(scope="module")
-def commands() -> list[str]:
-    return [b for b in guide_blocks("bash") if "--step-scope" in b]
+def _command(recipe_file: str, *, scored: bool) -> str:
+    """Return the one command that runs ``@<recipe_file>``, chosen by its classifier scope.
+
+    A screening command scopes the classifier step to the train group alone. A scored
+    command includes the test group, whose sequences ``evaluate`` scores.
+    """
+    (command,) = [
+        c
+        for c in guide_commands(recipe_file)
+        if ("test" in (step_scopes(c)["classifier"].groups or [])) == scored
+    ]
+    return command
 
 
 def test_the_supervised_recipe_trains_and_scores_as_written(
-    tmp_path: Path, supervised: dict[str, Any], commands: list[str]
+    tmp_path: Path, supervised: dict[str, Any]
 ) -> None:
     run = run_pipeline(
         guide_dataset(tmp_path / "ds"),
         Recipe.model_validate(supervised),
-        step_scopes=step_scopes(commands[0]),
+        step_scopes=step_scopes(_command("supervised.json", scored=True)),
     )
 
     assert set(step_states(run).values()) == {"ran"}
@@ -155,13 +165,17 @@ def test_the_supervised_recipe_trains_and_scores_as_written(
 
 
 def test_the_cross_validation_commands_screen_and_then_score_the_test_groups(
-    tmp_path: Path, cross_validated: dict[str, Any], commands: list[str]
+    tmp_path: Path, cross_validated: dict[str, Any]
 ) -> None:
     ds = guide_dataset(tmp_path / "ds")
     recipe = Recipe.model_validate(cross_validated)
 
-    screening = run_pipeline(ds, recipe, step_scopes=step_scopes(commands[1]))
-    final = run_pipeline(ds, recipe, step_scopes=step_scopes(commands[2]))
+    screening = run_pipeline(
+        ds, recipe, step_scopes=step_scopes(_command("cv.json", scored=False))
+    )
+    final = run_pipeline(
+        ds, recipe, step_scopes=step_scopes(_command("cv.json", scored=True))
+    )
 
     assert set(step_states(screening).values()) == {"ran"}
     assert run_ids(final)["classifier"] == run_ids(screening)["classifier"]
@@ -169,12 +183,12 @@ def test_the_cross_validation_commands_screen_and_then_score_the_test_groups(
 
 
 def test_the_block_validated_classifier_trains_and_scores_as_written(
-    tmp_path: Path, block_validated: dict[str, Any], commands: list[str]
+    tmp_path: Path, block_validated: dict[str, Any]
 ) -> None:
     run = run_pipeline(
         guide_dataset(tmp_path / "ds"),
         Recipe.model_validate(block_validated),
-        step_scopes=step_scopes(commands[1]),
+        step_scopes=step_scopes(_command("cv.json", scored=False)),
     )
 
     assert set(step_states(run).values()) == {"ran"}
@@ -182,11 +196,11 @@ def test_the_block_validated_classifier_trains_and_scores_as_written(
 
 
 def test_the_grouped_classifier_holds_the_tied_sequences_out_together(
-    tmp_path: Path, grouped: dict[str, Any], commands: list[str]
+    tmp_path: Path, grouped: dict[str, Any]
 ) -> None:
     ds = guide_dataset(tmp_path / "ds")
     recipe = Recipe.model_validate(grouped)
-    scopes = step_scopes(commands[1])
+    scopes = step_scopes(_command("cv.json", scored=False))
 
     run = run_pipeline(ds, recipe, step_scopes=scopes)
 
@@ -203,14 +217,14 @@ def test_the_grouped_classifier_holds_the_tied_sequences_out_together(
 
 
 def test_the_tuned_thresholds_are_chosen_on_the_train_groups_and_applied_to_the_test_groups(
-    tmp_path: Path, tuned: dict[str, Any], commands: list[str]
+    tmp_path: Path, tuned: dict[str, Any]
 ) -> None:
     ds = guide_dataset(tmp_path / "ds")
     recipe = Recipe.model_validate(tuned)
     # The final command of the cross-validation section, which widens the classifier to
     # the test groups and scores only them, with the two steps of the threshold section.
     scopes = {
-        **step_scopes(commands[2]),
+        **step_scopes(_command("cv.json", scored=True)),
         **step_scopes(
             '--step-scope \'tune={"groups": ["train"]}\' '
             '--step-scope \'apply={"groups": ["train", "test"]}\''
@@ -224,12 +238,12 @@ def test_the_tuned_thresholds_are_chosen_on_the_train_groups_and_applied_to_the_
 
 
 def test_the_smoothed_thresholds_are_chosen_on_the_smoothed_train_groups_and_applied_with_bouts_merged(
-    tmp_path: Path, smoothed: dict[str, Any], commands: list[str]
+    tmp_path: Path, smoothed: dict[str, Any]
 ) -> None:
     ds = guide_dataset(tmp_path / "ds")
     recipe = Recipe.model_validate(smoothed)
     scopes = {
-        **step_scopes(commands[2]),
+        **step_scopes(_command("cv.json", scored=True)),
         **step_scopes(
             '--step-scope \'smooth={"groups": ["train", "test"]}\' '
             '--step-scope \'smooth-tune={"groups": ["train"]}\' '
@@ -259,7 +273,6 @@ def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     sequence: dict[str, Any],
-    commands: list[str],
 ) -> None:
     package = install_lightning_action_stub(monkeypatch)
     recipe = copy.deepcopy(sequence)
@@ -273,7 +286,7 @@ def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(
         num_lags=1,
         device="cpu",
     )
-    (command,) = [c for c in commands if "@sequence.json" in c]
+    (command,) = guide_commands("sequence.json")
 
     run = run_pipeline(
         guide_dataset(tmp_path / "ds"),

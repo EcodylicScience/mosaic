@@ -205,8 +205,8 @@ from tests.helpers.media import (
 )
 from tests.helpers.driver_leases import write_driver_lease
 from tests.helpers.guide_recipes import (
-    GUIDE,
     GUIDE_CLASSES,
+    GUIDE_PAGES,
     guide_blocks,
     guide_commands,
     guide_dataset,
@@ -440,8 +440,8 @@ from tests.helpers.variants import (
 __all__ = [
     "CHAIN_RECIPE",
     "CONVERT_LABELS_STEP",
-    "GUIDE",
     "GUIDE_CLASSES",
+    "GUIDE_PAGES",
     "guide_blocks",
     "guide_commands",
     "guide_dataset",

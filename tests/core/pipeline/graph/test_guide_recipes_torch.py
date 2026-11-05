@@ -1,4 +1,4 @@
-"""The sequence-network recipes of docs/guides/analysis/train-a-classifier.md run as written.
+"""The sequence-network recipes of the classifier guide run as written.
 
 `test_guide_recipes.py` runs the recipes that need no torch. These train real networks
 on the CPU, so CI's `identity` job runs them. The guide's sizes suit a recording, and

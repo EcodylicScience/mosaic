@@ -73,6 +73,8 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   palette rules, or a README count that no longer matches its registry.
 - `test_agent_guide.py`: a site URL in `src/mosaic/agent/SKILL.md` with no page
   under `docs/`, a wheel without the guide, or a wheel that ships a `CLAUDE.md`.
+- `test_guide_sizes.py`: `docs/guides/analysis/train-a-classifier.md` at 5,000
+  characters or more.
 - `test_tools_import.py`: a script under `tools/` that fails to import.
 - `test_agent_layering.py`: a module under `core`, `behavior` or `tracking` that
   imports `mosaic.agent`.

@@ -1,8 +1,8 @@
-"""The recipes and commands of docs/guides/analysis/train-a-classifier.md, read from the page.
+"""The recipes and commands of the classifier guide, read from its pages.
 
 A recipe or a command that a guide shows must run as written. The tests that run them
-take the blocks from the page itself, so that a recipe that no longer validates, plans
-or runs fails here before a reader copies it.
+take the blocks from the pages themselves. A recipe that no longer validates, plans or
+runs then fails before a reader copies it.
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from tests.helpers.paths import REPO_ROOT
 from tests.helpers.tracks import calms21_dataset
 
 __all__ = [
-    "GUIDE",
     "GUIDE_CLASSES",
+    "GUIDE_PAGES",
     "guide_blocks",
     "guide_commands",
     "guide_dataset",
@@ -32,14 +32,23 @@ __all__ = [
     "with_params",
 ]
 
-GUIDE = REPO_ROOT / "docs" / "guides" / "analysis" / "train-a-classifier.md"
+_ANALYSIS = REPO_ROOT / "docs" / "guides" / "analysis"
+GUIDE_PAGES = (
+    _ANALYSIS / "train-a-classifier.md",
+    _ANALYSIS / "classifier-cross-validation.md",
+    _ANALYSIS / "classifier-thresholds-and-blends.md",
+    _ANALYSIS / "classifier-sequence-networks.md",
+    _ANALYSIS / "classifier-score-and-evaluate.md",
+)
+"""The pages of the classifier guide. A block is searched on every page, in this order."""
 GUIDE_CLASSES = 4
 """The classes of the dataset the guide's recipes run on: they name ``default_class: 3``."""
 
 
 def guide_blocks(language: str) -> list[str]:
-    """Return the fenced blocks of *language* on the page, in order."""
-    return re.findall(rf"```{language}\n(.*?)```", GUIDE.read_text(), re.S)
+    """Return the fenced blocks of *language* on the guide's pages, in order."""
+    text = "\n".join(page.read_text() for page in GUIDE_PAGES)
+    return re.findall(rf"```{language}\n(.*?)```", text, re.S)
 
 
 def guide_recipe(name: str) -> Recipe:
@@ -49,7 +58,7 @@ def guide_recipe(name: str) -> Recipe:
 
 
 def guide_commands(recipe_file: str) -> list[str]:
-    """Return the ``--step-scope`` commands that run ``@<recipe_file>``, in order."""
+    """Return the ``--step-scope`` commands that run ``@<recipe_file>``, in page order."""
     return [
         block
         for block in guide_blocks("bash")
