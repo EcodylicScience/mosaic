@@ -1054,6 +1054,13 @@ INSTANTS = range(100, 108)
 """The frame indices that the frames run extracted from every entry camera."""
 EXTRACTED_ENTRIES = ("A__s1", "B__s1", "C__s2__left", "C__s2__right")
 """How a placed name spells each entry camera of the ``extracted`` set."""
+EXTRACTED_UUID: Final = "0e000000-0000-4000-8000-000000000000"
+"""The manifest ``uuid`` pinned for the libraries of the split-by-frame tests.
+
+It enters the key of every unit, so it fixes the draw. A fresh ``uuid`` draws all
+eight instants into one split once in 128 runs, and a test that expects both
+splits then fails.
+"""
 
 
 @pytest.fixture
@@ -1066,7 +1073,9 @@ def extracted(tmp_path: Path) -> Dataset:
     and of both cameras of ``C/s2`` among them. The revision records each frame's
     bare sequence name.
     """
-    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    library = make_dataset(
+        tmp_path / "libraries" / "7", name="library", uuid=EXTRACTED_UUID
+    )
     sizes = {index: (64, 48) for index in INSTANTS}
     frames: list[PoseFrame] = []
     for group, sequence, camera in (
@@ -1149,7 +1158,9 @@ def test_under_split_by_frame_the_cameras_of_one_instant_fall_in_one_split(
 
 
 def test_one_frame_saved_in_two_sets_falls_in_one_split(tmp_path: Path) -> None:
-    library = make_dataset(tmp_path / "libraries" / "7", name="library")
+    library = make_dataset(
+        tmp_path / "libraries" / "7", name="library", uuid=EXTRACTED_UUID
+    )
     recordings = {"m01": 8, "m02": 8}
     _ = _save_set(library, "first", recordings)
     _ = _save_set(library, "second", recordings, shift=1.0)
