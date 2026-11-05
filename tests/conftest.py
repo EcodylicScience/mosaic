@@ -27,6 +27,11 @@ import os as _os
 # from here -- it needs a venv with one OpenMP runtime.
 _os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+# Typer forces a color terminal when GITHUB_ACTIONS is set, read once at its import,
+# so on CI every help and usage error the CLI tests read is full of ANSI escapes and
+# box drawing that a local run never shows.
+_os.environ.setdefault("_TYPER_FORCE_DISABLE_TERMINAL", "1")
+
 import csv
 import gc
 import importlib.metadata
