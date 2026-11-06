@@ -73,11 +73,13 @@ from mosaic.tracking.ops.train import PoseTrainParams, finalize_training
 from mosaic.tracking.ops.trained_models import trained_model_index
 from mosaic.tracking.training_provenance import training_provenance
 from tests.helpers import (
+    CONSUMER_OWNED,
     MOUSE,
     add_track_sequences,
     assert_tree_unchanged,
     extract_entry_camera,
     make_dataset,
+    narrowed_params,
     pose_frame,
     pose_object,
     pose_set,
@@ -2022,6 +2024,28 @@ def test_sequence_groups_is_refused_under_a_recording_split() -> None:
             "sequence_groups": {"h01": "a"},
         }
     )
+
+
+def test_a_model_without_the_consumers_fields_validates_the_default_split() -> None:
+    narrowed = narrowed_params(
+        PrepareTrainingDataParams, CONSUMER_OWNED["prepare-training-data"]
+    )
+    _ = narrowed.model_validate({})
+    _ = narrowed.model_validate({"split_by": "recording"})
+
+
+@pytest.mark.parametrize(
+    ("without", "payload"),
+    [
+        ("split_by", {"sequence_groups": {"h01": "a"}}),
+        ("sequence_groups", {"split_by": "recording"}),
+    ],
+)
+def test_a_model_without_one_field_of_the_split_rule_gives_no_verdict(
+    without: str, payload: dict[str, object]
+) -> None:
+    narrowed = narrowed_params(PrepareTrainingDataParams, {without})
+    _ = narrowed.model_validate({"sets": [{"set_key": "hourly"}], **payload})
 
 
 def _grouped_frames(ds: Dataset, groups: tuple[str, ...]) -> PoseAnnotationSet:

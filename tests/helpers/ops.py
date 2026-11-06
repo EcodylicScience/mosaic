@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Set as AbstractSet
+
+from pydantic import BaseModel, create_model
 
 from mosaic.core.pipeline.ops import OPS
 from mosaic.tracking import register_ops
@@ -62,6 +65,44 @@ _MINIMAL: dict[str, dict[str, object]] = {
     "trex": {},
     "ultralytics": {"model_path": "models/ultralytics/run/model.pt"},
 }
+
+CONSUMER_OWNED: dict[str, frozenset[str]] = {
+    "prepare-training-data": frozenset(
+        {
+            "sets",
+            "target",
+            "pose",
+            "class_by",
+            "track_by",
+            "sequence_groups",
+            "bbox",
+            "symlink_images",
+        }
+    ),
+}
+"""The fields a consumer of the toolkit owns for an op kind.
+
+Each value is the union of ``REQUEST_OWNED`` and ``SERVER_OWNED`` names for the
+kind in mosaic-api's ``src/mosaic_api/job_params.py``. The table is copied
+here, since mosaic does not depend on mosaic-api. The model that the consumer
+exposes lacks these fields and the consumer completes the payload before the
+worker validates it with the full model.
+"""
+
+
+def narrowed_params[M: BaseModel](model: type[M], without: AbstractSet[str]) -> type[M]:
+    """Return a subclass of *model* without the fields named in *without*.
+
+    Equivalent to mosaic-api's ``narrow_owned_fields``: the subclass is made by
+    ``create_model`` instead of a class statement, each field is popped from its
+    ``model_fields`` with a name the model lacks passed over, and it is rebuilt
+    with ``model_rebuild(force=True)``. *model* is unchanged.
+    """
+    narrowed = create_model(f"Narrowed{model.__name__}", __base__=model)
+    for field_name in without:
+        _ = narrowed.model_fields.pop(field_name, None)
+    _ = narrowed.model_rebuild(force=True)
+    return narrowed
 
 
 def minimal_op_params(kind: str) -> dict[str, object]:

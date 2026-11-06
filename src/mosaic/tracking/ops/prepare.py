@@ -247,8 +247,12 @@ class PrepareTrainingDataParams(Params):
         """Refuse ``sequence_groups`` under ``split_by="recording"``.
 
         A recording split draws the recordings that the revisions record, and a
-        label would regroup them.
+        label would regroup them. A subclass without either field returns without
+        a verdict.
         """
+        fields = type(self).model_fields
+        if "split_by" not in fields or "sequence_groups" not in fields:
+            return self
         if self.split_by == "recording" and self.sequence_groups:
             msg = (
                 "sequence_groups applies only under split_by='group', and "
