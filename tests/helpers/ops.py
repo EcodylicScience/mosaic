@@ -79,6 +79,12 @@ CONSUMER_OWNED: dict[str, frozenset[str]] = {
             "symlink_images",
         }
     ),
+    "train-litpose": frozenset(
+        {"project", "device", "num_workers", "base_model", "base_config"}
+    ),
+    "train-points": frozenset({"data", "device", "workers", "resume", "base_model"}),
+    "train-pose": frozenset({"data", "device", "workers", "resume", "base_model"}),
+    "train-sleap": frozenset({"labels", "device", "num_workers", "base_model"}),
 }
 """The fields a consumer of the toolkit owns for an op kind.
 

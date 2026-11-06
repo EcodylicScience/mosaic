@@ -41,6 +41,8 @@ from mosaic.core.params import (
     Declared,
     HASH_EXCLUDE,
     Params,
+    declared_field_names,
+    has_fields,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.core.pipeline.entry_claim import (
@@ -720,12 +722,16 @@ class PoseTrainParams(Params):
         so the identifier would describe data the run never read.
 
         Validating here rather than in ``run()`` is what lets mosaic-api answer
-        a bad submission with a 422 the caller can act on.
+        a bad submission with a 422 the caller can act on. A subclass without
+        some fields reserves the names its mosaic model reserves, and one
+        without ``train_overrides`` has nothing to check.
         """
+        if not has_fields(self, "train_overrides"):
+            return self
         overrides = self.train_overrides
         if not overrides:
             return self
-        reserved = set(type(self).model_fields) | OP_SUPPLIED_TRAIN_ARGS
+        reserved = declared_field_names(type(self)) | OP_SUPPLIED_TRAIN_ARGS
         shadowed = sorted(set(overrides) & reserved)
         if shadowed:
             names = ", ".join(shadowed)
