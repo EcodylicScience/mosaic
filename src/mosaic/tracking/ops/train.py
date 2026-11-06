@@ -43,7 +43,11 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
-from mosaic.core.pipeline.entry_claim import ClaimRefreshingProgress, phase_activity
+from mosaic.core.pipeline.entry_claim import (
+    ClaimRefreshingProgress,
+    claim_run_root,
+    phase_activity,
+)
 from mosaic.core.pipeline.progress import CompositeProgressCallback
 from mosaic.core.pipeline.toolenv import ToolEnv, ToolExitError
 from mosaic.tracking.common.mint import planned_model_id
@@ -54,7 +58,6 @@ from mosaic.tracking.model_refs import (
     resolve_model,
 )
 from mosaic.tracking.ops._common import (
-    claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
     fingerprint_yolo_dataset,
@@ -877,7 +880,12 @@ class TrainPoseOp(Op[PoseTrainParams]):
         ctx.set_total(params.epochs)
         run_root.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, run_root, self.kind, _TRAIN_IDLE_SECONDS
+            ds,
+            ctx.execution_id,
+            run_root,
+            self.kind,
+            _TRAIN_IDLE_SECONDS,
+            doing="training",
         )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
@@ -1011,7 +1019,12 @@ class TrainPointsOp(Op[PointTrainParams]):
         ctx.set_total(params.epochs)
         run_root.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, run_root, self.kind, _TRAIN_IDLE_SECONDS
+            ds,
+            ctx.execution_id,
+            run_root,
+            self.kind,
+            _TRAIN_IDLE_SECONDS,
+            doing="training",
         )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 
@@ -1121,7 +1134,12 @@ class TrainLocalizerOp(Op[LocalizerTrainParams]):
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, run_root, self.kind, _TRAIN_IDLE_SECONDS
+            ds,
+            ctx.execution_id,
+            run_root,
+            self.kind,
+            _TRAIN_IDLE_SECONDS,
+            doing="training",
         )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 

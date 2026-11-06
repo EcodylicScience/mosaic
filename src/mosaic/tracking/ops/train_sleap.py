@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self
 from pydantic import Field, field_validator, model_validator
 
 from mosaic.core.pipeline._utils import hash_params
-from mosaic.core.pipeline.entry_claim import phase_activity
+from mosaic.core.pipeline.entry_claim import claim_run_root, phase_activity
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_index_path, model_run_root
@@ -43,7 +43,6 @@ from mosaic.tracking.model_refs import (
     resolve_model_set,
 )
 from mosaic.tracking.ops._common import (
-    claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
     prepared_data_row,
@@ -858,7 +857,12 @@ class TrainSleapOp(Op[TrainSleapParams]):
         ctx.set_total(params.max_epochs)
         run_root.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, run_root, self.kind, params.idle_timeout
+            ds,
+            ctx.execution_id,
+            run_root,
+            self.kind,
+            params.idle_timeout,
+            doing="training",
         )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
         # sleap-nn writes "model-1" beside a "model" that exists, and the row

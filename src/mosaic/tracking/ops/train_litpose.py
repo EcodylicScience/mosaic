@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from mosaic.core.pipeline.file_digest import file_digest
-from mosaic.core.pipeline.entry_claim import phase_activity
+from mosaic.core.pipeline.entry_claim import claim_run_root, phase_activity
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.op_identity import OP_IDENTITY_SCHEME
@@ -36,7 +36,6 @@ from mosaic.tracking.model_refs import (
     resolve_model_set,
 )
 from mosaic.tracking.ops._common import (
-    claim_run_root,
     ensure_models_root,
     fingerprint_dataset,
     resolve_training_data,
@@ -282,7 +281,12 @@ class TrainLitposeOp(Op[TrainLitposeParams]):
         run_root = model_run_root(ds, self.kind, run_id)
         run_root.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, run_root, self.kind, params.idle_timeout
+            ds,
+            ctx.execution_id,
+            run_root,
+            self.kind,
+            params.idle_timeout,
+            doing="training",
         )
         write_identity_scheme(run_root, OP_IDENTITY_SCHEME)
 

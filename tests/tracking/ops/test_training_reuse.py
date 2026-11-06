@@ -25,12 +25,12 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.pipeline.entry_claim import RunRootHeld
 from mosaic.core.pipeline.markers import new_inflight, write_inflight
 from mosaic.core.pipeline.models import model_index_path, model_run_root
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline._utils import hash_params
 from mosaic.tracking.ops._common import (
-    RunRootHeld,
     fingerprint_dataset,
     fingerprint_yolo_dataset,
     remove_label_caches,
@@ -226,6 +226,10 @@ def test_a_second_execution_cannot_train_into_a_held_run_root(
     assert trainer.calls == 1
     assert refused.value.held is not None
     assert refused.value.held.execution_id == "SOMEONE-ELSE"
+    assert refused.value.reason == "run_root_held"
+    assert refused.value.detail["holder_execution_id"] == "SOMEONE-ELSE"
+    assert refused.value.detail["holder_host"] == "otherhost"
+    assert refused.value.detail["holder_pid"] == 4242
 
 
 # --- What the data fingerprint may and may not notice ----------------------

@@ -1,16 +1,19 @@
 """``mosaic release``: free a run root whose claim outlived the run that took it.
 
-An op claims its run root with an exclusive create and never releases it in a
-``finally``: a holder whose run-log has gone terminal reads as ``orphaned``, so
-a finished or cancelled execution frees the directory by itself. That covers
-every ordinary ending, including the one ``mosaic cancel`` now records for a
-process that had already exited.
+A one-shot op (training, preparing, converting, scoring) claims its run root with
+an exclusive create and never releases it: a holder whose run-log has gone
+terminal reads as ``orphaned``, so a finished or cancelled execution frees the
+directory by itself. That covers every ordinary ending, including the one
+``mosaic cancel`` now records for a process that had already exited. A feature
+fit is the other kind. It releases its claim in a ``finally``, so it leaves
+nothing for this command to free.
 
-What it does not cover is a claim with **no terminal record to find**: an
-execution that ran untracked, or whose run-log never reached the dataset. There
-``inflight_state`` can only wait out the marker's own expiry, which is half an
-hour after the claim was last refreshed, and until then the next attempt is
-refused with ``RunRootHeld``. Deleting the marker by hand was the only way out.
+What the op's rule does not cover is a claim with **no terminal record to find**:
+an execution that ran untracked, or whose run-log never reached the dataset.
+There ``inflight_state`` can only wait out the marker's own expiry, which is half
+an hour after the claim was last refreshed, and until then the next attempt is
+refused with the ``run_root_held`` refusal. Deleting the marker by hand was the
+only way out.
 
 **This never overrides a live run.** A claim held by another host is refused,
 because deciding it from here means guessing about a machine this process

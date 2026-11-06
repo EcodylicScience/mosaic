@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import pickle
 
+from mosaic.core.pipeline.entry_claim import RunRootHeld
 from mosaic.core.pipeline.graph.step_preflight import CoverageShortfall, StepRefused
+from mosaic.core.pipeline.markers import InflightMarker
 from mosaic.core.pipeline.refusal import Refusal, ToolUnavailable
 
 
@@ -67,3 +69,40 @@ def test_a_plain_refusal_survives_pickle() -> None:
         "undecodable_codec",
         "",
     )
+
+
+def test_a_run_root_refusal_survives_pickle_with_its_holder() -> None:
+    held = InflightMarker(
+        execution_id="01HOLDER", host="otherhost", pid=4242, expires_at="2026-11-06"
+    )
+    error = RunRootHeld("held by 01HOLDER", held=held)
+
+    restored = _round_trip(error)
+
+    assert type(restored) is RunRootHeld
+    assert restored.held == held
+    assert (restored.reason, restored.detail) == (
+        "run_root_held",
+        {
+            "holder_execution_id": "01HOLDER",
+            "holder_host": "otherhost",
+            "holder_expires_at": "2026-11-06",
+            "holder_pid": 4242,
+        },
+    )
+    assert str(restored) == "held by 01HOLDER"
+    assert restored.error_json("train") == error.error_json("train")
+
+
+def test_an_unreadable_holder_names_no_one() -> None:
+    error = RunRootHeld("held by another host", held=None)
+
+    restored = _round_trip(error)
+
+    assert restored.held is None
+    assert restored.detail == {
+        "holder_execution_id": "",
+        "holder_host": "",
+        "holder_expires_at": "",
+        "holder_pid": None,
+    }

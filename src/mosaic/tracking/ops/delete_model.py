@@ -33,6 +33,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from mosaic.core.pipeline.entry_claim import (
+    RunRootHeld,
+    claim_run_root,
+    empty_claimed_run_root,
+)
 from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.markers import InflightMarker, clear_inflight
 from mosaic.core.pipeline.models import (
@@ -43,11 +48,6 @@ from mosaic.core.pipeline.models import (
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.runlog import new_execution_id
 from mosaic.tracking.model_refs import ModelNotFoundError
-from mosaic.tracking.ops._common import (
-    RunRootHeld,
-    claim_run_root,
-    empty_claimed_run_root,
-)
 from mosaic.tracking.ops.trained_models import trained_model_index
 
 if TYPE_CHECKING:
@@ -192,7 +192,7 @@ def delete_trained_model(ds: Dataset, kind: str, run_id: str) -> DeletedModel:
     execution_id = new_execution_id()
     if claimed:
         try:
-            _ = claim_run_root(ds, execution_id, run_root, kind, 0)
+            _ = claim_run_root(ds, execution_id, run_root, kind, 0, doing="deleting")
         except RunRootHeld as held:
             raise _in_use(kind, run_id, held.held) from None
     try:

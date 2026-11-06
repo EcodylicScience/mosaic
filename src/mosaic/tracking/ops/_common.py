@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import glob
 import os
-import shutil
-import socket
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 
@@ -29,16 +27,6 @@ from mosaic.core.pipeline.models import (
     prepared_artifact_cell,
 )
 from mosaic.core.pipeline.op_identity import parse_op_run_id
-from mosaic.core.pipeline.markers import (
-    INFLIGHT_MARKER_NAME,
-    InflightMarker,
-    clear_inflight,
-    inflight_state,
-    new_inflight,
-    read_inflight,
-    refresh_inflight,
-    try_create_inflight,
-)
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -385,119 +373,3 @@ def remove_label_caches(data_yaml: Path) -> None:
                 f"Cannot remove the label cache {cache} before training: {error}. "
                 "Remove it by hand."
             ) from error
-
-
-class RunRootHeld(RuntimeError):
-    """Another execution is already producing this run, so this one must not.
-
-    Attributes:
-        held: The claim that refused this one, or ``None`` when it could not be
-            read.
-    """
-
-    def __init__(self, message: str, *, held: InflightMarker | None) -> None:
-        super().__init__(message)
-        self.held: InflightMarker | None = held
-
-
-def claim_run_root(
-    ds: Dataset, execution_id: str, run_root: Path, kind: str, idle_seconds: float
-) -> InflightMarker:
-    """Take *run_root* exclusively for a one-shot op, or raise.
-
-    Per-entry work skips a contended item so one sequence cannot end a batch; a
-    one-shot op *is* the batch, and returning its run_id would hand back a model
-    another execution is mid-write. Two executions of one identifier are not merely
-    wasted: a nondeterministic trainer interleaves ``best.pt`` / ``last.pt`` /
-    ``results.csv`` into one root, which is corrupt rather than slow.
-
-    No ``finally`` release -- ``inflight_state`` reads a holder whose run-log went
-    terminal as ``orphaned``, so a dead execution frees the root by itself.
-
-    Returns:
-        The claim that was taken, so a caller with output to read can keep it
-        alive. A claim expires ``idle_seconds`` plus a grace after it is written,
-        and a one-shot op that outruns that window has its root read as abandoned
-        by the next execution along -- which then clears it and starts writing
-        into the same directory. Only a caller with lines arriving from its tool
-        can refresh it, through
-        :func:`~mosaic.core.pipeline.entry_claim.phase_activity`, and it cannot do
-        that without the marker. This was minted and dropped on the floor for as
-        long as every one-shot op ran in process and had nothing to hang a
-        refresh on.
-    """
-    marker = new_inflight(
-        execution_id=execution_id,
-        host=socket.gethostname(),
-        pid=os.getpid(),
-        phase=None,
-        idle_seconds=idle_seconds,
-    )
-    held: InflightMarker | None = None
-    for attempt in (0, 1):
-        if try_create_inflight(run_root, marker):
-            return marker
-        held = read_inflight(run_root)
-        state = inflight_state(
-            held, run_log_base=ds.base_dir, execution_id=execution_id
-        )
-        if state == "mine":
-            return marker
-        if state in {"expired", "orphaned"} and attempt == 0:
-            clear_inflight(run_root)
-            continue
-        break
-    where = f"{held.host}:{held.pid}" if held is not None else "another host"
-    raise RunRootHeld(
-        f"[{kind}] {run_root.name} is being produced by execution "
-        f"{held.execution_id if held else '?'} on {where}; not training it again.",
-        held=held,
-    )
-
-
-def renew_run_root_claim(
-    run_root: Path, marker: InflightMarker, kind: str, idle_seconds: float
-) -> InflightMarker:
-    """Re-stamp this execution's claim on *run_root* before it writes, or raise.
-
-    An op whose work in this process gives no activity signal calls this between
-    that work and its first write. When the work outlived the claim and another
-    execution took the root over, that execution keeps it and this one writes
-    nothing.
-
-    Returns:
-        The re-stamped claim.
-
-    Raises:
-        RunRootHeld: Another execution holds *run_root*.
-    """
-    renewed = refresh_inflight(run_root, marker, idle_seconds)
-    if renewed is not None:
-        return renewed
-    held = read_inflight(run_root)
-    holder = held.execution_id if held is not None else "?"
-    where = f"{held.host}:{held.pid}" if held is not None else "another host"
-    msg = (
-        f"[{kind}] execution {holder} on {where} took {run_root.name} over while "
-        "this execution worked; not writing into it."
-    )
-    raise RunRootHeld(msg, held=held)
-
-
-def empty_claimed_run_root(run_root: Path) -> None:
-    """Remove everything under *run_root* except the claim on it.
-
-    An op calls this before writing into a root it has just claimed. Removing the
-    root itself, or everything in it, would remove the claim too and leave the
-    directory free for another execution mid-clear.
-
-    Raises:
-        OSError: A child could not be removed.
-    """
-    for child in run_root.iterdir():
-        if child.name == INFLIGHT_MARKER_NAME:
-            continue
-        if child.is_dir() and not child.is_symlink():
-            shutil.rmtree(child)
-        else:
-            child.unlink()

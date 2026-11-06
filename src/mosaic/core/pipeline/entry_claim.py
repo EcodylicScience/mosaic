@@ -1,13 +1,20 @@
-"""Claim one entry's working directory, and keep the claim alive.
+"""Claim one entry's working directory or one run's root, and keep the claim alive.
 
 A stage that writes into a per-entry directory takes it with an exclusive create
 before touching anything, re-stamps the claim while its work runs, and releases the
 claim in a ``finally`` whatever happened. The trackers and the ``infer-*`` ops
 follow this lifecycle. It lives in ``core`` because ``core`` may not import
 ``tracking``, and a stage in ``core`` that works per entry needs the same claim.
-The refresh callbacks also keep a one-shot op's run-root claim alive. A training
-op attaches :func:`phase_activity` to its tool's output, or
-:class:`ClaimRefreshingProgress` to an in-process trainer's callbacks.
+
+A one-shot op is the whole batch, so it takes its run root through
+:func:`claim_run_root` instead, which raises :class:`RunRootHeld` when another
+execution holds the root rather than skipping it. That claim has no release: a
+holder whose run-log went terminal reads as ``orphaned``, so a finished or dead
+execution frees the root by itself. :func:`renew_run_root_claim` re-stamps it, and
+:func:`empty_claimed_run_root` clears a root without removing the claim. The
+refresh callbacks keep that claim alive too. A training op attaches
+:func:`phase_activity` to its tool's output, or :class:`ClaimRefreshingProgress` to
+an in-process trainer's callbacks.
 
 The markers, and the rule deciding whether a claim is live, expired or orphaned,
 are in :mod:`mosaic.core.pipeline.markers`. This module is the lifecycle built on
@@ -27,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from mosaic.core.pipeline.markers import (
+    INFLIGHT_MARKER_NAME,
     InflightMarker,
     PhaseName,
     clear_inflight,
@@ -37,19 +45,25 @@ from mosaic.core.pipeline.markers import (
     try_create_inflight,
     write_inflight,
 )
+from mosaic.core.pipeline.refusal import Refusal
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.json_value import JsonValue
     from mosaic.core.pipeline.job import JobContext
 
 __all__ = [
     "INFLIGHT_REFRESH_SECONDS",
     "ClaimRefreshingProgress",
+    "RunRootHeld",
     "claim",
+    "claim_run_root",
     "discard_if_empty",
+    "empty_claimed_run_root",
     "open_entry",
     "phase_activity",
     "release_entry",
+    "renew_run_root_claim",
     "throttled_refresh",
 ]
 
@@ -267,3 +281,158 @@ def discard_if_empty(directory: Path) -> None:
             directory.rmdir()
     except OSError:
         pass
+
+
+def _holder_detail(held: InflightMarker | None) -> dict[str, JsonValue]:
+    """The holder of a refused claim, as the keys a refusal's ``error_json`` spreads.
+
+    Prefixed, because ``error_json`` puts the detail beside ``reason``, ``step`` and
+    ``message``. A claim that could not be read names no holder: its text fields
+    are empty and its pid is ``None``.
+    """
+    if held is None:
+        return {
+            "holder_execution_id": "",
+            "holder_host": "",
+            "holder_expires_at": "",
+            "holder_pid": None,
+        }
+    return {
+        "holder_execution_id": held.execution_id,
+        "holder_host": held.host,
+        "holder_expires_at": held.expires_at,
+        "holder_pid": held.pid,
+    }
+
+
+class RunRootHeld(Refusal, RuntimeError):
+    """Another execution is already producing this run, so this one must not.
+
+    Attributes:
+        held: The claim that refused this one, or ``None`` when it could not be
+            read.
+    """
+
+    def __init__(self, message: str, *, held: InflightMarker | None) -> None:
+        super().__init__(message, reason="run_root_held", detail=_holder_detail(held))
+        self.held: InflightMarker | None = held
+
+
+def claim_run_root(
+    ds: Dataset,
+    execution_id: str,
+    run_root: Path,
+    kind: str,
+    idle_seconds: float,
+    *,
+    doing: str,
+) -> InflightMarker:
+    """Take *run_root* exclusively for a one-shot op, or raise.
+
+    Per-entry work skips a contended item so one sequence cannot end a batch; a
+    one-shot op *is* the batch, and returning its run_id would hand back a model
+    another execution is mid-write. Two executions of one identifier are not merely
+    wasted: a nondeterministic trainer interleaves ``best.pt`` / ``last.pt`` /
+    ``results.csv`` into one root, which is corrupt rather than slow.
+
+    No ``finally`` release -- ``inflight_state`` reads a holder whose run-log went
+    terminal as ``orphaned``, so a dead execution frees the root by itself.
+
+    Args:
+        ds: The dataset whose run-logs say whether a holder is still running.
+        execution_id: This execution.
+        run_root: The directory to claim. It must exist.
+        kind: The op's kind, named in the refusal.
+        idle_seconds: How long the claim lasts without a refresh.
+        doing: What this execution would otherwise do to the root, as a gerund
+            for the refusal's sentence: ``"training"``, ``"scoring"``.
+
+    Returns:
+        The claim that was taken, so a caller with output to read can keep it
+        alive. A claim expires ``idle_seconds`` plus a grace after it is written,
+        and a one-shot op that outruns that window has its root read as abandoned
+        by the next execution along -- which then clears it and starts writing
+        into the same directory. Only a caller with lines arriving from its tool
+        can refresh it, through :func:`phase_activity`, and it cannot do that
+        without the marker.
+
+    Raises:
+        RunRootHeld: Another execution holds *run_root*. It is a
+            :class:`~mosaic.core.pipeline.refusal.Refusal`, so a verb reports it
+            as one.
+    """
+    marker = new_inflight(
+        execution_id=execution_id,
+        host=socket.gethostname(),
+        pid=os.getpid(),
+        phase=None,
+        idle_seconds=idle_seconds,
+    )
+    held: InflightMarker | None = None
+    for attempt in (0, 1):
+        if try_create_inflight(run_root, marker):
+            return marker
+        held = read_inflight(run_root)
+        state = inflight_state(
+            held, run_log_base=ds.base_dir, execution_id=execution_id
+        )
+        if state == "mine":
+            return marker
+        if state in {"expired", "orphaned"} and attempt == 0:
+            clear_inflight(run_root)
+            continue
+        break
+    where = f"{held.host}:{held.pid}" if held is not None else "another host"
+    raise RunRootHeld(
+        f"[{kind}] {run_root.name} is being produced by execution "
+        f"{held.execution_id if held else '?'} on {where}; not {doing} it again.",
+        held=held,
+    )
+
+
+def renew_run_root_claim(
+    run_root: Path, marker: InflightMarker, kind: str, idle_seconds: float
+) -> InflightMarker:
+    """Re-stamp this execution's claim on *run_root* before it writes, or raise.
+
+    An op whose work in this process gives no activity signal calls this between
+    that work and its first write. When the work outlived the claim and another
+    execution took the root over, that execution keeps it and this one writes
+    nothing.
+
+    Returns:
+        The re-stamped claim.
+
+    Raises:
+        RunRootHeld: Another execution holds *run_root*.
+    """
+    renewed = refresh_inflight(run_root, marker, idle_seconds)
+    if renewed is not None:
+        return renewed
+    held = read_inflight(run_root)
+    holder = held.execution_id if held is not None else "?"
+    where = f"{held.host}:{held.pid}" if held is not None else "another host"
+    msg = (
+        f"[{kind}] execution {holder} on {where} took {run_root.name} over while "
+        "this execution worked; not writing into it."
+    )
+    raise RunRootHeld(msg, held=held)
+
+
+def empty_claimed_run_root(run_root: Path) -> None:
+    """Remove everything under *run_root* except the claim on it.
+
+    An op calls this before writing into a root it has just claimed. Removing the
+    root itself, or everything in it, would remove the claim too and leave the
+    directory free for another execution mid-clear.
+
+    Raises:
+        OSError: A child could not be removed.
+    """
+    for child in run_root.iterdir():
+        if child.name == INFLIGHT_MARKER_NAME:
+            continue
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child)
+        else:
+            child.unlink()

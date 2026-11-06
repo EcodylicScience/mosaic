@@ -1,6 +1,6 @@
 """A one-shot training op holds its run root for as long as it trains.
 
-:func:`~mosaic.tracking.ops._common.claim_run_root` returns its marker so the
+:func:`~mosaic.core.pipeline.entry_claim.claim_run_root` returns its marker so the
 caller can re-stamp it while the tool runs, and three ops called it as a bare
 statement. A claim stamped once expires ``idle_timeout`` after it is taken; the
 next execution along then reads the root as abandoned, clears it, and trains
@@ -26,6 +26,11 @@ import pytest
 import yaml
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.entry_claim import (
+    RunRootHeld,
+    claim_run_root,
+    empty_claimed_run_root,
+)
 from mosaic.core.pipeline.markers import (
     INFLIGHT_MARKER_NAME,
     InflightState,
@@ -38,11 +43,6 @@ from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.ops import run_op
 from mosaic.core.pipeline.progress import TrainingProgressCallback
 from mosaic.tracking import register_ops
-from mosaic.tracking.ops._common import (
-    RunRootHeld,
-    claim_run_root,
-    empty_claimed_run_root,
-)
 
 from tests.helpers import make_dataset, write_litpose_model, write_sleap_model
 
@@ -114,7 +114,7 @@ def test_a_lapsed_claim_is_taken_by_the_next_execution(tmp_path: Path) -> None:
     )
     _go_stale(ds, run_root)
 
-    taken = claim_run_root(ds, _PEER, run_root, "train-sleap", 60)
+    taken = claim_run_root(ds, _PEER, run_root, "train-sleap", 60, doing="training")
 
     assert taken.execution_id == _PEER, "a lapsed claim is cleared and taken"
     held = read_inflight(run_root)
@@ -128,7 +128,7 @@ def test_emptying_a_claimed_run_root_keeps_the_claim(tmp_path: Path) -> None:
     (run_root / "train" / "weights").mkdir(parents=True)
     _ = (run_root / "train" / "weights" / "last.pt").write_bytes(b"w")
     _ = (run_root / "results.csv").write_text("epoch\n")
-    _ = claim_run_root(ds, _PEER, run_root, "train-sleap", 60)
+    _ = claim_run_root(ds, _PEER, run_root, "train-sleap", 60, doing="training")
 
     empty_claimed_run_root(run_root)
 
@@ -304,9 +304,13 @@ def test_a_refreshing_run_refuses_the_peer_that_would_have_stolen_its_root(
     def peer_tries_to_take_it(run_root: Path, fire: Callable[[], None]) -> None:
         _the_signal_restores_the_claim(ds, run_root, fire)
         with pytest.raises(RunRootHeld) as refused:
-            _ = claim_run_root(ds, _PEER, run_root, "train-sleap", 60)
+            _ = claim_run_root(ds, _PEER, run_root, "train-sleap", 60, doing="training")
         held = refused.value.held
         assert held is not None and held.execution_id != _PEER, "names its holder"
+        assert refused.value.reason == "run_root_held"
+        assert refused.value.detail["holder_execution_id"] == held.execution_id
+        assert refused.value.detail["holder_host"] == held.host
+        assert refused.value.detail["holder_pid"] == held.pid
 
     _run_sleap(ds, tmp_path, monkeypatch, peer_tries_to_take_it)
 

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field
 
+from mosaic.core.pipeline.entry_claim import claim_run_root, empty_claimed_run_root
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.models import model_index_path, model_run_root
@@ -31,8 +32,6 @@ from mosaic.core.params import (
     Params,
 )
 from mosaic.tracking.ops._common import (
-    claim_run_root,
-    empty_claimed_run_root,
     ensure_models_root,
     fingerprint_dataset,
 )
@@ -267,7 +266,14 @@ class ConvertPointsOp(Op[ConvertPointsParams]):
         # would otherwise have one delete the other's output mid-write. The body is
         # deterministic, so the bytes agree -- the destruction is the hazard.
         out.mkdir(parents=True, exist_ok=True)
-        claim_run_root(ds, ctx.execution_id, out, self.kind, _CONVERT_IDLE_SECONDS)
+        claim_run_root(
+            ds,
+            ctx.execution_id,
+            out,
+            self.kind,
+            _CONVERT_IDLE_SECONDS,
+            doing="converting",
+        )
         empty_claimed_run_root(out)
 
         schema = convert_cvat_points_polo(

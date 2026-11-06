@@ -72,6 +72,7 @@ type RefusalReason = Literal[
     "apply_step_changed",
     "apply_tracks_changed",
     "tool_unavailable",
+    "run_root_held",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -103,7 +104,9 @@ tracks variant other than the one the named request read
 (``apply_tracks_changed``). ``tool_unavailable`` is a step whose worker lacks the
 tool that the step runs: its ``tool`` detail names the tool, and its ``cause`` is
 ``license`` when the tool's license is not accepted there and ``environment``
-when the tool is not installed or cannot be started.
+when the tool is not installed or cannot be started. ``run_root_held`` is an op
+whose run root another execution's live claim holds; the ``holder_`` detail
+names that execution, its host and pid, and when its claim expires.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

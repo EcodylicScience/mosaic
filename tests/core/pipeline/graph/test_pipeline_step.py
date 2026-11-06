@@ -1511,9 +1511,9 @@ def test_two_dispatches_of_one_training_run_do_not_both_train(
     that running a training step through a graph reaches it rather than
     introducing a second one beside it.
     """
+    from mosaic.core.pipeline.entry_claim import RunRootHeld
     from mosaic.core.pipeline.markers import new_inflight, write_inflight
     from mosaic.core.pipeline.models import model_run_root
-    from mosaic.tracking.ops._common import RunRootHeld
 
     dataset = make_dataset(tmp_path)
     trainer = FakeTrainer()
@@ -1552,8 +1552,13 @@ def test_two_dispatches_of_one_training_run_do_not_both_train(
         ),
     )
 
-    with pytest.raises(RunRootHeld, match="SOMEONE-ELSE"):
+    with pytest.raises(RunRootHeld, match="SOMEONE-ELSE") as refused:
         _ = execute_step(dataset, submitted.request, "train")
+
+    assert refused.value.reason == "run_root_held"
+    assert refused.value.detail["holder_execution_id"] == "SOMEONE-ELSE"
+    assert refused.value.detail["holder_host"] == "otherhost"
+    assert refused.value.detail["holder_pid"] == 4242
 
     assert trainer.calls == 0
 

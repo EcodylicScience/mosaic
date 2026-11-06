@@ -30,7 +30,11 @@ from pydantic import Field, ValidationInfo, field_validator, model_validator
 from mosaic.core.entry import Entry, make_entry_key, validate_entry_name
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.pipeline.entry_claim import phase_activity
+from mosaic.core.pipeline.entry_claim import (
+    claim_run_root,
+    empty_claimed_run_root,
+    phase_activity,
+)
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.index_csv import (
@@ -68,7 +72,7 @@ from mosaic.tracking.sleap.run import (
 )
 from mosaic.tracking.sleap.version import PREPARE_EMBEDDING_DATA_KIND, SLEAP_KIND
 
-from ._common import claim_run_root, empty_claimed_run_root, ensure_models_root
+from ._common import ensure_models_root
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -1017,7 +1021,12 @@ class PrepareEmbeddingDataOp(Op[PrepareEmbeddingDataParams]):
         # would otherwise have one delete the other's files mid-write.
         out.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, out, self.kind, _PREPARE_IDLE_SECONDS
+            ds,
+            ctx.execution_id,
+            out,
+            self.kind,
+            _PREPARE_IDLE_SECONDS,
+            doing="preparing",
         )
         empty_claimed_run_root(out)
         on_activity = phase_activity(ctx, out, marker, _PREPARE_IDLE_SECONDS)

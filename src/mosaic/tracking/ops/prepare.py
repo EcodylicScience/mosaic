@@ -60,6 +60,7 @@ from mosaic.core.annotations.split import (
 from mosaic.core.entry import make_entry_key, to_safe_name
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.entry_claim import claim_run_root, empty_claimed_run_root
 from mosaic.core.pipeline.index_csv import (
     IndexCSV,
     RunIndexRowBase,
@@ -86,7 +87,7 @@ from mosaic.tracking.keypoint_sets import (
     set_label,
 )
 
-from ._common import claim_run_root, empty_claimed_run_root, ensure_models_root
+from ._common import ensure_models_root
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -983,7 +984,14 @@ class PrepareTrainingDataOp(Op[PrepareTrainingDataParams]):
         # Claimed before anything is cleared: two executions of one identifier
         # would otherwise have one delete the other's tree mid-write.
         out.mkdir(parents=True, exist_ok=True)
-        _ = claim_run_root(ds, ctx.execution_id, out, self.kind, _PREPARE_IDLE_SECONDS)
+        _ = claim_run_root(
+            ds,
+            ctx.execution_id,
+            out,
+            self.kind,
+            _PREPARE_IDLE_SECONDS,
+            doing="preparing",
+        )
         empty_claimed_run_root(out)
 
         training = _read_sets(sets)

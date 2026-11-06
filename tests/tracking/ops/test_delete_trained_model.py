@@ -30,7 +30,7 @@ from mosaic.tracking.ops.delete_model import (
     ModelDeletionRefusedError,
     TrainedModelInUseError,
 )
-from mosaic.tracking.ops._common import RunRootHeld, claim_run_root
+from mosaic.core.pipeline.entry_claim import RunRootHeld, claim_run_root
 from mosaic.tracking.ops.prepare import PreparedDatasetIndexRow, prepared_dataset_index
 from mosaic.tracking.ops.trained_models import TrainedModelIndexRow, trained_model_index
 from tests.helpers import make_dataset, register_trained_model
@@ -194,7 +194,12 @@ def test_a_training_arriving_mid_delete_cannot_claim_the_run_root(
     def retrain() -> None:
         with pytest.raises(RunRootHeld) as refused:
             _ = claim_run_root(
-                ds, "RETRAIN", model_run_root(ds, KIND, RUN_ID), KIND, 60
+                ds,
+                "RETRAIN",
+                model_run_root(ds, KIND, RUN_ID),
+                KIND,
+                60,
+                doing="training",
             )
         refusals.append(refused.value)
 

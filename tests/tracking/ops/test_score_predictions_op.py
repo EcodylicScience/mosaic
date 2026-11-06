@@ -59,6 +59,7 @@ from mosaic.core.pipeline.op_identity import (
     op_run_id,
     parse_op_run_id,
 )
+from mosaic.core.pipeline.entry_claim import RunRootHeld, empty_claimed_run_root
 from mosaic.core.pipeline.ops import OPS, IdentityDeferred, op_resource_class, run_op
 from mosaic.runlog import RunLogSnapshot, parse_instant, read_run, run_log_dir
 from mosaic.tracking import register_ops
@@ -74,11 +75,7 @@ from mosaic.tracking.frame_predictions.index import (
     write_run_params,
 )
 from mosaic.tracking.frame_predictions.params import PredictFramesParams
-from mosaic.tracking.ops._common import (
-    RunRootHeld,
-    empty_claimed_run_root,
-    resolve_training_data,
-)
+from mosaic.tracking.ops._common import resolve_training_data
 from mosaic.tracking.ops.predict_frames import predict_frames_payload
 from mosaic.tracking.ops.prepare import PrepareTrainingDataParams, check_preparation
 from mosaic.tracking.ops.score_predictions import (
@@ -1056,8 +1053,13 @@ def test_a_score_whose_root_a_peer_took_over_writes_nothing(
 
     monkeypatch.setattr(score_predictions, "empty_claimed_run_root", empty_then_lose)
 
-    with pytest.raises(RunRootHeld, match="exec-peer"):
+    with pytest.raises(RunRootHeld, match="exec-peer") as refused:
         _ = _score(ds)
+
+    assert refused.value.reason == "run_root_held"
+    assert refused.value.detail["holder_execution_id"] == "exec-peer"
+    assert refused.value.detail["holder_host"] == "elsewhere"
+    assert refused.value.detail["holder_pid"] == 1
 
     root = _run_root(ds, _plan(ds, _params()))
     assert [path.name for path in root.iterdir()] == [INFLIGHT_MARKER_NAME]

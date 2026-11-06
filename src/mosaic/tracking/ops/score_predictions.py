@@ -55,6 +55,11 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.keypoint_refs import resolve_keypoint_refs
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline._utils import atomic_write, hash_params
+from mosaic.core.pipeline.entry_claim import (
+    claim_run_root,
+    empty_claimed_run_root,
+    renew_run_root_claim,
+)
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.identity_scheme import write_identity_scheme
 from mosaic.core.pipeline.index_csv import index_records
@@ -91,8 +96,6 @@ from mosaic.tracking.keypoint_sets import (
     set_label,
 )
 from mosaic.tracking.training_provenance import SeenFrames, seen_frames_of_model
-
-from ._common import claim_run_root, empty_claimed_run_root, renew_run_root_claim
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -1160,7 +1163,12 @@ class ScorePredictionsOp(Op[ScorePredictionsParams]):
         run_root = prediction_kind_root(ds, _KIND) / run_id
         run_root.mkdir(parents=True, exist_ok=True)
         marker = claim_run_root(
-            ds, ctx.execution_id, run_root, _KIND, _SCORE_IDLE_SECONDS
+            ds,
+            ctx.execution_id,
+            run_root,
+            _KIND,
+            _SCORE_IDLE_SECONDS,
+            doing="scoring",
         )
         empty_claimed_run_root(run_root)
         scores = score_predictions(

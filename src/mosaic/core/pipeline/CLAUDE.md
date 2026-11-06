@@ -188,7 +188,8 @@ are in `graph/CLAUDE.md`.
 - Trackers, `infer-*` and `preprocess` claim each entry through `open_entry`
   (`entry_claim.py`) with an exclusive create, and release and refresh check
   ownership (`tests/core/pipeline/test_run_markers.py`). One-shot ops claim their
-  run root through `claim_run_root` in `tracking/ops/_common.py`.
+  run root through `claim_run_root` in `entry_claim.py`, which raises the
+  `run_root_held` refusal (`RunRootHeld`) when a live claim holds it.
 - Outside `Pipeline.clean`, a whole feature run is removed only through
   `remove_feature_run` (`feature_run_removal.py`): an intent record with the run's
   `params.json` in the cleanup's run-log, then the index rows, then the directory,
