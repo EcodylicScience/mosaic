@@ -202,6 +202,37 @@ def test_a_frozen_export_keeps_only_the_head(
 
 
 @pytest.mark.slow
+def test_a_failed_write_leaves_no_checkpoint(
+    trained: ClassifierIdentityNetwork,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that dies midway leaves neither a torn file nor a temporary one."""
+    torch = pytest.importorskip("torch")
+
+    def torn_save(_checkpoint: object, target: Path) -> None:
+        _ = Path(target).write_bytes(b"torn")
+        raise OSError("the disk is full")
+
+    monkeypatch.setattr(torch, "save", torn_save)
+
+    with pytest.raises(OSError, match="the disk is full"):
+        _ = trained.export_checkpoint(tmp_path / "net.pth", class_labels=["a", "b"])
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.slow
+def test_an_export_without_a_suffix_lands_at_the_pth_path(
+    trained: ClassifierIdentityNetwork, tmp_path: Path
+) -> None:
+    path = trained.export_checkpoint(tmp_path / "net", class_labels=["a", "b"])
+
+    assert path == tmp_path / "net.pth"
+    assert [item.name for item in tmp_path.iterdir()] == ["net.pth"]
+
+
+@pytest.mark.slow
 def test_reload_reproduces_predictions(
     trained: ClassifierIdentityNetwork, tmp_path: Path
 ) -> None:

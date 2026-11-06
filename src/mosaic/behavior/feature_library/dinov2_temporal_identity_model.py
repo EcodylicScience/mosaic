@@ -58,6 +58,7 @@ from ._identity_model_descriptions import (
     LEARNING_RATE_DESCRIPTION,
     WEIGHTS_NAME_DESCRIPTION,
 )
+from .helpers import write_bundle
 from .named_model import named_model_file
 from .registry import register_feature
 
@@ -480,9 +481,8 @@ class GlobalIdentityDinoV2Temporal:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
+        weights_name = f"{self.params.weights_name}.pth"
         if isinstance(self._network, DinoV2TemporalNetwork):
-            weights_name = f"{self.params.weights_name}.pth"
-            self._network.export_checkpoint(run_root / weights_name)
             # The sidecar a later run references as ``model``. Written here so
             # this run's output is loadable as the next run's pre-fitted model.
             bundle: DinoV2TemporalIdentityBundle = {
@@ -490,13 +490,17 @@ class GlobalIdentityDinoV2Temporal:
                 "identity_names": list(self._identity_names or ()),
                 "version": self.version,
             }
-            joblib.dump(bundle, run_root / _BUNDLE_NAME)
+            write_bundle(run_root / _BUNDLE_NAME, bundle)
 
         if self._history is not None:
-            joblib.dump(self._history, run_root / "training_history.joblib")
+            write_bundle(run_root / "training_history.joblib", self._history)
 
         if self._identity_names is not None:
-            joblib.dump(self._identity_names, run_root / "identity_names.joblib")
+            write_bundle(run_root / "identity_names.joblib", self._identity_names)
+
+        # The checkpoint goes last: its presence is what ``load_state`` tests for.
+        if isinstance(self._network, DinoV2TemporalNetwork):
+            self._network.export_checkpoint(run_root / weights_name)
 
     # --- Private helpers ---
 

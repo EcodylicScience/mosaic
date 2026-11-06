@@ -458,10 +458,10 @@ class ExtractTemplates:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
-        df = pd.DataFrame(self._templates, columns=self._feature_columns)
-        _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)
-
         if self._provenance is not None:
             _ = write_parquet_atomic(
                 self._provenance, run_root / "template_provenance.parquet"
             )
+
+        df = pd.DataFrame(self._templates, columns=self._feature_columns)
+        _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)

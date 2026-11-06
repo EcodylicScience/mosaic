@@ -18,6 +18,7 @@ import pandas as pd
 
 from mosaic.core.entry import Entry
 from mosaic.core.individuals import iter_individuals
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.memory_watch import host_memory_bytes
 from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
 
@@ -69,6 +70,7 @@ __all__ = [
     "train_labeled_frames_of_templates",
     "unwrap_diff",
     "wrap_angle",
+    "write_bundle",
 ]
 
 
@@ -1031,3 +1033,16 @@ def out_of_fold_choice(
         ValueError: *df* lacks ``group`` or ``sequence``, or holds more than one entry.
     """
     return fold_of.get(scored_entry(df, feature))
+
+
+def write_bundle(path: Path, bundle: object) -> None:
+    """Write a fitted state's bundle to *path* atomically.
+
+    A feature's ``load_state`` tests for one file and takes the state to be whole
+    when it is there, so that file is written last, after the files that belong
+    to it. A bundle of several models takes a while to write, and a kill or a
+    second invocation of the run must not leave ``load_state`` a partial file.
+    """
+    import joblib
+
+    atomic_write(path, lambda temporary: joblib.dump(bundle, temporary))

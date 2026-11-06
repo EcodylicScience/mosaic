@@ -21,7 +21,6 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, TypedDict, final
 
-import joblib
 import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
@@ -56,6 +55,7 @@ from .helpers import (
     iter_series,
     label_series,
     refuse_repeated_series_rows,
+    write_bundle,
 )
 from .named_model import named_model_file
 from .registry import register_feature
@@ -470,7 +470,7 @@ class ArHmmFeature:
             "downsample_rate": self.params.downsample_rate,
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "arhmm_model.joblib")
+        write_bundle(run_root / "arhmm_model.joblib", bundle)
 
     # --- Helpers ---
 

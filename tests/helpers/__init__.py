@@ -92,6 +92,8 @@ What lives where:
   that a statement loads there.
 - ``golden`` -- reading and rewriting the golden files under ``tests/data/``.
 - ``recipes``: the recipes a graph test validates, plans or runs.
+- ``state_writes``: the files a feature's ``save_state`` publishes and their order,
+  and whether ``load_state`` finds a state after each publish fails.
 - ``trees``: snapshots of a directory tree, and the assertion that a call left
   one unchanged.
 
@@ -346,6 +348,10 @@ from tests.helpers.stand_in_features import (
     ScopedFeature,
 )
 from tests.helpers.training import FakeTrainer, healthy_probe, write_data_yaml
+from tests.helpers.state_writes import (
+    load_results_after_each_failed_write,
+    record_published_files,
+)
 from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
     add_track_sequences,
@@ -621,6 +627,7 @@ __all__ = [
     "journal_source",
     "keypoint_rows",
     "kpms_params",
+    "load_results_after_each_failed_write",
     "latest_events",
     "latest_snapshot",
     "make_dataset",
@@ -670,6 +677,7 @@ __all__ = [
     "resolved_scope",
     "result_outputs",
     "result_run_root",
+    "record_published_files",
     "revision_file",
     "rewrite_as_older_prepared_index",
     "run_fresh",

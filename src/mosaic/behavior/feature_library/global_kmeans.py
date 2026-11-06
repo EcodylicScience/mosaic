@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, TypedDict, final
 
-import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
@@ -47,7 +46,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared
 from mosaic.core.pipeline.graph.compatibility import GpuWhen
 
-from .helpers import ensure_columns, finite_rows
+from .helpers import ensure_columns, finite_rows, write_bundle
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
@@ -318,7 +317,6 @@ class GlobalKMeansClustering:
             "feature_columns": self._feature_columns or [],
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "model.joblib")
 
         centers = np.asarray(self._kmeans.cluster_centers_, dtype=np.float32)
         atomic_savez(run_root / "cluster_centers.npz", centers=centers)
@@ -330,3 +328,6 @@ class GlobalKMeansClustering:
                 pd.DataFrame({"cluster": uniq.astype(int), "count": cnt.astype(int)}),
                 run_root / "cluster_sizes.parquet",
             )
+
+        # The model goes last: its presence is what ``load_state`` tests for.
+        write_bundle(run_root / "model.joblib", bundle)

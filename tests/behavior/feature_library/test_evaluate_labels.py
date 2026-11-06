@@ -37,7 +37,11 @@ from mosaic.core.evaluation import (
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.types import InputStream, Result
 from mosaic.core.scope import Scope
-from tests.helpers import write_lineage_run, write_sparse_labels
+from tests.helpers import (
+    load_results_after_each_failed_write,
+    write_lineage_run,
+    write_sparse_labels,
+)
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import Recipe
@@ -132,6 +136,27 @@ def test_writes_metrics_and_confusion_through_the_writers(
         "predicted_0": [5, 2],
         "predicted_1": [0, 3],
     }
+
+
+def test_the_metrics_are_published_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lookup = {("g", "s"): _labels(tmp_path / "labels.npz")}
+    lookups = {"labels": lookup}
+    feature = _feature({"perspective": 0})
+    assert not feature.load_state(tmp_path / "fit", {}, lookups)
+    frame = _rows("g", "s", GOOD)
+    feature.fit(InputStream(lambda: iter([("g__s", frame)]), n_entries=1))
+
+    published, loaded = load_results_after_each_failed_write(
+        monkeypatch,
+        tmp_path / "saves",
+        feature.save_state,
+        lambda root: _feature({"perspective": 0}).load_state(root, {}, lookups),
+    )
+
+    assert published == [CONFUSION_FILE, METRICS_FILE]
+    assert loaded == dict.fromkeys(published, False)
 
 
 def test_the_other_direction_is_unlabeled_and_dropped(tmp_path: Path) -> None:

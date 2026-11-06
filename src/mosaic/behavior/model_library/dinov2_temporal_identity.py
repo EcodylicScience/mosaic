@@ -31,6 +31,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.behavior.model_library.identity_common import (
     compute_prototypes,
     knn_predict,
@@ -446,7 +447,7 @@ class DinoV2TemporalNetwork:
                 "format_version": 1,
             },
         }
-        torch.save(checkpoint, path)
+        atomic_write(path, lambda temporary: torch.save(checkpoint, temporary))
         print(
             f"[dinov2-temporal] exported checkpoint: {path}  "
             f"({self.num_classes} identities, head={self.temporal_head_name}, "

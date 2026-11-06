@@ -432,10 +432,6 @@ class EvaluateLabels:
         if self._report is None:
             return
         report = self._report
-        atomic_write(
-            run_root / METRICS_FILE,
-            lambda tmp: tmp.write_text(report.model_dump_json(indent=2) + "\n"),
-        )
         classes = report.classes
         confusion = pd.DataFrame(
             np.asarray(report.confusion, dtype=np.int64).reshape(
@@ -449,6 +445,10 @@ class EvaluateLabels:
             _ = write_parquet_atomic(
                 self._contingency, run_root / CLUSTER_CONFUSION_FILE
             )
+        atomic_write(
+            run_root / METRICS_FILE,
+            lambda tmp: tmp.write_text(report.model_dump_json(indent=2) + "\n"),
+        )
 
     # --- scoring ---
 

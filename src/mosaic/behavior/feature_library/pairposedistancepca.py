@@ -40,7 +40,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import clean_tracks_grouped, ensure_columns, point_distances
+from .helpers import (
+    clean_tracks_grouped,
+    ensure_columns,
+    point_distances,
+    write_bundle,
+)
 from .registry import register_feature
 from .types import INTERPOLATION_CONFIG_DESCRIPTION, InterpolationConfig
 
@@ -298,13 +303,14 @@ class PairPoseDistancePCA:
             "feat_len": self._feat_len,
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "model.joblib")
         atomic_write(
             run_root / VARIANCE_FILE,
             lambda tmp: tmp.write_text(
                 json.dumps(self._variance_report(), indent=2) + "\n"
             ),
         )
+        # The basis goes last: its presence is what ``load_state`` tests for.
+        write_bundle(run_root / "model.joblib", bundle)
 
     def _variance_report(self) -> dict[str, object]:
         """The share of the pose-distance variance that each component keeps.

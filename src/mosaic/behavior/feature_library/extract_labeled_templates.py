@@ -913,6 +913,10 @@ class ExtractLabeledTemplates:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
+        _ = write_parquet_atomic(
+            self._provenance, run_root / "template_provenance.parquet"
+        )
+
         df = pd.DataFrame(self._templates, columns=self._feature_columns)
         df["label"] = self._labels
         df["split"] = self._splits
@@ -921,7 +925,3 @@ class ExtractLabeledTemplates:
         if self._template_frames is not None:
             df[C.frame_col] = self._template_frames
         _ = write_parquet_atomic(df, run_root / TEMPLATES_ARTIFACT_NAME)
-
-        _ = write_parquet_atomic(
-            self._provenance, run_root / "template_provenance.parquet"
-        )

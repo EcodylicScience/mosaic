@@ -38,6 +38,7 @@ from typing import Any, Final
 
 import numpy as np
 
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.behavior.model_library.timm_backbone import (
     DEFAULT_MODEL_NAME,
     BackboneDataConfig,
@@ -382,7 +383,7 @@ class ClassifierIdentityNetwork:
                 "accuracy": self._best_accuracy,
             },
         }
-        torch.save(checkpoint, path)
+        atomic_write(path, lambda temporary: torch.save(checkpoint, temporary))
         print(
             f"[identity-classifier] exported checkpoint: {path}  "
             f"({self.num_classes} identities, backbone="

@@ -10,7 +10,6 @@ import gc
 from pathlib import Path
 from typing import Annotated, ClassVar, TypedDict, final
 
-import joblib
 import numpy as np
 import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
@@ -40,7 +39,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, DeclaredModel
 from mosaic.optional_dependency import require
 
-from .helpers import ensure_columns, finite_rows
+from .helpers import ensure_columns, finite_rows, write_bundle
 from .registry import register_feature
 from mosaic.core.pipeline._utils import atomic_savez
 
@@ -487,8 +486,10 @@ class GlobalTSNE:
             "feature_columns": self._feature_columns,
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "embedding.joblib")
 
         # Save template coordinates for visualization
         coords = np.asarray(self._embedding)
         atomic_savez(run_root / "global_tsne_templates.npz", Y=coords)
+
+        # The embedding goes last: its presence is what ``load_state`` tests for.
+        write_bundle(run_root / "embedding.joblib", bundle)

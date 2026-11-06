@@ -11,7 +11,12 @@ import pytest
 
 from mosaic.behavior.feature_library.global_scaler import GlobalScaler
 from mosaic.core.pipeline.types import InputStream
-from tests.helpers import make_sequence_df, make_templates, write_templates
+from tests.helpers import (
+    load_results_after_each_failed_write,
+    make_sequence_df,
+    make_templates,
+    write_templates,
+)
 
 _TEMPLATES_PARAMS: dict[str, object] = {
     "templates": {"feature": "extract-templates", "pattern": "templates.parquet"},
@@ -33,6 +38,25 @@ def _fitted(tmp_path: Path, templates: pd.DataFrame) -> GlobalScaler:
     _ = feat.load_state(tmp_path / "run", {"templates": template_path}, {})
     feat.fit(InputStream(lambda: iter([]), n_entries=0))
     return feat
+
+
+class TestSaveState:
+    def test_the_scaler_is_published_last(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        feat = _fitted(tmp_path, make_templates(100, 3, offset=5.0, scale=2.0))
+
+        published, loaded = load_results_after_each_failed_write(
+            monkeypatch,
+            tmp_path / "saves",
+            feat.save_state,
+            lambda root: _make_feature(params=_TEMPLATES_PARAMS).load_state(
+                root, {}, {}
+            ),
+        )
+
+        assert published == ["scaled_templates.parquet", "scaler.joblib"]
+        assert loaded == dict.fromkeys(published, False)
 
 
 class TestFitAndSave:

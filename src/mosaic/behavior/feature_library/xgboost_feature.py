@@ -45,6 +45,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import HASH_EXCLUDE, Declared
 from mosaic.core.pipeline.graph.compatibility import GpuWhen
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .classifier_common import (
@@ -74,7 +75,6 @@ from .classifier_common import (
     held_out_frames,
     scoring_folds,
     stored_folds,
-    write_bundle,
 )
 from .helpers import (
     check_memory_headroom,
@@ -84,6 +84,7 @@ from .helpers import (
     refuse_unlabeled_templates,
     entries_of_templates,
     train_labeled_frames_of_templates,
+    write_bundle,
 )
 from .registry import register_feature
 
@@ -1064,9 +1065,16 @@ class XgboostFeature(FitReporting):
         if self._metrics is not None:
             import json
 
-            (run_root / "reports.json").write_text(json.dumps(self._metrics, indent=2))
-            summary = pd.DataFrame(self._metrics).T
-            summary.to_csv(run_root / "summary.csv")
+            metrics = self._metrics
+            atomic_write(
+                run_root / "reports.json",
+                lambda temporary: temporary.write_text(json.dumps(metrics, indent=2)),
+            )
+            summary = pd.DataFrame(metrics).T
+            atomic_write(
+                run_root / "summary.csv",
+                lambda temporary: summary.to_csv(temporary),
+            )
         if self._cv_table is not None:
             _ = write_parquet_atomic(self._cv_table, run_root / FOLD_TABLE_FILE)
 

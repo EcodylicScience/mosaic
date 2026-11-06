@@ -152,7 +152,6 @@ from .classifier_common import (
     scoring_folds,
     standardize,
     stored_folds,
-    write_bundle,
 )
 from .helpers import (
     check_memory_headroom,
@@ -163,6 +162,7 @@ from .helpers import (
     iter_series_positions,
     refuse_repeated_series_rows,
     entries_of_templates,
+    write_bundle,
 )
 from .registry import register_feature
 from .sequence_heads import (

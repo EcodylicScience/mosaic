@@ -31,7 +31,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns, feature_columns
+from .helpers import ensure_columns, feature_columns, write_bundle
 from .registry import register_feature
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
@@ -211,15 +211,15 @@ class GlobalScaler:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
-        import joblib
-
         bundle: ScalerModelBundle = {
             "scaler": self._scaler,
             "feature_columns": self._feature_columns,
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "scaler.joblib")
 
         if self._scaled_templates is not None:
             df = pd.DataFrame(self._scaled_templates, columns=self._feature_columns)
             _ = write_parquet_atomic(df, run_root / "scaled_templates.parquet")
+
+        # The scaler goes last: its presence is what ``load_state`` tests for.
+        write_bundle(run_root / "scaler.joblib", bundle)

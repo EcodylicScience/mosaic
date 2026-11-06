@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, ClassVar, TypedDict, final
 
-import joblib
 import numpy as np
 import pandas as pd
 from pydantic import Field
@@ -44,7 +43,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared
 
-from .helpers import ensure_columns, finite_rows
+from .helpers import ensure_columns, finite_rows, write_bundle
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 
@@ -268,4 +267,4 @@ class GlobalWardClustering:
             "feature_columns": self._feature_columns or [],
             "version": self.version,
         }
-        joblib.dump(bundle, run_root / "model.joblib")
+        write_bundle(run_root / "model.joblib", bundle)

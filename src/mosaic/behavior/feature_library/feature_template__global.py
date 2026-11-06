@@ -40,7 +40,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import feature_columns, meta_columns
+from .helpers import feature_columns, meta_columns, write_bundle
 
 # from .registry import register_feature  # <-- uncomment when ready
 
@@ -150,12 +150,12 @@ class MyGlobalFeature:
         if self._model is None:
             return
         run_root.mkdir(parents=True, exist_ok=True)
-        joblib.dump(
+        write_bundle(
+            run_root / "model.joblib",
             {
                 "model": self._model,
                 "params": self.params.model_dump(),
             },
-            run_root / "model.joblib",
         )
 
     # --- Apply ---

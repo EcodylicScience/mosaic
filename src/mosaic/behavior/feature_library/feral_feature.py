@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
@@ -1032,6 +1033,11 @@ class FeralFeature:
 
             mixup = MixUp(alpha=tc.mixup_alpha, num_classes=tc.train_bs)
 
+        # A reader that is not under the run claim can load ``model_best.pt`` while
+        # the fit is still writing it, so each write lands whole or not at all.
+        def write_best_model(temporary: Path) -> None:
+            save_model(model, str(temporary), ckpt_metadata)
+
         # Training loop
         best_checkpoint_path = run_root / "model_best.pt" if run_root else None
         best_map = -1.0
@@ -1175,21 +1181,23 @@ class FeralFeature:
                 # Checkpoint best model
                 if val_map > ema_map and val_map > best_map:
                     if best_checkpoint_path is not None:
-                        save_model(model, str(best_checkpoint_path), ckpt_metadata)
+                        atomic_write(best_checkpoint_path, write_best_model)
                     best_map = val_map
                     epochs_without_improvement = 0
                 elif model_ema is not None and ema_map > val_map and ema_map > best_map:
                     if best_checkpoint_path is not None:
-                        save_model(
-                            model_ema.ema, str(best_checkpoint_path), ckpt_metadata
-                        )
+
+                        def write_best_ema(temporary: Path) -> None:
+                            save_model(model_ema.ema, str(temporary), ckpt_metadata)
+
+                        atomic_write(best_checkpoint_path, write_best_ema)
                     best_map = ema_map
                     epochs_without_improvement = 0
                 else:
                     epochs_without_improvement += 1
             else:
                 if best_checkpoint_path is not None:
-                    save_model(model, str(best_checkpoint_path), ckpt_metadata)
+                    atomic_write(best_checkpoint_path, write_best_model)
 
             training_metrics.append(epoch_metrics)
             log.info("Epoch %d: %s", epoch, epoch_metrics)
@@ -1213,7 +1221,10 @@ class FeralFeature:
                 }
                 if model_ema is not None:
                     ckpt_data["ema_state_dict"] = model_ema.ema.state_dict()
-                torch.save(ckpt_data, checkpoint_path)
+                atomic_write(
+                    checkpoint_path,
+                    lambda temporary: torch.save(ckpt_data, temporary),
+                )
 
             if tc.patience is not None and epochs_without_improvement >= tc.patience:
                 log.info("Early stopping at epoch %d", epoch)
@@ -1439,17 +1450,32 @@ class FeralFeature:
         model = self._model
         if hasattr(model, "_orig_mod"):
             model = model._orig_mod
-        torch.save(
-            {
-                "state_dict": model.state_dict(),
-                "class_names": {str(k): v for k, v in self._class_names.items()},
-                "is_multilabel": self._config.get("is_multilabel", False),
-                "cfg": self._config,
-            },
+        checkpoint: dict[str, object] = {
+            "state_dict": model.state_dict(),
+            "class_names": {str(k): v for k, v in self._class_names.items()},
+            "is_multilabel": self._config.get("is_multilabel", False),
+            "cfg": self._config,
+        }
+        atomic_write(
             run_root / "feral_model.pt",
+            lambda temporary: torch.save(checkpoint, temporary),
         )
 
-        # Save config
+        # Save training metrics if available
+        if self._metrics is not None:
+            reports = json.dumps(self._metrics, indent=2, default=str)
+            atomic_write(
+                run_root / "reports.json",
+                lambda temporary: temporary.write_text(reports),
+            )
+            if "training_metrics" in self._metrics:
+                summary_df = pd.DataFrame(self._metrics["training_metrics"])
+                atomic_write(
+                    run_root / "summary.csv",
+                    lambda temporary: summary_df.to_csv(temporary, index=False),
+                )
+
+        # The config goes last, after the model: ``load_state`` tests for both.
         config_to_save = {
             **self._config,
             "num_classes": len(self._classes),
@@ -1462,16 +1488,12 @@ class FeralFeature:
             "freeze_encoder_layers": self._config.get("freeze_encoder_layers", 14),
             "version": self.version,
         }
-        with open(run_root / "feral_config.json", "w") as f:
-            json.dump(config_to_save, f, indent=2, default=str)
-
-        # Save training metrics if available
-        if self._metrics is not None:
-            with open(run_root / "reports.json", "w") as f:
-                json.dump(self._metrics, f, indent=2, default=str)
-            if "training_metrics" in self._metrics:
-                summary_df = pd.DataFrame(self._metrics["training_metrics"])
-                summary_df.to_csv(run_root / "summary.csv", index=False)
+        atomic_write(
+            run_root / "feral_config.json",
+            lambda temporary: temporary.write_text(
+                json.dumps(config_to_save, indent=2, default=str)
+            ),
+        )
 
     # --- Apply ---
 

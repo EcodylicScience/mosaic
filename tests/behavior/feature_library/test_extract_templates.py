@@ -13,7 +13,11 @@ import pytest
 from mosaic.behavior.feature_library.extract_templates import ExtractTemplates
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.core.pipeline.types import InputStream, Result
-from tests.helpers import run_id_digest, track_table
+from tests.helpers import (
+    load_results_after_each_failed_write,
+    run_id_digest,
+    track_table,
+)
 
 InputFactory = Callable[[], Iterator[tuple[str, pd.DataFrame]]]
 
@@ -545,6 +549,28 @@ class TestSaveLoad:
     def test_load_state_returns_false_when_missing(self, tmp_path: Path) -> None:
         feat = _make_feature(params={"n_templates": 10})
         assert feat.load_state(tmp_path, {}, {}) is False
+
+    def test_the_templates_are_published_last(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        feat = _make_feature(params={"n_templates": 20})
+        feat.fit(
+            InputStream(
+                _make_factory([("a", _make_df(100, n_features=4))]), n_entries=1
+            )
+        )
+
+        published, loaded = load_results_after_each_failed_write(
+            monkeypatch,
+            tmp_path / "saves",
+            feat.save_state,
+            lambda root: _make_feature(params={"n_templates": 20}).load_state(
+                root, {}, {}
+            ),
+        )
+
+        assert published == ["template_provenance.parquet", "templates.parquet"]
+        assert loaded == dict.fromkeys(published, False)
 
 
 # --- Edge cases ---

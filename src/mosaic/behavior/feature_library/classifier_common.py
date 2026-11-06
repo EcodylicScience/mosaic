@@ -43,7 +43,6 @@ from mosaic.core.entry import Entry, entry_token, parse_entry_tokens
 from mosaic.core.evaluation import CountScores, pool_entry_counts
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.params import Declared
-from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.label_lineage import lineage_label_controls
 from mosaic.core.pipeline.types import (
@@ -135,7 +134,6 @@ __all__ = [
     "standardize",
     "stored_folds",
     "tuned_threshold",
-    "write_bundle",
 ]
 
 log = logging.getLogger(__name__)
@@ -1544,19 +1542,6 @@ class FitReporting:
         """Report that *done* of *total* fits have finished."""
         if self.progress_callback is not None and total > 1:
             self.progress_callback.on_epoch_end(done - 1, total, {})
-
-
-def write_bundle(path: Path, bundle: object) -> None:
-    """Write a classifier's bundle to *path* atomically.
-
-    The bundle goes last, after the files that belong to it, because its presence
-    makes the run a cache. A bundle of several models takes a while to write, and
-    a kill or a second invocation of the run must not leave ``load_state`` a
-    partial file.
-    """
-    import joblib
-
-    atomic_write(path, lambda temporary: joblib.dump(bundle, temporary))
 
 
 # --- Class weights ---

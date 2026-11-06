@@ -10,7 +10,19 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.global_kmeans import GlobalKMeansClustering
-from tests.helpers import make_sequence_df, make_templates, write_templates
+from tests.helpers import (
+    load_results_after_each_failed_write,
+    make_sequence_df,
+    make_templates,
+    write_templates,
+)
+
+
+_TEMPLATES_PARAMS: dict[str, object] = {
+    "templates": {"feature": "extract-templates", "pattern": "templates.parquet"},
+    "k": 5,
+}
+"""A reference to the templates that :func:`write_templates` writes."""
 
 
 def _make_feature(
@@ -48,6 +60,31 @@ def _fit_feature(
     )
     feat.fit(lambda: iter([]))
     return feat
+
+
+class TestSaveState:
+    def test_the_model_is_published_last(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        feat = _fit_feature(tmp_path)
+
+        published, loaded = load_results_after_each_failed_write(
+            monkeypatch,
+            tmp_path / "saves",
+            feat.save_state,
+            lambda root: _make_feature(params=_TEMPLATES_PARAMS).load_state(
+                root, {}, {}
+            ),
+        )
+
+        assert published[-1] == "model.joblib"
+        assert set(published) == {
+            "model.joblib",
+            "cluster_centers.npz",
+            "artifact_labels.npz",
+            "cluster_sizes.parquet",
+        }
+        assert loaded == dict.fromkeys(published, False)
 
 
 class TestFitAndSave:

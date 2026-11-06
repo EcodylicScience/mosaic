@@ -54,6 +54,7 @@ from ._identity_model_descriptions import (
     CROP_ROOT_DESCRIPTION,
     LEARNING_RATE_DESCRIPTION,
 )
+from .helpers import write_bundle
 from .named_model import named_model_file
 from .registry import register_feature
 
@@ -470,15 +471,8 @@ class GlobalIdentityModel:
             return
         run_root.mkdir(parents=True, exist_ok=True)
 
+        weights_name = f"{self.params.weights_name}.pth"
         if isinstance(self._network, ClassifierIdentityNetwork):
-            weights_name = f"{self.params.weights_name}.pth"
-            # The head scores identities by index and nothing in the weights
-            # records what animal an index means, so the class order is the
-            # only link back to the animals.
-            self._network.export_checkpoint(
-                run_root / weights_name,
-                class_labels=self._identity_names,
-            )
             # The sidecar a later run references as ``model``. Written here so
             # this run's output is loadable as the next run's pre-fitted model.
             bundle: ClassifierIdentityBundle = {
@@ -486,10 +480,20 @@ class GlobalIdentityModel:
                 "identity_names": list(self._identity_names or ()),
                 "version": self.version,
             }
-            joblib.dump(bundle, run_root / _BUNDLE_NAME)
+            write_bundle(run_root / _BUNDLE_NAME, bundle)
 
         if self._history is not None:
-            joblib.dump(self._history, run_root / "training_history.joblib")
+            write_bundle(run_root / "training_history.joblib", self._history)
 
         if self._identity_names is not None:
-            joblib.dump(self._identity_names, run_root / "identity_names.joblib")
+            write_bundle(run_root / "identity_names.joblib", self._identity_names)
+
+        # The checkpoint goes last: its presence is what ``load_state`` tests for.
+        if isinstance(self._network, ClassifierIdentityNetwork):
+            # The head scores identities by index and nothing in the weights
+            # records what animal an index means, so the class order is the
+            # only link back to the animals.
+            self._network.export_checkpoint(
+                run_root / weights_name,
+                class_labels=self._identity_names,
+            )

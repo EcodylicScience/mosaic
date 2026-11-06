@@ -39,6 +39,7 @@ from mosaic.behavior.feature_library.identity_model import (
 )
 from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.types.feature import Feature
 from mosaic.core.pipeline.run import compute_run_id
 
 # Selected by CI's `identity` job with `-m identity` rather than by a filename
@@ -404,3 +405,71 @@ def test_save_state_output_is_loadable_as_the_next_runs_model(
 
     assert ready is True
     assert RecordingNetwork.loaded == [run_root / f"{case.weights_stem}.pth"]
+
+
+class ListingNetwork(RecordingNetwork):
+    """A network that records which files stood beside its checkpoint as it was written."""
+
+    beside_checkpoint: ClassVar[list[str]] = []
+
+    def export_checkpoint(
+        self, path: Path, *, class_labels: list[str] | None = None
+    ) -> Path:
+        type(self).beside_checkpoint = sorted(
+            item.name for item in path.parent.iterdir()
+        )
+        return super().export_checkpoint(path, class_labels=class_labels)
+
+
+class FailingNetwork(RecordingNetwork):
+    """A network whose checkpoint write fails."""
+
+    def export_checkpoint(
+        self, path: Path, *, class_labels: list[str] | None = None
+    ) -> Path:
+        _ = (path, class_labels)
+        raise OSError("the checkpoint write failed")
+
+
+def fitted_trainer(case: ArtifactCase, network: RecordingNetwork) -> Feature:
+    """A trainer that holds *network*, a history and identity names to save."""
+    trainer = build_feature(case.slug, CROP_INPUTS, None)
+    trainer.__dict__.update(
+        _network=network, _history={"loss": [1.0]}, _identity_names=["a", "b"]
+    )
+    return trainer
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_the_checkpoint_is_written_after_the_files_that_belong_to_it(
+    case: ArtifactCase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = importlib.import_module(case.module)
+    monkeypatch.setattr(module, case.network_attr, ListingNetwork)
+
+    trainer = fitted_trainer(case, ListingNetwork())
+    trainer.save_state(tmp_path / "run")
+
+    assert ListingNetwork.beside_checkpoint == [
+        case.bundle_name,
+        "identity_names.joblib",
+        "training_history.joblib",
+    ]
+
+
+@pytest.mark.parametrize("case", ARTIFACT_CASES, ids=lambda c: c.slug)
+def test_a_failed_checkpoint_write_leaves_no_stored_state(
+    case: ArtifactCase, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = importlib.import_module(case.module)
+    monkeypatch.setattr(module, case.network_attr, FailingNetwork)
+    run_root = tmp_path / "run"
+
+    trainer = fitted_trainer(case, FailingNetwork())
+    with pytest.raises(OSError, match="checkpoint write failed"):
+        trainer.save_state(run_root)
+
+    assert (
+        build_feature(case.slug, CROP_INPUTS, None).load_state(run_root, {}, {})
+        is False
+    )

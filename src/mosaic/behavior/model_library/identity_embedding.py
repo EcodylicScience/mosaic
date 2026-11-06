@@ -53,6 +53,7 @@ from typing import Any, Final
 
 import numpy as np
 
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.behavior.model_library.identity_common import (
     compute_prototypes,
     knn_predict,
@@ -295,7 +296,7 @@ class EmbeddingIdentityNetwork:
                 "format_version": CHECKPOINT_FORMAT_VERSION,
             },
         }
-        torch.save(checkpoint, path)
+        atomic_write(path, lambda temporary: torch.save(checkpoint, temporary))
         print(
             f"[identity-embedding] exported checkpoint: {path}  "
             f"({self.num_classes} identities, dim={self.embedding_dim}, "

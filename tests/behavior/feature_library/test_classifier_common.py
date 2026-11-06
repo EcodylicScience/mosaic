@@ -49,11 +49,11 @@ from mosaic.behavior.feature_library.classifier_common import (
     read_fold_table,
     refuse_entries_outside_scope,
     standardize,
-    write_bundle,
 )
 from mosaic.behavior.feature_library.helpers import (
     gaussian_radius,
     iter_series_positions,
+    write_bundle,
 )
 from mosaic.core.evaluation import classification_scores
 from mosaic.core.pipeline.job import Cancelled, CancelToken
