@@ -268,6 +268,34 @@ def test_relink_adopts_it_and_a_second_run_calls_it_live(
     assert _verdicts(pruned_dataset)[orphan.name] == "live"
 
 
+def test_relink_leaves_a_file_with_no_index_row_unlinked(
+    pruned_dataset: Dataset,
+) -> None:
+    """Linking a rowless file would make it ``unrowed``, a state prune refuses.
+
+    A crash before the row write leaves such a file, and the next encode
+    replaces it anyway. The verdict stays ``relinkable`` and the file is kept.
+    """
+    orphan = _add_derivative(
+        pruned_dataset,
+        uuid=UUID_A,
+        recipe=_live_recipe(pruned_dataset, "playback"),
+        target="playback",
+        row=False,
+    )
+    assert _verdicts(pruned_dataset)[orphan.name] == "relinkable"
+
+    report = pruned_dataset.prune_media(apply=True, min_age_hours=0.0, relink=True)
+
+    assert not report.links_relinked
+    assert orphan.exists()
+    linked = {
+        row["video_uuid"]: row["playback_derivative_path"]
+        for row in read_media_index(pruned_dataset.get_root("media_raw") / "index.csv")
+    }
+    assert linked[UUID_A] == ""
+
+
 def test_relink_never_displaces_a_link_that_already_names_a_file(
     pruned_dataset: Dataset,
 ) -> None:

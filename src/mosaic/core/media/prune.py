@@ -526,6 +526,9 @@ def _relink_originals(
     ``relinkable`` file whose target cell already names something is left alone
     and reported: overwriting a live link to adopt an unreferenced file would
     strand the one it displaced, turning a repair into the thing being repaired.
+    A ``relinkable`` file with no index row is left alone too: linking it would
+    create the ``unrowed`` state this module refuses, and the next encode
+    replaces it anyway.
     """
     relinked: list[str] = []
     cleared: list[str] = []
@@ -544,7 +547,7 @@ def _relink_originals(
                         row[column] = ""
                         cleared.append(cell)
             continue
-        if entry.verdict != "relinkable":
+        if entry.verdict != "relinkable" or entry.row_index is None:
             continue
         parsed = parse_derivative_name(entry.path.name)
         if parsed is None:
