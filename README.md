@@ -46,6 +46,9 @@ conda install -c conda-forge ffmpeg av py-opencv -y
 pip install "mosaic-behavior[all]"
 ```
 
+On macOS, also take PyTorch and the other OpenMP libraries from conda-forge, as the
+[installation guide](https://ecodylicscience.github.io/mosaic/installation/) shows.
+
 The distribution is `mosaic-behavior` and the import name is `mosaic`. An unrelated
 project named `mosaic` exists on PyPI, so never run `pip install mosaic`.
 

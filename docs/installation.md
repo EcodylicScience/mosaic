@@ -9,6 +9,17 @@ conda install -c conda-forge ffmpeg av py-opencv -y
 pip install "mosaic-behavior[all]"
 ```
 
+On macOS, take the libraries that use OpenMP from conda-forge as well, and install the
+`deep-learning` extra instead of `all`
+([one OpenMP runtime per environment](#one-openmp-runtime-per-environment-macos)):
+
+```bash
+conda create -n mosaic python=3.13 -y
+conda activate mosaic
+conda install -c conda-forge ffmpeg av py-opencv pytorch torchvision scikit-learn xgboost faiss-cpu -y
+pip install "mosaic-behavior[deep-learning]"
+```
+
 The PyPI distribution is `mosaic-behavior` and the import name is `mosaic`. An unrelated
 project named `mosaic` exists on PyPI, so never run `pip install mosaic`.
 
@@ -53,6 +64,32 @@ conda install -c conda-forge --force-reinstall ffmpeg av py-opencv -y
 
 `--force-reinstall` restores conda files that a wheel overwrote or the uninstall
 removed.
+
+## One OpenMP runtime per environment (macOS)
+
+On macOS the pip wheels of PyTorch, scikit-learn, faiss and XGBoost each bring their own
+OpenMP runtime, and conda's numpy brings another. Two runtimes in one process abort it
+with `OMP: Error #15: Initializing libomp.dylib, but found libomp.dylib already
+initialized`, or crash it later in a parallel step, depending on which library was
+imported first. Do not set `KMP_DUPLICATE_LIB_OK`, which hides the error and lets the
+process compute wrong results.
+
+The conda-forge builds of these libraries all link the environment's one OpenMP
+runtime. Install them before pip, and install mosaic with the `deep-learning` extra:
+`all` also requests the `faiss-cpu` wheel, because conda's faiss registers under the
+name `faiss`. conda-forge's PyTorch can trail the PyPI release by a version, and it
+supports Apple GPUs (MPS).
+
+To repair an environment that shows either symptom, remove the wheels and reinstall the
+conda builds:
+
+```bash
+pip uninstall -y torch torchvision scikit-learn xgboost faiss-cpu
+conda install -c conda-forge --force-reinstall pytorch torchvision scikit-learn xgboost faiss faiss-cpu libfaiss -y
+```
+
+Linux is not affected, and there the pip install above, with its CUDA builds of PyTorch,
+is the one to use.
 
 ## Optional extras
 
@@ -120,6 +157,9 @@ conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"
 ```
+
+On macOS, use the conda line of the macOS install above, then
+`pip install -e ".[deep-learning]"`.
 
 The
 [environment notes](https://github.com/EcodylicScience/mosaic/blob/main/CONTRIBUTING.md#environment-notes)

@@ -124,7 +124,9 @@ Commands and environments are on https://ecodylicscience.github.io/mosaic/instal
   `pip install mosaic`, which is an unrelated project. `ffmpeg`, `av` and `py-opencv`
   come from conda-forge before `pip install "mosaic-behavior[all]"`, which keeps one ffmpeg
   build in the environment. On macOS use conda and do not add pip wheels of `av` or
-  OpenCV.
+  OpenCV. On macOS also take `pytorch torchvision scikit-learn xgboost faiss-cpu` from
+  conda-forge and install `"mosaic-behavior[deep-learning]"` instead of `[all]`, so one
+  OpenMP runtime is loaded. `OMP: Error #15` at import means two are.
 - An extra named in an older install command may be retired. pip only warns and
   installs the base without it. Check the retired names on the installation page.
 - Install the `feral` extra in a separate environment, since its exact pins downgrade

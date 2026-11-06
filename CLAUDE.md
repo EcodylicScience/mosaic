@@ -22,8 +22,10 @@ conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"
 ```
 
-Install from conda before pip. `ffmpeg` and `ffprobe` must be on `PATH`. Every CI job
-runs Python 3.13.
+On macOS, add `pytorch torchvision scikit-learn xgboost faiss-cpu` to the conda line
+and install `".[deep-learning]"` instead, so the environment holds one OpenMP runtime
+([docs/installation.md](docs/installation.md)). Install from conda before pip.
+`ffmpeg` and `ffprobe` must be on `PATH`. Every CI job runs Python 3.13.
 
 **One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
 different point on every run. [CONTRIBUTING.md](CONTRIBUTING.md#environment-notes) gives

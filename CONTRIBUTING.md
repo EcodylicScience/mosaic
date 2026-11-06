@@ -83,6 +83,14 @@ CI's wheels against an apt `ffmpeg` work. The Ultralytics environments declare h
 OpenCV and override the GUI wheel away, and
 `tests/tracking/ultralytics_track/test_ultralytics_preflight.py` checks their locks.
 
+**One OpenMP runtime per environment (macOS).** The macOS wheels of torch,
+scikit-learn, faiss and xgboost each bring their own OpenMP runtime, and two in one
+process abort it (`OMP: Error #15`) or crash it in a threaded step, depending on import
+order. On macOS install `pytorch torchvision scikit-learn xgboost faiss-cpu` from
+conda-forge with `av` and `py-opencv`, then `pip install -e ".[deep-learning]"`: `all`
+adds the `faiss-cpu` wheel, since conda's faiss registers as `faiss`. Linux keeps pip's
+CUDA builds of torch ([docs/installation.md](docs/installation.md)).
+
 A `[tool.uv.sources]` path to a `mosaic-media` checkout breaks `pip install -e .`, because
 pip does not read that table.
 ## Dependency invariants
