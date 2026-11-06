@@ -14,8 +14,14 @@ from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
 from mosaic.behavior.feature_library.types import InterpolationConfig, SamplingConfig
-from mosaic.core.params import HASH_EXCLUDE, NestedParams, Params
-from tests.helpers import run_id_digest
+from mosaic.core.params import (
+    HASH_EXCLUDE,
+    NestedParams,
+    Params,
+    declared_field_names,
+    has_fields,
+)
+from tests.helpers import narrowed_params, run_id_digest
 
 
 # --- Params base ---
@@ -196,3 +202,31 @@ def test_a_nested_model_dumps_whole_by_default() -> None:
         b: int | None = None
 
     assert _Plain().identity_dump() == {"a": 1, "b": None}
+
+
+def test_a_narrowed_model_still_names_the_fields_its_base_declares() -> None:
+    from mosaic.tracking.ops.train import PointTrainParams, PoseTrainParams
+
+    narrowed = narrowed_params(PointTrainParams, {"loc", "data"})
+
+    assert "loc" not in narrowed.model_fields
+    declared = declared_field_names(narrowed)
+    assert {"loc", "data", "backend"} <= declared
+    assert set(PoseTrainParams.model_fields) <= declared
+    assert declared == declared_field_names(PointTrainParams)
+
+
+def test_has_fields_reads_the_class_of_an_instance_and_the_narrowed_model() -> None:
+    class _Two(Params):
+        a: int = 1
+        b: int = 2
+
+    narrowed = narrowed_params(_Two, {"b"})
+
+    assert has_fields(_Two, "a", "b")
+    assert has_fields(_Two(), "a", "b")
+    assert has_fields(narrowed, "a")
+    assert has_fields(narrowed(), "a")
+    assert not has_fields(narrowed, "a", "b")
+    assert not has_fields(narrowed(), "b")
+    assert has_fields(narrowed)

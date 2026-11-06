@@ -151,6 +151,33 @@ class HashExclude:
 HASH_EXCLUDE = HashExclude()
 
 
+def declared_field_names(model: type[BaseModel]) -> frozenset[str]:
+    """Return every field name that *model* or a pydantic base of it declares.
+
+    A subclass that removed fields from its ``model_fields`` still names them
+    here, through the model it narrows. A rule over field names reads this set,
+    so that a narrowed subclass reserves the names its base model reserves.
+    """
+    return frozenset(
+        name
+        for base in model.__mro__
+        if issubclass(base, BaseModel)
+        for name in base.model_fields
+    )
+
+
+def has_fields(model: BaseModel | type[BaseModel], *names: str) -> bool:
+    """Return whether *model*, or the class of the instance *model*, declares every one of *names*.
+
+    A validator reading another field returns without a verdict when this is
+    false. A control plane exposes a subclass without the fields it sets
+    itself, and the full model's validation of the completed payload gives the
+    verdict.
+    """
+    fields = (model if isinstance(model, type) else type(model)).model_fields
+    return all(name in fields for name in names)
+
+
 def own_declaration(info: FieldInfo) -> Declared | None:
     """The :class:`Declared` in a field's own ``Annotated``, if it carries one.
 

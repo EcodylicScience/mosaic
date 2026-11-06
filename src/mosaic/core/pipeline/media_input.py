@@ -18,7 +18,7 @@ from typing import Annotated, ClassVar, Self
 
 from pydantic import model_validator
 
-from mosaic.core.params import HASH_EXCLUDE, Declared, Params
+from mosaic.core.params import HASH_EXCLUDE, Declared, Params, has_fields
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.preprocess_layout import PREPROCESS_KIND
@@ -109,7 +109,7 @@ class MediaInputParams(Params):
         A subclass without ``media`` names no variant. A control plane that sets
         ``media`` itself removes the field from the model that it exposes.
         """
-        if "media" not in type(self).model_fields or not self.media:
+        if not has_fields(self, "media") or not self.media:
             return self
         offending = self.frame_window
         if not offending:

@@ -58,7 +58,7 @@ from mosaic.core.annotations.split import (
     unit_key,
 )
 from mosaic.core.entry import make_entry_key, to_safe_name
-from mosaic.core.params import HASH_EXCLUDE, Declared, Params
+from mosaic.core.params import HASH_EXCLUDE, Declared, Params, has_fields
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.entry_claim import claim_run_root, empty_claimed_run_root
 from mosaic.core.pipeline.index_csv import (
@@ -250,8 +250,7 @@ class PrepareTrainingDataParams(Params):
         label would regroup them. A subclass without either field returns without
         a verdict.
         """
-        fields = type(self).model_fields
-        if "split_by" not in fields or "sequence_groups" not in fields:
+        if not has_fields(self, "split_by", "sequence_groups"):
             return self
         if self.split_by == "recording" and self.sequence_groups:
             msg = (

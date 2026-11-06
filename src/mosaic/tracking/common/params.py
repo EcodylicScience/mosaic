@@ -20,6 +20,7 @@ from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
     Params,
+    declared_field_names,
 )
 
 __all__ = ["PhasedTrackerOpParams", "TrackerOpParams", "refuse_unphased_fields"]
@@ -99,7 +100,10 @@ def refuse_unphased_fields(model: type[BaseModel]) -> None:
             :class:`~mosaic.core.pipeline.markers.Phase`.
     """
     inherited = {
-        name for base in model.__mro__[1:] for name in getattr(base, "model_fields", {})
+        name
+        for base in model.__bases__
+        if issubclass(base, BaseModel)
+        for name in declared_field_names(base)
     }
     unphased = sorted(
         name
