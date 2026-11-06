@@ -184,7 +184,7 @@ class PrepareEmbeddingDataParams(Params):
         Declared(_VAL_WINDOWS_PER_ENTRY_DESCRIPTION),
     ] = 60
 
-    @field_validator("train_entries", "val_entries")
+    @field_validator("train_entries", "val_entries", check_fields=False)
     @classmethod
     def _sorted_without_repeats(
         cls, value: list[EntryRef], info: ValidationInfo

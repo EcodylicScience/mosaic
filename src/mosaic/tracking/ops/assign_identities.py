@@ -189,7 +189,7 @@ class AssignIdentitiesParams(Params):
         int, Field(ge=0), Declared(_MAX_GAP_DESCRIPTION, unit="frames")
     ] = 15
 
-    @field_validator("references")
+    @field_validator("references", check_fields=False)
     @classmethod
     def _sorted_without_repeats(
         cls, value: list[IdentityReference]

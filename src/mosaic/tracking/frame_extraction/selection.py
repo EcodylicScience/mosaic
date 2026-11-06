@@ -352,7 +352,7 @@ class SelectFramesParams(Params):
     exclude: Annotated[tuple[EntryFrames, ...], Declared(_EXCLUDE_DESCRIPTION)] = ()
     random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 0
 
-    @field_validator("exclude")
+    @field_validator("exclude", check_fields=False)
     @classmethod
     def _normalized_exclude(
         cls, value: tuple[EntryFrames, ...]

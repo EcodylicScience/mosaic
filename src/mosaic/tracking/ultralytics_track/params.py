@@ -193,7 +193,7 @@ class UltralyticsParams(TrackerOpParams, MediaInputParams):
     ] = 8
     prefetch: Annotated[bool, HASH_EXCLUDE, Declared(_PREFETCH_DESCRIPTION)] = True
 
-    @field_validator("tracker_overrides", mode="before")
+    @field_validator("tracker_overrides", mode="before", check_fields=False)
     @classmethod
     def _configure_the_backend_that_tracker_names(
         cls,

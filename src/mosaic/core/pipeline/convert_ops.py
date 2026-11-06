@@ -191,7 +191,7 @@ class ConvertLabelsParams(Params):
     source_format: Annotated[str, Declared(_SOURCE_FORMAT)]
     params: Annotated[dict[str, JsonValue], Declared(_LABEL_PARAMS)] = {}
 
-    @field_validator("kind")
+    @field_validator("kind", check_fields=False)
     @classmethod
     def _lower_kind(cls, value: str) -> str:
         """The kind as the label root spells it, which is lower case."""

@@ -263,7 +263,7 @@ class ScorePredictionsParams(Params):
     ] = 0.95
     random_state: Annotated[int, Declared(_RANDOM_STATE_DESCRIPTION)] = 0
 
-    @field_validator("prediction_runs")
+    @field_validator("prediction_runs", check_fields=False)
     @classmethod
     def _sorted_runs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         """Sort the runs, and refuse a run named twice."""
@@ -275,7 +275,7 @@ class ScorePredictionsParams(Params):
             raise ValueError(msg)
         return tuple(sorted(value))
 
-    @field_validator("pck_alphas")
+    @field_validator("pck_alphas", check_fields=False)
     @classmethod
     def _sorted_alphas(cls, value: tuple[float, ...]) -> tuple[float, ...]:
         """Refuse an alpha with more than 4 decimals or named twice, and sort them."""

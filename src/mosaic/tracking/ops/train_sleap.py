@@ -679,7 +679,7 @@ class TrainSleapParams(Params):
         _ = sleap_device_overrides(value)
         return value
 
-    @field_validator("sleap_overrides")
+    @field_validator("sleap_overrides", check_fields=False)
     @classmethod
     def _worker_count_is_not_an_override(
         cls, value: dict[str, JsonValue] | None

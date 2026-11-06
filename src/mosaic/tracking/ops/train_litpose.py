@@ -165,7 +165,7 @@ class TrainLitposeParams(Params):
         _ = litpose_device_placement(value)
         return value
 
-    @field_validator("litpose_overrides")
+    @field_validator("litpose_overrides", check_fields=False)
     @classmethod
     def _worker_count_is_not_an_override(
         cls, value: dict[str, JsonValue] | None
