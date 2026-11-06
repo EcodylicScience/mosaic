@@ -51,7 +51,7 @@ from mosaic.core.media.preprocess.specs import MediaStepSpec
 from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.timeline import ConcatenatedTimeline, concatenated_timeline
 from mosaic.core.media.video_io import FFmpegVideoWriter, open_frame_reader
-from mosaic.core.params import HASH_EXCLUDE, Declared, Params
+from mosaic.core.params import HASH_EXCLUDE, Declared, Params, has_fields
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write, staging_path
 from mosaic.core.pipeline.composition import compositions_disagree
 from mosaic.core.pipeline.consumed_camera import (
@@ -213,6 +213,12 @@ class PreprocessParams(Params):
 
     @model_validator(mode="after")
     def _refuse_no_steps_in_av1(self) -> Self:
+        """Refuse an AV1 variant without steps.
+
+        A subclass without ``steps`` or ``codec`` returns without a verdict.
+        """
+        if not has_fields(self, "steps", "codec"):
+            return self
         # A step-less H.264 variant is the source re-encoded for a decoder without
         # AV1. A step-less AV1 variant changes nothing a consumer reads.
         if not self.steps and self.codec == "av1":
@@ -226,6 +232,12 @@ class PreprocessParams(Params):
 
     @model_validator(mode="after")
     def _refuse_a_quality_off_the_scale(self) -> Self:
+        """Refuse a quality above the maximum of the codec's scale.
+
+        A subclass without ``codec`` or ``quality`` returns without a verdict.
+        """
+        if not has_fields(self, "codec", "quality"):
+            return self
         # The field declares the lower bound, which is 0 on every scale.
         scale = _QUALITY_SCALES[self.codec]
         if self.quality is not None and self.quality > scale.maximum:

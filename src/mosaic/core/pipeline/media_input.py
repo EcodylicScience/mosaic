@@ -65,10 +65,13 @@ class MediaInputParams(Params):
         default does not narrow anything. A settings key counts as set when its
         value is not null. The tools read null as the setting left unset. Each
         name is spelled as a refusal spells it. Empty when the op reads every
-        frame.
+        frame. A window or settings field that the class does not declare is
+        passed over.
         """
         names = (*self.window_fields, *self.extra_settings_window_keys)
-        return type(self).frame_window_of({name: getattr(self, name) for name in names})
+        return type(self).frame_window_of(
+            {name: getattr(self, name) for name in names if has_fields(self, name)}
+        )
 
     @classmethod
     def frame_window_of(cls, values: Mapping[str, object]) -> tuple[str, ...]:
@@ -78,12 +81,15 @@ class MediaInputParams(Params):
         a run recorded them. A field absent from *values* is at its default. A
         recorded value is compared with the default as it is, and every window
         field's default is null or a number, which a record spells as the field
-        holds it.
+        holds it. A window field that the class does not declare is passed over.
         """
         fields = cls.model_fields
         named: list[str] = []
         for name in cls.window_fields:
-            default: object = fields[name].get_default(call_default_factory=True)
+            info = fields.get(name)
+            if info is None:
+                continue
+            default: object = info.get_default(call_default_factory=True)
             if values.get(name, default) != default:
                 named.append(f"`{name}`")
         for settings_field, keys in cls.extra_settings_window_keys.items():

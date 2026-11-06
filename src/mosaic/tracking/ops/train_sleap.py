@@ -15,6 +15,7 @@ additionally write a tracks variant naming a table that does not exist.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self
@@ -34,6 +35,7 @@ from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
     Params,
+    has_fields,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE
 from mosaic.tracking.common.training_progress import epoch_reporter
@@ -660,7 +662,14 @@ class TrainSleapParams(Params):
 
     @model_validator(mode="after")
     def _settings_are_buildable(self) -> Self:
-        """Refuse, at submit time, a combination of settings sleap-nn refuses."""
+        """Refuse, at submit time, a combination of settings sleap-nn refuses.
+
+        A subclass without ``head``, ``backbone`` or a field of
+        :class:`SleapTrainSettings` returns without a verdict.
+        """
+        settings = (field.name for field in dataclasses.fields(SleapTrainSettings))
+        if not has_fields(self, "head", "backbone", *settings):
+            return self
         _ = effective_train_settings(self.head, self.backbone, self.train_settings())
         return self
 

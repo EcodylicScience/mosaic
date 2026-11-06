@@ -30,7 +30,7 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.media_input import MediaInputParams, media_identity_terms
 from mosaic.core.pipeline.ops import OPS, OpIdentity
 from mosaic.tracking import register_ops
-from tests.helpers import make_dataset
+from tests.helpers import make_dataset, narrowed_params
 
 register_ops()
 
@@ -134,6 +134,36 @@ SETTINGS_FIELD_CASES = [
     pytest.param(kind, settings_field, id=f"{kind}-{settings_field}")
     for kind, fields in EXTRA_SETTINGS_WINDOWS.items()
     for settings_field in fields
+]
+
+NARROWED_FIELD_CASES = [
+    pytest.param(kind, field, id=f"{kind}-{field}")
+    for kind in sorted(CONSUMERS)
+    for field in OPS[kind].Params.model_fields
+    if field != "media"
+]
+
+KEPT_WINDOW_CASES = [
+    pytest.param(kind, window, value, field, id=f"{kind}-{window}-without-{field}")
+    for kind, windows in WINDOWS.items()
+    for window, value in windows.items()
+    for field in OPS[kind].Params.model_fields
+    if field not in {"media", window}
+]
+
+KEPT_SETTING_CASES = [
+    pytest.param(
+        kind,
+        settings_field,
+        key,
+        field,
+        id=f"{kind}-{settings_field}-{key}-without-{field}",
+    )
+    for kind, fields in EXTRA_SETTINGS_WINDOWS.items()
+    for settings_field, keys in fields.items()
+    for key in keys
+    for field in OPS[kind].Params.model_fields
+    if field not in {"media", settings_field}
 ]
 
 EXPECTED_REFUSAL = (
@@ -290,6 +320,62 @@ def test_other_settings_pass_through_beside_media(
     params = _params(kind, media=VARIANT, **{settings_field: settings})
 
     assert params.media == VARIANT
+
+
+# --- a model narrowed the way a consumer narrows it ---------------------------
+
+
+def _validate_narrowed(
+    kind: str, without: str, values: dict[str, JsonValue]
+) -> MediaInputParams:
+    """Validate *kind*'s payload of *values* without *without* on a model lacking it."""
+    payload = {**CONSUMERS[kind], **values}
+    _ = payload.pop(without, None)
+    return narrowed_params(_params_type(kind), {without}).model_validate(payload)
+
+
+@pytest.mark.parametrize(("kind", "field"), NARROWED_FIELD_CASES)
+def test_a_narrowed_consumer_with_media_answers_or_refuses(
+    kind: str, field: str
+) -> None:
+    """Any exception but ``ValidationError`` fails the test."""
+    try:
+        _ = _validate_narrowed(kind, field, {"media": VARIANT})
+    except ValidationError:
+        pass
+
+
+@pytest.mark.parametrize(("kind", "window", "value", "field"), KEPT_WINDOW_CASES)
+def test_a_narrowed_consumer_still_refuses_a_kept_window_beside_media(
+    kind: str, window: str, value: JsonValue, field: str
+) -> None:
+    with pytest.raises(ValidationError, match="cannot be combined with `media`"):
+        _ = _validate_narrowed(kind, field, {"media": VARIANT, window: value})
+
+
+@pytest.mark.parametrize(("kind", "settings_field", "key"), EXTRA_SETTINGS_CASES)
+def test_a_consumer_narrowed_without_a_settings_field_answers_or_refuses(
+    kind: str, settings_field: str, key: str
+) -> None:
+    """The narrowed settings field takes its frame setting with it."""
+    settings: dict[str, JsonValue] = {key: SETTING_VALUES[key]}
+    try:
+        _ = _validate_narrowed(
+            kind, settings_field, {"media": VARIANT, settings_field: settings}
+        )
+    except ValidationError:
+        pass
+
+
+@pytest.mark.parametrize(("kind", "settings_field", "key", "field"), KEPT_SETTING_CASES)
+def test_a_narrowed_consumer_still_refuses_a_kept_frame_setting_beside_media(
+    kind: str, settings_field: str, key: str, field: str
+) -> None:
+    settings: dict[str, JsonValue] = {key: SETTING_VALUES[key]}
+    with pytest.raises(ValidationError, match="cannot be combined with `media`"):
+        _ = _validate_narrowed(
+            kind, field, {"media": VARIANT, settings_field: settings}
+        )
 
 
 # --- the frame window a run reads ---------------------------------------------

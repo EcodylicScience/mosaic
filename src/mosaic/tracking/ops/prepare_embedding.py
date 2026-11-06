@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from mosaic.core.entry import Entry, make_entry_key, validate_entry_name
-from mosaic.core.params import Declared, Params
+from mosaic.core.params import Declared, Params, has_fields
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.entry_claim import (
     claim_run_root,
@@ -199,7 +199,13 @@ class PrepareEmbeddingDataParams(Params):
 
     @model_validator(mode="after")
     def _lists_are_disjoint(self) -> Self:
-        """Refuse an entry that is both trained and validated on."""
+        """Refuse an entry that is both trained and validated on.
+
+        A subclass without ``train_entries`` or ``val_entries`` returns without
+        a verdict.
+        """
+        if not has_fields(self, "train_entries", "val_entries"):
+            return self
         validated = {ref.entry for ref in self.val_entries}
         shared = [ref.entry for ref in self.train_entries if ref.entry in validated]
         if shared:

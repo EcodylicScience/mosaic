@@ -26,6 +26,7 @@ from mosaic.core.pipeline.media_input import MediaInputParams
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
+    has_fields,
 )
 from mosaic.core.pipeline.ops import ModelReference
 from mosaic.tracking.common.detection_params import (
@@ -227,8 +228,11 @@ class UltralyticsParams(TrackerOpParams, MediaInputParams):
 
         A caller who builds the configuration model itself names the backend
         twice, and the resolved table would otherwise describe a tracker the
-        identifier does not name.
+        identifier does not name. A subclass without ``tracker`` or
+        ``tracker_overrides`` returns without a verdict.
         """
+        if not has_fields(self, "tracker", "tracker_overrides"):
+            return self
         _ = resolve_tracker_config(self.tracker, self.tracker_overrides)
         return self
 

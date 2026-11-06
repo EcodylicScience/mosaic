@@ -15,10 +15,23 @@ disables pydantic's misspelling check, which
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ValidationError, field_validator
 
 from mosaic.core.pipeline.ops import OPS
-from tests.helpers import narrowed_params
+from tests.helpers import narrowed_params, rule_reaching_op_params
+
+RULE_REACHING_CASES = [
+    pytest.param(kind, case, id=f"{kind}-{case}")
+    for kind in sorted(OPS)
+    for case in rule_reaching_op_params(kind)
+]
+
+NARROWED_CASES = [
+    pytest.param(kind, case, field, id=f"{kind}-{case}-{field}")
+    for kind in sorted(OPS)
+    for case in rule_reaching_op_params(kind)
+    for field in OPS[kind].Params.model_fields
+]
 
 
 def _undeclared_validator_fields(model: type[BaseModel]) -> list[str]:
@@ -58,3 +71,20 @@ def test_the_check_finds_a_misnamed_field_validator():
             return value
 
     assert _undeclared_validator_fields(Misnamed) == ["absent"]
+
+
+@pytest.mark.parametrize(("kind", "case"), RULE_REACHING_CASES)
+def test_every_rule_reaching_payload_validates_on_the_full_model(kind: str, case: str):
+    _ = OPS[kind].Params.model_validate(rule_reaching_op_params(kind)[case])
+
+
+@pytest.mark.parametrize(("kind", "case", "field"), NARROWED_CASES)
+def test_a_narrowed_model_answers_or_refuses(kind: str, case: str, field: str):
+    """Any exception but ``ValidationError`` fails the test."""
+    payload = rule_reaching_op_params(kind)[case]
+    _ = payload.pop(field, None)
+    narrowed = narrowed_params(OPS[kind].Params, {field})
+    try:
+        _ = narrowed.model_validate(payload)
+    except ValidationError:
+        pass

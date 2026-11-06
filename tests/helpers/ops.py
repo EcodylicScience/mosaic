@@ -66,6 +66,27 @@ _MINIMAL: dict[str, dict[str, object]] = {
     "ultralytics": {"model_path": "models/ultralytics/run/model.pt"},
 }
 
+_RULE_REACHING: dict[str, dict[str, dict[str, object]]] = {
+    "sleap": {"max_tracks": {"max_tracks": 2, "candidates_method": "local_queues"}},
+    "ultralytics": {"tracker_overrides": {"tracker_overrides": {"track_buffer": 60}}},
+    "train-pose": {"train_overrides": {"train_overrides": {"lr0": 0.01}}},
+    "train-points": {"train_overrides": {"train_overrides": {"lr0": 0.01}}},
+    "prepare-training-data": {
+        "recording_split": {"split_by": "recording"},
+        "group_split": {"split_by": "group", "sequence_groups": {"s1": "a"}},
+    },
+    "preprocess": {"no_steps": {"steps": [], "codec": "h264"}},
+    "select-frames": {
+        "keypoint_name": {"head": "nose", "keypoint_names": ["nose", "tail"]}
+    },
+}
+"""Per op kind and case name, overrides of the minimal payload that reach a rule.
+
+Each case sets values that exercise a branch of a validator that the minimal
+payload skips. The minimal payloads of the other kinds already reach every
+branch of their rules.
+"""
+
 CONSUMER_OWNED: dict[str, frozenset[str]] = {
     "prepare-training-data": frozenset(
         {
@@ -130,3 +151,16 @@ def minimal_op_params(kind: str) -> dict[str, object]:
         message = f"minimal_op_params does not cover op kind {kind!r}"
         raise KeyError(message)
     return copy.deepcopy(_MINIMAL[kind])
+
+
+def rule_reaching_op_params(kind: str) -> dict[str, dict[str, object]]:
+    """Return the payloads of op *kind* that reach its validators, by case name.
+
+    The ``"minimal"`` case is :func:`minimal_op_params`. Each further case is an
+    entry of ``_RULE_REACHING`` merged over it. Every payload is a copy.
+    """
+    minimal = minimal_op_params(kind)
+    cases = {"minimal": minimal}
+    for case, overrides in _RULE_REACHING.get(kind, {}).items():
+        cases[case] = copy.deepcopy({**minimal, **overrides})
+    return cases

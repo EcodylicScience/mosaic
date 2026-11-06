@@ -67,9 +67,9 @@ What lives where:
 - ``variants`` contains media variant files, their index rows and recorded
   recipes, and a count of the index reads that a variant's consumers make.
 - ``identity`` -- the digest a feature run is named by, from its parameters.
-- ``ops`` -- the smallest params dict that validates for each registered op, a
-  params model narrowed the way a consumer narrows it, and the fields a consumer
-  owns for an op kind.
+- ``ops`` -- the smallest params dict that validates for each registered op,
+  the payloads that reach each op's validators, a params model narrowed the way
+  a consumer narrows it, and the fields a consumer owns for an op kind.
 - ``runlog`` -- an attempt's recorded run-log events.
 - ``scope`` -- a resolved scope over named entries, for the ops and drivers
   that take their coverage as an argument.
@@ -258,7 +258,12 @@ from tests.helpers.models import (
     register_trained_model,
     rewrite_as_older_prepared_index,
 )
-from tests.helpers.ops import CONSUMER_OWNED, minimal_op_params, narrowed_params
+from tests.helpers.ops import (
+    CONSUMER_OWNED,
+    minimal_op_params,
+    narrowed_params,
+    rule_reaching_op_params,
+)
 from tests.helpers.paths import (
     GOLDEN_DIR,
     KPMS_PROTOCOL,
@@ -689,6 +694,7 @@ __all__ = [
     "record_published_files",
     "revision_file",
     "rewrite_as_older_prepared_index",
+    "rule_reaching_op_params",
     "run_fresh",
     "run_id_digest",
     "record_open_attempt",

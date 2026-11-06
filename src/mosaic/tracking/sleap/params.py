@@ -24,6 +24,7 @@ from mosaic.core.pipeline.types import JsonValue
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,
+    has_fields,
 )
 from mosaic.tracking.common.params import DEVICE_INDEX_NOTE, TrackerOpParams
 from mosaic.tracking.sleap.run import (
@@ -192,8 +193,11 @@ class SleapParams(TrackerOpParams, MediaInputParams):
         candidates. Under ``fixed_window``, earlier releases discard the cap and
         later ones switch to ``local_queues`` themselves, so the same params
         would name two tracker configurations depending on the installed
-        release, and neither is the one they state.
+        release, and neither is the one they state. A subclass without
+        ``max_tracks`` or ``candidates_method`` returns without a verdict.
         """
+        if not has_fields(self, "max_tracks", "candidates_method"):
+            return self
         if self.max_tracks is not None and self.candidates_method != "local_queues":
             msg = (
                 f"max_tracks={self.max_tracks} needs "

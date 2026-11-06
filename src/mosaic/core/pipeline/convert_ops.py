@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import JsonValue, field_validator, model_validator
 
-from mosaic.core.params import Declared, Params
+from mosaic.core.params import Declared, Params, has_fields
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
 
@@ -93,6 +93,13 @@ class ConvertTracksParams(Params):
 
     @model_validator(mode="after")
     def _converter_keys(self) -> ConvertTracksParams:
+        """Refuse a ``params`` key that the chosen converter does not declare.
+
+        A subclass without ``source_format`` or ``params`` returns without a
+        verdict.
+        """
+        if not has_fields(self, "source_format", "params"):
+            return self
         from mosaic.core.track_converter import get_track_converter
 
         converter = get_track_converter(self.source_format)
@@ -199,6 +206,13 @@ class ConvertLabelsParams(Params):
 
     @model_validator(mode="after")
     def _converter_keys(self) -> ConvertLabelsParams:
+        """Refuse a ``params`` key that the chosen label converter does not declare.
+
+        A subclass without ``source_format``, ``kind`` or ``params`` returns
+        without a verdict.
+        """
+        if not has_fields(self, "source_format", "kind", "params"):
+            return self
         from mosaic.core.label_converter import get_label_converter
 
         converter = get_label_converter(self.source_format, self.kind)

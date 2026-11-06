@@ -27,7 +27,13 @@ from pydantic import Field, field_validator, model_validator
 from mosaic.core.entry import Entry, make_entry_key
 from mosaic.core.helpers import text_cell
 from mosaic.core.keypoint_refs import resolve_keypoint_refs
-from mosaic.core.params import Declared, DeclaredModel, Params, Probability
+from mosaic.core.params import (
+    Declared,
+    DeclaredModel,
+    Params,
+    Probability,
+    has_fields,
+)
 from mosaic.core.pipeline._utils import atomic_write, hash_params
 from mosaic.core.pipeline.entry_claim import discard_if_empty, open_entry, release_entry
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
@@ -362,7 +368,13 @@ class SelectFramesParams(Params):
 
     @model_validator(mode="after")
     def _names_have_a_list(self) -> Self:
-        """Refuse a keypoint name without ``keypoint_names``, and the list unread."""
+        """Refuse a keypoint name without ``keypoint_names``, and the list unread.
+
+        A subclass without ``head``, ``tail``, ``missing_keypoints`` or
+        ``keypoint_names`` returns without a verdict.
+        """
+        if not has_fields(self, "head", "tail", "missing_keypoints", "keypoint_names"):
+            return self
         references: list[tuple[str, int | str | None]] = [
             ("head", self.head),
             ("tail", self.tail),

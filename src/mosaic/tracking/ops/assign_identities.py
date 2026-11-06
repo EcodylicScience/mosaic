@@ -39,7 +39,7 @@ from pydantic import Field, field_validator, model_validator
 from mosaic.core.entry import Entry, make_entry_key
 from mosaic.core.helpers import text_cell
 from mosaic.core.individuals import refuse_repeated_rows
-from mosaic.core.params import Declared, DeclaredModel, Params
+from mosaic.core.params import Declared, DeclaredModel, Params, has_fields
 from mosaic.core.pipeline.appearance import (
     AppearanceTable,
     AppearanceTableError,
@@ -231,7 +231,12 @@ class AssignIdentitiesParams(Params):
 
     @model_validator(mode="after")
     def _two_identities(self) -> Self:
-        """Refuse references that name fewer than two identities."""
+        """Refuse references that name fewer than two identities.
+
+        A subclass without ``references`` returns without a verdict.
+        """
+        if not has_fields(self, "references"):
+            return self
         identities = sorted({ref.identity for ref in self.references})
         if len(identities) < _MIN_IDENTITIES:
             msg = (
