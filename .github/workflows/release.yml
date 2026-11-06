@@ -229,6 +229,32 @@ jobs:
             exit 1
           fi
 
+      # GitHub refuses a release body over 125,000 characters. Longer notes keep
+      # the whole `### ` subsections that fit in 120,000 and link to the rest.
+      - name: Fit the release notes to GitHub's limit
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          if [ "$(wc -c < "$notes")" -le 120000 ]; then
+            exit 0
+          fi
+          awk -v limit=120000 '
+            /^### / {
+              if (total + length(section) > limit) exit
+              printf "%s", section
+              total += length(section)
+              section = ""
+            }
+            { section = section $0 "\n" }
+            END { if (total + length(section) <= limit) printf "%s", section }
+          ' "$notes" > "$RUNNER_TEMP/kept.md"
+          url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md"
+          {
+            cat "$RUNNER_TEMP/kept.md"
+            printf '\n---\n\nThese notes stop at the length GitHub allows for a release. '
+            printf 'The full notes are the %s section of [CHANGELOG.md](%s).\n' \
+              "${GITHUB_REF_NAME#v}" "$url"
+          } > "$notes"
+
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
