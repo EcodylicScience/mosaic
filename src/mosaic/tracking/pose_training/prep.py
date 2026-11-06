@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.tracking.frame_extraction import get_frame_manifests
 from mosaic.core.annotations.split import default_group_key, split_filenames
+from mosaic.core.annotations.yolo_layout import YOLO_IMAGE_SUFFIXES
 from mosaic.user_paths import user_path
 
 
@@ -200,7 +201,7 @@ def prepare_yolo_dataset(
 
     def _find_image_for_label(label_path: str, images_dir: str):
         stem = os.path.splitext(os.path.basename(label_path))[0]
-        for ext in (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"):
+        for ext in sorted(YOLO_IMAGE_SUFFIXES):
             candidate = os.path.join(images_dir, stem + ext)
             if os.path.exists(candidate):
                 return candidate

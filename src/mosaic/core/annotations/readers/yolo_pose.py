@@ -37,19 +37,11 @@ from mosaic.core.annotations.model import (
     Split,
     Visibility,
 )
+from mosaic.core.annotations.yolo_layout import YOLO_IMAGE_SUFFIXES
 
 __all__ = ["read_yolo_pose"]
 
 _SPLITS: tuple[Split, Split, Split] = ("train", "valid", "test")
-_IMAGE_SUFFIXES: tuple[str, ...] = (
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".bmp",
-    ".tif",
-    ".tiff",
-    ".webp",
-)
 
 
 def _visibility(flag: float) -> Visibility:
@@ -126,7 +118,7 @@ def read_yolo_pose(
 
 
 def _find_image(images_dir: Path, stem: str) -> Path | None:
-    for suffix in _IMAGE_SUFFIXES:
+    for suffix in sorted(YOLO_IMAGE_SUFFIXES):
         candidate = images_dir / f"{stem}{suffix}"
         if candidate.exists():
             return candidate
