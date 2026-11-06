@@ -47,7 +47,7 @@ from mosaic.tracking.ultralytics_track.tracker_defaults import (
 from mosaic.tracking.ultralytics_track.version import ULTRALYTICS_KIND
 
 if TYPE_CHECKING:
-    from typing_extensions import Self
+    from typing import Self
 
 __all__ = ["ULTRALYTICS_MODEL", "UltralyticsParams"]
 

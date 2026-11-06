@@ -16,14 +16,14 @@ pose models. See [README.md](README.md) and [docs/index.md](docs/index.md).
 ## Development environment
 
 ```bash
-conda create -p ./.venv python=3.12 -y      # the path [tool.basedpyright] expects
+conda create -p ./.venv python=3.13 -y      # the path [tool.basedpyright] expects
 conda activate ./.venv
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"
 ```
 
 Install from conda before pip. `ffmpeg` and `ffprobe` must be on `PATH`. Every CI job
-runs Python 3.12.
+runs Python 3.13.
 
 **One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
 different point on every run. [CONTRIBUTING.md](CONTRIBUTING.md#environment-notes) gives

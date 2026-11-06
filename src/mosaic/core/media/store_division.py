@@ -50,10 +50,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePath
-from typing import Final, Literal, get_args
+from typing import Final, Literal, TypeIs, get_args
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from typing_extensions import TypeIs
 
 from mosaic.core.entry import to_safe_name, validate_entry_name
 from mosaic.core.narrowing import is_str_mapping

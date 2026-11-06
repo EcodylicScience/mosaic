@@ -44,7 +44,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       # The tag is the release, so it must agree with the version the build
       # reads from pyproject.toml. `--frozen` keeps uv from resolving or
@@ -104,7 +104,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       - run: uv build
 

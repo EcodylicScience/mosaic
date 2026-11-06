@@ -9,7 +9,7 @@
 <p align="center"><strong>A platform for behavior analysis.</strong></p>
 
 <p align="center">
-  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12%2B-blue">
+  <img alt="Python 3.13+" src="https://img.shields.io/badge/python-3.13%2B-blue">
   <img alt="AGPL-3.0-or-later" src="https://img.shields.io/badge/license-AGPL--3.0--or--later-blue">
 </p>
 
@@ -40,7 +40,7 @@ tells you exactly what a dataset already holds.
 ## Install
 
 ```bash
-conda create -n mosaic python=3.12 -y
+conda create -n mosaic python=3.13 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install "mosaic-behavior[all]"

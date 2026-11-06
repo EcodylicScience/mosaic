@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Generic, Self
+from typing import Annotated, Generic, Self, TypeVar
 
 from pydantic import model_validator
-from typing_extensions import TypeVar
 
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.types.artifacts import JoblibArtifact, TemplatesRef

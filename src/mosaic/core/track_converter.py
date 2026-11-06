@@ -36,10 +36,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Generic
+from typing import Annotated, Any, ClassVar, Generic, TypeVar
 
 import pandas as pd
-from typing_extensions import TypeVar
 
 from mosaic.core.entry import validate_entry_name
 from mosaic.core.params import (

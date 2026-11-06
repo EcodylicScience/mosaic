@@ -1,9 +1,9 @@
 # Installation
 
-Mosaic needs Python 3.12 or newer. Install it into a conda environment:
+Mosaic needs Python 3.13 or newer. Install it into a conda environment:
 
 ```bash
-conda create -n mosaic python=3.12 -y
+conda create -n mosaic python=3.13 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install "mosaic-behavior[all]"
@@ -115,7 +115,7 @@ environment:
 ```bash
 git clone https://github.com/EcodylicScience/mosaic.git
 cd mosaic
-conda create -n mosaic python=3.12 -y
+conda create -n mosaic python=3.13 -y
 conda activate mosaic
 conda install -c conda-forge ffmpeg av py-opencv -y
 pip install -e ".[all]"

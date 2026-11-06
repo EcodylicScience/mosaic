@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated, Generic, Literal, Self
+from typing import Annotated, Generic, Literal, Self, TypeVar
 
 import numpy as np
 import numpy.typing as npt
 from pydantic import Field, field_validator, model_validator
-from typing_extensions import TypeVar
 
 from mosaic.core.pipeline._loaders import (
     LoadSpec,

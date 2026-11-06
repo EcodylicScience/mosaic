@@ -7,7 +7,7 @@ name = "mosaic-behavior"
 version = "0.18.0"
 description = "Mosaic — behavior analysis toolkit for animal tracking, feature extraction, and modeling."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 # PEP 639. The SPDX expression replaces both the deprecated `{ file = ... }`
 # table and the `License ::` trove classifier, which cannot coexist with an
 # expression -- setuptools raises rather than warns. `license-files` ships both
@@ -23,7 +23,7 @@ keywords = [
     "computational ethology",
 ]
 # No `License ::` trove classifier, for the reason given at `license` above.
-# No `Typing :: Typed` either: the wheel ships no `py.typed` marker. Python 3.12
+# No `Typing :: Typed` either: the wheel ships no `py.typed` marker. Python 3.13
 # is the one version the suite runs against. Native Windows supports the core
 # analysis only (docs/installation.md), so it is left out of the operating
 # systems listed.
@@ -33,7 +33,7 @@ classifiers = [
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
@@ -214,7 +214,7 @@ all = ["mosaic-behavior[deep-learning,faiss]"]
 mosaic = "mosaic.cli:app"
 
 [tool.basedpyright]
-pythonVersion = "3.12"
+pythonVersion = "3.13"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"

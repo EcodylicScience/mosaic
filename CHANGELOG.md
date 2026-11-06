@@ -8,6 +8,13 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: Python 3.13 is the minimum
+
+mosaic requires Python 3.13 or newer, the version mosaic-api runs on, and every CI job
+runs 3.13. An environment on 3.12 must be recreated, conda packages first, as
+`docs/installation.md` describes. The tool environments keep their own interpreters.
+No identifier or name on disk moves.
+
 ## Unreleased: prune-media keeps current store exports
 
 `mosaic prune-media` judges a file in `media/transcode/` against the recipe of a store

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import ClassVar, Generic, Literal, Protocol, Self
+from typing import ClassVar, Generic, Literal, Protocol, Self, TypeVar
 
 from pydantic import RootModel, model_validator
-from typing_extensions import TypeVar
 
 from mosaic.core.pipeline.types.results import Result
 

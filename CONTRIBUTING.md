@@ -72,7 +72,7 @@ The rules for the environment itself:
 
 Install from conda before pip. Conda-forge's `av` and `py-opencv` then satisfy pip's
 requirements, and pip installs neither wheel. A `uv venv` cannot take conda packages.
-`ffmpeg` and `ffprobe` must be on `PATH`. Every CI job runs Python 3.12.
+`ffmpeg` and `ffprobe` must be on `PATH`. Every CI job runs Python 3.13.
 
 **One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
 different point on every run. Two `cv2` wheels (`opencv-python` beside

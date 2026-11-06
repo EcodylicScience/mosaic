@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Annotated, Generic, Self, override
+from typing import Annotated, Generic, Self, TypeVar, override
 
 from pydantic import Field
-from typing_extensions import TypeVar
 
 from mosaic.core.params import Declared, DeclaredModel
 from mosaic.core.strict_model import StrictModel

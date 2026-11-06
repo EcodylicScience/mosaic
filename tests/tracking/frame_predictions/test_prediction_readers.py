@@ -12,6 +12,10 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
+from mosaic.core.annotations.pose_predictions import (
+    FramePredictions,
+    pose_predictions_payload,
+)
 from mosaic.core.annotations.scoring import (
     DEFAULT_PCK_ALPHAS,
     PoseScoreSummary,
@@ -148,14 +152,29 @@ def test_an_undeclared_root_lists_the_schema_alone(tmp_path: Path) -> None:
 # --- read_entry_predictions ----------------------------------------------------
 
 
+def assert_same_predictions(
+    found: FramePredictions | None, expected: FramePredictions
+) -> None:
+    """Compare through the serialized document, where an unplaced point is null.
+
+    An unplaced keypoint holds NaN, and a dataclass compares its fields with
+    ``==``, so two equal predictions holding one never compare equal as objects.
+    """
+    assert found is not None
+    assert pose_predictions_payload(found) == pose_predictions_payload(expected)
+
+
 def test_a_finished_entry_camera_reads_back(dataset: Dataset) -> None:
     _ = _record(dataset, camera="cam1")
     _ = _record(dataset, camera="cam2")
 
     found = read_entry_predictions(dataset, RUN_ID, "G", "S", "cam2")
 
-    assert found == entry_predictions(
-        frames_run_id=FRAMES_RUN_ID, group="G", sequence="S", camera="cam2"
+    assert_same_predictions(
+        found,
+        entry_predictions(
+            frames_run_id=FRAMES_RUN_ID, group="G", sequence="S", camera="cam2"
+        ),
     )
 
 
@@ -176,7 +195,9 @@ def test_the_file_is_the_one_the_row_names(dataset: Dataset) -> None:
     )
     _ = record_entry_predictions(dataset, predictions, run_id=RUN_ID, path=elsewhere)
 
-    assert read_entry_predictions(dataset, RUN_ID, "G", "S") == predictions
+    assert_same_predictions(
+        read_entry_predictions(dataset, RUN_ID, "G", "S"), predictions
+    )
 
 
 def test_no_row_reads_as_none(dataset: Dataset) -> None:

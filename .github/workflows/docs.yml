@@ -50,7 +50,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           enable-cache: true
 
       # No ffmpeg and no mosaic-media checkout, unlike every job in `ci.yml`.

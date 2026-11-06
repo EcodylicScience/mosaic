@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Final, Generic, Literal, Self
+from typing import Annotated, Final, Generic, Literal, Self, TypeVar
 
 import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
-from typing_extensions import TypeVar
 
 from mosaic.core.params import Declared
 from mosaic.core.pipeline._loaders import (
@@ -37,9 +36,7 @@ class ArtifactSpec(Result[str], Generic[L, R]):
 
     `L` is the load spec type -- `NpzLoadSpec`, `ParquetLoadSpec` or
     `JoblibLoadSpec` -- and `R` is the return type of `from_path()`, which
-    defaults to `object`. Both are declared through `Generic[L, R]` rather than
-    the PEP 695 form, because each carries a `default=` that PEP 696 makes
-    available only from Python 3.13 and this package targets 3.12.
+    defaults to `object`.
     """
 
     load: Annotated[L, Declared(_LOAD_DESCRIPTION)]

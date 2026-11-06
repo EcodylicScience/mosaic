@@ -1,6 +1,6 @@
 """Narrowing a value of unknown shape, for the type checker.
 
-This leaf module imports only the standard library and ``typing_extensions``.
+This leaf module imports only the standard library.
 Parsed JSON and YAML documents, class attributes read with ``getattr`` and a
 library's metadata mappings are typed ``object``. Their readers narrow them
 through these predicates.
@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 
-from typing_extensions import TypeIs
+from typing import TypeIs
 
 __all__ = ["is_object_list", "is_object_set", "is_object_tuple", "is_str_mapping"]
 

@@ -31,10 +31,9 @@ the camera the triple names.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import ClassVar, Self
+from typing import ClassVar, Self, TypeIs
 
 from pydantic import ConfigDict, field_validator, model_validator
-from typing_extensions import TypeIs
 
 from mosaic.core.entry import CameraEntry, Entry
 from mosaic.core.strict_model import StrictModel
