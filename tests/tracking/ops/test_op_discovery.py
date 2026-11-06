@@ -105,6 +105,38 @@ def test_a_narrowed_trainer_reserves_the_fields_it_lacks(
     ).train_overrides == {"lr0": 0.0044}
 
 
+def test_a_narrowed_trainer_does_not_point_at_a_field_it_lacks():
+    """The refusal tells the caller where to set a name its model has no field for.
+
+    The full model ends "Use the typed field instead."; on a model without the
+    field that advice cannot be followed.
+    """
+    full = "train_overrides may not set epochs: the op supplies these itself."
+    with pytest.raises(ValidationError) as full_refusal:
+        _ = PoseTrainParams.model_validate(
+            {"data": "d.yaml", "train_overrides": {"epochs": 1}}
+        )
+    assert f"{full} Use the typed field instead." in str(full_refusal.value)
+
+    narrowed = narrowed_params(PoseTrainParams, {"epochs"})
+    with pytest.raises(ValidationError) as absent:
+        _ = narrowed.model_validate(
+            {"data": "d.yaml", "train_overrides": {"epochs": 1}}
+        )
+    message = str(absent.value)
+    assert f"{full} epochs is set by whoever supplies the job's parameters." in message
+    assert "typed field" not in message
+
+    with pytest.raises(ValidationError) as mixed:
+        _ = narrowed.model_validate(
+            {"data": "d.yaml", "train_overrides": {"epochs": 1, "imgsz": 1}}
+        )
+    assert (
+        "Use the typed field instead for imgsz. epochs is set by whoever supplies "
+        "the job's parameters." in str(mixed.value)
+    )
+
+
 def test_a_narrowed_point_trainer_still_reserves_what_only_it_declares():
     """``loc`` and ``backend`` belong to ``PointTrainParams``, not its base."""
     narrowed = narrowed_params(PointTrainParams, CONSUMER_OWNED["train-points"])

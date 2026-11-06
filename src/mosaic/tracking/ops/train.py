@@ -735,12 +735,32 @@ class PoseTrainParams(Params):
         shadowed = sorted(set(overrides) & reserved)
         if shadowed:
             names = ", ".join(shadowed)
-            msg = (
-                f"train_overrides may not set {names}: "
-                "the op supplies these itself. Use the typed field instead."
-            )
+            msg = f"train_overrides may not set {names}: the op supplies these itself."
+            msg = f"{msg} {_typed_field_advice(self, shadowed)}"
             raise ValueError(msg)
         return self
+
+
+def _typed_field_advice(params: PoseTrainParams, shadowed: list[str]) -> str:
+    """Say where to set each refused name, given the fields of *params*' class.
+
+    A model that lacks the field for a name that its base model declares cannot
+    follow "Use the typed field instead", so those names are said to be set by
+    whoever supplies the job's parameters. The full model's answer is unchanged.
+    """
+    model = type(params)
+    removed = declared_field_names(model) - set(model.model_fields)
+    absent = [name for name in shadowed if name in removed]
+    if not absent:
+        return "Use the typed field instead."
+    verb = "is" if len(absent) == 1 else "are"
+    unsettable = (
+        f"{', '.join(absent)} {verb} set by whoever supplies the job's parameters."
+    )
+    typed = [name for name in shadowed if name not in removed]
+    if not typed:
+        return unsettable
+    return f"Use the typed field instead for {', '.join(typed)}. {unsettable}"
 
 
 class PointTrainParams(PoseTrainParams):
