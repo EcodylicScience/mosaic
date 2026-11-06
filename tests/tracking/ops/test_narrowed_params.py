@@ -18,7 +18,12 @@ import pytest
 from pydantic import BaseModel, ValidationError, field_validator
 
 from mosaic.core.pipeline.ops import OPS
-from tests.helpers import narrowed_params, rule_reaching_op_params
+from tests.helpers import (
+    CONSUMER_OWNED,
+    minimal_op_params,
+    narrowed_params,
+    rule_reaching_op_params,
+)
 
 RULE_REACHING_CASES = [
     pytest.param(kind, case, id=f"{kind}-{case}")
@@ -54,6 +59,18 @@ def _undeclared_validator_fields(model: type[BaseModel]) -> list[str]:
 )
 def test_every_field_can_be_narrowed_out(kind: str, field: str):
     _ = narrowed_params(OPS[kind].Params, {field})
+
+
+@pytest.mark.parametrize("kind", sorted(CONSUMER_OWNED))
+def test_a_consumer_can_own_several_fields_at_once(kind: str):
+    owned = CONSUMER_OWNED[kind]
+    narrowed = narrowed_params(OPS[kind].Params, owned)
+    payload = {
+        name: value
+        for name, value in minimal_op_params(kind).items()
+        if name not in owned
+    }
+    assert not owned & set(narrowed.model_validate(payload).model_dump())
 
 
 @pytest.mark.parametrize("kind", sorted(OPS))

@@ -16,7 +16,7 @@ from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.ops import OPS, ModelReference
 from mosaic.tracking.model_refs import ModelNotFoundError, ModelReferenceRefusedError
 
-from tests.helpers import make_dataset, minimal_op_params
+from tests.helpers import make_dataset, minimal_op_params, narrowed_params
 
 
 _MODEL_REFERENCES = {
@@ -112,10 +112,7 @@ def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> N
     which supply any other required field, such as predict-frames'
     ``frames_run_id``.
     """
-    from pydantic import create_model
-
     from mosaic.core.params import HashExclude
-    from mosaic.core.pipeline.ops import OPS
 
     op = OPS[kind]
     reference = op.model_reference
@@ -126,10 +123,7 @@ def test_a_consumer_can_own_a_trackers_model_and_execution_knobs(kind: str) -> N
         if any(isinstance(meta, HashExclude) for meta in field.metadata)
     }
 
-    exposed = create_model(f"Exposed{op.Params.__name__}", __base__=op.Params)
-    for name in owned:
-        _ = exposed.model_fields.pop(name)
-    _ = exposed.model_rebuild(force=True)
+    exposed = narrowed_params(op.Params, owned)
     others = {
         name: value
         for name, value in minimal_op_params(kind).items()

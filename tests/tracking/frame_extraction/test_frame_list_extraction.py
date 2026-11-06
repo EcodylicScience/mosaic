@@ -48,6 +48,7 @@ from mosaic.tracking.frame_extraction.sampling import SamplingMethod
 from tests.helpers import (
     add_media_sequence,
     invoke_json,
+    narrowed_params,
     write_painted_entry,
     paint_frame_code,
     read_frame_code,
@@ -156,16 +157,11 @@ def test_a_consumer_can_remove_a_checked_field_from_a_subclass() -> None:
     rebuild, so the one field it checks being absent must leave the rest working.
     """
 
-    class Exposed(ExtractFramesParams):
-        pass
+    exposed = narrowed_params(ExtractFramesParams, {"frames", "start_frame"})
 
-    for name in ("frames", "start_frame"):
-        _ = Exposed.model_fields.pop(name)
-    _ = Exposed.model_rebuild(force=True)
-
-    assert Exposed.model_validate({"method": "list"}).method == "list"
+    assert exposed.model_validate({"method": "list"}).method == "list"
     with pytest.raises(ValidationError, match="n_frames is not read"):
-        _ = Exposed.model_validate({"method": "list", "n_frames": 2})
+        _ = exposed.model_validate({"method": "list", "n_frames": 2})
 
 
 class TestTheExcludeParams:
@@ -219,13 +215,9 @@ class TestTheExcludeParams:
     def test_a_model_without_exclude_accepts_a_spacing(self) -> None:
         """A consumer that supplies exclude itself removes it from its exposed model."""
 
-        class Exposed(ExtractFramesParams):
-            pass
+        exposed = narrowed_params(ExtractFramesParams, {"exclude"})
 
-        _ = Exposed.model_fields.pop("exclude")
-        _ = Exposed.model_rebuild(force=True)
-
-        params = Exposed.model_validate({"n_frames": 2, "exclude_spacing": 5})
+        params = exposed.model_validate({"n_frames": 2, "exclude_spacing": 5})
         assert params.exclude_spacing == 5
 
 

@@ -8,6 +8,26 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a params model narrowed by a consumer gives mosaic's answer
+
+**Nothing moves.** No run identifier, op `version` or golden changes, and the full
+model's verdict on every payload is the same.
+
+**A subclass of an op's params without any one field builds and validates.** A
+validator on a registered op's `Params` model returns, or raises `ValidationError`, on
+a subclass that lacks a field it reads, where a consumer that removes the field from
+its exposed model got an `AttributeError`, a `KeyError` or a `PydanticUserError`.
+A value rule that needs a missing field gives no verdict and leaves it to the full
+model's validation of the completed payload. What changes for a consumer:
+
+- `prepare-training-data` with `sequence_groups` removed validates its default
+  `split_by`.
+- `train-pose` and `train-points` with fields removed refuse a `train_overrides` key
+  that names one of them.
+- The field validators of `convert-labels`, `select-frames`, `assign-identities`,
+  `prepare-embedding-data`, `score-predictions`, `train-litpose`, `train-sleap` and
+  `ultralytics` allow the removal of the fields they check.
+
 ## Unreleased: feature fits claim their run root, and a held run root is a refusal
 
 **A held run root is a refusal.** A one-shot op (training, preparing, converting,
