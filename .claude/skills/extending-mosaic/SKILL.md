@@ -66,6 +66,16 @@ work in before you start. This skill lists what a change must also touch.
 - A job that declares a progress total reports progress
   (`tests/meta/test_progress_reporting.py`). A failed entry is reported instead of dropped
   (`CLAUDE.md`, "A run reports its losses").
+- Every validator on the `Params` model gives mosaic's answer, or no verdict, on a
+  subclass that lacks any one field (mosaic-api builds such subclasses):
+  - A field validator declares `check_fields=False`.
+  - A model validator that reads another field returns early when
+    `has_fields(self, ...)` is false (`core/params.py`).
+  - A rule over field names reads `declared_field_names(type(self))`, which includes
+    the names a subclass removed.
+  - A branch of a rule that the minimal payload in `tests/helpers/ops.py` skips gets a
+    `_RULE_REACHING` case there.
+  - Guard: `tests/tracking/ops/test_narrowed_params.py`.
 
 ## Track converter (`register_track_converter`)
 
