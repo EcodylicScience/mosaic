@@ -684,7 +684,7 @@ Train the heatmap localizer, registering the directory it produces.
 
 #### `train-points`
 
-Version `0.2` &middot; `mosaic.tracking.ops.train.TrainPointsOp`
+Version `0.3` &middot; `mosaic.tracking.ops.train.TrainPointsOp`
 
 Train a POLO point-detection model, registering the directory it produces.
 
@@ -709,7 +709,7 @@ Train a POLO point-detection model, registering the directory it produces.
 
 #### `train-pose`
 
-Version `0.2` &middot; `mosaic.tracking.ops.train.TrainPoseOp`
+Version `0.3` &middot; `mosaic.tracking.ops.train.TrainPoseOp`
 
 Train a YOLO pose model, registering the directory it produces.
 

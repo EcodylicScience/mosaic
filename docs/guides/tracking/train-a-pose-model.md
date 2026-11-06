@@ -289,7 +289,7 @@ together.
 ### Ask a model what it saw
 
 ```bash
-mosaic models provenance -m /data/mice/dataset.yaml train-pose.0.2-<digest>
+mosaic models provenance -m /data/mice/dataset.yaml train-pose.0.3-<digest>
 ```
 
 Prints the prepared dataset behind the model, the pose that dataset was narrowed to,

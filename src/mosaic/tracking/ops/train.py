@@ -58,6 +58,7 @@ from mosaic.tracking.ops._common import (
     ensure_models_root,
     fingerprint_dataset,
     fingerprint_yolo_dataset,
+    remove_label_caches,
     resolve_training_data,
 )
 from mosaic.tracking.ops.trained_models import (
@@ -487,6 +488,7 @@ def train_through_the_tool[RequestT: TrainRequestBase](
     run_root: Path,
     marker: InflightMarker,
     base_weights: str,
+    data_yaml: Path,
     preflight: Callable[[ProbeResponse, str], None],
     run_tool: TrainingTool[RequestT],
     env: ToolEnv,
@@ -498,7 +500,7 @@ def train_through_the_tool[RequestT: TrainRequestBase](
     request they build, the environment they reach and what they refuse -- all of
     which arrive as arguments, so the sequence itself exists once.
 
-    Three things happen here that do not happen for any other external tool.
+    Four things happen here that do not happen for any other external tool.
 
     The environment is **probed before the root is claimed**, so a missing
     Ultralytics or a checkpoint from the wrong fork is a message rather than a
@@ -510,6 +512,11 @@ def train_through_the_tool[RequestT: TrainRequestBase](
     :func:`~mosaic.tracking.common.cooperative_cancel.stop_then_kill` it writes
     the file the tool stats between epochs, and only escalates once the grace is
     spent.
+
+    The data's **label caches are removed after the probe and before the tool
+    starts**, so a cache left half-written by a crashed run, or one that hides a
+    corrected label, never reaches Ultralytics. The data fingerprint was taken
+    before this, so the removal does not move the run's identity.
 
     And the tool's own output **keeps the claim alive**. A training run outlasts
     the claim's window routinely, and until it ran out of process there was no
@@ -530,6 +537,7 @@ def train_through_the_tool[RequestT: TrainRequestBase](
         cancel_check=ctx.cancel_token.is_cancelled,
     )
     preflight(probe, base_weights)
+    remove_label_caches(data_yaml)
 
     work_dir = attempt_directory(run_root, ctx.execution_id)
     outcome = run_tool(
@@ -781,7 +789,9 @@ class TrainPoseOp(Op[PoseTrainParams]):
     # data.yaml by what it declares. Both move the digest, so the visible segment
     # moves with them: ``train-pose.0.1-*`` runs stay readable and keep their index
     # rows rather than sitting under a name that now means something else.
-    version = "0.2"
+    # 0.3 digests each image's label file by content and reads integer-keyed
+    # ``names`` and ``radii``, so a label corrected in place trains a new model.
+    version = "0.3"
     scope_takes = "none"
     scope_dependent = False
     Params = PoseTrainParams
@@ -877,6 +887,7 @@ class TrainPoseOp(Op[PoseTrainParams]):
             run_root=run_root,
             marker=marker,
             base_weights=base_weights,
+            data_yaml=data_yaml,
             preflight=require_pose_training_env,
             run_tool=run_pose_training_tool,
             env=ULTRALYTICS_ENV,
@@ -908,7 +919,7 @@ class TrainPointsOp(Op[PointTrainParams]):
     kind = "train-points"
     category = "train"
     domain = "tracking"
-    version = "0.2"  # see TrainPoseOp.version
+    version = "0.3"  # see TrainPoseOp.version
     scope_takes = "none"
     scope_dependent = False
     Params = PointTrainParams
@@ -1010,6 +1021,7 @@ class TrainPointsOp(Op[PointTrainParams]):
             run_root=run_root,
             marker=marker,
             base_weights=base_weights,
+            data_yaml=data_yaml,
             preflight=require_points_training_env,
             run_tool=run_point_training_tool,
             env=POLO_ENV,

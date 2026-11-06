@@ -12,9 +12,12 @@ from mosaic.core.annotations.yolo_layout import (
 )
 
 
-def test_image_suffixes_are_the_ultralytics_formats() -> None:
+def test_image_suffixes_are_the_union_of_both_trainers_formats() -> None:
+    """Ultralytics 8.4.121 (train-pose) and the POLO fork's 8.4.84 (train-points)."""
+    pose = "bmp dng jpeg jpg mpo png tif tiff webp pfm heic"
+    points = "avif bmp dng heic heif jp2 jpeg jpg mpo png tif tiff webp"
     assert YOLO_IMAGE_SUFFIXES == frozenset(
-        f".{name}" for name in "bmp dng jpeg jpg mpo png tif tiff webp pfm heic".split()
+        f".{name}" for name in (pose + " " + points).split()
     )
 
 

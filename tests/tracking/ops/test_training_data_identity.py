@@ -60,6 +60,7 @@ def _yolo(ds: Dataset, data: str) -> list[Path]:
     data_yaml = Path(ds.resolve_path(data))
     _ = _file(data_yaml.parent / "train" / "images" / "a.png", b"train-image")
     _ = _file(data_yaml.parent / "val" / "images" / "b.png", b"val-image")
+    _ = _file(data_yaml.parent / "train" / "labels" / "a.txt", b"0 0.5 0.5 0.1 0.1\n")
     _ = _file(data_yaml, b"train: train/images\nval: val/images\nnc: 1\nnames: [a]\n")
     return [data_yaml]
 
@@ -211,6 +212,9 @@ def test_what_sits_beside_the_data_does_not_move_the_identity(
     for path in inputs:
         _ = _file(path.parent / "unrelated.txt", b"not this run's data")
         _ = _file(path.parent / "elsewhere" / "deeper.txt", b"nor this")
+        if path.name == "data.yaml":
+            # The label cache Ultralytics writes beside a split's labels.
+            _ = _file(path.parent / "train" / "labels.cache", b"cached labels")
     after = _plan(op, ds, params)
 
     assert after == before, (

@@ -31,6 +31,28 @@ prints `current export recipe, analysis: <hash>`. The hint to pass `--relink` ap
 only when the flag would repair something, and the report now lists the dangling links
 it would clear.
 
+## Unreleased: a YOLO training identity follows its labels
+
+A label file edited in place now moves the `train-pose` and `train-points` run id, even
+when the edit keeps the file's byte length, such as a keypoint moved by one digit.
+Before, a training on a YOLO or POLO tree whose labels were corrected in place reported
+`already trained; reusing it` and returned the model trained on the old labels. POLO
+trees now have their images listed in the id, as YOLO trees already did. Images count by
+path and size. An image replaced at the same size does not move the id and needs
+`overwrite` to train again. The label caches (`train/labels.cache`) are removed before
+every training. `overwrite` reads fresh labels, a stale cache cannot hide an edit, and a
+0-byte one left by a killed run cannot fail the next training on the dataset.
+
+This moves every `train-pose` and `train-points` identifier (op version 0.3). A training
+identical to a 0.2 run trains once more. Existing 0.2 models keep their index rows and
+stay resolvable by their ids. No other op's identifier moves.
+
+The YOLO pose reader and `prepare_yolo_dataset` try image suffixes in sorted order.
+When one frame has several image files, both take the first, so `x.jpg` wins over
+`x.png`; `prepare_yolo_dataset` used to try `.jpg` first. Both now recognize the full set
+of image suffixes either trainer's Ultralytics accepts, which adds `.avif`, `.dng`,
+`.heic`, `.heif`, `.jp2`, `.mpo` and `.pfm`.
+
 ## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, classifiers smooth their probabilities, and predictions made outside mosaic are scored
 
 ### External predictions and agreement

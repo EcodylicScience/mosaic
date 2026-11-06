@@ -12,7 +12,7 @@
   "templates/tracks_variant": "",
   "train/entries": "",
   "train/lane": "gpu-train",
-  "train/run_id": "train-pose.0.2-54d811aa6c",
+  "train/run_id": "train-pose.0.3-dd853abcde",
   "train/storage_name": "",
   "train/tracks_variant": "",
   "transcode/entries": ":seq_a;:seq_b",

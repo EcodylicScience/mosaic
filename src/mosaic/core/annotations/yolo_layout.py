@@ -2,7 +2,8 @@
 
 A leaf module: it imports only the standard library, so every reader, emitter and
 fingerprint can share one statement of the rules. The rules mirror Ultralytics
-release 8.4.121, which is not importable in the base environment.
+release 8.4.121 and the POLO fork's 8.4.84, neither importable in the base
+environment.
 """
 
 from __future__ import annotations
@@ -14,9 +15,12 @@ __all__ = ["YOLO_IMAGE_SUFFIXES", "label_path_for_image"]
 
 YOLO_IMAGE_SUFFIXES: frozenset[str] = frozenset(
     {
+        ".avif",
         ".bmp",
         ".dng",
         ".heic",
+        ".heif",
+        ".jp2",
         ".jpeg",
         ".jpg",
         ".mpo",
@@ -27,7 +31,14 @@ YOLO_IMAGE_SUFFIXES: frozenset[str] = frozenset(
         ".webp",
     }
 )
-"""The dotted, lowercase image suffixes Ultralytics 8.4.121 accepts (``IMG_FORMATS``).
+"""The dotted, lowercase image suffixes either trainer accepts (``IMG_FORMATS``).
+
+The union of two sets: Ultralytics 8.4.121, which ``train-pose`` runs, accepts
+``bmp dng jpeg jpg mpo png tif tiff webp pfm heic``, and the POLO fork at
+Ultralytics 8.4.84, which ``train-points`` runs, accepts
+``avif bmp dng heic heif jp2 jpeg jpg mpo png tif tiff webp``. A union is safe
+because an extra suffix only adds files to a training fingerprint and caches to
+remove.
 
 Ultralytics compares a file's suffix lowercased, so test
 ``path.suffix.lower() in YOLO_IMAGE_SUFFIXES``.

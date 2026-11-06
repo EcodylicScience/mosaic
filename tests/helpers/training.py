@@ -15,6 +15,7 @@ tool actually says.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,6 +60,9 @@ class FakeTrainer:
     save_dir_override: Path | None = None
     """Where to claim the model landed, for the case where that disagrees."""
 
+    on_call: Callable[[TrainRequestBase], None] | None = None
+    """Run with the request as the trainer starts, before it writes anything."""
+
     calls: int = 0
     requests: list[TrainRequestBase] = field(default_factory=list)
     probes: list[str] = field(default_factory=list)
@@ -97,6 +101,8 @@ class FakeTrainer:
         del idle_timeout, cancel_check
         self.calls += 1
         self.requests.append(request)
+        if self.on_call is not None:
+            self.on_call(request)
 
         save_dir = Path(request.project_dir) / request.run_name
         (save_dir / "weights").mkdir(parents=True, exist_ok=True)

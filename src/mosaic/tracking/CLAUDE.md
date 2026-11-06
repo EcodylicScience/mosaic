@@ -89,10 +89,12 @@ extraction, and mosaic's side of the external Ultralytics and POLO environments.
 - `prepare-training-data` (`ops/prepare.py`) copies its images and names each through
   `write_split_tree(name_of=...)`, which refuses two images under one name. The
   revision digests it hashes are sorted and measured off disk at plan time.
-- `data.yaml` is written with `portable=True` (`make_data_yaml`, `make_polo_data_yaml`)
-  and has no `path` key. Ultralytics then roots the tree at the YAML's directory. Do
-  not write a relative `path`. Ultralytics resolves one against the working directory
-  or its datasets folder.
+- `prepare-training-data` writes its `data.yaml` with `portable=True`
+  (`make_data_yaml`, `make_polo_data_yaml`), which leaves out the `path` key.
+  Ultralytics then roots the tree at the YAML's directory. `convert-points`
+  (`ops/convert.py`) calls `make_polo_data_yaml` without it, and its `data.yaml` has an
+  absolute `path`. The training fingerprint leaves `path` out. Do not write a relative
+  `path`. Ultralytics resolves one against the working directory or its datasets folder.
 - A training run root holds `training.json` (`TRAINING_PROVENANCE_FILENAME` in
   `ops/train.py`), never a second `params.json` schema.
   `test_nothing_else_opens_params_json` in

@@ -33,7 +33,9 @@ from mosaic.tracking.ops._common import (
     RunRootHeld,
     fingerprint_dataset,
     fingerprint_yolo_dataset,
+    remove_label_caches,
 )
+from mosaic.tracking.external.runner.ultralytics_protocol import TrainRequestBase
 from mosaic.tracking.ops.trained_models import trained_model_index
 from tests.helpers import FakeTrainer, make_dataset, write_data_yaml
 
@@ -44,17 +46,23 @@ def _write(path: Path, content: bytes) -> Path:
     return path
 
 
-def _yolo_dataset(root: Path, *, image: bytes = b"train-image") -> Path:
+_TRAIN_LABEL = b"0 0.5 0.5 0.2 0.2 0.40 0.50 2 0.60 0.50 2\n"
+
+
+def _yolo_dataset(
+    root: Path, *, image: bytes = b"train-image", label: bytes = _TRAIN_LABEL
+) -> Path:
     """A minimal YOLO dataset: a data.yaml naming two split directories.
 
+    Each image has its label file under the sibling ``labels`` directory.
     ``path`` is written absolute because that is what ``make_data_yaml`` writes
     (``os.path.abspath(dataset_root)``), which is exactly the spelling the
     fingerprint must not depend on.
     """
-    (root / "train" / "images").mkdir(parents=True, exist_ok=True)
-    (root / "valid" / "images").mkdir(parents=True, exist_ok=True)
-    _ = (root / "train" / "images" / "a.png").write_bytes(image)
-    _ = (root / "valid" / "images" / "b.png").write_bytes(b"val-image")
+    _ = _write(root / "train" / "images" / "a.png", image)
+    _ = _write(root / "valid" / "images" / "b.png", b"val-image")
+    _ = _write(root / "train" / "labels" / "a.txt", label)
+    _ = _write(root / "valid" / "labels" / "b.txt", b"0 0.5 0.5 0.1 0.1\n")
     data_yaml = root / "data.yaml"
     _ = data_yaml.write_text(
         f"path: {root.resolve()}\ntrain: train/images\nval: valid/images\n"
@@ -110,6 +118,28 @@ def test_a_reused_training_run_records_the_cache_hit(
     assert first is not None and second is not None
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
+
+
+def test_a_label_edit_between_two_runs_trains_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrected label at the same byte length is new data, so a new model."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    ds = make_dataset(tmp_path)
+    trainer = FakeTrainer()
+    trainer.install(monkeypatch)
+    params = {"data": str(data_yaml), "epochs": 1, "device": "cpu"}
+
+    first = run_op(ds, "train-pose", dict(params))
+
+    label = data_yaml.parent / "train" / "labels" / "a.txt"
+    moved = _TRAIN_LABEL.replace(b"0.40 0.50", b"0.45 0.55")
+    assert len(moved) == len(_TRAIN_LABEL)
+    _ = label.write_bytes(moved)
+    second = run_op(ds, "train-pose", dict(params))
+
+    assert trainer.calls == 2
+    assert second != first
 
 
 def test_overwrite_retrains(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -271,6 +301,285 @@ def test_a_declaration_free_data_yaml_still_fingerprints(tmp_path: Path) -> None
         fingerprint_yolo_dataset(directory / "does-not-exist.yaml"),
     }
     assert len(digests) == 4  # each is a digest, and none collides with another
+
+
+def test_a_moved_keypoint_moves_the_fingerprint(tmp_path: Path) -> None:
+    """A corrected label is new training data, even at the same byte length."""
+    before = fingerprint_yolo_dataset(_yolo_dataset(tmp_path / "a"))
+    moved = _TRAIN_LABEL.replace(b"0.40 0.50", b"0.45 0.55")
+    assert len(moved) == len(_TRAIN_LABEL)
+    after = fingerprint_yolo_dataset(_yolo_dataset(tmp_path / "b", label=moved))
+    assert after != before
+
+
+def test_an_added_instance_moves_the_fingerprint(tmp_path: Path) -> None:
+    before = fingerprint_yolo_dataset(_yolo_dataset(tmp_path / "a"))
+    added = _TRAIN_LABEL + b"0 0.2 0.2 0.1 0.1 0.15 0.20 2 0.25 0.20 2\n"
+    after = fingerprint_yolo_dataset(_yolo_dataset(tmp_path / "b", label=added))
+    assert after != before
+
+
+def test_caches_beside_the_data_leave_the_fingerprint(tmp_path: Path) -> None:
+    """What Ultralytics writes while training is not training data."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    before = fingerprint_yolo_dataset(data_yaml)
+    _ = _write(data_yaml.parent / "train" / "labels.cache", b"cached labels")
+    _ = _write(data_yaml.parent / "train" / "images" / "a.npy", b"cached pixels")
+    assert fingerprint_yolo_dataset(data_yaml) == before
+
+
+@pytest.mark.parametrize("kind", ["train-pose", "train-points"])
+def test_empty_label_caches_are_gone_when_the_trainer_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """A 0-byte cache left by an earlier crash must not reach Ultralytics."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    caches = [
+        _write(data_yaml.parent / "train" / "labels.cache", b""),
+        _write(data_yaml.parent / "valid" / "labels.cache", b""),
+    ]
+    present: list[bool] = []
+
+    def witness(request: TrainRequestBase) -> None:
+        del request
+        present.extend(cache.exists() for cache in caches)
+
+    trainer = FakeTrainer(on_call=witness)
+    trainer.install(monkeypatch)
+
+    _ = run_op(
+        make_dataset(tmp_path),
+        kind,
+        {"data": str(data_yaml), "epochs": 1, "device": "cpu"},
+    )
+
+    assert trainer.calls == 1
+    assert present == [False, False]
+
+
+def test_removing_the_label_caches_names_the_file_it_cannot_remove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    cache = _write(data_yaml.parent / "train" / "labels.cache", b"")
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, missing_ok: bool = False) -> None:
+        if self == cache:
+            raise PermissionError("read-only directory")
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+
+    with pytest.raises(RuntimeError, match=r"train[/\\]labels\.cache"):
+        remove_label_caches(data_yaml)
+
+
+def test_only_the_label_caches_of_the_splits_are_removed(tmp_path: Path) -> None:
+    """A split's cache is its label directory's sibling; nothing else goes."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    root = data_yaml.parent
+    gone = [
+        _write(root / "train" / "labels.cache", b"x"),
+        _write(root / "valid" / "labels.cache", b"x"),
+    ]
+    kept = [
+        _write(root / "train" / "images" / "a.npy", b"x"),
+        _write(root / "train" / "images.cache", b"x"),
+        _write(root / "elsewhere" / "labels.cache", b"x"),
+        root / "train" / "labels" / "a.txt",
+    ]
+
+    remove_label_caches(data_yaml)
+    remove_label_caches(data_yaml)
+
+    assert not any(cache.exists() for cache in gone)
+    assert all(path.exists() for path in kept)
+
+
+def test_a_data_yaml_that_does_not_parse_removes_nothing(tmp_path: Path) -> None:
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    cache = _write(data_yaml.parent / "train" / "labels.cache", b"")
+    _ = data_yaml.write_text("train: [train/images\nval: valid/images\n")
+
+    remove_label_caches(data_yaml)
+
+    assert cache.exists()
+
+
+def test_a_list_split_has_the_label_caches_of_its_images_removed(
+    tmp_path: Path,
+) -> None:
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    root = data_yaml.parent
+    _ = (root / "train.txt").write_text("./train/images/a.png\n")
+    _ = data_yaml.write_text("train: train.txt\nval: valid/images\n")
+    listed = _write(root / "train" / "labels.cache", b"")
+    valid = _write(root / "valid" / "labels.cache", b"")
+
+    remove_label_caches(data_yaml)
+
+    assert not listed.exists()
+    assert not valid.exists()
+
+
+def test_a_polo_tree_is_portable_and_content_sensitive(tmp_path: Path) -> None:
+    """A tree ``make_polo_data_yaml`` writes, with its absolute ``path`` and int keys.
+
+    The integer keys of ``names`` and ``radii`` must parse, so the digest is
+    taken from the declared content rather than from the YAML's text, which
+    carries the location.
+    """
+    from mosaic.tracking.pose_training.prep import make_polo_data_yaml
+
+    def tree(
+        root: Path, *, image: bytes = b"img", label: bytes = b"0 0.5 0.5\n"
+    ) -> Path:
+        _ = _write(root / "train" / "images" / "a.png", image)
+        _ = _write(root / "train" / "labels" / "a.txt", label)
+        _ = _write(root / "valid" / "images" / "b.png", b"val")
+        _ = _write(root / "valid" / "labels" / "b.txt", b"0 0.4 0.4\n")
+        return Path(make_polo_data_yaml(root, ["bee"], {0: 6.0}))
+
+    here = fingerprint_yolo_dataset(tree(tmp_path / "here"))
+    assert fingerprint_yolo_dataset(tree(tmp_path / "there")) == here
+    assert fingerprint_yolo_dataset(tree(tmp_path / "image", image=b"other")) != here
+    assert (
+        fingerprint_yolo_dataset(tree(tmp_path / "label", label=b"0 0.6 0.5\n")) != here
+    )
+
+
+def test_integer_and_text_keys_fingerprint_alike(tmp_path: Path) -> None:
+    """Ultralytics reads ``{0: bee}`` and ``{'0': bee}`` as one class map."""
+    a = _yolo_dataset(tmp_path / "a")
+    b = _yolo_dataset(tmp_path / "b")
+    _ = a.write_text("train: train/images\nval: valid/images\nnames: {0: bee}\n")
+    _ = b.write_text("train: train/images\nval: valid/images\nnames: {'0': bee}\n")
+    assert fingerprint_yolo_dataset(a) == fingerprint_yolo_dataset(b)
+
+
+def test_a_missing_label_fingerprints_and_adding_it_moves(tmp_path: Path) -> None:
+    """An image without a label is a background image, not an error."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    label = data_yaml.parent / "train" / "labels" / "a.txt"
+    label.unlink()
+    without = fingerprint_yolo_dataset(data_yaml)
+    assert without
+    _ = _write(label, _TRAIN_LABEL)
+    assert fingerprint_yolo_dataset(data_yaml) != without
+
+
+def test_a_linked_image_reads_the_label_beside_the_link(tmp_path: Path) -> None:
+    """Ultralytics does not resolve the files under a split directory."""
+    target = _write(tmp_path / "store" / "images" / "a.png", b"pixels")
+    _ = _write(tmp_path / "store" / "labels" / "a.txt", b"0 0.1 0.1\n")
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    image = data_yaml.parent / "train" / "images" / "a.png"
+    image.unlink()
+    image.symlink_to(target)
+    before = fingerprint_yolo_dataset(data_yaml)
+    _ = _write(tmp_path / "store" / "labels" / "a.txt", b"0 0.9 0.9\n")
+    assert fingerprint_yolo_dataset(data_yaml) == before, "the target's label"
+    _ = _write(data_yaml.parent / "train" / "labels" / "a.txt", b"0 0.9 0.9\n")
+    assert fingerprint_yolo_dataset(data_yaml) != before, "the link's label"
+
+
+def test_an_uppercase_suffix_is_an_image(tmp_path: Path) -> None:
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    before = fingerprint_yolo_dataset(data_yaml)
+    _ = _write(data_yaml.parent / "train" / "labels" / "c.txt", b"0 0.3 0.3\n")
+    _ = _write(data_yaml.parent / "train" / "images" / "c.JPG", b"upper")
+    with_image = fingerprint_yolo_dataset(data_yaml)
+    assert with_image != before
+    _ = _write(data_yaml.parent / "train" / "labels" / "c.txt", b"0 0.4 0.4\n")
+    assert fingerprint_yolo_dataset(data_yaml) != with_image, "its label is read"
+
+
+@pytest.mark.parametrize("suffix", [".avif", ".heif", ".jp2"])
+def test_a_label_edit_beside_a_polo_only_image_moves_the_fingerprint(
+    tmp_path: Path, suffix: str
+) -> None:
+    """The POLO fork's Ultralytics accepts suffixes that 8.4.121 does not."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    _ = _write(data_yaml.parent / "train" / "images" / f"c{suffix}", b"pixels")
+    _ = _write(data_yaml.parent / "train" / "labels" / "c.txt", b"0 0.3 0.3\n")
+    before = fingerprint_yolo_dataset(data_yaml)
+    _ = _write(data_yaml.parent / "train" / "labels" / "c.txt", b"0 0.4 0.4\n")
+    assert fingerprint_yolo_dataset(data_yaml) != before
+
+
+def test_a_parent_relative_split_naming_nothing_drops_its_prefix(
+    tmp_path: Path,
+) -> None:
+    """``../train/images`` that names nothing is read as ``train/images``.
+
+    Ultralytics retries such a split without its ``../`` prefix, so the labels
+    under the dataset's own ``train/labels`` are the ones it trains on.
+    """
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    assert not (data_yaml.parent.parent / "train").exists()
+    _ = data_yaml.write_text(
+        "train: ../train/images\nval: valid/images\nnames: [bee]\n"
+    )
+    before = fingerprint_yolo_dataset(data_yaml)
+    _ = _write(data_yaml.parent / "train" / "labels" / "a.txt", b"0 0.9 0.9\n")
+    assert fingerprint_yolo_dataset(data_yaml) != before
+
+
+def test_a_list_split_derives_its_labels(tmp_path: Path) -> None:
+    """A ``.txt`` split names its images, and each image's label is read too."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    root = data_yaml.parent
+    _ = (root / "train.txt").write_text("./train/images/a.png\n")
+    _ = data_yaml.write_text("train: train.txt\nval: valid/images\nnames: [bee]\n")
+    before = fingerprint_yolo_dataset(data_yaml)
+
+    _ = _write(root / "train" / "labels" / "a.txt", b"0 0.9 0.9 0.1 0.1\n")
+    edited = fingerprint_yolo_dataset(data_yaml)
+    assert edited != before, "a listed image's label"
+    _ = _write(root / "train" / "images" / "a.png", b"a longer train image")
+    assert fingerprint_yolo_dataset(data_yaml) != edited, "a listed image's size"
+
+    elsewhere = _yolo_dataset(tmp_path / "elsewhere")
+    _ = (elsewhere.parent / "train.txt").write_text("./train/images/a.png\n")
+    _ = elsewhere.write_text("train: train.txt\nval: valid/images\nnames: [bee]\n")
+    assert fingerprint_yolo_dataset(elsewhere) == before, "portable"
+
+
+def test_a_list_line_replaces_only_its_leading_dot_slash(tmp_path: Path) -> None:
+    """``../`` inside a listed path is not another ``./`` to replace."""
+    data_yaml = _yolo_dataset(tmp_path / "data")
+    root = data_yaml.parent
+    _ = (root / "train.txt").write_text("./train/images/../images/a.png\n")
+    _ = data_yaml.write_text("train: train.txt\nval: valid/images\nnames: [bee]\n")
+    before = fingerprint_yolo_dataset(data_yaml)
+
+    _ = _write(root / "train" / "labels" / "a.txt", b"0 0.9 0.9 0.1 0.1\n")
+
+    assert fingerprint_yolo_dataset(data_yaml) != before
+
+
+def test_a_dataset_under_glob_characters_fingerprints_its_labels(
+    tmp_path: Path,
+) -> None:
+    """``[``, ``]``, ``*`` and ``?`` in the dataset path are literal."""
+    data_yaml = _yolo_dataset(tmp_path / "mice [2024] *?" / "data")
+    before = fingerprint_yolo_dataset(data_yaml)
+
+    _ = _write(data_yaml.parent / "train" / "labels" / "a.txt", b"0 0.9 0.9 0.1 0.1\n")
+
+    assert fingerprint_yolo_dataset(data_yaml) != before
+
+
+def test_an_empty_label_cache_under_glob_characters_is_removed(
+    tmp_path: Path,
+) -> None:
+    data_yaml = _yolo_dataset(tmp_path / "mice [2024] *?" / "data")
+    cache = _write(data_yaml.parent / "train" / "labels.cache", b"")
+
+    remove_label_caches(data_yaml)
+
+    assert not cache.exists()
 
 
 def test_a_data_file_is_its_own_bytes_and_nothing_beside_it(tmp_path: Path) -> None:
