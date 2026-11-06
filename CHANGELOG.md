@@ -8,6 +8,22 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: prune-media keeps current store exports
+
+`mosaic prune-media` judges a file in `media/transcode/` against the recipe of a store
+export as well as the transcode recipes. A linked current export is no longer listed as
+a live derivative under a superseded recipe. `--apply` no longer deletes an unlinked
+current export, which is `relinkable`, so an export interrupted before its forward link
+no longer re-encodes the store on the next `export-store`. An unlinked export under an
+older export recipe, or one made with a non-default `av1_crf`, stays `superseded`, and a
+linked one is listed under a superseded recipe.
+`--relink` skips a `relinkable` file that has no index row, for a transcode as well as
+an export, because linking it made the file `unrowed` and the reuse gate then
+reused a file with no row. The `--json` document gains `export_recipes`, and the report
+prints `current export recipe, analysis: <hash>`. The hint to pass `--relink` appears
+only when the flag would repair something, and the report now lists the dangling links
+it would clear.
+
 ## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, classifiers smooth their probabilities, and predictions made outside mosaic are scored
 
 ### External predictions and agreement

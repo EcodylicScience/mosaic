@@ -1,5 +1,9 @@
 """Reconcile the transcode kind directory against the links that reach into it.
 
+The directory holds two kinds of file under one naming scheme: transcode
+derivatives and store exports (``export-store``). A file is current under either
+recipe of its target, and everything below applies to both.
+
 A transcode derivative is reachable through exactly one route: a forward-link
 cell (``analysis_derivative_path`` / ``playback_derivative_path``) on an
 originals row. Nothing else addresses one -- ``Dataset._derivative_facts``
@@ -193,6 +197,9 @@ class PruneReport:
     # input an operator cannot see and can silently differ from the worker's --
     # media_thresholds() reads the environment, and the recipe folds it whole.
     live_recipes: dict[str, str] = field(default_factory=dict)
+    # The recipes a store export is named after, beside the transcode recipes. A
+    # file is current under either one of its target.
+    export_recipes: dict[str, str] = field(default_factory=dict)
 
     def of(self, verdict: PruneClass) -> list[PruneEntry]:
         """Every entry the run put in *verdict*, in the order it decided them."""
@@ -221,6 +228,7 @@ class PruneReport:
             "links_cleared": self.links_cleared,
             "held_for_age": self.held_for_age,
             "live_recipes": self.live_recipes,
+            "export_recipes": self.export_recipes,
             "backups": [str(path) for path in self.backups],
             # Every refused class listed by path, because each names a repair a
             # person has to make rather than a thing this run can do.
@@ -302,10 +310,10 @@ def classify_rows(
     module could produce.** ``Dataset.resolve_media_root`` answers ``media_raw``
     the moment that root is *set*, so adding one to a dataset that never had it
     reinterprets an index still full of originals as the derivative index. The
-    discriminator is cheap and sound: the transcode job is the only writer that
-    fills ``recipe_hash``, a fresh probe always leaves it empty, and a re-probe
-    is forbidden from ever writing it. A row without one is not a derivative,
-    whatever index it is sitting in.
+    discriminator is cheap and sound: the transcode and export-store jobs are
+    the only writers that fill ``recipe_hash``, a fresh probe always leaves it
+    empty, and a re-probe is forbidden from ever writing it. A row without one
+    is not a derivative, whatever index it is sitting in.
     """
     verdicts: dict[int, tuple[Path | None, PruneClass | None]] = {}
     resolved_kind_root = transcode_root.resolve()
@@ -348,6 +356,7 @@ def reconcile(
     transcode_root: Path,
     base_directory: Path,
     live_recipes: Mapping[str, str],
+    export_recipes: Mapping[str, str],
     cutoff: datetime,
 ) -> list[PruneEntry]:
     """Decide every path reachable from the links, the rows, or the directory.
@@ -406,6 +415,7 @@ def reconcile(
                 is_dir_or_link=path.is_dir() or path.is_symlink(),
                 source_uuids=source_uuids,
                 live_recipes=live_recipes,
+                export_recipes=export_recipes,
                 cutoff=cutoff,
             )
         )
@@ -422,6 +432,7 @@ def _decide(
     is_dir_or_link: bool,
     source_uuids: frozenset[str] | set[str],
     live_recipes: Mapping[str, str],
+    export_recipes: Mapping[str, str],
     cutoff: datetime,
 ) -> PruneEntry:
     """The class of one reconciled path.
@@ -451,9 +462,9 @@ def _decide(
         )
 
     _, _, target = parsed
-    current = live_recipes.get(target, "")
+    current = {live_recipes.get(target, ""), export_recipes.get(target, "")} - {""}
     if linked:
-        live_now = recipe_hash == current
+        live_now = recipe_hash in current
         if position is None:
             return PruneEntry(
                 path=path,
@@ -480,7 +491,7 @@ def _decide(
             recipe_hash=recipe_hash,
             size_bytes=size,
         )
-    if recipe_hash == current:
+    if recipe_hash in current:
         return PruneEntry(
             path=path,
             verdict="relinkable",
@@ -578,17 +589,20 @@ def prune_media(
     transcode_root: Path,
     base_directory: Path,
     live_recipes: Mapping[str, str],
+    export_recipes: Mapping[str, str],
     apply: bool,
     min_age_hours: float = 24.0,
     relink: bool = False,
     include_stray: bool = False,
     now: datetime | None = None,
 ) -> PruneReport:
-    """Delete the transcode derivatives nothing reaches, and optionally repair.
+    """Delete the derivatives and store exports nothing reaches, and optionally repair.
 
-    *live_recipes* maps each target to the recipe hash a run would produce
-    today; a file named under any other recipe, and referenced by no link, is
-    what this deletes. *now* is injectable so the age window can be tested
+    The kind directory also holds store exports. *live_recipes* maps each target
+    to the recipe hash a transcode would produce today and *export_recipes* to
+    the one an export would. A file is current under either recipe of its
+    target; one named under any other recipe, and referenced by no link, is what
+    this deletes. *now* is injectable so the age window can be tested
     without sleeping.
 
     Dry-run unless *apply*. When nothing needs changing it writes nothing at
@@ -620,6 +634,7 @@ def prune_media(
         transcode_root=transcode_root,
         base_directory=base_directory,
         live_recipes=live_recipes,
+        export_recipes=export_recipes,
         cutoff=cutoff,
     )
 
@@ -698,4 +713,5 @@ def prune_media(
         bytes_reclaimed=sum(entry.size_bytes for entry in delete_files),
         held_for_age=sum(1 for entry in entries if entry.held_for_age),
         live_recipes=dict(live_recipes),
+        export_recipes=dict(export_recipes),
     )

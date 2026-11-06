@@ -6376,7 +6376,7 @@ class Dataset:
         relink: bool = False,
         include_stray: bool = False,
     ) -> PruneReport:
-        """Delete the transcode derivatives no forward link reaches.
+        """Delete the transcode derivatives and store exports no forward link reaches.
 
         A retuned recipe writes a new derivative and overwrites the link cell,
         leaving the previous file and its row behind with nothing addressing
@@ -6384,7 +6384,10 @@ class Dataset:
         going to happen anyway -- the op's reuse gate needs the link as well as
         the file -- so *relink* is where the value is: it writes the cell for an
         unreferenced file a current recipe would reproduce, turning the next
-        run's encode into a skip, and clears a cell whose file is gone.
+        run's encode into a skip, and clears a cell whose file is gone. A store
+        export under the default export recipe is current like a transcode. One
+        under any other recipe is superseded when unlinked, and listed under a
+        superseded recipe when linked.
 
         Dry-run unless *apply*. *min_age_hours* holds back anything modified
         inside the window, so a prune cannot race a running encode.
@@ -6401,6 +6404,11 @@ class Dataset:
         from mosaic_media.transcode import ANALYSIS_ENCODING, PLAYBACK_ENCODING
 
         from mosaic.core.media.prune import TARGETS
+        from mosaic.core.pipeline.store_export import (
+            EXPORT_TARGET,
+            StoreExportParams,
+            export_recipe_hash,
+        )
         from mosaic.core.pipeline.transcode import (
             TRANSCODE_KIND_DIRECTORY,
             TranscodeParams,
@@ -6459,6 +6467,9 @@ class Dataset:
             transcode_root=transcode_root,
             base_directory=_dataset_base_dir(self),
             live_recipes=live_recipes,
+            # One hash is enough: the export recipe takes no per-store input. An
+            # export made at a non-default `av1_crf` is therefore not current.
+            export_recipes={EXPORT_TARGET: export_recipe_hash(StoreExportParams())},
             apply=apply,
             min_age_hours=min_age_hours,
             relink=relink,

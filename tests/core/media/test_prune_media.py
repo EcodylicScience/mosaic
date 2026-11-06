@@ -28,6 +28,11 @@ from mosaic.core.pipeline.media_index import (
     read_media_index,
     write_media_index_rows,
 )
+from mosaic.core.pipeline.store_export import (
+    EXPORT_TARGET,
+    StoreExportParams,
+    export_recipe_hash,
+)
 
 UUID_A = "11111111-1111-4111-8111-111111111111"
 UUID_B = "22222222-2222-4222-8222-222222222222"
@@ -55,6 +60,14 @@ def _live_recipe(ds: Dataset, target: Target = "analysis") -> str:
         CHROME_149,
         media_thresholds(),
     )
+
+
+def _export_recipe() -> str:
+    """The recipe a store export would name its output after, right now.
+
+    Read through the same call the pruner makes rather than hard-coded.
+    """
+    return export_recipe_hash(StoreExportParams())
 
 
 def _row(**cells: object) -> dict[str, object]:
@@ -154,6 +167,53 @@ def _add_derivative(
         )
         _write(index_path, rows)
     return path
+
+
+def _add_store_export(
+    ds: Dataset, *, uuid: str, recipe: str, linked: bool, row: bool = True
+) -> Path:
+    """Put a store export of *uuid* on disk, optionally linked and indexed.
+
+    An export claims the analysis link, as the transcode of the same uuid does,
+    so the fixture's transcode is removed first: its file, its row and its cell.
+    That leaves the analysis cell empty for the export to be linked into or
+    relinked into, and keeps each case about the export alone.
+    """
+    transcode = (
+        ds.get_root("media") / "transcode" / f"{uuid}.{_live_recipe(ds)}.analysis.mp4"
+    )
+    transcode.unlink()
+    derivative_index = ds.get_root("media") / "index.csv"
+    _write(
+        derivative_index,
+        [
+            _row(**dict(existing))
+            for existing in read_media_index(derivative_index)
+            if existing["abs_path"] != ds.relative_to_root(str(transcode))
+        ],
+    )
+    export = _add_derivative(
+        ds, uuid=uuid, recipe=recipe, target=EXPORT_TARGET, row=row
+    )
+    originals_index = ds.get_root("media_raw") / "index.csv"
+    originals = [
+        _row(**dict(existing)) for existing in read_media_index(originals_index)
+    ]
+    for original in originals:
+        if original["video_uuid"] == uuid:
+            original["analysis_derivative_path"] = (
+                f"transcode/{export.name}" if linked else ""
+            )
+    _write(originals_index, originals)
+    return export
+
+
+def _links(ds: Dataset, column: str) -> dict[str, str]:
+    """Each original's link cell in *column*, keyed by video uuid."""
+    return {
+        row["video_uuid"]: row[column]
+        for row in read_media_index(ds.get_root("media_raw") / "index.csv")
+    }
 
 
 # --- the motivating case ------------------------------------------------------
@@ -289,11 +349,7 @@ def test_relink_leaves_a_file_with_no_index_row_unlinked(
 
     assert not report.links_relinked
     assert orphan.exists()
-    linked = {
-        row["video_uuid"]: row["playback_derivative_path"]
-        for row in read_media_index(pruned_dataset.get_root("media_raw") / "index.csv")
-    }
-    assert linked[UUID_A] == ""
+    assert _links(pruned_dataset, "playback_derivative_path")[UUID_A] == ""
 
 
 def test_relink_never_displaces_a_link_that_already_names_a_file(
@@ -573,6 +629,104 @@ def test_a_file_younger_than_the_window_is_held_back(pruned_dataset: Dataset) ->
     assert report.held_for_age == 0
 
 
+# --- store exports ------------------------------------------------------------
+
+
+def test_a_linked_current_export_is_live(pruned_dataset: Dataset) -> None:
+    """An export is named under its own recipe, not a transcode's.
+
+    Judged against the transcode recipes alone it was listed as a live
+    derivative under a superseded recipe, and the CLI told the user to rebuild it.
+    """
+    export = _add_store_export(
+        pruned_dataset, uuid=UUID_A, recipe=_export_recipe(), linked=True
+    )
+
+    report = pruned_dataset.prune_media(apply=False, min_age_hours=0.0)
+
+    assert _verdicts(pruned_dataset)[export.name] == "live"
+    superseded_recipe = report.payload()["live_legacy_recipe"]
+    assert isinstance(superseded_recipe, list)
+    assert str(export.resolve()) not in superseded_recipe
+
+
+def test_a_linked_export_under_another_export_recipe_is_not_current(
+    pruned_dataset: Dataset,
+) -> None:
+    export = _add_store_export(
+        pruned_dataset, uuid=UUID_A, recipe="deadbeef03", linked=True
+    )
+
+    assert _verdicts(pruned_dataset)[export.name] == "live_legacy_recipe"
+
+
+def test_an_unlinked_current_export_is_kept_and_relink_adopts_it(
+    pruned_dataset: Dataset,
+) -> None:
+    """The state an export interrupted before its forward link leaves.
+
+    Deleting it would make the next export re-encode the store from scratch.
+    """
+    export = _add_store_export(
+        pruned_dataset, uuid=UUID_A, recipe=_export_recipe(), linked=False
+    )
+    assert _verdicts(pruned_dataset)[export.name] == "relinkable"
+
+    report = pruned_dataset.prune_media(apply=True, min_age_hours=0.0)
+
+    assert export.exists()
+    assert not report.files_deleted
+    assert _links(pruned_dataset, "analysis_derivative_path")[UUID_A] == ""
+
+    report = pruned_dataset.prune_media(apply=True, min_age_hours=0.0, relink=True)
+
+    assert report.links_relinked == [f"transcode/{export.name}"]
+    assert export.exists()
+    assert (
+        _links(pruned_dataset, "analysis_derivative_path")[UUID_A]
+        == f"transcode/{export.name}"
+    )
+    assert _links(pruned_dataset, "playback_derivative_path")[UUID_A] == ""
+    assert _verdicts(pruned_dataset)[export.name] == "live"
+
+
+def test_an_unlinked_export_under_another_recipe_is_deleted(
+    pruned_dataset: Dataset,
+) -> None:
+    export = _add_store_export(
+        pruned_dataset, uuid=UUID_A, recipe="deadbeef03", linked=False
+    )
+    assert _verdicts(pruned_dataset)[export.name] == "superseded"
+
+    report = pruned_dataset.prune_media(apply=True, min_age_hours=0.0)
+
+    assert not export.exists()
+    assert report.files_deleted == [export.resolve()]
+
+
+def test_relink_leaves_an_export_with_no_index_row_unlinked(
+    pruned_dataset: Dataset,
+) -> None:
+    """The export reuse gate trusts a linked file, so a rowless one stays unlinked."""
+    export = _add_store_export(
+        pruned_dataset, uuid=UUID_A, recipe=_export_recipe(), linked=False, row=False
+    )
+    assert _verdicts(pruned_dataset)[export.name] == "relinkable"
+
+    report = pruned_dataset.prune_media(apply=True, min_age_hours=0.0, relink=True)
+
+    assert not report.links_relinked
+    assert export.exists()
+    assert _links(pruned_dataset, "analysis_derivative_path")[UUID_A] == ""
+
+
+def test_the_report_names_the_export_recipe(pruned_dataset: Dataset) -> None:
+    report = pruned_dataset.prune_media(apply=False, min_age_hours=0.0)
+
+    assert report.export_recipes == {EXPORT_TARGET: _export_recipe()}
+    assert report.payload()["export_recipes"] == {EXPORT_TARGET: _export_recipe()}
+
+
 # --- blast radius, gates, determinism -----------------------------------------
 
 
@@ -775,6 +929,9 @@ def test_the_command_is_a_dry_run_by_default(pruned_dataset: Dataset) -> None:
     # The recipes are the one input an operator cannot see and that can silently
     # differ from the worker's, so the human report has to print them.
     assert _live_recipe(pruned_dataset) in result.stdout
+    assert (
+        f"current export recipe, {EXPORT_TARGET}: {_export_recipe()}" in result.stdout
+    )
 
 
 def test_the_json_document_is_one_value_on_stdout(pruned_dataset: Dataset) -> None:
@@ -797,6 +954,36 @@ def test_the_json_document_is_one_value_on_stdout(pruned_dataset: Dataset) -> No
     assert payload["considered"] is True
     assert payload["applied"] is False
     assert payload["counts"]["superseded"] == 1
+    assert payload["export_recipes"] == {EXPORT_TARGET: _export_recipe()}
+
+
+def _dry_run(ds: Dataset) -> str:
+    result = runner.invoke(
+        app, ["prune-media", "-m", str(ds.manifest_path), "--min-age-hours", "0"]
+    )
+    assert result.exit_code == 0, result.stdout
+    return result.stdout
+
+
+def test_the_relink_hint_follows_a_class_relink_can_repair(
+    pruned_dataset: Dataset,
+) -> None:
+    """``--relink`` skips a relinkable file with no row, so it earns no hint."""
+    recipe = _live_recipe(pruned_dataset, "playback")
+    _ = _add_derivative(
+        pruned_dataset, uuid=UUID_A, recipe=recipe, target="playback", row=False
+    )
+
+    output = _dry_run(pruned_dataset)
+
+    assert "a current recipe would rebuild" in output
+    assert "Pass --relink" not in output
+
+    _ = _add_derivative(
+        pruned_dataset, uuid=UUID_B, recipe=recipe, target="playback", row=True
+    )
+
+    assert "Pass --relink" in _dry_run(pruned_dataset)
 
 
 def test_a_decline_exits_zero_and_says_why(tmp_path: Path) -> None:

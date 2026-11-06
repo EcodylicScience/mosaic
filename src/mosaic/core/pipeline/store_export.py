@@ -28,8 +28,9 @@ Registration is otherwise exactly a transcode's, and deliberately shares its
 machinery: the derivative lands in the same ``transcode`` kind directory under
 ``media``, named ``<video_uuid>.<recipe_hash>.analysis.mp4``, with a back-link
 row in the ``media`` index and a forward link on the store's ``media_raw`` row.
-Sharing that layout is what makes ``mosaic prune-media`` reach an orphaned export
-without knowing this op exists.
+Sharing that layout is what lets ``mosaic prune-media`` walk exports. It judges
+them against :func:`export_recipe_hash` at the default parameters, so a parameter
+whose non-default value should stay current needs ``Dataset.prune_media`` to know it.
 
 An entry's cameras each export separately -- a store per camera, a
 ``video_uuid`` per store, so the recipe-addressed filenames never collide. A

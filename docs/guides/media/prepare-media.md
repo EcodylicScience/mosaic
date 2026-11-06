@@ -43,7 +43,7 @@ mosaic run -m dataset.yaml --kind transcode \
 
 `target` is `analysis` (seekable, for repeated frame access) or `playback` (browser
 friendly). Derivatives land in `media/` with their own index. `mosaic prune-media`
-deletes any that nothing links to.
+deletes any that nothing links to and no current recipe would rebuild.
 
 For a one-off file outside a dataset:
 

@@ -67,7 +67,7 @@ inventory_wire(ds, found, status_not=["complete"], limit=20)
 | `mosaic reprobe-media` | Media metadata is wrong or missing; re-probes in place |
 | `mosaic reconcile` | The identity scheme moved in a mosaic upgrade; re-addresses artifacts |
 | `mosaic sweep-tracking` | Reclaim tracker working directories that are finished and past their window |
-| `mosaic prune-media` | Delete transcode derivatives no forward link reaches |
+| `mosaic prune-media` | Delete transcode derivatives and store exports no forward link reaches |
 | `mosaic prune-joined` | Delete joined exports an earlier `export-joined` version made |
 | `mosaic upgrade-tracks` | Rescale centimeter-era TRex tables to pixels |
 | `mosaic pipeline plan --cleanup superseded` | List the feature runs a recipe's new params superseded, and which may go |

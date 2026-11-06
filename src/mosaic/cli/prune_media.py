@@ -1,4 +1,4 @@
-"""``mosaic prune-media``: delete the transcode derivatives nothing reaches."""
+"""``mosaic prune-media``: delete the derivatives and store exports nothing reaches."""
 
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def prune_media_command(
         bool, typer.Option("--json", help="Emit the result as JSON.")
     ] = False,
 ) -> None:
-    """Delete transcode derivatives that no forward link reaches.
+    """Delete transcode derivatives and store exports that no forward link reaches.
 
     A retuned recipe writes a new derivative and overwrites the link cell,
     leaving the old file and its index row behind with nothing addressing them.
@@ -117,6 +117,8 @@ def prune_media_command(
     # superseded, and this line is what makes that diagnosable.
     for target, recipe in sorted(report.live_recipes.items()):
         typer.echo(f"  current recipe, {target}: {recipe}")
+    for target, recipe in sorted(report.export_recipes.items()):
+        typer.echo(f"  current export recipe, {target}: {recipe}")
     _echo_group("file(s) to delete", [str(p) for p in report.files_deleted])
     if report.held_for_age:
         typer.echo(
@@ -139,11 +141,17 @@ def prune_media_command(
         ("foreign", "row(s) carrying no recipe, kept"),
         ("live_legacy_recipe", "live derivative(s) under a superseded recipe"),
         ("relinkable", "unreferenced derivative(s) a current recipe would rebuild"),
+        ("dangling", "link(s) naming a missing file"),
         ("stray", "non-derivative entr(ies) under transcode/"),
     )
     for verdict, header in reported:
         _echo_group(header, [str(entry.path) for entry in report.of(verdict)])
-    if not relink and (report.of("relinkable") or report.of("dangling")):
+    # `--relink` skips a relinkable file with no index row, so only one with a
+    # row, or a dangling link, is a repair the flag would make.
+    repairable = report.of("dangling") or [
+        entry for entry in report.of("relinkable") if entry.row_index is not None
+    ]
+    if not relink and repairable:
         typer.echo("Pass --relink to repair the two classes above.")
     for backup in report.backups:
         typer.echo(f"backup: {backup}")
