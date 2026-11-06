@@ -485,6 +485,10 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `coverage_shortfall` is answered with `--allow-partial` (`allow_partial=True`), and
   only once the user accepts results over fewer entries. Details:
   https://ecodylicscience.github.io/mosaic/concepts/pipelines/.
+- Reason `run_root_held`: another execution is fitting or training the same run. Wait
+  for the holder that `detail` names to end (`mosaic runs` lists it), then rerun, which
+  reuses its result. Run `mosaic release` only for a holder that is dead, and never
+  delete the claim marker by hand.
 - Reason `gpu_card_not_leased`: a GPU step of a local request is given one card, and its
   `device` names another (`1`, `cuda:1`) or several (`0,1`). Set `device` to `0` or
   `cuda`, or leave it unset. `0` names the card the step was given. `--allow-partial`

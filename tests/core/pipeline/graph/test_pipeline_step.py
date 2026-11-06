@@ -57,6 +57,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.storage_names import NAME_MAX_BYTES, SHORTENED_MARKER
 from mosaic.core.pipeline.graph.claims import FileFailureStore
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
+from mosaic.core.pipeline.entry_claim import RunRootHeld
 from mosaic.core.pipeline.job import Cancelled
 from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.pipeline.ops import registered_op
@@ -160,16 +161,20 @@ def test_a_step_pins_its_parent_from_that_parent_s_run_log(
 
 @pytest.mark.parametrize(
     ("raised", "attempts"),
-    [(Cancelled(), 0), (RuntimeError("the feature failed"), 1)],
-    ids=["cancelled", "failed"],
+    [
+        (Cancelled(), 0),
+        (RunRootHeld("another execution is fitting it", held=None), 0),
+        (RuntimeError("the feature failed"), 1),
+    ],
+    ids=["cancelled", "held", "failed"],
 )
-def test_a_cancelled_feature_step_is_not_counted_as_a_step_failure(
+def test_a_cancelled_or_contended_feature_step_is_not_counted_as_a_step_failure(
     tracked: Dataset,
     monkeypatch: pytest.MonkeyPatch,
     raised: Exception,
     attempts: int,
 ) -> None:
-    """Backoff and quarantine read the count, and a cancel is not a failure."""
+    """Backoff and quarantine read the count, which a cancel or a held root skips."""
     recipe = Recipe.model_validate(_chain())
     request = submit_request(tracked, recipe).request
     planned = plan_pipeline(tracked, recipe).step("speed")

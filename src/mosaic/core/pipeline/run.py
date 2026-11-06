@@ -45,6 +45,7 @@ from .column_contract import (
     check_input_columns,
     declared_provides,
 )
+from .entry_claim import INFLIGHT_REFRESH_SECONDS, held_run_root, renew_run_root_claim
 from .error_kind import ClassifiedError, ErrorKind
 from .identity_scheme import (
     FEATURE_IDENTITY_SCHEME,
@@ -1094,6 +1095,15 @@ property of the clock instead of a property of how fast the feature happens to
 be. It moves no identifier and changes no output -- only when rows land.
 """
 
+_FIT_IDLE_SECONDS: Final = 4 * INFLIGHT_REFRESH_SECONDS
+"""How long a fit's claim on its run root survives without a refresh.
+
+A timer re-stamps the claim every refresh interval, so four missed ticks mean the
+holder stopped. The marker adds its grace and floor on top, so a killed holder's
+root frees by expiry within about half an hour, or at once when its run-log
+records its end.
+"""
+
 
 def build_run_params_payload(
     feature: Feature,
@@ -1639,29 +1649,50 @@ def _run_feature_impl(
     if hasattr(feature, "cancel_token"):
         setattr(feature, "cancel_token", ctx.cancel_token)
 
-    # Fit phase (if not state_ready)
+    # Fit phase (if not state_ready). Two executions of one identity share this
+    # run root, so the fit holds it: a second execution arriving mid-fit is
+    # refused, and the state is loaded again under the claim, so a save a peer
+    # finished since the first load is used rather than fitted again. The claim
+    # is released before apply, which runs concurrently across scopes.
     if not state_ready:
         ctx.check_cancel()
-
-        ctx.phase("fit", f"{len(manifest)} entries")
-        feature.fit(
-            fit_input_stream(
-                feature, manifest, filter_factory, cross_join, widens_individuals
+        kind = f"feature:{feature.name}"
+        fitted = False
+        with held_run_root(
+            ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
+        ) as marker:
+            state_ready = feature.load_state(
+                run_root, artifact_paths, dependency_lookups
             )
-        )
-        feature.save_state(run_root)
-        # Item 5.3, and the placement is the item. Written here rather than
-        # beside params.json because only this branch means a fit actually ran:
-        # params.json is written on every invocation, before load_state, so its
-        # `_scope` is the scope of whichever run came last. A params-level fitter
-        # -- scope-free, so every apply scope shares one run root -- fits from
-        # its pinned artifacts, not from this invocation's scope, so its record
-        # is derived from theirs.
-        write_fit_scope(
-            run_root,
-            derive_fit_scope(ds, feature, resolved, resolutions, artifact_paths),
-        )
-        ctx.phase("apply")
+            if not state_ready:
+                ctx.phase("fit", f"{len(manifest)} entries")
+                feature.fit(
+                    fit_input_stream(
+                        feature,
+                        manifest,
+                        filter_factory,
+                        cross_join,
+                        widens_individuals,
+                    )
+                )
+                _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
+                feature.save_state(run_root)
+                # Written here rather than beside params.json because only this
+                # branch means a fit actually ran: params.json is written on every
+                # invocation, before load_state, so its `_scope` is the scope of
+                # whichever run came last. A params-level fitter -- scope-free, so
+                # every apply scope shares one run root -- fits from its pinned
+                # artifacts, not from this invocation's scope, so its record is
+                # derived from theirs.
+                write_fit_scope(
+                    run_root,
+                    derive_fit_scope(
+                        ds, feature, resolved, resolutions, artifact_paths
+                    ),
+                )
+                fitted = True
+        if fitted:
+            ctx.phase("apply")
 
     # Apply phase — index rows are flushed periodically for interrupt recovery
     _pending_idx_rows: list[FeatureIndexRow] = []

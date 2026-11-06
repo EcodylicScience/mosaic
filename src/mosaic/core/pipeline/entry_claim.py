@@ -16,6 +16,10 @@ refresh callbacks keep that claim alive too. A training op attaches
 :func:`phase_activity` to its tool's output, or :class:`ClaimRefreshingProgress` to
 an in-process trainer's callbacks.
 
+A feature fit holds its run root through :func:`held_run_root`, which a timer
+keeps refreshed and which is released on leaving it, because apply runs after the
+fit on the same root and is not exclusive.
+
 The markers, and the rule deciding whether a claim is live, expired or orphaned,
 are in :mod:`mosaic.core.pipeline.markers`. This module is the lifecycle built on
 them.
@@ -29,7 +33,8 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -60,6 +65,7 @@ __all__ = [
     "claim_run_root",
     "discard_if_empty",
     "empty_claimed_run_root",
+    "held_run_root",
     "open_entry",
     "phase_activity",
     "release_entry",
@@ -352,9 +358,10 @@ def claim_run_root(
         alive. A claim expires ``idle_seconds`` plus a grace after it is written,
         and a one-shot op that outruns that window has its root read as abandoned
         by the next execution along -- which then clears it and starts writing
-        into the same directory. Only a caller with lines arriving from its tool
-        can refresh it, through :func:`phase_activity`, and it cannot do that
-        without the marker.
+        into the same directory. A caller refreshes it with the marker: through
+        :func:`phase_activity` for a tool's output lines,
+        :class:`ClaimRefreshingProgress` for an in-process trainer's callbacks,
+        or the timer of :func:`held_run_root`.
 
     Raises:
         RunRootHeld: Another execution holds *run_root*. It is a
@@ -436,3 +443,69 @@ def empty_claimed_run_root(run_root: Path) -> None:
             shutil.rmtree(child)
         else:
             child.unlink()
+
+
+@contextmanager
+def held_run_root(
+    ds: Dataset,
+    execution_id: str,
+    run_root: Path,
+    kind: str,
+    idle_seconds: float,
+    *,
+    doing: str,
+) -> Generator[InflightMarker]:
+    """Hold *run_root* for the block, refreshed by a timer and released on leaving.
+
+    The claim is taken with :func:`claim_run_root`, so an expired or orphaned
+    holder is cleared and a live one refuses. A thread re-stamps the claim every
+    :data:`INFLIGHT_REFRESH_SECONDS` while the block runs, because a fit in this
+    process prints no line and calls no progress callback that could. The thread
+    is stopped and joined, and the claim released, whatever the block raised.
+
+    Args:
+        ds: The dataset whose run-logs say whether a holder is still running.
+        execution_id: This execution.
+        run_root: The directory to claim. It must exist.
+        kind: The caller's kind, named in a refusal.
+        idle_seconds: How long the claim lasts without a refresh.
+        doing: What this execution would do to the root, as a gerund for the
+            refusal's sentence.
+
+    Yields:
+        The claim, for :func:`renew_run_root_claim` before the block writes.
+
+    Raises:
+        RunRootHeld: Another execution holds *run_root*.
+    """
+    marker = claim_run_root(ds, execution_id, run_root, kind, idle_seconds, doing=doing)
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_keep_claimed,
+        args=(run_root, marker, idle_seconds, stop),
+        name=f"claim-{run_root.name}",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield marker
+    finally:
+        stop.set()
+        thread.join()
+        clear_inflight(run_root, execution_id=execution_id)
+
+
+def _keep_claimed(
+    run_root: Path, marker: InflightMarker, idle_seconds: float, stop: threading.Event
+) -> None:
+    """Re-stamp *marker* until *stop* is set or another execution takes the root.
+
+    A refusal by the filesystem shortens the claim and is retried on the next
+    tick. The interval is read on every tick.
+    """
+    while not stop.wait(INFLIGHT_REFRESH_SECONDS):
+        try:
+            if refresh_inflight(run_root, marker, idle_seconds) is None:
+                return
+        except OSError:
+            continue

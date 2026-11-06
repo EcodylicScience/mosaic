@@ -36,7 +36,8 @@ What lives where:
 - ``lightning_action`` stands in for the lightning-action package, with its data
   contract, and records what a feature hands it.
 - ``stand_in_features`` -- features that do nothing but declare the source
-  roots they consume, for the tests of what a source change reaches.
+  roots they consume, for the tests of what a source change reaches, and one
+  that fits, for the tests of the claim a fit holds.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
   TREx, SLEAP and DeepLabCut exports.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
@@ -341,6 +342,8 @@ from tests.helpers.lightning_action import (
 )
 from tests.helpers.stand_in_features import (
     CropLike,
+    FitControl,
+    FittingFeature,
     LossyFeature,
     PairClusterFeature,
     ParallelFeature,
@@ -478,6 +481,8 @@ __all__ = [
     "SPEED_RECIPE",
     "FakeDetections",
     "FakeResult",
+    "FitControl",
+    "FittingFeature",
     "GOLDEN_DIR",
     "ImportedName",
     "KEYPOINTS_PAYLOAD",

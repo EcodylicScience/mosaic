@@ -6,6 +6,8 @@ does nothing but declare one. :class:`LossyFeature` loses the entries it is told
 to and :class:`ScopedFeature` also declares ``scope_dependent``, for the tests of
 how a run is measured against the entries it was asked for.
 :class:`PairClusterFeature` writes pair rows for the tests of scoring them.
+:class:`FittingFeature` fits once per run root and saves its state, for the tests
+of the claim a fit holds.
 :class:`ParallelFeature` declares ``parallelizable``, and a subclass that sets
 ``kill_on`` ends the process computing those sequences, for the tests of a run
 that computes several entries at once.
@@ -15,12 +17,15 @@ from __future__ import annotations
 
 import os
 import signal
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.params import Params
+from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream
 from mosaic.core.pipeline.types.feature import EmitsLevel
 
@@ -147,3 +152,87 @@ class PairClusterFeature(PlainFeature):
                 "cluster": np.repeat(frames % 2, 2),
             }
         )
+
+
+_GATE_SECONDS = 30.0
+"""How long a gated stand-in waits to be let through before its test fails."""
+
+
+@dataclass
+class FitControl:
+    """What a test sees of the :class:`FittingFeature` runs sharing it, and steers.
+
+    Attributes:
+        fits: How many times any of them fitted.
+        fitting: Set once a fit has begun.
+        finish_fit: A fit waits for this before it returns, when given.
+        applying: Set once an apply has begun.
+        finish_apply: An apply waits for this before it returns, when given.
+        fit_error: Raised by every fit, when given.
+        peer_saves_first: The first ``load_state`` writes the state, as a peer
+            finishing its fit at that moment would, and still answers ``False``.
+        loads: How many times any of them loaded state.
+        lock: Guards the two counts across the threads of one test.
+    """
+
+    fits: int = 0
+    fitting: threading.Event = field(default_factory=threading.Event)
+    finish_fit: threading.Event | None = None
+    applying: threading.Event = field(default_factory=threading.Event)
+    finish_apply: threading.Event | None = None
+    fit_error: BaseException | None = None
+    peer_saves_first: bool = False
+    loads: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+
+def _wait(gate: threading.Event | None) -> None:
+    if gate is not None and not gate.wait(_GATE_SECONDS):
+        raise TimeoutError("the test never let the stand-in feature through")
+
+
+class FittingFeature(PlainFeature):
+    """A scope-free feature whose state is one ``state.json`` that its fit makes.
+
+    Instances sharing one :class:`FitControl` share one identity and so one run
+    root, which is how a test runs two executions of one fit at once.
+    """
+
+    name = "prov-fitting"
+    accepts_overlap = False
+    emits: EmitsLevel = "as-input"
+
+    def __init__(self, control: FitControl) -> None:
+        super().__init__()
+        self.control = control
+
+    def load_state(
+        self,
+        run_root: Path,
+        artifact_paths: dict[str, Path],
+        dependency_lookups: dict[str, DependencyLookup],
+    ) -> bool:
+        state = run_root / "state.json"
+        with self.control.lock:
+            self.control.loads += 1
+            first = self.control.loads == 1
+        if first and self.control.peer_saves_first:
+            self.save_state(run_root)
+            return False
+        return state.exists()
+
+    def fit(self, inputs: InputStream) -> None:
+        with self.control.lock:
+            self.control.fits += 1
+        self.control.fitting.set()
+        _wait(self.control.finish_fit)
+        if self.control.fit_error is not None:
+            raise self.control.fit_error
+
+    def save_state(self, run_root: Path) -> None:
+        atomic_write(run_root / "state.json", lambda temp: temp.write_text("{}"))
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        self.control.applying.set()
+        _wait(self.control.finish_apply)
+        return df

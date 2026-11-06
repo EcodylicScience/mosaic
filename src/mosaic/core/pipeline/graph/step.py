@@ -45,6 +45,7 @@ from mosaic.runlog import (
     run_log_path,
 )
 
+from ..entry_claim import RunRootHeld
 from ..inventory.cache import InventoryCache
 from ..inventory.model import ArtifactRef, FeatureRunRef
 from ..job import Cancelled
@@ -696,6 +697,10 @@ def _run(
     except Cancelled:
         # A cancel is not counted as a failure, because backoff and quarantine
         # read the failure count.
+        raise
+    except RunRootHeld:
+        # Another execution is fitting this run. Contention is not a failure of
+        # the step, so backoff and quarantine do not count it either.
         raise
     except Exception as exc:
         store.note_step_failure(

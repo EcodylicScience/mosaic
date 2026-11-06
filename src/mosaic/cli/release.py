@@ -5,8 +5,8 @@ an exclusive create and never releases it: a holder whose run-log has gone
 terminal reads as ``orphaned``, so a finished or cancelled execution frees the
 directory by itself. That covers every ordinary ending, including the one
 ``mosaic cancel`` now records for a process that had already exited. A feature
-fit is the other kind. It releases its claim in a ``finally``, so it leaves
-nothing for this command to free.
+fit is the other kind. It releases its claim in a ``finally``, and only a killed
+fit leaves one behind, which this command frees like any other.
 
 What the op's rule does not cover is a claim with **no terminal record to find**:
 an execution that ran untracked, or whose run-log never reached the dataset.

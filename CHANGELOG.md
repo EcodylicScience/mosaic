@@ -8,6 +8,36 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: feature fits claim their run root, and a held run root is a refusal
+
+**A held run root is a refusal.** A one-shot op (training, preparing, converting,
+scoring) whose run root another live execution holds raised a `RuntimeError`, so the
+attempt ended with a traceback and exit 1. It now raises `RunRootHeld`, a `Refusal`
+with the new reason `run_root_held`: every verb exits 65,
+`--json` prints the reason and the holder (`holder_execution_id`, `holder_host`,
+`holder_pid`, `holder_expires_at`) under `detail`, and the attempt's run-log records
+status `failed` with the refusal in `error_json`. `run_root_held` is a wire addition to
+`RefusalReason`, and no terminal status is added.
+
+**The claim names moved.** `claim_run_root`, `renew_run_root_claim`,
+`empty_claimed_run_root` and `RunRootHeld` are in `mosaic.core.pipeline.entry_claim`.
+`mosaic.tracking.ops._common` no longer defines or re-exports them, so an import from
+there fails.
+
+**A feature fit claims its run root.** Two executions of one fitting identity share one
+run root, and both used to fit and write into it. `run_feature` now takes the root once
+`load_state` misses, loads the state again under the claim, fits, saves and releases the
+claim before apply. A timer refreshes the claim while the fit runs. A second execution
+arriving mid-fit is refused with `run_root_held`, and one arriving after loads the saved
+state without fitting. A pipeline step refused this way is not counted as a step failure,
+so backoff and quarantine ignore it. Apply is not claimed, so scope-free runs over
+different entries still apply at once. A killed fit frees its root when its run-log
+records the end, or by the claim's expiry.
+
+**Every fitter saves its state atomically.** Each `save_state` writes every file through
+an atomic helper and writes the file its `load_state` tests for last, so a reader never
+takes a partial state for a whole one. No run id, version or output moves.
+
 ## Unreleased: Python 3.13 is the minimum
 
 mosaic requires Python 3.13 or newer, the version mosaic-api runs on, and every CI job

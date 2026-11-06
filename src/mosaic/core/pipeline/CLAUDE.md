@@ -194,8 +194,11 @@ are in `graph/CLAUDE.md`.
   `remove_feature_run` (`feature_run_removal.py`): an intent record with the run's
   `params.json` in the cleanup's run-log, then the index rows, then the directory,
   then a done record (`tests/core/pipeline/test_feature_run_removal.py`).
-- `run_feature` runs unclaimed. Two concurrent executions of one fitting identity
-  both fit and write into one run root. Do not assume a fit is exclusive.
+- A fit runs under `held_run_root` (`entry_claim.py`): `run_feature` claims the run
+  root once `load_state` misses, loads the state again under the claim, and a timer
+  refreshes the claim until the fit and its save end. A live holder refuses with
+  `run_root_held`, which `execute_step` does not count as a step failure. Apply is
+  unclaimed (`tests/core/pipeline/test_fit_claim.py`).
 
 ## Reading a run
 
