@@ -43,11 +43,15 @@ __all__ = [
     "TRUST_VARIABLE",
     "PickledFormatNotTrustedError",
     "UnsafeRawFileError",
+    "brief",
+    "check_hdf5_attribute",
     "check_hdf5_file",
     "check_hdf5_member",
     "check_npz",
     "pickled_files_trusted",
     "raw_array_limit_bytes",
+    "read_hdf5_attribute",
+    "read_hdf5_strings",
     "read_pandas_hdf_frame",
     "require_pickled_trust",
     "require_within_limit",
@@ -61,6 +65,22 @@ TRUST_VARIABLE = "MOSAIC_TRUST_PICKLED_FILES"
 
 _DEFAULT_LIMIT_BYTES = 2 * 1024**3
 _MAX_NPZ_MEMBERS = 4096
+# Each variable-length string is read on its own, so this bounds the reads.
+_MAX_VARIABLE_STRINGS = 65536
+# Each read of one element inflates its whole chunk unless h5py's chunk cache,
+# 1 MiB by default, holds it. The file stores a variable-length string as its
+# length and a global heap ID, 16 bytes.
+_CHUNK_CACHE_BYTES = 1024**2
+_VARIABLE_STRING_STORED_BYTES = 16
+# PyTables stores an attribute in its node's header, which holds 64 KiB, so an
+# attribute pandas writes, a pickle included, is smaller unless the file uses
+# the latest format. A SLEAP ``dims`` attribute is far smaller.
+_MAX_ATTRIBUTE_BYTES = 64 * 1024
+# A decoded label is a Python object held through an 8-byte pointer: a short
+# str takes about 50 bytes and an int 28. A str takes up to four bytes per
+# character, and each stored byte decodes to one character at most.
+_PYTHON_OBJECT_BYTES = 64
+_STRING_BYTES_PER_STORED_BYTE = 4
 _ZIP_LOCAL_HEADER = b"PK\x03\x04"
 _ZIP_SIGNATURES = (_ZIP_LOCAL_HEADER, b"PK\x05\x06")
 _HEADER_READERS = {
@@ -157,7 +177,9 @@ def check_npz(path: Path) -> None:
     require_within_limit(path, total, "its arrays declare")
 
 
-def require_within_limit(path: Path, total: int, measure: str) -> None:
+def require_within_limit(
+    path: Path, total: int, measure: str, *, member: str | None = None
+) -> None:
     """Refuse *path* if *total* bytes exceed `raw_array_limit_bytes`.
 
     Args:
@@ -165,6 +187,7 @@ def require_within_limit(path: Path, total: int, measure: str) -> None:
         total: The bytes the file's arrays take.
         measure: How the refusal says they take them, such as ``"its arrays
             declare"``.
+        member: The member that took the total past the limit, if one did.
 
     Raises:
         UnsafeRawFileError: If *total* exceeds the limit.
@@ -175,7 +198,7 @@ def require_within_limit(path: Path, total: int, measure: str) -> None:
             f"{measure} {total} bytes, more than the {limit} that "
             f"{LIMIT_VARIABLE} allows"
         )
-        raise UnsafeRawFileError(path, reason)
+        raise UnsafeRawFileError(path, reason, member=member)
 
 
 def _declared_bytes(path: Path, archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> int:
@@ -214,7 +237,14 @@ def _declared_bytes(path: Path, archive: zipfile.ZipFile, info: zipfile.ZipInfo)
     return declared
 
 
-def check_hdf5_member(path: Path, group: h5py.Group, name: str) -> int:
+def check_hdf5_member(
+    path: Path,
+    group: h5py.Group,
+    name: str,
+    *,
+    read_as: np.dtype[np.generic] | None = None,
+    variable_strings: bool = False,
+) -> int:
     """Refuse member *name* of *group* if reading it is unsafe, from its metadata.
 
     No data is read. The member must be a hard link, since a soft or external
@@ -227,10 +257,17 @@ def check_hdf5_member(path: Path, group: h5py.Group, name: str) -> int:
         path: The file that *group* belongs to, as the refusal names it.
         group: The group holding the member.
         name: The member's path relative to *group*.
+        read_as: The dtype the caller converts the values to as it reads
+            them, when that differs from the stored one.
+        variable_strings: Whether a dataset of variable-length strings
+            passes. Its declared bytes count only the references to its
+            strings, so the caller reads it through `read_hdf5_strings`.
 
     Returns:
-        The bytes the member declares: its shape times its item size for a
-        dataset, and 0 for a group.
+        The bytes the member declares, and 0 for a group. A dataset declares
+        the larger of its shape and its chunk shape, since HDF5 inflates a
+        whole chunk to read any element of it, times the larger of its item
+        size and that of *read_as*.
 
     Raises:
         UnsafeRawFileError: If the member fails any of these checks, or has a
@@ -258,12 +295,194 @@ def check_hdf5_member(path: Path, group: h5py.Group, name: str) -> int:
     except TypeError as exc:
         reason = "has a datatype with no numpy equivalent"
         raise UnsafeRawFileError(path, reason, member=member) from exc
-    if dtype.hasobject:
+    if dtype.hasobject and not (variable_strings and _is_variable_string(dtype)):
         reason = "holds variable-length, reference or object values"
         raise UnsafeRawFileError(path, reason, member=member)
     if target.shape is None:
         return 0
-    return math.prod(target.shape) * max(dtype.itemsize, 1)
+    read_itemsize = 0 if read_as is None else read_as.itemsize
+    items = max(math.prod(target.shape), math.prod(target.chunks or ()))
+    return items * max(dtype.itemsize, read_itemsize, 1)
+
+
+def _is_variable_string(dtype: np.dtype[np.generic]) -> bool:
+    """Whether *dtype* is h5py's dtype for variable-length strings."""
+    import h5py
+
+    info = h5py.check_string_dtype(dtype)
+    return info is not None and info.length is None
+
+
+def check_hdf5_attribute(
+    path: Path,
+    node: h5py.Group | h5py.Dataset | h5py.Datatype,
+    name: str,
+    *,
+    variable_string: bool = False,
+) -> None:
+    """Refuse attribute *name* of *node* from its datatype and shape, unread.
+
+    h5py builds a Python object for each element of a variable-length or
+    reference attribute, and the elements of one can all name a single large
+    object in the file, so such an attribute is refused before it is read, as
+    is one that declares more than ``_MAX_ATTRIBUTE_BYTES``.
+
+    Args:
+        path: The file that *node* belongs to, as the refusal names it.
+        node: The object holding the attribute.
+        name: The attribute's name.
+        variable_string: Whether a single variable-length string passes. It
+            names one object in the file, so it costs at most what the file
+            holds.
+
+    Raises:
+        UnsafeRawFileError: If the attribute holds variable-length,
+            reference or object values, has a datatype with no numpy
+            equivalent, or declares more than ``_MAX_ATTRIBUTE_BYTES``.
+    """
+    member = (node.name or "").lstrip("/")
+    attribute = node.attrs.get_id(name)
+    try:
+        dtype = attribute.dtype
+    except TypeError as exc:
+        reason = f"attribute {name} has a datatype with no numpy equivalent"
+        raise UnsafeRawFileError(path, reason, member=member) from exc
+    elements = math.prod(attribute.shape or ())
+    one_string = variable_string and elements == 1 and _is_variable_string(dtype)
+    if dtype.hasobject and not one_string:
+        reason = f"attribute {name} holds variable-length or reference values"
+        raise UnsafeRawFileError(path, reason, member=member)
+    declared = elements * max(dtype.itemsize, 1)
+    if declared > _MAX_ATTRIBUTE_BYTES:
+        reason = (
+            f"attribute {name} declares {declared} bytes, more than the "
+            f"{_MAX_ATTRIBUTE_BYTES} an attribute may"
+        )
+        raise UnsafeRawFileError(path, reason, member=member)
+
+
+def read_hdf5_attribute(
+    path: Path,
+    node: h5py.Group | h5py.Dataset | h5py.Datatype,
+    name: str,
+    *,
+    variable_string: bool = False,
+) -> object:
+    """Read attribute *name* of *node* once `check_hdf5_attribute` passes it.
+
+    A variable-length string is refused once read if it is longer than
+    ``_MAX_ATTRIBUTE_BYTES``, the size a fixed-size attribute may declare.
+
+    Args:
+        path: The file that *node* belongs to, as the refusal names it.
+        node: The object holding the attribute.
+        name: The attribute's name.
+        variable_string: Whether a single variable-length string passes.
+
+    Returns:
+        The attribute's value as h5py reads it, or ``None`` if *node* has no
+        attribute *name*.
+
+    Raises:
+        UnsafeRawFileError: If `check_hdf5_attribute` refuses the attribute,
+            or its string is longer than ``_MAX_ATTRIBUTE_BYTES``.
+    """
+    if name not in node.attrs:
+        return None
+    check_hdf5_attribute(path, node, name, variable_string=variable_string)
+    value = node.attrs[name]
+    if isinstance(value, str | bytes) and len(value) > _MAX_ATTRIBUTE_BYTES:
+        member = (node.name or "").lstrip("/")
+        reason = (
+            f"attribute {name} holds a string of {len(value)} characters, "
+            f"more than {_MAX_ATTRIBUTE_BYTES}"
+        )
+        raise UnsafeRawFileError(path, reason, member=member)
+    return value
+
+
+def read_hdf5_strings(path: Path, group: h5py.Group, name: str) -> list[bytes]:
+    """Read dataset *name* of *group*, of fixed- or variable-length strings.
+
+    The dataset passes `check_hdf5_member`. The bytes it declares and its
+    strings, counted as the bytes objects they are read into and the text
+    they decode to, must fit in `raw_array_limit_bytes`. An empty dataset holds
+    no strings, whatever dtype that check passes. A fixed-length string
+    declares its size, so those are counted before any is read. The elements
+    of a variable-length dataset can all name one large string in the file, so
+    its strings are read one at a time, at most ``_MAX_VARIABLE_STRINGS`` of
+    them, and the reading stops at the first that takes the total past the
+    limit. A single string costs at most what the file holds. Its chunks must
+    fit in h5py's chunk cache, or each read would inflate a whole chunk again.
+
+    Args:
+        path: The file that *group* belongs to, as the refusal names it.
+        group: The group holding the dataset.
+        name: The dataset's path relative to *group*.
+
+    Returns:
+        The strings, flattened in C order.
+
+    Raises:
+        UnsafeRawFileError: If the dataset fails `check_hdf5_member`, holds
+            values other than strings, has chunks larger than the chunk
+            cache, or its strings pass the limit.
+    """
+    import h5py
+
+    declared = check_hdf5_member(path, group, name, variable_strings=True)
+    member = posixpath.join(group.name or "/", name).lstrip("/")
+    dataset = group[name]
+    if not isinstance(dataset, h5py.Dataset):
+        raise UnsafeRawFileError(path, "is a group, not strings", member=member)
+    shape = dataset.shape
+    if shape is None or math.prod(shape) == 0:
+        return []
+    count = math.prod(shape)
+    dtype = dataset.dtype
+    variable = _is_variable_string(dtype)
+    if not variable and dtype.kind != "S":
+        reason = f"holds {dtype} values, not strings"
+        raise UnsafeRawFileError(path, reason, member=member)
+    measure = "its strings, read and decoded, take"
+    per_byte = 1 + _STRING_BYTES_PER_STORED_BYTE
+    if not variable:
+        objects = count * (_PYTHON_OBJECT_BYTES + per_byte * dtype.itemsize)
+        total = declared + objects
+        require_within_limit(path, total, measure, member=member)
+        return _stored_strings(path, member, dataset[()])
+    if count > _MAX_VARIABLE_STRINGS:
+        reason = f"holds {count} strings, more than {_MAX_VARIABLE_STRINGS}"
+        raise UnsafeRawFileError(path, reason, member=member)
+    chunks = dataset.chunks
+    chunk = 0 if chunks is None else math.prod(chunks) * _VARIABLE_STRING_STORED_BYTES
+    if chunk > _CHUNK_CACHE_BYTES:
+        reason = (
+            f"stores its strings in chunks of {chunk} bytes, more than the "
+            f"{_CHUNK_CACHE_BYTES} the chunk cache holds"
+        )
+        raise UnsafeRawFileError(path, reason, member=member)
+    total = declared + count * _PYTHON_OBJECT_BYTES
+    require_within_limit(path, total, measure, member=member)
+    strings: list[bytes] = []
+    for position in np.ndindex(shape):
+        one = tuple(slice(index, index + 1) for index in position)
+        for string in _stored_strings(path, member, dataset[one]):
+            total += per_byte * len(string)
+            require_within_limit(path, total, measure, member=member)
+            strings.append(string)
+    return strings
+
+
+def _stored_strings(path: Path, member: str, values: object) -> list[bytes]:
+    """The strings that h5py read from *member*, flattened in C order."""
+    strings: list[bytes] = []
+    for _, raw in np.ndenumerate(np.asarray(values)):
+        if not isinstance(raw, bytes):
+            reason = f"holds a {type(raw).__name__}, not a string"
+            raise UnsafeRawFileError(path, reason, member=member)
+        strings.append(bytes(raw))
+    return strings
 
 
 def check_hdf5_file(path: Path, handle: h5py.File) -> int:
@@ -378,18 +597,9 @@ _UNREADABLE_PICKLE = (
     IndexError,
     AttributeError,
 )
-# PyTables stores an attribute in its node's header, which holds 64 KiB, so an
-# attribute pandas writes, a pickle included, is smaller unless the file uses
-# the latest format.
-_MAX_ATTRIBUTE_BYTES = 64 * 1024
 # pandas nests its pickled attributes four levels deep at most:
 # ``non_index_axes`` is a list of tuples of a list of tuples.
 _MAX_PICKLE_DEPTH = 8
-# A decoded label is a Python object held through an 8-byte pointer: a short
-# str takes about 50 bytes and an int 28. A str takes up to four bytes per
-# character, and each stored byte decodes to one character at most.
-_PYTHON_OBJECT_BYTES = 64
-_STRING_BYTES_PER_STORED_BYTE = 4
 _BRIEF = reprlib.Repr(
     maxlevel=2,
     maxtuple=4,
@@ -415,8 +625,15 @@ def _as_mapping(value: object) -> Mapping[object, object] | None:
     return value if is_object_mapping(value) else None
 
 
-def _brief(value: object) -> str:
-    """A short repr of *value*, which a refusal can show whatever its size."""
+def brief(value: object) -> str:
+    """A short repr of *value*, which a refusal can show whatever its size.
+
+    Args:
+        value: The value to show.
+
+    Returns:
+        Its repr, with long strings, numbers and containers cut short.
+    """
     return _BRIEF.repr(value)
 
 
@@ -500,7 +717,7 @@ class _PandasGroupReader:
             return self.fixed_frame()
         if pandas_type == "frame_table":
             return self.table_frame()
-        return self.fail(f"holds a pandas object of type {_brief(pandas_type)}")
+        return self.fail(f"holds a pandas object of type {brief(pandas_type)}")
 
     def fixed_frame(self) -> pd.DataFrame:
         """A frame in the fixed format, as `BlockManagerFixed.read` reads it."""
@@ -532,7 +749,7 @@ class _PandasGroupReader:
         if variety == "regular":
             return self.index_node(key)
         if variety != "multi":
-            return self.fail(f"axis {key} is of the variety {_brief(variety)}")
+            return self.fail(f"axis {key} is of the variety {brief(variety)}")
         levels: list[pd.Index] = []
         codes: list[list[int]] = []
         for level in range(self.integer(self.group, f"{key}_nlevels")):
@@ -549,9 +766,7 @@ class _PandasGroupReader:
                 verify_integrity=True,
             )
         except (TypeError, ValueError) as exc:
-            return self.fail(
-                f"axis {key} is not a valid MultiIndex: {_brief(str(exc))}"
-            )
+            return self.fail(f"axis {key} is not a valid MultiIndex: {brief(str(exc))}")
 
     def index_node(self, key: str) -> pd.Index:
         """One index node, as `GenericFixed.read_index_node` reads it."""
@@ -570,7 +785,7 @@ class _PandasGroupReader:
         elif kind == "string":
             values = self.strings(key, self.nan_rep(node))
         else:
-            return self.fail(f"index {key} is of the kind {_brief(kind)}")
+            return self.fail(f"index {key} is of the kind {brief(kind)}")
         return pd.Index(values, name=name)
 
     def table_frame(self) -> pd.DataFrame:
@@ -616,7 +831,7 @@ class _PandasGroupReader:
     ) -> np.ndarray:
         kind = self.attribute(table, "index_kind")
         if not isinstance(kind, str) or kind not in _NUMERIC_KINDS:
-            return self.fail(f"has a table index of the kind {_brief(kind)}")
+            return self.fail(f"has a table index of the kind {brief(kind)}")
         if self.attribute(table, "index_meta") is not None:
             self.fail("has a table index with metadata")
         values = rows["index"]
@@ -652,7 +867,7 @@ class _PandasGroupReader:
             self.fail(f"block {block} holds {values.dtype} values, not numbers")
         if dtype_name != values.dtype.name:
             self.fail(
-                f"block {block} declares {_brief(dtype_name)} but holds {values.dtype}"
+                f"block {block} declares {brief(dtype_name)} but holds {values.dtype}"
             )
         if self.attribute(table, f"{block}_meta") is not None:
             self.fail(f"block {block} carries metadata")
@@ -670,7 +885,7 @@ class _PandasGroupReader:
                 columns = columns.set_names(names)
         except (TypeError, ValueError) as exc:
             return self.fail(
-                f"block {block} has unusable column labels: {_brief(str(exc))}"
+                f"block {block} has unusable column labels: {brief(str(exc))}"
             )
         return pd.DataFrame(values, columns=columns, index=index, copy=False)
 
@@ -684,7 +899,7 @@ class _PandasGroupReader:
         for index in range(plist.get_nfilters()):
             code, _, _, name = plist.get_filter(index)
             if not h5py.h5z.filter_avail(code):
-                filter_name = _brief(name.decode(errors="replace"))
+                filter_name = brief(name.decode(errors="replace"))
                 self.fail(f"dataset {key} needs the {filter_name} filter")
         return node
 
@@ -728,7 +943,7 @@ class _PandasGroupReader:
                     return self.fail(f"strings {key} hold a {type(raw).__name__}")
                 decoded[position] = raw.decode(self.encoding, self.errors)
         except UnicodeError as exc:
-            return self.fail(f"strings {key} do not decode: {_brief(str(exc))}")
+            return self.fail(f"strings {key} do not decode: {brief(str(exc))}")
         if nan_rep is not None:
             decoded[decoded == nan_rep] = np.nan
         return decoded
@@ -786,7 +1001,7 @@ class _PandasGroupReader:
             try:
                 decoded = self.unpickle(value)
             except (_ForbiddenPickleError, RecursionError) as exc:
-                reason = f"attribute {name} cannot be unpickled: {_brief(str(exc))}"
+                reason = f"attribute {name} cannot be unpickled: {brief(str(exc))}"
                 raise _UnrecognizedLayoutError(
                     self.path, reason, member=member
                 ) from exc
@@ -806,37 +1021,16 @@ class _PandasGroupReader:
             return value
 
     def check_attribute(self, node: h5py.Group | h5py.Dataset, name: str) -> None:
-        """Refuse attribute *name* of *node* from its datatype and shape, unread.
+        """Refuse attribute *name* of *node* unread, as `check_hdf5_attribute` does.
 
-        h5py builds a Python object for each element of a variable-length or
-        reference attribute, and the elements of one can all name a single
-        large object in the file, so such an attribute is refused before it is
-        read, as is one past the size pandas writes. pandas writes each
-        attribute that the reader reads as a scalar.
+        pandas writes each attribute that the reader reads as a scalar.
 
         Raises:
-            UnsafeRawFileError: If the attribute holds variable-length,
-                reference or object values, has a datatype with no numpy
-                equivalent, or declares more than ``_MAX_ATTRIBUTE_BYTES``.
+            UnsafeRawFileError: If `check_hdf5_attribute` refuses it.
             _UnrecognizedLayoutError: If the attribute is not a scalar.
         """
-        member = (node.name or "").lstrip("/")
+        check_hdf5_attribute(self.path, node, name)
         attribute = node.attrs.get_id(name)
-        try:
-            dtype = attribute.dtype
-        except TypeError as exc:
-            reason = f"attribute {name} has a datatype with no numpy equivalent"
-            raise UnsafeRawFileError(self.path, reason, member=member) from exc
-        if dtype.hasobject:
-            reason = f"attribute {name} holds variable-length or reference values"
-            raise UnsafeRawFileError(self.path, reason, member=member)
-        declared = math.prod(attribute.shape or ()) * max(dtype.itemsize, 1)
-        if declared > _MAX_ATTRIBUTE_BYTES:
-            reason = (
-                f"attribute {name} declares {declared} bytes, more than the "
-                f"{_MAX_ATTRIBUTE_BYTES} pandas writes"
-            )
-            raise UnsafeRawFileError(self.path, reason, member=member)
         if attribute.shape not in (None, ()):
             self.fail(f"attribute {name} is an array of shape {attribute.shape}")
 

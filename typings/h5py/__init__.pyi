@@ -5,7 +5,7 @@ It declares only the names that mosaic uses. The signatures follow h5py 3.16.
 
 from collections.abc import Callable, ItemsView, KeysView
 from types import TracebackType
-from typing import Literal, Self, overload
+from typing import Literal, NamedTuple, Self, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -28,6 +28,12 @@ class Empty:
 def string_dtype(
     encoding: str = "utf-8", length: int | None = None
 ) -> np.dtype[np.object_]: ...
+
+class string_info(NamedTuple):
+    encoding: str
+    length: int | None
+
+def check_string_dtype(dt: np.dtype[np.generic]) -> string_info | None: ...
 
 class HardLink: ...
 
@@ -64,9 +70,11 @@ class Dataset:
     attrs: AttributeManager
     dtype: np.dtype[np.generic]
     shape: tuple[int, ...] | None
+    chunks: tuple[int, ...] | None
     is_virtual: bool
     external: list[tuple[str, int, int]] | None
     def __getitem__(self, key: object) -> npt.NDArray[np.generic]: ...
+    def __setitem__(self, key: object, value: object) -> None: ...
     def __array__(
         self, dtype: npt.DTypeLike | None = None
     ) -> npt.NDArray[np.generic]: ...
@@ -93,6 +101,7 @@ class Group:
     attrs: AttributeManager
     def __getitem__(self, name: str) -> _Node: ...
     def __setitem__(self, name: str, value: object) -> None: ...
+    def __delitem__(self, name: str) -> None: ...
     def __contains__(self, name: str) -> bool: ...
     def __iter__(self) -> object: ...
     def __len__(self) -> int: ...
@@ -112,6 +121,8 @@ class Group:
         data: npt.ArrayLike | None = None,
         *,
         chunks: tuple[int, ...] | bool | None = None,
+        maxshape: tuple[int | None, ...] | None = None,
+        compression: str | None = None,
         external: list[tuple[str, int, int]] | None = None,
     ) -> Dataset: ...
     def copy(self, source: Group | Dataset, dest: str) -> None: ...

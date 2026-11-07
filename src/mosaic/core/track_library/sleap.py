@@ -43,7 +43,7 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Final, override
+from typing import TYPE_CHECKING, Annotated, Final, override
 
 import numpy as np
 import numpy.typing as npt
@@ -58,6 +58,17 @@ from mosaic.core.track_converter import (
     register_track_converter,
 )
 from mosaic.core.track_library.helpers import norm_hint
+from mosaic.core.track_library.safe_load import (
+    UnsafeRawFileError,
+    brief,
+    check_hdf5_member,
+    read_hdf5_attribute,
+    read_hdf5_strings,
+    require_within_limit,
+)
+
+if TYPE_CHECKING:
+    import h5py
 
 # Axis-name aliases. sleap-io names the coordinate axis "xy"; the others are
 # singular, but tolerate a plural just in case a future writer emits one.
@@ -69,6 +80,9 @@ _NODE_ALIASES = frozenset({"node", "nodes"})
 # The documented matlab-preset axis orders, used when a dataset has no ``dims``.
 _TRACKS_MATLAB_DIMS = ("track", "xy", "node", "frame")
 _SCORES_MATLAB_DIMS = ("track", "node", "frame")
+
+# The arrays the converter reads, each as float64.
+_ANALYSIS_ARRAYS = ("tracks", "point_scores")
 
 
 def _canon_axis(token: str) -> str:
@@ -119,12 +133,13 @@ def _reorder(
     """Transpose *arr* whose axes are *dims* into *target* canonical order."""
     canon = [_canon_axis(d) for d in dims]
     if arr.ndim != len(canon):
-        raise ValueError(f"SLEAP analysis dataset has {arr.ndim} axes but dims={dims}")
+        msg = f"SLEAP analysis dataset has {arr.ndim} axes but dims={brief(dims)}"
+        raise ValueError(msg)
     try:
         order = [canon.index(name) for name in target]
     except ValueError as exc:
         raise ValueError(
-            f"SLEAP analysis dataset dims {dims} do not cover {target}"
+            f"SLEAP analysis dataset dims {brief(dims)} do not cover {target}"
         ) from exc
     return np.transpose(arr, order)
 
@@ -146,23 +161,58 @@ def _read_analysis_h5(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     import h5py
 
     with h5py.File(str(path), "r") as handle:
-        if "tracks" not in handle:
+        arrays = _analysis_arrays(path, handle)
+        dims = {
+            name: _decode_dims(
+                read_hdf5_attribute(path, dataset, "dims", variable_string=True)
+            )
+            for name, dataset in arrays.items()
+        }
+        if "tracks" not in arrays:
             raise ValueError(f"SLEAP analysis HDF5 has no 'tracks' dataset: {path}")
-        tracks_ds = handle["tracks"]
-        tracks_raw = np.asarray(tracks_ds, dtype=np.float64)
-        tracks_dims = _decode_dims(tracks_ds.attrs.get("dims")) or _TRACKS_MATLAB_DIMS
+        tracks_raw = np.asarray(arrays["tracks"], dtype=np.float64)
+        tracks_dims = dims["tracks"] or _TRACKS_MATLAB_DIMS
         tracks = _reorder(tracks_raw, tracks_dims, ("frame", "track", "node", "xy"))
 
         scores: np.ndarray | None = None
-        if "point_scores" in handle:
-            scores_ds = handle["point_scores"]
-            scores_raw = np.asarray(scores_ds, dtype=np.float64)
-            scores_dims = (
-                _decode_dims(scores_ds.attrs.get("dims")) or _SCORES_MATLAB_DIMS
-            )
+        if "point_scores" in arrays:
+            scores_raw = np.asarray(arrays["point_scores"], dtype=np.float64)
+            scores_dims = dims["point_scores"] or _SCORES_MATLAB_DIMS
             scores = _reorder(scores_raw, scores_dims, ("frame", "track", "node"))
 
     return tracks, scores
+
+
+def _analysis_arrays(path: Path, handle: h5py.File) -> dict[str, h5py.Dataset]:
+    """The arrays that `_read_analysis_h5` reads, each refused if unsafe, unread.
+
+    Each array present is a dataset that passes `check_hdf5_member`, counted
+    at the float64 it is read as, and the arrays together fit in the raw array
+    limit.
+
+    Returns:
+        The datasets present, by name.
+
+    Raises:
+        UnsafeRawFileError: If an array is refused, is not a dataset, or the
+            arrays together pass the limit.
+    """
+    import h5py
+
+    arrays: dict[str, h5py.Dataset] = {}
+    total = 0
+    for name in _ANALYSIS_ARRAYS:
+        # ``name in handle`` follows an external link to its file, so the
+        # link itself is looked up.
+        if handle.get(name, getlink=True) is None:
+            continue
+        total += check_hdf5_member(path, handle, name, read_as=np.dtype(np.float64))
+        node = handle[name]
+        if not isinstance(node, h5py.Dataset):
+            raise UnsafeRawFileError(path, "is not a dataset", member=name)
+        arrays[name] = node
+    require_within_limit(path, total, "its arrays, read as float64, take")
+    return arrays
 
 
 def _track_to_trex_df(
@@ -416,16 +466,17 @@ def read_analysis_track_names(path: Path) -> tuple[str, ...]:
 
     Raises:
         ValueError: The file has no ``track_names`` dataset.
+        UnsafeRawFileError: `read_hdf5_strings` refuses the dataset.
     """
     # Deferred for the reason that ``_read_analysis_h5`` gives.
     import h5py
 
     with h5py.File(str(path), "r") as handle:
-        if "track_names" not in handle:
+        if handle.get("track_names", getlink=True) is None:
             msg = f"SLEAP analysis HDF5 has no 'track_names' dataset: {path}"
             raise ValueError(msg)
-        raw = np.asarray(handle["track_names"]).reshape(-1)
-    return tuple(_decode_token(item) for item in raw.tolist())
+        names = read_hdf5_strings(path, handle, "track_names")
+    return tuple(_decode_token(name) for name in names)
 
 
 def appearance_rows(
