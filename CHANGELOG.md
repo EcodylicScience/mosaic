@@ -56,6 +56,17 @@ can offer the dataset's keypoints for it. The key is declared through
 `x-mosaic-unit` and `x-mosaic-unwired`. It reaches the step-type catalog's
 `params_schema` unchanged. The kind is published only: no run identifier moves.
 
+**A time filter on a dataset with no frame rate has one message.**
+`resolve_frame_range` raised `ValueError("Time-based filters require fps")`, and
+the plan's problem for the same case named the filters as `run.filter_start_frame`
+and `run.filter_end_frame`. Both now use `TIME_FILTER_NEEDS_FPS`
+(`mosaic.core.helpers`): "a time filter needs the dataset's frame rate, and this
+dataset does not record one. Set meta.fps_default in its dataset.yaml, or filter
+by frame with filter_start_frame and filter_end_frame". The `ValueError` from
+`resolve_frame_range` therefore names `meta.fps_default` and the frame filters,
+and the plan's message names the filters without the `run.` prefix. The opening
+words are unchanged. No run identifier, signature or golden changes.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full

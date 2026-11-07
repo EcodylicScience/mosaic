@@ -55,7 +55,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
-from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.helpers import TIME_FILTER_NEEDS_FPS, resolve_frame_range
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
@@ -1760,17 +1760,12 @@ def _time_filter_problems(step: FeatureStepSpec, fps: float | None) -> list[Prob
     """
     if fps is not None:
         return []
-    message = (
-        "a time filter needs the dataset's frame rate, and this dataset does not "
-        "record one. Set meta.fps_default in its dataset.yaml, or filter by frame "
-        "with run.filter_start_frame and run.filter_end_frame"
-    )
     filters = {
         "filter_start_time": step.run.filter_start_time,
         "filter_end_time": step.run.filter_end_time,
     }
     return [
-        Problem(step.id, f"run.{name}", message)
+        Problem(step.id, f"run.{name}", TIME_FILTER_NEEDS_FPS)
         for name, value in filters.items()
         if value is not None
     ]

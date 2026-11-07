@@ -1,5 +1,7 @@
+import re
+
 import pytest
-from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.helpers import TIME_FILTER_NEEDS_FPS, resolve_frame_range
 
 
 def test_frame_only():
@@ -25,8 +27,18 @@ def test_conflict_end():
 
 
 def test_no_fps_with_time():
-    with pytest.raises(ValueError, match="Time-based filters require fps"):
+    with pytest.raises(ValueError, match=re.escape(TIME_FILTER_NEEDS_FPS)):
         resolve_frame_range(fps=None, start_time=1.0)
+
+
+def test_the_missing_frame_rate_message_names_the_key_and_the_frame_filters():
+    with pytest.raises(ValueError) as caught:
+        resolve_frame_range(fps=None, end_time=5.0)
+
+    message = str(caught.value)
+    assert "meta.fps_default" in message
+    assert "filter_start_frame" in message
+    assert "filter_end_frame" in message
 
 
 def test_all_none():

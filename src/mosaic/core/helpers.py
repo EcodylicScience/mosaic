@@ -937,6 +937,14 @@ def filter_time_range(
     return df.loc[mask].reset_index(drop=True)
 
 
+TIME_FILTER_NEEDS_FPS: Final = (
+    "a time filter needs the dataset's frame rate, and this dataset does not "
+    "record one. Set meta.fps_default in its dataset.yaml, or filter by frame "
+    "with filter_start_frame and filter_end_frame"
+)
+"""Why a time filter cannot be converted to frames on a dataset with no frame rate."""
+
+
 def resolve_frame_range(
     fps: float | None,
     start_frame: int | None = None,
@@ -946,15 +954,27 @@ def resolve_frame_range(
 ) -> tuple[int | None, int | None]:
     """Validate mutual exclusivity and convert to frame range.
 
-    Raises ValueError if both frame and time are set for the same boundary,
-    or if time-based filters are used without fps.
+    Args:
+        fps: The dataset's frame rate, or None when it records none.
+        start_frame: First frame to keep, or None.
+        end_frame: Frame at which to stop, or None.
+        start_time: First second to keep, or None.
+        end_time: Second at which to stop, or None.
+
+    Returns:
+        The start and end frames, each None where no boundary was given.
+
+    Raises:
+        ValueError: If both a frame and a time are set for the same boundary,
+            or if a time is set and ``fps`` is None
+            (``TIME_FILTER_NEEDS_FPS``).
     """
     if start_frame is not None and start_time is not None:
         raise ValueError("Cannot set both start_frame and start_time")
     if end_frame is not None and end_time is not None:
         raise ValueError("Cannot set both end_frame and end_time")
     if (start_time is not None or end_time is not None) and fps is None:
-        raise ValueError("Time-based filters require fps")
+        raise ValueError(TIME_FILTER_NEEDS_FPS)
 
     start = start_frame
     if start_time is not None:

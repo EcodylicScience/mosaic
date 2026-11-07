@@ -22,6 +22,7 @@ import mosaic.core.pipeline.graph.step as step_module
 from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistancePCA
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import TIME_FILTER_NEEDS_FPS
 from mosaic.core.json_value import JsonValue
 from mosaic.core.label_converter import LABEL_CONVERTERS
 from mosaic.core.pipeline.graph import (
@@ -141,7 +142,7 @@ def test_a_time_filter_without_a_frame_rate_is_a_problem_at_the_filter(
     at_filter = [p for p in refusal.problems if p.where == "run.filter_start_time"]
     assert {problem.step for problem in at_filter} == filtered
     assert all(FILTER_PROBLEM in problem.message for problem in at_filter)
-    assert all("meta.fps_default" in problem.message for problem in at_filter)
+    assert all(problem.message == TIME_FILTER_NEEDS_FPS for problem in at_filter)
     # Each filtered step is reported, and none of them has an identity.
     assert {
         step for step, run_id in refusal.plan.run_ids.items() if run_id is None
