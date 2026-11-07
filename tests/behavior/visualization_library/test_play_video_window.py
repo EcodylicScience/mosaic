@@ -13,15 +13,30 @@ from mosaic.behavior.visualization_library.playback import (
     play_video,
     play_video_with_spec,
 )
+from mosaic.core.dataset import Dataset
 from mosaic.core.media import window_support
 from mosaic.core.media.window_support import WindowSupportError
 
 
-class _TouchedDataset:
-    """A dataset that fails the test on any use."""
+class _TouchedDataset(Dataset):
+    """A dataset that fails the test on any attribute read."""
 
-    def __getattr__(self, name: str) -> Any:
+    def __getattribute__(self, name: str) -> Any:
         raise AssertionError(f"play_video read the dataset ({name}) before refusing")
+
+
+def untouched_dataset() -> Dataset:
+    return object.__new__(_TouchedDataset)
+
+
+@pytest.fixture
+def no_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the test if the overlay is built."""
+
+    def overlay_must_not_build(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the overlay was built before the refusal")
+
+    monkeypatch.setattr(playback, "build_overlay", overlay_must_not_build)
 
 
 def test_the_window_is_off_by_default() -> None:
@@ -30,18 +45,13 @@ def test_the_window_is_off_by_default() -> None:
 
 
 def test_a_window_without_gui_support_is_refused_before_any_work(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_overlay: None
 ) -> None:
     monkeypatch.setattr(window_support, "gui_backend", lambda: None)
 
-    def overlay_must_not_build(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the overlay was built before the refusal")
-
-    monkeypatch.setattr(playback, "build_overlay", overlay_must_not_build)
-
     with pytest.raises(WindowSupportError, match="show_window=False"):
         play_video(
-            _TouchedDataset(),  # pyright: ignore[reportArgumentType]
+            untouched_dataset(),
             "group",
             "sequence",
             feature_runs={},
@@ -49,17 +59,11 @@ def test_a_window_without_gui_support_is_refused_before_any_work(
         )
 
 
-def test_no_window_and_no_output_is_refused_before_any_work(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def overlay_must_not_build(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the overlay was built before the refusal")
-
-    monkeypatch.setattr(playback, "build_overlay", overlay_must_not_build)
-
+@pytest.mark.usefixtures("no_overlay")
+def test_no_window_and_no_output_is_refused_before_any_work() -> None:
     with pytest.raises(ValueError, match="output_path"):
         play_video(
-            _TouchedDataset(),  # pyright: ignore[reportArgumentType]
+            untouched_dataset(),
             "group",
             "sequence",
             feature_runs={},
@@ -67,18 +71,13 @@ def test_no_window_and_no_output_is_refused_before_any_work(
 
 
 def test_the_spec_wrapper_refuses_a_window_without_gui_support_before_any_work(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, no_overlay: None
 ) -> None:
     monkeypatch.setattr(window_support, "gui_backend", lambda: None)
 
-    def overlay_must_not_build(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the overlay was built before the refusal")
-
-    monkeypatch.setattr(playback, "build_overlay", overlay_must_not_build)
-
     with pytest.raises(WindowSupportError, match="show_window=False"):
         play_video_with_spec(
-            _TouchedDataset(),  # pyright: ignore[reportArgumentType]
+            untouched_dataset(),
             "group",
             "sequence",
             {},
@@ -87,17 +86,11 @@ def test_the_spec_wrapper_refuses_a_window_without_gui_support_before_any_work(
         )
 
 
-def test_the_spec_wrapper_refuses_no_window_and_no_output_before_any_work(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def overlay_must_not_build(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the overlay was built before the refusal")
-
-    monkeypatch.setattr(playback, "build_overlay", overlay_must_not_build)
-
+@pytest.mark.usefixtures("no_overlay")
+def test_the_spec_wrapper_refuses_no_window_and_no_output_before_any_work() -> None:
     with pytest.raises(ValueError, match="output_path"):
         play_video_with_spec(
-            _TouchedDataset(),  # pyright: ignore[reportArgumentType]
+            untouched_dataset(),
             "group",
             "sequence",
             {},
@@ -121,7 +114,7 @@ def test_the_spec_wrapper_forwards_the_window_and_output_arguments(
     target = tmp_path / "out.mp4"
 
     play_video_with_spec(
-        _TouchedDataset(),  # pyright: ignore[reportArgumentType]
+        untouched_dataset(),
         "group",
         "sequence",
         {},

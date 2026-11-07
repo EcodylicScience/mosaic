@@ -127,6 +127,10 @@ Commands and environments are on https://ecodylicscience.github.io/mosaic/instal
   OpenCV. On macOS also take `pytorch torchvision scikit-learn xgboost faiss-cpu` from
   conda-forge and install `"mosaic-behavior[deep-learning]"` instead of `[all]`, so one
   OpenMP runtime is loaded. `OMP: Error #15` at import means two are.
+- A pip environment upgraded from mosaic 0.18.0 or earlier holds both `opencv-python` and
+  `opencv-python-headless`, which share the files of `cv2/`. Repair it with
+  `pip uninstall -y opencv-python opencv-python-headless && pip install "opencv-python-headless>=4.7,<6"`.
+  Uninstalling only one of them breaks `import cv2`.
 - An extra named in an older install command may be retired. pip only warns and
   installs the base without it. Check the retired names on the installation page.
 - Install the `feral` extra in a separate environment, since its exact pins downgrade

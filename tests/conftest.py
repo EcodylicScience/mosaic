@@ -155,10 +155,10 @@ def _refuse_two_opencv_builds() -> None:
 
     Unlike the checks below this fires outside CI too, because the failure mode is a
     crash rather than a skip, and because the other half of it is silent: whichever
-    wheel wins may be the headless one, which has no ``imshow``, so interactive
-    playback breaks with no dependency error anywhere. Mosaic itself requires the
-    headless wheel, so a GUI wheel in the environment is one that something else
-    asked for.
+    wheel wins may be the headless one, which has no ``imshow``, so a playback
+    function that asks for a window refuses with ``WindowSupportError``. Mosaic
+    itself requires the headless wheel, so a GUI wheel in the environment is one
+    that something else asked for.
 
     Not covered, deliberately: ``av`` and ``opencv-python`` each vendor a *complete*
     ffmpeg, so two of those wheels collide the same way even when only one provides

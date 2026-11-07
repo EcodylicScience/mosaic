@@ -54,11 +54,11 @@ else asks for it. The conda-forge builds avoid both, because they link the envir
 ffmpeg and one `py-opencv` registers both OpenCV names.
 
 The headless wheel has no window functions: `cv2.imshow` raises `cv2.error`. So
-`play_video` and pose inference (`visualize_inference`) show no window unless you pass
-`show_window=True`, which needs conda-forge's `py-opencv`, the build the install above
-provides. With the headless wheel, `show_window=True` raises `WindowSupportError` before
-any work starts. Pass `show_window=False` and write the video to a file with
-`output_path`.
+`play_video`, `play_video_with_spec` and pose inference (`visualize_inference`)
+show no window unless you pass `show_window=True`, which needs conda-forge's
+`py-opencv`, the build the install above provides. With the headless wheel,
+`show_window=True` raises `WindowSupportError` before any work starts. Pass
+`show_window=False` and write the video to a file with `output_path`.
 
 On macOS, install `av` and `py-opencv` from conda-forge, and do not install either one
 with pip afterward. To repair an environment that shows either symptom, remove the
@@ -71,6 +71,17 @@ conda install -c conda-forge --force-reinstall ffmpeg av py-opencv -y
 
 `--force-reinstall` restores conda files that a wheel overwrote or the uninstall
 removed.
+
+### Upgrading from 0.18.0 or earlier with pip
+
+pip does not remove `opencv-python` when it installs the headless wheel, and
+the two wheels share the files of `cv2/`. Uninstalling one of them alone breaks
+`import cv2`. In a pip environment, run both uninstalls and one install,
+whether or not you have upgraded yet:
+
+```bash
+pip uninstall -y opencv-python opencv-python-headless && pip install "opencv-python-headless>=4.7,<6"
+```
 
 ## One OpenMP runtime per environment (macOS)
 
@@ -425,6 +436,57 @@ says what mosaic refuses.
 | -------- | ---- |
 | `MOSAIC_TRUST_PICKLED_FILES` | Set to exactly `1` to load formats that can only be read by unpickling: CalMS21 `.npy` and BORIS `.pkl`. It also lets a DeepLabCut `.h5` of an unrecognized layout load through pandas. Unset, mosaic refuses those files and names the safe form. Unpickling can run code in the file, so set it only for files you trust, and never on a deployment that accepts uploads |
 | `MOSAIC_RAW_ARRAY_LIMIT_BYTES` | The most array data one raw file may declare, in bytes. The default is 2 GiB (`2147483648`). A value that is not an integer raises an error naming the variable |
+
+## Docker images
+
+The `mosaic-compute` images hold mosaic with its tools already installed, for
+running `mosaic run` under a job queue, on Kubernetes or with `docker run`. They
+are published to an authenticated registry,
+`ccu-k8s.inf.uni-konstanz.de:32250/jacob.davidson/mosaic-compute`, so run
+`docker login` for it first.
+
+| Image | Holds | Use it on |
+| ----- | ----- | --------- |
+| `cpu` | mosaic with the `faiss`, `movement` and `mcp` extras, and a PyAV that links an LGPL ffmpeg (`movement` also brings imageio-ffmpeg's GPL ffmpeg binary) | machines without a GPU |
+| `gpu-cu130` | `cpu`, plus PyTorch, the `deep-learning` and `lightning-action` extras, and the TRex, SLEAP, Lightning Pose, Ultralytics, POLO, VAME and HiDRA environments | Turing and newer GPUs (compute capability 7.5 or higher) with NVIDIA driver 580 or newer |
+| `gpu-cu126` | the same, with PyTorch's CUDA 12.6 build | Pascal and Volta GPUs, such as a GTX 1080 Ti or a V100, or a driver older than 580 |
+
+Each tool's locator variable is set in the gpu images, so `mosaic track` and the
+tool ops find their tools without configuration. keypoint-MoSeq and FERAL are not in
+any image.
+
+**Tags.** `cpu-<version>`, `gpu-cu130-<version>` and `gpu-cu126-<version>` name one
+build of a mosaic release and never move. A rebuild of the same release gets `-r2`,
+`-r3`. `cpu`, `gpu-cu130` and `gpu-cu126` move to each new release, and `gpu` follows
+`gpu-cu130`. For a deployment, pin the digest rather than a tag
+(`mosaic-compute@sha256:<digest>`): a tag can move under a running stack, and the
+digest is the image that was tested.
+
+**Running them.**
+
+- The images run as any user id on a read-only root filesystem. The default is
+  `1000:1000`. Run them as the owner of your data (`--user "$(id -u):$(id -g)"`), so
+  that every process writing a dataset has the same uid.
+- Everything a process writes outside the dataset goes under `HOME=/tmp`, so give the
+  container a writable `/tmp`.
+- Model weights are not in the images. Mount them, and point mosaic at them, for
+  example with `MOSAIC_HIDRA_MODELS_ROOT` for HiDRA.
+- The images show no windows: mosaic uses `opencv-python-headless`, and `show_window`
+  defaults to `False`.
+- Docker's default 64 MB `/dev/shm` is too small for PyTorch data-loader workers, and a
+  training job fails with a bus error. Pass `--shm-size=8g`.
+- Give a container a stable host name (`--hostname`), as
+  [the pipeline guide](guides/pipelines/run-and-see-what-ran.md) explains.
+
+```bash
+docker run --rm --gpus device=0 --shm-size=8g --user "$(id -u):$(id -g)" --read-only --tmpfs /tmp \
+    --hostname worker1 -v /data/myproject:/data/myproject \
+    ccu-k8s.inf.uni-konstanz.de:32250/jacob.davidson/mosaic-compute@sha256:<digest> \
+    mosaic run --json ...
+```
+
+`/opt/mosaic/licenses/` in each image lists every component it holds, with its
+license and, for each GPL and AGPL one, where its source is.
 
 ## Platform support
 

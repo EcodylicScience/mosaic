@@ -1,7 +1,8 @@
 """Video playback with interactive controls.
 
 This module contains the high-level playback orchestrator:
-- play_video: Full pipeline with window display + optional file output
+- play_video: render a sequence's overlay to a file, or to a window on a GUI
+  build of OpenCV
 """
 
 from __future__ import annotations
