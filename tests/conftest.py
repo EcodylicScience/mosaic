@@ -32,6 +32,10 @@ _os.environ.setdefault("OMP_NUM_THREADS", "1")
 # box drawing that a local run never shows.
 _os.environ.setdefault("_TYPER_FORCE_DISABLE_TERMINAL", "1")
 
+# Many fixtures write CalMS21 `.npy` files, which load only when pickled files are
+# trusted. `setdefault`, so a test that removes or zeroes the variable sees the refusal.
+_os.environ.setdefault("MOSAIC_TRUST_PICKLED_FILES", "1")
+
 import csv
 import gc
 import importlib.metadata

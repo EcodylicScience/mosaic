@@ -5,6 +5,9 @@ Converts CalMS21 multi-animal pose tracking files to the standardized
 Handles task1/task2/task3 splits.
 
 CalMS21 keypoint layout: (T, n_animals, xy=2, n_landmarks)
+
+A ``.npy`` source is a pickled dict and loads only with
+``MOSAIC_TRUST_PICKLED_FILES=1``; the original ``.json`` always loads.
 """
 
 from __future__ import annotations

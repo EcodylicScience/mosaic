@@ -7,6 +7,7 @@ import json
 import numpy as np
 
 from mosaic.core.helpers import text_cell
+from mosaic.core.track_library.safe_load import require_pickled_trust
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -34,12 +35,26 @@ def column_array(frame: "pd.DataFrame", name: str) -> np.ndarray:
 
 
 def load_calms21(path: Path | str):
-    """
-    Load a single CalMS21 file: either .npy (dict) or the original .json.
-    Returns a nested dict: group -> seq_id -> dict(...)
+    """Load a single CalMS21 file: either .npy (dict) or the original .json.
+
+    A CalMS21 ``.npy`` is a pickled dict, so it loads by unpickling, which can run
+    code. It loads only when ``MOSAIC_TRUST_PICKLED_FILES=1`` says the file is
+    trusted. The original ``.json`` always loads.
+
+    Args:
+        path: The ``.npy`` or ``.json`` file.
+
+    Returns:
+        A nested dict: group -> seq_id -> dict(...)
+
+    Raises:
+        PickledFormatNotTrustedError: If *path* is a ``.npy`` and pickled files are
+            not trusted.
+        ValueError: If *path* is neither a ``.npy`` nor a ``.json``.
     """
     p = Path(path)
     if p.suffix.lower() == ".npy":
+        require_pickled_trust(p, "CalMS21 .npy", "the original CalMS21 .json")
         return np.load(p, allow_pickle=True).item()
     elif p.suffix.lower() == ".json":
         with open(p, "r") as f:

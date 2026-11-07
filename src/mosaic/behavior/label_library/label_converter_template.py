@@ -228,7 +228,7 @@ class MyLabelConverter(LabelConverter[MyLabelParams]):
                 with open(src_path) as f:
                     return json.load(f)
 
-            For NPY: ``return np.load(src_path, allow_pickle=True)``.
+            For NPY: ``return np.load(src_path, allow_pickle=False)``.
         """
         raise NotImplementedError("Implement _load_source_file for your format")
 

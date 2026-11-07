@@ -66,6 +66,10 @@ class CalMS21BehaviorConverter(LabelConverter[CalMS21BehaviorParams]):
     (attack, investigation, mount, other_interaction) are directed pair
     interactions between resident (ID=0) and intruder (ID=1), implicitly
     resident -> intruder.
+
+    A ``.npy`` source is a pickled dict and loads only with
+    ``MOSAIC_TRUST_PICKLED_FILES=1``; a refused file fails the whole conversion.
+    The original ``.json`` always loads.
     """
 
     src_format = "calms21_npy"  # Also handles calms21_json via load_calms21
