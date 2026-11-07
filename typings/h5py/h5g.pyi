@@ -1,0 +1,3 @@
+"""The group identifiers of h5py's low-level API."""
+
+class GroupID: ...

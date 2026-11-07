@@ -41,6 +41,7 @@ from mosaic.core.track_converter import (
     register_track_converter,
 )
 from mosaic.core.track_library.helpers import norm_hint
+from mosaic.core.track_library.safe_load import read_pandas_hdf_frame
 
 
 @dataclass(frozen=True)
@@ -73,10 +74,7 @@ def _read_dlc_table(path: Path) -> pd.DataFrame:
     """
     suffix = path.suffix.lower()
     if suffix in (".h5", ".hdf5", ".hdf"):
-        obj = pd.read_hdf(path)
-        if not isinstance(obj, pd.DataFrame):
-            raise ValueError(f"DLC HDF5 did not contain a DataFrame: {path}")
-        df = obj
+        df = read_pandas_hdf_frame(path)
     elif suffix == ".csv":
         # Detect how many header rows the export has by inspecting the label
         # column (scorer / individuals / bodyparts / coords).

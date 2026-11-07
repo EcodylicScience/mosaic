@@ -13,6 +13,7 @@ from typing import Any
 
 import h5py
 import numpy as np
+import numpy.typing as npt
 
 
 # --------------------------------------------------------------------------- #
@@ -36,39 +37,35 @@ def _extract_keras_weights(h5_path: Path) -> list[np.ndarray]:
 
     with h5py.File(h5_path, "r") as f:
         # Find the weights group
+        root: h5py.Group = f
         if "model_weights" in f:
-            root = f["model_weights"]
-        else:
-            root = f
+            model_weights = f["model_weights"]
+            if isinstance(model_weights, h5py.Group):
+                root = model_weights
 
         # Get layer names in order
-        if "layer_names" in root.attrs:
-            layer_names = [
-                n.decode("utf-8") if isinstance(n, bytes) else n
-                for n in root.attrs["layer_names"]
-            ]
-        else:
+        layer_names = _attribute_names(root, "layer_names")
+        if layer_names is None:
             layer_names = list(root.keys())
 
         for layer_name in layer_names:
             if layer_name not in root:
                 continue
             layer_group = root[layer_name]
+            if not isinstance(layer_group, h5py.Group):
+                continue
 
             # Get weight names for this layer
-            if "weight_names" in layer_group.attrs:
-                weight_names = [
-                    n.decode("utf-8") if isinstance(n, bytes) else n
-                    for n in layer_group.attrs["weight_names"]
-                ]
-            else:
-                weight_names = []
+            weight_names = _attribute_names(layer_group, "weight_names")
+            if weight_names is None:
+                collected: list[str] = []
 
-                def _collect(name, obj):
+                def _collect(name: str, obj: object) -> None:
                     if isinstance(obj, h5py.Dataset):
-                        weight_names.append(name)
+                        collected.append(name)
 
                 layer_group.visititems(_collect)
+                weight_names = collected
 
             for wn in weight_names:
                 # weight_names may be 'layer_name/kernel:0' or nested
@@ -76,16 +73,28 @@ def _extract_keras_weights(h5_path: Path) -> list[np.ndarray]:
                     if wn in layer_group:
                         weights.append(np.array(layer_group[wn]))
                     else:
-                        parts = wn.split("/")
-                        g = layer_group
-                        for p in parts:
-                            g = g[p]
-                        weights.append(np.array(g))
+                        node: object = layer_group
+                        for part in wn.split("/"):
+                            if not isinstance(node, h5py.Group):
+                                raise KeyError(wn)
+                            node = node[part]
+                        weights.append(np.array(node))
                 except (KeyError, TypeError):
                     # Skip unreadable entries
                     continue
 
     return weights
+
+
+def _attribute_names(group: h5py.Group, key: str) -> list[str] | None:
+    """The names that attribute *key* of *group* lists, or ``None`` without one."""
+    if key not in group.attrs:
+        return None
+    names: npt.NDArray[Any] = np.asarray(group.attrs[key])
+    return [
+        name.decode("utf-8") if isinstance(name, bytes) else str(name)
+        for name in names.tolist()
+    ]
 
 
 # --------------------------------------------------------------------------- #

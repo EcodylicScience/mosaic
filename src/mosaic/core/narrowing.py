@@ -13,7 +13,13 @@ from collections.abc import Set as AbstractSet
 
 from typing import TypeIs
 
-__all__ = ["is_object_list", "is_object_set", "is_object_tuple", "is_str_mapping"]
+__all__ = [
+    "is_object_list",
+    "is_object_mapping",
+    "is_object_set",
+    "is_object_tuple",
+    "is_str_mapping",
+]
 
 
 def is_str_mapping(value: object) -> TypeIs[Mapping[str, object]]:
@@ -23,6 +29,11 @@ def is_str_mapping(value: object) -> TypeIs[Mapping[str, object]]:
     keys are strings, and a reader through ``.get`` with a string returns the
     default from a mapping keyed otherwise.
     """
+    return isinstance(value, Mapping)
+
+
+def is_object_mapping(value: object) -> TypeIs[Mapping[object, object]]:
+    """Whether *value* is a mapping, read as a mapping of anything by anything."""
     return isinstance(value, Mapping)
 
 

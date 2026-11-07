@@ -1,0 +1,3 @@
+"""The filters of h5py's low-level API that mosaic uses."""
+
+def filter_avail(filter_code: int) -> bool: ...
