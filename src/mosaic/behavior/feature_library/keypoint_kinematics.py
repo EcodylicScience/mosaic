@@ -233,10 +233,10 @@ class KeypointKinematics:
         """Keypoint-kinematics parameters."""
 
         keypoint_names: Annotated[
-            list[str] | None, Declared(KEYPOINT_NAMES_DESCRIPTION)
+            list[str] | None, Declared(KEYPOINT_NAMES_DESCRIPTION, keypoint="name")
         ] = None
         keypoints: Annotated[
-            list[int | str] | None, Declared(_KEYPOINTS_DESCRIPTION)
+            list[int | str] | None, Declared(_KEYPOINTS_DESCRIPTION, keypoint="either")
         ] = None
         fps: Annotated[float | None, Declared(FPS_DESCRIPTION, unit="fps")] = Field(
             default=None, gt=0
@@ -248,13 +248,16 @@ class KeypointKinematics:
             default=2, ge=2
         )
         distances: Annotated[
-            list[tuple[int | str, int | str]], Declared(_DISTANCES_DESCRIPTION)
+            list[tuple[int | str, int | str]],
+            Declared(_DISTANCES_DESCRIPTION, keypoint="either"),
         ] = Field(default_factory=list)
         normalize_by: Annotated[
-            tuple[int | str, int | str] | None, Declared(_NORMALIZE_BY_DESCRIPTION)
+            tuple[int | str, int | str] | None,
+            Declared(_NORMALIZE_BY_DESCRIPTION, keypoint="either"),
         ] = None
         heading: Annotated[
-            tuple[int | str, int | str] | None, Declared(_HEADING_DESCRIPTION)
+            tuple[int | str, int | str] | None,
+            Declared(_HEADING_DESCRIPTION, keypoint="either"),
         ] = None
 
         @model_validator(mode="after")

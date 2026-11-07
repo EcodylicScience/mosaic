@@ -130,10 +130,10 @@ class BodyLength:
             Literal["keypoints", "column"], Declared(_SOURCE_DESCRIPTION)
         ] = "keypoints"
         keypoints: Annotated[
-            list[int | str] | None, Declared(_KEYPOINTS_DESCRIPTION)
+            list[int | str] | None, Declared(_KEYPOINTS_DESCRIPTION, keypoint="either")
         ] = None
         keypoint_names: Annotated[
-            list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION)
+            list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION, keypoint="name")
         ] = None
         column: Annotated[str, Declared(_COLUMN_DESCRIPTION)] = Field(
             default="body_length", min_length=1

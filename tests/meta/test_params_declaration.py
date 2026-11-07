@@ -65,8 +65,9 @@ from __future__ import annotations
 import ast
 import importlib
 import re
+import types
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal, TypeAliasType, Union, get_args, get_origin
 
 import mosaic
 import pytest
@@ -79,9 +80,11 @@ from mosaic.core.params import (
     Declared,
     DeclaredModel,
     HashExclude,
+    KeypointKind,
     Params,
     own_declaration,
 )
+from mosaic.core.pipeline._utils import hash_params
 from mosaic.core.pipeline.ops import OPS
 from mosaic.core.strict_model import StrictModel
 from mosaic.tracking import register_ops
@@ -785,10 +788,11 @@ class DeclarationSample(Params):
     inert: Annotated[
         str, Declared("which accelerator runs it", unwired="nothing reads it")
     ] = "auto"
+    front: Annotated[int, Declared("the front keypoint", keypoint="index")] = 0
 
 
 def test_every_declared_fact_appears_in_the_schema() -> None:
-    """Read the four keys a client reads, straight out of the schema.
+    """Read the five keys a client reads, straight out of the schema.
 
     This is what fails when pydantic stops calling a marker's
     ``__get_pydantic_json_schema__``.
@@ -799,6 +803,7 @@ def test_every_declared_fact_appears_in_the_schema() -> None:
     assert properties["speed"]["x-mosaic-unit"] == "cm/s"
     assert "x-mosaic-hash-exclude" not in properties["speed"]
     assert "x-mosaic-unwired" not in properties["speed"]
+    assert "x-mosaic-keypoint" not in properties["speed"]
 
     assert properties["workers"]["description"] == "how many workers run"
     assert properties["workers"]["x-mosaic-hash-exclude"] is True
@@ -806,6 +811,9 @@ def test_every_declared_fact_appears_in_the_schema() -> None:
 
     assert properties["inert"]["description"] == "which accelerator runs it"
     assert properties["inert"]["x-mosaic-unwired"] == "nothing reads it"
+
+    assert properties["front"]["description"] == "the front keypoint"
+    assert properties["front"]["x-mosaic-keypoint"] == "index"
 
 
 def test_every_model_carrying_a_declared_subclasses_declared_model() -> None:
@@ -1023,6 +1031,25 @@ def test_a_re_annotated_field_keeps_its_parents_declaration() -> None:
     assert "kept: what kept means [px]" in (Child.__doc__ or "")
 
 
+def test_a_re_annotated_keypoint_field_keeps_its_parents_kind() -> None:
+    """A subclass narrowing a keypoint field still tells a client what it holds."""
+
+    class Parent(DeclaredModel):
+        """Parent prose."""
+
+        front: Annotated[int, Declared("the front keypoint", keypoint="index")] = 0
+
+    class Child(Parent):
+        """Child prose."""
+
+        front: int = 1
+
+    field = Child.model_json_schema()["properties"]["front"]
+
+    assert field["description"] == "the front keypoint"
+    assert field["x-mosaic-keypoint"] == "index"
+
+
 def test_a_re_annotated_field_may_restate_its_own_prose() -> None:
     """A subclass whose meaning changed declares again, and its own wins.
 
@@ -1064,6 +1091,25 @@ def test_an_unwired_field_still_reaches_the_run_identity() -> None:
     assert "inert" in DeclarationSample().identity_dump()
 
 
+def test_a_keypoint_kind_leaves_the_run_identity_unchanged() -> None:
+    """The keypoint kind is published for a client and hashes nothing.
+
+    Marking a field moves no run id, so every cached run keeps its identifier.
+    """
+
+    class Unmarked(Params):
+        front: Annotated[int, Declared("the front keypoint")] = 0
+
+    class Marked(Params):
+        front: Annotated[int, Declared("the front keypoint", keypoint="index")] = 0
+
+    unmarked = Unmarked().identity_dump()
+    marked = Marked().identity_dump()
+
+    assert marked == unmarked
+    assert hash_params(marked) == hash_params(unmarked)
+
+
 def test_the_sample_model_stays_out_of_the_walk() -> None:
     """A ``Params`` subclass declared by a test is a fixture, not a shipped model.
 
@@ -1083,3 +1129,228 @@ def test_the_constraint_stays_inside_the_optional_branch() -> None:
     speed = field_schemas(DeclarationSample)["speed"]
     branches = speed["anyOf"]
     assert branches == [{"exclusiveMinimum": 0.0, "type": "number"}, {"type": "null"}]
+
+
+_FEATURES = "mosaic.behavior.feature_library"
+_KINEMATICS = f"{_FEATURES}.keypoint_kinematics.KeypointKinematics.Params"
+_BODY_LENGTH = f"{_FEATURES}.body_length.BodyLength.Params"
+_PAIR_KEYPOINTS = f"{_FEATURES}.pair_keypoints.PairKeypoints.Params"
+_VISUAL_NETWORK = f"{_FEATURES}.visual_network.VisualNetwork.Params"
+_VAME = f"{_FEATURES}.vame_feature.VameFeature.Params"
+_CROPS = "mosaic.behavior.visualization_library"
+_EGOCENTRIC_CROP = f"{_CROPS}.egocentric_crop.EgocentricCrop.Params"
+_INTERACTION_CROP = f"{_CROPS}.interaction_crop.InteractionCropPipeline.Params"
+_POSE_CONFIG = "mosaic.core.pipeline.types.data_config.PoseConfig"
+_SELECTION = "mosaic.tracking.frame_extraction.selection"
+_SCORE_PREDICTIONS = "mosaic.tracking.ops.score_predictions.ScorePredictionsParams"
+
+KEYPOINT_FIELDS: dict[tuple[str, str], KeypointKind] = {
+    (f"{_FEATURES}.kpms.KpmsFeature.Params", "anterior_bodyparts"): "name",
+    (f"{_FEATURES}.kpms.KpmsFeature.Params", "posterior_bodyparts"): "name",
+    (_POSE_CONFIG, "keypoint_names"): "name",
+    (_POSE_CONFIG, "pose_indices"): "index",
+    (_KINEMATICS, "keypoint_names"): "name",
+    (_KINEMATICS, "keypoints"): "either",
+    (_KINEMATICS, "distances"): "either",
+    (_KINEMATICS, "normalize_by"): "either",
+    (_KINEMATICS, "heading"): "either",
+    (_BODY_LENGTH, "keypoint_names"): "name",
+    (_BODY_LENGTH, "keypoints"): "either",
+    (_PAIR_KEYPOINTS, "keypoint_names"): "name",
+    (_PAIR_KEYPOINTS, "keypoints"): "either",
+    (_PAIR_KEYPOINTS, "heading"): "either",
+    (_PAIR_KEYPOINTS, "inter_distances"): "either",
+    (
+        f"{_FEATURES}.movement.smooth.MovementSmooth.Params",
+        "keypoint_names",
+    ): "name",
+    (
+        f"{_FEATURES}.movement.filter_interp.MovementFilterInterpolate.Params",
+        "keypoint_names",
+    ): "name",
+    (f"{_FEATURES}.hidra_feature.HidraFeature.Params", "keypoint_map"): "name",
+    (f"{_FEATURES}.heading.HeadingFeature.Params", "front_idx"): "index",
+    (f"{_FEATURES}.heading.HeadingFeature.Params", "rear_idx"): "index",
+    (f"{_FEATURES}.pair_facing.PairFacing.Params", "pose_head_index"): "index",
+    (f"{_FEATURES}.pair_facing.PairFacing.Params", "pose_abdomen_index"): "index",
+    (
+        f"{_FEATURES}.pair_egocentric.PairEgocentricFeatures.Params",
+        "neck_idx",
+    ): "index",
+    (
+        f"{_FEATURES}.pair_egocentric.PairEgocentricFeatures.Params",
+        "tail_base_idx",
+    ): "index",
+    (
+        f"{_FEATURES}.pair_interaction_filter.PairInteractionFilter.Params",
+        "pose_head_index",
+    ): "index",
+    (_VISUAL_NETWORK, "head_index"): "index",
+    (_VISUAL_NETWORK, "tail_index"): "index",
+    (_VISUAL_NETWORK, "left_eye_index"): "index",
+    (_VISUAL_NETWORK, "right_eye_index"): "index",
+    (_VISUAL_NETWORK, "outline_indices"): "index",
+    (_VISUAL_NETWORK, "heading_back_index"): "index",
+    (_EGOCENTRIC_CROP, "heading_points"): "index",
+    (_EGOCENTRIC_CROP, "center_mode"): "index",
+    (_INTERACTION_CROP, "heading_points"): "index",
+    (_INTERACTION_CROP, "center_mode"): "index",
+    (_VAME, "centered_reference_keypoint"): "either",
+    (_VAME, "orientation_reference_keypoint"): "either",
+    (_SCORE_PREDICTIONS, "center"): "either",
+    (_SCORE_PREDICTIONS, "head"): "either",
+    (_SCORE_PREDICTIONS, "tail"): "either",
+    (_SCORE_PREDICTIONS, "oks_sigmas"): "name",
+    (f"{_SELECTION}.SelectFramesParams", "head"): "either",
+    (f"{_SELECTION}.SelectFramesParams", "tail"): "either",
+    (f"{_SELECTION}.SelectFramesParams", "keypoint_names"): "name",
+    (f"{_SELECTION}.MissingKeypointsCriterion", "keypoints"): "either",
+    (
+        "mosaic.core.annotations.keypoint_map.KeypointMapParams",
+        "keypoints",
+    ): "either",
+    ("mosaic.core.annotations.bbox.BboxPolicy", "head_index"): "index",
+    ("mosaic.core.annotations.bbox.BboxPolicy", "tail_index"): "index",
+    (
+        "mosaic.tracking.ops.prepare.PrepareTrainingDataParams",
+        "point_index",
+    ): "index",
+}
+"""Every field whose value names or indexes keypoints, with the kind it declares.
+
+Keyed by the ``DECLARED_MODELS`` key and the field name. A client offers the
+dataset's keypoints for these fields, as names, as indices, or as either.
+"""
+
+NOT_KEYPOINT_FIELDS: dict[tuple[str, str], str] = {
+    (_EGOCENTRIC_CROP, "transform_keypoints"): "a flag",
+    (
+        f"{_FEATURES}.lightning_action_feature.LightningActionFeature.Params",
+        "head",
+    ): "a model head, one of the architecture names",
+    (
+        f"{_FEATURES}.sequence_classifier.SequenceClassifier.Params",
+        "head",
+    ): "a model head, one of the architecture names",
+    (
+        "mosaic.tracking.ops.train_sleap.TrainSleapParams",
+        "head",
+    ): "a model head, one of the architecture names",
+    (_SCORE_PREDICTIONS, "keypoint_map"): (
+        "the KeypointMapParams model, whose own keypoints field is marked"
+    ),
+    (_SCORE_PREDICTIONS, "min_keypoint_score"): "a score threshold",
+    (f"{_SELECTION}.SelectFramesParams", "missing_keypoints"): (
+        "the MissingKeypointsCriterion model, whose own keypoints field is marked"
+    ),
+    ("mosaic.tracking.trex.params.TrexParams", "detect_keypoint_count"): "a count",
+    (
+        f"{_FEATURES}.pair_egocentric.PairEgocentricFeatures.Params",
+        "center_mode",
+    ): "a mode string that no code reads as a keypoint",
+}
+"""Fields whose names look like a keypoint's, with why each holds none."""
+
+KEYPOINT_LIKE_NAME = re.compile(
+    r"keypoint|bodypart|_idx$|_index$|_indices$|heading_points"
+    r"|^head$|^tail$|^center$|center_mode"
+)
+
+
+def published_keypoint_fields() -> dict[tuple[str, str], object]:
+    """The ``x-mosaic-keypoint`` value of every field that publishes one."""
+    found: dict[tuple[str, str], object] = {}
+    for name, model in DECLARED_MODELS.items():
+        for field, schema in field_schemas(model).items():
+            if "x-mosaic-keypoint" in schema:
+                found[(name, field)] = schema["x-mosaic-keypoint"]
+    return found
+
+
+def test_every_keypoint_field_carries_its_kind() -> None:
+    """The schema marks exactly the fields of :data:`KEYPOINT_FIELDS`, as listed.
+
+    A marked field missing from the table fails, and so does a row whose field
+    lost its marker or changed its kind.
+    """
+    published = published_keypoint_fields()
+
+    unlisted = sorted(set(published) - set(KEYPOINT_FIELDS))
+    unmarked = sorted(set(KEYPOINT_FIELDS) - set(published))
+    changed = sorted(
+        key
+        for key in set(published) & set(KEYPOINT_FIELDS)
+        if published[key] != KEYPOINT_FIELDS[key]
+    )
+    assert not unlisted, f"marked but not in KEYPOINT_FIELDS: {unlisted}"
+    assert not unmarked, f"in KEYPOINT_FIELDS but publishing no kind: {unmarked}"
+    assert not changed, f"publishing a kind other than the listed one: {changed}"
+
+
+def annotation_leaves(annotation: object) -> set[type]:
+    """The leaf types *annotation* admits, through wrappers and containers.
+
+    Reads through type aliases, ``Annotated``, unions, ``Literal`` values (as
+    their types), and the arguments of a ``list``, ``tuple`` or ``dict``, keys
+    and values both. ``None`` and a tuple's ``...`` are left out.
+    """
+    if isinstance(annotation, TypeAliasType):
+        return annotation_leaves(annotation.__value__)
+    origin = get_origin(annotation)
+    if origin is Annotated:
+        return annotation_leaves(get_args(annotation)[0])
+    if origin is Literal:
+        return {type(value) for value in get_args(annotation)}
+    if origin in (Union, types.UnionType, list, tuple, dict):
+        leaves: set[type] = set()
+        for argument in get_args(annotation):
+            if argument is Ellipsis:
+                continue
+            leaves |= annotation_leaves(argument)
+        return leaves
+    if annotation is None or annotation is type(None):
+        return set()
+    if isinstance(annotation, type):
+        return {annotation}
+    raise AssertionError(f"no leaf rule for {annotation!r}")
+
+
+@pytest.mark.parametrize(
+    ("model_name", "field", "kind"),
+    [(name, field, kind) for (name, field), kind in sorted(KEYPOINT_FIELDS.items())],
+)
+def test_a_keypoint_kind_agrees_with_its_field_type(
+    model_name: str, field: str, kind: KeypointKind
+) -> None:
+    """A ``name`` field takes strings, an ``index`` one integers, ``either`` both."""
+    leaves = annotation_leaves(
+        DECLARED_MODELS[model_name].model_fields[field].annotation
+    )
+
+    takes_a_name = str in leaves
+    takes_an_index = int in leaves
+    expected = {
+        "name": (True, False),
+        "index": (takes_a_name, True),
+        "either": (True, True),
+    }[kind]
+    assert (takes_a_name, takes_an_index) == expected, (
+        f"{model_name}.{field} is declared {kind!r} and admits {sorted(map(str, leaves))}"
+    )
+
+
+def test_every_keypoint_named_field_is_declared_or_exempt() -> None:
+    """A field named like a keypoint is marked, or listed with why it holds none."""
+    unaccounted = sorted(
+        (name, field)
+        for name, model in DECLARED_MODELS.items()
+        for field in model.model_fields
+        if KEYPOINT_LIKE_NAME.search(field)
+        and (name, field) not in KEYPOINT_FIELDS
+        and (name, field) not in NOT_KEYPOINT_FIELDS
+    )
+    assert not unaccounted, (
+        f"fields named like a keypoint with no kind declared: {unaccounted}. "
+        "Declare keypoint= on each, or add it to NOT_KEYPOINT_FIELDS with the "
+        "reason it holds no keypoint."
+    )

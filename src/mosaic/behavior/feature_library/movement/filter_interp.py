@@ -129,7 +129,7 @@ class MovementFilterInterpolate:
         )
         fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = None
         keypoint_names: Annotated[
-            list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION)
+            list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION, keypoint="name")
         ] = None
 
     def __init__(

@@ -128,12 +128,12 @@ class BboxPolicy(Params):
     min_pad_px: Annotated[float, Declared(_MIN_PAD_PX_DESCRIPTION, unit="px")] = 20.0
     length_pad_frac: Annotated[float, Declared(_LENGTH_PAD_FRAC_DESCRIPTION)] = 0.25
     side_pad_frac: Annotated[float, Declared(_SIDE_PAD_FRAC_DESCRIPTION)] = 0.35
-    head_index: Annotated[int | None, Declared(_HEAD_INDEX_DESCRIPTION)] = Field(
-        default=None
-    )
-    tail_index: Annotated[int | None, Declared(_TAIL_INDEX_DESCRIPTION)] = Field(
-        default=None
-    )
+    head_index: Annotated[
+        int | None, Declared(_HEAD_INDEX_DESCRIPTION, keypoint="index")
+    ] = Field(default=None)
+    tail_index: Annotated[
+        int | None, Declared(_TAIL_INDEX_DESCRIPTION, keypoint="index")
+    ] = Field(default=None)
 
 
 def _aabb_to_norm_cxcywh(

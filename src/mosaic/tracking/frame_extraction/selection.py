@@ -289,7 +289,8 @@ class MissingKeypointsCriterion(DeclaredModel):
 
     enabled: Annotated[bool, Declared(_MISSING_KEYPOINTS_ENABLED_DESCRIPTION)] = True
     keypoints: Annotated[
-        tuple[int | str, ...], Declared(_MISSING_KEYPOINTS_DESCRIPTION)
+        tuple[int | str, ...],
+        Declared(_MISSING_KEYPOINTS_DESCRIPTION, keypoint="either"),
     ] = ()
 
 
@@ -335,12 +336,16 @@ class SelectFramesParams(Params):
     n_expected: Annotated[
         int | None, Field(ge=1), Declared(_N_EXPECTED_DESCRIPTION)
     ] = None
-    head: Annotated[int | str | None, Declared(_HEAD_DESCRIPTION)] = None
-    tail: Annotated[int | str | None, Declared(_TAIL_DESCRIPTION)] = None
+    head: Annotated[
+        int | str | None, Declared(_HEAD_DESCRIPTION, keypoint="either")
+    ] = None
+    tail: Annotated[
+        int | str | None, Declared(_TAIL_DESCRIPTION, keypoint="either")
+    ] = None
     keypoint_names: Annotated[
         tuple[str, ...] | None,
         Field(min_length=1),
-        Declared(_KEYPOINT_NAMES_DESCRIPTION),
+        Declared(_KEYPOINT_NAMES_DESCRIPTION, keypoint="name"),
     ] = None
     body_length_px: Annotated[
         float | None, Field(gt=0.0), Declared(_BODY_LENGTH_PX_DESCRIPTION, unit="px")

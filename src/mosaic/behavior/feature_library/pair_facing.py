@@ -175,9 +175,11 @@ class PairFacing:
         cm_per_pixel: Annotated[
             float | None, Declared(_CM_PER_PIXEL_DESCRIPTION, unit="cm/px")
         ] = None
-        pose_head_index: Annotated[int, Declared(_POSE_HEAD_INDEX_DESCRIPTION)] = 3
+        pose_head_index: Annotated[
+            int, Declared(_POSE_HEAD_INDEX_DESCRIPTION, keypoint="index")
+        ] = 3
         pose_abdomen_index: Annotated[
-            int, Declared(_POSE_ABDOMEN_INDEX_DESCRIPTION)
+            int, Declared(_POSE_ABDOMEN_INDEX_DESCRIPTION, keypoint="index")
         ] = 5
         body_axis_from: Annotated[
             str,

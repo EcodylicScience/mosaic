@@ -227,14 +227,18 @@ class PairKeypoints:
         """Pair-keypoints parameters."""
 
         keypoint_names: Annotated[
-            list[str] | None, Declared(KEYPOINT_NAMES_DESCRIPTION)
+            list[str] | None, Declared(KEYPOINT_NAMES_DESCRIPTION, keypoint="name")
         ] = None
         keypoints: Annotated[
-            list[int | str] | None, Declared(_KEYPOINTS_DESCRIPTION)
+            list[int | str] | None, Declared(_KEYPOINTS_DESCRIPTION, keypoint="either")
         ] = None
-        heading: Annotated[tuple[int | str, int | str], Declared(_HEADING_DESCRIPTION)]
+        heading: Annotated[
+            tuple[int | str, int | str],
+            Declared(_HEADING_DESCRIPTION, keypoint="either"),
+        ]
         inter_distances: Annotated[
-            list[tuple[int | str, int | str]], Declared(_INTER_DISTANCES_DESCRIPTION)
+            list[tuple[int | str, int | str]],
+            Declared(_INTER_DISTANCES_DESCRIPTION, keypoint="either"),
         ] = Field(default_factory=list)
         fps: Annotated[float | None, Declared(FPS_DESCRIPTION, unit="fps")] = Field(
             default=None, gt=0

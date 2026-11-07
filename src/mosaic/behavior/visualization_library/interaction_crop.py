@@ -199,7 +199,7 @@ class InteractionCropPipeline:
         center_mode: Annotated[
             str | int,
             Field(examples=["default", "xy", "pose0"]),
-            Declared(CENTER_MODE_DESCRIPTION),
+            Declared(CENTER_MODE_DESCRIPTION, keypoint="index"),
         ] = "default"
         center_offset_px: Annotated[
             float, Declared(CENTER_OFFSET_PX_DESCRIPTION, unit="px")
@@ -208,7 +208,7 @@ class InteractionCropPipeline:
             True
         )
         heading_points: Annotated[
-            tuple[int, int], Declared(HEADING_POINTS_DESCRIPTION)
+            tuple[int, int], Declared(HEADING_POINTS_DESCRIPTION, keypoint="index")
         ] = (3, 6)
         margin_factor: Annotated[float, Declared(MARGIN_FACTOR_DESCRIPTION)] = 1.5
         angle_col: Annotated[str | None, Declared(ANGLE_COL_DESCRIPTION)] = None

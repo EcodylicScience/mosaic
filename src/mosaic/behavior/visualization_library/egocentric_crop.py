@@ -188,7 +188,7 @@ class EgocentricCrop:
         center_mode: Annotated[
             str | int,
             Field(examples=["default", "xy", "pose0"]),
-            Declared(CENTER_MODE_DESCRIPTION),
+            Declared(CENTER_MODE_DESCRIPTION, keypoint="index"),
         ] = "default"
         pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
@@ -200,7 +200,7 @@ class EgocentricCrop:
             True
         )
         heading_points: Annotated[
-            tuple[int, int], Declared(HEADING_POINTS_DESCRIPTION)
+            tuple[int, int], Declared(HEADING_POINTS_DESCRIPTION, keypoint="index")
         ] = (3, 6)
         margin_factor: Annotated[float, Declared(MARGIN_FACTOR_DESCRIPTION)] = 1.5
         # Center offset along heading direction (pixels)

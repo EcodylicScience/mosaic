@@ -48,6 +48,14 @@ refused. Only a field typed as one model, with or without `None`, still merges a
 partial dict into its default. A partial override of a discriminated-union field
 names its tag. No run identifier, op `version` or golden changes.
 
+**The params schema marks a keypoint field with `x-mosaic-keypoint`.** A field
+whose value names keypoints publishes `name`, one whose value indexes them
+publishes `index`, and one that accepts either publishes `either`, so a client
+can offer the dataset's keypoints for it. The key is declared through
+`Declared(..., keypoint=...)` and sits at the field level beside
+`x-mosaic-unit` and `x-mosaic-unwired`. It reaches the step-type catalog's
+`params_schema` unchanged. The kind is published only: no run identifier moves.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full

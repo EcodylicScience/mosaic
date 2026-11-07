@@ -236,12 +236,19 @@ class ScorePredictionsParams(Params):
         Field(gt=0.0),
         Declared(_DUPLICATE_RADIUS_DESCRIPTION, unit=_BODY_LENGTHS),
     ] = 0.2
-    center: Annotated[_KeypointReference, Declared(_CENTER_DESCRIPTION)] = None
-    head: Annotated[_KeypointReference, Declared(_HEAD_DESCRIPTION)] = None
-    tail: Annotated[_KeypointReference, Declared(_TAIL_DESCRIPTION)] = None
+    center: Annotated[
+        _KeypointReference, Declared(_CENTER_DESCRIPTION, keypoint="either")
+    ] = None
+    head: Annotated[
+        _KeypointReference, Declared(_HEAD_DESCRIPTION, keypoint="either")
+    ] = None
+    tail: Annotated[
+        _KeypointReference, Declared(_TAIL_DESCRIPTION, keypoint="either")
+    ] = None
     oks_sigma: Annotated[float, Field(gt=0.0), Declared(_OKS_SIGMA_DESCRIPTION)] = 0.025
     oks_sigmas: Annotated[
-        dict[str, Annotated[float, Field(gt=0.0)]], Declared(_OKS_SIGMAS_DESCRIPTION)
+        dict[str, Annotated[float, Field(gt=0.0)]],
+        Declared(_OKS_SIGMAS_DESCRIPTION, keypoint="name"),
     ] = Field(default_factory=dict)
     pck_alphas: Annotated[
         tuple[Annotated[float, Field(gt=0.0, le=1.0)], ...],

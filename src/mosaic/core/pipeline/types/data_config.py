@@ -131,16 +131,16 @@ class PoseConfig(DeclaredModel):
     """Pose keypoint column naming and selection."""
 
     pose_n: Annotated[int, Declared(_POSE_N_DESCRIPTION)] = 7
-    pose_indices: Annotated[list[int] | None, Declared(_POSE_INDICES_DESCRIPTION)] = (
-        None
-    )
+    pose_indices: Annotated[
+        list[int] | None, Declared(_POSE_INDICES_DESCRIPTION, keypoint="index")
+    ] = None
     x_prefix: Annotated[str, Declared(_X_PREFIX_DESCRIPTION)] = "poseX"
     y_prefix: Annotated[str, Declared(_Y_PREFIX_DESCRIPTION)] = "poseY"
     confidence_prefix: Annotated[str, Declared(_CONFIDENCE_PREFIX_DESCRIPTION)] = (
         "poseP"
     )
     keypoint_names: Annotated[
-        list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION)
+        list[str] | None, Declared(_KEYPOINT_NAMES_DESCRIPTION, keypoint="name")
     ] = None
 
     def selected_indices(self) -> list[int]:

@@ -605,10 +605,10 @@ class VameFeature:
             default_factory=PoseConfig
         )
         centered_reference_keypoint: Annotated[
-            int | str, Declared(_CENTERED_REFERENCE_DESCRIPTION)
+            int | str, Declared(_CENTERED_REFERENCE_DESCRIPTION, keypoint="either")
         ]
         orientation_reference_keypoint: Annotated[
-            int | str, Declared(_ORIENTATION_REFERENCE_DESCRIPTION)
+            int | str, Declared(_ORIENTATION_REFERENCE_DESCRIPTION, keypoint="either")
         ]
 
         # Preprocessing

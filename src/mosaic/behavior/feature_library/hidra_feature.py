@@ -508,7 +508,8 @@ class HidraFeature:
             default_factory=PoseConfig
         )
         keypoint_map: Annotated[
-            dict[str, HidraBodypart], Declared(_KEYPOINT_MAP_DESCRIPTION)
+            dict[str, HidraBodypart],
+            Declared(_KEYPOINT_MAP_DESCRIPTION, keypoint="name"),
         ] = Field(default_factory=dict)
         heads: Annotated[list[HidraHead], Declared(_HEADS_DESCRIPTION)] = Field(
             default_factory=list

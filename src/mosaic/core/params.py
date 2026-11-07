@@ -14,7 +14,16 @@ import textwrap
 import types
 from dataclasses import dataclass
 from inspect import cleandoc
-from typing import Annotated, Final, Self, TypeAlias, Union, get_args, get_origin
+from typing import (
+    Annotated,
+    Final,
+    Literal,
+    Self,
+    TypeAlias,
+    Union,
+    get_args,
+    get_origin,
+)
 
 from pydantic import BaseModel, Field, GetJsonSchemaHandler
 from pydantic.fields import FieldInfo
@@ -34,6 +43,14 @@ A named ``Annotated`` alias states the bound once, and states the constraint
 alone. A description declared here would land inside the ``anyOf`` branch of
 every optional field that reuses it, leaving the property itself undescribed, so
 each field declares its prose beside the field.
+"""
+
+
+KeypointKind: TypeAlias = Literal["name", "index", "either"]
+"""What a keypoint field's value refers to keypoints by.
+
+``name`` for a value that names keypoints, ``index`` for one that indexes them,
+``either`` for one that accepts an index or a name.
 """
 
 
@@ -96,28 +113,41 @@ class Declared:
             Removing such a field is the maintainer's call, so the record sits
             beside it; a ``strict`` xfail test names the wiring it lacks and
             fails the day someone supplies it.
+        keypoint: What the field's value refers to keypoints by, published as
+            ``x-mosaic-keypoint``: ``name`` for a value that names keypoints,
+            ``index`` for one that indexes them, ``either`` for one that
+            accepts an index or a name. ``None`` publishes no key. A client
+            offers the dataset's keypoints for such a field. The kind is
+            published only and does not reach the run identity.
     """
 
     description: str
     unit: str = ""
     unwired: str = ""
+    keypoint: KeypointKind | None = None
 
     def __get_pydantic_json_schema__(
         self, source: CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        """Add ``description``, plus ``x-mosaic-unit`` and ``x-mosaic-unwired``.
+        """Add ``description``, plus the ``x-mosaic-`` key of each fact set.
 
         Every key sits at the field level, outside the ``anyOf`` an optional
         field renders. A client that unwraps only the non-null branch reads them
         from the property itself.
         """
         schema = handler(source)
+        self.publish_into(schema)
+        return schema
+
+    def publish_into(self, schema: JsonSchemaValue) -> None:
+        """Write the description and each fact set into one field's *schema*."""
         schema["description"] = self.description
         if self.unit:
             schema["x-mosaic-unit"] = self.unit
         if self.unwired:
             schema["x-mosaic-unwired"] = self.unwired
-        return schema
+        if self.keypoint is not None:
+            schema["x-mosaic-keypoint"] = self.keypoint
 
 
 class HashExclude:
@@ -350,11 +380,7 @@ class DeclaredModel(StrictModel):
             field_schema = properties.get(name)
             if field_schema is None or "description" in field_schema:
                 continue
-            field_schema["description"] = declared.description
-            if declared.unit:
-                field_schema["x-mosaic-unit"] = declared.unit
-            if declared.unwired:
-                field_schema["x-mosaic-unwired"] = declared.unwired
+            declared.publish_into(field_schema)
         return schema
 
 

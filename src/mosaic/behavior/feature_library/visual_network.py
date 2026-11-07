@@ -419,24 +419,34 @@ class VisualNetwork:
         pass
 
     class Params(Params):
-        head_index: Annotated[int, Field(ge=0), Declared(_HEAD_INDEX_DESCRIPTION)] = 0
-        tail_index: Annotated[int, Field(ge=-1), Declared(_TAIL_INDEX_DESCRIPTION)] = -1
+        head_index: Annotated[
+            int, Field(ge=0), Declared(_HEAD_INDEX_DESCRIPTION, keypoint="index")
+        ] = 0
+        tail_index: Annotated[
+            int, Field(ge=-1), Declared(_TAIL_INDEX_DESCRIPTION, keypoint="index")
+        ] = -1
         left_eye_index: Annotated[
-            int | None, Field(ge=0), Declared(_LEFT_EYE_INDEX_DESCRIPTION)
+            int | None,
+            Field(ge=0),
+            Declared(_LEFT_EYE_INDEX_DESCRIPTION, keypoint="index"),
         ] = None
         right_eye_index: Annotated[
-            int | None, Field(ge=0), Declared(_RIGHT_EYE_INDEX_DESCRIPTION)
+            int | None,
+            Field(ge=0),
+            Declared(_RIGHT_EYE_INDEX_DESCRIPTION, keypoint="index"),
         ] = None
         outline_indices: Annotated[
             list[Annotated[int, Field(ge=0)]] | None,
             Field(min_length=2),
-            Declared(_OUTLINE_INDICES_DESCRIPTION),
+            Declared(_OUTLINE_INDICES_DESCRIPTION, keypoint="index"),
         ] = None
         heading_source: Annotated[
             HeadingSource, Declared(_HEADING_SOURCE_DESCRIPTION)
         ] = "ANGLE"
         heading_back_index: Annotated[
-            int, Field(ge=0), Declared(_HEADING_BACK_INDEX_DESCRIPTION)
+            int,
+            Field(ge=0),
+            Declared(_HEADING_BACK_INDEX_DESCRIPTION, keypoint="index"),
         ] = 2
         n_rays: Annotated[int, Field(ge=8), Declared(_N_RAYS_DESCRIPTION)] = 1000
         blind_angle_deg: Annotated[

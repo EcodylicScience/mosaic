@@ -501,10 +501,10 @@ class KpmsFeature:
             default_factory=PoseConfig
         )
         anterior_bodyparts: Annotated[
-            list[str], Declared(_ANTERIOR_BODYPARTS_DESCRIPTION)
+            list[str], Declared(_ANTERIOR_BODYPARTS_DESCRIPTION, keypoint="name")
         ] = Field(min_length=1)
         posterior_bodyparts: Annotated[
-            list[str], Declared(_POSTERIOR_BODYPARTS_DESCRIPTION)
+            list[str], Declared(_POSTERIOR_BODYPARTS_DESCRIPTION, keypoint="name")
         ] = Field(min_length=1)
         fps: Annotated[int, Declared(_FPS_DESCRIPTION, unit="fps")] = 30
         num_iters_ar: Annotated[

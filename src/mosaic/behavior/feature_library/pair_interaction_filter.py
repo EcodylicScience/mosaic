@@ -317,7 +317,7 @@ class PairInteractionFilter:
             True
         )
         pose_head_index: Annotated[
-            int | None, Declared(_POSE_HEAD_INDEX_DESCRIPTION)
+            int | None, Declared(_POSE_HEAD_INDEX_DESCRIPTION, keypoint="index")
         ] = None
 
     def __init__(

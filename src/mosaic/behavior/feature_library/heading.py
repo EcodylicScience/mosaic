@@ -119,8 +119,10 @@ class HeadingFeature:
 
     class Params(Params):
         method: Annotated[HeadingMethod, Declared(_METHOD_DESCRIPTION)] = "two_point"
-        front_idx: Annotated[int, Declared(_FRONT_IDX_DESCRIPTION)] = 0
-        rear_idx: Annotated[int, Declared(_REAR_IDX_DESCRIPTION)] = 1
+        front_idx: Annotated[
+            int, Declared(_FRONT_IDX_DESCRIPTION, keypoint="index")
+        ] = 0
+        rear_idx: Annotated[int, Declared(_REAR_IDX_DESCRIPTION, keypoint="index")] = 1
         output_col: Annotated[str, Declared(_OUTPUT_COL_DESCRIPTION)] = (
             C.orientation_col
         )

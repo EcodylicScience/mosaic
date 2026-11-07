@@ -191,7 +191,9 @@ class PrepareTrainingDataParams(Params):
     point_index: Annotated[
         int,
         Field(ge=0),
-        Declared("polo only: which keypoint of each instance is the point."),
+        Declared(
+            "polo only: which keypoint of each instance is the point.", keypoint="index"
+        ),
     ] = 0
     radius: Annotated[
         float,

@@ -169,8 +169,10 @@ class PairEgocentricFeatures:
         pose: Annotated[PoseConfig, Declared(POSE_CONFIG_DESCRIPTION)] = Field(
             default_factory=PoseConfig
         )
-        neck_idx: Annotated[int, Declared(_NECK_IDX_DESCRIPTION)] = 3
-        tail_base_idx: Annotated[int, Declared(_TAIL_BASE_IDX_DESCRIPTION)] = 6
+        neck_idx: Annotated[int, Declared(_NECK_IDX_DESCRIPTION, keypoint="index")] = 3
+        tail_base_idx: Annotated[
+            int, Declared(_TAIL_BASE_IDX_DESCRIPTION, keypoint="index")
+        ] = 6
         center_mode: Annotated[
             str, Declared(_CENTER_MODE_DESCRIPTION, unwired=_CENTER_MODE_UNWIRED)
         ] = "mean"

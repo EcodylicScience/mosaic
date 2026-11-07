@@ -227,6 +227,17 @@ def test_the_schema_detail_drops_titles_and_class_docstrings() -> None:
     assert k["description"]
 
 
+def test_the_catalog_schema_keeps_the_keypoint_kind() -> None:
+    schema = step_type_detail("heading", detail="schema").params_schema
+
+    assert schema is not None
+    properties = schema["properties"]
+    assert isinstance(properties, dict)
+    front = properties["front_idx"]
+    assert isinstance(front, dict)
+    assert front["x-mosaic-keypoint"] == "index"
+
+
 def test_a_property_named_title_survives_compaction() -> None:
     schema: dict[str, JsonValue] = {
         "title": "Params",

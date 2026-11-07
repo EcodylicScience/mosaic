@@ -196,7 +196,9 @@ class KeypointMapParams(DeclaredModel):
 
     keypoints: Annotated[
         dict[str, str | StrictInt],
-        Declared("Target keypoint name to source keypoint name or index."),
+        Declared(
+            "Target keypoint name to source keypoint name or index.", keypoint="either"
+        ),
     ] = Field(default_factory=dict)
     by_name: Annotated[
         bool, Declared("Map every target name that is also a source name to it.")
