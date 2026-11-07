@@ -324,14 +324,15 @@ FFmpeg
   Loaded:      FFmpeg libraries also arrive in a default install, inside
                two third-party wheels, and are loaded in-process when they
                are imported: av (PyAV, through mosaic-media[io]) and
-               opencv-python. PyAV's wheels bundle the x264 and x265
-               encoder libraries on every platform, and those are
-               GPL-2.0-or-later. opencv-python's wheel for macOS on Apple
-               silicon bundles an FFmpeg configured as GPL-3.0-or-later.
-               Neither wheel ships those license texts. mosaic does not
-               redistribute either wheel, and its own in-process encoding,
-               through mosaic-media, uses the AV1 encoder libsvtav1 (or
-               av1_nvenc on NVIDIA hardware), never x264 or x265.
+               opencv-python-headless. PyAV's wheels bundle the x264 and
+               x265 encoder libraries on every platform, and those are
+               GPL-2.0-or-later. The opencv-python-headless wheel for macOS
+               on Apple silicon bundles an FFmpeg configured as
+               GPL-3.0-or-later. Neither wheel ships those license
+               texts. mosaic does not redistribute either wheel, and its
+               own in-process encoding, through mosaic-media, uses the
+               AV1 encoder libsvtav1 (or av1_nvenc on NVIDIA hardware),
+               never x264 or x265.
   Optional:    the movement extra installs imageio-ffmpeg, whose ffmpeg
                executables are GPL builds. The feral extra installs decord
                on Linux, whose FFmpeg is configured with non-free
@@ -656,8 +657,8 @@ regenerates the full inventory from it: per extra and per dependency
 group, the transitive closure with each distribution's license resolved
 from PyPI metadata and flagged when it is not permissive. It reads license
 metadata only, so it does not see libraries bundled inside a wheel -- the
-FFmpeg builds in av and opencv-python, or the CUDA runtime in xgboost --
-which are described above instead. By default it reads mosaic's lock,
+FFmpeg builds in av and opencv-python-headless, or the CUDA runtime in
+xgboost -- which are described above instead. By default it reads mosaic's lock,
 the isolated keypoint-MoSeq lock and the isolated VAME lock. Pass --lock
 for the Ultralytics and POLO environment locks, which list the
 AGPL-licensed distributions and are not read by default.

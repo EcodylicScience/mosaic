@@ -64,8 +64,8 @@ uv sync --python 3.12
 ```
 
 Python 3.12 is pinned rather than left to uv, which would otherwise take the
-newest interpreter it can find. `pyproject.toml` here admits `>=3.12`, and
-`uv.lock` beside it was resolved for one interpreter: a build on a newer one
+newest interpreter it can find. `pyproject.toml` here admits `>=3.12`, and the
+lock resolves on 3.12 and 3.13 alike. A build on a still newer interpreter
 resolves a different set of wheels, or none at all for the first months after a
 Python release, which is exactly the reproducibility the committed lock is
 there to give.

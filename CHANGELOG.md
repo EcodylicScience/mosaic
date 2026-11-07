@@ -8,6 +8,24 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: headless OpenCV, and the tool environments on torch 2.14.1
+
+mosaic requires `opencv-python-headless>=4.7,<6` instead of `opencv-python`. The
+`lightning-action` and `movement` extras already required the headless wheel, so an
+environment that installed one of them held two builds of `cv2`, and `tests/conftest.py`
+refused to start in it. The headless wheel also links no libGL, so a container without
+a graphics stack imports `cv2`. The wheel has no window functions: `cv2.imshow` raises
+`cv2.error`, so `play_video` and pose inference with `show_window=True`, their default,
+need conda-forge's `py-opencv` (the documented install) or `show_window=False`. A pip
+environment upgraded from an earlier release holds the `opencv-python` wheel, and the
+upgrade installs the headless wheel beside it. Run `pip uninstall opencv-python` first.
+
+The Ultralytics and POLO environments lock torch 2.14.1, torchvision 0.29.1 and triton
+3.8.0, and resolve on Python 3.13 as well as 3.12. Every other pin stays except the
+CUDA 13 libraries that torch 2.14.1 requires. A host with an older GPU reinstalls the
+same version from PyTorch's cu126 index, as `src/mosaic/tracking/external/README.md`
+describes. No identifier or name on disk moves.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full

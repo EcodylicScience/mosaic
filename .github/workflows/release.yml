@@ -150,15 +150,12 @@ jobs:
 
       # A clean environment that holds nothing but the wheel and what PyPI
       # resolves for it. `mosaic-media` comes from PyPI here, where the suite's
-      # jobs install a sibling checkout over it. `av` and `opencv-python` each
-      # bundle an ffmpeg and collide on macOS; on this Ubuntu runner their
-      # wheels coexist (docs/installation.md explains the macOS case).
+      # jobs install a sibling checkout over it. `av` and
+      # `opencv-python-headless` each bundle an ffmpeg and collide on macOS; on
+      # this Ubuntu runner their wheels coexist (docs/installation.md explains the
+      # macOS case).
       - name: Smoke test the wheel in a clean environment
         run: |
-          # The full `opencv-python` wheel links libGL, which a runner image
-          # may not carry.
-          sudo apt-get update
-          sudo apt-get install -y libgl1
           uv venv "$RUNNER_TEMP/smoke"
           uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
           "$RUNNER_TEMP/smoke/bin/python" -I - "${GITHUB_REF_NAME#v}" <<'PY'

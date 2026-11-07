@@ -253,8 +253,9 @@ jobs:
   # `test`: FERAL pins its dependencies exactly -- `opencv-python`, `pandas`,
   # `scikit-learn`, `timm`, `matplotlib`, `transformers` -- so installing it beside
   # the other extras would silently re-resolve the environment every other job
-  # shares. On its own runner those pins win uncontested, and its single
-  # `opencv-python` build keeps conftest's two-builds guard satisfied.
+  # shares. On its own runner those pins win uncontested, except `opencv-python`:
+  # mosaic requires `opencv-python-headless`, so the install overrides FERAL's GUI
+  # wheel away to keep conftest's two-builds guard satisfied.
   feral:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
@@ -282,7 +283,8 @@ jobs:
         run: |
           uv venv
           uv pip install -e '../mosaic-media[io,cli]'
-          uv pip install -e '.[feral]'
+          echo "opencv-python ; sys_platform == 'never'" > "$RUNNER_TEMP/overrides.txt"
+          uv pip install --override "$RUNNER_TEMP/overrides.txt" -e '.[feral]'
           uv pip install --group test
 
       - name: Test feral integration
@@ -302,9 +304,9 @@ jobs:
   # video models do, and they import it inside a try -- so the package goes in
   # with `--no-deps`, followed by the requirements its import needs.
   # `lightning_action.api.model` loads `api/__init__`, which imports the video
-  # model and with it cv2 (mosaic's own `opencv-python`), torchvision and
-  # transformers. `--no-deps` also keeps out its `opencv-python-headless`, a
-  # second cv2 build that conftest refuses.
+  # model and with it cv2 (mosaic's own `opencv-python-headless`), torchvision
+  # and transformers. `--no-deps` also keeps the package from re-resolving the
+  # environment around its own OpenCV requirement.
   #
   # Without this job nothing in CI ran the package, and a stub that wrote CSVs
   # its own way hid a fit that raised on every real call.

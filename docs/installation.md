@@ -25,9 +25,9 @@ project named `mosaic` exists on PyPI, so never run `pip install mosaic`.
 
 `av` and `py-opencv` are installed from conda-forge, before pip runs, so that the
 environment holds a single ffmpeg build. conda's `py-opencv` registers itself as
-`opencv-python`, which lets pip accept it, and its `av` satisfies the `av>=18,<20`
-requirement of mosaic-media. `ffmpeg` and `ffprobe` must be on `PATH`. They are used
-for media indexing and for `mosaic media transcode`.
+`opencv-python` and `opencv-python-headless`, which lets pip accept it, and its `av`
+satisfies the `av>=18,<20` requirement of mosaic-media. `ffmpeg` and `ffprobe` must
+be on `PATH`. They are used for media indexing and for `mosaic media transcode`.
 
 Confirm the install:
 
@@ -44,14 +44,19 @@ often with `Trace/BPT trap: 5`. On macOS every import also warns that
 the environment contains two builds.
 
 A pip install without the conda step produces two builds in two ways.
-`pip install mosaic-behavior` resolves the full `opencv-python` wheel and, through
+`pip install mosaic-behavior` resolves the `opencv-python-headless` wheel and, through
 `mosaic-media[io]`, the `av` wheel. Each bundles a complete ffmpeg, and on macOS the two
 collide. On Linux mosaic's CI runs use both wheels without a crash, and on Windows
-OpenCV loads its ffmpeg as a separate library on demand. Separately, the
-`lightning-action` and `movement` extras require `opencv-python-headless` beside
-mosaic's `opencv-python`, and pip installs both wheels into one `cv2` package on every
-platform. The conda-forge builds avoid both, because they link the environment's ffmpeg
-and one `py-opencv` registers both OpenCV names.
+OpenCV loads its ffmpeg as a separate library on demand. Mosaic requires the headless
+wheel because the `lightning-action` and `movement` extras do, and pip installs the
+GUI `opencv-python` wheel into the same `cv2` package on every platform when something
+else asks for it. The conda-forge builds avoid both, because they link the environment's
+ffmpeg and one `py-opencv` registers both OpenCV names.
+
+The headless wheel has no window functions: `cv2.imshow` raises `cv2.error`. The
+interactive playback of `play_video` and of pose inference (`show_window=True`, their
+default) needs conda-forge's `py-opencv`, which the install above provides. Without
+it, pass `show_window=False` and write the video to a file.
 
 On macOS, install `av` and `py-opencv` from conda-forge, and do not install either one
 with pip afterward. To repair an environment that shows either symptom, remove the
@@ -328,8 +333,9 @@ uv sync --python 3.12
 export MOSAIC_POLO_BIN="$PWD/.venv/bin/yolo"
 ```
 
-Pass `--python 3.12` rather than letting uv choose. The committed lock was resolved
-for that interpreter and a newer one may not resolve at all.
+Pass `--python 3.12` rather than letting uv choose. The committed lock resolves on
+Python 3.12 and 3.13 (`--python 3.13` works too), and an interpreter newer than
+both may not resolve at all.
 
 Set `MOSAIC_POLO_BIN` and `MOSAIC_ULTRALYTICS_BIN` explicitly rather than relying on
 `$PATH`. Both environments install a `yolo` script, and a `$PATH` lookup cannot tell

@@ -52,7 +52,14 @@ dependencies = [
     # major version this project is tested against was being chosen by the
     # resolver rather than declared. Raise the ceiling on purpose, with a run
     # of the media suites behind it.
-    "opencv-python>=4.7,<6",
+    #
+    # The headless wheel, because the extras that need `cv2` (`lightning-action`,
+    # `movement`, and the Ultralytics environments) require it, and the GUI wheel
+    # beside it is a second build of one import package. It also links no libGL.
+    # `cv2.imshow` is therefore unavailable from the wheel: the interactive
+    # playback of `play_video` and of pose inference (`show_window=True`) needs
+    # the conda-forge `py-opencv` installed in its place.
+    "opencv-python-headless>=4.7,<6",
     # `core/annotations/readers/yolo_pose.py` opens each image with PIL to read
     # its size. Core rather than an extra: reading annotations is not gated on
     # any integration, and it arrived only transitively through `ultralytics`,

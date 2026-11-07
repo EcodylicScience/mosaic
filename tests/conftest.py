@@ -134,13 +134,14 @@ def _refuse_an_unresolvable_external_environment() -> None:
 def _refuse_two_opencv_builds() -> None:
     """Two *builds* of ``cv2`` in one environment is a broken install, everywhere.
 
-    ``albumentations`` and ``albucore`` require ``opencv-python-headless``;
-    ``mosaic-behavior`` and ``ultralytics`` require ``opencv-python``. Install both
-    wheels and pip is happy: they are different distributions, so nothing conflicts --
-    but they ship the *same* import package, so one overwrites the other's files and
-    both leave their bundled native libraries in one ``cv2/.dylibs``. That directory
-    then holds two ffmpeg builds (``libavcodec.61.19.100`` beside ``.101``), and the
-    suite dies with ``Trace/BPT trap: 5`` at a different place on every run.
+    ``mosaic-behavior``, ``albumentations`` and ``albucore`` require
+    ``opencv-python-headless``; ``feral`` and ``ultralytics`` require
+    ``opencv-python``. Install both wheels and pip is happy: they are different
+    distributions, so nothing conflicts -- but they ship the *same* import package,
+    so one overwrites the other's files and both leave their bundled native
+    libraries in one ``cv2/.dylibs``. That directory then holds two ffmpeg builds
+    (``libavcodec.61.19.100`` beside ``.101``), and the suite dies with
+    ``Trace/BPT trap: 5`` at a different place on every run.
 
     **Counting distribution names is not the test; counting builds is.** conda-forge
     ships one ``py-opencv`` that deliberately registers *both* ``opencv-python`` and
@@ -155,7 +156,9 @@ def _refuse_two_opencv_builds() -> None:
     Unlike the checks below this fires outside CI too, because the failure mode is a
     crash rather than a skip, and because the other half of it is silent: whichever
     wheel wins may be the headless one, which has no ``imshow``, so interactive
-    playback breaks with no dependency error anywhere.
+    playback breaks with no dependency error anywhere. Mosaic itself requires the
+    headless wheel, so a GUI wheel in the environment is one that something else
+    asked for.
 
     Not covered, deliberately: ``av`` and ``opencv-python`` each vendor a *complete*
     ffmpeg, so two of those wheels collide the same way even when only one provides
@@ -179,9 +182,9 @@ def _refuse_two_opencv_builds() -> None:
             "They share one import package, so their bundled ffmpeg libraries land in "
             "one directory and the suite crashes nondeterministically. Keep exactly "
             "one -- `pip uninstall opencv-python opencv-python-headless` then either "
-            "`pip install 'opencv-python>=4.7'`, or `conda install -c conda-forge "
-            "py-opencv`, which links the environment's shared ffmpeg and registers "
-            "both names for one build."
+            "`pip install 'opencv-python-headless>=4.7'`, or "
+            "`conda install -c conda-forge py-opencv`, which links the environment's "
+            "shared ffmpeg and registers both names for one build."
         )
 
 

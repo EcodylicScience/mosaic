@@ -77,10 +77,11 @@ requirements, and pip installs neither wheel. A `uv venv` cannot take conda pack
 **One ffmpeg build per environment.** Two ffmpeg builds in one process crash it at a
 different point on every run. Two `cv2` wheels (`opencv-python` beside
 `opencv-python-headless`) collide on every platform, and `tests/conftest.py` refuses to
-start with them. The `av` wheel beside a `cv2` wheel collides on macOS whichever `cv2`
-flavor is installed, and a dependency edit cannot fix it. Use conda on macOS. On Linux,
-CI's wheels against an apt `ffmpeg` work. The Ultralytics environments declare headless
-OpenCV and override the GUI wheel away, and
+start with them. Mosaic requires `opencv-python-headless`, so `cv2.imshow` needs
+conda-forge's `py-opencv`. The `av` wheel beside a `cv2` wheel collides on macOS
+whichever `cv2` flavor is installed, and a dependency edit cannot fix it. Use conda
+on macOS. On Linux, CI's wheels against an apt `ffmpeg` work. The Ultralytics
+environments declare headless OpenCV and override the GUI wheel away, and
 `tests/tracking/ultralytics_track/test_ultralytics_preflight.py` checks their locks.
 
 **One OpenMP runtime per environment (macOS).** The macOS wheels of torch,

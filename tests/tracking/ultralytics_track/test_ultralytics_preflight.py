@@ -175,6 +175,38 @@ def test_a_locked_external_environment_resolves_one_cv2(directory: Path) -> None
     )
 
 
+@pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
+def test_a_locked_external_environment_pins_one_torch_build(directory: Path) -> None:
+    """The lock names the torch release every image and every host installs.
+
+    The lock resolves torch from PyPI. A host with an older GPU reinstalls the same
+    version from PyTorch's cu126 index (``src/mosaic/tracking/external/README.md``), so
+    the version here is the one that both builds carry. ``nvidia-ml-py`` is
+    Ultralytics' own requirement, and a lock that lost it fails at import on a
+    machine without it.
+    """
+    locked = {
+        package["name"]: package["version"]
+        for package in tomllib.loads((directory / "uv.lock").read_text())["package"]
+    }
+
+    assert locked["torch"] == "2.14.1"
+    assert locked["torchvision"] == "0.29.1"
+    assert "triton" in locked
+    assert "nvidia-ml-py" in locked
+
+
+@pytest.mark.parametrize("directory", ENVIRONMENT_DIRECTORIES)
+def test_a_locked_external_environment_allows_the_interpreter_mosaic_requires(
+    directory: Path,
+) -> None:
+    """Python 3.13 resolves in the lock, so a 3.13 interpreter can sync it."""
+    lock = tomllib.loads((directory / "uv.lock").read_text())
+
+    assert lock["requires-python"] == ">=3.12"
+    assert not any("< '3.13'" in marker for marker in lock["resolution-markers"])
+
+
 def test_every_backend_declares_the_settings_it_selects_on() -> None:
     """``tracker_type`` is present and correct in every resolved table."""
     for name in TRACKER_NAMES:
