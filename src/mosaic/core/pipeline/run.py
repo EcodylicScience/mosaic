@@ -719,10 +719,18 @@ def cached_entry_disposition(recorded: str, current: str) -> CacheDisposition:
     return "undetectable"
 
 
-def _disposition_reason(recorded: str, current: str) -> str:
-    """Why a cached entry was refused, in the words a user can act on."""
+def _disposition_reason(
+    recorded: str, current: str, moved: str = "its source moved"
+) -> str:
+    """Why a cached entry was refused, in the words a user can act on.
+
+    Args:
+        recorded: The cell the entry's row recorded.
+        current: The cell as it reads now.
+        moved: What to say when both are known and differ.
+    """
     if recorded and current:
-        return "its source moved"
+        return moved
     if recorded:
         return "the composition it was built from is no longer recorded"
     return "nothing records what it was built from"
@@ -846,6 +854,48 @@ def _blind_tracks_warning(
             f"transcode derivative, has nothing to record."
         )
     return "".join(parts)
+
+
+def _upstreams_over_variants(
+    ds: Dataset, feature_inputs: Sequence[tuple[str, str]]
+) -> tuple[tuple[str, str], ...]:
+    """The feature inputs whose upstream run read a named tracks variant.
+
+    Read from each upstream run's ``params.json``. An upstream over the
+    unlabelled variant, or one whose file is absent or unreadable, is left out:
+    no repair reaches the tracks tables it read.
+
+    Args:
+        ds: The dataset holding the upstream runs.
+        feature_inputs: The ``(storage, run_id)`` of each feature input.
+    """
+    named: list[tuple[str, str]] = []
+    for storage, run_id in dict.fromkeys(feature_inputs):
+        if not run_id:
+            continue
+        params = read_run_params(feature_run_root(ds, storage, run_id)).params
+        if params is not None and params.consumed_variants():
+            named.append((storage, run_id))
+    return tuple(named)
+
+
+def _blind_upstream_tracks_warning(
+    feature_name: str, upstreams: Sequence[tuple[str, str]], count: int
+) -> str:
+    """What to say when the upstream rows of a feature input record no tracks cell.
+
+    The repair is upstream: the tracks tables an upstream run read have to record
+    a composition first (that run's own warning names how), and the upstream run
+    then runs again, so its rows carry the cell to this run.
+    """
+    named = ", ".join(f"{storage} run {run_id}" for storage, run_id in upstreams)
+    return (
+        f"[feature:{feature_name}] served {count} cached entry(ies) whose "
+        f"tracks tables record no source composition, read through {named}, so "
+        f"a change under the tracks sources would go unnoticed. Once those "
+        f"tracks tables record one, run the upstream run again; the run of this "
+        f"feature after that recomputes once, then serves from cache."
+    )
 
 
 def _scope_term(feature: Feature, scope: ResolvedScope) -> list[list[object]]:
@@ -1772,6 +1822,18 @@ def _run_feature_impl(
         if overlap_frames > 0
         else {}
     )
+    # What each feature input's upstream recorded of its declared roots, its own
+    # and those it inherited, so an entry recomputes after its upstream entry
+    # recomputes for a moved root. An upstream declaring no root records nothing,
+    # which is absence and not blindness, so this channel never warns.
+    inputs_now_by_entry: Mapping[Entry, str] = (
+        resolved.input_root_compositions
+        if resolved.input_root_compositions is not None
+        else {}
+    )
+    # A run reading tracks only through feature inputs is blind where an
+    # upstream run read a named variant whose tables record no composition.
+    upstreams_over_variants = _upstreams_over_variants(ds, resolved.feature_inputs)
 
     skip_keys: set[str] = set()
     # Entries whose provenance neither side can establish. Collected rather than
@@ -1841,6 +1903,8 @@ def _run_feature_impl(
             tracks_now = tracks_now_by_entry.get(entry, "")
             neighbors_was = recorded_reads.neighbors
             neighbors_now = neighbors_now_by_entry.get(entry, "")
+            inputs_was = recorded_reads.inputs
+            inputs_now = inputs_now_by_entry.get(entry, "")
             disposition = cached_entry_disposition(was_made_from, now_made_of)
             tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
             refusal: str | None = None
@@ -1848,6 +1912,10 @@ def _run_feature_impl(
                 refusal = _disposition_reason(was_made_from, now_made_of)
             elif tracks_disposition == "recompute":
                 refusal = _disposition_reason(tracks_was, tracks_now)
+            elif cached_entry_disposition(inputs_was, inputs_now) == "recompute":
+                refusal = _disposition_reason(
+                    inputs_was, inputs_now, moved="its upstream's source moved"
+                )
             elif cached_entry_disposition(neighbors_was, neighbors_now) == "recompute":
                 refusal = _neighbors_reason(neighbors_was)
             if refusal is None and blind_layouts is not None:
@@ -1869,7 +1937,9 @@ def _run_feature_impl(
                 continue
             if feature.consumed_roots and disposition == "undetectable":
                 roots_blind.add(entry)
-            if resolved.tracks_variants and tracks_disposition == "undetectable":
+            if tracks_disposition == "undetectable" and (
+                resolved.tracks_variants or upstreams_over_variants
+            ):
                 tracks_blind.add(entry)
             _record_row(
                 FeatureIndexRow(
@@ -1885,6 +1955,7 @@ def _run_feature_impl(
                     # says so, rather than claiming the present.
                     consumed_composition=was_made_from,
                     consumed_tracks_composition=tracks_was,
+                    consumed_input_composition=inputs_was,
                     consumed_neighbors=neighbors_was,
                     n_rows=n_rows,
                     params_hash=params_hash,
@@ -1901,10 +1972,19 @@ def _run_feature_impl(
             _blind_roots_warning(feature.name, declared, len(roots_blind)),
             file=sys.stderr,
         )
-    if tracks_blind:
+    # A run with feature inputs names the upstream runs, whose tracks tables are
+    # the ones to repair; a variant it reads directly is named beside them.
+    if tracks_blind and resolved.tracks_variants:
         print(
             _blind_tracks_warning(
                 feature.name, resolved.tracks_variants, len(tracks_blind)
+            ),
+            file=sys.stderr,
+        )
+    if tracks_blind and upstreams_over_variants:
+        print(
+            _blind_upstream_tracks_warning(
+                feature.name, upstreams_over_variants, len(tracks_blind)
             ),
             file=sys.stderr,
         )
@@ -2045,6 +2125,9 @@ def _run_feature_impl(
                     consumed_tracks_composition=tracks_now_by_entry.get(
                         (meta.group, meta.sequence), ""
                     ),
+                    consumed_input_composition=inputs_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
+                    ),
                     consumed_neighbors=neighbors_now_by_entry.get(
                         (meta.group, meta.sequence), ""
                     ),
@@ -2166,6 +2249,9 @@ def _run_feature_impl(
                         feature, resolved, (group, sequence)
                     ),
                     consumed_tracks_composition=tracks_now_by_entry.get(
+                        (group, sequence), ""
+                    ),
+                    consumed_input_composition=inputs_now_by_entry.get(
                         (group, sequence), ""
                     ),
                     consumed_neighbors=neighbors_now_by_entry.get(

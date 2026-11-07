@@ -32,6 +32,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
     feature_index_path,
+    recorded_consumption,
     recorded_tracks_reads,
 )
 from mosaic.core.pipeline.manifest import build_manifest
@@ -45,7 +46,7 @@ from mosaic.core.pipeline.tracks_index import (
     write_tracks_row,
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
-from mosaic.core.pipeline.types import Feature, Inputs, Result
+from mosaic.core.pipeline.types import Feature, Inputs, Result, TrackInput
 from mosaic.core.pipeline.types.feature import EmitsLevel
 from tests.helpers import (
     CropLike,
@@ -510,3 +511,182 @@ class TestTracksProvenanceThroughFeatureInputs:
 
         assert resolved.input_tracks_compositions is None
         assert _recorded_cell(ds, result, "seq_a") == _tracks_cell(ds, "seq_a")
+
+
+class _RootUpstream(_Upstream):
+    """A per-entry feature over tracks that declares ``media_raw``, as ``scale-to-cm`` does."""
+
+    name = "prov-root-upstream"
+    consumed_roots: tuple[str, ...] = ("media_raw",)
+
+
+class _Third(_Upstream):
+    """A per-entry feature at the end of a three-feature chain."""
+
+    name = "prov-third"
+
+
+def _index_media(ds: Dataset, seq_a: str, seq_b: str) -> None:
+    """Index one video per sequence under the given uids, and project ``media_raw``."""
+    write_media_index(ds, ["seq_a", "seq_b"], uids={"seq_a": seq_a, "seq_b": seq_b})
+    _ = ds.rebuild_sequence_index("media_raw")
+
+
+def _reader_of(*inputs: TrackInput | Result) -> _Reader:
+    return _Reader(Inputs(inputs))
+
+
+def _input_of(result: Result) -> Result:
+    return Result(feature=result.feature, run_id=result.run_id)
+
+
+def _recorded_input_cell(ds: Dataset, result: Result, sequence: str) -> str:
+    assert result.run_id is not None
+    return recorded_tracks_reads(ds, result.feature, result.run_id)[
+        ("", sequence)
+    ].inputs
+
+
+def _recorded_roots_cell(ds: Dataset, result: Result, sequence: str) -> str:
+    assert result.run_id is not None
+    return recorded_consumption(ds, result.feature, result.run_id)[("", sequence)][1]
+
+
+class TestDeclaredRootsThroughFeatureInputs:
+    """A run reading a feature's output compares the roots its upstream declared."""
+
+    @staticmethod
+    def _chain(ds: Dataset) -> tuple[Result, _Reader]:
+        _convert(ds, "seq_a", "seq_b")
+        _index_media(ds, "uid-a-1", "uid-b-1")
+        upstream = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
+        reader = _reader_of(_input_of(upstream))
+        _ = run_feature(ds, reader)
+        return upstream, reader
+
+    def test_a_reader_recomputes_after_its_upstreams_declared_root_moves(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        upstream, reader = self._chain(ds)
+
+        _index_media(ds, "uid-a-2", "uid-b-1")
+        _ = capsys.readouterr()
+        again = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
+        assert again.run_id == upstream.run_id
+        assert _recomputed(capsys.readouterr().err) == {"seq_a"}
+
+        result = run_feature(ds, reader)
+        err = capsys.readouterr().err
+
+        assert _recomputed(err) == {"seq_a"}
+        assert "its upstream's source moved" in err
+        assert not result.cache_hit
+
+    def test_a_third_feature_recomputes_after_the_first_ones_root_moves(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        _, reader = self._chain(ds)
+        middle = run_feature(ds, reader)
+        third = _Third(Inputs((_input_of(middle),)))
+        written = run_feature(ds, third)
+        # The middle feature declares no root, so the third inherits the first's.
+        first_part = _recorded_input_cell(ds, middle, "seq_a")
+        assert first_part.endswith("/")
+        assert _recorded_input_cell(ds, written, "seq_a") == f"/{first_part}"
+
+        _index_media(ds, "uid-a-2", "uid-b-1")
+        _ = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
+        _ = run_feature(ds, reader)
+        _ = capsys.readouterr()
+
+        result = run_feature(ds, third)
+
+        assert _recomputed(capsys.readouterr().err) == {"seq_a"}
+        assert not result.cache_hit
+
+    def test_an_unchanged_rerun_serves_the_reader_without_a_warning(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        _, reader = self._chain(ds)
+        _ = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
+        _ = capsys.readouterr()
+
+        result = run_feature(ds, reader)
+
+        assert result.cache_hit
+        assert SAID_ANYTHING not in capsys.readouterr().err
+
+    def test_a_reader_row_records_its_upstreams_root_cell_in_input_order(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        upstream, _ = self._chain(ds)
+        own = _recorded_roots_cell(ds, upstream, "seq_a")
+        assert own
+
+        upstream_first = run_feature(
+            ds, _reader_of(_input_of(upstream), "tracks"), tracks_run_id=VARIANT
+        )
+        tracks_first = run_feature(
+            ds, _reader_of("tracks", _input_of(upstream)), tracks_run_id=VARIANT
+        )
+
+        assert _recorded_input_cell(ds, upstream_first, "seq_a") == f"{own}/+"
+        assert _recorded_input_cell(ds, tracks_first, "seq_a") == f"+{own}/"
+
+    def test_a_reader_row_written_before_the_cell_recomputes_once(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        _, reader = self._chain(ds)
+        written = run_feature(ds, reader)
+        # An index written before the column existed has no such column at all.
+        index_path = feature_index_path(ds, written.feature)
+        rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+        rows = rows.drop(columns=["consumed_input_composition"])
+        rows.to_csv(index_path, index=False)
+        _ = capsys.readouterr()
+
+        _ = run_feature(ds, reader)
+        first = capsys.readouterr().err
+        _ = run_feature(ds, reader)
+        second = capsys.readouterr().err
+
+        assert _recomputed(first) == {"seq_a", "seq_b"}
+        assert _recomputed(second) == set()
+
+    def test_a_reader_over_an_upstream_recording_no_tracks_composition_names_it(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        add_tracks_variant(ds, VARIANT, "seq_a")
+        assert tracks_compositions(ds, (VARIANT,)) == {}
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        assert upstream.run_id is not None
+        reader = _reader_of(_input_of(upstream))
+        _ = run_feature(ds, reader)
+        _ = capsys.readouterr()
+
+        _ = run_feature(ds, reader)
+        err = capsys.readouterr().err
+
+        assert BLIND_TRACKS in err
+        assert upstream.feature in err
+        assert upstream.run_id in err
+        assert VARIANT not in err
+
+    def test_a_reader_over_an_upstream_of_the_unlabelled_variant_says_nothing(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        upstream = run_feature(ds, _Upstream())
+        reader = _reader_of(_input_of(upstream))
+        _ = run_feature(ds, reader)
+        _ = capsys.readouterr()
+
+        _ = run_feature(ds, reader)
+
+        assert SAID_ANYTHING not in capsys.readouterr().err

@@ -171,9 +171,16 @@ class FeatureIndexRow(RunIndexRowBase):
     # joined with ``+`` in input order, a feature input's cell being its upstream
     # row's own (``build_manifest``).
     consumed_tracks_composition: str = ""
+    # The declared-root compositions of a run's feature inputs: per input in input
+    # order, joined with ``+``, the upstream row's ``consumed_composition`` and
+    # ``consumed_input_composition`` as ``own/inherited`` (``input_root_part`` in
+    # ``composition.py``). A ``tracks`` input's part is blank, and so is the cell of
+    # a run whose every part is blank. Kept apart from ``consumed_composition``,
+    # which holds this run's own declared roots.
+    consumed_input_composition: str = ""
     # The neighbors an overlapped run read for this entry, each by entry key with
     # its tracks composition (``neighbor_compositions`` in ``run.py``). Empty at
-    # ``overlap_frames=0``, and out of the run id, like the two cells above.
+    # ``overlap_frames=0``, and out of the run id, like the cells above.
     consumed_neighbors: str = ""
 
 
@@ -232,16 +239,19 @@ class RecordedTracksReads:
     Attributes:
         composition: The entry's ``consumed_tracks_composition``.
         neighbors: Its ``consumed_neighbors``, empty without overlap.
+        inputs: Its ``consumed_input_composition``, empty without a feature
+            input whose upstream records a declared root.
     """
 
     composition: str = ""
     neighbors: str = ""
+    inputs: str = ""
 
 
 def recorded_tracks_reads(
     ds: Dataset, feature_name: str, run_id: str
 ) -> dict[tuple[str, str], RecordedTracksReads]:
-    """Per entry, the tracks composition and the neighbors each row recorded reading.
+    """Per entry, the tracks, neighbors and input cells each row recorded reading.
 
     Its own reader rather than a third element on :func:`recorded_consumption`,
     which drops every row whose ``consumed_roots`` is empty -- and that is the forty
@@ -258,6 +268,7 @@ def recorded_tracks_reads(
         (str(row["group"]), str(row["sequence"])): RecordedTracksReads(
             composition=str(row.get("consumed_tracks_composition", "")),
             neighbors=str(row.get("consumed_neighbors", "")),
+            inputs=str(row.get("consumed_input_composition", "")),
         )
         for _, row in rows.iterrows()
     }

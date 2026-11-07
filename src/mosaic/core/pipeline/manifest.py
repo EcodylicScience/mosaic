@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import gc
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, overload
@@ -23,6 +23,8 @@ from ...core.recording import (
 )
 from ...core.schema import LEGACY_SCHEMA, schema_family
 from ...core.scope import Scope
+from ...core.entry import Entry
+from .composition import input_root_part, join_input_cells
 from .dataset_indexes import feature_storages
 from .sequence_index import read_entry_compositions
 from .storage_names import feature_slug_of
@@ -118,6 +120,12 @@ class ResolvedInput:
             ``consumed_tracks_composition``, for the feature resolver only.
             Covers every resolvable entry, so a neighbor outside the scope
             has one too.
+        root_compositions: Per entry, this input's part of the downstream's
+            ``consumed_input_composition`` (:func:`input_root_part` of each
+            upstream row's ``consumed_composition`` and
+            ``consumed_input_composition``), for the feature resolver only.
+        run_id: The upstream run a feature input resolved to, ``""`` for the
+            tracks resolver and for a run that is not there.
     """
 
     entries: set[tuple[str, str]]
@@ -129,6 +137,8 @@ class ResolvedInput:
     tracks_compositions: Mapping[tuple[str, str], str] = field(
         default_factory=dict[tuple[str, str], str]
     )
+    root_compositions: Mapping[Entry, str] = field(default_factory=dict[Entry, str])
+    run_id: str = ""
 
 
 class UnrunFeatureInput(FileNotFoundError):
@@ -263,8 +273,10 @@ def build_manifest(
 
     When any input is a feature, ``ResolvedScope.input_tracks_compositions``
     holds per entry the inputs' tracks compositions joined with ``+`` in input
-    order (:func:`_joined_tracks_compositions`). A run whose only input is
-    ``tracks`` leaves it ``None``.
+    order, and ``ResolvedScope.input_root_compositions`` their declared-root
+    parts joined the same way (:func:`join_input_cells`).
+    ``ResolvedScope.feature_inputs`` names each feature input's storage and run.
+    A run whose only input is ``tracks`` leaves both cells ``None``.
 
     ``on_missing_run`` is forwarded to both resolvers; leave it at ``"raise"``
     unless you are predicting an identifier rather than resolving inputs to read.
@@ -284,15 +296,19 @@ def build_manifest(
     variants: tuple[str, ...] = ()
     tracks_schemas: dict[tuple[str, str], str] = {}
     upstream_runs: list[tuple[str, str | None]] = []
+    feature_inputs: list[tuple[str, str]] = []
     # ``None`` marks the tracks input, whose compositions are read once the
     # variants are known and only when a feature input needs them joined.
     per_input_tracks: list[Mapping[tuple[str, str], str] | None] = []
+    # A tracks input's declared-root part is blank.
+    per_input_roots: list[Mapping[Entry, str]] = []
     for i, item in enumerate(inputs.root):
         if item == "tracks":
             input_result = _resolve_tracks(ds, tracks_run_id, selector, on_missing_run)
             variants = input_result.tracks_variants
             tracks_schemas = input_result.tracks_schemas
             per_input_tracks.append(None)
+            per_input_roots.append({})
         else:
             input_result = _resolve_feature(
                 ds,
@@ -304,7 +320,9 @@ def build_manifest(
             if getattr(type(inputs), "_track_input", False):
                 _ensure_track_shaped(item.feature, input_result.path_map_all)
             upstream_runs.append((item.feature, item.run_id))
+            feature_inputs.append((item.feature, input_result.run_id))
             per_input_tracks.append(input_result.tracks_compositions)
+            per_input_roots.append(input_result.root_compositions)
         per_input_entries.append(input_result.entries)
         per_input_paths.append(input_result.path_map)
         per_input_paths_all.append(input_result.path_map_all)
@@ -341,10 +359,19 @@ def build_manifest(
             if entry in shared_entries
         },
         input_tracks_compositions=(
-            _joined_tracks_compositions(ds, per_input_tracks, variants)
+            join_input_cells(
+                [
+                    tracks_compositions(ds, variants) if parts is None else parts
+                    for parts in per_input_tracks
+                ]
+            )
             if upstream_runs
             else None
         ),
+        input_root_compositions=(
+            join_input_cells(per_input_roots) if upstream_runs else None
+        ),
+        feature_inputs=tuple(feature_inputs),
     )
 
     # Neighbors are the adjacent members of a divided recording
@@ -409,38 +436,6 @@ def build_manifest(
         )
 
     return manifest, resolved
-
-
-def _joined_tracks_compositions(
-    ds: Dataset,
-    recorded: Sequence[Mapping[tuple[str, str], str] | None],
-    variants: Sequence[str],
-) -> dict[tuple[str, str], str]:
-    """Per entry, the inputs' tracks compositions joined with ``+`` in input order.
-
-    A ``tracks`` input's part is :func:`tracks_compositions` of *variants*, the
-    cell a run over tracks alone records. An input without a composition for an
-    entry contributes a blank part, and an entry whose every part is blank is
-    ``""``, the unknown that
-    :func:`~mosaic.core.pipeline.run.cached_entry_disposition` reads.
-
-    Args:
-        ds: The dataset whose tracks index a ``tracks`` input reads.
-        recorded: Each input's compositions in declared input order,
-            ``None`` for the ``tracks`` input.
-        variants: The tracks variants the ``tracks`` input resolved.
-    """
-    tracks_now = tracks_compositions(ds, variants) if None in recorded else {}
-    per_input = [
-        tracks_now if compositions is None else compositions
-        for compositions in recorded
-    ]
-    entries = sorted({entry for compositions in per_input for entry in compositions})
-    joined: dict[tuple[str, str], str] = {}
-    for entry in entries:
-        parts = [compositions.get(entry, "") for compositions in per_input]
-        joined[entry] = "+".join(parts) if any(parts) else ""
-    return joined
 
 
 class StackedEntryOverlap(ValueError):
@@ -1076,6 +1071,7 @@ def _resolve_feature(
     all_entries: list[tuple[str, str]] = []
     missing_all: list[Path] = []
     tracks_read: dict[tuple[str, str], str] = {}
+    roots_read: dict[Entry, str] = {}
     for _, row in df_all.iterrows():
         entry = (row["group"], row["sequence"])
         resolved = ds.resolve_path(row["abs_path"])
@@ -1085,6 +1081,10 @@ def _resolve_feature(
         path_map_all[entry] = (resolved, ParquetLoadSpec())
         all_entries.append(entry)
         tracks_read[entry] = text_cell(row.get("consumed_tracks_composition"))
+        roots_read[entry] = input_root_part(
+            text_cell(row.get("consumed_composition")),
+            text_cell(row.get("consumed_input_composition")),
+        )
 
     if missing_all and not all_entries:
         # Every output resolved missing: dataset moved / non-portable paths.
@@ -1121,7 +1121,13 @@ def _resolve_feature(
         path_map[entry] = (resolved, ParquetLoadSpec())
 
     return ResolvedInput(
-        scoped, path_map, full_order, path_map_all, tracks_compositions=tracks_read
+        scoped,
+        path_map,
+        full_order,
+        path_map_all,
+        tracks_compositions=tracks_read,
+        root_compositions=roots_read,
+        run_id=run_id,
     )
 
 

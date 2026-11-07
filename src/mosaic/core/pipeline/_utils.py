@@ -98,6 +98,15 @@ class ResolvedScope:
     blank. A feature input's cell is its upstream row's
     ``consumed_tracks_composition``. ``None`` when no input is a feature, where
     the tracks variants' own compositions are the cell. Never hashed."""
+    input_root_compositions: Mapping[Entry, str] | None = None
+    """Per entry, the declared-root compositions a run with a feature input read:
+    each input's part joined with ``+`` in input order, ``""`` when every part is
+    blank. A feature input's part is its upstream row's ``consumed_composition``
+    and ``consumed_input_composition`` as ``own/inherited``, and a ``tracks``
+    input's part is blank. ``None`` when no input is a feature. Never hashed."""
+    feature_inputs: tuple[tuple[str, str], ...] = ()
+    """The ``(storage, run_id)`` of each feature input, in input order. Never
+    hashed."""
 
     def composition_of(self, entry: tuple[str, str], root: str) -> str:
         """*root*'s recorded composition for *entry*, or ``""`` when none is.

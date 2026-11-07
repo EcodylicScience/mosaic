@@ -144,6 +144,15 @@ are in `graph/CLAUDE.md`.
   upstream entry recomputes under the same run id. A run whose only input is `tracks`
   leaves it `None` and records the tracks rows' cell, and a row written without the
   upstream part recomputes once.
+- A run with a feature input also compares `consumed_input_composition`
+  (`ResolvedScope.input_root_compositions`): its upstreams' declared-root
+  compositions, each upstream row's `consumed_composition` and
+  `consumed_input_composition` as `own/inherited`, joined in input order by
+  `join_input_cells` (`composition.py`). An entry recomputes after its upstream
+  entry recomputes for a moved declared root, at any depth of a chain. Both sides
+  blank is absence, served without a warning. The blind tracks warning covers a
+  feature input whose upstream run read a named tracks variant, and names that
+  upstream run.
 - At `overlap_frames > 0` the row's `consumed_neighbors` (`neighbor_compositions`,
   `run.py`) names the entry keys of the sequences before and after the entry with
   their tracks compositions, and is compared the same way. The cell is then always

@@ -42,6 +42,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from mosaic.core.entry import Entry
+
 from ._utils import hash_params
 
 __all__ = [
@@ -53,6 +55,8 @@ __all__ = [
     "SourceMember",
     "composition_drift",
     "compositions_disagree",
+    "input_root_part",
+    "join_input_cells",
     "labels_raw_composition",
     "media_composition",
     "media_composition_payload",
@@ -271,3 +275,39 @@ def composition_drift(
             if compositions_disagree(was, current.get(entry, ""))
         )
     )
+
+
+def input_root_part(own: str, inherited: str) -> str:
+    """One feature input's part of a downstream's ``consumed_input_composition``.
+
+    The part is ``f"{own}/{inherited}"``: *own* is the upstream row's
+    ``consumed_composition``, the composition of the roots it declares, and
+    *inherited* its ``consumed_input_composition``, which carries the roots of the
+    upstream's own feature inputs. A part with both halves blank is ``""``.
+
+    Args:
+        own: The upstream row's ``consumed_composition``.
+        inherited: The upstream row's ``consumed_input_composition``.
+    """
+    return f"{own}/{inherited}" if own or inherited else ""
+
+
+def join_input_cells(per_input: Sequence[Mapping[Entry, str]]) -> dict[Entry, str]:
+    """Per entry, the inputs' parts joined with ``+`` in input order.
+
+    An input that names no part for an entry contributes a blank one, and an
+    entry whose every part is blank is ``""``, the unknown a cache check reads as
+    nothing recorded.
+
+    Args:
+        per_input: Each input's parts by entry, in declared input order.
+
+    Returns:
+        The joined cell of every entry that any input names.
+    """
+    entries = sorted({entry for parts in per_input for entry in parts})
+    joined: dict[Entry, str] = {}
+    for entry in entries:
+        parts = [cells.get(entry, "") for cells in per_input]
+        joined[entry] = "+".join(parts) if any(parts) else ""
+    return joined

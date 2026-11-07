@@ -112,6 +112,20 @@ withdrawn, and the schema publishes no `x-mosaic-unwired`.
   reports a FERAL run whose recorded params carry `wandb_project` as
   unresolvable: that run is recomputed rather than re-addressed.
 
+**A feature reading another feature's output recomputes after its upstream's
+declared root moves.** The feature index gains `consumed_input_composition`:
+per entry, each feature input's `consumed_composition` and its own
+`consumed_input_composition` as `own/inherited`, joined with `+` in input order
+(a `tracks` input's part is blank). `run_feature` compares it before serving a
+cached entry, so an entry recomputes after its upstream entry recomputed for a
+moved declared root, such as `scale-to-cm`'s `media_raw`, and a chain of three
+features compares its first feature's roots. A row written before the column
+recomputes once where its upstream records a root, and is then served. The
+blind tracks warning also covers a run whose feature input's upstream run read
+a named tracks variant recording no composition, and names that upstream
+storage and run id. `ResolvedScope` gains `input_root_compositions` and
+`feature_inputs`. No run identifier, `version` or golden changes.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full
