@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: headless OpenCV, and the tool environments on torch 2.14.1
+## 0.19.0: Python 3.13 is the minimum, a feature step refuses an unrun input and recomputes when it drifts, a params model narrowed by a consumer gives mosaic's answer, feature fits claim their run root, a YOLO training identity follows its labels, raw tracks load without unpickling, and OpenCV is headless
+
+### Headless OpenCV, and the tool environments on torch 2.14.1
 
 mosaic requires `opencv-python-headless>=4.7,<6` instead of `opencv-python`.
 The `lightning-action` and `movement` extras already required the headless
@@ -37,7 +39,7 @@ CUDA 13 libraries that torch 2.14.1 requires. A host with an older GPU reinstall
 same version from PyTorch's cu126 index, as `src/mosaic/tracking/external/README.md`
 describes. No identifier or name on disk moves.
 
-## Unreleased: feature inputs, drift and unwired params
+### Feature inputs, drift and unwired params
 
 **A dict override for a field admitting several model types is validated as
 given.** `Params.from_overrides` merged a dict into the field's factory default
@@ -151,7 +153,7 @@ reads was served in the same call. `verify_plan` and `pipeline score` read
 score a drifted run. The MCP submit output gains `to_compute`. No status, `Reason`
 variant, run identifier, `version` or golden changes.
 
-## Unreleased: a params model narrowed by a consumer gives mosaic's answer
+### A params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full
 model's verdict on every payload is the same.
@@ -171,7 +173,7 @@ model's validation of the completed payload. What changes for a consumer:
   `prepare-embedding-data`, `score-predictions`, `train-litpose`, `train-sleap` and
   `ultralytics` allow the removal of the fields they check.
 
-## Unreleased: feature fits claim their run root, and a held run root is a refusal
+### Feature fits claim their run root, and a held run root is a refusal
 
 **A held run root is a refusal.** A one-shot op (training, preparing, converting,
 scoring) whose run root another live execution holds raised a `RuntimeError`, so the
@@ -201,14 +203,14 @@ records the end, or by the claim's expiry.
 an atomic helper and writes the file its `load_state` tests for last, so a reader never
 takes a partial state for a whole one. No run id, version or output moves.
 
-## Unreleased: Python 3.13 is the minimum
+### Python 3.13 is the minimum
 
 mosaic requires Python 3.13 or newer, the version mosaic-api runs on, and every CI job
 runs 3.13. An environment on 3.12 must be recreated, conda packages first, as
 `docs/installation.md` describes. The tool environments keep their own interpreters.
 No identifier or name on disk moves.
 
-## Unreleased: prune-media keeps current store exports
+### `prune-media` keeps current store exports
 
 `mosaic prune-media` judges a file in `media/transcode/` against the recipe of a store
 export as well as the transcode recipes. A linked current export is no longer listed as
@@ -224,7 +226,7 @@ prints `current export recipe, analysis: <hash>`. The hint to pass `--relink` ap
 only when the flag would repair something, and the report now lists the dangling links
 it would clear.
 
-## Unreleased: a YOLO training identity follows its labels
+### A YOLO training identity follows its labels
 
 A label file edited in place now moves the `train-pose` and `train-points` run id, even
 when the edit keeps the file's byte length, such as a keypoint moved by one digit.
@@ -246,7 +248,7 @@ When one frame has several image files, both take the first, so `x.jpg` wins ove
 of image suffixes either trainer's Ultralytics accepts, which adds `.avif`, `.dng`,
 `.heic`, `.heif`, `.jp2`, `.mpo` and `.pfm`.
 
-## Unreleased: raw tracks and label files load without unpickling
+### Raw tracks and label files load without unpickling
 
 **A raw file no longer runs code when it loads, and a CalMS21 `.npy` and a BORIS `.pkl`
 need a flag.** The TRex `.npz`, SLEAP analysis `.h5` and DeepLabCut `.h5` converters
