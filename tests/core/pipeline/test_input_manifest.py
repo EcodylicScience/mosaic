@@ -15,6 +15,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import FeatureIndexRow, feature_index
 from mosaic.core.pipeline.manifest import (
     ManifestEntry,
+    UnrunFeatureInput,
     build_manifest,
     iter_manifest,
     verify_overlap_supported,
@@ -94,6 +95,59 @@ def test_build_manifest_feature_result(tmp_path):
     manifest, scope = build_manifest(ds, inputs)
     assert len(manifest) == 2
     assert scope.entries == {("g1", "s1"), ("g1", "s2")}
+
+
+def test_a_bare_slug_input_is_refused_naming_its_storage_names(tmp_path: Path):
+    """A feature that reads inputs stores under ``<slug>__from__<inputs>``."""
+    ds = MockDataset(tmp_path)
+    _ = _setup_feature(ds, "trajectory-smooth__from__tracks", [("g1", "s1")])
+
+    with pytest.raises(UnrunFeatureInput) as caught:
+        _ = build_manifest(_dataset(ds), Inputs((Result(feature="trajectory-smooth"),)))
+
+    message = str(caught.value)
+    assert "'trajectory-smooth'" in message
+    assert "trajectory-smooth__from__tracks" in message
+
+
+def test_a_pinned_run_over_a_missing_index_is_refused(tmp_path: Path):
+    ds = MockDataset(tmp_path)
+    _ = _setup_feature(ds, "trajectory-smooth__from__tracks", [("g1", "s1")])
+    inputs = Inputs((Result(feature="trajectory-smooth", run_id="v1-abc"),))
+
+    with pytest.raises(UnrunFeatureInput, match="trajectory-smooth__from__tracks"):
+        _ = build_manifest(_dataset(ds), inputs)
+
+
+def test_an_empty_input_name_is_refused(tmp_path: Path):
+    ds = MockDataset(tmp_path)
+
+    with pytest.raises(UnrunFeatureInput, match="empty"):
+        _ = build_manifest(_dataset(ds), Inputs((Result(feature=""),)))
+
+
+def test_the_empty_policy_resolves_a_missing_index_to_nothing(tmp_path: Path):
+    ds = MockDataset(tmp_path)
+    _ = _setup_feature(ds, "trajectory-smooth__from__tracks", [("g1", "s1")])
+    inputs = Inputs((Result(feature="trajectory-smooth", run_id="v1-abc"),))
+
+    manifest, scope = build_manifest(_dataset(ds), inputs, on_missing_run="empty")
+
+    assert manifest == {}
+    assert scope.entries == set()
+
+
+def test_a_full_storage_name_still_resolves(tmp_path: Path):
+    ds = MockDataset(tmp_path)
+    _ = _setup_feature(ds, "trajectory-smooth__from__tracks", [("g1", "s1")])
+    inputs = Inputs(
+        (Result(feature="trajectory-smooth__from__tracks", run_id="v1-abc"),)
+    )
+
+    manifest, scope = build_manifest(_dataset(ds), inputs)
+
+    assert len(manifest) == 1
+    assert scope.entries == {("g1", "s1")}
 
 
 def test_track_inputs_accepts_result_type():

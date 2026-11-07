@@ -48,8 +48,14 @@ class Inputs(RootModel[tuple[InputItem, ...]], Generic[InputItem]):
 
     Examples:
         Inputs(("tracks",))
-        Inputs((Result(feature="speed-angvel"),))
-        Inputs(("tracks", Result(feature="nn", run_id="0.1-abc")))
+        Inputs((Result(feature="speed-angvel__from__tracks"),))
+        Inputs(
+            ("tracks", Result(feature="nearest-neighbor__from__tracks", run_id="0.1-abc"))
+        )
+
+    A ``Result`` names a storage directory under ``features/``: the ``Result`` a
+    run returned, or ``<slug>__from__<inputs>`` for a feature that reads inputs.
+    A bare slug of such a feature names no stored run and is refused.
 
     Per-feature narrowing:
         class Inputs(Inputs[TrackInput]):

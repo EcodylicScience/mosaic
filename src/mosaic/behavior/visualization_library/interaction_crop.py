@@ -245,7 +245,7 @@ class InteractionCropPipeline:
     def __init__(
         self,
         inputs: InteractionCropPipeline.Inputs = Inputs(
-            ("tracks", Result(feature="pair-interaction-filter"))
+            ("tracks", Result(feature="pair-interaction-filter__from__tracks"))
         ),
         params: dict[str, object] | None = None,
     ):

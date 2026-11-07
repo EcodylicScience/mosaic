@@ -134,7 +134,9 @@ class AttentionTarget:
 
     def __init__(
         self,
-        inputs: AttentionTarget.Inputs = Inputs((Result(feature="pair-facing"),)),
+        inputs: AttentionTarget.Inputs = Inputs(
+            (Result(feature="pair-facing__from__tracks"),)
+        ),
         params: dict[str, object] | None = None,
     ):
         self.inputs = inputs

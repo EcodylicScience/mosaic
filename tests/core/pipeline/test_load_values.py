@@ -22,11 +22,15 @@ import pytest
 
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.loading import row_individual_pairs
-from mosaic.core.pipeline.manifest import FilterFactory, Manifest
+from mosaic.core.pipeline.manifest import FilterFactory, Manifest, UnrunFeatureInput
 from mosaic.core.pipeline.labels_index import _ambiguous_label_variant_message
 from mosaic.core.pipeline.run import load_values
-from mosaic.core.pipeline.types import GroundTruthLabelsSource, TracksColumn
-from tests.helpers import MockDataset, add_track_sequences
+from mosaic.core.pipeline.types import (
+    GroundTruthLabelsSource,
+    ResultColumn,
+    TracksColumn,
+)
+from tests.helpers import MockDataset, add_track_sequences, make_dataset
 
 
 def test_the_refusal_names_a_keyword_the_caller_can_pass() -> None:
@@ -62,6 +66,29 @@ def test_load_values_threads_the_labels_selector(
     )
 
     assert seen == ["chosen.0.1-abc"]
+
+
+def test_a_misspelled_result_column_is_refused(tmp_path: Path) -> None:
+    """A ResultColumn naming no stored run is refused, not read as an empty frame."""
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), n_rows=4)
+
+    with pytest.raises(UnrunFeatureInput, match="speed-angvle"):
+        _ = load_values(
+            ds,
+            [
+                TracksColumn(column="X"),
+                ResultColumn(feature="speed-angvle", column="speed"),
+            ],
+        )
+
+
+def test_an_empty_result_column_feature_is_refused(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    add_track_sequences(ds, ("g1", "s1"), n_rows=4)
+
+    with pytest.raises(UnrunFeatureInput, match="empty"):
+        _ = load_values(ds, [TracksColumn(column="X"), ResultColumn(column="speed")])
 
 
 def _labels_file(path: Path) -> Path:

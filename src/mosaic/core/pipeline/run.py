@@ -82,6 +82,7 @@ from .manifest import (
     iter_manifest,
     skip_pairs_missing,
     tracks_variants_for,
+    unrun_feature_input,
     verify_overlap_supported,
 )
 from .op_identity import parse_op_run_id
@@ -158,12 +159,16 @@ def _build_result_lookup(
     A reference with ``run_id is None`` reaches the fallback below only when
     :func:`~mosaic.core.pipeline.resolve.resolve_references` found no run to pin,
     because the feature it names has not run. The lookup then raises
-    ``FileNotFoundError`` for a missing index, which :func:`_resolve_dependencies`
-    lets pass for a field the feature declares in ``optional_results``. Any other
-    reference is pinned before the identifier is computed, so the fallback never
-    reads a run the identifier does not name.
+    :class:`~mosaic.core.pipeline.manifest.UnrunFeatureInput`, a
+    ``FileNotFoundError``, for a missing index, which
+    :func:`_resolve_dependencies` lets pass for a field the feature declares in
+    ``optional_results``. Any other reference is pinned before the identifier is
+    computed, so the fallback never reads a run the identifier does not name.
     """
-    dep_index = feature_index(feature_index_path(ds, feature_name))
+    index_path = feature_index_path(ds, feature_name)
+    if not index_path.exists():
+        raise unrun_feature_input(ds, feature_name)
+    dep_index = feature_index(index_path)
     if run_id is None:
         run_id = dep_index.latest_run_id()
     index_df = dep_index.read(
@@ -292,12 +297,10 @@ def _resolve_dependencies(
     # items), not just params fields. Features like FeralFeature carry their
     # upstream output location here rather than in a params field. Appended
     # after the params loop so params-derived lookups keep priority for
-    # consumers that select the first non-empty lookup.
+    # consumers that select the first non-empty lookup. Every input here has
+    # already resolved in build_manifest, which refuses one naming no stored run.
     for idx, result in enumerate(feature.inputs.feature_inputs):
-        feature_name = result.feature
-        if not feature_name or feature_name == "nearest-neighbor":
-            continue
-        lookup = _build_result_lookup(ds, feature_name, result.run_id)
+        lookup = _build_result_lookup(ds, result.feature, result.run_id)
         if lookup:  # skip empty so first-non-empty consumers aren't misled
             dependency_lookups[f"_input_{idx}"] = lookup
 

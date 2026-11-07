@@ -95,13 +95,21 @@ animal-centered clips; `overlay` renders an annotated video. See
 
 ## Chaining
 
-A feature reads tracks by default, or another feature's output when you name one:
+A feature reads tracks by default, or another feature's output when you pass the
+`Result` its run returned:
 
 ```python
-from mosaic.core.pipeline.types import Inputs, Result
+from mosaic.behavior.feature_library import TrajectorySmooth
+from mosaic.core.pipeline.types import Inputs
 
-ds.run_feature(SpeedAngvel(inputs=Inputs((Result(feature="trajectory-smooth"),))))
+smoothed = ds.run_feature(TrajectorySmooth())
+ds.run_feature(SpeedAngvel(inputs=Inputs((smoothed,))))
 ```
+
+A hand-written `Result` names the upstream's storage directory under `features/`,
+`<slug>__from__<inputs>` for a feature that reads inputs, such as
+`Result(feature="trajectory-smooth__from__tracks")`. A bare slug names no stored run
+and is refused with `UnrunFeatureInput`.
 
 The upstream identity enters the downstream `run_id`, so a result computed from
 smoothed tracks can never be mistaken for the same feature computed from raw ones.

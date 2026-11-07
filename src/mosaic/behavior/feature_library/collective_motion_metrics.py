@@ -263,8 +263,8 @@ class CollectiveMotionMetrics:
 
         A hand-written reference must carry the *storage* name, not the slug --
         ``Result(feature="ffgroups__from__tracks")``. A slug names a directory
-        that does not exist, which resolves to an empty manifest and a run that
-        writes nothing and reports success. Listing ``"tracks"`` first keeps
+        that does not exist, and the run refuses it with ``UnrunFeatureInput``
+        before it writes anything. Listing ``"tracks"`` first keeps
         ``group`` and ``sequence`` unsuffixed, since the merge suffixes the later
         input's duplicate columns.
 

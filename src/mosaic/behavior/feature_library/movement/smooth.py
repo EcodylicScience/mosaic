@@ -91,8 +91,9 @@ class MovementSmooth:
     poseX/poseY keypoint positions.
 
     The output is a full track DataFrame with smoothed positions replacing
-    the originals, so downstream features can chain off the result via
-    ``Inputs((Result(feature="movement-smooth"),))``.
+    the originals, so downstream features can chain off the ``Result`` the
+    run returned, or its storage name:
+    ``Inputs((Result(feature="movement-smooth__from__tracks"),))``.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.movement.smooth.MovementSmooth.Params`.

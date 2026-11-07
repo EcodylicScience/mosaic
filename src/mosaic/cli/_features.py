@@ -86,7 +86,8 @@ def build_feature(
         elif inputs_json is None:
             message = (
                 f"Feature '{slug}' does not read from tracks by default; pass "
-                f'--inputs (e.g. --inputs \'[{{"feature":"<upstream-slug>"}}]\').'
+                "--inputs naming the upstream's storage directory under features/ "
+                """(e.g. --inputs '[{"feature":"speed-angvel__from__tracks"}]')."""
             )
         else:
             message = f"Invalid --inputs for '{slug}': {exc.detail}"

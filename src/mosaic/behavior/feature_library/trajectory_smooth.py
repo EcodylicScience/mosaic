@@ -96,7 +96,8 @@ class TrajectorySmooth:
 
     Output is the full track DataFrame with smoothed positions replacing
     originals, plus a ``bad_frame`` boolean column. Downstream features
-    can consume this via ``Inputs((Result(feature="trajectory-smooth"),))``.
+    consume the ``Result`` the run returned, or its storage name:
+    ``Inputs((Result(feature="trajectory-smooth__from__tracks"),))``.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth.Params`.

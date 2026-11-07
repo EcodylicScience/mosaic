@@ -7,15 +7,24 @@ path bit-identical, because every published force map was produced by it.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.behavior.feature_library.nn_delta_response import (
     NearestNeighborDelta,
     _row_lags,
     windowed_delta,
 )
+from mosaic.core.pipeline.manifest import UnrunFeatureInput
+from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.types import Result
+from mosaic.runlog import read_run, run_log_dir
+from mosaic.core.dataset import Dataset
+from tests.helpers import add_track_sequences, make_dataset
 
 
 def _track(
@@ -219,3 +228,55 @@ def test_windowed_delta_boundary_rows_are_never_valid() -> None:
     _, ok_back = windowed_delta(vals, lags, frame_idx=1, forward=False)
     np.testing.assert_array_equal(ok_fwd, [1, 1, 1, 1, 0, 0])
     np.testing.assert_array_equal(ok_back, [0, 0, 1, 1, 1, 1])
+
+
+# --------------------------------------------------------------------------- #
+# (d) the nearest-neighbor input
+# --------------------------------------------------------------------------- #
+
+
+def _tracks_with_heading_and_speed(ds: Dataset) -> None:
+    """Two individuals on one entry, with the heading and speed the feature reads."""
+    add_track_sequences(ds, ("g1", "s1"), n_ids=2)
+    path = ds.get_root("tracks") / "g1__s1.parquet"
+    table = pd.read_parquet(path)
+    table["ANGLE"] = 0.0
+    table["SPEED"] = 1.0
+    table.to_parquet(path)
+
+
+def test_a_bare_nearest_neighbor_input_is_refused_before_a_run_root(
+    tmp_path: Path,
+) -> None:
+    """``nearest-neighbor`` stores under ``nearest-neighbor__from__<inputs>``."""
+    ds = make_dataset(tmp_path)
+    _tracks_with_heading_and_speed(ds)
+    _ = run_feature(ds, NearestNeighbor())
+    execution_id = "TESTBARENN1"
+    feature = NearestNeighborDelta(
+        inputs=NearestNeighborDelta.Inputs(
+            ("tracks", Result(feature="nearest-neighbor"))
+        )
+    )
+
+    with pytest.raises(UnrunFeatureInput, match="nearest-neighbor__from__tracks"):
+        _ = run_feature(ds, feature, execution_id=execution_id)
+
+    assert not list(ds.get_root("features").glob("nn-delta-response__from__*"))
+    snapshot = read_run(run_log_dir(ds.base_dir), execution_id)
+    assert snapshot is not None
+    assert snapshot["status"] == "failed"
+
+
+def test_a_full_nearest_neighbor_storage_name_still_resolves(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path)
+    _tracks_with_heading_and_speed(ds)
+    upstream = run_feature(ds, NearestNeighbor())
+    feature = NearestNeighborDelta(
+        inputs=NearestNeighborDelta.Inputs(("tracks", upstream))
+    )
+
+    result = run_feature(ds, feature)
+
+    assert upstream.feature == "nearest-neighbor__from__tracks"
+    assert result.entries_written == 1

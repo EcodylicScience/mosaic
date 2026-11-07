@@ -53,10 +53,11 @@ disk would move a scope-free feature's identifier every time a sequence is added
 which is exactly what workflow H5 forbids.
 
 **A reference to a feature that has not run yet stays unpinned**, and is reported
-as ``run_id=None``. It must not raise: the chain runner previews a cold dataset
-step by step, and ``build_manifest`` is documented to return an empty scope for a
-not-yet-computed upstream rather than failing. The reference is then resolved --
-or reported missing -- later, by whichever consumer needs the file.
+as ``run_id=None``. Resolution does not raise for it: an upstream with no index
+stays unpinned here and is refused when the manifest is built, where
+``build_manifest`` raises ``UnrunFeatureInput`` unless it is asked to predict an
+identifier with ``on_missing_run="empty"``. A params reference with no index is
+refused by whichever consumer needs the file.
 
 Only top-level params fields are scanned, matching ``_resolve_dependencies`` and
 ``Params.identity_dump()``. The dump asks a nested model for its own dump, and no

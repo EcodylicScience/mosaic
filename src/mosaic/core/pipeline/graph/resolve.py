@@ -359,7 +359,7 @@ def build_feature(
         raise StepBuildError(
             "inputs",
             slug,
-            'inputs must be a list, e.g. ["tracks"] or [{"feature": "speed-angvel"}]',
+            'inputs must be a list, e.g. ["tracks"] or [{"feature": "speed-angvel__from__tracks"}]',
         )
     try:
         inputs_obj = inputs_cls.model_validate(

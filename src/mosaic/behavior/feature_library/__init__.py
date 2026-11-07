@@ -11,13 +11,16 @@ Usage
 -----
 >>> from mosaic.behavior.feature_library import Inputs, Result
 >>> from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+>>> from mosaic.behavior.feature_library.trajectory_smooth import TrajectorySmooth
 >>>
 >>> # Track-only feature (default inputs)
 >>> feat = SpeedAngvel()
 >>> dataset.run_feature(feat)
 >>>
->>> # Feature consuming another feature's output
->>> feat = SpeedAngvel(inputs=Inputs((Result(feature="nn"),)))
+>>> # Feature consuming another feature's output: the Result a run returned,
+>>> # or its storage name, such as "trajectory-smooth__from__tracks"
+>>> smoothed = dataset.run_feature(TrajectorySmooth())
+>>> feat = SpeedAngvel(inputs=Inputs((smoothed,)))
 >>> dataset.run_feature(feat)
 >>>
 >>> # List all registered features

@@ -67,6 +67,20 @@ by frame with filter_start_frame and filter_end_frame". The `ValueError` from
 and the plan's message names the filters without the `run.` prefix. The opening
 words are unchanged. No run identifier, signature or golden changes.
 
+**An input naming no stored run is refused.** `build_manifest` and `run_feature`
+raise `UnrunFeatureInput` (`mosaic.core.pipeline.manifest`, a `FileNotFoundError`)
+for a feature input whose name has no index under `features/`, pinned or not, and
+for an empty name, where they returned an empty manifest or finished over zero
+entries. An input names a storage directory, `<slug>__from__<inputs>` for a feature
+that reads inputs, so the bare slug of such a feature is refused, and the message
+lists the stored directories with that slug. A refused run writes no run root,
+`params.json` or index. `load_values` refuses a `ResultColumn` naming no stored run
+the same way, and a params-field reference with no index raises the same error.
+`on_missing_run="empty"` is unchanged. `AttentionTarget` now defaults to
+`pair-facing__from__tracks` and `InteractionCropPipeline` to
+`pair-interaction-filter__from__tracks`, where their bare-slug defaults never
+resolved. No run identifier, `version` or golden changes.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full

@@ -102,7 +102,9 @@ When `mosaic` is not on `PATH`, run `<python> -m mosaic` with the interpreter be
   (`Scope(groups=["train"])`).
 - `mosaic.behavior.feature_library`: the feature classes, such as `SpeedAngvel`,
   `HeadingFeature` and `ScaleToCm`. `Inputs` and `Result` from
-  `mosaic.core.pipeline.types` chain one feature onto another.
+  `mosaic.core.pipeline.types` chain one feature onto another. An input names a
+  storage directory under `features/`: pass the `Result` a run returned, or
+  `<slug>__from__<inputs>`, since a bare slug is refused.
 - `mosaic.tracking`: `run_trex`, `run_sleap`, `run_litpose`, `run_ultralytics` and
   `extract_frames`. Each tracker's parameter model is in `mosaic.tracking.<tool>`.
 - `mosaic.core.pipeline.inventory`: `inventory`. `mosaic.core.pipeline.graph`:

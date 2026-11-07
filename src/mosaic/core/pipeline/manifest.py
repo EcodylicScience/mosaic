@@ -23,7 +23,9 @@ from ...core.recording import (
 )
 from ...core.schema import LEGACY_SCHEMA, schema_family
 from ...core.scope import Scope
+from .dataset_indexes import feature_storages
 from .sequence_index import read_entry_compositions
+from .storage_names import feature_slug_of
 from ._utils import ResolvedScope
 from .index import (
     feature_index,
@@ -129,6 +131,47 @@ class ResolvedInput:
     )
 
 
+class UnrunFeatureInput(FileNotFoundError):
+    """A feature input or reference names no stored run.
+
+    An input names a storage directory under ``features/``, and a feature that
+    reads inputs stores under ``<slug>__from__<inputs>``. Its bare slug, a
+    misspelling, or a feature that has not run here names no directory with an
+    index. A ``FileNotFoundError``, so a caller that lets a missing upstream
+    pass, such as an optional params reference, still catches it.
+    """
+
+
+def unrun_feature_input(ds: Dataset, name: str) -> UnrunFeatureInput:
+    """The refusal of an input *name* that names no stored run.
+
+    Args:
+        ds: The dataset whose ``features/`` root was searched.
+        name: The input's feature name as written.
+
+    Returns:
+        The error, naming *name* and the stored directories whose slug is *name*.
+    """
+    if not name:
+        return UnrunFeatureInput(
+            "A feature input has an empty name. An input names a storage "
+            "directory under features/: pass the Result a run returned, or "
+            "'<slug>__from__<inputs>' for a feature that reads inputs."
+        )
+    matches = [
+        storage for storage in feature_storages(ds) if feature_slug_of(storage) == name
+    ]
+    if matches:
+        found = f" Stored runs of {name!r}: {', '.join(matches)}."
+    else:
+        found = f" No stored directory has the slug {name!r}."
+    return UnrunFeatureInput(
+        f"Feature input {name!r} names no stored run. An input names a storage "
+        "directory under features/, '<slug>__from__<inputs>' for a feature that "
+        f"reads inputs; pass the Result a run returned or the full name.{found}"
+    )
+
+
 def _ensure_track_shaped(
     feature_name: str,
     path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]],
@@ -225,6 +268,9 @@ def build_manifest(
 
     ``on_missing_run`` is forwarded to both resolvers; leave it at ``"raise"``
     unless you are predicting an identifier rather than resolving inputs to read.
+    Under ``"raise"`` a feature input that names no stored run, such as the bare
+    slug of a feature that stores under ``<slug>__from__<inputs>``, raises
+    :class:`UnrunFeatureInput`. Under ``"empty"`` it resolves to no entries.
 
     Both are keyword-only, so a positional argument cannot land in the wrong one.
     """
@@ -978,17 +1024,21 @@ def _resolve_feature(
     ``run_id``, which ``resolve_references`` has already pinned into ``Inputs``
     where the digest reads it.
 
-    ``on_missing_run`` governs a pinned run that the index does not hold. It is
-    ``"raise"`` for execution -- consuming a run that is not there is a wrong
-    answer, and an empty manifest would turn it into a silent no-op. It is
+    ``on_missing_run`` governs an input that names no stored run: an empty
+    name, a name with no index, pinned or not, and a pinned run that the index
+    does not hold. It is ``"raise"`` for execution -- consuming a run that is
+    not there is a wrong answer, and an empty manifest would turn it into a
+    silent no-op. A name with no index raises :class:`UnrunFeatureInput`. It is
     ``"empty"`` for the chain runner's prediction, which asks what a step's
     identifier *would* be and therefore names runs that do not exist yet: after
     any params change the upstream index holds only the previous run, which is
     an ordinary state rather than a failure.
     """
     selector = scope if scope is not None else Scope()
-    idx_path = feature_index_path(ds, feature_name)
-    if not idx_path.exists():
+    idx_path = feature_index_path(ds, feature_name) if feature_name else None
+    if idx_path is None or not idx_path.exists():
+        if on_missing_run == "raise":
+            raise unrun_feature_input(ds, feature_name)
         return ResolvedInput(set(), {}, [], {})
 
     if run_id is None:
