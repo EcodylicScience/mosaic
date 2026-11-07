@@ -200,6 +200,14 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   "none"` is asked for no entry, and `check_scope_takes` (`core/pipeline/ops.py`) refuses
   a mismatch at plan time. A `scope_dependent` step is asked for all of its scope and a
   scope-free one for the remainder (`_entries_for`, `test_pipeline_plan.py`).
+- A feature step reading `complete-but-drifted` with drifted entries in its target has
+  drift work (`PlannedStep.drift_work`). It is not `is_complete`: it is pending,
+  computed and asked for those entries (`_entries_for`), and `execute_step` calls
+  `run_feature` without `overwrite`, which recomputes them under the same run id. A step
+  below it shows drift once it recomputes, when it is planned again at its
+  start. `has_complete_run` asks only whether a complete run exists, which `verify_plan`
+  and `score_heldout` read. An op, bound or pinned step is served
+  (`test_pipeline_run.py`).
 - `_step_scope_problems` refuses a step scope naming no step, on an op that takes no
   scope or a bound step, or selecting nothing, and a reader planned over entries its
   `inputs` or `tracks` parent is not. A params reference and `after` carry no entry

@@ -20,6 +20,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import Plan, Recipe, plan_pipeline, run_pipeline
 from mosaic.behavior.feature_library.evaluate_labels import EvaluateLabels
 from mosaic.behavior.feature_library.xgboost_feature import XgboostFeature
+from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.pipeline.types import InputStream
 from mosaic.core.pipeline.verify import (
     ScratchRefused,
@@ -241,6 +242,24 @@ def test_a_step_that_fits_nothing_is_skipped_with_the_reason(study: Dataset) -> 
         assert _verdict(report, step).status == "skipped"
     assert _verdict(report, "heading").reason == "it fits nothing"
     assert _verdict(report, "tracks").reason == "an op step is not fitted here"
+
+
+def test_a_drifted_fitting_step_is_still_verified(study: Dataset) -> None:
+    """A drifted run is compared: superseded is not invalid."""
+    clf = _plan(study).step("clf")
+    index_path = feature_index_path(study, clf.storage_name)
+    rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    # The entry's input moved under the run: its row records another
+    # composition than the one its input records now.
+    rows.loc[rows["sequence"] == "s2", "consumed_tracks_composition"] = "before"
+    rows.to_csv(index_path, index=False)
+    plan = _plan(study)
+    assert plan.step("clf").status == "complete-but-drifted"
+    assert plan.step("clf").drift_work == (("train", "s2"),)
+
+    report = verify_plan(study, plan)
+
+    assert _verdict(report, "clf").status == "ok"
 
 
 def test_a_stored_output_that_was_changed_fails_and_names_the_entry(

@@ -13,6 +13,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -26,7 +27,14 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     run_pipeline,
 )
-from mosaic.core.pipeline.graph.score import SCORES_JSON, SCORES_TXT, md5_of_file
+from mosaic.core.pipeline.graph import score as score_module
+from mosaic.core.pipeline.graph.score import (
+    EVALUATION_PREFIX,
+    SCORES_JSON,
+    SCORES_TXT,
+    md5_of_file,
+)
+from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.scope import Scope
 from tests.helpers import (
     assert_tree_unchanged,
@@ -667,6 +675,58 @@ def test_a_recipe_step_that_only_scores_does_not_stop_the_scoring(
     assert report["moved"] == []
     assert any("cv_eval" in warning for warning in report["warnings"])
     assert report["models"][0]["members"][0]["n_scored"] > 0
+
+
+def _runs_nothing(*_arguments: object, **_options: object) -> None:
+    """Stand in for ``run_pipeline`` and leave the stored runs as they are."""
+
+
+def test_a_score_reads_a_drifted_evaluation_run(
+    study: Dataset,
+    heldout: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drifted evaluation run is still read: superseded is not invalid."""
+    out = tmp_path / "scored"
+    held = ["--heldout", str(heldout), *HELD, "--out", str(out)]
+    first = _score(study, tmp_path, *held)
+    assert first.exit_code == 0, first.stderr
+    [member, *_] = json.loads(first.stdout)["models"][0]["members"]
+    copy = open_dataset(out / study.manifest_path.name)
+    [run_root] = copy.get_root("features").glob(f"*/{member['run_id']}")
+    # The held-out entry's tracks moved under the run: its row records another
+    # composition than the one its inputs record now.
+    index_path = feature_index_path(copy, run_root.parent.name)
+    rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+    own = rows["run_id"] == member["run_id"]
+    moved = own & (rows["sequence"] == rows.loc[own, "sequence"].iloc[0])
+    rows.loc[moved, "consumed_tracks_composition"] = "converted-before"
+    rows.to_csv(index_path, index=False)
+    monkeypatch.setattr(score_module, "run_pipeline", _runs_nothing)
+
+    again = _score(study, tmp_path, *held, "--reuse")
+
+    assert again.exit_code == 0, again.stderr
+    report = json.loads(again.stdout)
+    assert not any("did not finish" in warning for warning in report["warnings"])
+    assert report["models"][0]["members"][0]["n_scored"] > 0
+    scoring = Recipe.model_validate_json(
+        (out / "scoring" / "scoring-recipe.json").read_text()
+    )
+    evaluations = [
+        step.id for step in scoring.steps if step.id.startswith(EVALUATION_PREFIX)
+    ]
+    plan = plan_pipeline(
+        open_dataset(out / study.manifest_path.name),
+        scoring,
+        step_scopes={
+            **SCOPES,
+            **{step: Scope(groups=["test"]) for step in evaluations},
+        },
+    )
+    drifted = [plan.step(step) for step in evaluations if plan.step(step).drift_work]
+    assert [planned.status for planned in drifted] == ["complete-but-drifted"]
 
 
 def test_the_protocol_reaches_each_evaluation() -> None:

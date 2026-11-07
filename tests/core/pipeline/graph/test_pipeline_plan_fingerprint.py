@@ -37,6 +37,7 @@ from mosaic.core.scope import Scope
 from tests.helpers import (
     SPEED_RECIPE,
     add_tracks_variant,
+    convert_tracks_from_raw,
     invoke_json,
     make_dataset,
     run_fresh,
@@ -97,6 +98,23 @@ def test_a_new_feature_run_changes_the_fingerprint(tracked: Dataset) -> None:
     _ = run_pipeline(tracked, speed_recipe())
 
     assert _fingerprint(tracked) != before
+
+
+def test_drift_in_a_feature_steps_target_changes_the_fingerprint(
+    tmp_path: Path,
+) -> None:
+    dataset = make_dataset(tmp_path / "converted")
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = run_pipeline(dataset, speed_recipe())
+    before = plan_pipeline(dataset, speed_recipe())
+
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", n=9, std_format="mosaic_v1")
+    after = plan_pipeline(dataset, speed_recipe())
+
+    assert before.step("speed").spec.entries.is_unset
+    assert after.step("speed").spec.entries.entry_pairs == {("", "seq_a")}
+    assert len(after.step("speed").drift) == 1
+    assert plan_fingerprint(after) != plan_fingerprint(before)
 
 
 def test_the_same_tables_in_another_dataset_have_another_fingerprint(

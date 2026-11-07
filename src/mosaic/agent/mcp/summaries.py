@@ -26,7 +26,6 @@ from mosaic.core.pipeline.graph import (
     ValidationReport,
     describe_duplicate,
 )
-from mosaic.core.pipeline.graph.model import COMPLETE_STATUSES
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.preview import ArtifactPreview
 
@@ -345,14 +344,9 @@ def _submitted(submitted: SubmittedPipeline) -> str:
         else ""
     )
     total = sum(submitted.counts.values())
-    computed = total - sum(
-        count
-        for status, count in submitted.counts.items()
-        if status in COMPLETE_STATUSES
-    )
     return (
         f"Submitted request {submitted.request_id} with {total} step(s), "
-        f"{computed} to compute, running in the background.{duplicates}"
+        f"{submitted.to_compute} to compute, running in the background.{duplicates}"
         f"{cleanup} Wait for it with get_request_status and wait_seconds, which "
         "returns when a step or the request ends. get_request_status lists the "
         "steps that need attention, and with brief false every step. "

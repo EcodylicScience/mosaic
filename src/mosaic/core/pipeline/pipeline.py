@@ -33,6 +33,7 @@ from .index import (
     feature_run_root,
     list_feature_runs,
 )
+from .inventory.params import read_run_params
 from .resolve import resolve_references
 from .run import resolve_feature_identity
 from .types import Feature, Inputs, Result, TrackLike
@@ -180,6 +181,14 @@ def _step_scope(kwargs: Mapping[str, object]) -> Scope:
         f"a step's 'scope' run_kwarg must be a Scope or None, not "
         f"{type(value).__name__}."
     )
+
+
+def _drifted(
+    dataset: Dataset, storage: str, run_id: str
+) -> tuple[tuple[str, str], ...]:
+    """The entries of a run whose sources moved, over every channel it recorded."""
+    params = read_run_params(feature_run_root(dataset, storage, run_id)).params
+    return drifted_entries(dataset, storage, run_id, params)
 
 
 def _as_run_id(x: object) -> str | None:
@@ -505,15 +514,12 @@ class Pipeline:
                 if rr.exists():
                     modified = _newest_mtime(rr)
 
-            # Item 5.2's chain-runner half, as a sibling column rather than a
-            # fifth value in `cached`. `cached` is a *cache* verdict -- is the
-            # output on disk and complete -- and drift is a *source* verdict.
-            # Folding them together would make `cached == "drift"` mean "I no
-            # longer know whether it is cached", which is not what was measured:
-            # a drifted run is complete and loadable, and superseded is not
-            # invalid (rule P4). Deciding what to do about it is item 6.2's.
+            # Drift is a column beside `cached`. `cached` says whether the
+            # output is on disk and complete, and drift says how many of its
+            # entries' sources moved. A drifted run is complete and loadable,
+            # and `run` recomputes the drifted entries.
             drift = (
-                drifted_entries(dataset, info["storage_name"], expected)
+                _drifted(dataset, info["storage_name"], expected)
                 if (expected := str(info["expected_run_id"]))
                 else ()
             )
@@ -552,13 +558,11 @@ class Pipeline:
                     run_id=info["expected_run_id"],
                 )
                 loaded.append(step.name)
-                # Loaded anyway, and reported. A drifted run was correctly
-                # derived from a state its run_id still describes -- it is old,
-                # not wrong (rule P4's "superseded is not invalid"). Refusing
-                # here would destroy the ability to compare across source
-                # revisions, which is a thing users want; deciding to delete is
-                # item 6.2's gesture, behind an explicit force.
-                moved = drifted_entries(
+                # Loaded and reported. A drifted run was derived from a state
+                # its run_id still describes: superseded is not invalid, and
+                # loading it keeps a comparison across source revisions
+                # possible. `run` recomputes the drifted entries.
+                moved = _drifted(
                     dataset, info["storage_name"], str(info["expected_run_id"])
                 )
                 if moved:
@@ -607,6 +611,9 @@ class Pipeline:
 
         self.results = {}
         force_set: set[str] = self._downstream_of(force_from) if force_from else set()
+        # A step reading one that ran in this call rechecks its entries: the run
+        # it reads may have recomputed some under the same run id.
+        ran: set[str] = set()
 
         for step in self.steps:
             if isinstance(step, CallbackStep):
@@ -614,18 +621,25 @@ class Pipeline:
                 step.fn(dataset, self.results)
                 continue
 
-            # Check if cached
+            # Served only when complete, drift-free and reading nothing that
+            # ran in this call. Otherwise ``run_feature`` recomputes the moved
+            # entries and serves the rest.
             info = cached_map.get(step.name, {})
-            if step.name not in force_set and info.get("cached"):
-                run_id = info["expected_run_id"]
-                self.results[step.name] = Result(
+            if (
+                step.name not in force_set
+                and info.get("cached")
+                and not ran.intersection(step.input_names)
+            ):
+                cached: Result[str] = Result(
                     feature=info["storage_name"],
-                    run_id=run_id,
+                    run_id=info["expected_run_id"],
                 )
-                print(
-                    f"  [{step.name}] {step.feature_cls.__name__} -> {run_id} (cached)"
-                )
-                continue
+                run_id = cached.run_id or ""
+                if not _drifted(dataset, cached.feature, run_id):
+                    self.results[step.name] = cached
+                    name = step.feature_cls.__name__
+                    print(f"  [{step.name}] {name} -> {run_id} (cached)")
+                    continue
 
             # Not cached — execute. Each step's run_feature() opens its own
             # append-only JSONL run-log (track=True); no shared handle to manage.
@@ -645,6 +659,7 @@ class Pipeline:
             )
             result = dataset.run_feature(feature, **kwargs)
             self.results[step.name] = result
+            ran.add(step.name)
             print(f"-> {result.run_id}")
 
         return self.results

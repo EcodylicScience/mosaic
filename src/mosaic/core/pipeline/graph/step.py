@@ -358,9 +358,9 @@ def _before_run(
         return _bound(ds, planned, attempt=attempt, owner=owner)
     # A pinned step serves its run and computes nothing, under overwrite too:
     # recomputing it would fit over this request's entries under the pin's name.
-    if planned.status in COMPLETE_STATUSES and (
-        not overwrite or step_id in request.pins
-    ):
+    # A feature step with drift work runs, and ``run_feature`` recomputes its
+    # drifted entries and serves the rest.
+    if planned.is_complete and (not overwrite or step_id in request.pins):
         return _cached(ds, planned, attempt=attempt, owner=owner)
 
     preflight(ds, plan, step_id, allow_partial=request.allow_partial)
@@ -386,7 +386,7 @@ def _before_run(
         excluded |= set(quarantined)
         plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
         planned = plan.step(step_id)
-        if planned.status in COMPLETE_STATUSES:
+        if planned.is_complete:
             return _cached(ds, planned, attempt=attempt, owner=owner)
         asked = asked_of(planned, plan)
         storage, run_id = planned.storage_name, planned.run_id or ""

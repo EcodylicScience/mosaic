@@ -25,20 +25,30 @@ recomputed, so no existing dataset is forced to redo work.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
+from typing import ClassVar
+
 import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.index import (
     FEATURE_INDEX_COLUMNS,
+    drifted_entries,
     feature_index_path,
+    feature_run_root,
     recorded_consumption,
     recorded_tracks_reads,
 )
 from mosaic.core.pipeline.manifest import build_manifest
-from mosaic.core.pipeline.run import cached_entry_disposition, run_feature
+from mosaic.core.pipeline.composition import cached_entry_disposition
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.index_csv import index_records
+from mosaic.core.pipeline import tracks_index as tracks_index_module
+from mosaic.core.pipeline.inventory import inventory
+from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.sequence_index import read_sequence_index
 from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
@@ -48,10 +58,12 @@ from mosaic.core.pipeline.tracks_index import (
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.types import Feature, Inputs, Result, TrackInput
 from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.scope import Scope
 from tests.helpers import (
     CropLike,
     PlainFeature,
     add_tracks_variant,
+    convert_tracks_from_raw,
     write_media_index,
     write_trex_npz,
 )
@@ -392,12 +404,7 @@ class _Reader(_Upstream):
 
 def _convert(ds: Dataset, *sequences: str, n: int = 8) -> None:
     """Convert *sequences* from raw files of *n* frames, recording their composition."""
-    for sequence in sequences:
-        write_trex_npz(ds.get_root("tracks_raw") / f"{sequence}.npz", n=n)
-    _ = ds.index_tracks_raw(
-        [ds.get_root("tracks_raw")], patterns=["*.npz"], src_format="trex_npz"
-    )
-    add_tracks_variant(ds, VARIANT, *sequences)
+    convert_tracks_from_raw(ds, VARIANT, *sequences, n=n)
 
 
 def _tracks_cell(ds: Dataset, sequence: str) -> str:
@@ -552,23 +559,24 @@ def _recorded_roots_cell(ds: Dataset, result: Result, sequence: str) -> str:
     return recorded_consumption(ds, result.feature, result.run_id)[("", sequence)][1]
 
 
+def _root_chain(ds: Dataset) -> tuple[Result, _Reader]:
+    """Run a root-declaring upstream over two sequences and a reader of it."""
+    _convert(ds, "seq_a", "seq_b")
+    _index_media(ds, "uid-a-1", "uid-b-1")
+    upstream = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
+    reader = _reader_of(_input_of(upstream))
+    _ = run_feature(ds, reader)
+    return upstream, reader
+
+
 class TestDeclaredRootsThroughFeatureInputs:
     """A run reading a feature's output compares the roots its upstream declared."""
-
-    @staticmethod
-    def _chain(ds: Dataset) -> tuple[Result, _Reader]:
-        _convert(ds, "seq_a", "seq_b")
-        _index_media(ds, "uid-a-1", "uid-b-1")
-        upstream = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
-        reader = _reader_of(_input_of(upstream))
-        _ = run_feature(ds, reader)
-        return upstream, reader
 
     def test_a_reader_recomputes_after_its_upstreams_declared_root_moves(
         self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
     ) -> None:
         ds = scenario_dataset
-        upstream, reader = self._chain(ds)
+        upstream, reader = _root_chain(ds)
 
         _index_media(ds, "uid-a-2", "uid-b-1")
         _ = capsys.readouterr()
@@ -587,7 +595,7 @@ class TestDeclaredRootsThroughFeatureInputs:
         self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
     ) -> None:
         ds = scenario_dataset
-        _, reader = self._chain(ds)
+        _, reader = _root_chain(ds)
         middle = run_feature(ds, reader)
         third = _Third(Inputs((_input_of(middle),)))
         written = run_feature(ds, third)
@@ -610,7 +618,7 @@ class TestDeclaredRootsThroughFeatureInputs:
         self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
     ) -> None:
         ds = scenario_dataset
-        _, reader = self._chain(ds)
+        _, reader = _root_chain(ds)
         _ = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
         _ = capsys.readouterr()
 
@@ -623,7 +631,7 @@ class TestDeclaredRootsThroughFeatureInputs:
         self, scenario_dataset: Dataset
     ) -> None:
         ds = scenario_dataset
-        upstream, _ = self._chain(ds)
+        upstream, _ = _root_chain(ds)
         own = _recorded_roots_cell(ds, upstream, "seq_a")
         assert own
 
@@ -641,7 +649,7 @@ class TestDeclaredRootsThroughFeatureInputs:
         self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
     ) -> None:
         ds = scenario_dataset
-        _, reader = self._chain(ds)
+        _, reader = _root_chain(ds)
         written = run_feature(ds, reader)
         # An index written before the column existed has no such column at all.
         index_path = feature_index_path(ds, written.feature)
@@ -678,6 +686,25 @@ class TestDeclaredRootsThroughFeatureInputs:
         assert upstream.run_id in err
         assert VARIANT not in err
 
+    def test_a_third_feature_over_a_blind_first_one_names_its_input(
+        self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        ds = scenario_dataset
+        add_tracks_variant(ds, VARIANT, "seq_a")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        middle = run_feature(ds, _reader_of(_input_of(upstream)))
+        assert middle.run_id is not None
+        third = _Third(Inputs((_input_of(middle),)))
+        _ = run_feature(ds, third)
+        _ = capsys.readouterr()
+
+        _ = run_feature(ds, third)
+        err = capsys.readouterr().err
+
+        assert BLIND_TRACKS in err
+        assert middle.feature in err
+        assert middle.run_id in err
+
     def test_a_reader_over_an_upstream_of_the_unlabelled_variant_says_nothing(
         self, scenario_dataset: Dataset, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -690,3 +717,226 @@ class TestDeclaredRootsThroughFeatureInputs:
         _ = run_feature(ds, reader)
 
         assert SAID_ANYTHING not in capsys.readouterr().err
+
+
+class _Stacker(_Upstream):
+    """A feature reading its inputs as runs over disjoint entries."""
+
+    name = "prov-stacker"
+    stacks_inputs: ClassVar[bool] = True
+
+
+def _forget_stacking(ds: Dataset, result: Result) -> None:
+    """Rewrite *result*'s ``params.json`` as written before ``stacks_inputs`` was."""
+    assert result.run_id is not None
+    path = feature_run_root(ds, result.feature, result.run_id) / "params.json"
+    document = json.loads(path.read_text())
+    del document["_scope"]["stacks_inputs"]
+    path.write_text(json.dumps(document))
+
+
+def _stacked_over_two_halves(ds: Dataset) -> tuple[Result, Result]:
+    """Two upstream runs over disjoint entries, and a stacked run over both."""
+    _convert(ds, "seq_a", "seq_b")
+    first = run_feature(
+        ds, _Upstream(), scope=Scope(entries=[("", "seq_a")]), tracks_run_id=VARIANT
+    )
+    second = run_feature(
+        ds, _Third(), scope=Scope(entries=[("", "seq_b")]), tracks_run_id=VARIANT
+    )
+    stacked = run_feature(ds, _Stacker(Inputs((_input_of(first), _input_of(second)))))
+    return first, stacked
+
+
+def _drifted(
+    ds: Dataset, result: Result, *, with_params: bool = True
+) -> tuple[tuple[str, str], ...]:
+    """The entries ``drifted_entries`` reports for *result*'s run."""
+    assert result.run_id is not None
+    params = (
+        read_run_params(feature_run_root(ds, result.feature, result.run_id)).params
+        if with_params
+        else None
+    )
+    return drifted_entries(ds, result.feature, result.run_id, params)
+
+
+class TestDriftedEntries:
+    """The planner reports the entries ``run_feature`` would recompute."""
+
+    def test_a_moved_tracks_composition_is_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        assert _drifted(ds, upstream) == ()
+
+        _convert(ds, "seq_a", n=9)
+
+        assert _drifted(ds, upstream) == (("", "seq_a"),)
+
+    def test_a_moved_upstream_root_is_drift(self, scenario_dataset: Dataset) -> None:
+        ds = scenario_dataset
+        upstream, reader = _root_chain(ds)
+        written = run_feature(ds, reader)
+        assert _drifted(ds, written) == ()
+
+        _index_media(ds, "uid-a-2", "uid-b-1")
+        assert _drifted(ds, upstream) == (("", "seq_a"),)
+        _ = run_feature(ds, _RootUpstream(), tracks_run_id=VARIANT)
+
+        assert _drifted(ds, upstream) == ()
+        assert _drifted(ds, written) == (("", "seq_a"),)
+
+    def test_a_reader_over_a_recomputed_upstream_is_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        written = run_feature(ds, _reader_of(_input_of(upstream)))
+
+        _convert(ds, "seq_a", n=9)
+        # The reader compares what its upstream's rows record, which move only
+        # once the upstream recomputes.
+        assert _drifted(ds, written) == ()
+        _ = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+
+        assert _drifted(ds, written) == (("", "seq_a"),)
+
+    def test_a_one_sided_blank_is_drift(self, scenario_dataset: Dataset) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        # A row written before the cell existed recorded no composition.
+        index_path = feature_index_path(ds, upstream.feature)
+        rows = pd.read_csv(index_path, dtype=str, keep_default_na=False)
+        rows["consumed_tracks_composition"] = ""
+        rows.to_csv(index_path, index=False)
+
+        assert _drifted(ds, upstream) == (("", "seq_a"), ("", "seq_b"))
+
+    def test_two_blank_sides_are_not_drift(self, scenario_dataset: Dataset) -> None:
+        ds = scenario_dataset
+        add_tracks_variant(ds, VARIANT, "seq_a")
+        assert tracks_compositions(ds, (VARIANT,)) == {}
+
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+
+        assert _drifted(ds, upstream) == ()
+
+    def test_an_entry_dropped_from_the_tracks_index_is_not_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        upstream, reader = _root_chain(ds)
+        written = run_feature(ds, reader)
+
+        _ = ds.drop_entries(scope=Scope(entries=[("", "seq_b")]))
+
+        # A run no longer resolves the entry, so it would recompute nothing.
+        assert _drifted(ds, upstream) == ()
+        assert _drifted(ds, written) == ()
+
+    def test_an_entry_dropped_from_one_input_of_an_intersected_run_is_not_drift(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        reader = run_feature(
+            ds, _reader_of("tracks", _input_of(upstream)), tracks_run_id=VARIANT
+        )
+
+        _ = ds.drop_entries(scope=Scope(entries=[("", "seq_b")]))
+
+        # The upstream run still holds seq_b, and the tracks input no longer does.
+        assert _drifted(ds, reader) == ()
+
+    def test_a_stacked_run_reports_an_entry_one_input_holds(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _, stacked = _stacked_over_two_halves(ds)
+        assert _drifted(ds, stacked) == ()
+
+        _convert(ds, "seq_a", n=9)
+        _ = run_feature(
+            ds, _Upstream(), scope=Scope(entries=[("", "seq_a")]), tracks_run_id=VARIANT
+        )
+
+        assert _drifted(ds, stacked) == (("", "seq_a"),)
+
+    def test_a_run_recording_no_stacking_counts_an_entry_any_input_holds(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _, stacked = _stacked_over_two_halves(ds)
+        _forget_stacking(ds, stacked)
+        _convert(ds, "seq_a", n=9)
+        _ = run_feature(
+            ds, _Upstream(), scope=Scope(entries=[("", "seq_a")]), tracks_run_id=VARIANT
+        )
+
+        assert _drifted(ds, stacked) == (("", "seq_a"),)
+
+    def test_an_intersected_run_recording_no_stacking_drifts_once(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        _convert(ds, "seq_a", "seq_b")
+        upstream = run_feature(ds, _Upstream(), tracks_run_id=VARIANT)
+        reader = _reader_of("tracks", _input_of(upstream))
+        written = run_feature(ds, reader, tracks_run_id=VARIANT)
+        _forget_stacking(ds, written)
+        _ = ds.drop_entries(scope=Scope(entries=[("", "seq_b")]))
+        assert _drifted(ds, written) == (("", "seq_b"),)
+
+        # The next invocation records the reading, and the entry leaves the drift.
+        _ = run_feature(ds, reader, tracks_run_id=VARIANT)
+
+        assert _drifted(ds, written) == ()
+
+    def test_a_run_without_params_compares_its_declared_roots_only(
+        self, scenario_dataset: Dataset
+    ) -> None:
+        ds = scenario_dataset
+        upstream, _ = _root_chain(ds)
+
+        _convert(ds, "seq_b", n=9)
+        _index_media(ds, "uid-a-2", "uid-b-1")
+
+        assert _drifted(ds, upstream) == (("", "seq_a"), ("", "seq_b"))
+        assert _drifted(ds, upstream, with_params=False) == (("", "seq_a"),)
+
+
+def test_a_scan_reads_each_variants_tracks_compositions_once(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Runs reading one variant share its tracks cells within one scan."""
+    ds = scenario_dataset
+    _convert(ds, "seq_a", "seq_b")
+    runs = [
+        run_feature(ds, feature, tracks_run_id=VARIANT)
+        for feature in (_Upstream(), _Third(), _RootUpstream())
+    ]
+    runs.append(run_feature(ds, _reader_of(_input_of(runs[0]))))
+    _convert(ds, "seq_a", n=9)
+    expected = {(run.feature, run.run_id): _drifted(ds, run) for run in runs}
+    calls: list[tuple[str, ...]] = []
+
+    def counted(
+        dataset: Dataset, variants: Sequence[str]
+    ) -> dict[tuple[str, str], str]:
+        calls.append(tuple(variants))
+        return tracks_compositions(dataset, variants)
+
+    monkeypatch.setattr(tracks_index_module, "tracks_compositions", counted)
+    found = inventory(ds, kinds=["feature"])
+
+    assert calls == [(VARIANT,)]
+    assert {
+        (record.name, record.run_id): record.drift for record in found.records
+    } == expected
+    assert expected[(runs[0].feature, runs[0].run_id)] == (("", "seq_a"),)

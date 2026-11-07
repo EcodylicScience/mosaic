@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.behavior.feature_library import SpeedAngvel
+from mosaic.behavior.feature_library import SpeedAngvel, TrajectorySmooth
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline import FeatureStep, Pipeline
 from mosaic.core.pipeline.index import (
@@ -24,7 +24,8 @@ from mosaic.core.pipeline.index import (
     feature_run_root,
 )
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
-from tests.helpers import add_track_sequences, make_dataset
+from mosaic.core.scope import Scope
+from tests.helpers import add_track_sequences, convert_tracks_from_raw, make_dataset
 
 
 def _dataset_with_tracks(tmp_path: Path) -> Dataset:
@@ -193,3 +194,98 @@ def test_a_step_still_spelling_the_retired_scope_kwargs_is_refused(
     )
     with pytest.raises(TypeError, match="groups"):
         stale.run(ds)
+
+
+# ---------------------------------------------------------------------------
+# A drifted step is recomputed.
+# ---------------------------------------------------------------------------
+
+DRIFT_VARIANT = "convert-trex.0.2-1111111111"
+
+
+def _converted(tmp_path: Path) -> Dataset:
+    ds = make_dataset(tmp_path)
+    convert_tracks_from_raw(ds, DRIFT_VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    return ds
+
+
+def _reconvert_seq_a(ds: Dataset) -> None:
+    convert_tracks_from_raw(ds, DRIFT_VARIANT, "seq_a", n=9, std_format="mosaic_v1")
+
+
+def _smooth_then_speed() -> Pipeline:
+    pipe = Pipeline()
+    pipe.add(FeatureStep("smooth", TrajectorySmooth, {}))
+    pipe.add(FeatureStep("speed", SpeedAngvel, {}, ["smooth"]))
+    return pipe
+
+
+def test_pipeline_run_recomputes_a_drifted_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _converted(tmp_path)
+    pipe = Pipeline()
+    pipe.add(FeatureStep("speed", SpeedAngvel, {}))
+    pipe.run(ds)
+    _reconvert_seq_a(ds)
+    _ = capsys.readouterr()
+
+    pipe.run(ds)
+    captured = capsys.readouterr()
+
+    assert "(cached)" not in captured.out
+    assert "cannot serve cached output for (,seq_a)" in captured.err
+    assert "cannot serve cached output for (,seq_b)" not in captured.err
+
+
+def test_pipeline_run_rechecks_a_step_below_a_recomputed_step(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _converted(tmp_path)
+    pipe = _smooth_then_speed()
+    pipe.run(ds)
+    _reconvert_seq_a(ds)
+    _ = capsys.readouterr()
+
+    pipe.run(ds)
+    captured = capsys.readouterr()
+
+    assert "(cached)" not in captured.out
+    assert captured.err.count("cannot serve cached output for (,seq_a)") == 2
+    _ = capsys.readouterr()
+    pipe.run(ds)
+    assert capsys.readouterr().out.count("(cached)") == 2
+
+
+def test_pipeline_run_serves_its_steps_after_an_entry_is_dropped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _converted(tmp_path)
+    pipe = _smooth_then_speed()
+    pipe.run(ds)
+    _ = ds.drop_entries(scope=Scope(entries=[("", "seq_b")]))
+    _ = capsys.readouterr()
+
+    pipe.run(ds)
+
+    assert capsys.readouterr().out.count("(cached)") == 2
+
+
+def test_pipeline_load_still_loads_a_drifted_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ds = _converted(tmp_path)
+    pipe = Pipeline()
+    pipe.add(FeatureStep("speed", SpeedAngvel, {}))
+    pipe.run(ds)
+    _reconvert_seq_a(ds)
+    _ = capsys.readouterr()
+
+    results = pipe.load(ds)
+
+    assert "speed" in results
+    assert "Drift: source has moved under speed (1 sequence(s))" in (
+        capsys.readouterr().out
+    )
+    status = pipe.status(ds)
+    assert list(status["drift"]) == [1]

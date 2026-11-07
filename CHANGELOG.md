@@ -96,7 +96,9 @@ withdrawn, and the schema publishes no `x-mosaic-unwired`.
   identifier of those seven features moves in its version prefix, and its digest
   stays. In the goldens the `global-kmeans`, `global-scaler`, `pair-egocentric`,
   `track-subsample` and `xgboost` cases of `feature_run_id_golden.json` and
-  `tsne/run_id` of `pipeline_plan_golden.json` move.
+  `tsne/run_id` of `pipeline_plan_golden.json` move. A run reading one of those
+  features' output also gets a new identifier, because its `_inputs` pin the
+  upstream run id, and recomputes.
 - Withdrawn, labels: `GroundTruthLabelsSource` (and `PredictionsLabelsSource`)
   no longer takes `source`, `load` or `pattern`. Each is accepted at its old
   value (`"labels"`, `{"kind": "npz", "key": "labels", "transpose": false}` in
@@ -121,10 +123,33 @@ cached entry, so an entry recomputes after its upstream entry recomputed for a
 moved declared root, such as `scale-to-cm`'s `media_raw`, and a chain of three
 features compares its first feature's roots. A row written before the column
 recomputes once where its upstream records a root, and is then served. The
-blind tracks warning also covers a run whose feature input's upstream run read
-a named tracks variant recording no composition, and names that upstream
-storage and run id. `ResolvedScope` gains `input_root_compositions` and
+blind tracks warning also covers a run whose feature input read a named tracks
+variant recording no composition, at any depth of its chain, and names that
+input's storage and run id. `ResolvedScope` gains `input_root_compositions` and
 `feature_inputs`. No run identifier, `version` or golden changes.
+
+**A recipe rerun recomputes a drifted feature step.** `drifted_entries` takes the run's
+`RunParams` and compares the declared roots, the tracks cell and the upstreams' roots
+cell under `cached_entry_disposition` (now in `mosaic.core.pipeline.composition`), the
+rule `run_feature` serves by. A moved tracks composition, a moved upstream root and a
+one-sided blank are drift, and an entry the run's inputs no longer resolve, such as one
+dropped from the tracks index, is not. A run resolves an entry every input holds, or any
+input for a feature that declares `stacks_inputs`, and `params.json` records which as
+`_scope.stacks_inputs`, outside the run identifier. A file written before the key counts
+any input, so an entry dropped from one input of such a run reads drifted until the
+run's next invocation records the key. The inventory therefore reads
+`complete-but-drifted` on more feature runs, including runs whose rows predate a
+recorded composition, until their next run. A feature step reading
+`complete-but-drifted` with drifted entries in its target is planned as work
+(`PlannedStep.drift_work`): in the plan wire its `status` stays `complete-but-drifted`,
+`asked` lists those entries, `complete` is false, and the fingerprint differs from a
+drift-free plan. It is among the runs a request computes, and its step run-log records a
+`run_feature` attempt ending `finished` with `cache_hit` false and the entries it wrote.
+`Pipeline.run` serves a step only when it is complete, drift-free and every step it
+reads was served in the same call. `verify_plan` and `pipeline score` read
+`PlannedStep.has_complete_run`, whether a complete run exists, and still compare and
+score a drifted run. The MCP submit output gains `to_compute`. No status, `Reason`
+variant, run identifier, `version` or golden changes.
 
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 

@@ -285,6 +285,30 @@ def is_stalled(
 # --- the plan ------------------------------------------------------------------
 
 
+def _drift_work(
+    kind: Literal["feature", "op"],
+    status: StepStatus,
+    drift: tuple[Entry, ...],
+    target: frozenset[Entry],
+) -> tuple[Entry, ...]:
+    """The drifted entries a step recomputes: a feature step's, inside its target.
+
+    Args:
+        kind: The step's kind. An op step reading drift is still served.
+        status: The step's status. Only ``complete-but-drifted`` has drift work,
+            so a bound step and a pinned step, whose views read ``bound`` and
+            ``complete``, have none.
+        drift: The entries of the step's run whose sources moved.
+        target: The entries the step is planned over.
+
+    Returns:
+        The entries, sorted.
+    """
+    if kind != "feature" or status != "complete-but-drifted":
+        return ()
+    return tuple(sorted(set(drift) & target))
+
+
 @dataclass(frozen=True, slots=True)
 class PlannedStep:
     """One step of a recipe, resolved against one dataset.
@@ -373,8 +397,27 @@ class PlannedStep:
     pairs: PairRead | None = None
 
     @property
+    def drift_work(self) -> tuple[Entry, ...]:
+        """The drifted entries this step recomputes, sorted.
+
+        A feature step reading ``complete-but-drifted`` recomputes its drifted
+        entries inside its target. Drift outside the target is no work, and an
+        op step, a bound step and a pinned step have none.
+        """
+        return _drift_work(self.kind, self.status, self.drift, self.coverage.target)
+
+    @property
     def is_complete(self) -> bool:
         """Is there nothing left for this step to compute?"""
+        return self.status in COMPLETE_STATUSES and not self.drift_work
+
+    @property
+    def has_complete_run(self) -> bool:
+        """Does the dataset hold a complete run of this step, drifted or not?
+
+        A drifted run is still compared and scored, since superseded is not
+        invalid. :attr:`is_complete` answers whether the step runs.
+        """
         return self.status in COMPLETE_STATUSES
 
 
@@ -1070,13 +1113,13 @@ def _plan_step(
             base.spec,
             entries=Scope()
             if pinned is not None
-            else _entries_for(step, resolution, target, view.coverage, view.status),
+            else _entries_for(step, resolution, target, view),
         ),
         coverage=view.coverage,
         status=view.status,
         drift=view.drift,
         finished=view.finished,
-        reason=_reason_for(base, parents, planned, view.coverage, view.status),
+        reason=_reason_for(base, parents, planned, view, kind=base.kind),
         pairs=pair_read,
     )
 
@@ -2284,8 +2327,7 @@ def _entries_for(
     step: Step,
     resolution: _Resolution,
     target: frozenset[Entry],
-    coverage: Coverage[Entry],
-    status: ArtifactStatus,
+    view: ArtifactView,
 ) -> Scope:
     """What this step should be asked to compute, already narrowed.
 
@@ -2303,14 +2345,18 @@ def _entries_for(
     entry, so it is complete over a scope naming an entry it never saw, and its
     *missing* set names that entry all the same. Asking it to compute the entry
     would ask it to be a different artifact.
+
+    A complete feature step whose run drifted inside its target is asked for
+    those entries (:func:`_drift_work`), which ``run_feature`` recomputes under
+    the same run id.
     """
     if isinstance(step, OpStepSpec):
         return _op_scope(step.kind, target)
     if resolution.scope_dependent:
         return _named(sorted(target))
-    if status in COMPLETE_STATUSES:
-        return Scope()
-    return _named(sorted(coverage.missing))
+    if view.status in COMPLETE_STATUSES:
+        return _named(list(_drift_work("feature", view.status, view.drift, target)))
+    return _named(sorted(view.coverage.missing))
 
 
 def _named(entries: list[Entry]) -> Scope:
@@ -2327,8 +2373,9 @@ def _reason_for(
     base: PlannedStep,
     parents: tuple[str, ...],
     planned: Mapping[str, PlannedStep],
-    coverage: Coverage[Entry],
-    status: ArtifactStatus,
+    view: ArtifactView,
+    *,
+    kind: Literal["feature", "op"],
 ) -> Reason | None:
     """Why this step is not simply running.
 
@@ -2337,10 +2384,15 @@ def _reason_for(
     already complete has no reason at all, whatever is above it. Otherwise the
     graph comes before the artifact: a step whose parents are short cannot be
     expected to hold what they have not produced.
+
+    A complete step with drift work (:func:`_drift_work`) waits only on its
+    parents. Its coverage is whole and is not short.
     """
     if base.reason is not None:
         return base.reason
-    if status in COMPLETE_STATUSES:
+    coverage = view.coverage
+    has_drift_work = bool(_drift_work(kind, view.status, view.drift, coverage.target))
+    if view.status in COMPLETE_STATUSES and not has_drift_work:
         return None
     blocking = tuple(
         parent
@@ -2349,7 +2401,7 @@ def _reason_for(
     )
     if blocking:
         return DepsIncomplete(blocking=blocking)
-    if coverage.covered:
+    if coverage.covered and not has_drift_work:
         missing = tuple(sorted(coverage.missing))
         return CoverageShort(
             covered=len(coverage.covered),

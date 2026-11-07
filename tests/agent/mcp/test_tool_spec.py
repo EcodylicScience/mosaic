@@ -330,6 +330,7 @@ class _Oversized:
             recipe_digest="d",
             plan_fingerprint=args.plan_fingerprint or "f",
             counts={"absent": 1},
+            to_compute=1,
             first_steps=(
                 SubmittedStep(
                     step="step_0",

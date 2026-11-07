@@ -327,8 +327,8 @@ def key_sample(
     )
 
 
-def coverage_wire(
-    coverage: Coverage[AnyKey], *, sample: int = MISSING_SAMPLE_WIRE
+def coverage_wire[KeyT: AnyKey](
+    coverage: Coverage[KeyT], *, sample: int = MISSING_SAMPLE_WIRE
 ) -> CoverageWire:
     """Return *coverage* as counts and a sorted sample of what is missing.
 

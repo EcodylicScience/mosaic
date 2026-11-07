@@ -53,9 +53,11 @@ made from has changed since.
 That change is detected by comparison, not by the identifier. A `run_id` covers the
 recipe of each input, not its content, so re-converting tracks from changed source files
 or re-transcoding media leaves every downstream identifier as it was. What each run read
-is recorded beside it and compared with the present. The next `run_feature` recomputes
-the entries whose tracks changed, and a tracker run over re-transcoded media reports
-`complete-but-drifted`.
+is recorded beside it and compared with the present. A feature run whose tracks, declared
+roots or upstream runs changed reads `complete-but-drifted`, and the next `run_feature`,
+`mosaic run` or recipe rerun recomputes those entries and serves the rest. A tracker run
+over re-transcoded media reports `complete-but-drifted`. A feature run whose rows predate
+a recorded composition reads `complete-but-drifted` until its next run.
 
 ## A trained model can say what it saw
 

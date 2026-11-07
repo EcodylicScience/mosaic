@@ -77,6 +77,7 @@ from tests.helpers import (
     add_tracks_variant,
     calms21_dataset,
     chain_recipe,
+    convert_tracks_from_raw,
     exited_pid,
     make_dataset,
     speed_recipe,
@@ -788,6 +789,35 @@ def test_a_submission_hands_the_starter_the_servers_card_limit(
 
     assert starter.started == [submitted.request_id]
     assert starter.gpu_cards == [limit]
+
+
+def test_a_submitted_drifted_step_counts_as_to_compute(tmp_path: Path) -> None:
+    """A feature step whose run drifted inside its target is work to submit."""
+    dataset = make_dataset(tmp_path / "converted", name="converted")
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    _ = run_pipeline(dataset, speed_recipe())
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", n=9, std_format="mosaic_v1")
+    backend = LocalBackend(
+        [dataset.manifest_path], warm=False, start_driver=RecordingStarter()
+    )
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+    )
+
+    submitted = _call(
+        backend,
+        "submit_pipeline",
+        SubmittedPipeline,
+        dataset=_uuid(dataset),
+        recipe=SPEED_RECIPE,
+        plan_fingerprint=plan.fingerprint,
+    )
+
+    assert not plan.complete
+    assert submitted.counts == {"complete-but-drifted": 1}
+    assert submitted.to_compute == 1
+    assert [step.step for step in submitted.first_steps] == ["speed"]
+    assert "1 step(s), 1 to compute" in summarize(submitted)
 
 
 def test_discover_keeps_the_card_limit(dataset: Dataset, tmp_path: Path) -> None:

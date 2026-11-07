@@ -131,12 +131,12 @@ are in `graph/CLAUDE.md`.
 - A run identity is params-only. What a run consumed is recorded on its row and
   compared, and `run_id` leaves it out.
 - `run_feature` compares each cached entry's `consumed_tracks_composition`
-  (`recorded_tracks_reads`, `index.py`) with the tracks row's current
-  composition through `cached_entry_disposition` (`run.py`). A difference, or one
-  known side beside a blank one, recomputes the entry. A re-conversion from changed
-  sources therefore recomputes (`tests/core/pipeline/test_tracks_source_staleness.py`).
-  `tracks_compositions` adds a tracks row's `first_frame` past 0 to its composition,
-  so a table published again at a moved first frame recomputes its features.
+  (`recorded_tracks_reads`, `index.py`) with the tracks row's current composition
+  through `cached_entry_disposition` (`composition.py`). A difference, or one known side
+  beside a blank one, recomputes the entry. A re-conversion from changed sources
+  therefore recomputes (`tests/core/pipeline/test_tracks_source_staleness.py`).
+  `tracks_compositions` adds a tracks row's `first_frame` past 0 to its composition, so
+  a table published again at a moved first frame recomputes its features.
 - A run with a feature input compares instead
   `ResolvedScope.input_tracks_compositions` (`build_manifest`): per entry, its inputs'
   cells joined with `+` in input order, a feature input's cell being its upstream
@@ -151,8 +151,8 @@ are in `graph/CLAUDE.md`.
   `join_input_cells` (`composition.py`). An entry recomputes after its upstream
   entry recomputes for a moved declared root, at any depth of a chain. Both sides
   blank is absence, served without a warning. The blind tracks warning covers a
-  feature input whose upstream run read a named tracks variant, and names that
-  upstream run.
+  feature input whose upstream chain read a named tracks variant at any depth
+  (`TracksVariantWalk`), and names that input's run.
 - At `overlap_frames > 0` the row's `consumed_neighbors` (`neighbor_compositions`,
   `run.py`) names the entry keys of the sequences before and after the entry with
   their tracks compositions, and is compared the same way. The cell is then always
@@ -165,12 +165,23 @@ are in `graph/CLAUDE.md`.
 - A division of a store is a member of its entry's media composition under its
   `imgstore-division/1` uid, so each division has its own composition, and a division
   whose chunks change frame count has a new uid (`tests/core/media/test_media_drift.py`).
-- `drifted_entries` (`index.py`) compares the declared-root `consumed_composition`,
-  and `consumed_media_composition` on tracks rows, media variant rows and tracker run
-  rows is compared the same way, through `compositions_disagree` (`composition.py`).
-  There a blank side is unknown and not drift
-  (`tests/core/pipeline/test_tracks_media_drift.py`). `media_drift` also reports a
-  tracks row whose recorded `first_frame` differs from the sequence's current one.
+- `drifted_entries` (`index.py`) follows `cached_entry_disposition` over three
+  channels, given the run's `RunParams`: the declared roots, the tracks cell and the
+  upstreams' roots cell, each built as `build_manifest` builds it. One known side is
+  drift, and the plan names every entry `run_feature` recomputes. The neighbors cell
+  stays `run_feature`'s (`TestDriftedEntries` in
+  `tests/core/pipeline/test_tracks_source_staleness.py`). An entry the inputs no
+  longer resolve, such as one dropped from the tracks index, is not drift: every input
+  holds it for a run that intersects its inputs, and any input for a stacked run, as
+  `_scope.stacks_inputs` in `params.json` records (`stacks_inputs`, `loading.py`). A
+  file without the key counts any input, so a false drift lasts one run, where every
+  input would hide a stacked run's drift. Without params it compares the declared
+  roots alone.
+- `consumed_media_composition` on tracks rows, media variant rows and tracker run rows
+  is compared through `compositions_disagree` (`composition.py`). There a blank side is
+  unknown and not drift (`tests/core/pipeline/test_tracks_media_drift.py`).
+  `media_drift` also reports a tracks row whose recorded `first_frame` differs from the
+  sequence's current one.
 
 ## Inputs and claims
 

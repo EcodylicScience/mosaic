@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Literal, overload
+from typing import ClassVar, Literal, Protocol, overload
 
 from mosaic.core.entry import CameraEntry, Entry
 
@@ -407,9 +407,23 @@ def classify(
     return "absent"
 
 
-def reclassify(
-    record: ArtifactRecord[object], coverage: Coverage[object]
-) -> ArtifactStatus:
+class _StatusFacts(Protocol):
+    """The facts of a record that its status reads, whatever its coverage key."""
+
+    @property
+    def orphan_rows(self) -> frozenset[object]: ...
+
+    @property
+    def orphan_files(self) -> frozenset[object]: ...
+
+    @property
+    def drift(self) -> tuple[Entry, ...]: ...
+
+    @property
+    def finished_at(self) -> str: ...
+
+
+def reclassify[KeyT](record: _StatusFacts, coverage: Coverage[KeyT]) -> ArtifactStatus:
     """Return *record*'s status measured over *coverage*, another target's coverage.
 
     A record's status is measured against the target its scan was given. A plan

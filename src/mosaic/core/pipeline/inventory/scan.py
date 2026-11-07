@@ -23,6 +23,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.dataset_indexes import feature_storages, label_kinds
 from mosaic.core.pipeline.identity_scheme import read_identity_scheme
 from mosaic.core.pipeline.index import (
+    DriftReads,
     drifted_entries,
     feature_index,
     feature_index_path,
@@ -381,6 +382,11 @@ def _feature_records(
     universe = reportable_universe(ds, scope.tracks_run_id)
     target = narrow_target(universe, scope.selector)
     records: list[ArtifactRecord[Entry]] = []
+    # One read of each feature index and one tracks cell per variant set,
+    # shared by every run's drift.
+    drift_reads = DriftReads(
+        ds, lambda path: reader.frame(path, lambda: feature_index(path).read())
+    )
     for name in feature_storages(ds):
         index_path = feature_index_path(ds, name)
         frame = reader.frame(index_path, lambda p=index_path: feature_index(p).read())
@@ -400,7 +406,7 @@ def _feature_records(
                 covers_all=on_disk.covers_all,
             )
             started, finished_at, finished = finish_state(frame, run_id)
-            drift = drifted_entries(ds, name, run_id)
+            drift = drifted_entries(ds, name, run_id, read.params, drift_reads)
             records.append(
                 ArtifactRecord[Entry](
                     ref=FeatureRunRef(name=name, run_id=run_id),

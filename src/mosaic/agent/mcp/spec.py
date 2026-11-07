@@ -1314,9 +1314,12 @@ class SubmittedPipeline(StrictModel):
         recipe_digest: The recipe the request names.
         plan_fingerprint: The fingerprint of the plan it was submitted under.
         counts: How many steps the plan gave each status.
+        to_compute: How many steps have work left.
         first_steps: The first :data:`SUBMITTED_STEP_SAMPLE` steps to compute,
-            those whose status is not one of ``COMPLETE_STATUSES`` (``complete``,
-            ``complete-but-drifted`` or ``bound``), in topological order.
+            in topological order: those whose status is not one of
+            ``COMPLETE_STATUSES`` (``complete``, ``complete-but-drifted`` or
+            ``bound``), and each feature step reading ``complete-but-drifted``
+            with drifted entries in its target, which it recomputes.
         truncated: Whether more steps are to compute than ``first_steps`` lists.
         duplicates: The open requests, of any recipe, that compute runs of
             this one.
@@ -1338,6 +1341,7 @@ class SubmittedPipeline(StrictModel):
     recipe_digest: str
     plan_fingerprint: str
     counts: dict[StepStatus, int]
+    to_compute: int
     first_steps: tuple[SubmittedStep, ...]
     truncated: bool
     duplicates: tuple[SubmittedDuplicate, ...]

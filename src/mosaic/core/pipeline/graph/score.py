@@ -1212,7 +1212,7 @@ def score_heldout(
         planned = final.step(identifier)
         report = (
             _read_report(ds, planned.storage_name, planned.run_id)
-            if planned.run_id and planned.is_complete
+            if planned.run_id and planned.has_complete_run
             else None
         )
         if report is None:

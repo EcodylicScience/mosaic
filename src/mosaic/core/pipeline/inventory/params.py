@@ -53,6 +53,7 @@ from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 
 __all__ = [
+    "InputSource",
     "ParamsState",
     "ResolvedRef",
     "RunKey",
@@ -83,6 +84,9 @@ LABELS_EDGE: Final = "inputs[labels]"
 type RunKey = tuple[str, str]
 """A feature run: its storage directory and its run id."""
 
+type InputSource = Literal["tracks"] | RunKey
+"""One input of a feature run: the tracks tables, or the feature run it read."""
+
 
 class ResolvedRef(BaseModel):
     """One ``_resolved`` entry: which concrete upstream a reference pinned to.
@@ -108,6 +112,9 @@ class ScopeBlock(BaseModel):
     a scope-free run asked for every entry of the dataset, including entries
     added later. An invocation without a selector asks for every entry, and so
     does a recipe step that neither its request nor a step scope narrows.
+    ``stacks_inputs`` records that the run read its inputs as runs over
+    disjoint entries rather than over the entries they all hold, and is
+    ``None`` in a file written before the key existed.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -117,6 +124,7 @@ class ScopeBlock(BaseModel):
     entries: list[list[str]] = Field(default_factory=list)
     asked: list[list[str]] | None = None
     asked_all: bool = False
+    stacks_inputs: bool | None = None
     compositions: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
@@ -254,6 +262,25 @@ class RunParams(BaseModel):
             for ref in self.resolved
             if ref.run_id is not None and (ref.run_id or ref.where == TRACKS_EDGE)
         )
+
+    def input_sources(self) -> tuple[InputSource, ...]:
+        """The run's inputs in input order, each ``"tracks"`` or the feature run it read.
+
+        A feature input's run is the ``inputs[<i>]`` pin of ``_resolved`` when the
+        file records one, else the run id ``_inputs`` names, else ``""``.
+        """
+        pins = {ref.where: ref.run_id for ref in self.resolved if ref.run_id}
+        sources: list[InputSource] = []
+        for position, item in enumerate(self.inputs):
+            if item == "tracks":
+                sources.append("tracks")
+                continue
+            named = _named_run(item)
+            if named is None:
+                continue
+            feature, run_id = named
+            sources.append((feature, pins.get(f"inputs[{position}]") or run_id))
+        return tuple(sources)
 
     def upstream_references(self) -> tuple[frozenset[RunKey], frozenset[str]]:
         """The feature runs this run read, as ``(pairs, storages)``.

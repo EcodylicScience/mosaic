@@ -377,12 +377,12 @@ class TestCachedEntryDisposition:
     """
 
     def test_agreement_is_served(self) -> None:
-        from mosaic.core.pipeline.run import cached_entry_disposition
+        from mosaic.core.pipeline.composition import cached_entry_disposition
 
         assert cached_entry_disposition("abc", "abc") == "serve"
 
     def test_a_moved_source_is_recomputed(self) -> None:
-        from mosaic.core.pipeline.run import cached_entry_disposition
+        from mosaic.core.pipeline.composition import cached_entry_disposition
 
         assert cached_entry_disposition("abc", "def") == "recompute"
 
@@ -392,7 +392,7 @@ class TestCachedEntryDisposition:
         Recomputing resolves it -- the new row records what is true now -- so the
         next run serves. One wrong cache miss, by construction.
         """
-        from mosaic.core.pipeline.run import cached_entry_disposition
+        from mosaic.core.pipeline.composition import cached_entry_disposition
 
         assert cached_entry_disposition("", "abc") == "recompute"
         assert cached_entry_disposition("abc", "") == "recompute"
@@ -406,7 +406,7 @@ class TestCachedEntryDisposition:
         on either side. Recomputing teaches nothing and would repeat forever, so
         the entry is served and the gap is reported instead.
         """
-        from mosaic.core.pipeline.run import cached_entry_disposition
+        from mosaic.core.pipeline.composition import cached_entry_disposition
 
         assert cached_entry_disposition("", "") == "undetectable"
 

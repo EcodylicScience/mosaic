@@ -963,14 +963,13 @@ class LocalBackend:
             detail = {**(envelope.detail or {}), "request_id": request.request_id}
             raise ToolFailure(envelope.model_copy(update={"detail": detail})) from error
         lanes = {planned.lane for planned in submitted.plan.steps}
-        to_compute = [
-            planned for planned in submitted.plan.steps if not planned.is_complete
-        ]
+        to_compute = submitted.plan.pending
         return SubmittedPipeline(
             request_id=request.request_id,
             recipe_digest=request.recipe_digest,
             plan_fingerprint=plan_fingerprint(submitted.plan),
             counts=dict(Counter(planned.status for planned in submitted.plan.steps)),
+            to_compute=len(to_compute),
             first_steps=tuple(
                 SubmittedStep(
                     step=planned.step_id,

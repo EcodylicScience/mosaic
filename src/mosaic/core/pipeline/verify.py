@@ -1181,7 +1181,7 @@ def verify_plan(
                     skipped.model_copy(update={"reason": "it fits nothing"})
                 )
                 continue
-            if not planned.is_complete or planned.run_id is None:
+            if not planned.has_complete_run or planned.run_id is None:
                 unfinished += 1
                 verdicts.append(
                     skipped.model_copy(

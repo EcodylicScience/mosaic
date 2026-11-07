@@ -536,6 +536,26 @@ def add_tracks_variant(
         )
 
 
+def convert_tracks_from_raw(
+    dataset: Dataset,
+    run_id: str,
+    *sequences: str,
+    n: int = 8,
+    std_format: str = "trex_v1",
+) -> None:
+    """Convert *sequences* into variant *run_id* from raw files of *n* frames.
+
+    Each raw file is indexed under ``tracks_raw``, and every table records the
+    source composition it was converted from. Calling it again with another *n*
+    is a conversion from changed source: the table's composition moves.
+    """
+    raw_root = dataset.get_root("tracks_raw")
+    for sequence in sequences:
+        write_trex_npz(raw_root / f"{sequence}.npz", n=n)
+    _ = dataset.index_tracks_raw([raw_root], patterns=["*.npz"], src_format="trex_npz")
+    add_tracks_variant(dataset, run_id, *sequences, std_format=std_format)
+
+
 def add_tracks_table(
     dataset: Dataset,
     run_id: str,

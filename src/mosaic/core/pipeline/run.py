@@ -16,7 +16,7 @@ from concurrent.futures import (
 )
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
-from typing import ClassVar, Final, TYPE_CHECKING, Literal
+from typing import ClassVar, Final, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,7 @@ from ._utils import (
 )
 from .arena_guard import ArenaBlindFeature, entry_arena_count, refuse_arena_blind
 from .storage_names import derive_storage_name, feature_slug_of
+from .composition import cached_entry_disposition
 from .column_contract import (
     MissingInputColumns,
     check_input_columns,
@@ -62,7 +63,7 @@ from .index import (
     recorded_tracks_reads,
 )
 from .index_lock import index_lock
-from .inventory.params import RunParams, read_run_params
+from .inventory.params import RunParams, TracksVariantWalk, read_run_params
 from .loading import (
     CROSS_JOIN_FEATURES,
     PairRowsMissing,
@@ -676,49 +677,6 @@ def neighbor_compositions(
     }
 
 
-CacheDisposition = Literal["serve", "recompute", "undetectable"]
-"""What may be done with a cached entry, given what it recorded consuming.
-
-Item 6.2's refusal, and its three answers rather than two. ``serve`` and
-``recompute`` are the obvious pair; ``undetectable`` is the case that has to be
-named separately or the rule defeats the cache permanently.
-"""
-
-
-def cached_entry_disposition(recorded: str, current: str) -> CacheDisposition:
-    """Whether a cached entry may be served, must be recomputed, or cannot be told.
-
-    Fail closed means *recompute* here, not prompt: a library has no one to ask,
-    and the cost of being wrong is CPU rather than data. But it has to converge,
-    and that is what splits ``unknown`` in two.
-
-    - **Both sides known and equal** -- serve. The ordinary answer.
-    - **Both known and different** -- recompute. The source moved under an output
-      still on disk.
-    - **Exactly one side known** -- recompute. Either the entry predates item 5.1
-      and nothing says what it was built from, or the projection that would say
-      has gone. Recomputing *resolves* it: the row then records what is true now,
-      and the next run serves. One wrong cache miss, by construction -- the
-      migration shape M1 established.
-    - **Neither side known** -- ``undetectable``. Recomputing would resolve
-      nothing, because the row it wrote would record the same empty and the next
-      run would recompute again, forever. A dataset whose media was indexed
-      before item 4.4 is exactly this state, so failing closed here would mean an
-      unbounded recompute on every run of the two features that declare a root.
-      Serve it, and say out loud that drift cannot be detected until the
-      projection exists.
-
-    The distinction is the honest-empty rule applied to a decision rather than to
-    a value: an empty needs a companion saying which kind of empty it is, and
-    here the companion is the other side.
-    """
-    if recorded and current:
-        return "serve" if recorded == current else "recompute"
-    if recorded or current:
-        return "recompute"
-    return "undetectable"
-
-
 def _disposition_reason(
     recorded: str, current: str, moved: str = "its source moved"
 ) -> str:
@@ -859,24 +817,23 @@ def _blind_tracks_warning(
 def _upstreams_over_variants(
     ds: Dataset, feature_inputs: Sequence[tuple[str, str]]
 ) -> tuple[tuple[str, str], ...]:
-    """The feature inputs whose upstream run read a named tracks variant.
+    """The feature inputs that read a named tracks variant at any depth.
 
-    Read from each upstream run's ``params.json``. An upstream over the
-    unlabelled variant, or one whose file is absent or unreadable, is left out:
+    Walked through each upstream run's ``params.json`` by
+    :class:`~.inventory.params.TracksVariantWalk`. An input over the unlabelled
+    variant, or one whose walk meets an absent or unreadable file, is left out:
     no repair reaches the tracks tables it read.
 
     Args:
         ds: The dataset holding the upstream runs.
         feature_inputs: The ``(storage, run_id)`` of each feature input.
     """
-    named: list[tuple[str, str]] = []
-    for storage, run_id in dict.fromkeys(feature_inputs):
-        if not run_id:
-            continue
-        params = read_run_params(feature_run_root(ds, storage, run_id)).params
-        if params is not None and params.consumed_variants():
-            named.append((storage, run_id))
-    return tuple(named)
+    walk = TracksVariantWalk(ds)
+    return tuple(
+        (storage, run_id)
+        for storage, run_id in dict.fromkeys(feature_inputs)
+        if run_id and walk(storage, run_id)
+    )
 
 
 def _blind_upstream_tracks_warning(
@@ -1203,6 +1160,10 @@ def build_run_params_payload(
     rather than ``_inputs``, which must stay the literal the process worker
     revalidates, and match what the digest's ``_tracks``/``_labels`` terms cover.
 
+    ``_scope.stacks_inputs`` records whether the run read its inputs as one
+    stack (:func:`~.loading.stacks_inputs`), which tells a drift check whether an
+    entry is the run's when every input holds it or when any does.
+
     ``_overlap_frames`` is written **unconditionally**, where the digest omits it
     at zero -- the same split ``_frame_range`` already shows. This is the readable
     record, so it states the value; the digest is where the omission buys
@@ -1246,6 +1207,7 @@ def build_run_params_payload(
                 for entry in sorted(scope.entries if asked is None else set(asked))
             ],
             "asked_all": asked_all,
+            "stacks_inputs": stacks_inputs(feature),
             "compositions": {
                 make_entry_key(group, sequence): dict(sorted(per_root.items()))
                 for (group, sequence), per_root in sorted(scope.compositions.items())

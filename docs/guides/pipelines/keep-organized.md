@@ -26,6 +26,10 @@ Status is **derived at read time, never stored**:
 | `complete-but-drifted` | complete, but a recorded source has moved |
 | `inconsistent` | the index and the files disagree |
 
+A recipe rerun recomputes the drifted entries of a feature step and serves the rest.
+A run whose rows predate a recorded composition reads `complete-but-drifted` until its
+next run.
+
 A run is measured against the sequences it was asked for. A template sampler run on the
 training sequences, or a classifier applied to the test sequences through a step scope,
 reads `complete` when it has all of them, and `partial` only when it lost some. A run

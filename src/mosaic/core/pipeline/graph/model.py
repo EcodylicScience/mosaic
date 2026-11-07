@@ -434,9 +434,10 @@ COMPLETE_STATUSES: Final[frozenset[StepStatus]] = frozenset(
 never executed.
 
 ``complete-but-drifted`` is here deliberately: a drifted run is complete and
-loadable, and superseded is not invalid. It is surfaced as drift so a caller can
-choose to re-run it, and refusing to call it complete would make every dataset
-whose sources have moved read as unfinished work.
+loadable, and superseded is not invalid. An op step in it is served. A feature
+step in it still recomputes the drifted entries inside its target
+(``PlannedStep.drift_work``). Whether a step runs is
+``PlannedStep.is_complete``.
 """
 
 

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 from mosaic.core.entry import Entry
 
@@ -53,6 +53,8 @@ __all__ = [
     "MediaMember",
     "SequenceComposition",
     "SourceMember",
+    "CacheDisposition",
+    "cached_entry_disposition",
     "composition_drift",
     "compositions_disagree",
     "input_root_part",
@@ -243,6 +245,47 @@ def labels_raw_composition(members: Sequence[SourceMember]) -> SequenceCompositi
         len(members),
         all(member.digest for member in members),
     )
+
+
+CacheDisposition = Literal["serve", "recompute", "undetectable"]
+"""What may be done with a cached entry, given what it recorded consuming.
+
+Three answers rather than two. ``serve`` and ``recompute`` are the obvious
+pair; ``undetectable`` is the case that has to be named separately or the rule
+defeats the cache permanently.
+"""
+
+
+def cached_entry_disposition(recorded: str, current: str) -> CacheDisposition:
+    """Whether a cached entry may be served, must be recomputed, or cannot be told.
+
+    Fail closed means *recompute* here, not prompt: a library has no one to ask,
+    and the cost of being wrong is CPU rather than data. But it has to converge,
+    and that is what splits ``unknown`` in two.
+
+    - **Both sides known and equal**: serve. The ordinary answer.
+    - **Both known and different**: recompute. The source moved under an output
+      still on disk.
+    - **Exactly one side known**: recompute. Either the entry predates its
+      composition column and nothing says what it was built from, or the
+      projection that would say has gone. Recomputing resolves it: the row then
+      records what is true now, and the next run serves. One cache miss.
+    - **Neither side known**: ``undetectable``. Recomputing would resolve
+      nothing, because the row it wrote would record the same empty and the next
+      run would recompute again, forever. A dataset whose media was indexed
+      before the sequence projection existed is in this state. Failing closed
+      here would mean an unbounded recompute on every run of the features that
+      declare a root. Serve it, and say that drift cannot be detected until the
+      projection exists.
+
+    An empty needs a companion saying which kind of empty it is, and here the
+    companion is the other side.
+    """
+    if recorded and current:
+        return "serve" if recorded == current else "recompute"
+    if recorded or current:
+        return "recompute"
+    return "undetectable"
 
 
 def compositions_disagree(recorded: str, current: str) -> bool:

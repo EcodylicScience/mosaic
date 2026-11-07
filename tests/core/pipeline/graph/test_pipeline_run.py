@@ -65,6 +65,7 @@ from tests.helpers import (
     catalog_without_contract,
     chain_recipe,
     chain_with_sibling_recipe,
+    convert_tracks_from_raw,
     make_dataset,
     write_driver_lease,
 )
@@ -422,6 +423,106 @@ def test_a_step_already_computed_is_not_recomputed(tracked: Dataset) -> None:
 
     assert done.outcomes[0].state == "cached"
     assert [outcome.state for outcome in done.outcomes[1:]] == ["ran", "ran"]
+
+
+SMOOTH_THEN_SPEED: Document = {
+    "schema_version": 1,
+    "name": "smooth then speed",
+    "steps": [
+        {
+            "id": "smooth",
+            "type": "feature",
+            "feature": "trajectory-smooth",
+            "inputs": ["tracks"],
+        },
+        {
+            "id": "speed",
+            "type": "feature",
+            "feature": "speed-angvel",
+            "inputs": [{"step": "smooth"}],
+        },
+    ],
+}
+"""Two per-entry steps, the second reading the first's output."""
+
+
+@pytest.fixture
+def converted(tmp_path: Path) -> Dataset:
+    """Two tables converted from raw files, each recording its source composition."""
+    dataset = make_dataset(tmp_path / "converted")
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    return dataset
+
+
+def _output_mtimes(dataset: Dataset, run_id: str) -> dict[str, int]:
+    """Each output parquet of *run_id* by file name, with its modification time."""
+    root = Path(dataset.get_root("features"))
+    return {
+        path.name: path.stat().st_mtime_ns
+        for path in root.glob(f"*/{run_id}/*.parquet")
+    }
+
+
+def test_a_rerun_after_a_reconversion_recomputes_only_the_moved_entries(
+    converted: Dataset, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A drifted feature step is planned as work and asked for its drifted entries."""
+    recipe = Recipe.model_validate(SMOOTH_THEN_SPEED)
+    _ = run_pipeline(converted, recipe)
+    run_id = plan_pipeline(converted, recipe).step("smooth").run_id
+    assert run_id is not None
+    before = _output_mtimes(converted, run_id)
+
+    convert_tracks_from_raw(converted, VARIANT, "seq_a", n=9, std_format="mosaic_v1")
+    plan = plan_pipeline(converted, recipe)
+    smooth = plan.step("smooth")
+
+    assert smooth.status == "complete-but-drifted"
+    assert smooth.drift_work == (("", "seq_a"),)
+    assert smooth.spec.entries.entry_pairs == {("", "seq_a")}
+    assert smooth.reason is None
+    assert not smooth.is_complete
+    assert not plan.is_complete
+
+    _ = capsys.readouterr()
+    done = run_pipeline(converted, recipe)
+    err = capsys.readouterr().err
+
+    assert done.outcomes[0].state == "ran"
+    assert done.outcomes[0].run_id == run_id
+    assert "cannot serve cached output for (,seq_a)" in err
+    after = _output_mtimes(converted, run_id)
+    assert after["seq_b.parquet"] == before["seq_b.parquet"]
+    assert after["seq_a.parquet"] != before["seq_a.parquet"]
+    assert plan_pipeline(converted, recipe).step("smooth").status == "complete"
+
+
+def test_an_unchanged_rerun_serves_every_step(converted: Dataset) -> None:
+    recipe = Recipe.model_validate(SMOOTH_THEN_SPEED)
+    _ = run_pipeline(converted, recipe)
+    plan = plan_pipeline(converted, recipe)
+
+    again = run_pipeline(converted, recipe)
+
+    assert plan.is_complete
+    assert all(planned.spec.entries.is_unset for planned in plan.steps)
+    assert [outcome.state for outcome in again.outcomes] == ["cached", "cached"]
+
+
+def test_a_step_below_a_drifted_step_is_recomputed_in_the_same_run(
+    converted: Dataset,
+) -> None:
+    """The reader drifts once its upstream records new cells."""
+    recipe = Recipe.model_validate(SMOOTH_THEN_SPEED)
+    _ = run_pipeline(converted, recipe)
+    convert_tracks_from_raw(converted, VARIANT, "seq_a", n=9, std_format="mosaic_v1")
+    plan = plan_pipeline(converted, recipe)
+    assert plan.step("speed").status == "complete"
+
+    done = run_pipeline(converted, recipe)
+
+    assert [outcome.state for outcome in done.outcomes] == ["ran", "ran"]
+    assert plan_pipeline(converted, recipe).is_complete
 
 
 UNCOMPUTABLE = Scope(entries=[("", "seq_a"), ("", "seq_b"), ("", "seq_gone")])

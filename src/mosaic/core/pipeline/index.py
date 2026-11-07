@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
 import pandas as pd
 
-from mosaic.core.pipeline.composition import compositions_disagree
+from mosaic.core.entry import Entry
+from mosaic.core.pipeline.composition import (
+    cached_entry_disposition,
+    input_root_part,
+    join_input_cells,
+)
 from mosaic.core.pipeline.dataset_indexes import register_reconcilable_index
 from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.inventory.params import RunParams
 
 
 class DatasetRoots(Protocol):
@@ -257,13 +264,22 @@ def recorded_tracks_reads(
     which drops every row whose ``consumed_roots`` is empty -- and that is the forty
     features this exists for.
     """
+    return _tracks_reads_of(_run_rows(ds, feature_name, run_id))
+
+
+def _run_rows(ds: Dataset, feature_name: str, run_id: str) -> pd.DataFrame:
+    """One run's rows of its feature index, empty when there are none."""
     index = feature_index(feature_index_path(ds, feature_name))
     if not index.path.exists():
-        return {}
+        return pd.DataFrame()
     try:
-        rows = index.read(run_id=run_id)
+        return index.read(run_id=run_id)
     except FileNotFoundError:
-        return {}
+        return pd.DataFrame()
+
+
+def _tracks_reads_of(rows: pd.DataFrame) -> dict[Entry, RecordedTracksReads]:
+    """Per entry, the tracks, neighbors and input cells of one run's *rows*."""
     return {
         (str(row["group"]), str(row["sequence"])): RecordedTracksReads(
             composition=str(row.get("consumed_tracks_composition", "")),
@@ -292,17 +308,14 @@ def recorded_consumption(
     establishable. Neither is evidence of change; both are item 6.2's to fail
     closed on. Entries declaring no root are dropped here, having nothing to say.
     """
+    return _consumption_of(_run_rows(ds, feature_name, run_id))
+
+
+def _consumption_of(rows: pd.DataFrame) -> dict[Entry, tuple[tuple[str, ...], str]]:
+    """Per entry of one run's *rows* that declares a root, its roots and digest."""
     from .sequence_index import decode_consumed_roots
 
-    index = feature_index(feature_index_path(ds, feature_name))
-    if not index.path.exists():
-        return {}
-    try:
-        rows = index.read(run_id=run_id)
-    except FileNotFoundError:
-        return {}
-
-    recorded: dict[tuple[str, str], tuple[tuple[str, ...], str]] = {}
+    recorded: dict[Entry, tuple[tuple[str, ...], str]] = {}
     for _, row in rows.iterrows():
         roots = decode_consumed_roots(str(row.get("consumed_roots", "")))
         if not roots:
@@ -312,44 +325,241 @@ def recorded_consumption(
     return recorded
 
 
+def _read_feature_frame(path: Path) -> pd.DataFrame:
+    """A feature storage's whole index, empty when it has none."""
+    index = feature_index(path)
+    return index.read() if index.path.exists() else pd.DataFrame()
+
+
+class DriftReads:
+    """The index reads that several :func:`drifted_entries` calls share.
+
+    An inventory scan builds one and passes it to the call for every run: each
+    feature storage's index is read once, and the tracks cells of each set of
+    variants are computed once. A call given none builds one for itself.
+
+    Args:
+        ds: The dataset whose indexes are read.
+        feature_frame: Reads a feature storage's whole index from its path. The
+            default reads it through :func:`feature_index`. A scan passes the
+            reader it reads the indexes with, and the file is read once.
+    """
+
+    def __init__(
+        self,
+        ds: Dataset,
+        feature_frame: Callable[[Path], pd.DataFrame] = _read_feature_frame,
+    ) -> None:
+        self._ds: Dataset = ds
+        self._feature_frame: Callable[[Path], pd.DataFrame] = feature_frame
+        self._frames: dict[str, pd.DataFrame] = {}
+        self._tracks: dict[tuple[str, ...], dict[Entry, str]] = {}
+        self._held: dict[tuple[str, ...], frozenset[Entry]] = {}
+
+    def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
+        frame = self._frames.get(storage)
+        if frame is None:
+            frame = self._feature_frame(feature_index_path(self._ds, storage))
+            self._frames[storage] = frame
+        if frame.empty or "run_id" not in frame.columns:
+            return pd.DataFrame()
+        return frame[frame["run_id"] == run_id]
+
+    def tracks_reads(
+        self, storage: str, run_id: str
+    ) -> dict[Entry, RecordedTracksReads]:
+        """What :func:`recorded_tracks_reads` returns, from the shared frame."""
+        return _tracks_reads_of(self._rows(storage, run_id))
+
+    def consumption(
+        self, storage: str, run_id: str
+    ) -> dict[Entry, tuple[tuple[str, ...], str]]:
+        """What :func:`recorded_consumption` returns, from the shared frame."""
+        return _consumption_of(self._rows(storage, run_id))
+
+    def tracks_cells(self, variants: Sequence[str]) -> dict[Entry, str]:
+        """The tracks cells of *variants*, as ``tracks_compositions`` builds them."""
+        from .tracks_index import tracks_compositions
+
+        key = tuple(sorted(set(variants)))
+        cells = self._tracks.get(key)
+        if cells is None:
+            cells = tracks_compositions(self._ds, key)
+            self._tracks[key] = cells
+        return cells
+
+    def tracks_entries(self, variants: Sequence[str]) -> frozenset[Entry]:
+        """The entries the tracks index holds a row for under *variants*.
+
+        An unlabelled row counts beside a row of *variants*, because a run
+        records only the labelled variants it read. A row whose composition is
+        blank counts too: it is absent from :meth:`tracks_cells` but present here.
+        """
+        from .tracks_index import read_tracks_index
+
+        key = tuple(sorted(set(variants)))
+        held = self._held.get(key)
+        if held is None:
+            readable = {"", *key}
+            held = frozenset(
+                (str(row.get("group", "")), str(row.get("sequence", "")))
+                for _, row in read_tracks_index(self._ds).iterrows()
+                if str(row.get("run_id", "")) in readable
+            )
+            self._held[key] = held
+        return held
+
+
 def drifted_entries(
-    ds: Dataset, feature_name: str, run_id: str
+    ds: Dataset,
+    feature_name: str,
+    run_id: str,
+    run_params: RunParams | None,
+    reads: DriftReads | None = None,
 ) -> tuple[tuple[str, str], ...]:
-    """Entries whose source has moved since this run recorded what it consumed.
+    """Entries whose sources have moved since this run recorded what it consumed.
 
-    Item 5.2's chain-runner half. Both sides are already on disk, so this is two
-    small index reads and no probe: the run's rows carry the composition each
-    entry was built from (item 5.1's features half), and ``<root>/sequences.csv``
-    carries what that entry is made of now (item 4.4). A difference between them
-    is a source that moved under a finished run.
+    Each entry's row is compared, channel by channel, with what the dataset
+    records now, under :func:`~.composition.cached_entry_disposition`, the rule
+    ``run_feature`` applies before it serves a cached entry. An entry is drifted
+    when any channel says ``recompute``. The entries reported are those a run
+    would recompute:
 
-    **Recorded against recorded, never recomputed.** A value recomputed from the
-    present agrees with itself by construction, which is the argument
-    ``sequence_index`` makes for storing compositions at all. It also keeps
-    ``Pipeline.status`` free of any filesystem measurement -- a status display
-    that probed would be unusable on the corpora this exists for.
+    - its declared roots: the row's ``consumed_composition`` against the entry's
+      composition under those roots in ``<root>/sequences.csv``;
+    - its tracks: the row's ``consumed_tracks_composition`` against the tracks
+      rows of the run's variants (:func:`~.tracks_index.tracks_compositions`) for
+      a run whose only input is ``tracks``, or against its inputs' cells joined
+      in input order (:func:`~.composition.join_input_cells`), a feature input's
+      cell being its upstream row's ``consumed_tracks_composition``;
+    - its upstreams' roots: the row's ``consumed_input_composition`` against its
+      feature inputs' parts (:func:`~.composition.input_root_part`), joined the
+      same way.
 
-    **Both sides must be non-empty to count**, and that is the honest-empty rule
-    rather than caution. An empty recorded cell means the run predates item 5.1
-    or its root could not be established; an empty current one means the
-    projection has not been written or is unestablishable now. Neither is
-    evidence of change, and reporting either as drift would light up every
-    pre-Stage-5 run in the display. Unknown is item 6.2's to fail closed on, not
-    this function's to guess at.
+    The neighbors cell is compared by ``run_feature`` alone. An entry the run's
+    inputs no longer resolve, dropped from the tracks index for instance, is not
+    reported: a run would recompute nothing for it. A run that intersects its
+    inputs resolves an entry every input holds, and a stacked run one that any
+    input holds. A ``params.json`` written before it recorded stacking counts an
+    entry any input holds: a false drift there lasts one run, which records the
+    stacking, while counting only the entries every input holds would hide the
+    real drift of a stacked run that nothing then recomputes.
+
+    **Both sides are recorded values.** A value recomputed from the present
+    would always agree with itself. Reading recorded values also keeps a status
+    display free of any filesystem measurement.
+
+    **One known side is drift**, and two blank sides are not. A row written before
+    its cell existed against a present that records one is recomputed once, after
+    which the row records the present. Two blanks cannot converge: the run
+    serves them with a warning, and reporting them here would ask for a recompute
+    that changes nothing.
+
+    Args:
+        ds: The dataset holding the run.
+        feature_name: The run's feature storage.
+        run_id: The run.
+        run_params: The run's ``params.json``, which names its inputs and tracks
+            variants. ``None`` compares the declared roots alone.
+        reads: The index reads shared with other calls, or ``None`` to read
+            them for this call alone.
+
+    Returns:
+        The drifted entries, sorted.
     """
     from .sequence_index import encode_entry_composition, read_entry_compositions
 
-    recorded = recorded_consumption(ds, feature_name, run_id)
-    if not recorded:
+    shared = DriftReads(ds) if reads is None else reads
+    recorded_roots = shared.consumption(feature_name, run_id)
+    declared = tuple(run_params.scope.consumed_roots) if run_params else ()
+    recorded_reads = shared.tracks_reads(feature_name, run_id) if run_params else {}
+    entries = sorted(set(recorded_roots) | set(recorded_reads))
+    if not entries:
         return ()
+    current_roots = read_entry_compositions(ds, entries)
+    tracks_now, inputs_now, held = (
+        _current_input_cells(shared, run_params)
+        if run_params
+        else ({}, {}, frozenset(entries))
+    )
 
-    current = read_entry_compositions(ds, recorded.keys())
     drifted: list[tuple[str, str]] = []
-    for entry, (roots, was) in sorted(recorded.items()):
-        now = encode_entry_composition(current.get(entry, {}), roots)
-        if compositions_disagree(was, now):
+    for entry in entries:
+        if entry not in held:
+            continue
+        roots, was = recorded_roots.get(entry, (declared, ""))
+        channels = [
+            (was, encode_entry_composition(current_roots.get(entry, {}), roots))
+            if roots
+            else ("", "")
+        ]
+        if run_params is not None:
+            read = recorded_reads.get(entry, RecordedTracksReads())
+            channels.append((read.composition, tracks_now.get(entry, "")))
+            channels.append((read.inputs, inputs_now.get(entry, "")))
+        if any(
+            cached_entry_disposition(recorded, current) == "recompute"
+            for recorded, current in channels
+        ):
             drifted.append(entry)
     return tuple(drifted)
+
+
+def _current_input_cells(
+    reads: DriftReads, run_params: RunParams
+) -> tuple[dict[Entry, str], dict[Entry, str], frozenset[Entry]]:
+    """Per entry, the tracks cell and the upstream-roots cell a run would compare now.
+
+    Built as ``build_manifest`` builds them: a run whose only input is ``tracks``
+    compares its variants' tracks rows and no upstream roots, and a run with a
+    feature input joins each input's part in input order, a ``tracks`` input's
+    roots part being blank. The third element holds the entries the inputs
+    still resolve: those every input holds a row for, or any input for a stacked
+    run or one whose file does not say, whether or not the row records a
+    composition.
+    """
+    tracks_variants, _ = run_params.variant_ids()
+    sources = run_params.input_sources()
+    if all(source == "tracks" for source in sources):
+        return (
+            reads.tracks_cells(tracks_variants),
+            {},
+            reads.tracks_entries(tracks_variants),
+        )
+    per_input_tracks: list[Mapping[Entry, str]] = []
+    per_input_roots: list[Mapping[Entry, str]] = []
+    per_input_held: list[frozenset[Entry]] = []
+    for source in sources:
+        if source == "tracks":
+            per_input_tracks.append(reads.tracks_cells(tracks_variants))
+            per_input_roots.append({})
+            per_input_held.append(reads.tracks_entries(tracks_variants))
+            continue
+        storage, upstream_run = source
+        upstream_reads = reads.tracks_reads(storage, upstream_run)
+        per_input_held.append(frozenset(upstream_reads))
+        upstream_roots = reads.consumption(storage, upstream_run)
+        per_input_tracks.append(
+            {entry: read.composition for entry, read in upstream_reads.items()}
+        )
+        per_input_roots.append(
+            {
+                entry: input_root_part(
+                    upstream_roots.get(entry, ((), ""))[1], read.inputs
+                )
+                for entry, read in upstream_reads.items()
+            }
+        )
+    held = (
+        frozenset[Entry]().union(*per_input_held)
+        if run_params.scope.stacks_inputs is not False
+        else per_input_held[0].intersection(*per_input_held[1:])
+    )
+    return (
+        join_input_cells(per_input_tracks),
+        join_input_cells(per_input_roots),
+        held,
+    )
 
 
 # Item 6.1: reconciled through the shared registry, beside the tracker

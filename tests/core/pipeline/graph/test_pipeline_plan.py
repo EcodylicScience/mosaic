@@ -72,6 +72,7 @@ from tests.helpers import (
     add_transcode_derivative,
     assert_tree_unchanged,
     clip_facts,
+    convert_tracks_from_raw,
     finish_media_variant,
     install_fake_trex,
     make_dataset,
@@ -650,6 +651,25 @@ def test_a_partly_covered_step_reports_what_is_covered(tracked: Dataset) -> None
     assert again.spec.entries == Scope(entries=[("", "seq_b")]), (
         "ask only for what is missing"
     )
+
+
+def test_drift_outside_the_target_leaves_the_step_complete(tmp_path: Path) -> None:
+    """Only a drifted entry inside a step's target is work for it."""
+    dataset = make_dataset(tmp_path / "converted")
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    recipe = Recipe.model_validate(SPEED_RECIPE)
+    _ = run_pipeline(dataset, recipe)
+    convert_tracks_from_raw(dataset, VARIANT, "seq_a", n=9, std_format="mosaic_v1")
+
+    plan = plan_pipeline(dataset, recipe, scope=Scope(entries=[("", "seq_b")]))
+    speed = plan.step("speed")
+
+    assert speed.status == "complete-but-drifted"
+    assert speed.drift == (("", "seq_a"),)
+    assert speed.drift_work == ()
+    assert speed.is_complete
+    assert plan.is_complete
+    assert speed.spec.entries.is_unset
 
 
 def test_a_scope_dependent_step_is_asked_for_all_of_its_scope(

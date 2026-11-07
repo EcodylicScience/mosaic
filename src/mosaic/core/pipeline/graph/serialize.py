@@ -297,13 +297,14 @@ def _roles_covered(plan: Plan) -> str:
 def plan_fingerprint(plan: Plan) -> str:
     """Name what *plan* found on its dataset, for a submission to compare against.
 
-    The digest covers the dataset's manifest ``uuid``, the recipe digest, and per
-    step its id, ``run_id``, status, finished flag, coverage counts, drift count
-    and the entries it would be asked for. A new feature run or a new tracks
-    entry therefore changes it. A step's ``reason`` is left out, because a
-    resource's occupancy changes from one second to the next. The plan's
-    problems and cautions are left out too. A plan with problems is refused at
-    submit whatever its fingerprint, and a caution refuses nothing.
+    The digest covers the dataset's manifest ``uuid``, the recipe digest, and per step
+    its id, ``run_id``, status, finished flag, coverage counts, drift count and the
+    entries it would be asked for. A new feature run or a new tracks entry therefore
+    changes it, and so does drift appearing in a feature step's target, through its
+    drift count and the drifted entries it is asked for. A step's ``reason`` is left
+    out, because a resource's occupancy changes from one second to the next. The plan's
+    problems and cautions are left out too. A plan with problems is refused at submit
+    whatever its fingerprint, and a caution refuses nothing.
 
     The document is canonical JSON, with steps sorted by id and entries sorted,
     so one plan has one fingerprint in every process. The plan's step scopes

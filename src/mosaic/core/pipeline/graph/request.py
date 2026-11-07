@@ -496,8 +496,11 @@ def computed_runs(plan: Plan) -> list[ComputedRun]:
 
     *plan* is planned with the submission's binds: a bound step is the run it
     pins, computes nothing (its status is ``bound``, which is complete), and
-    names the runs below it. A step that is complete or of no resolved
-    ``run_id`` computes none. A feature that fits or
+    names the runs below it. A step that is complete (``PlannedStep.is_complete``)
+    or of no resolved ``run_id`` computes none, and a feature step with drift work
+    computes its run. A step below it shows drift only once that run records new
+    cells and is not listed. The GPU lease gives it a card through its ancestor's
+    run. A feature that fits or
     names its run by its entries, and an op that takes no scope, computes its
     run whole (``ComputedRun.whole``).
     """

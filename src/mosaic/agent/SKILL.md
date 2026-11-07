@@ -531,8 +531,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   threads of every BLAS and OpenMP library while a step is fitted. Propose it to
   the user to check a result reproduces, and run it only when they ask.
 - `mosaic inventory` reports what exists, with coverage and a status such as
-  `partial` or `complete-but-drifted`. `mosaic runs` and `mosaic status` report
-  attempts. A feature run is measured over the entries it was asked for, and
+  `partial` or `complete-but-drifted`. `mosaic pipeline run` recomputes a drifted
+  feature step's moved entries and serves the rest. `mosaic runs` and `mosaic status`
+  report attempts. A feature run is measured over the entries it was asked for, and
   `complete` means it has all of them. A classifier applied through a step scope to
   the test groups is complete when it has the test groups. A run invoked without a
   scope was asked for every entry, and reads `partial` once the dataset gains a
