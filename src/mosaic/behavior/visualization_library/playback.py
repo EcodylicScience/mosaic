@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Optional, Iterable, Any, Tuple
 import cv2
 
+from mosaic.core.media.window_support import require_playback_target
 from mosaic.user_paths import user_path
 
 from .data_loading import load_tracks_and_labels, load_ground_truth_labels
@@ -83,7 +84,7 @@ def play_video(
     pair_box_behaviors: Optional[Iterable[Any]] = None,
     hide_individual_bboxes_for_pair: bool = False,
     output_path: Optional[Path | str] = None,
-    show_window: bool = True,
+    show_window: bool = False,
     window_name: Optional[str] = None,
     visualization_spec: Optional[dict[str, Any]] = None,
     tracks_run_id: Optional[str] = None,
@@ -137,7 +138,11 @@ def play_video(
     output_path : Path or str, optional
         If provided, saves video to this path.
     show_window : bool
-        If True, displays video in a window.
+        If True, displays video in a window. Needs an OpenCV built with a GUI
+        backend (conda-forge ``py-opencv``, not the headless wheel); without one
+        the call raises ``WindowSupportError`` before it reads anything. A call
+        with ``show_window=False`` and no ``output_path`` has nothing to do and
+        raises ``ValueError`` before it reads anything.
     window_name : str, optional
         Name for the display window.
     visualization_spec : dict, optional
@@ -164,6 +169,9 @@ def play_video(
     - d: Step one frame (while paused)
     - s: Save current frame as PNG
     """
+    require_playback_target(
+        "play_video", show_window=show_window, output_path=output_path
+    )
     overlay = overlay_data
     spec_playback = (
         playback_kwargs_from_spec(visualization_spec) if visualization_spec else {}
@@ -290,11 +298,17 @@ def play_video_with_spec(
     group: str,
     sequence: str,
     feature_runs: Dict[str, Optional[str]],
-    visualization_spec: dict,
+    visualization_spec: dict[str, Any],
+    *,
+    show_window: bool = False,
+    output_path: Optional[Path | str] = None,
     **kwargs: Any,
 ) -> Optional[Path]:
     """
     Convenience wrapper: build overlay from tracks/labels + visualization_spec, then play/save.
+
+    A call that shows no window and writes no file, or asks for a window the
+    installed OpenCV cannot open, is refused before the overlay is built.
 
     Any explicit kwargs are forwarded to play_video and override spec playback defaults.
 
@@ -303,6 +317,9 @@ def play_video_with_spec(
     prebuilt one. Left in ``kwargs`` it would reach a parameter that does nothing
     and silently read whichever variant the index happened to resolve.
     """
+    require_playback_target(
+        "play_video_with_spec", show_window=show_window, output_path=output_path
+    )
     overlay, _, _ = build_overlay(
         ds=ds,
         group=group,
@@ -322,5 +339,7 @@ def play_video_with_spec(
         feature_runs=feature_runs,
         overlay_data=overlay,
         visualization_spec=visualization_spec,
+        show_window=show_window,
+        output_path=output_path,
         **kwargs,
     )

@@ -261,7 +261,15 @@ def test_two_tracks_variants_must_be_named(
     _add_variant(ds, "trex.0.1-bbbbbbbbbb", pose=False)
 
     with pytest.raises(ValueError, match="2 variants"):
-        play_video(ds, "", "seq", feature_runs={}, label_kind=None, show_window=False)
+        play_video(
+            ds,
+            "",
+            "seq",
+            feature_runs={},
+            label_kind=None,
+            show_window=False,
+            output_path=tmp_path / "out.mp4",
+        )
 
 
 def test_a_multicamera_sequence_must_name_a_camera(
@@ -284,6 +292,7 @@ def test_a_multicamera_sequence_must_name_a_camera(
             feature_runs={},
             label_kind=None,
             show_window=False,
+            output_path=tmp_path / "out.mp4",
             tracks_run_id="ultralytics.8.4-aaaaaaaaaa",
         )
 

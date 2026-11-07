@@ -133,7 +133,9 @@ class TestPlayVideo:
         with open_frame_reader(written, target="raw") as reader:
             assert sum(1 for _ in reader) == len(_SECOND)
 
-    def test_a_window_outside_the_sequence_is_refused(self, recording: Dataset) -> None:
+    def test_a_window_outside_the_sequence_is_refused(
+        self, recording: Dataset, tmp_path: Path
+    ) -> None:
         with pytest.raises(FrameOutsideSequenceError, match="5 to 8"):
             _ = play_video(
                 recording,
@@ -142,6 +144,7 @@ class TestPlayVideo:
                 feature_runs={},
                 label_kind=None,
                 show_window=False,
+                output_path=tmp_path / "out.mp4",
                 start=0,
                 end=2,
             )

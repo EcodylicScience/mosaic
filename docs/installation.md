@@ -53,10 +53,12 @@ GUI `opencv-python` wheel into the same `cv2` package on every platform when som
 else asks for it. The conda-forge builds avoid both, because they link the environment's
 ffmpeg and one `py-opencv` registers both OpenCV names.
 
-The headless wheel has no window functions: `cv2.imshow` raises `cv2.error`. The
-interactive playback of `play_video` and of pose inference (`show_window=True`, their
-default) needs conda-forge's `py-opencv`, which the install above provides. Without
-it, pass `show_window=False` and write the video to a file.
+The headless wheel has no window functions: `cv2.imshow` raises `cv2.error`. So
+`play_video` and pose inference (`visualize_inference`) show no window unless you pass
+`show_window=True`, which needs conda-forge's `py-opencv`, the build the install above
+provides. With the headless wheel, `show_window=True` raises `WindowSupportError` before
+any work starts. Pass `show_window=False` and write the video to a file with
+`output_path`.
 
 On macOS, install `av` and `py-opencv` from conda-forge, and do not install either one
 with pip afterward. To repair an environment that shows either symptom, remove the

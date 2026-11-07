@@ -15,10 +15,17 @@ mosaic requires `opencv-python-headless>=4.7,<6` instead of `opencv-python`. The
 environment that installed one of them held two builds of `cv2`, and `tests/conftest.py`
 refused to start in it. The headless wheel also links no libGL, so a container without
 a graphics stack imports `cv2`. The wheel has no window functions: `cv2.imshow` raises
-`cv2.error`, so `play_video` and pose inference with `show_window=True`, their default,
-need conda-forge's `py-opencv` (the documented install) or `show_window=False`. A pip
-environment upgraded from an earlier release holds the `opencv-python` wheel, and the
-upgrade installs the headless wheel beside it. Run `pip uninstall opencv-python` first.
+`cv2.error`. So `show_window` of `play_video` and of `visualize_inference` (pose
+inference) now defaults to `False`, where it defaulted to `True`. A call that passes
+`show_window=True` on an OpenCV build with no GUI backend raises `WindowSupportError`
+before it reads anything, and the message says to install a GUI-capable OpenCV
+(conda-forge's `py-opencv`, the documented install) or to pass `show_window=False`. A
+caller that relied on the old default passes `show_window=True`. A call with
+`show_window=False` and no `output_path` has nothing to do, and raises `ValueError`
+before it reads anything instead of decoding the whole video. `show_window` is not a
+parameter of any feature, so no `run_id` moves. A pip environment upgraded from an
+earlier release holds the `opencv-python` wheel, and the upgrade installs the headless
+wheel beside it. Run `pip uninstall opencv-python` first.
 
 The Ultralytics and POLO environments lock torch 2.14.1, torchvision 0.29.1 and triton
 3.8.0, and resolve on Python 3.13 as well as 3.12. Every other pin stays except the

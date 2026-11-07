@@ -25,6 +25,7 @@ from mosaic_media.io import FFmpegVideoWriter
 
 from mosaic.core.media.store_division import StoreWindow
 from mosaic.core.media.video_io import get_video_metadata, open_frame_reader
+from mosaic.core.media.window_support import require_playback_target
 from mosaic.user_paths import user_path
 
 
@@ -233,7 +234,7 @@ def visualize_inference(
     *,
     result_type: str | None = None,
     output_path: str | Path | None = None,
-    show_window: bool = True,
+    show_window: bool = False,
     window_name: str = "Inference",
     start_frame: int = 0,
     frame_step: int = 1,
@@ -275,7 +276,12 @@ def visualize_inference(
         Save annotated video to this path (MP4).  Uses ffmpeg for fast
         H.264 encoding when available, falls back to OpenCV VideoWriter.
     show_window : bool
-        Display video in an OpenCV window with interactive controls.
+        Display video in an OpenCV window with interactive controls. Needs an
+        OpenCV built with a GUI backend (conda-forge ``py-opencv``, not the
+        headless wheel); without one the call raises ``WindowSupportError``
+        before it reads anything. A call with ``show_window=False`` and no
+        ``output_path`` has nothing to do and raises ``ValueError`` before it
+        reads anything.
     window_name : str
         Name for the display window.
     start_frame : int
@@ -320,6 +326,10 @@ def visualize_inference(
     - **d**: Step one frame (while paused)
     - **s**: Save current frame as PNG
     """
+    require_playback_target(
+        "visualize_inference", show_window=show_window, output_path=output_path
+    )
+
     if not results:
         raise ValueError("results list is empty")
 
