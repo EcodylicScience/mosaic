@@ -284,7 +284,7 @@ class GlobalTSNE:
     costly_fit = True  # a superseded-run cleanup keeps its runs
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name: str = "global-tsne"
-    version: str = "0.4"
+    version: str = "0.5"
     parallelizable = False
     scope_dependent = False
     relates: RelatesLevel = "none"

@@ -81,6 +81,37 @@ the same way, and a params-field reference with no index raises the same error.
 `pair-interaction-filter__from__tracks`, where their bare-slug defaults never
 resolved. No run identifier, `version` or golden changes.
 
+**No parameter field is declared unwired.** Each of the eight is wired or
+withdrawn, and the schema publishes no `x-mosaic-unwired`.
+
+- Wired: `ParquetLoadSpec.frame_column` makes the column the loaded table's
+  index, read even when `columns` omits it, and refuses a file without it.
+  `pair-egocentric`'s `center_mode` takes `"mean"` or a keypoint index, read as
+  `neck_idx` is, and refuses any other string. `track-subsample`'s `drop_nan`
+  keeps rows with a non-finite `X`, `Y`, `ANGLE` or pose keypoint out of the
+  output, and under `clips` starts a clip only where all its rows are finite.
+- Versions: `global-kmeans` 0.4 to 0.5, `global-scaler` 0.2 to 0.3,
+  `global-tsne` 0.4 to 0.5, `global-ward` 0.3 to 0.4, `xgboost` 0.4 to 0.5,
+  `pair-egocentric` 0.1 to 0.2 and `track-subsample` 0.2 to 0.3. Every run
+  identifier of those seven features moves in its version prefix, and its digest
+  stays. In the goldens the `global-kmeans`, `global-scaler`, `pair-egocentric`,
+  `track-subsample` and `xgboost` cases of `feature_run_id_golden.json` and
+  `tsne/run_id` of `pipeline_plan_golden.json` move.
+- Withdrawn, labels: `GroundTruthLabelsSource` (and `PredictionsLabelsSource`)
+  no longer takes `source`, `load` or `pattern`. Each is accepted at its old
+  value (`"labels"`, `{"kind": "npz", "key": "labels", "transpose": false}` in
+  any spelling `NpzLoadSpec` reads as that, and `null`), which every recorded
+  `params.json` carries, and refused at any other. `identity_dump` still writes
+  the three at those values, so no labels-consuming run identifier moves and
+  `mosaic reconcile` reports such a run `ok`.
+- Withdrawn and refused: `strict_schema` in a label converter's params (it was
+  `HASH_EXCLUDE`, so no convert-labels variant moves; the track converters'
+  field stays), FERAL's `training.wandb_project`, and `backend="jax"` on `arhmm`
+  (`HASH_EXCLUDE`, so no run identifier moves). A saved recipe or `--params`
+  naming one is refused. FERAL training identities move, and `mosaic reconcile`
+  reports a FERAL run whose recorded params carry `wandb_project` as
+  unresolvable: that run is recomputed rather than re-addressed.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full

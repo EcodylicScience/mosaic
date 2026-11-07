@@ -273,7 +273,8 @@ class XgboostFeature(FitReporting):
     # takes a mapping, ``n_jobs`` bounds the threads of a fit, and the bundle is
     # written atomically. A 0.2 bundle still loads through ``model``.
     # 0.4: ``device`` picks the CPU or a CUDA device for a fit.
-    version = "0.4"
+    # 0.5: a templates ``frame_column`` becomes the templates' index.
+    version = "0.5"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"

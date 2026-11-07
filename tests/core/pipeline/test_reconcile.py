@@ -18,6 +18,7 @@ from typing import ClassVar
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import Field
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.appearance import appearance_path, read_appearance
@@ -43,7 +44,9 @@ from mosaic.core.pipeline.tracks_identity import (
 )
 from mosaic.core.pipeline.tracks_index import tracks_index, tracks_index_path
 from mosaic.core.pipeline.types import (
+    EmitsLevel,
     Feature,
+    GroundTruthLabelsSource,
     InputRequire,
     Inputs,
     InputStream,
@@ -52,35 +55,26 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 
-from tests.helpers import add_tracks_variant
+from tests.helpers import add_labels, add_tracks_variant
 
 
-class _ReconcileFeature:
-    """A minimal per-frame feature that reads tracks -- registered for each test.
+class _TracksFeature:
+    """A minimal per-frame feature that reads tracks, without its params.
 
-    Follows the uniform ``FeatureCls(inputs, params)`` constructor the reconciler
-    rebuilds through, unlike the workflow tests' local features.
+    Each subclass declares ``Params`` and the uniform
+    ``FeatureCls(inputs, params)`` constructor the reconciler rebuilds through,
+    unlike the workflow tests' local features.
     """
 
-    name = "reconcile-test"
     version = "0.1"
     parallelizable = True
     scope_dependent = False
-    consumed_roots: ClassVar[tuple[str, ...]] = ()
+    accepts_overlap = False
+    emits: EmitsLevel = "as-input"
+    consumed_roots: tuple[str, ...] = ()
 
     class Inputs(Inputs[TrackInput]):
         _require: ClassVar[InputRequire] = "any"
-
-    class Params(Params):
-        pass
-
-    def __init__(
-        self,
-        inputs: "Inputs[TrackInput] | None" = None,
-        params: dict[str, object] | None = None,
-    ) -> None:
-        self.inputs = inputs if inputs is not None else self.Inputs(("tracks",))
-        self.params = self.Params.from_overrides(params)
 
     def load_state(
         self,
@@ -99,6 +93,23 @@ class _ReconcileFeature:
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame({"frame": df["frame"], "value": df["feat_a"] * 2})
+
+
+class _ReconcileFeature(_TracksFeature):
+    """The test feature, with no params -- registered for each test."""
+
+    name = "reconcile-test"
+
+    class Params(Params):
+        pass
+
+    def __init__(
+        self,
+        inputs: "Inputs[TrackInput] | None" = None,
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs = inputs if inputs is not None else self.Inputs(("tracks",))
+        self.params = self.Params.from_overrides(params)
 
 
 @pytest.fixture
@@ -755,3 +766,59 @@ def test_a_relocated_run_keeps_the_neighbors_each_entry_read(
         "seq_a": "neighbors-of-seq_a",
         "seq_b": "neighbors-of-seq_b",
     }
+
+
+# --- Recorded params of a labels source -------------------------------------
+
+
+class _LabelsReconcileFeature(_TracksFeature):
+    """The reconcile test feature, with a labels source among its params."""
+
+    name = "reconcile-labels-test"
+
+    class Params(Params):
+        labels: GroundTruthLabelsSource = Field(default_factory=GroundTruthLabelsSource)
+
+    def __init__(
+        self,
+        inputs: "Inputs[TrackInput] | None" = None,
+        params: dict[str, object] | None = None,
+    ) -> None:
+        self.inputs = inputs if inputs is not None else self.Inputs(("tracks",))
+        self.params = self.Params.from_overrides(params)
+
+
+def test_a_run_recording_the_withdrawn_labels_keys_reconciles_as_ok(
+    scenario_dataset: Dataset,
+) -> None:
+    """A run whose ``params.json`` spells ``source``, ``load`` and ``pattern`` rebuilds.
+
+    Every labels source recorded those three keys at one value, and a run that
+    recorded them keeps the identifier it was computed under.
+    """
+    from mosaic.behavior.feature_library.registry import FEATURES
+
+    ds = scenario_dataset
+    for sequence in ("seq_a", "seq_b"):
+        _ = add_labels(ds, "", sequence, [(0, 0, 1, 0)])
+    FEATURES[_LabelsReconcileFeature.__name__] = _LabelsReconcileFeature
+    try:
+        run_id = run_feature(ds, _LabelsReconcileFeature()).run_id
+        assert run_id is not None
+        params_path = _run_root(ds, run_id) / "params.json"
+        recorded = json.loads(params_path.read_text())
+        recorded["_params"]["labels"].update(
+            {
+                "source": "labels",
+                "load": {"kind": "npz", "key": "labels", "transpose": False},
+                "pattern": None,
+            }
+        )
+        params_path.write_text(json.dumps(recorded))
+
+        report = ds.reconcile(only=("features",))
+    finally:
+        _ = FEATURES.pop(_LabelsReconcileFeature.__name__, None)
+
+    _only_finding(report, "ok")
+    assert report.findings[0].old_address == report.findings[0].new_address

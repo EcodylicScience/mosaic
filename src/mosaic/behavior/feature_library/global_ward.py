@@ -100,7 +100,7 @@ class GlobalWardClustering:
     costly_fit = False  # cheap to refit, so a cleanup may remove a superseded run
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     name = "global-ward"
-    version = "0.3"
+    version = "0.4"
     parallelizable = False
     scope_dependent = False
     relates: RelatesLevel = "none"

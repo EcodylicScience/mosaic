@@ -98,7 +98,8 @@ class GlobalScaler:
     name = "global-scaler"
     # 0.2: the output keeps the identity and bookkeeping columns and the fitted
     # columns, and drops every other payload column.
-    version = "0.2"
+    # 0.3: a templates ``frame_column`` becomes the templates' index.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"

@@ -1,6 +1,7 @@
 """Leaf module: load-spec models and load_from_spec() dispatcher.
 
-No internal pipeline imports -- both types.py and loading.py import from here.
+Imports only the ``parquet_reader`` leaf from the pipeline -- both types.py and
+loading.py import from here.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.params import Declared, DeclaredModel
+from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
 
 _KIND_DESCRIPTION = (
     "Fixed tag identifying this load specification's format. Selects the "
@@ -41,11 +43,11 @@ _PARQUET_NUMERIC_ONLY_DESCRIPTION = (
     "Keep only numeric-dtype columns. Ignored when columns is set."
 )
 
-_PARQUET_FRAME_COLUMN_DESCRIPTION = "Column meant to be extracted as frame indices."
-
-_PARQUET_FRAME_COLUMN_UNWIRED = (
-    "no code path reads this field -- load_from_spec's ParquetLoadSpec case "
-    "does not destructure it, and nothing else reads spec.frame_column"
+_PARQUET_FRAME_COLUMN_DESCRIPTION = (
+    "Column that becomes the table's index, read even when columns does not "
+    "list it. It leaves the table's values before drop_columns, numeric_only "
+    "and transpose apply. A file without it is refused. Unset keeps the "
+    "table's own index."
 )
 
 _JOBLIB_KEY_DESCRIPTION = (
@@ -71,12 +73,9 @@ class ParquetLoadSpec(DeclaredModel):
         list[str] | None, Declared(_PARQUET_DROP_COLUMNS_DESCRIPTION)
     ] = None
     numeric_only: Annotated[bool, Declared(_PARQUET_NUMERIC_ONLY_DESCRIPTION)] = True
-    frame_column: Annotated[
-        str | None,
-        Declared(
-            _PARQUET_FRAME_COLUMN_DESCRIPTION, unwired=_PARQUET_FRAME_COLUMN_UNWIRED
-        ),
-    ] = None
+    frame_column: Annotated[str | None, Declared(_PARQUET_FRAME_COLUMN_DESCRIPTION)] = (
+        None
+    )
 
 
 class JoblibLoadSpec(DeclaredModel):
@@ -133,8 +132,19 @@ def load_from_spec(
             drop_columns=drop_columns,
             numeric_only=numeric_only,
             transpose=transpose,
+            frame_column=frame_column,
         ):
-            df = pd.read_parquet(path, columns=columns)
+            read_columns = columns
+            if frame_column is not None:
+                names = read_parquet_column_names(path)
+                if names is not None and frame_column not in names:
+                    msg = f"frame_column {frame_column!r} is not a column of {path}"
+                    raise ValueError(msg)
+                if columns is not None and frame_column not in columns:
+                    read_columns = [*columns, frame_column]
+            df = pd.read_parquet(path, columns=read_columns)
+            if frame_column is not None:
+                df = df.set_index(frame_column)
             if drop_columns:
                 df = df.drop(columns=set(drop_columns) & set(df.columns))
             if columns is None and numeric_only:

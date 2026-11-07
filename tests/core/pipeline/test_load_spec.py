@@ -14,6 +14,7 @@ from mosaic.core.pipeline.types import (
     NpzLoadSpec,
     ParquetLoadSpec,
     Result,
+    load_from_spec,
 )
 
 
@@ -155,3 +156,50 @@ class TestLoadParquetDataFrame:
         spec = NpzLoadSpec(key="features")
         df = load_parquet_dataframe(npz_path, spec)
         assert df is None
+
+
+class TestParquetFrameColumn:
+    """``ParquetLoadSpec.frame_column`` turns one column into the table's index."""
+
+    def test_a_frame_column_becomes_the_frame_index(self, tmp_path: Path) -> None:
+        path = tmp_path / "frames.parquet"
+        pd.DataFrame(
+            {"frame": [10, 11, 12], "a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}
+        ).to_parquet(path, index=False)
+
+        indexed = load_from_spec(path, ParquetLoadSpec(frame_column="frame"))
+        as_read = load_from_spec(path, ParquetLoadSpec())
+
+        assert isinstance(indexed, pd.DataFrame)
+        assert indexed.index.name == "frame"
+        assert list(indexed.index) == [10, 11, 12]
+        assert list(indexed.columns) == ["a", "b"]
+        assert isinstance(as_read, pd.DataFrame)
+        assert list(as_read.columns) == ["frame", "a", "b"]
+
+    def test_an_unset_frame_column_leaves_the_table_as_read(
+        self, parquet_path: Path
+    ) -> None:
+        loaded = load_from_spec(parquet_path, ParquetLoadSpec())
+
+        assert isinstance(loaded, pd.DataFrame)
+        assert list(loaded.index) == [0, 1, 2]
+        assert list(loaded.columns) == ["frame", "id", "feat_a", "feat_b"]
+
+    def test_a_frame_column_outside_columns_is_read_for_the_index(
+        self, parquet_path: Path
+    ) -> None:
+        spec = ParquetLoadSpec(columns=["feat_a"], frame_column="frame")
+
+        loaded = load_from_spec(parquet_path, spec)
+
+        assert isinstance(loaded, pd.DataFrame)
+        assert loaded.index.name == "frame"
+        assert list(loaded.index) == [0, 1, 2]
+        assert list(loaded.columns) == ["feat_a"]
+
+    def test_a_missing_frame_column_is_refused(self, parquet_path: Path) -> None:
+        spec = ParquetLoadSpec(frame_column="time")
+
+        with pytest.raises(ValueError, match=r"'time'.*data\.parquet"):
+            _ = load_from_spec(parquet_path, spec)

@@ -63,9 +63,9 @@ _DEFAULT_FPS_DESCRIPTION = "Frame rate recorded in each sequence's payload."
 class MyLabelParams(LabelConvertParams):
     """Parameters for :class:`MyLabelConverter`.
 
-    ``group_from`` and ``strict_schema`` are already declared on
+    ``group_from`` is already declared on
     :class:`~mosaic.core.label_converter.LabelConvertParams` -- do not redeclare
-    them. Add only what this format needs.
+    it. Add only what this format needs.
 
     A field that changes the labels is a plain (hashed) field: it is part of the
     label variant identity, so two conversions that differ in it mint two

@@ -148,8 +148,7 @@ from mosaic.core.params import HASH_EXCLUDE
 
 
 class MyParams(LabelConvertParams):
-    # group_from and strict_schema are ALREADY on LabelConvertParams -- do not
-    # redeclare them.
+    # group_from is ALREADY on LabelConvertParams -- do not redeclare it.
 
     fps: float = 30.0  # Hashed: changes the labels.
     background_label: str = "none"  # Hashed.
@@ -162,9 +161,8 @@ class MyParams(LabelConvertParams):
 - **`HASH_EXCLUDE` fields are not.** A validation-only or throughput-only knob is
   tagged `Annotated[T, HASH_EXCLUDE]`, so retuning it never busts the cache. It
   still appears in `params.json` and reaches the converter.
-- **`group_from` and `strict_schema` live on the base** and are already excluded
-  from identity -- `group_from` is entry policy (which group string to assign),
-  `strict_schema` is validation strictness. Do not redeclare them.
+- **`group_from` lives on the base** and is already excluded from identity, since
+  it is entry policy (which group string to assign). Do not redeclare it.
 
 ### `convert()` Returns `list[LabelEntry]`
 

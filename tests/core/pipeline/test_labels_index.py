@@ -9,9 +9,8 @@ from typing import ClassVar, override
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import TypeAdapter, ValidationError
 
-from mosaic.behavior import label_library
-from mosaic.core import dataset as dataset_module
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import place_label_payload
 from mosaic.core.label_converter import (
@@ -29,16 +28,19 @@ from mosaic.core.pipeline.labels_index import (
     write_labels_row,
 )
 from mosaic.core.pipeline.sequence_index import write_sequence_compositions
+from mosaic.core.pipeline.types import (
+    GroundTruthLabelsSource,
+    LabelsSourceSpec,
+    NpzLoadSpec,
+    ResultColumn,
+)
 from tests.helpers import (
     ListedEntries,
     SharedKeyRefusingEntries,
     add_track_sequences,
     add_tracks_table,
     calms21_dataset,
-    functions_named,
     make_dataset,
-    names_read,
-    source_tree,
     track_table,
     tree_snapshot,
     write_listed_entries,
@@ -536,42 +538,68 @@ def test_the_label_registry_fills_without_an_explicit_import() -> None:
     assert "OK" in proc.stdout
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="LabelConvertParams.strict_schema is declared but never read",
+def test_a_label_converter_refuses_strict_schema() -> None:
+    with pytest.raises(ValidationError, match="strict_schema"):
+        _ = LabelConvertParams.model_validate({"strict_schema": True})
+
+
+@pytest.mark.parametrize(
+    "withdrawn",
+    [
+        {"source": "other"},
+        {"load": {"kind": "parquet"}},
+        {"pattern": "*.npz"},
+    ],
+    ids=["source", "load", "pattern"],
 )
-def test_the_label_conversion_reads_strict_schema() -> None:
-    """The record for a parameter the label path declares and never consults.
+def test_a_ground_truth_labels_source_refuses_a_withdrawn_key_at_another_value(
+    withdrawn: dict[str, object],
+) -> None:
+    [key] = withdrawn
+    with pytest.raises(ValidationError, match=f"{key}.*withdrawn"):
+        _ = GroundTruthLabelsSource.model_validate({"kind": "behavior", **withdrawn})
 
-    ``TrackConvertParams.strict_schema`` is read three times, each time as
-    ``ensure_track_schema(strict=...)``. ``LabelConvertParams`` declares a field
-    of the same name, and no label path validates a schema at all, so nothing
-    reads it -- a client drawing a form from the schema offers a strictness
-    toggle that changes nothing. Whether labels should have a schema to be
-    strict about is the maintainer's call, so the field stays and carries an
-    ``unwired`` record.
 
-    Scanned across both places a reader could plausibly sit -- the conversion
-    method and every registered converter -- rather than asserted at one call
-    site, so that wiring it anywhere retires the marker. The scan counts a read
-    only off the names a converter's params are bound to, since ``strict_schema``
-    is reached as ``conv_params.strict_schema`` on the tracks side and every
-    converter here names its own ``params``. ``strict`` is what retires it: the
-    day something reads the field this xpasses and the suite fails until the
-    marker is deleted.
-    """
-    trees = functions_named(dataset_module, ["convert_all_labels"])
-    library = Path(label_library.__file__ or "").parent
-    for module_path in sorted(library.glob("*.py")):
-        trees.append(source_tree(module_path))
+def test_a_ground_truth_labels_source_drops_the_withdrawn_keys_at_their_old_values() -> (
+    None
+):
+    recorded = {
+        "kind": "behavior",
+        "source": "labels",
+        "load": {"kind": "npz", "key": "labels", "transpose": False},
+        "pattern": None,
+    }
 
-    reads = names_read(
-        trees,
-        owners={"params", "conv_params", "label_params", "p", "self.params"},
-        destructured_classes={"LabelConvertParams"},
+    assert GroundTruthLabelsSource.model_validate(recorded) == GroundTruthLabelsSource(
+        kind="behavior"
     )
 
-    assert "strict_schema" in reads
+
+@pytest.mark.parametrize(
+    "load",
+    [{"key": "labels"}, NpzLoadSpec(key="labels")],
+    ids=["defaults-omitted", "model"],
+)
+def test_a_recorded_load_counts_as_the_old_value_however_it_is_spelled(
+    load: object,
+) -> None:
+    validated = GroundTruthLabelsSource.model_validate(
+        {"kind": "behavior", "load": load}
+    )
+
+    assert validated == GroundTruthLabelsSource(kind="behavior")
+
+
+def test_a_labels_source_spec_tells_its_members_apart() -> None:
+    adapter: TypeAdapter[LabelsSourceSpec] = TypeAdapter(LabelsSourceSpec)
+
+    assert isinstance(
+        adapter.validate_python({"kind": "behavior"}), GroundTruthLabelsSource
+    )
+    assert isinstance(adapter.validate_python({}), GroundTruthLabelsSource)
+    assert isinstance(
+        adapter.validate_python({"feature": "f", "column": "c"}), ResultColumn
+    )
 
 
 def test_convert_all_labels_reports_written_and_skipped(tmp_path: Path) -> None:

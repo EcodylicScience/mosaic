@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Annotated, ClassVar, Literal, final
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 from pydantic import Field
 
@@ -63,7 +64,16 @@ _CLIP_LEN_DESCRIPTION = "The clip length, for method=clips. Ignored otherwise."
 
 _SEED_DESCRIPTION = "The random seed for k-means."
 
-_DROP_NAN_DESCRIPTION = "Drop rows with non-finite required columns from the output."
+_DROP_NAN_DESCRIPTION = (
+    "Keep rows with a non-finite required column out of the output. The "
+    "required columns are X, Y, ANGLE and the pose keypoints below pose.pose_n, "
+    "each where the table has it. kmeans and uniform drop those rows before "
+    "choosing, and so before returning an input of at most target_frames rows "
+    "whole. clips returns whole, less those rows, only an input shorter than "
+    "clip_len. Otherwise it keeps the frame axis whole and starts a clip only "
+    "where its clip_len rows are all finite, so each clip stays on consecutive "
+    "frames, and a table with no such start emits no clip."
+)
 
 
 @final
@@ -89,9 +99,13 @@ class TrackSubsample:
 
     Frames with NaN ``ANGLE`` / ``X`` / ``Y`` / required keypoints are
     excluded from k-means clustering (they cannot be canonicalized),
-    independent of ``drop_nan``. ``drop_nan`` is not read by ``apply()``
-    and has no effect. When ``len(df) <= target_frames`` the input is
-    returned unchanged.
+    independent of ``drop_nan``. With ``drop_nan`` (the default) no output
+    row has a non-finite value in one of those columns. ``"kmeans"`` and
+    ``"uniform"`` drop such rows first, and return the rest whole when no
+    more than ``target_frames`` remain. ``"clips"`` returns the rest whole
+    only for an input shorter than ``clip_len``. Otherwise it selects clips,
+    starting one only where all ``clip_len`` of its rows are finite, so a
+    clip never spans the gap a dropped row would leave.
 
     Output preserves all input columns -- only row count changes.
 
@@ -111,7 +125,8 @@ class TrackSubsample:
 
     category = "per-frame"
     name = "track-subsample"
-    version = "0.2"
+    # 0.3: drop_nan keeps rows with a non-finite required column out of the output.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -141,16 +156,7 @@ class TrackSubsample:
             default_factory=PoseConfig
         )
         seed: Annotated[int, Declared(_SEED_DESCRIPTION)] = 42
-        drop_nan: Annotated[
-            bool,
-            Declared(
-                _DROP_NAN_DESCRIPTION,
-                unwired=(
-                    "no code path reads it; apply() emits whatever rows the "
-                    "chosen method selects"
-                ),
-            ),
-        ] = True
+        drop_nan: Annotated[bool, Declared(_DROP_NAN_DESCRIPTION)] = True
 
     def __init__(
         self,
@@ -183,15 +189,15 @@ class TrackSubsample:
             return df
 
         p = self.params
+        finite = self._finite_rows(df)
 
-        if p.method == "uniform":
+        if p.method != "clips":
+            if p.drop_nan:
+                df = df[finite]
             if len(df) <= p.target_frames:
                 return df.reset_index(drop=True)
-            return self._uniform(df, p.target_frames)
-
-        if p.method == "kmeans":
-            if len(df) <= p.target_frames:
-                return df.reset_index(drop=True)
+            if p.method == "uniform":
+                return self._uniform(df, p.target_frames)
             seeds = self._kmeans_seeds(df, p.target_frames)
             if seeds is None:
                 return self._uniform(df, p.target_frames)
@@ -200,7 +206,8 @@ class TrackSubsample:
         # method == "clips": pick K seeds, expand each to clip_len consecutive frames.
         n_clips = max(1, p.target_frames // p.clip_len)
         if len(df) < p.clip_len:
-            return df.reset_index(drop=True)
+            short = df[finite] if p.drop_nan else df
+            return short.reset_index(drop=True)
 
         # If video is just barely long enough, fall back to as-many-clips-as-fit.
         n_clips = min(n_clips, len(df) // p.clip_len)
@@ -216,31 +223,62 @@ class TrackSubsample:
         # Snap each seed into [0, len(df)-clip_len].
         max_start = len(df) - p.clip_len
         snapped = sorted(min(max(int(s), 0), max_start) for s in seeds)
+        kept = finite if p.drop_nan else np.ones(len(df), dtype=np.bool_)
+        starts = self._clip_starts(kept, p.clip_len)
 
-        # Greedy disjoint: when a seed's [s, s+clip_len) overlaps the previous
-        # span, snap it forward to start exactly at the previous span's end.
-        # If snapping forward exceeds max_start, drop the seed. The resulting
-        # spans are strictly non-overlapping, so the downstream sorted-glob +
-        # non-overlapping sliding window aligns each span 1:1 with one clip.
+        # Greedy disjoint: each seed moves forward to the first valid start at
+        # or after both itself and the previous span's end, and a seed with
+        # none is dropped. The resulting spans are strictly non-overlapping, so
+        # the downstream sorted-glob + non-overlapping sliding window aligns
+        # each span 1:1 with one clip.
         disjoint: list[int] = []
-        last_end = -1
+        last_end = 0
         for s in snapped:
-            if s < last_end:
-                s = last_end
-            if s + p.clip_len > len(df):
+            at = int(np.searchsorted(starts, max(s, last_end)))
+            if at == len(starts):
                 break
-            disjoint.append(s)
-            last_end = s + p.clip_len
+            start = int(starts[at])
+            disjoint.append(start)
+            last_end = start + p.clip_len
 
-        # If everything collapsed (extreme overlap), at least emit one clip
-        # at row 0 so EgocentricCrop has something to work with.
-        if not disjoint:
-            disjoint = [0] if max_start >= 0 else []
+        # If everything collapsed (extreme overlap), at least emit the first
+        # valid clip so EgocentricCrop has something to work with.
+        if not disjoint and len(starts):
+            disjoint = [int(starts[0])]
 
         keep_rows: list[int] = []
         for s in disjoint:
             keep_rows.extend(range(s, s + p.clip_len))
         return df.iloc[keep_rows].reset_index(drop=True)
+
+    def _finite_rows(self, df: pd.DataFrame) -> npt.NDArray[np.bool_]:
+        """Whether each row of *df* is finite in every required column it has.
+
+        The required columns are ``X``, ``Y``, ``ANGLE`` and the pose keypoints
+        below ``pose.pose_n``, the columns :meth:`_kmeans_seeds` reads.
+        """
+        pose = self.params.pose
+        required = [COLUMNS.x_col, COLUMNS.y_col, COLUMNS.orientation_col]
+        for i in range(pose.pose_n):
+            required += [f"{pose.x_prefix}{i}", f"{pose.y_prefix}{i}"]
+        present = [column for column in required if column in df.columns]
+        values = df[present].to_numpy(dtype=np.float64)
+        return np.isfinite(values).all(axis=1)
+
+    @staticmethod
+    def _clip_starts(
+        finite: npt.NDArray[np.bool_], clip_len: int
+    ) -> npt.NDArray[np.intp]:
+        """The rows a clip of *clip_len* rows may start at, ascending.
+
+        A start is valid when all *clip_len* rows from it are *finite*.
+        """
+        n_starts = len(finite) - clip_len + 1
+        if n_starts <= 0:
+            return np.empty(0, dtype=np.intp)
+        not_finite = np.concatenate(([0], np.cumsum(~finite)))
+        clean = not_finite[clip_len : clip_len + n_starts] == not_finite[:n_starts]
+        return np.flatnonzero(clean)
 
     @staticmethod
     def _uniform(df: pd.DataFrame, target_frames: int) -> pd.DataFrame:

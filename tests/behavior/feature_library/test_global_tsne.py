@@ -65,7 +65,7 @@ class TestFitAndSave:
         assert "feature_columns" in bundle
         assert "version" in bundle
         assert bundle["feature_columns"] == [f"feat_{i}" for i in range(5)]
-        assert bundle["version"] == "0.4"
+        assert bundle["version"] == "0.5"
 
     def test_template_coords_shape(self, tmp_path: Path) -> None:
         feat = _fit_feature(tmp_path, n_templates=80)

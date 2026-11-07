@@ -67,9 +67,9 @@ _BACKGROUND_LABEL_DESCRIPTION = "The label assigned when no behavior is annotate
 class CustomLabelParams(LabelConvertParams):
     """Parameters for :class:`CustomLabelConverter`.
 
-    ``group_from`` and ``strict_schema`` are already declared on
+    ``group_from`` is already declared on
     :class:`~mosaic.core.label_converter.LabelConvertParams` -- do not redeclare
-    them. Fields that change the labels are plain (hashed) fields, part of the
+    it. Fields that change the labels are plain (hashed) fields, part of the
     label variant identity; validation-only or throughput-only knobs are tagged
     ``HASH_EXCLUDE`` so retuning them never mints a new variant.
     """

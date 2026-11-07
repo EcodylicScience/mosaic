@@ -261,8 +261,7 @@ description, so an entry here would be a field reaching a client unlabelled."""
 # 488, when the label strict_schema and two template verbose fields were found
 # carrying descriptions no source supported: an honest placeholder counts here
 # where a false description did not. All three are settled -- strict_schema
-# describes what it would mean and declares that nothing reads it, and the
-# templates describe theirs -- so nothing is owed.
+# is withdrawn, and the templates describe theirs -- so nothing is owed.
 UNDOCUMENTED_CEILING = 0
 """Only ever lowered. Counts every field a client cannot draw a label for.
 
@@ -1182,6 +1181,10 @@ KEYPOINT_FIELDS: dict[tuple[str, str], KeypointKind] = {
         "tail_base_idx",
     ): "index",
     (
+        f"{_FEATURES}.pair_egocentric.PairEgocentricFeatures.Params",
+        "center_mode",
+    ): "index",
+    (
         f"{_FEATURES}.pair_interaction_filter.PairInteractionFilter.Params",
         "pose_head_index",
     ): "index",
@@ -1244,10 +1247,6 @@ NOT_KEYPOINT_FIELDS: dict[tuple[str, str], str] = {
         "the MissingKeypointsCriterion model, whose own keypoints field is marked"
     ),
     ("mosaic.tracking.trex.params.TrexParams", "detect_keypoint_count"): "a count",
-    (
-        f"{_FEATURES}.pair_egocentric.PairEgocentricFeatures.Params",
-        "center_mode",
-    ): "a mode string that no code reads as a keypoint",
 }
 """Fields whose names look like a keypoint's, with why each holds none."""
 
@@ -1337,6 +1336,11 @@ def test_a_keypoint_kind_agrees_with_its_field_type(
     assert (takes_a_name, takes_an_index) == expected, (
         f"{model_name}.{field} is declared {kind!r} and admits {sorted(map(str, leaves))}"
     )
+
+
+def test_no_field_is_both_a_keypoint_field_and_exempt() -> None:
+    """A field is listed as holding keypoints or as holding none, never both."""
+    assert not set(KEYPOINT_FIELDS) & set(NOT_KEYPOINT_FIELDS)
 
 
 def test_every_keypoint_named_field_is_declared_or_exempt() -> None:

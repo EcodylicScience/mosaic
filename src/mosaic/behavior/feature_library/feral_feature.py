@@ -404,10 +404,6 @@ _MULTILABEL_THRESHOLD_DESCRIPTION = (
     "only when the label JSON is multilabel."
 )
 
-_WANDB_PROJECT_DESCRIPTION = (
-    "The Weights & Biases project name recorded in the saved training config."
-)
-
 
 class FeralTrainingConfig(DeclaredModel):
     """Training hyperparameters for FERAL ViT fine-tuning.
@@ -452,16 +448,6 @@ class FeralTrainingConfig(DeclaredModel):
     multilabel_threshold: Annotated[
         float, Declared(_MULTILABEL_THRESHOLD_DESCRIPTION)
     ] = Field(default=0.85, ge=0, le=1)
-    wandb_project: Annotated[
-        str | None,
-        Declared(
-            _WANDB_PROJECT_DESCRIPTION,
-            unwired=(
-                "Stored in the saved config; nothing in this file starts a "
-                "Weights & Biases run with it."
-            ),
-        ),
-    ] = None
 
 
 @final
@@ -894,7 +880,6 @@ class FeralFeature:
             "seed": tc.seed,
             "part_sample": tc.part_sample,
             "multilabel_threshold": tc.multilabel_threshold,
-            "wandb_project": tc.wandb_project,
         }
         self._config = cfg
 

@@ -107,7 +107,7 @@ class TestFitAndSave:
         assert "feature_columns" in bundle
         assert "version" in bundle
         assert bundle["feature_columns"] == ["feat_0", "feat_1"]
-        assert bundle["version"] == "0.2"
+        assert bundle["version"] == "0.3"
 
 
 class TestApply:

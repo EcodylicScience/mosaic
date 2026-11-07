@@ -152,8 +152,7 @@ _BACKEND_DESCRIPTION = (
     "The compute backend for EM and Viterbi decoding. auto uses the "
     "numba-compiled path when available and falls back to numpy. numba "
     "requests the compiled path but still falls back to numpy if it "
-    "raises. numpy forces the plain path. jax is reserved for a future "
-    "GPU path and is not implemented yet."
+    "raises. numpy forces the plain path."
 )
 
 
@@ -285,7 +284,7 @@ class ArHmmFeature:
         # HASH_EXCLUDE: backends are numerically equivalent, so this is dropped
         # from the run_id hash (a numpy run and a numba run share one cache entry).
         backend: Annotated[
-            Literal["auto", "numpy", "numba", "jax"],
+            Literal["auto", "numpy", "numba"],
             HASH_EXCLUDE,
             Declared(_BACKEND_DESCRIPTION),
         ] = "auto"
@@ -478,16 +477,9 @@ class ArHmmFeature:
         """Resolve the compute backend.
 
         ``"auto"`` prefers the numba path (a core dependency) and falls back to
-        numpy if numba can't be imported.  ``"jax"`` is reserved for a future GPU
-        path and raises until implemented.
+        numpy if numba can't be imported.
         """
         b = self.params.backend
-        if b == "jax":
-            msg = (
-                "backend='jax' (GPU) is not yet implemented for arhmm; use "
-                "'numba' (default) for the accelerated CPU path, or 'numpy'."
-            )
-            raise NotImplementedError(msg)
         if b in ("numpy", "numba"):
             return b
         try:  # auto

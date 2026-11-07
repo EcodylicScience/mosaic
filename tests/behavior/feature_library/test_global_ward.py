@@ -66,7 +66,7 @@ class TestFitAndSave:
         assert "feature_columns" in bundle
         assert "version" in bundle
         assert bundle["feature_columns"] == [f"feat_{i}" for i in range(5)]
-        assert bundle["version"] == "0.3"
+        assert bundle["version"] == "0.4"
         assert len(bundle["cluster_ids"]) == 5
 
     def test_linkage_matrix_shape(self, tmp_path: Path) -> None:

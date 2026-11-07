@@ -164,7 +164,7 @@ class GlobalKMeansClustering:
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     gpu_when = GpuWhen(field="device", values=("cuda",))  # a GPU lane only on cuda
     name: str = "global-kmeans"
-    version: str = "0.4"
+    version: str = "0.5"
     parallelizable = False
     scope_dependent = False
     relates: RelatesLevel = "none"

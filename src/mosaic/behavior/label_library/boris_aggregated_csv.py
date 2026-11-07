@@ -69,8 +69,8 @@ class BorisAggregatedCSVParams(LabelConvertParams):
     the file is read and how times become frames, the column names select which
     columns are parsed, and the id maps and ``background_label`` decide which
     events survive and which individual IDs they carry -- so all are hashed.
-    ``group_from`` and ``strict_schema`` (on the base) are entry policy and
-    validation strictness, and are excluded from identity there.
+    ``group_from`` (on the base) is entry policy, and is excluded from identity
+    there.
     """
 
     delimiter: Annotated[str, Declared(_DELIMITER_DESCRIPTION)] = "\t"

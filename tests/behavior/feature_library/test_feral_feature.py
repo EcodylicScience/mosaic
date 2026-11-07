@@ -12,9 +12,11 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from mosaic.behavior.feature_library.feral_feature import (
     FeralFeature,
+    FeralTrainingConfig,
     _check_feral,
     _load_checkpoint_state_dict,
     _resolve_dataset_path,
@@ -255,3 +257,8 @@ class TestResolveBackboneKey:
 
         with pytest.raises(ValueError, match="Unknown FERAL backbone"):
             _resolve_backbone_key("not-a-real-backbone")
+
+
+def test_the_training_config_refuses_wandb_project() -> None:
+    with pytest.raises(ValidationError, match="wandb_project"):
+        _ = FeralTrainingConfig.model_validate({"wandb_project": "behavior"})

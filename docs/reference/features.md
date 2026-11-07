@@ -203,40 +203,11 @@ Read a label kind of predictions onto the rows of one input.
 | `predictions` | `PredictionsLabelsSource` | _constructed_ |  | The label kind of predictions read onto the rows, predictions unless set, resolved from labels/<kind>/index.csv, where a {step: <id>} reference names a convert-labels step and pins the variant it writes. |
 | `missing_predictions` | `"null"` \| `"error"` | `"null"` |  | What an entry without a file of the variant writes: null writes its rows without a prediction, and error fails the entry. |
 
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
-
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
-??? note "`ParquetLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
-    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
-    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
-    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
-
 ??? note "`PredictionsLabelsSource`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"predictions"` | min length `1` | Which labels/<kind> subdirectory the predictions resolve to. Defaults to predictions; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
@@ -394,7 +365,7 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
 
 ### `pair-egocentric`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures`
 
 Egocentric and kinematic features of every pair, from pose keypoints.
 
@@ -405,7 +376,7 @@ Egocentric and kinematic features of every pair, from pose keypoints.
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `neck_idx` | `integer` | `3` |  | Index of the neck keypoint in the pose array. Paired with tail_base_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. It must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
 | `tail_base_idx` | `integer` | `6` |  | Index of the tail-base keypoint in the pose array. Paired with neck_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. It must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
-| `center_mode` | `string` | `"mean"` |  | How the animal's center point is computed from its pose keypoints. Every accepted value averages all keypoints. Selecting a single keypoint by index needs an integer, which this field does not accept. **Unwired:** every accepted value averages all keypoints -- the per-keypoint branch needs an int this field refuses. |
+| `center_mode` | `"mean"` \| `integer` | `"mean"` |  | How the animal's center point is computed from its pose keypoints. mean averages every selected keypoint. An integer centers the animal on one keypoint, read as neck_idx is: it must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
 
 ??? note "`InterpolationConfig`"
 
@@ -654,7 +625,7 @@ Smooth a classifier's class probabilities along consecutive frames.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`ThresholdsArtifact`"
 
@@ -714,7 +685,7 @@ Build temporal context windows over per-sequence feature data.
 
 ### `track-subsample`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSubsample`
+Version `0.3` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSubsample`
 
 Subsample tracks rows for downstream per-row features.
 
@@ -725,7 +696,7 @@ Subsample tracks rows for downstream per-row features.
 | `clip_len` | `integer` | `8` | >= `2` | The clip length, for method=clips. Ignored otherwise. [frames] |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `seed` | `integer` | `42` |  | The random seed for k-means. |
-| `drop_nan` | `boolean` | `true` |  | Drop rows with non-finite required columns from the output. **Unwired:** no code path reads it; apply() emits whatever rows the chosen method selects. |
+| `drop_nan` | `boolean` | `true` |  | Keep rows with a non-finite required column out of the output. The required columns are X, Y, ANGLE and the pose keypoints below pose.pose_n, each where the table has it. kmeans and uniform drop those rows before choosing, and so before returning an input of at most target_frames rows whole. clips returns whole, less those rows, only an input shorter than clip_len. Otherwise it keeps the frame axis whole and starts a clip only where its clip_len rows are all finite, so each clip stays on consecutive frames, and a table with no such start emits no clip. |
 
 ??? note "`PoseConfig`"
 
@@ -825,18 +796,8 @@ Score a run's predictions or clusters against ground-truth labels.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
-
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
 
 ??? note "`LabelMapRef`"
 
@@ -851,14 +812,6 @@ Score a run's predictions or clusters against ground-truth labels.
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"label_map.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
@@ -868,7 +821,7 @@ Score a run's predictions or clusters against ground-truth labels.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ### `ffgroups-metrics`
 
@@ -924,7 +877,7 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `labels` | `ResultColumn` \| `GroundTruthLabelsSource` | `{"kind": "behavior", "source": "labels", "load": {"key": "labels", "kind": "npz", "transpose": false}, "pattern": null, "remap": null, "mask": null}` |  | Where the label sequence comes from. A GroundTruthLabelsSource reads each entry's converted label file from labels/<kind>/, through its segment sidecar when the file carries one. A ResultColumn reads a categorical column of a feature's output: from that feature's run when it names a feature, from this feature's own input when its feature is left empty. |
+| `labels` | `ResultColumn` \| `GroundTruthLabelsSource` | `{"kind": "behavior", "remap": null, "mask": null}` |  | Where the label sequence comes from. A GroundTruthLabelsSource reads each entry's converted label file from labels/<kind>/, through its segment sidecar when the file carries one. A ResultColumn reads a categorical column of a feature's output: from that feature's run when it names a feature, from this feature's own input when its feature is left empty. |
 | `states` | list of (`string` \| `integer`) \| `None` | `null` |  | The fixed vocabulary of states, which gives every entry the same columns -- a state an entry never shows reads as zero usage and zero bouts rather than as a missing column. An integer names a label id or a numeric column value, a string a label name or a text column value. Required for a ResultColumn source. Unset for ground truth, it is the label file's label_names in file order, less those in ignore, so it can differ between entries whose files were converted with different vocabularies; a file that declares no label_ids has no vocabulary to default to and is refused. A label or value in neither states nor ignore is refused. |
 | `fps` | `number` \| `None` | `null` |  | The frame rate that converts bout lengths to seconds and bout counts to rates. Unset, it is read from the input's time column as the median time step per frame, and an input without a usable time column is refused. [fps] |
 | `min_bout_frames` | `integer` | `1` | >= `1` | The shortest bout kept. A shorter run or segment is dropped before any statistic is taken: it adds to no usage and no coverage, is no bout, and takes part in no transition. A bout's length is its rows times the entry's frame step, so on a table holding every k-th frame a bout of r rows has length r*k. [frames] |
@@ -935,37 +888,8 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
-
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
-
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
-??? note "`ParquetLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
-    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
-    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
-    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`ResultColumn`"
 
@@ -1056,7 +980,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 | `prune_threshold` | `number` | `0.01` | >= `0`, <= `1` | The posterior mass fraction below which a fitted state is dropped. |
 | `random_state` | `integer` | `42` |  | The random seed for PCA and model fitting, for reproducible restarts. |
 | `columns` | list of `string` \| `None` | `null` |  | The payload columns to read. Unset, every numeric payload column of the input is read. A name of an identity or bookkeeping column, or of a column that the input lacks, raises. The order and repeats of the names do not change the run. |
-| `backend` | `"auto"` \| `"numpy"` \| `"numba"` \| `"jax"` | `"auto"` |  | The compute backend for EM and Viterbi decoding. auto uses the numba-compiled path when available and falls back to numpy. numba requests the compiled path but still falls back to numpy if it raises. numpy forces the plain path. jax is reserved for a future GPU path and is not implemented yet. |
+| `backend` | `"auto"` \| `"numpy"` \| `"numba"` | `"auto"` |  | The compute backend for EM and Viterbi decoding. auto uses the numba-compiled path when available and falls back to numpy. numba requests the compiled path but still falls back to numpy if it raises. numpy forces the plain path. |
 
 ??? note "`ArHmmModelArtifact`"
 
@@ -1100,37 +1024,8 @@ Extract labeled, split-annotated templates from upstream features.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
-
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
-
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
-??? note "`ParquetLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
-    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
-    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
-    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ??? note "`PoolConfig`"
 
@@ -1223,7 +1118,6 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
     | `seed` | `integer` | `0` |  | The random seed applied to torch and numpy before training starts. |
     | `part_sample` | `number` | `1.0` | > `0`, <= `1` | The fraction of the training partition included when building the training dataset. |
     | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` | The probability threshold used when computing F1 metrics, applied only when the label JSON is multilabel. |
-    | `wandb_project` | `string` \| `None` | `null` |  | The Weights & Biases project name recorded in the saved training config. **Unwired:** Stored in the saved config; nothing in this file starts a Weights & Biases run with it.. |
 
 ### `fit-label-map`
 
@@ -1243,37 +1137,8 @@ Map each cluster to the behavior class its labeled rows favor.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
-
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
-
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
-??? note "`ParquetLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
-    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
-    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
-    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ### `global-identity-dinov2-temporal`
 
@@ -1405,7 +1270,7 @@ Train a visual identity model from individual animal sequences.
 
 ### `global-kmeans`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering`
+Version `0.5` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering`
 
 Global K-Means clustering on templates loaded via load_state. Per-sequence cluster assignment is done in apply(). It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with k-means in place of a watershed segmentation of a density estimate.
 
@@ -1461,7 +1326,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`TemplatesRef`"
 
@@ -1478,7 +1343,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
 ### `global-scaler`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler`
+Version `0.3` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler`
 
 Fit a StandardScaler on templates and scale per-sequence data.
 
@@ -1503,7 +1368,7 @@ Fit a StandardScaler on templates and scale per-sequence data.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`ScalerModelArtifact`"
 
@@ -1533,7 +1398,7 @@ Fit a StandardScaler on templates and scale per-sequence data.
 
 ### `global-tsne`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE`
+Version `0.5` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE`
 
 Fit an openTSNE embedding on templates and map per-sequence data.
 
@@ -1564,7 +1429,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`TSNEFitConfig`"
 
@@ -1616,7 +1481,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
 ### `global-ward`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering`
+Version `0.4` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering`
 
 Ward hierarchical clustering on templates with per-sequence 1-NN assignment. It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with Ward clustering in place of a watershed segmentation of a density estimate.
 
@@ -1655,7 +1520,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment. It 
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`TemplatesRef`"
 
@@ -1783,9 +1648,6 @@ Supervised temporal action segmentation via lightning-action.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
@@ -1822,14 +1684,6 @@ Supervised temporal action segmentation via lightning-action.
     | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"lightning_action_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
@@ -1839,7 +1693,7 @@ Supervised temporal action segmentation via lightning-action.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ### `probability-ensemble`
 
@@ -1861,26 +1715,8 @@ Average or blend the class probabilities of several classifier runs.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
-
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
-
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
 
 ??? note "`ParquetLoadSpec`"
 
@@ -1891,7 +1727,7 @@ Average or blend the class probabilities of several classifier runs.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`ThresholdsArtifact`"
 
@@ -1952,9 +1788,6 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
@@ -1984,14 +1817,6 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
     | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
     | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
 ??? note "`ParquetLoadSpec`"
 
     | Parameter | Type | Default | Constraints | Description |
@@ -2001,7 +1826,7 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`SequenceClassifierModelArtifact`"
 
@@ -2038,37 +1863,8 @@ Choose the probability thresholds of a cross-validated classifier.
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
-    | `source` | `"labels"` | `"labels"` |  | Fixed tag naming this as a labels/ dependency. **Unwired:** no code path reads this field -- a GroundTruthLabelsSource is told apart from a ResultColumn by isinstance, not by this tag. |
-    | `load` | `NpzLoadSpec` \| `ParquetLoadSpec` \| `JoblibLoadSpec` | _constructed_ |  | How to load the matched label file. **Unwired:** no code path reads this field -- the resolved label file is read through load_labels_for_feature_frames, not through load_from_spec, so this load specification is never consulted. |
-    | `pattern` | `string` \| `None` | `null` |  | Glob pattern for the label file within labels/<kind>/. **Unwired:** no code path reads this field -- the label file is the abs_path recorded in labels/<kind>/index.csv, not a file matched by a pattern. |
     | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
     | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
-
-??? note "`JoblibLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
-
-??? note "`NpzLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"npz"` | `"npz"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `key` | `string` | _required_ |  | Array key read from the .npz archive. Raises when the archive has no such key. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded array after it is read. |
-
-??? note "`ParquetLoadSpec`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
-    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
-    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
-    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
-    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
 
 ### `vame`
 
@@ -2159,7 +1955,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 ### `xgboost`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
+Version `0.5` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
 
 XGBoost behavior classifier as a pipeline feature.
 
@@ -2217,7 +2013,7 @@ XGBoost behavior classifier as a pipeline feature.
     | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
-    | `frame_column` | `string` \| `None` | `null` |  | Column meant to be extracted as frame indices. **Unwired:** no code path reads this field -- load_from_spec's ParquetLoadSpec case does not destructure it, and nothing else reads spec.frame_column. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ??? note "`XgboostModelArtifact`"
 

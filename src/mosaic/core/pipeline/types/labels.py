@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from typing import Annotated, Generic, Literal, Self, TypeVar
+import copy
+from collections.abc import Mapping
+from typing import Annotated, Final, Generic, Self, TypeVar
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
-from mosaic.core.pipeline._loaders import (
-    LoadSpec,
-    NpzLoadSpec,
-)
+from mosaic.core.pipeline._loaders import NpzLoadSpec
 from mosaic.core.helpers import UNLABELED
+from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.label_controls import (
     LABEL_CONTROL_FIELDS,
     LabelMask,
@@ -29,27 +29,30 @@ _GROUND_TRUTH_KIND_DESCRIPTION = (
     "labels/<kind>/index.csv."
 )
 
-_SOURCE_DESCRIPTION = "Fixed tag naming this as a labels/ dependency."
+# The values of the withdrawn ``source``, ``load`` and ``pattern`` fields, which
+# every labels source held. ``identity_dump`` keeps writing them so that runs
+# computed before the fields were withdrawn keep their identifiers, and a
+# recorded params file spelling one of them still validates.
+_RETIRED_IDENTITY: Final[Mapping[str, object]] = {
+    "source": "labels",
+    "load": {"kind": "npz", "key": "labels", "transpose": False},
+    "pattern": None,
+}
 
-_SOURCE_UNWIRED = (
-    "no code path reads this field -- a GroundTruthLabelsSource is told apart "
-    "from a ResultColumn by isinstance, not by this tag"
-)
 
-_LOAD_DESCRIPTION = "How to load the matched label file."
+def _is_retired_value(name: str, value: object) -> bool:
+    """Whether *value* spells the old value of the withdrawn field *name*.
 
-_LOAD_UNWIRED = (
-    "no code path reads this field -- the resolved label file is read "
-    "through load_labels_for_feature_frames, not through load_from_spec, so "
-    "this load specification is never consulted"
-)
-
-_PATTERN_DESCRIPTION = "Glob pattern for the label file within labels/<kind>/."
-
-_PATTERN_UNWIRED = (
-    "no code path reads this field -- the label file is the abs_path "
-    "recorded in labels/<kind>/index.csv, not a file matched by a pattern"
-)
+    A ``load`` counts in any spelling ``NpzLoadSpec`` reads as the old one,
+    defaults omitted or a model instance included.
+    """
+    if name != "load":
+        return value == _RETIRED_IDENTITY[name]
+    try:
+        spec = NpzLoadSpec.model_validate(value)
+    except ValidationError:
+        return False
+    return spec.model_dump() == _RETIRED_IDENTITY["load"]
 
 
 class LabelsSource(NestedParams, Generic[K]):
@@ -65,22 +68,35 @@ class LabelsSource(NestedParams, Generic[K]):
 class GroundTruthLabelsSource(LabelsSource[str]):
     """Labels loaded from labels/<kind>/index.csv."""
 
-    source: Annotated[
-        Literal["labels"], Declared(_SOURCE_DESCRIPTION, unwired=_SOURCE_UNWIRED)
-    ] = "labels"
     # min_length: the resolver skips a source with an empty kind, so "" would
     # resolve to no labels at all and fail every entry for want of a file.
     kind: Annotated[
         str, Field(min_length=1), Declared(_GROUND_TRUTH_KIND_DESCRIPTION)
     ] = "behavior"
-    load: Annotated[LoadSpec, Declared(_LOAD_DESCRIPTION, unwired=_LOAD_UNWIRED)] = (
-        Field(default_factory=lambda: NpzLoadSpec(key="labels"))
-    )
-    pattern: Annotated[
-        str | None, Declared(_PATTERN_DESCRIPTION, unwired=_PATTERN_UNWIRED)
-    ] = None
     remap: LabelRemap = None
     mask: LabelMask = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_keys(cls, data: object) -> object:
+        """Drop ``source``, ``load`` and ``pattern`` at their old values.
+
+        Every params file recorded before the fields were withdrawn spells them,
+        and ``mosaic reconcile`` rebuilds a run from that file. Any other value
+        asked for something no labels source does, and is refused.
+        """
+        if not is_str_mapping(data):
+            return data
+        kept = dict(data)
+        for name in _RETIRED_IDENTITY:
+            if name in kept and not _is_retired_value(name, kept.pop(name)):
+                msg = (
+                    f"{name!r} is withdrawn from a labels source and is accepted "
+                    f"only at its old value {_RETIRED_IDENTITY[name]!r}. The labels "
+                    "of a kind are the files labels/<kind>/index.csv lists"
+                )
+                raise ValueError(msg)
+        return kept
 
     @field_validator("remap")
     @classmethod
@@ -114,10 +130,13 @@ class GroundTruthLabelsSource(LabelsSource[str]):
     def identity_dump(self) -> dict[str, object]:
         """The ``model_dump()``, without ``remap`` and ``mask`` while they are unset.
 
-        A source without controls dumps as it did before they existed, so the
-        run of every labels-consuming feature keeps its identifier.
+        The dump also holds ``source``, ``load`` and ``pattern`` at the values
+        every source held before those fields were withdrawn. A source without
+        controls dumps as it did before they existed, so the run of every
+        labels-consuming feature keeps its identifier.
         """
-        dumped = self.model_dump()
+        dumped: dict[str, object] = self.model_dump()
+        dumped.update(copy.deepcopy(dict(_RETIRED_IDENTITY)))
         for name in LABEL_CONTROL_FIELDS:
             if dumped[name] is None:
                 del dumped[name]

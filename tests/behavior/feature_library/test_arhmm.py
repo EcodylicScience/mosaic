@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from mosaic.behavior.feature_library.arhmm import ArHmmFeature
 from mosaic.behavior.feature_library.fit_label_map import (
@@ -135,10 +136,9 @@ class TestFitApply:
         with pytest.raises(RuntimeError, match="No valid sequences"):
             feat.fit(lambda: iter([]))
 
-    def test_jax_backend_not_implemented(self) -> None:
-        feat = _make_feature("jax")
-        with pytest.raises(NotImplementedError, match="jax"):
-            feat.fit(lambda: iter([("g__s1", _make_sequence_df())]))
+    def test_jax_backend_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="backend"):
+            _ = _make_feature("jax")
 
 
 # --------------------------------------------------------------------------

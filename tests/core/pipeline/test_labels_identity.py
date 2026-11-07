@@ -7,8 +7,12 @@ ever reading like a tracks variant of the same registered format.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pytest
+
+from mosaic.behavior.feature_library.label_predictions import PredictionsLabelsSource
 from mosaic.core.pipeline.composition import (
     SourceMember,
     labels_raw_composition,
@@ -22,6 +26,7 @@ from mosaic.core.pipeline.labels_identity import (
 )
 from mosaic.core.pipeline.op_identity import parse_op_run_id
 from mosaic.core.pipeline.tracks_identity import converter_op
+from mosaic.core.pipeline.types import GroundTruthLabelsSource
 from tests.helpers import calms21_dataset, tree_snapshot
 
 
@@ -158,3 +163,34 @@ def test_a_pinned_labels_variant_is_taken_as_given_before_conversion(
     _ = ds.convert_all_labels(kind="behavior", source_format="calms21_npy")
     assert resolve_labels_variants(ds, feature) == (variant,)
     assert resolve_labels_variants(ds, feature, variant) == (variant,)
+
+
+def _dumped_on_main(kind: str) -> dict[str, object]:
+    """The ``identity_dump()`` of a default labels source of *kind*, as ``main`` wrote it."""
+    return {
+        "kind": kind,
+        "source": "labels",
+        "load": {"kind": "npz", "key": "labels", "transpose": False},
+        "pattern": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (GroundTruthLabelsSource(), _dumped_on_main("behavior")),
+        (PredictionsLabelsSource(), _dumped_on_main("predictions")),
+        (
+            GroundTruthLabelsSource(remap={1: 2}),
+            {**_dumped_on_main("behavior"), "remap": {1: 2}},
+        ),
+    ],
+    ids=["ground-truth", "predictions", "remap"],
+)
+def test_a_default_labels_source_dumps_as_before(
+    source: GroundTruthLabelsSource, expected: dict[str, object]
+) -> None:
+    dumped = source.identity_dump()
+
+    assert dumped == expected
+    assert json.dumps(dumped, sort_keys=True) == json.dumps(expected, sort_keys=True)

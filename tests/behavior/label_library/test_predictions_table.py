@@ -644,7 +644,8 @@ def test_the_variant_id_moves_with_files_and_class_ids_only(tmp_path: Path) -> N
     default = variant()
     assert re.fullmatch(r"convert-labels-predictions_table\.0\.1-[0-9a-f]{10}", default)
     assert variant(group_from="infile") == default
-    assert variant(strict_schema=True) == default
+    with pytest.raises(ValidationError, match="strict_schema"):
+        _ = variant(strict_schema=True)
     assert variant(files="labels_raw/predictions/a/*") != default
     assert variant(class_ids={"a": 0}) != default
 

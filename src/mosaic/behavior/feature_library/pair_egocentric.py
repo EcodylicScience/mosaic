@@ -7,7 +7,7 @@ Extracted from features.py as part of feature_library modularization.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Final, final
+from typing import Annotated, ClassVar, Final, Literal, final
 
 import numpy as np
 import pandas as pd
@@ -63,15 +63,11 @@ _TAIL_BASE_IDX_DESCRIPTION = (
 )
 
 _CENTER_MODE_DESCRIPTION = (
-    "How the animal's center point is computed from its pose "
-    "keypoints. Every accepted value averages all keypoints. "
-    "Selecting a single keypoint by index needs an integer, which "
-    "this field does not accept."
-)
-
-_CENTER_MODE_UNWIRED = (
-    "every accepted value averages all keypoints -- the per-keypoint "
-    "branch needs an int this field refuses"
+    "How the animal's center point is computed from its pose keypoints. "
+    "mean averages every selected keypoint. An integer centers the animal "
+    "on one keypoint, read as neck_idx is: it must name a selected keypoint, "
+    "one listed in pose.pose_indices when that is set and one from 0 to "
+    "pose.pose_n - 1 otherwise."
 )
 
 EGOCENTRIC_PAIR_COLUMNS: Final[tuple[str, ...]] = (
@@ -140,7 +136,8 @@ class PairEgocentricFeatures:
 
     category = "per-frame"
     name = "pair-egocentric"
-    version = "0.1"
+    # 0.2: an integer center_mode centers each animal on that keypoint.
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -174,7 +171,8 @@ class PairEgocentricFeatures:
             int, Declared(_TAIL_BASE_IDX_DESCRIPTION, keypoint="index")
         ] = 6
         center_mode: Annotated[
-            str, Declared(_CENTER_MODE_DESCRIPTION, unwired=_CENTER_MODE_UNWIRED)
+            Literal["mean"] | Annotated[int, Field(ge=0)],
+            Declared(_CENTER_MODE_DESCRIPTION, keypoint="index"),
         ] = "mean"
 
     def __init__(
@@ -209,6 +207,11 @@ class PairEgocentricFeatures:
         [tail] = p.pose.resolve_keypoints(
             [p.tail_base_idx], who="[pair-egocentric] tail_base_idx"
         )
+        center: int | None = None
+        if isinstance(p.center_mode, int):
+            [center] = p.pose.resolve_keypoints(
+                [p.center_mode], who="[pair-egocentric] center_mode"
+            )
         order_col = resolve_order_col(df)
 
         required = [C.id_col, C.seq_col] + pose_cols
@@ -260,7 +263,7 @@ class PairEgocentricFeatures:
                     pass
 
             frames, AtoB, BtoA, names = self._build_ego_block_for_joined(
-                j, fps, x_cols, y_cols, neck, tail
+                j, fps, x_cols, y_cols, neck, tail, center
             )
 
             # produce row-wise DataFrames
@@ -302,10 +305,11 @@ class PairEgocentricFeatures:
         return np.arctan2(vy, vx)
 
     def _center_from_points(
-        self, xs: np.ndarray, ys: np.ndarray, mode: str | int
+        self, xs: np.ndarray, ys: np.ndarray, center: int | None
     ) -> tuple[np.ndarray, np.ndarray]:
-        if isinstance(mode, (int, np.integer)):
-            return xs[:, int(mode)], ys[:, int(mode)]
+        """The keypoint at position *center*, or the mean of all when ``None``."""
+        if center is not None:
+            return xs[:, center], ys[:, center]
         return xs.mean(axis=1), ys.mean(axis=1)
 
     def _build_ego_block_for_joined(
@@ -316,15 +320,16 @@ class PairEgocentricFeatures:
         y_cols: list[str],
         neck: int,
         tail: int,
+        center: int | None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
         """Measure one pair from its joined rows.
 
-        *neck* and *tail* are positions in *x_cols* and *y_cols*, as
-        :meth:`PoseConfig.resolve_keypoints` returns them.
+        *neck*, *tail* and *center* are positions in *x_cols* and *y_cols*, as
+        :meth:`PoseConfig.resolve_keypoints` returns them. A ``None`` *center*
+        centers each animal on the mean of its keypoints.
         """
         n_pts = len(x_cols)
         win = self.params.sampling.smooth_win
-        mode = self.params.center_mode
 
         xa = j[[f"{column}_A" for column in x_cols]].to_numpy()
         ya = j[[f"{column}_A" for column in y_cols]].to_numpy()
@@ -340,8 +345,8 @@ class PairEgocentricFeatures:
             yb = np.vstack([smooth_1d(yb[:, k], win) for k in range(n_pts)]).T
 
         # centers
-        cxA, cyA = self._center_from_points(xa, ya, mode)
-        cxB, cyB = self._center_from_points(xb, yb, mode)
+        cxA, cyA = self._center_from_points(xa, ya, center)
+        cxB, cyB = self._center_from_points(xb, yb, center)
 
         # headings (neck - tail) and units
         hxA, hyA = xa[:, neck] - xa[:, tail], ya[:, neck] - ya[:, tail]

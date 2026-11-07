@@ -83,8 +83,8 @@ class BorisPandasPickleParams(LabelConvertParams):
     Every field here changes the parsed labels -- the frame rate, the subject
     to individual-ID mapping, which behaviors are treated as symmetric pairs,
     the background label, and the column names read from the export -- so they
-    are all hashed. ``group_from`` and ``strict_schema`` (on the base) are entry
-    policy and validation strictness and are excluded from identity.
+    are all hashed. ``group_from`` (on the base) is entry policy and is excluded
+    from identity.
     """
 
     fps: Annotated[float | None, Declared(FPS_DESCRIPTION)] = None
