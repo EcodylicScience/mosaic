@@ -156,8 +156,8 @@ def _read_analysis_h5(path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     # ``track_library``, which imports this module. That made a binary HDF5 stack a hard
     # requirement for reading three field names off a leaf, and an environment without
     # h5py met a ModuleNotFoundError rather than the missing converter it could have
-    # done without. Costs 86 ms and 235 modules, paid by the one caller that opens a
-    # SLEAP file.
+    # done without. Costs 86 ms and 235 modules, paid by the callers that open an
+    # HDF5 file.
     import h5py
 
     with h5py.File(str(path), "r") as handle:

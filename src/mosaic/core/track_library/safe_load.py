@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import codecs
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import io
 import math
 from pathlib import Path
@@ -44,7 +44,6 @@ __all__ = [
     "PickledFormatNotTrustedError",
     "UnsafeRawFileError",
     "brief",
-    "check_hdf5_attribute",
     "check_hdf5_file",
     "check_hdf5_member",
     "check_npz",
@@ -150,8 +149,7 @@ def require_pickled_trust(path: Path, fmt: str, safe_form: str) -> None:
 def load_pickled_npy_dict(path: Path, fmt: str, safe_form: str) -> dict[str, object]:
     """Load the dict that a pickled ``.npy`` holds, when pickled files are trusted.
 
-    This is one of the two places that a converter's file is unpickled whole, so a
-    file that is not trusted is refused before it is read.
+    A file that is not trusted is refused before it is read.
 
     Args:
         path: The ``.npy`` file.
@@ -178,8 +176,7 @@ def load_pickled_npy_dict(path: Path, fmt: str, safe_form: str) -> dict[str, obj
 def load_pickled_dataframe(path: Path, fmt: str, safe_form: str) -> object:
     """Load a pandas pickle, when pickled files are trusted.
 
-    This is the other place that a converter's file is unpickled whole, so a file
-    that is not trusted is refused before it is read.
+    A file that is not trusted is refused before it is read.
 
     Args:
         path: The pickle file.
@@ -326,7 +323,7 @@ def check_hdf5_member(
     """
     import h5py
 
-    member = posixpath.join(group.name or "/", name).lstrip("/")
+    member = _member_name(group, name)
     link = group.get(name, getlink=True)
     if not isinstance(link, h5py.HardLink):
         kind = "an external" if isinstance(link, h5py.ExternalLink) else "a soft"
@@ -356,6 +353,14 @@ def check_hdf5_member(
     return items * max(dtype.itemsize, read_itemsize, 1)
 
 
+def _member_name(
+    node: h5py.Group | h5py.Dataset | h5py.Datatype, child: str | None = None
+) -> str:
+    """The path of *node*, or of its member *child*, without the leading slash."""
+    base = node.name or "/"
+    return (base if child is None else posixpath.join(base, child)).lstrip("/")
+
+
 def _is_variable_string(dtype: np.dtype[np.generic]) -> bool:
     """Whether *dtype* is h5py's dtype for variable-length strings."""
     import h5py
@@ -364,7 +369,7 @@ def _is_variable_string(dtype: np.dtype[np.generic]) -> bool:
     return info is not None and info.length is None
 
 
-def check_hdf5_attribute(
+def _check_hdf5_attribute(
     path: Path,
     node: h5py.Group | h5py.Dataset | h5py.Datatype,
     name: str,
@@ -391,7 +396,7 @@ def check_hdf5_attribute(
             reference or object values, has a datatype with no numpy
             equivalent, or declares more than ``_MAX_ATTRIBUTE_BYTES``.
     """
-    member = (node.name or "").lstrip("/")
+    member = _member_name(node)
     attribute = node.attrs.get_id(name)
     try:
         dtype = attribute.dtype
@@ -419,7 +424,7 @@ def read_hdf5_attribute(
     *,
     variable_string: bool = False,
 ) -> object:
-    """Read attribute *name* of *node* once `check_hdf5_attribute` passes it.
+    """Read attribute *name* of *node* once `_check_hdf5_attribute` passes it.
 
     A variable-length string is refused once read if it is longer than
     ``_MAX_ATTRIBUTE_BYTES``, the size a fixed-size attribute may declare.
@@ -435,15 +440,15 @@ def read_hdf5_attribute(
         attribute *name*.
 
     Raises:
-        UnsafeRawFileError: If `check_hdf5_attribute` refuses the attribute,
+        UnsafeRawFileError: If `_check_hdf5_attribute` refuses the attribute,
             or its string is longer than ``_MAX_ATTRIBUTE_BYTES``.
     """
     if name not in node.attrs:
         return None
-    check_hdf5_attribute(path, node, name, variable_string=variable_string)
+    _check_hdf5_attribute(path, node, name, variable_string=variable_string)
     value = node.attrs[name]
     if isinstance(value, str | bytes) and len(value) > _MAX_ATTRIBUTE_BYTES:
-        member = (node.name or "").lstrip("/")
+        member = _member_name(node)
         reason = (
             f"attribute {name} holds a string of {len(value)} characters, "
             f"more than {_MAX_ATTRIBUTE_BYTES}"
@@ -482,7 +487,7 @@ def read_hdf5_strings(path: Path, group: h5py.Group, name: str) -> list[bytes]:
     import h5py
 
     declared = check_hdf5_member(path, group, name, variable_strings=True)
-    member = posixpath.join(group.name or "/", name).lstrip("/")
+    member = _member_name(group, name)
     dataset = group[name]
     if not isinstance(dataset, h5py.Dataset):
         raise UnsafeRawFileError(path, "is a group, not strings", member=member)
@@ -735,6 +740,7 @@ class _PandasGroupReader:
         errors: The codec's error handler.
         charged: The bytes the file's datasets declare, plus those of the
             Python objects decoded from them so far.
+        charged_keys: The datasets whose Python objects are in *charged*.
     """
 
     path: Path
@@ -742,6 +748,7 @@ class _PandasGroupReader:
     encoding: str
     errors: str
     charged: int
+    charged_keys: set[str] = field(default_factory=set)
 
     @classmethod
     def open(cls, path: Path, handle: h5py.File, declared: int) -> _PandasGroupReader:
@@ -753,14 +760,14 @@ class _PandasGroupReader:
             reason = f"holds {len(keys)} top-level members, not one top-level group"
             raise _UnrecognizedLayoutError(path, reason)
         reader = cls(path, group, "UTF-8", "strict", declared)
-        encoding = reader.text(group, "encoding", "UTF-8")
-        errors = reader.text(group, "errors", "strict")
+        reader.encoding = reader.text(group, "encoding", "UTF-8")
+        reader.errors = reader.text(group, "errors", "strict")
         try:
-            _ = codecs.lookup(encoding)
-            _ = codecs.lookup_error(errors)
+            _ = codecs.lookup(reader.encoding)
+            _ = codecs.lookup_error(reader.errors)
         except LookupError:
-            reader.fail(f"stores strings as {encoding} ({errors})")
-        return cls(path, group, encoding, errors, declared)
+            reader.fail(f"stores strings as {reader.encoding} ({reader.errors})")
+        return reader
 
     def frame(self) -> pd.DataFrame:
         pandas_type = self.attribute(self.group, "pandas_type")
@@ -957,9 +964,14 @@ class _PandasGroupReader:
     def charge_objects(self, key: str) -> None:
         """Count the Python objects that dataset *key* decodes to toward the limit.
 
+        A dataset counts once, however many readers of the axis reach it.
+
         Raises:
             UnsafeRawFileError: If the count passes the limit.
         """
+        if key in self.charged_keys:
+            return
+        self.charged_keys.add(key)
         node = self.dataset(key)
         elements = math.prod(node.shape or ())
         per_element = _PYTHON_OBJECT_BYTES
@@ -1048,7 +1060,7 @@ class _PandasGroupReader:
             return value
         value = bytes(value)
         if value.endswith(b".") and value not in (b"0", b"0."):
-            member = (node.name or "").lstrip("/")
+            member = _member_name(node)
             try:
                 decoded = self.unpickle(value)
             except (_ForbiddenPickleError, RecursionError) as exc:
@@ -1072,15 +1084,15 @@ class _PandasGroupReader:
             return value
 
     def check_attribute(self, node: h5py.Group | h5py.Dataset, name: str) -> None:
-        """Refuse attribute *name* of *node* unread, as `check_hdf5_attribute` does.
+        """Refuse attribute *name* of *node* unread, as `_check_hdf5_attribute` does.
 
         pandas writes each attribute that the reader reads as a scalar.
 
         Raises:
-            UnsafeRawFileError: If `check_hdf5_attribute` refuses it.
+            UnsafeRawFileError: If `_check_hdf5_attribute` refuses it.
             _UnrecognizedLayoutError: If the attribute is not a scalar.
         """
-        check_hdf5_attribute(self.path, node, name)
+        _check_hdf5_attribute(self.path, node, name)
         attribute = node.attrs.get_id(name)
         if attribute.shape not in (None, ()):
             self.fail(f"attribute {name} is an array of shape {attribute.shape}")

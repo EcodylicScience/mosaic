@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 import pickle
 import struct
@@ -22,6 +23,7 @@ from mosaic.core.track_library.safe_load import (
     TRUST_VARIABLE,
     PickledFormatNotTrustedError,
     UnsafeRawFileError,
+    check_hdf5_file,
     read_pandas_hdf_frame,
 )
 
@@ -29,6 +31,8 @@ from tests.helpers import unpickling_member, write_dlc_csv
 
 _BODYPARTS = ["snout", "midbody", "tailtip"]
 _BLOSC_FILTER = 32001
+# The bytes one decoded label takes besides its stored bytes.
+_PYTHON_OBJECT_BYTES = 64
 
 
 def test_load_dlc_single_animal(tmp_path: Path) -> None:
@@ -477,6 +481,42 @@ def test_a_string_index_that_expands_past_the_limit_is_refused(
         read_pandas_hdf_frame(path)
 
     assert not isinstance(caught.value, PickledFormatNotTrustedError)
+
+
+@pytest.mark.usefixtures("untrusted")
+def test_a_string_level_of_a_fixed_multiindex_is_charged_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "levels.h5"
+    columns = pd.MultiIndex.from_product(
+        [[f"animal{number:03d}" for number in range(40)], ["x", "y"]],
+        names=["individuals", "coords"],
+    )
+    pd.DataFrame(np.zeros((3, len(columns))), columns=columns).to_hdf(
+        path, key="pose", mode="w", format="fixed"
+    )
+    with h5py.File(path, "r") as handle:
+        declared = check_hdf5_file(path, handle)
+        pose = handle["pose"]
+        assert isinstance(pose, h5py.Group)
+        decoded = 0
+        for name in pose.keys():
+            node = pose[name]
+            if not isinstance(node, h5py.Dataset):
+                continue
+            if any(part in name for part in ("_level", "_label", "_items")):
+                per_element = _PYTHON_OBJECT_BYTES
+                if node.dtype.kind == "S":
+                    per_element += 4 * node.dtype.itemsize
+                decoded += math.prod(node.shape or ()) * per_element
+    limit = declared + decoded
+
+    monkeypatch.setenv("MOSAIC_RAW_ARRAY_LIMIT_BYTES", str(limit))
+    assert_frame_equal(read_pandas_hdf_frame(path), _pandas_frame(path))
+
+    monkeypatch.setenv("MOSAIC_RAW_ARRAY_LIMIT_BYTES", str(limit - 1))
+    with pytest.raises(UnsafeRawFileError, match="MOSAIC_RAW_ARRAY_LIMIT_BYTES"):
+        read_pandas_hdf_frame(path)
 
 
 @pytest.mark.skipif(
