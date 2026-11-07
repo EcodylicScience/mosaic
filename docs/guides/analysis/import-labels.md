@@ -59,8 +59,14 @@ labels that step writes, even where the dataset holds another conversion of them
 | `--src-format` | Reads |
 | --- | --- |
 | `boris_aggregated_csv` | BORIS Aggregated Events export, CSV or TSV |
-| `boris_pandas_pickle` | BORIS pandas DataFrame pickle |
-| `calms21_npy` | CalMS21 `.npy` / `.json` behavior annotations |
+| `boris_pandas_pickle` | BORIS pandas DataFrame pickle, only with `MOSAIC_TRUST_PICKLED_FILES=1` |
+| `calms21_npy` | CalMS21 `.npy` / `.json` behavior annotations; the `.npy` needs `MOSAIC_TRUST_PICKLED_FILES=1`, the `.json` does not |
+
+A pickle or a CalMS21 `.npy` can run code when it loads, so mosaic refuses one unless
+you set `MOSAIC_TRUST_PICKLED_FILES=1` for files you trust. A refused file fails the
+whole conversion and the message names it. The safe forms are the BORIS aggregated
+CSV/TSV export and the original CalMS21 `.json`, which load without the flag. See
+[files mosaic will not unpickle](../tracking/import.md#files-mosaic-will-not-unpickle).
 
 All three produce the `behavior` label kind. `predictions_table` reads a model's or a
 second annotator's per-frame predictions into the `predictions` kind instead: see

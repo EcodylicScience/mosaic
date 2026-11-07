@@ -407,6 +407,17 @@ mosaic and `[feral]`, and point it at the same datasets.
 Third-party licenses, and what mosaic does about each, are recorded in
 [NOTICE](https://github.com/EcodylicScience/mosaic/blob/main/NOTICE).
 
+## Settings for raw track and label files
+
+Two environment variables govern the raw files that `convert-tracks` and
+`convert-labels` read. The [import guide](guides/tracking/import.md#files-mosaic-will-not-unpickle)
+says what mosaic refuses.
+
+| Variable | Does |
+| -------- | ---- |
+| `MOSAIC_TRUST_PICKLED_FILES` | Set to exactly `1` to load formats that can only be read by unpickling: CalMS21 `.npy` and BORIS `.pkl`. It also lets a DeepLabCut `.h5` of an unrecognized layout load through pandas. Unset, mosaic refuses those files and names the safe form. Unpickling can run code in the file, so set it only for files you trust, and never on a deployment that accepts uploads |
+| `MOSAIC_RAW_ARRAY_LIMIT_BYTES` | The most array data one raw file may declare, in bytes. The default is 2 GiB (`2147483648`). A value that is not an integer raises an error naming the variable |
+
 ## Platform support
 
 mosaic runs natively on **macOS** and **Linux**. On **Windows** the core analysis

@@ -234,6 +234,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 - `frame` counts media frames from 0 across an entry's clips (imgstore: `frame_index`).
 - A format mosaic does not read needs a converter in the user's project:
   https://ecodylicscience.github.io/mosaic/guides/tracking/write-a-converter/.
+- A converter refuses a raw file it cannot load without unpickling or within
+  `MOSAIC_RAW_ARRAY_LIMIT_BYTES`, and `convert-tracks` reports it as an entry error. A
+  CalMS21 `.npy`, a BORIS `.pkl` and a DeepLabCut `.h5` of an unrecognized layout load
+  only with `MOSAIC_TRUST_PICKLED_FILES=1`. Never set that variable yourself. When a
+  refusal names it, use the JSON or CSV form of the data (CalMS21 `.json`, BORIS
+  aggregated CSV/TSV, DeepLabCut CSV), or ask the user whether they trust the file's
+  source, since only the user sets the variable:
+  https://ecodylicscience.github.io/mosaic/guides/tracking/import/#files-mosaic-will-not-unpickle.
 - Read raw `.h264` streams (Raspberry Pi) only through mosaic, which measures their
   frame count. Other readers misjudge a bare stream.
 - Run `mosaic upgrade-tracks` on TRex tables an older mosaic wrote in centimeters.

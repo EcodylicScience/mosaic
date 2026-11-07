@@ -459,7 +459,12 @@ The server does not expose them as tools. When one is needed, the agent proposes
   `sources add-files`;
 - `mosaic pipeline score`, which adds held-out data to a copy of the dataset;
 - `extract-frames`, whose frames annotation tools refer to by path;
-- accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`).
+- accepting the keypoint-MoSeq license (`MOSAIC_KPMS_LICENSE_ACCEPTED`);
+- trusting pickled raw files (`MOSAIC_TRUST_PICKLED_FILES=1`). The agent never sets it.
+  When a CalMS21 `.npy`, a BORIS `.pkl` or a DeepLabCut `.h5` of an unrecognized layout
+  is refused, it uses the JSON or CSV form of the data, or asks you whether you trust the
+  file's source. See
+  [files mosaic will not unpickle](guides/tracking/import.md#files-mosaic-will-not-unpickle).
 
 ### Reclaiming superseded runs
 

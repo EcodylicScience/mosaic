@@ -60,6 +60,26 @@ cannot say. The tracks index records the answer, and a step that needs ids follo
 an animal refuses tracks recorded `False`. `None` records no answer and refuses
 nothing.
 
+## Load the raw file safely
+
+A converter may read a file someone else made, so loading it must not run anything the
+file stores. Never use `allow_pickle=True`, `pd.read_pickle`, `pd.read_hdf` or `pickle`
+on a raw file. The helpers in `mosaic.core.track_library.safe_load` cover the usual
+formats:
+
+- `check_npz` checks an `.npz` before `np.load(path, allow_pickle=False)` reads it.
+- `check_hdf5_file` checks an HDF5 file before h5py reads it, and
+  `read_pandas_hdf_frame` reads a pandas DataFrame from one.
+- `require_within_limit` refuses arrays that declare more bytes than
+  `MOSAIC_RAW_ARRAY_LIMIT_BYTES` allows.
+- A format only unpickling can read goes through `load_pickled_npy_dict`, which refuses
+  the file unless `MOSAIC_TRUST_PICKLED_FILES=1`. Pass the safe form of the same data,
+  such as JSON, so the refusal tells the user what to convert to.
+
+A refusal raises `UnsafeRawFileError`, so a batch conversion fails that entry and goes
+on. `tests/meta/test_converters_do_not_unpickle.py` fails a converter that unpickles
+outside `safe_load`.
+
 ## Shipping it inside mosaic
 
 mosaic discovers nothing on its own — no entry-point scan, no import hook — so where

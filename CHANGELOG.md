@@ -103,6 +103,42 @@ When one frame has several image files, both take the first, so `x.jpg` wins ove
 of image suffixes either trainer's Ultralytics accepts, which adds `.avif`, `.dng`,
 `.heic`, `.heif`, `.jp2`, `.mpo` and `.pfm`.
 
+## Unreleased: raw tracks and label files load without unpickling
+
+**A raw file no longer runs code when it loads, and a CalMS21 `.npy` and a BORIS `.pkl`
+need a flag.** The TRex `.npz`, SLEAP analysis `.h5` and DeepLabCut `.h5` converters
+read a file only after checking its headers, and refuse object arrays, malformed shapes,
+and files whose declared arrays add up past `MOSAIC_RAW_ARRAY_LIMIT_BYTES`, 2 GiB by
+default. A refused file fails its own entry, named with its reason: `mosaic
+convert-tracks` converts the rest and reports `partial`, and a `convert-tracks` step
+records an entry error, writes the rest and fails. No tracks variant, run id or output
+moves for a file that loads.
+
+**CalMS21 `.npy` and BORIS `.pkl` load only with `MOSAIC_TRUST_PICKLED_FILES=1`.** Both
+are pickles, and the `calms21_npy` track and label converters and the
+`boris_pandas_pickle` label converter read them by unpickling. Without the flag they
+refuse the file and name it. A refused CalMS21 or BORIS label conversion fails whole,
+and a refused track file fails its entry. A CalMS21 `.npy` user either sets the flag or
+converts from the original CalMS21 `.json`, which `calms21_json` and the label converter
+read without it. A BORIS `.pkl` user sets the flag or converts from the BORIS aggregated
+CSV/TSV export with `boris_aggregated_csv`. Only `1` enables the flag. A deployment that
+accepts uploads must never set it.
+
+**A DeepLabCut `.h5` of an unusual layout may now be refused.** The converter reads the
+files DeepLabCut and Lightning Pose write through h5py, and decodes the pickled
+attributes pandas stores without calling anything. A file in another layout, or one with
+links, external storage, virtual datasets or oversized attributes, is refused. Export it
+as DeepLabCut CSV, or set `MOSAIC_TRUST_PICKLED_FILES=1` to let pandas read a file of an
+unrecognized layout. A file refused as unsafe is never read by pandas.
+
+**New API.** `mosaic.core.track_library.safe_load` holds the checks and the loaders. A
+refusal raises `UnsafeRawFileError`, a `ValueError`, or its subclass
+`PickledFormatNotTrustedError` for a pickle without the flag. `mosaic.env_settings` reads
+an integer or a flag from the environment, and a `MOSAIC_RAW_ARRAY_LIMIT_BYTES` that is
+not an integer raises an error naming the variable.
+`tests/meta/test_converters_do_not_unpickle.py` fails a converter that unpickles outside
+`safe_load`.
+
 ## 0.18.0: a request names its tracks variant and pins its fits, a GPU step leases a card, an imgstore divides into recordings, arenas pair the animals within them, SLEAP embeddings re-identify animals, classifiers smooth their probabilities, and predictions made outside mosaic are scored
 
 ### External predictions and agreement

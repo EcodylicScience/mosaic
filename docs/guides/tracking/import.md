@@ -62,12 +62,44 @@ which schema the output carries.
 | `sleap_analysis_h5` | SLEAP HDF5 from `sleap-convert --format analysis` | `mosaic_v1` |
 | `deeplabcut` | DeepLabCut `.csv` / `.h5`, single- and multi-animal — and Lightning Pose, which writes the same shape | `mosaic_v1` |
 | `ultralytics_tracks` | Ultralytics tracker predictions parquet | `mosaic_v1` |
-| `calms21_npy` | CalMS21 `.npy` arrays | `mosaic_v1` |
+| `calms21_npy` | CalMS21 `.npy` arrays, when [you trust the files](#files-mosaic-will-not-unpickle) | `mosaic_v1` |
 | `calms21_json` | The `.json` spelling of CalMS21 | `mosaic_v1` |
 
 [The track formats reference](../../reference/track-formats.md) lists each with its
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
 explain why the three TRex rows differ.
+
+## Files mosaic will not unpickle
+
+A raw file can come from someone else, or arrive in an upload. mosaic reads TRex `.npz`,
+SLEAP `.h5` and DeepLabCut `.h5` files without running anything stored in them, and
+refuses a file that is malformed or declares more array data than the limit allows. A
+refused file fails its own entry, and the message names the file and the reason. `mosaic
+convert-tracks` warns, converts the rest and reports `partial`. As a recipe step,
+`convert-tracks` records an entry error for each refused file, writes the rest, and fails
+the step; rerun it once the file is fixed or removed.
+
+Two formats can refuse a file you expected to load:
+
+- **CalMS21 `.npy`** stores a pickled dict, which can run code when it loads. mosaic
+  loads it only with `MOSAIC_TRUST_PICKLED_FILES=1`. The original CalMS21 `.json` loads
+  without the flag, so use `calms21_json` where you have it.
+- **DeepLabCut `.h5`** from DeepLabCut or Lightning Pose loads without the flag. A file
+  in a layout mosaic does not recognize is refused. Export it as DeepLabCut CSV, which
+  always loads, or set the flag to read the file with pandas.
+
+```bash
+export MOSAIC_TRUST_PICKLED_FILES=1
+mosaic convert-tracks -m dataset.yaml
+```
+
+Set the flag only for files you made or got from a source you trust. Exactly `1` turns
+it on. A deployment that accepts uploads must never set it. The BORIS pickle label
+converter reads the same flag.
+
+`MOSAIC_RAW_ARRAY_LIMIT_BYTES` sets the most array data one raw file may declare, 2 GiB
+(`2147483648`) by default. Raise it for a larger export. A value that is not an integer
+raises an error naming the variable.
 
 ## Several recipes over one dataset
 
