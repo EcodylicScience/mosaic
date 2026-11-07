@@ -39,6 +39,7 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
     merge_on_column_union,
 )
+from mosaic.core.track_library.safe_load import UnsafeRawFileError
 from mosaic.core.track_library.trex import (
     CALIBRATION_COLUMN,
     FRAME_RATE_COLUMN,
@@ -60,7 +61,7 @@ from mosaic.core.track_library.trex import (
     unscale_to_pixels,
 )
 
-from tests.helpers import write_trex_npz
+from tests.helpers import unpickling_member, write_trex_npz
 
 
 def _convert(path: Path) -> pd.DataFrame:
@@ -752,11 +753,14 @@ def _convert_scaled_at_the_recorded_factor(path: Path) -> pd.DataFrame:
     return _convert_scaled(path, 0.03)
 
 
-@pytest.mark.parametrize(
+_EVERY_READER = pytest.mark.parametrize(
     "convert",
     [_convert, _convert_scaled_at_the_recorded_factor, _convert_cm],
     ids=["trex_npz", "trex_npz_scaled", "trex_npz_cm"],
 )
+
+
+@_EVERY_READER
 def test_every_reader_carries_the_tracklet_key(
     tmp_path: Path, convert: Callable[[Path], pd.DataFrame]
 ) -> None:
@@ -768,6 +772,54 @@ def test_every_reader_carries_the_tracklet_key(
 
     assert TRACKLET_START_COLUMN in table.columns
     assert "tracklet_id" not in table.columns
+
+
+# --- a supplied file is loaded without unpickling and within a size limit -----
+
+
+def _write_with_object_member(path: Path, marker: Path) -> None:
+    write_trex_npz(path, cm_per_pixel=0.03)
+    with np.load(path) as data:
+        fields = {name: data[name] for name in data.files}
+    np.savez(path, allow_pickle=True, payload=unpickling_member(marker), **fields)
+
+
+@_EVERY_READER
+def test_every_reader_converts_a_plain_export(
+    tmp_path: Path, convert: Callable[[Path], pd.DataFrame]
+) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(path, cm_per_pixel=0.03)
+
+    assert not convert(path).empty
+
+
+@_EVERY_READER
+def test_every_reader_refuses_an_object_member_without_unpickling_it(
+    tmp_path: Path, convert: Callable[[Path], pd.DataFrame]
+) -> None:
+    marker = tmp_path / "marker"
+    path = tmp_path / "seq_fish0.npz"
+    _write_with_object_member(path, marker)
+
+    with pytest.raises(UnsafeRawFileError, match="object"):
+        _ = convert(path)
+
+    assert not marker.exists(), "the reader unpickled the member"
+
+
+@_EVERY_READER
+def test_every_reader_refuses_arrays_past_the_limit(
+    tmp_path: Path,
+    convert: Callable[[Path], pd.DataFrame],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "seq_fish0.npz"
+    write_trex_npz(path, cm_per_pixel=0.03)
+    monkeypatch.setenv("MOSAIC_RAW_ARRAY_LIMIT_BYTES", "64")
+
+    with pytest.raises(UnsafeRawFileError, match="MOSAIC_RAW_ARRAY_LIMIT_BYTES"):
+        _ = convert(path)
 
 
 # --- the frame rate -----------------------------------------------------------

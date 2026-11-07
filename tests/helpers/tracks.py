@@ -159,6 +159,29 @@ def add_track_sequences(
     pd.DataFrame([*kept, *added]).to_csv(index_path, index=False)
 
 
+def _write_marker(marker: str) -> None:
+    Path(marker).write_text("unpickled")
+
+
+class _UnpickleSentinel:
+    def __init__(self, marker: Path) -> None:
+        self.marker = marker
+
+    def __reduce__(self) -> tuple[object, tuple[str]]:
+        return _write_marker, (str(self.marker),)
+
+
+def unpickling_member(marker: Path) -> npt.NDArray[np.object_]:
+    """A one-element object array whose unpickling writes the file *marker*.
+
+    Saved into a raw export, it shows whether a reader unpickled the export: the
+    marker exists exactly when the reader ran the pickle.
+    """
+    member = np.empty(1, dtype=object)
+    member[0] = _UnpickleSentinel(marker)
+    return member
+
+
 def write_trex_npz(
     path: Path,
     *,

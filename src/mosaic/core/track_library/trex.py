@@ -59,6 +59,7 @@ from pydantic import Field
 
 from mosaic.core.params import Declared
 from mosaic.core.track_library.helpers import column_array, column_names
+from mosaic.core.track_library.safe_load import check_npz
 from mosaic.core.track_converter import (
     EntryHints,
     TrackConverter,
@@ -667,112 +668,119 @@ def load_npz_to_df(filepath: Path) -> pd.DataFrame:
     Flatten a TRex-like NPZ (per-id) into a DataFrame, robust to arrays with
     slightly different lengths in the same file. We pick the most common length
     across arrays as the target 'n', and truncate longer arrays to fit.
+
+    Raises:
+        UnsafeRawFileError: If the file fails `check_npz`, which it must pass
+            before any of its data is read.
     """
-    data = np.load(filepath, allow_pickle=True)
-    keys = list(data.files)
+    check_npz(filepath)
+    with np.load(filepath, allow_pickle=False) as data:
+        keys = list(data.files)
 
-    # Not a preference: these are per-tracklet arrays, and padding them onto the
-    # frame axis would put each value on a row that does not mean it. See
-    # OFF_AXIS_FIELDS.
-    skip_keys = OFF_AXIS_FIELDS
+        # Not a preference: these are per-tracklet arrays, and padding them onto the
+        # frame axis would put each value on a row that does not mean it. See
+        # OFF_AXIS_FIELDS.
+        skip_keys = OFF_AXIS_FIELDS
 
-    # Determine candidate lengths per key
-    lens: list[int] = []
-    for k in keys:
-        if k in skip_keys:
-            continue
-        v = data[k]
-        if getattr(v, "ndim", 0) > 0:
-            lens.append(int(v.shape[0]))
-    if not lens:
-        raise ValueError(f"No array-like keys with length found in NPZ: {filepath}")
+        # Determine candidate lengths per key
+        lens: list[int] = []
+        for k in keys:
+            if k in skip_keys:
+                continue
+            v = data[k]
+            if getattr(v, "ndim", 0) > 0:
+                lens.append(int(v.shape[0]))
+        if not lens:
+            raise ValueError(f"No array-like keys with length found in NPZ: {filepath}")
 
-    # Prefer 'time' length if present and 1D; else use the mode length
-    if "time" in data.files and getattr(data["time"], "ndim", 0) == 1:
-        n = int(data["time"].shape[0])
-    else:
-        # mode (most common) length among arrays
-        vals, counts = np.unique(np.array(lens), return_counts=True)
-        n = int(vals[np.argmax(counts)])
-
-    cols: dict[str, np.ndarray] = {}
-
-    for k in sorted(keys):
-        if k in skip_keys:
-            continue
-        v = data[k]
-
-        if np.ndim(v) == 0:
-            # scalar -> broadcast
-            cols[k] = np.repeat(v.item(), n)
-            continue
-
-        # 1D or ND: align first dimension to n by truncation (or pad if you prefer)
-        if v.shape[0] < n:
-            # If you want to pad instead of skip, do it here; for now, we take the shorter n
-            # but to keep a consistent table width we'll just truncate n down for this column.
-            vi = v  # keep as-is; we will align by slicing [:vi.shape[0]] and then pad
-            # simple pad with NaN to length n
-            pad = (
-                np.full((n - vi.shape[0],), np.nan, dtype=float)
-                if v.ndim == 1
-                else np.full((n - vi.shape[0],) + v.shape[1:], np.nan, dtype=float)
-            )
-            vi = np.concatenate([vi, pad], axis=0)
+        # Prefer 'time' length if present and 1D; else use the mode length
+        if "time" in data.files and getattr(data["time"], "ndim", 0) == 1:
+            n = int(data["time"].shape[0])
         else:
-            vi = v[:n]
+            # mode (most common) length among arrays
+            vals, counts = np.unique(np.array(lens), return_counts=True)
+            n = int(vals[np.argmax(counts)])
 
-        if vi.ndim == 1:
-            cols[k] = vi
+        cols: dict[str, np.ndarray] = {}
+
+        for k in sorted(keys):
+            if k in skip_keys:
+                continue
+            v = data[k]
+
+            if np.ndim(v) == 0:
+                # scalar -> broadcast
+                cols[k] = np.repeat(v.item(), n)
+                continue
+
+            # 1D or ND: align first dimension to n by truncation (or pad if you prefer)
+            if v.shape[0] < n:
+                # If you want to pad instead of skip, do it here; for now, we take the shorter n
+                # but to keep a consistent table width we'll just truncate n down for this column.
+                vi = v  # keep as-is; we will align by slicing [:vi.shape[0]] and then pad
+                # simple pad with NaN to length n
+                pad = (
+                    np.full((n - vi.shape[0],), np.nan, dtype=float)
+                    if v.ndim == 1
+                    else np.full((n - vi.shape[0],) + v.shape[1:], np.nan, dtype=float)
+                )
+                vi = np.concatenate([vi, pad], axis=0)
+            else:
+                vi = v[:n]
+
+            if vi.ndim == 1:
+                cols[k] = vi
+            else:
+                flat = vi.reshape(n, -1)
+                for i in range(flat.shape[1]):
+                    cols[f"{k}_{i}"] = flat[:, i]
+
+        df = pd.DataFrame(cols)
+
+        # TRex uses inf for undetected keypoints — standardize to NaN
+        float_cols = df.select_dtypes(include=[np.floating]).columns
+        if len(float_cols):
+            df[float_cols] = df[float_cols].replace([np.inf, -np.inf], np.nan)
+
+        # id
+        if "id" in data.files and np.ndim(data["id"]) > 0:
+            try:
+                id_val = int(np.array(data["id"]).ravel()[0])
+            except Exception:
+                # fallback for weird dtypes
+                id_val = int(np.array(data["id"]).ravel()[0].astype(np.int64))
         else:
-            flat = vi.reshape(n, -1)
-            for i in range(flat.shape[1]):
-                cols[f"{k}_{i}"] = flat[:, i]
+            # derive from filename suffix _id<digits>
+            m = _TREX_ID_SUFFIX.search(filepath.stem)
+            id_val = int(m.group(1)) if m else 0
+        df["id"] = id_val
 
-    df = pd.DataFrame(cols)
+        # frame/time
+        if "frame" not in df.columns:
+            df["frame"] = np.arange(len(df), dtype=int)
+        if "time" not in df.columns:
+            if FRAME_RATE_COLUMN in data.files:
+                fr = float(np.array(data[FRAME_RATE_COLUMN]).ravel()[0])
+                fr = fr if fr > 0 else 1.0
+                df["time"] = df["frame"] / fr
+            else:
+                df["time"] = df["frame"].astype(float)
 
-    # TRex uses inf for undetected keypoints — standardize to NaN
-    float_cols = df.select_dtypes(include=[np.floating]).columns
-    if len(float_cols):
-        df[float_cols] = df[float_cols].replace([np.inf, -np.inf], np.nan)
-
-    # id
-    if "id" in data.files and np.ndim(data["id"]) > 0:
-        try:
-            id_val = int(np.array(data["id"]).ravel()[0])
-        except Exception:
-            # fallback for weird dtypes
-            id_val = int(np.array(data["id"]).ravel()[0].astype(np.int64))
-    else:
-        # derive from filename suffix _id<digits>
-        m = _TREX_ID_SUFFIX.search(filepath.stem)
-        id_val = int(m.group(1)) if m else 0
-    df["id"] = id_val
-
-    # frame/time
-    if "frame" not in df.columns:
-        df["frame"] = np.arange(len(df), dtype=int)
-    if "time" not in df.columns:
-        if FRAME_RATE_COLUMN in data.files:
-            fr = float(np.array(data[FRAME_RATE_COLUMN]).ravel()[0])
-            fr = fr if fr > 0 else 1.0
-            df["time"] = df["frame"] / fr
-        else:
-            df["time"] = df["frame"].astype(float)
-
-    # The bounds are an off-axis array, so they never became columns above.
-    # Read here, once `frame` is settled, into the per-row key that replaces
-    # TRex's collapsed `tracklet_id`. See OFF_AXIS_FIELDS.
-    bounds_field = next((k for k in _TRACKLET_BOUNDS_FIELDS if k in data.files), None)
-    if bounds_field is not None:
-        df[TRACKLET_START_COLUMN] = tracklet_starts(
-            df["frame"].to_numpy(dtype=np.float64, na_value=np.nan),
-            data[bounds_field],
-            source=filepath,
+        # The bounds are an off-axis array, so they never became columns above.
+        # Read here, once `frame` is settled, into the per-row key that replaces
+        # TRex's collapsed `tracklet_id`. See OFF_AXIS_FIELDS.
+        bounds_field = next(
+            (k for k in _TRACKLET_BOUNDS_FIELDS if k in data.files), None
         )
-        df = df.drop(columns="tracklet_id", errors="ignore")
+        if bounds_field is not None:
+            df[TRACKLET_START_COLUMN] = tracklet_starts(
+                df["frame"].to_numpy(dtype=np.float64, na_value=np.nan),
+                data[bounds_field],
+                source=filepath,
+            )
+            df = df.drop(columns="tracklet_id", errors="ignore")
 
-    return df
+        return df
 
 
 def name_the_body_centre(frame: pd.DataFrame, *, source: Path) -> pd.DataFrame:

@@ -39,7 +39,8 @@ What lives where:
   roots they consume, for the tests of what a source change reaches, and one
   that fits, for the tests of the claim a fit holds.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
-  TREx, SLEAP and DeepLabCut exports.
+  TREx, SLEAP and DeepLabCut exports, and an object member whose unpickling
+  writes a marker file.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
@@ -374,6 +375,7 @@ from tests.helpers.tracks import (
     set_tracks_cell,
     track_sequences,
     track_table,
+    unpickling_member,
     write_calms21_npy,
     write_dlc_csv,
     write_sleap_analysis_h5,
@@ -727,6 +729,7 @@ __all__ = [
     "track_table",
     "tree_snapshot",
     "ultralytics_probe_response",
+    "unpickling_member",
     "write_data_yaml",
     "write_appearance_readback",
     "write_calms21_npy",
