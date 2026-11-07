@@ -92,5 +92,10 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   `mutate_manifest`, `write_manifest` or `save`, or updates `splits` through
   `model_copy` or `setattr`.
 - `test_shared_tool_cap.py`: more than 16 tools in `mosaic.agent.mcp.spec.TOOLS`.
+- `test_converters_do_not_unpickle.py`: a module under `core/track_library/` or
+  `behavior/label_library/` other than `safe_load.py` that passes `allow_pickle`
+  as anything but `False`, calls `load` or `loads` of `pickle`, `joblib`, `dill`
+  or `cloudpickle`, or names `read_hdf`, `read_pickle`, `HDFStore` or
+  `Unpickler`.
 - `test_storage_name_marker.py`: a feature slug or a literal input name that contains
   `~`, the shortened storage-name marker.

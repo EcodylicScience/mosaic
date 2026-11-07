@@ -89,3 +89,15 @@ def test_the_track_converter_refuses_an_untrusted_npy_and_names_it(
             _ = converter.convert(npy, Calms21Params(), EntryHints())
         else:
             _ = converter.enumerate_sequences(npy)
+
+
+@pytest.mark.parametrize("pickled", [[1, 2], [3], "text"], ids=["pair", "one", "str"])
+def test_a_trusted_npy_that_is_not_a_dict_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pickled: object
+) -> None:
+    monkeypatch.setenv(TRUST_VARIABLE, "1")
+    npy = tmp_path / "not_a_dict.npy"
+    np.save(npy, np.array(pickled, dtype=object), allow_pickle=True)
+
+    with pytest.raises(ValueError, match=r"not_a_dict\.npy"):
+        _ = load_calms21(npy)

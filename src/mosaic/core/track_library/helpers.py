@@ -1,13 +1,15 @@
 """Shared utilities for track format converters."""
 
 from __future__ import annotations
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 import json
 import numpy as np
 
 from mosaic.core.helpers import text_cell
-from mosaic.core.track_library.safe_load import require_pickled_trust
+from mosaic.core.narrowing import is_object_mapping
+from mosaic.core.track_library.safe_load import load_pickled_npy_dict
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -34,7 +36,37 @@ def column_array(frame: "pd.DataFrame", name: str) -> np.ndarray:
     return np.asarray(frame[name])
 
 
-def load_calms21(path: Path | str):
+type Calms21Nested = dict[str, dict[str, Mapping[str, object]]]
+"""A CalMS21 file's contents: group -> sequence id -> the sequence's fields."""
+
+
+def _nested_calms21(path: Path, loaded: object) -> Calms21Nested:
+    """*loaded*, the contents of the CalMS21 file at *path*, as nested mappings.
+
+    Raises:
+        ValueError: If a level of *loaded* is not a mapping.
+    """
+    if not is_object_mapping(loaded):
+        raise ValueError(
+            f"{path}: expected a CalMS21 dict, got {type(loaded).__name__}"
+        )
+    nested: Calms21Nested = {}
+    for group, sequences in loaded.items():
+        if not is_object_mapping(sequences):
+            raise ValueError(f"{path}: CalMS21 group {group!r} is not a dict")
+        nested[str(group)] = {}
+        for sequence_id, fields in sequences.items():
+            if not is_object_mapping(fields):
+                raise ValueError(
+                    f"{path}: CalMS21 sequence {sequence_id!r} is not a dict"
+                )
+            nested[str(group)][str(sequence_id)] = {
+                str(name): value for name, value in fields.items()
+            }
+    return nested
+
+
+def load_calms21(path: Path | str) -> Calms21Nested:
     """Load a single CalMS21 file: either .npy (dict) or the original .json.
 
     A CalMS21 ``.npy`` is a pickled dict, so it loads by unpickling, which can run
@@ -50,15 +82,16 @@ def load_calms21(path: Path | str):
     Raises:
         PickledFormatNotTrustedError: If *path* is a ``.npy`` and pickled files are
             not trusted.
-        ValueError: If *path* is neither a ``.npy`` nor a ``.json``.
+        ValueError: If *path* is neither a ``.npy`` nor a ``.json``, or its
+            contents are not nested dicts.
     """
     p = Path(path)
     if p.suffix.lower() == ".npy":
-        require_pickled_trust(p, "CalMS21 .npy", "the original CalMS21 .json")
-        return np.load(p, allow_pickle=True).item()
+        loaded = load_pickled_npy_dict(p, "CalMS21 .npy", "the original CalMS21 .json")
+        return _nested_calms21(p, loaded)
     elif p.suffix.lower() == ".json":
         with open(p, "r") as f:
-            return json.load(f)
+            return _nested_calms21(p, json.load(f))
     else:
         raise ValueError(f"Unsupported CalMS21 path (expect .npy or .json): {p}")
 

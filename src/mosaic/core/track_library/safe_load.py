@@ -48,6 +48,8 @@ __all__ = [
     "check_hdf5_file",
     "check_hdf5_member",
     "check_npz",
+    "load_pickled_dataframe",
+    "load_pickled_npy_dict",
     "pickled_files_trusted",
     "raw_array_limit_bytes",
     "read_hdf5_attribute",
@@ -143,6 +145,55 @@ def require_pickled_trust(path: Path, fmt: str, safe_form: str) -> None:
         f"{safe_form}, or set {TRUST_VARIABLE}=1 if you trust where it came from."
     )
     raise PickledFormatNotTrustedError(path, reason)
+
+
+def load_pickled_npy_dict(path: Path, fmt: str, safe_form: str) -> dict[str, object]:
+    """Load the dict that a pickled ``.npy`` holds, when pickled files are trusted.
+
+    This is one of the two places that a converter's file is unpickled whole, so a
+    file that is not trusted is refused before it is read.
+
+    Args:
+        path: The ``.npy`` file.
+        fmt: The file's format, as a refusal names it.
+        safe_form: A form of the same data that loads without unpickling.
+
+    Returns:
+        The dict that the file pickles, with its values as the file wrote them.
+
+    Raises:
+        PickledFormatNotTrustedError: If `pickled_files_trusted` is false.
+        ValueError: If the file pickles something other than a dict.
+    """
+    require_pickled_trust(path, fmt, safe_form)
+    array = np.load(path, allow_pickle=True)
+    loaded: object = array.item() if array.size == 1 else array
+    if not is_object_mapping(loaded):
+        raise ValueError(
+            f"{path}: expected a pickled dict, got {type(loaded).__name__}"
+        )
+    return {str(key): value for key, value in loaded.items()}
+
+
+def load_pickled_dataframe(path: Path, fmt: str, safe_form: str) -> object:
+    """Load a pandas pickle, when pickled files are trusted.
+
+    This is the other place that a converter's file is unpickled whole, so a file
+    that is not trusted is refused before it is read.
+
+    Args:
+        path: The pickle file.
+        fmt: The file's format, as a refusal names it.
+        safe_form: A form of the same data that loads without unpickling.
+
+    Returns:
+        The object that the file pickles, which the caller checks is a frame.
+
+    Raises:
+        PickledFormatNotTrustedError: If `pickled_files_trusted` is false.
+    """
+    require_pickled_trust(path, fmt, safe_form)
+    return pd.read_pickle(path)
 
 
 def check_npz(path: Path) -> None:

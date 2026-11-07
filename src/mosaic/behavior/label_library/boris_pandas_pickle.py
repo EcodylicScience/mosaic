@@ -8,6 +8,10 @@ preserves all data types and structure from the aggregated events export.
 The pickle format contains the same data as the aggregated CSV/TSV export,
 but with proper Python data types (datetime, float, etc.) already applied.
 
+A pickle loads by unpickling, which can run code, so this converter reads one only
+when ``MOSAIC_TRUST_PICKLED_FILES=1`` says the files are trusted. Otherwise export
+the aggregated CSV/TSV from BORIS and convert it with ``boris_aggregated_csv``.
+
 Expected structure:
     DataFrame with columns including:
     - Observation id (str)
@@ -27,10 +31,6 @@ Expected structure:
     - Comment start (str)
     - Comment stop (str)
     - [Independent variables columns]
-
-Loading:
-    import pandas as pd
-    df = pd.read_pickle('boris_export.pkl')
 
 References
 ----------
@@ -71,6 +71,10 @@ from mosaic.core.label_converter import (
     LabelEntry,
 )
 from mosaic.core.params import Declared
+from mosaic.core.track_library.safe_load import (
+    PickledFormatNotTrustedError,
+    load_pickled_dataframe,
+)
 
 
 class BorisPandasPickleParams(LabelConvertParams):
@@ -124,7 +128,11 @@ class BorisPandasPickleConverter(LabelConverter[BorisPandasPickleParams]):
         df.to_pickle('filename.pkl')
 
     The pickle format contains the same aggregated event data as CSV/TSV
-    exports but with preserved data types (datetime, float, etc.).
+    exports but with preserved data types (datetime, float, etc.). A pickle
+    loads by unpickling, which can run code, so the converter reads one only
+    when ``MOSAIC_TRUST_PICKLED_FILES=1`` is set; without it the file is
+    refused, and the aggregated CSV/TSV export loads through
+    ``boris_aggregated_csv`` instead.
     Outputs individual_pair_v1 format with explicit individual IDs.
 
     The converter:
@@ -185,10 +193,18 @@ class BorisPandasPickleConverter(LabelConverter[BorisPandasPickleParams]):
 
         Returns:
             One :class:`LabelEntry` per (observation, subject) sequence.
+
+        Raises:
+            PickledFormatNotTrustedError: If pickled files are not trusted.
+            ValueError: If the file is not a BORIS DataFrame pickle.
         """
         # Load BORIS DataFrame from pickle
         try:
-            df = pd.read_pickle(src_path)
+            df = load_pickled_dataframe(
+                src_path, "BORIS pickle", "the BORIS aggregated CSV/TSV export"
+            )
+        except PickledFormatNotTrustedError:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to load BORIS pickle file: {e}")
 

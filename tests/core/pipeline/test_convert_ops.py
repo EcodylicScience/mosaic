@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -22,7 +23,10 @@ from tests.helpers import (
     calms21_dataset,
     entry_error_lines,
     latest_snapshot,
+    make_dataset,
     tree_snapshot,
+    unpickling_member,
+    write_trex_npz,
 )
 
 
@@ -89,6 +93,42 @@ def test_a_failed_file_emits_entry_error_fails_the_attempt_and_a_rerun_resumes(
     _ = bad.write_bytes(good_bytes)
     _ = run_op(ds, "convert-tracks", {"source_format": "calms21_npy"})
     assert len(read_tracks_index(ds)) == 3
+
+
+def test_a_crafted_trex_file_is_refused_unread_and_its_neighbor_converts(
+    tmp_path: Path,
+) -> None:
+    """A TRex export that would unpickle on load is one failed entry, not a run.
+
+    The refusal is an ``entry_error`` naming the file and the object member. The
+    op fails the attempt, the good file's entry is written, and the member's
+    unpickling never ran.
+    """
+    ds = make_dataset(tmp_path / "ds")
+    raw = ds.base_dir / "raw"
+    marker = tmp_path / "unpickled"
+    write_trex_npz(raw / "good_fish0.npz")
+    crafted = raw / "crafted_fish0.npz"
+    write_trex_npz(crafted)
+    with np.load(crafted) as data:
+        fields = {name: data[name] for name in data.files}
+    np.savez(crafted, payload=unpickling_member(marker), **fields)
+    _ = ds.index_tracks_raw([raw], patterns=["*.npz"], src_format="trex_npz")
+
+    with pytest.raises(RuntimeError, match="convert-tracks failed on 1 raw file"):
+        _ = run_op(ds, "convert-tracks", {"source_format": "trex_npz"})
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "failed"
+    assert snapshot["entries_failed"] == 1
+    [line] = entry_error_lines(ds, snapshot["execution_id"])
+    assert "crafted_fish0.npz" in line
+    assert "payload" in line
+    assert "object" in line
+    assert [
+        (row["group"], row["sequence"]) for _, row in read_tracks_index(ds).iterrows()
+    ] == [("", "good")]
+    assert not marker.exists(), "the converter unpickled the crafted member"
 
 
 def test_convert_labels_plan_identity_names_the_labels_variant(tmp_path: Path) -> None:
