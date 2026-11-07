@@ -37,6 +37,17 @@ CUDA 13 libraries that torch 2.14.1 requires. A host with an older GPU reinstall
 same version from PyTorch's cu126 index, as `src/mosaic/tracking/external/README.md`
 describes. No identifier or name on disk moves.
 
+## Unreleased: feature inputs, drift and unwired params
+
+**A dict override for a field admitting several model types is validated as
+given.** `Params.from_overrides` merged a dict into the field's factory default
+whatever the field's type, so a partial or complete override of a field such as
+`labels` (a `ResultColumn` or a `GroundTruthLabelsSource`), a `LoadSpec`, or a
+`ThresholdsArtifact` beside a mapping was combined with the default's keys and
+refused. Only a field typed as one model, with or without `None`, still merges a
+partial dict into its default. A partial override of a discriminated-union field
+names its tag. No run identifier, op `version` or golden changes.
+
 ## Unreleased: a params model narrowed by a consumer gives mosaic's answer
 
 **Nothing moves.** No run identifier, op `version` or golden changes, and the full

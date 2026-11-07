@@ -7,12 +7,14 @@ of its dump, and the fields ``HASH_EXCLUDE`` keeps out of a run's identity.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Annotated
 
 import pytest
 from pydantic import BaseModel as _PydanticBaseModel
 from pydantic import Field, ValidationError
 
+from mosaic.behavior.feature_library.classifier_common import ThresholdsArtifact
 from mosaic.behavior.feature_library.types import InterpolationConfig, SamplingConfig
 from mosaic.core.params import (
     HASH_EXCLUDE,
@@ -21,6 +23,12 @@ from mosaic.core.params import (
     declared_field_names,
     has_fields,
 )
+from mosaic.core.pipeline._loaders import LoadSpec, NpzLoadSpec, ParquetLoadSpec
+from mosaic.core.pipeline.types.labels import (
+    GroundTruthLabelsSource,
+    LabelsSourceSpec,
+)
+from mosaic.core.pipeline.types.results import ResultColumn
 from tests.helpers import narrowed_params, run_id_digest
 
 
@@ -57,6 +65,53 @@ def test_from_overrides_full_basemodel_override() -> None:
     p = _ParamsWithNested.from_overrides({"nested": {"a": 10, "b": 20}})
     assert p.nested.a == 10
     assert p.nested.b == 20
+
+
+class _ParamsWithLabels(Params):
+    labels: LabelsSourceSpec = Field(default_factory=GroundTruthLabelsSource)
+
+
+class _ParamsWithLoad(Params):
+    load: LoadSpec = Field(default_factory=lambda: NpzLoadSpec(key="labels"))
+
+
+class _ParamsWithThresholds(Params):
+    thresholds: ThresholdsArtifact | Mapping[int, float] | None = Field(
+        default_factory=ThresholdsArtifact
+    )
+
+
+def test_from_overrides_validates_a_union_field_override_as_given() -> None:
+    p = _ParamsWithLabels.from_overrides(
+        {"labels": {"feature": "global-kmeans", "column": "cluster"}}
+    )
+    assert isinstance(p.labels, ResultColumn)
+    assert p.labels.feature == "global-kmeans"
+    assert p.labels.column == "cluster"
+
+
+@pytest.mark.parametrize(
+    "labels",
+    [
+        ResultColumn(feature="global-kmeans", column="cluster"),
+        GroundTruthLabelsSource(kind="behavior"),
+    ],
+)
+def test_from_overrides_round_trips_each_member_of_a_union_field(
+    labels: ResultColumn | GroundTruthLabelsSource,
+) -> None:
+    p = _ParamsWithLabels(labels=labels)
+    assert _ParamsWithLabels.from_overrides(p.model_dump()) == p
+
+
+def test_from_overrides_switches_the_kind_of_a_load_spec_field() -> None:
+    p = _ParamsWithLoad.from_overrides({"load": {"kind": "parquet"}})
+    assert isinstance(p.load, ParquetLoadSpec)
+
+
+def test_from_overrides_validates_a_mapping_beside_a_model_as_given() -> None:
+    p = _ParamsWithThresholds.from_overrides({"thresholds": {1: 0.5}})
+    assert p.thresholds == {1: 0.5}
 
 
 # --- Composition ---

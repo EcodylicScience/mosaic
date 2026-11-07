@@ -11,9 +11,10 @@ Imports pydantic, the standard library, and StrictModel.
 from __future__ import annotations
 
 import textwrap
+import types
 from dataclasses import dataclass
 from inspect import cleandoc
-from typing import Annotated, Final, Self, TypeAlias
+from typing import Annotated, Final, Self, TypeAlias, Union, get_args, get_origin
 
 from pydantic import BaseModel, Field, GetJsonSchemaHandler
 from pydantic.fields import FieldInfo
@@ -357,6 +358,28 @@ class DeclaredModel(StrictModel):
         return schema
 
 
+def _sole_model_type(annotation: object) -> type[BaseModel] | None:
+    """The one model type a field annotation admits, or ``None``.
+
+    Strips ``Annotated`` wrappers at any depth and drops ``None`` from a union.
+    Returns the remaining member when exactly one remains and it is a
+    ``BaseModel`` subclass. A union of several models, or of a model and a
+    non-model type such as a mapping, returns ``None``.
+    """
+    while get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    if get_origin(annotation) in (Union, types.UnionType):
+        members = [
+            member for member in get_args(annotation) if member is not type(None)
+        ]
+        if len(members) != 1:
+            return None
+        return _sole_model_type(members[0])
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
 class NestedParams(DeclaredModel):
     """Base for a model a :class:`Params` field holds that names its own identity.
 
@@ -402,9 +425,13 @@ class Params(DeclaredModel):
     def from_overrides(cls, overrides: dict[str, object] | None = None) -> Self:
         """Construct from user dict; missing keys get field defaults.
 
-        For BaseModel-typed fields with default_factory, partial dict overrides
-        are merged on top of the default before validation (1-level deep merge).
-        This replaces the per-feature deep-merge hacks in global_ward.
+        A dict override of a field typed as one model, with or without ``None``,
+        and with a factory default, is merged on top of that default before
+        validation (1-level deep merge). A dict override of any other field is
+        validated as given: a field admitting several model types, or a model
+        beside a non-model member such as a mapping, has no single default to
+        merge into. A partial dict for such a field names its tag, for example
+        the ``kind`` of a discriminated union.
         """
         if not overrides:
             return cls()
@@ -415,7 +442,10 @@ class Params(DeclaredModel):
             field_info = cls.model_fields.get(key)
             if field_info is None or field_info.default_factory is None:
                 continue
+            model_type = _sole_model_type(field_info.annotation)
+            if model_type is None:
+                continue
             default_obj: object = field_info.get_default(call_default_factory=True)
-            if isinstance(default_obj, BaseModel):
+            if isinstance(default_obj, model_type):
                 merged[key] = {**default_obj.model_dump(), **value}
         return cls.model_validate(merged)
