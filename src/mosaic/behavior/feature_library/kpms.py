@@ -21,7 +21,6 @@ the runner's interpreter, which a feature starts only after
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -54,6 +53,7 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline.job import CancelCheck, CancelToken, cancel_check
 from mosaic.core.pipeline.refusal import ToolUnavailable
+from mosaic.env_settings import flag_env
 from mosaic.optional_dependency import Prerequisite
 from mosaic.core.pipeline.toolenv import (
     ToolEnv,
@@ -204,11 +204,11 @@ def check_license_accepted() -> None:
     every flag to ``true`` would assert an institution's entitlement on its
     behalf.
 
-    Unlike ``_int_env`` in :mod:`mosaic.media_probe_config`, a malformed value
-    gets no error of its own. Unset, blank, ``0`` and ``maybe`` are one answer,
-    the fallback state is the safe one, and every non-accepting value already
-    produces a single message naming the variable and the value it wants; a
-    second failure mode with an identical remedy would only add noise.
+    Unlike :func:`mosaic.env_settings.int_env`, a malformed value gets no error
+    of its own. Unset, blank, ``0`` and ``maybe`` are one answer, the fallback
+    state is the safe one, and every non-accepting value already produces a
+    single message naming the variable and the value it wants; a second failure
+    mode with an identical remedy would only add noise.
 
     Raises:
         ToolUnavailable: with :data:`LICENSE_NOTICE` and the cause ``license``
@@ -221,7 +221,7 @@ def check_license_accepted() -> None:
 
 def license_accepted() -> bool:
     """Whether ``MOSAIC_KPMS_LICENSE_ACCEPTED`` is ``1``, whitespace aside."""
-    return os.environ.get(KPMS_LICENSE_ENV, "").strip() == "1"
+    return flag_env(KPMS_LICENSE_ENV)
 
 
 @final

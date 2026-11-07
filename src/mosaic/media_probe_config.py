@@ -13,26 +13,9 @@ for those. `mosaic.runlog` is the same shape.
 
 from __future__ import annotations
 
-import os
-
 from mosaic_media import DEFAULT_THRESHOLDS, Thresholds
 
-
-def _int_env(name: str, default: int) -> int:
-    """The integer value of environment variable *name*, or *default*.
-
-    An unset or blank value falls back; a value that is not an integer raises
-    naming the variable, because a silently ignored typo would produce a verdict
-    nobody could explain.
-    """
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return int(raw)
-    except ValueError as exc:
-        message = f"{name} must be an integer, got {raw!r}"
-        raise ValueError(message) from exc
+from mosaic.env_settings import int_env
 
 
 def media_thresholds() -> Thresholds:
@@ -50,10 +33,10 @@ def media_thresholds() -> Thresholds:
     default, and a comparison against it raises `TypeError` at verdict time.
     """
     return Thresholds(
-        max_gop_bytes=_int_env(
+        max_gop_bytes=int_env(
             "MEDIA_PROBE_MAX_GOP_BYTES", DEFAULT_THRESHOLDS.max_gop_bytes
         ),
-        max_keyframe_interval_frames=_int_env(
+        max_keyframe_interval_frames=int_env(
             "MEDIA_PROBE_MAX_KEYFRAME_INTERVAL_FRAMES",
             DEFAULT_THRESHOLDS.max_keyframe_interval_frames,
         ),
