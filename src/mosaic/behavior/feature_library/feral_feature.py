@@ -510,6 +510,9 @@ class FeralFeature:
     # category groups it in the pipeline diagram and `mosaic features list`. A GPU
     # feature of category global is also offered to the queue's gpu-train lane.
     category = "global"
+    # Trains on the ground-truth labels of ``label_json``, a path the params
+    # types do not mark as labels.
+    needs_ground_truth = True
     costly_fit = True  # a superseded-run cleanup keeps its runs
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.

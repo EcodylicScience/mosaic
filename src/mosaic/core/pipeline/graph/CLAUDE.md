@@ -436,6 +436,13 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   which the catalog lists whether the prerequisite is met or not. `kpms` declares one.
   `catalog_index` summarizes the editor catalog without params schemas, and
   `describe_step_type` returns one entry whole (`test_pipeline_catalog_index.py`).
+- `CatalogEntry.ground_truth_fields` lists the fields whose type takes the
+  `GroundTruthLabelsSource` class itself, which leaves out the subclass
+  `PredictionsLabelsSource`. `needs_ground_truth` marks an entry with such a field
+  whose only form it is, a `LabeledTemplatesRef` field, or the class attribute
+  `needs_ground_truth = True` (`feral`). mosaic-app hides that form and leaves
+  those entries out of its picker
+  (`test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels`).
 - `step_type_detail` extends an index row with one `ParamRow` per wired params
   field, nested models as dotted paths, and gives the compacted schema only under
   `detail="schema"`. Unwired fields stay in that schema and on the reference pages.

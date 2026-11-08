@@ -733,10 +733,18 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
     if isinstance(params_cls, type) and issubclass(params_cls, BaseModel):
         schema = params_cls.model_json_schema()
     reference_fields: dict[str, ReferenceKind] = {}
-    for field_name, annotation in _params_field_types(kind, name).items():
+    field_types = _params_field_types(kind, name)
+    for field_name, annotation in field_types.items():
         site = _reference_site_of(annotation)
         if site == "result" or site == "identifier" or site == "labels":
             reference_fields[field_name] = site
+    ground_truth_fields = tuple(
+        sorted(
+            field_name
+            for field_name, annotation in field_types.items()
+            if _accepts_ground_truth(annotation)
+        )
+    )
     return CatalogEntry(
         name=name,
         type=kind,
@@ -750,7 +758,53 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         provides=provides,
         unavailable=declared.unavailable,
         license_note=license_notes(prerequisites),
+        ground_truth_fields=ground_truth_fields,
+        needs_ground_truth=_needs_ground_truth(cls, field_types),
     )
+
+
+def _field_forms(annotation: object) -> tuple[object, ...]:
+    """The types a field declared as *annotation* takes, ``None`` left out."""
+    args: tuple[object, ...] = getattr(annotation, "__args__", ())
+    candidates = args if args else (annotation,)
+    return tuple(candidate for candidate in candidates if candidate is not type(None))
+
+
+def _accepts_ground_truth(annotation: object) -> bool:
+    """Whether a field declared as *annotation* takes a ``GroundTruthLabelsSource``.
+
+    The class itself. Its subclass ``PredictionsLabelsSource`` reads the
+    ``predictions`` kind, a classifier's output.
+    """
+    from mosaic.core.pipeline.types.labels import GroundTruthLabelsSource
+
+    return any(form is GroundTruthLabelsSource for form in _field_forms(annotation))
+
+
+def _needs_ground_truth(cls: object, field_types: Mapping[str, object]) -> bool:
+    """Whether a step type depends on ground-truth labels.
+
+    True when a field takes the ``GroundTruthLabelsSource`` form and no other,
+    when a field takes labeled templates (``LabeledTemplatesRef``), which only a
+    run over ground-truth labels writes, or when the class declares
+    ``needs_ground_truth = True`` for a dependence its params types do not show.
+    """
+    from mosaic.core.pipeline.types.artifacts import LabeledTemplatesRef
+
+    if getattr(cls, "needs_ground_truth", False) is True:
+        return True
+    for annotation in field_types.values():
+        forms = _field_forms(annotation)
+        if _accepts_ground_truth(annotation) and all(
+            _accepts_ground_truth(form) for form in forms
+        ):
+            return True
+        if any(
+            isinstance(form, type) and issubclass(form, LabeledTemplatesRef)
+            for form in forms
+        ):
+            return True
+    return False
 
 
 class StepTypeNotFound(ClassifiedError, LookupError):

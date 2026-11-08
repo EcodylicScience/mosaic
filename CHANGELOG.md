@@ -8,6 +8,21 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the editor catalog flags the ground-truth labels fields
+
+`CatalogEntry` gains two fields, which `mosaic pipeline catalog --json` prints.
+`ground_truth_fields` lists the labels fields that accept the
+`GroundTruthLabelsSource` form: the `labels` field of `evaluate-labels`,
+`extract-labeled-templates`, `fit-label-map`, `label-statistics`,
+`lightning-action`, `probability-ensemble`, `sequence-classifier` and
+`tune-threshold`. `needs_ground_truth` is true for an entry that depends on
+ground-truth labels: those features less `label-statistics`, which also takes a
+`ResultColumn`, plus `xgboost`, which takes labeled templates, and `feral`,
+which declares the class attribute `needs_ground_truth = True` for its
+`label_json`. A feature outside mosaic declares the attribute the same way.
+Both fields default to empty and false. A reader of the older wire is
+unaffected. No identifier or name on disk moves.
+
 ## Unreleased: the aggregates reduce several columns, split by arena and by a subgroup column
 
 `frame-aggregate` 0.3, `sequence-aggregate` 0.2 and `individual-aggregate` 0.2

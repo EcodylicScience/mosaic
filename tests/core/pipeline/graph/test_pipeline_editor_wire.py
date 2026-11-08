@@ -132,6 +132,44 @@ def test_labels_fields_are_listed_as_labels_references() -> None:
     assert entries["id-tag-columns"].reference_fields["labels"] == "labels"
 
 
+def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None:
+    """An editor hides the ground-truth form and the entries that depend on it.
+
+    ``label-statistics`` also takes a ``ResultColumn`` and does not depend on
+    ground truth. ``label-predictions`` reads the ``predictions`` kind through a
+    subclass, and ``overlay`` names a kind by a string field: neither is flagged.
+    ``xgboost`` takes labeled templates and ``feral`` declares the dependence.
+    """
+    entries = editor_catalog().entries
+    fields = {entry.name: entry.ground_truth_fields for entry in entries}
+    dependent = {entry.name for entry in entries if entry.needs_ground_truth}
+
+    assert {name: names for name, names in fields.items() if names} == {
+        "evaluate-labels": ("labels",),
+        "extract-labeled-templates": ("labels",),
+        "fit-label-map": ("labels",),
+        "label-statistics": ("labels",),
+        "lightning-action": ("labels",),
+        "probability-ensemble": ("labels",),
+        "sequence-classifier": ("labels",),
+        "tune-threshold": ("labels",),
+    }
+    assert dependent == {
+        "evaluate-labels",
+        "extract-labeled-templates",
+        "feral",
+        "fit-label-map",
+        "lightning-action",
+        "probability-ensemble",
+        "sequence-classifier",
+        "tune-threshold",
+        "xgboost",
+    }
+    for entry in entries:
+        labels = {f for f, kind in entry.reference_fields.items() if kind == "labels"}
+        assert set(entry.ground_truth_fields) <= labels, entry.name
+
+
 def test_a_catalog_entry_carries_its_schema_version_and_summary() -> None:
     entries = {entry.name: entry for entry in editor_catalog().entries}
     tsne = entries["global-tsne"]
