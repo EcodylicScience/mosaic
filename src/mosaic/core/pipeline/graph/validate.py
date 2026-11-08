@@ -734,24 +734,24 @@ def _column_problems(
 
 _PAIR_RULE: Final[TypeAdapter[PairRule]] = TypeAdapter(PairRule)
 
-_AGG_FIELD: Final = "agg"
+_AGGS_FIELD: Final = "aggs"
 _FILTER_FIELD: Final = "filter_expr"
 
 
 def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead | None:
     """The rows that an aggregate built with *built* reads of pair rows.
 
-    ``None`` when it is neither a ``sum`` nor a ``count``, or when its params do
-    not hold the fields of a pair rule.
+    ``None`` when none of its aggregations is a ``sum`` or a ``count``, or when
+    its params do not hold the fields of a pair rule.
     """
     values = param_values(
-        built, (column_field, _AGG_FIELD, PAIR_RULE_FIELD, _FILTER_FIELD)
+        built, (column_field, _AGGS_FIELD, PAIR_RULE_FIELD, _FILTER_FIELD)
     )
-    column = values.get(column_field)
-    agg = values.get(_AGG_FIELD)
+    columns = _names(values.get(column_field))
+    aggs = _names(values.get(_AGGS_FIELD))
     pairs = values.get(PAIR_RULE_FIELD)
     filter_expr = values.get(_FILTER_FIELD)
-    if not isinstance(column, str) or not isinstance(agg, str):
+    if not columns or not aggs:
         return None
     try:
         rule = _PAIR_RULE.validate_python(pairs, strict=True)
@@ -759,11 +759,20 @@ def _pair_read(merged: ColumnSet, built: Params, column_field: str) -> PairRead 
         return None
     return pair_rule_read(
         merged,
-        column,
-        agg,
+        columns,
+        aggs,
         rule,
         filter_expr if isinstance(filter_expr, str) else None,
     )
+
+
+def _names(value: JsonValue) -> tuple[str, ...]:
+    """The strings that a params value lists: one string, or a list of them."""
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return tuple(item for item in value if isinstance(item, str))
+    return ()
 
 
 def pair_rules(
@@ -771,8 +780,8 @@ def pair_rules(
 ) -> dict[str, PairRead]:
     """The rows that each ``sum`` or ``count`` step with a pair rule reads, by step id.
 
-    A step's ``auto`` reads ``once`` when its column is declared symmetric over
-    mirrored rows and it sets no ``filter_expr``
+    A step's ``auto`` reads ``once`` when each of its columns is declared
+    symmetric over mirrored rows and it sets no ``filter_expr``
     (:func:`~.columns.pair_rule_read`), and every row otherwise. A step that
     writes ``once`` or ``each_perspective`` reads it. Read from the declarations
     alone: the tracks hold no ``perspective``, and the columns a plan measures

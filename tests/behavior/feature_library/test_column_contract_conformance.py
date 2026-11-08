@@ -84,8 +84,8 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "extract-labeled-templates": {"labels": {"kind": "behavior"}, "n_total": 40},
     "fit-label-map": {"prediction_column": "cluster"},
     "extract-templates": {"n_templates": 50},
-    "frame-aggregate": {"column": "X"},
-    "individual-aggregate": {"column": "X"},
+    "frame-aggregate": {"columns": ["X"]},
+    "individual-aggregate": {"columns": ["X"]},
     "global-kmeans": {"templates": {"step": "extract-templates"}, "k": 2, "n_init": 1},
     "global-scaler": {"templates": {"step": "extract-templates"}},
     "global-tsne": {
@@ -119,7 +119,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "probability-ensemble": {"default_class": 0},
     "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
-    "sequence-aggregate": {"column": "X"},
+    "sequence-aggregate": {"columns": ["X"]},
     "smooth-probabilities": {"default_class": 0},
     "tune-threshold": {"default_class": 0, "nested": False},
     "sequence-classifier": {

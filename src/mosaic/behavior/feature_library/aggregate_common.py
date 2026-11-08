@@ -2,11 +2,13 @@
 Shared reduction of the aggregate features.
 
 ``frame-aggregate``, ``sequence-aggregate`` and ``individual-aggregate`` reduce
-one column of a feature output or of raw tracks with the same steps: filter,
+columns of a feature output or of raw tracks with the same steps: filter,
 transform, threshold, then a group-by. :func:`reduce_column` holds those steps
 and :class:`AggregateParams` the parameters they read, so the three features
 differ only in the keys they group by and in whether they take a ``pairs``
-rule (:class:`PairAggregateParams`).
+rule (:class:`PairAggregateParams`). Each feature also groups by the input's
+``arena`` column when it has one, and by ``subgroup_col`` when it is set
+(:func:`split_keys`).
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from collections.abc import Sequence
 from typing import Annotated, Literal
 
 import pandas as pd
+from pydantic import Field, field_validator
 
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
@@ -22,11 +25,18 @@ from mosaic.core.pipeline.column_contract import (
     PairRead,
     PairRule,
 )
+from mosaic.core.schema import ARENA_COLUMN
 
-_COLUMN_DESCRIPTION = "The name of the column to aggregate."
+type Aggregation = Literal["mean", "median", "min", "max", "std", "sum", "count"]
 
-_AGG_DESCRIPTION = (
-    "The aggregation applied across the rows that the feature reduces "
+_COLUMNS_DESCRIPTION = (
+    "The names of the columns to aggregate. Each column is reduced by each "
+    "aggregation in aggs, and the result column is named column followed by "
+    "agg, joined with an underscore."
+)
+
+_AGGS_DESCRIPTION = (
+    "The aggregations applied across the rows that the feature reduces "
     "together: those of one frame, one entry or one id, as the feature "
     "groups them. Known values "
     "are mean, median, min, max, std, sum and count. Without threshold, "
@@ -34,25 +44,26 @@ _AGG_DESCRIPTION = (
     "values."
 )
 
-_OUTPUT_COLUMN_DESCRIPTION = (
-    "The name of the result column. Unset, it is column followed by agg, "
-    "joined with an underscore."
+_SUBGROUP_COL_DESCRIPTION = (
+    "A column of the input that splits the rows reduced together into "
+    "subgroups, one result row per value, such as a tag column or the event "
+    "of ffgroups. Rows whose value is null belong to no subgroup and are "
+    "dropped. Unset, the rows are not split."
 )
-
 _FILTER_EXPR_DESCRIPTION = (
     "A pandas DataFrame.query expression applied before aggregation, for "
     "example to drop flagged frames."
 )
 
 _THRESHOLD_DESCRIPTION = (
-    "Aggregate the boolean column > threshold instead of the raw column. "
-    "Unset, the raw column is aggregated. With agg set to mean, the "
+    "Aggregate the boolean column > threshold instead of each raw column. "
+    "Unset, the raw columns are aggregated. With mean in aggs, the "
     "result is the fraction of the rows reduced together that exceed the "
     "threshold."
 )
 
 _TRANSFORM_DESCRIPTION = (
-    "A transform applied to the column before aggregation. Known values "
+    "A transform applied to each column before aggregation. Known values "
     "are none and abs. abs aggregates the column's absolute value, useful "
     "for a magnitude such as angular velocity."
 )
@@ -61,9 +72,9 @@ _PAIRS_DESCRIPTION = (
     "Which rows of a pair table sum and count read, when the input has a "
     "perspective column; the other aggregations read every row. once reads "
     "perspective 0, each pair once, and each_perspective reads every "
-    "ordered pair row. auto is resolved by a recipe's plan: once for a "
-    "column declared symmetric over mirrored rows with no filter_expr, "
-    "every row otherwise. A run outside a plan (mosaic run --feature) has "
+    "ordered pair row. auto is resolved by a recipe's plan: once when every "
+    "column is declared symmetric over mirrored rows and filter_expr is "
+    "unset, every row otherwise. A run outside a plan (mosaic run --feature) has "
     "no input chain to resolve and reads every row under auto, which never "
     "halves a value without a declaration. Set once there to count each "
     "pair once."
@@ -75,24 +86,33 @@ _PERSPECTIVE_COLUMN = "perspective"
 class AggregateParams(Params):
     """The parameters of the reduction that every aggregate shares.
 
-    ``column`` is the column reduced and ``agg`` the aggregation. Before it,
+    Each of ``columns`` is reduced by each of ``aggs``. Before it,
     ``filter_expr`` drops rows, ``transform`` takes the absolute value and
-    ``threshold`` turns the column into whether it exceeds a value.
-    ``output_column`` names the result. :class:`PairAggregateParams` adds the
-    ``pairs`` rule for the aggregates whose groups hold both rows of a pair.
+    ``threshold`` turns each column into whether it exceeds a value.
+    ``subgroup_col`` splits the rows reduced together.
+    :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
+    whose groups hold both rows of a pair.
     """
 
-    column: Annotated[str, Declared(_COLUMN_DESCRIPTION)]
-    agg: Annotated[
-        Literal["mean", "median", "min", "max", "std", "sum", "count"],
-        Declared(_AGG_DESCRIPTION),
-    ] = "mean"
-    output_column: Annotated[str | None, Declared(_OUTPUT_COLUMN_DESCRIPTION)] = None
+    columns: Annotated[list[str], Declared(_COLUMNS_DESCRIPTION)] = Field(min_length=1)
+    aggs: Annotated[list[Aggregation], Declared(_AGGS_DESCRIPTION)] = Field(
+        default_factory=lambda: ["mean"], min_length=1
+    )
     filter_expr: Annotated[str | None, Declared(_FILTER_EXPR_DESCRIPTION)] = None
     threshold: Annotated[float | None, Declared(_THRESHOLD_DESCRIPTION)] = None
     transform: Annotated[Literal["none", "abs"], Declared(_TRANSFORM_DESCRIPTION)] = (
         "none"
     )
+    subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+
+    @field_validator("columns", "aggs", check_fields=False)
+    @classmethod
+    def _no_repeats(cls, value: list[str]) -> list[str]:
+        """Refuse a name listed twice, which would name one result column twice."""
+        repeated = sorted({item for item in value if value.count(item) > 1})
+        if repeated:
+            raise ValueError(f"lists {', '.join(repeated)} more than once")
+        return value
 
 
 class PairAggregateParams(AggregateParams):
@@ -114,9 +134,16 @@ class PairAggregateParams(AggregateParams):
         return "once" if self.pairs == "once" else "each_perspective"
 
 
-def output_column_name(params: AggregateParams) -> str:
-    """The result column: ``output_column``, else ``column`` and ``agg`` joined."""
-    return params.output_column or f"{params.column}_{params.agg}"
+def split_keys(df: pd.DataFrame, params: AggregateParams) -> list[str]:
+    """The keys that split the rows a feature reduces together.
+
+    ``arena`` when the input has the column, so the animals of different arenas
+    are never pooled, then ``subgroup_col`` when it is set.
+    """
+    keys = [ARENA_COLUMN] if ARENA_COLUMN in df.columns else []
+    if params.subgroup_col and params.subgroup_col not in keys:
+        keys.append(params.subgroup_col)
+    return keys
 
 
 def reduce_column(
@@ -127,23 +154,25 @@ def reduce_column(
     first: Sequence[str] = (),
     pairs: PairRead,
 ) -> pd.DataFrame:
-    """Reduce ``params.column`` of ``df`` to one row per distinct ``keys``.
+    """Reduce each of ``params.columns`` of ``df`` to one row per distinct ``keys``.
 
     Applies ``filter_expr``, ``transform`` and ``threshold``, then groups by
-    ``keys`` and aggregates with ``agg``. The result holds ``keys``, then each
-    column of ``first`` (its first value in the group), then the output column,
-    sorted by ``keys``. It is empty when no row survives the filter.
+    ``keys`` and aggregates each column with each of ``aggs``. The result holds
+    ``keys``, then each column of ``first`` (its first value in the group), then
+    ``<column>_<agg>`` for each column and, within it, each aggregation, sorted
+    by ``keys``. A row whose key is null belongs to no group. The result is
+    empty when no row survives the filter.
 
     A pair table holds each pair once per perspective. Under ``pairs="once"``
-    and with a ``perspective`` column present, ``sum`` and ``count`` keep the
-    ``perspective == 0`` rows, so each pair counts once. Under
-    ``each_perspective`` they read every ordered pair row, as a caller that
-    groups pair rows by a focal id needs. The other aggregations read every
-    row under either.
+    and with a ``perspective`` column present, ``sum`` and ``count`` read the
+    ``perspective == 0`` rows, so each pair counts once, while the other
+    aggregations of the same call read every row. Under ``each_perspective``
+    every aggregation reads every ordered pair row, as a caller that groups pair
+    rows by a focal id needs.
 
     Args:
         df: The rows to reduce.
-        params: The column, aggregation and pre-aggregation steps.
+        params: The columns, aggregations and pre-aggregation steps.
         keys: The columns to group by.
         first: Columns that take their first value within each group.
         pairs: The rows of a pair table that ``sum`` and ``count`` read.
@@ -153,25 +182,38 @@ def reduce_column(
     """
     if params.filter_expr:
         df = df.query(params.filter_expr)
-    if (
-        pairs == "once"
-        and params.agg in PAIR_COUNTING_AGGS
-        and _PERSPECTIVE_COLUMN in df.columns
-    ):
-        df = df[df[_PERSPECTIVE_COLUMN] == 0]
     if df.empty:
         return pd.DataFrame()
 
-    values = df[params.column]
-    if params.transform == "abs":
-        values = values.abs()
-    if params.threshold is not None:
-        values = (values > params.threshold).astype(float)
-
     work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *first)})
-    work["_v"] = values.to_numpy()
+    for index, column in enumerate(params.columns):
+        values = df[column]
+        if params.transform == "abs":
+            values = values.abs()
+        if params.threshold is not None:
+            values = (values > params.threshold).astype(float)
+        work[f"_v{index}"] = values.to_numpy()
 
-    out_col = output_column_name(params)
-    named = {name: pd.NamedAgg(column=name, aggfunc="first") for name in first}
-    named[out_col] = pd.NamedAgg(column="_v", aggfunc=params.agg)
-    return work.groupby(list(keys), sort=True).agg(**named).reset_index()
+    once = pairs == "once" and _PERSPECTIVE_COLUMN in df.columns
+    halved = work[(df[_PERSPECTIVE_COLUMN] == 0).to_numpy()] if once else work
+    group_keys = list(keys)
+    grouped = work.groupby(group_keys, sort=True)
+    reduced = (
+        grouped[list(first)].first()
+        if first
+        else pd.DataFrame(index=grouped.size().index)
+    )
+    for index, column in enumerate(params.columns):
+        for agg in params.aggs:
+            counting = agg in PAIR_COUNTING_AGGS
+            source = halved if once and counting else work
+            result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
+            # A group whose rows are all of the other perspective sums no row.
+            reduced[f"{column}_{agg}"] = (
+                result.reindex(reduced.index, fill_value=0)
+                if counting
+                else result.reindex(reduced.index)
+            )
+    if reduced.empty:
+        return pd.DataFrame()
+    return reduced.reset_index()

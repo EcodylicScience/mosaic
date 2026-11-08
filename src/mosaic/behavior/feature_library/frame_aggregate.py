@@ -2,14 +2,16 @@
 FrameAggregate -- generic per-frame across-ids summary feature.
 
 Consumes any feature output (or raw tracks) and reduces multi-id data to one
-row per frame by applying an aggregation (mean/median/min/max/std/sum/count)
-to a chosen column. Optional pre-aggregation transforms cover the common
-cases: ``transform="abs"`` for magnitudes, ``threshold=X`` with
-``agg="mean"`` for a fraction-of-ids-in-the-frame-exceeding-threshold summary.
+row per frame by applying each chosen aggregation (mean/median/min/max/std/
+sum/count) to each chosen column. Optional pre-aggregation transforms cover the
+common cases: ``transform="abs"`` for magnitudes, ``threshold=X`` with
+``"mean"`` in ``aggs`` for a fraction-of-ids-in-the-frame-exceeding-threshold
+summary. An input with an ``arena`` column gives one row per frame and arena,
+and ``subgroup_col`` one row per frame and value of that column.
 
 Composes naturally with pair-aware features: pointing FrameAggregate at
-``PairPositionFeatures`` with ``column="AB_dist", agg="mean"`` yields mean
-pairwise distance per frame. A pair table holds each pair once per
+``PairPositionFeatures`` with ``columns=["AB_dist"], aggs=["mean"]`` yields
+mean pairwise distance per frame. A pair table holds each pair once per
 perspective (A->B and B->A), and ``pairs`` says which rows sum and count read.
 ``once`` keeps the ``perspective == 0`` rows, so each pair counts once, and
 ``each_perspective`` reads every row. ``auto``, the default, is resolved by a
@@ -48,7 +50,9 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 
-from .aggregate_common import PairAggregateParams, reduce_column
+from mosaic.core.schema import ARENA_COLUMN
+
+from .aggregate_common import PairAggregateParams, reduce_column, split_keys
 from .registry import register_feature
 
 
@@ -58,10 +62,12 @@ class FrameAggregate:
     """
     Per-sequence feature reducing multi-id data to one row per frame.
 
-    Output columns (one row per frame):
+    Output columns (one row per frame, arena and subgroup):
       - frame
+      - arena (if present in input)
+      - <subgroup_col> (when set)
       - time (if present in input)
-      - <output_column>: the aggregated value
+      - <column>_<agg>: the aggregated value, for each column and aggregation
       - group, sequence (if present in input)
 
     Field documentation is on
@@ -87,7 +93,7 @@ class FrameAggregate:
 
     category = "summary"
     name = "frame-aggregate"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -95,16 +101,20 @@ class FrameAggregate:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "unidentified"
     follows_ids: bool = False
-    requires: ClassVar[tuple[Requirement, ...]] = (ParamColumn("column"), ORDER_COLUMN)
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        ParamColumn("columns"),
+        ParamColumn("subgroup_col"),
+        ORDER_COLUMN,
+    )
     provides: ClassVar[Provides] = Provides(
-        adds=(ParamColumn("output_column", fallback="{column}_{agg}"),),
-        conditional=kept(C.frame_col, C.time_col, C.seq_col, C.group_col),
+        adds=(ParamColumn("subgroup_col"), ParamColumn("columns", suffixes="aggs")),
+        conditional=kept(C.frame_col, C.time_col, C.seq_col, C.group_col, ARENA_COLUMN),
     )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
 
-    pair_rule_column: ClassVar[str] = "column"
+    pair_rule_column: ClassVar[str] = "columns"
 
     class Params(PairAggregateParams):
         pass
@@ -146,7 +156,7 @@ class FrameAggregate:
         result = reduce_column(
             df,
             self.params,
-            keys=[order_col],
+            keys=[order_col, *split_keys(df, self.params)],
             first=["time"] if has_time else [],
             pairs=self.params.pair_read(),
         )

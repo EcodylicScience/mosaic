@@ -121,6 +121,9 @@ class ParamColumn:
             (``"absent"``), or columns that only the data decides
             (``"unknown"``). Under both, an empty field without a fallback is
             ``"absent"``.
+        suffixes: A string- or list-valued params field. Each name is repeated
+            once per item, joined to it by an underscore, as an aggregate names
+            ``<column>_<agg>`` for each column and aggregation.
     """
 
     field: str
@@ -128,6 +131,7 @@ class ParamColumn:
     prefix: str = ""
     renamed_by: str = ""
     unset: Literal["absent", "unknown"] = "absent"
+    suffixes: str = ""
     kind: Literal["param"] = "param"
 
 
@@ -475,6 +479,8 @@ def _reference_fields(ref: ColumnRef) -> list[str]:
     found = [ref.field, *_template_fields(ref.fallback)]
     if ref.renamed_by:
         found.append(ref.renamed_by)
+    if ref.suffixes:
+        found.append(ref.suffixes)
     return found
 
 
@@ -737,6 +743,11 @@ def resolve_names(ref: ColumnRef, values: ParamValues) -> NamedColumns:
     if renames is None:
         return unknown
     names = tuple(f"{ref.prefix}{renames.get(name, name)}" for name in listed)
+    if ref.suffixes:
+        suffixes = _listed(values.get(ref.suffixes))
+        if not suffixes:
+            return unknown
+        names = tuple(f"{name}_{suffix}" for name in names for suffix in suffixes)
     return NamedColumns(columns=names, params=read)
 
 

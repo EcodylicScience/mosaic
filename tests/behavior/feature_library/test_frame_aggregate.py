@@ -52,7 +52,7 @@ def _apply(params: dict, df: pd.DataFrame) -> pd.DataFrame:
 
 def test_mean():
     df = _make_df({0: [1.0, 2.0, 3.0], 1: [4.0, 5.0, 6.0], 2: [10.0, 20.0, 30.0]})
-    out = _apply({"column": "value", "agg": "mean"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, df)
     assert list(out["frame"]) == [0, 1, 2]
     np.testing.assert_allclose(out["value_mean"], [2.0, 5.0, 20.0])
     assert {name: str(dtype) for name, dtype in out.dtypes.items()} == {
@@ -67,7 +67,7 @@ def test_mean():
 
 def test_median():
     df = _make_df({0: [1.0, 2.0, 100.0], 1: [4.0, 5.0, 6.0]})
-    out = _apply({"column": "value", "agg": "median"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["median"]}, df)
     np.testing.assert_allclose(out["value_median"], [2.0, 5.0])
 
 
@@ -82,13 +82,13 @@ def test_median():
 )
 def test_min_max_sum_count(agg, expected):
     df = _make_df({0: [1.0, 2.0, 3.0], 1: [4.0, 5.0, 6.0]})
-    out = _apply({"column": "value", "agg": agg}, df)
+    out = _apply({"columns": ["value"], "aggs": [agg]}, df)
     np.testing.assert_allclose(out[f"value_{agg}"], expected)
 
 
 def test_std():
     df = _make_df({0: [1.0, 2.0, 3.0]})
-    out = _apply({"column": "value", "agg": "std"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["std"]}, df)
     np.testing.assert_allclose(out["value_std"], [np.std([1.0, 2.0, 3.0], ddof=1)])
 
 
@@ -99,14 +99,14 @@ def test_std():
 
 def test_transform_abs():
     df = _make_df({0: [-1.0, -2.0, 3.0], 1: [-4.0, 5.0, -6.0]})
-    out = _apply({"column": "value", "agg": "mean", "transform": "abs"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"], "transform": "abs"}, df)
     np.testing.assert_allclose(out["value_mean"], [2.0, 5.0])
 
 
 def test_threshold_mean():
     # Boolean fraction-of-ids-exceeding-threshold
     df = _make_df({0: [1.0, 1.5, 2.0, 3.0], 1: [0.5, 0.7, 0.9, 1.1]})
-    out = _apply({"column": "value", "agg": "mean", "threshold": 1.0}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"], "threshold": 1.0}, df)
     # frame 0: 3 of 4 > 1.0 = 0.75 ; frame 1: 1 of 4 > 1.0 = 0.25
     np.testing.assert_allclose(out["value_mean"], [0.75, 0.25])
 
@@ -130,11 +130,11 @@ def test_filter_expr_perspective_dedup_gives_the_same_sum_as_once():
             "group": "G",
         }
     )
-    out_once = _apply({"column": "AB_dist", "agg": "sum", "pairs": "once"}, df)
+    out_once = _apply({"columns": ["AB_dist"], "aggs": ["sum"], "pairs": "once"}, df)
     out_filtered = _apply(
         {
-            "column": "AB_dist",
-            "agg": "sum",
+            "columns": ["AB_dist"],
+            "aggs": ["sum"],
             "pairs": "once",
             "filter_expr": "perspective == 0",
         },
@@ -164,34 +164,39 @@ def _pair_table() -> pd.DataFrame:
 
 
 def test_sum_over_pair_input_counts_each_pair_once():
-    out = _apply({"column": "AB_dist", "agg": "sum", "pairs": "once"}, _pair_table())
+    out = _apply(
+        {"columns": ["AB_dist"], "aggs": ["sum"], "pairs": "once"}, _pair_table()
+    )
     assert list(out["frame"]) == [0, 1]
     # Each pair counts once: (3 + 5) at frame 0 and (4 + 6) at frame 1.
     np.testing.assert_allclose(out["AB_dist_sum"], [8.0, 10.0])
 
 
 def test_count_over_pair_input_counts_each_pair_once():
-    out = _apply({"column": "AB_dist", "agg": "count", "pairs": "once"}, _pair_table())
+    out = _apply(
+        {"columns": ["AB_dist"], "aggs": ["count"], "pairs": "once"}, _pair_table()
+    )
     np.testing.assert_allclose(out["AB_dist_count"], [2, 2])
 
 
 def test_auto_over_pair_input_reads_every_row():
     """Outside a plan nothing resolves ``auto``, and it reads both perspectives."""
-    total = _apply({"column": "AB_dist", "agg": "sum"}, _pair_table())
-    count = _apply({"column": "AB_dist", "agg": "count"}, _pair_table())
+    total = _apply({"columns": ["AB_dist"], "aggs": ["sum"]}, _pair_table())
+    count = _apply({"columns": ["AB_dist"], "aggs": ["count"]}, _pair_table())
     np.testing.assert_allclose(total["AB_dist_sum"], [16.0, 20.0])
     np.testing.assert_allclose(count["AB_dist_count"], [4, 4])
 
 
 def test_each_perspective_reads_every_row():
     out = _apply(
-        {"column": "AB_dist", "agg": "sum", "pairs": "each_perspective"}, _pair_table()
+        {"columns": ["AB_dist"], "aggs": ["sum"], "pairs": "each_perspective"},
+        _pair_table(),
     )
     np.testing.assert_allclose(out["AB_dist_sum"], [16.0, 20.0])
 
 
 def test_mean_over_pair_input_is_unchanged():
-    out = _apply({"column": "AB_dist", "agg": "mean"}, _pair_table())
+    out = _apply({"columns": ["AB_dist"], "aggs": ["mean"]}, _pair_table())
     np.testing.assert_allclose(out["AB_dist_mean"], [4.0, 5.0])
 
 
@@ -207,21 +212,21 @@ def test_mean_over_pair_input_is_unchanged():
 def test_the_other_aggregations_over_pair_input_read_every_row(
     agg: str, expected: list[float]
 ):
-    out = _apply({"column": "AB_dist", "agg": agg}, _pair_table())
+    out = _apply({"columns": ["AB_dist"], "aggs": [agg]}, _pair_table())
     np.testing.assert_allclose(out[f"AB_dist_{agg}"], expected)
 
 
 def test_input_without_perspective_is_unchanged():
     df = _make_df({0: [1.0, 2.0, 3.0], 1: [4.0, 5.0, 6.0]})
-    out_sum = _apply({"column": "value", "agg": "sum"}, df)
-    out_count = _apply({"column": "value", "agg": "count"}, df)
+    out_sum = _apply({"columns": ["value"], "aggs": ["sum"]}, df)
+    out_count = _apply({"columns": ["value"], "aggs": ["count"]}, df)
     np.testing.assert_allclose(out_sum["value_sum"], [6.0, 15.0])
     np.testing.assert_allclose(out_count["value_count"], [3, 3])
 
 
 def test_a_pair_input_filtered_to_one_perspective_is_not_filtered_twice():
     out = _apply(
-        {"column": "AB_dist", "agg": "sum", "filter_expr": "perspective == 0"},
+        {"columns": ["AB_dist"], "aggs": ["sum"], "filter_expr": "perspective == 0"},
         _pair_table(),
     )
     np.testing.assert_allclose(out["AB_dist_sum"], [8.0, 10.0])
@@ -229,7 +234,7 @@ def test_a_pair_input_filtered_to_one_perspective_is_not_filtered_twice():
 
 def test_filter_expr_drops_rows():
     df = _make_df({0: [1.0, 2.0, 3.0, 4.0], 1: [10.0, 20.0, 30.0, 40.0]})
-    out = _apply({"column": "value", "agg": "mean", "filter_expr": "id < 2"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"], "filter_expr": "id < 2"}, df)
     # Only ids 0,1 keep -> mean is [(1+2)/2, (10+20)/2]
     np.testing.assert_allclose(out["value_mean"], [1.5, 15.0])
 
@@ -241,7 +246,7 @@ def test_filter_expr_drops_rows():
 
 def test_metadata_attached():
     df = _make_df({0: [1.0, 2.0]}, seq="OCI_1", group="OCI")
-    out = _apply({"column": "value", "agg": "mean"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, df)
     assert (out["sequence"] == "OCI_1").all()
     assert (out["group"] == "OCI").all()
     assert "time" in out.columns
@@ -251,29 +256,43 @@ def test_metadata_attached():
 def test_a_table_without_frames_is_aggregated_by_its_time():
     """The time orders the rows and keys the result, and is not aggregated twice."""
     df = _make_df({0: [1.0, 3.0], 1: [4.0, 6.0]}).drop(columns="frame")
-    out = _apply({"column": "value", "agg": "mean"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, df)
     assert list(out.columns) == ["time", "value_mean", "sequence", "group"]
     np.testing.assert_allclose(out["time"], [0.0, 0.02])
     np.testing.assert_allclose(out["value_mean"], [2.0, 5.0])
 
 
-def test_output_column_override():
-    df = _make_df({0: [1.0, 3.0]})
-    out = _apply({"column": "value", "agg": "mean", "output_column": "custom_name"}, df)
-    assert "custom_name" in out.columns
-    assert "value_mean" not in out.columns
-    np.testing.assert_allclose(out["custom_name"], [2.0])
+def test_an_arena_column_gives_one_row_per_frame_and_arena():
+    df = _make_df(
+        {0: [1.0, 3.0, 10.0], 1: [4.0, 6.0, 20.0]},
+        extra_cols={"arena": ["a", "a", "b", "a", "a", "b"]},
+    )
+    out = _apply({"columns": ["value"], "aggs": ["mean", "count"]}, df)
+    assert list(out.columns) == [
+        "frame",
+        "arena",
+        "time",
+        "value_mean",
+        "value_count",
+        "sequence",
+        "group",
+    ]
+    assert out["arena"].tolist() == ["a", "b", "a", "b"]
+    np.testing.assert_allclose(out["value_mean"], [2.0, 10.0, 5.0, 20.0])
+    np.testing.assert_allclose(out["value_count"], [2, 1, 2, 1])
 
 
 def test_empty_input():
     df = pd.DataFrame()
-    out = _apply({"column": "value", "agg": "mean"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, df)
     assert out.empty
 
 
 def test_filter_eliminates_all_rows():
     df = _make_df({0: [1.0, 2.0]})
-    out = _apply({"column": "value", "agg": "mean", "filter_expr": "id > 100"}, df)
+    out = _apply(
+        {"columns": ["value"], "aggs": ["mean"], "filter_expr": "id > 100"}, df
+    )
     assert out.empty
 
 
@@ -284,12 +303,12 @@ def test_filter_eliminates_all_rows():
 
 def test_nan_skipped_in_mean():
     df = _make_df({0: [1.0, np.nan, 3.0], 1: [np.nan, np.nan, 6.0]})
-    out = _apply({"column": "value", "agg": "mean"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, df)
     # mean of [1, NaN, 3] = 2.0 ; mean of [NaN, NaN, 6] = 6.0
     np.testing.assert_allclose(out["value_mean"], [2.0, 6.0])
 
 
 def test_count_excludes_nan():
     df = _make_df({0: [1.0, np.nan, 3.0]})
-    out = _apply({"column": "value", "agg": "count"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["count"]}, df)
     assert int(out["value_count"].iloc[0]) == 2

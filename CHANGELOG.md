@@ -8,6 +8,25 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the aggregates reduce several columns, split by arena and by a subgroup column
+
+`frame-aggregate` 0.3, `sequence-aggregate` 0.2 and `individual-aggregate` 0.2
+replace `column` and `agg` with the lists `columns` and `aggs`, and drop
+`output_column`. Each column is reduced by each aggregation into
+`<column>_<agg>`, columns outer, so `{"column": "speed", "agg": "mean"}` becomes
+`{"columns": ["speed"], "aggs": ["mean"]}` and still writes `speed_mean`. A
+column or aggregation listed twice is refused. A recipe or a stored params
+document that names `column`, `agg` or `output_column` no longer validates. The
+three features group by the input's `arena` column when it has one and write it
+to the output, so a table of several arenas gives a row per arena where it gave
+one pooled row, and by the new `subgroup_col` when it is set, dropping rows
+whose value is null. A plan resolves `pairs="auto"` to `once` only when every
+listed column is declared symmetric, and `once` halves only the `sum` and
+`count` of a step whose other aggregations read every row. `ParamColumn` takes
+`suffixes`, a params field whose items each name is repeated with, which the
+catalog's declarations carry. Every run id of the three features moves with the
+version.
+
 ## 0.19.0: Python 3.13 is the minimum, a feature step refuses an unrun input and recomputes when it drifts, a params model narrowed by a consumer gives mosaic's answer, feature fits claim their run root, a YOLO training identity follows its labels, raw tracks load without unpickling, and OpenCV is headless
 
 ### Headless OpenCV, and the tool environments on torch 2.14.1

@@ -211,17 +211,17 @@ CASES: tuple[Case, ...] = (
     Case(
         case_id="frame-aggregate/column-speed",
         feature="frame-aggregate",
-        params={"column": "SPEED"},
+        params={"columns": ["SPEED"]},
     ),
     Case(
         case_id="sequence-aggregate/column-speed",
         feature="sequence-aggregate",
-        params={"column": "SPEED"},
+        params={"columns": ["SPEED"]},
     ),
     Case(
         case_id="individual-aggregate/column-speed",
         feature="individual-aggregate",
-        params={"column": "SPEED"},
+        params={"columns": ["SPEED"]},
     ),
     Case(
         case_id="collective-motion-metrics/subgroups-alpha",

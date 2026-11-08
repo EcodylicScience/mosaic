@@ -1269,7 +1269,7 @@ def test_two_inputs_resolving_to_one_run_are_refused_before_planning(
                     "type": "feature",
                     "feature": "frame-aggregate",
                     "inputs": [{"step": "speed_a"}, {"step": "speed_b"}],
-                    "params": {"column": "speed"},
+                    "params": {"columns": ["speed"]},
                 },
             ]
         }
@@ -1312,7 +1312,7 @@ def test_inputs_that_resolve_to_one_run_only_here_are_a_dataset_problem(
                     "type": "feature",
                     "feature": "frame-aggregate",
                     "inputs": [{"step": "by_frame"}, {"step": "by_time"}],
-                    "params": {"column": "speed"},
+                    "params": {"columns": ["speed"]},
                 },
             ]
         }
@@ -1355,7 +1355,7 @@ def _pair_total(
         "type": "feature",
         "feature": "frame-aggregate",
         "inputs": [{"step": reads}],
-        "params": {"agg": "sum", **params},
+        "params": {"aggs": ["sum"], **params},
     }
     return Recipe.model_validate({"steps": [_HEADING_STEP, _PAIRS_STEP, *steps, total]})
 
@@ -1367,8 +1367,8 @@ def _total(dataset: Dataset, recipe: Recipe) -> PlannedStep:
 
 
 def test_a_sum_of_a_symmetric_pair_column_is_planned_once(tracked: Dataset) -> None:
-    planned = _total(tracked, _pair_total({"column": "AB_dist"}))
-    written = _total(tracked, _pair_total({"column": "AB_dist", "pairs": "once"}))
+    planned = _total(tracked, _pair_total({"columns": ["AB_dist"]}))
+    written = _total(tracked, _pair_total({"columns": ["AB_dist"], "pairs": "once"}))
 
     assert planned.pairs == "once"
     assert planned.spec.params["pairs"] == "once"
@@ -1379,13 +1379,22 @@ def test_a_sum_of_a_symmetric_pair_column_is_planned_once(tracked: Dataset) -> N
 def test_a_sum_of_a_directional_pair_column_reads_each_perspective(
     tracked: Dataset,
 ) -> None:
-    planned = _total(tracked, _pair_total({"column": "A_speed"}))
-    once = _total(tracked, _pair_total({"column": "A_speed", "pairs": "once"}))
+    planned = _total(tracked, _pair_total({"columns": ["A_speed"]}))
+    once = _total(tracked, _pair_total({"columns": ["A_speed"], "pairs": "once"}))
 
     assert planned.pairs == "each_perspective"
     assert "pairs" not in planned.spec.params
     assert planned.run_id is not None
     assert planned.run_id != once.run_id
+
+
+def test_one_directional_column_makes_every_sum_read_each_perspective(
+    tracked: Dataset,
+) -> None:
+    planned = _total(tracked, _pair_total({"columns": ["AB_dist", "A_speed"]}))
+
+    assert planned.pairs == "each_perspective"
+    assert "pairs" not in planned.spec.params
 
 
 def test_a_sum_through_temporal_stack_keeps_the_rule(tracked: Dataset) -> None:
@@ -1396,7 +1405,7 @@ def test_a_sum_through_temporal_stack_keeps_the_rule(tracked: Dataset) -> None:
         "inputs": [{"step": "pairs"}],
     }
     recipe = _pair_total(
-        {"column": "AB_dist__pool_mean"}, steps=(stack,), reads="stack"
+        {"columns": ["AB_dist__pool_mean"]}, steps=(stack,), reads="stack"
     )
 
     assert _total(tracked, recipe).pairs == "once"
@@ -1411,7 +1420,9 @@ def test_a_classifier_probability_reads_each_perspective(tracked: Dataset) -> No
         "inputs": [{"step": "pairs"}],
         "params": {"model": {"run_id": "0.1-0000000000"}, "default_class": 0},
     }
-    recipe = _pair_total({"column": "prob_1"}, steps=(classifier,), reads="classifier")
+    recipe = _pair_total(
+        {"columns": ["prob_1"]}, steps=(classifier,), reads="classifier"
+    )
 
     planned = _total(tracked, recipe)
 
@@ -1440,7 +1451,7 @@ def test_a_merge_with_an_unmirrored_input_reads_each_perspective(
         "type": "feature",
         "feature": "frame-aggregate",
         "inputs": [{"step": "pairs"}, {"step": "response"}],
-        "params": {"column": "AB_dist", "agg": "sum"},
+        "params": {"columns": ["AB_dist"], "aggs": ["sum"]},
     }
     recipe = Recipe.model_validate(
         {"steps": [_HEADING_STEP, _PAIRS_STEP, speed, response, total]}
@@ -1450,7 +1461,7 @@ def test_a_merge_with_an_unmirrored_input_reads_each_perspective(
 
 
 def test_a_filtered_sum_keeps_each_perspective(tracked: Dataset) -> None:
-    recipe = _pair_total({"column": "AB_dist", "filter_expr": "id1 < 3"})
+    recipe = _pair_total({"columns": ["AB_dist"], "filter_expr": "id1 < 3"})
 
     planned = _total(tracked, recipe)
 
@@ -1459,7 +1470,7 @@ def test_a_filtered_sum_keeps_each_perspective(tracked: Dataset) -> None:
 
 
 def test_a_mean_keeps_auto(tracked: Dataset) -> None:
-    planned = _total(tracked, _pair_total({"column": "AB_dist", "agg": "mean"}))
+    planned = _total(tracked, _pair_total({"columns": ["AB_dist"], "aggs": ["mean"]}))
 
     assert planned.pairs is None
     assert "pairs" not in planned.spec.params

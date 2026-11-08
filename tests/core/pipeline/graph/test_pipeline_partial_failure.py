@@ -142,7 +142,7 @@ def tracked(tmp_path: Path) -> Dataset:
 
 
 CONSUMER_PARAMS: dict[str, Document] = {
-    "frame-aggregate": {"column": "value", "agg": "mean"},
+    "frame-aggregate": {"columns": ["value"], "aggs": ["mean"]},
     "extract-templates": {"n_templates": 4},
 }
 """The two consumers, and the one thing that separates them.

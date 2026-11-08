@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -66,7 +67,7 @@ def _pair_table() -> pd.DataFrame:
 
 
 def test_one_row_per_id_holds_group_sequence_id_and_the_value() -> None:
-    out = _apply({"column": "value", "agg": "mean"}, _individual_table())
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, _individual_table())
 
     assert list(out.columns) == ["group", "sequence", "id", "value_mean"]
     assert out["id"].tolist() == [0, 1, 2]
@@ -75,14 +76,49 @@ def test_one_row_per_id_holds_group_sequence_id_and_the_value() -> None:
     assert set(out["sequence"]) == {"S1"}
 
 
+def test_an_arena_column_keys_each_individual_by_its_arena() -> None:
+    table = _individual_table().assign(
+        arena=lambda df: np.where(df["id"] < 2, "a", "b")
+    )
+
+    out = _apply({"columns": ["value"], "aggs": ["mean", "max"]}, table)
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "id",
+        "arena",
+        "value_mean",
+        "value_max",
+    ]
+    assert out["arena"].tolist() == ["a", "a", "b"]
+    assert out["value_max"].tolist() == [4.0, 6.0, 8.0]
+
+
+def test_subgroup_col_splits_an_individuals_rows() -> None:
+    table = _individual_table().assign(phase=["x", "x", "x", "y", "y", "y"])
+
+    out = _apply({"columns": ["value"], "subgroup_col": "phase"}, table)
+
+    assert out[["id", "phase"]].values.tolist() == [
+        [0, "x"],
+        [0, "y"],
+        [1, "x"],
+        [1, "y"],
+        [2, "x"],
+        [2, "y"],
+    ]
+    assert out["value_mean"].tolist() == [1.0, 4.0, 2.0, 6.0, 3.0, 8.0]
+
+
 def test_sum_over_individual_input_adds_each_frame() -> None:
-    out = _apply({"column": "value", "agg": "sum"}, _individual_table())
+    out = _apply({"columns": ["value"], "aggs": ["sum"]}, _individual_table())
 
     assert out["value_sum"].tolist() == [5.0, 8.0, 11.0]
 
 
 def test_pair_input_counts_each_ordered_pair_once_per_focal() -> None:
-    out = _apply({"column": "A_speed", "agg": "sum"}, _pair_table())
+    out = _apply({"columns": ["A_speed"], "aggs": ["sum"]}, _pair_table())
 
     # Individual 2 is the focal of two rows only because the higher-id focal's
     # rows count: perspective 0 alone would give it nothing.
@@ -91,13 +127,13 @@ def test_pair_input_counts_each_ordered_pair_once_per_focal() -> None:
 
 
 def test_pair_input_count_is_the_number_of_partners() -> None:
-    out = _apply({"column": "A_speed", "agg": "count"}, _pair_table())
+    out = _apply({"columns": ["A_speed"], "aggs": ["count"]}, _pair_table())
 
     assert out["A_speed_count"].tolist() == [2, 2, 2]
 
 
 def test_pair_input_mean_reads_every_focal_row() -> None:
-    out = _apply({"column": "A_speed", "agg": "mean"}, _pair_table())
+    out = _apply({"columns": ["A_speed"], "aggs": ["mean"]}, _pair_table())
 
     assert out["A_speed_mean"].tolist() == [1.5, 6.5, 25.0]
 
@@ -105,17 +141,17 @@ def test_pair_input_mean_reads_every_focal_row() -> None:
 def test_the_params_have_no_pairs_field() -> None:
     assert "pairs" not in IndividualAggregate.Params.model_fields
     with pytest.raises(ValueError, match="pairs"):
-        _ = IndividualAggregate(params={"column": "value", "pairs": "once"})
+        _ = IndividualAggregate(params={"columns": ["value"], "pairs": "once"})
 
 
 def test_empty_input_gives_no_output() -> None:
-    assert _apply({"column": "value"}, pd.DataFrame()).empty
+    assert _apply({"columns": ["value"]}, pd.DataFrame()).empty
 
 
 def test_overlap_is_refused(tmp_path: Path) -> None:
     dataset = make_dataset(tmp_path / "ds")
     add_track_sequences(dataset, ("g", "s1"), ("g", "s2"), n_rows=10, n_ids=2)
-    feature = IndividualAggregate(params={"column": "X", "agg": "mean"})
+    feature = IndividualAggregate(params={"columns": ["X"], "aggs": ["mean"]})
 
     with pytest.raises(OverlapUnsupported, match="accepts_overlap = False"):
         _ = run_feature(dataset, feature, overlap_frames=3)
@@ -123,7 +159,8 @@ def test_overlap_is_refused(tmp_path: Path) -> None:
 
 def test_a_filter_names_the_focal_of_pair_input_as_id1() -> None:
     out = _apply(
-        {"column": "A_speed", "agg": "sum", "filter_expr": "id1 < 2"}, _pair_table()
+        {"columns": ["A_speed"], "aggs": ["sum"], "filter_expr": "id1 < 2"},
+        _pair_table(),
     )
 
     assert out["id"].tolist() == [0, 1]
@@ -157,7 +194,7 @@ def test_a_recipe_reduces_pair_rows_to_individuals(tmp_path: Path) -> None:
                     "type": "feature",
                     "feature": "individual-aggregate",
                     "inputs": [{"step": "pairs"}],
-                    "params": {"column": "A_speed", "agg": "sum"},
+                    "params": {"columns": ["A_speed"], "aggs": ["sum"]},
                 },
             ]
         }

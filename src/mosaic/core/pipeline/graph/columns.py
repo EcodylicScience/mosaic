@@ -588,17 +588,19 @@ def _payload_names(columns: Iterable[str]) -> list[str]:
 
 def pair_rule_read(
     merged: ColumnSet,
-    column: str,
-    agg: str,
+    columns: Sequence[str],
+    aggs: Sequence[str],
     pairs: PairRule,
     filter_expr: str | None,
 ) -> PairRead | None:
-    """The rows that an aggregate reads of pair rows, ``None`` unless a sum or count.
+    """The rows that an aggregate's sums and counts read of pair rows.
 
-    A rule written as ``once`` or ``each_perspective`` stands. ``auto`` reads
-    ``once`` when no *filter_expr* is set, *merged* may hold ``perspective``,
-    its rows are mirrored, and *column* is symmetric, and every row
-    (``each_perspective``) otherwise. A filter can keep one row of a pair (on
+    ``None`` when none of *aggs* is a sum or a count. A rule written as ``once``
+    or ``each_perspective`` stands. ``auto`` reads ``once`` when no
+    *filter_expr* is set, *merged* may hold ``perspective``, its rows are
+    mirrored, and every one of *columns* is symmetric, and every row
+    (``each_perspective``) otherwise. One rule serves every column, so a single
+    column that is not symmetric makes every sum and count read every row. A filter can keep one row of a pair (on
     ``id1`` or ``perspective``, say), and ``once`` would then miss pairs. An
     undeclared or unbounded input has no symmetric column, and its ``auto``
     reads every row. The other aggregations read every row whatever the rule,
@@ -606,12 +608,12 @@ def pair_rule_read(
 
     Args:
         merged: The columns of the aggregate's merged input.
-        column: The column it aggregates.
-        agg: Its aggregation.
+        columns: The columns it aggregates.
+        aggs: Its aggregations.
         pairs: Its pair rule as written.
         filter_expr: Its row filter, ``None`` or empty when unset.
     """
-    if agg not in PAIR_COUNTING_AGGS:
+    if not PAIR_COUNTING_AGGS.intersection(aggs):
         return None
     if pairs != "auto":
         return pairs
@@ -619,7 +621,7 @@ def pair_rule_read(
         not filter_expr
         and merged.admits(_PERSPECTIVE)
         and merged.mirrored
-        and merged.is_symmetric(column)
+        and all(merged.is_symmetric(column) for column in columns)
     ):
         return "once"
     return "each_perspective"

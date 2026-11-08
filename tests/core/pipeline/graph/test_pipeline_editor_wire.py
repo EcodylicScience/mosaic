@@ -372,7 +372,7 @@ def test_a_candidate_whose_output_lacks_a_child_s_column_is_refused() -> None:
                 "type": "feature",
                 "feature": "frame-aggregate",
                 "inputs": [{"step": "speed"}],
-                "params": {"column": "speed"},
+                "params": {"columns": ["speed"]},
             },
         ]
     }
@@ -637,7 +637,7 @@ def test_the_plan_wire_states_each_aggregate_rule(tmp_path: Path) -> None:
             "type": "feature",
             "feature": "frame-aggregate",
             "inputs": [{"step": "pairs"}],
-            "params": {"column": column, "agg": agg},
+            "params": {"columns": [column], "aggs": [agg]},
         }
 
     recipe = Recipe.model_validate(

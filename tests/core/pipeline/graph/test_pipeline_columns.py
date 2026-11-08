@@ -538,7 +538,7 @@ def _aggregate(column: str, inputs: list[JsonValue]) -> dict[str, JsonValue]:
         "type": "feature",
         "feature": "frame-aggregate",
         "inputs": inputs,
-        "params": {"column": column},
+        "params": {"columns": [column]},
     }
 
 
@@ -1244,8 +1244,8 @@ def test_a_family_of_a_symmetric_column_names_only_its_own_members() -> None:
             "feature": "frame-aggregate",
             "inputs": [{"step": "second_stack"}],
             "params": {
-                "column": "distance_from_centroid__id1__pool_mean",
-                "agg": "sum",
+                "columns": ["distance_from_centroid__id1__pool_mean"],
+                "aggs": ["sum"],
             },
         },
     ]

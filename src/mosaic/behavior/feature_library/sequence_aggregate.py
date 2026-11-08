@@ -2,11 +2,12 @@
 SequenceAggregate -- one summary row per entry.
 
 Consumes any feature output (or raw tracks) and reduces every row of an entry
-to one value by applying an aggregation (mean/median/min/max/std/sum/count) to
-a chosen column, over all its frames and all its ids. The optional
+to one row by applying each chosen aggregation (mean/median/min/max/std/sum/
+count) to each chosen column, over all its frames and all its ids. The optional
 pre-aggregation steps of ``frame-aggregate`` apply here too: ``transform="abs"``
-for magnitudes, and ``threshold=X`` with ``agg="mean"`` for the fraction of rows
-that exceed it.
+for magnitudes, and ``threshold=X`` with ``"mean"`` in ``aggs`` for the fraction
+of rows that exceed it. An input with an ``arena`` column gives one row per
+arena, and ``subgroup_col`` one row per value of that column.
 
 The class docstring states which rows of a pair table sum and count read.
 """
@@ -23,6 +24,7 @@ from mosaic.core.pipeline.column_contract import (
     ParamColumn,
     Provides,
     Requirement,
+    kept,
 )
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
@@ -35,7 +37,9 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types.feature import RelatesLevel
 
-from .aggregate_common import PairAggregateParams, reduce_column
+from mosaic.core.schema import ARENA_COLUMN
+
+from .aggregate_common import PairAggregateParams, reduce_column, split_keys
 from .registry import register_feature
 
 
@@ -43,11 +47,13 @@ from .registry import register_feature
 @register_feature
 class SequenceAggregate:
     """
-    Per-sequence feature reducing every row of an entry to one row.
+    Per-sequence feature reducing the rows of an entry to one row per group.
 
-    Output columns (one row per entry):
+    Output columns (one row per entry, arena and subgroup):
       - group, sequence: the entry, copied from the frame
-      - <output_column>: the aggregated value
+      - arena: when the input has it
+      - <subgroup_col>: when set
+      - <column>_<agg>: the aggregated value, for each column and aggregation
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate.Params`.
@@ -72,7 +78,7 @@ class SequenceAggregate:
 
     category = "summary"
     name = "sequence-aggregate"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -82,7 +88,8 @@ class SequenceAggregate:
     emits: EmitsLevel = "unidentified"
     follows_ids: bool = False
     requires: ClassVar[tuple[Requirement, ...]] = (
-        ParamColumn("column"),
+        ParamColumn("columns"),
+        ParamColumn("subgroup_col"),
         Column(C.group_col),
         Column(C.seq_col),
     )
@@ -90,14 +97,16 @@ class SequenceAggregate:
         adds=(
             Column(C.group_col),
             Column(C.seq_col),
-            ParamColumn("output_column", fallback="{column}_{agg}"),
+            ParamColumn("subgroup_col"),
+            ParamColumn("columns", suffixes="aggs"),
         ),
+        conditional=kept(ARENA_COLUMN),
     )
 
     class Inputs(Inputs[TrackInput | Result]):
         pass
 
-    pair_rule_column: ClassVar[str] = "column"
+    pair_rule_column: ClassVar[str] = "columns"
 
     class Params(PairAggregateParams):
         pass
@@ -134,6 +143,6 @@ class SequenceAggregate:
         return reduce_column(
             df,
             self.params,
-            keys=[C.group_col, C.seq_col],
+            keys=[C.group_col, C.seq_col, *split_keys(df, self.params)],
             pairs=self.params.pair_read(),
         )

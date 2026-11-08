@@ -289,11 +289,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   blank answer is not refused. When converting SLEAP tracks that follow an animal, set
   `tracks_named`.
 - `frame-aggregate`, `sequence-aggregate` (one row per sequence) and
-  `individual-aggregate` (one row per individual) reduce a column. `frame-aggregate`'s
+  `individual-aggregate` (one row per individual) reduce each of `columns` by each of
+  `aggs`, writing `<column>_<agg>`, so one step gives a summary of several measures.
+  They give one row per arena when the input has an `arena` column, and `subgroup_col`
+  splits the rows by a column such as a tag (null values are dropped). `frame-aggregate`'s
   and `sequence-aggregate`'s `sum` and `count` over pair rows take `pairs`: `once` reads
   one row per pair (perspective 0), `each_perspective` every ordered pair row. Under
-  `auto`, the default, a recipe's plan picks `once` for a column its producer declares
-  symmetric, such as `AB_dist`, and every row otherwise; the plan's step shows the rule
+  `auto`, the default, a recipe's plan picks `once` when every column is one its producer
+  declares symmetric, such as `AB_dist`, and every row otherwise; the plan's step shows the rule
   in `pairs`. A direct run (`mosaic run --feature`, `run_feature`) has no recipe to
   resolve `auto` and reads every row, so a symmetric column counts each pair twice. Set
   `pairs` to `once` there. `individual-aggregate` has no `pairs`: over pair rows it

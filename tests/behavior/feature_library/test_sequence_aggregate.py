@@ -61,7 +61,7 @@ def _pair_table() -> pd.DataFrame:
 
 
 def test_one_row_per_entry_holds_group_sequence_and_the_value() -> None:
-    out = _apply({"column": "value", "agg": "mean"}, _individual_table())
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, _individual_table())
 
     assert list(out.columns) == ["group", "sequence", "value_mean"]
     assert len(out) == 1
@@ -71,50 +71,102 @@ def test_one_row_per_entry_holds_group_sequence_and_the_value() -> None:
 
 
 def test_an_entry_with_an_empty_group_keeps_its_row() -> None:
-    out = _apply({"column": "value", "agg": "max"}, _individual_table(group=""))
+    out = _apply({"columns": ["value"], "aggs": ["max"]}, _individual_table(group=""))
 
     assert out["group"].tolist() == [""]
     assert out["value_max"].tolist() == [6.0]
 
 
-def test_output_column_names_the_result() -> None:
-    out = _apply(
-        {"column": "value", "agg": "sum", "output_column": "total"},
-        _individual_table(),
+def test_each_column_is_reduced_by_each_aggregation() -> None:
+    table = _individual_table().assign(other=lambda df: df["value"] * 10)
+
+    out = _apply({"columns": ["value", "other"], "aggs": ["sum", "max"]}, table)
+
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "value_sum",
+        "value_max",
+        "other_sum",
+        "other_max",
+    ]
+    assert out.iloc[0][["value_sum", "value_max"]].tolist() == [21.0, 6.0]
+    assert out.iloc[0][["other_sum", "other_max"]].tolist() == [210.0, 60.0]
+
+
+def test_a_column_listed_twice_is_refused() -> None:
+    with pytest.raises(ValueError, match="value more than once"):
+        _ = SequenceAggregate(params={"columns": ["value", "value"]})
+
+
+def test_an_arena_column_gives_one_row_per_arena() -> None:
+    table = _individual_table().assign(
+        arena=lambda df: np.where(df["id"] < 2, "a", "b")
     )
 
-    assert list(out.columns) == ["group", "sequence", "total"]
-    assert out["total"].iloc[0] == pytest.approx(21.0)
+    out = _apply({"columns": ["value"], "aggs": ["mean"]}, table)
+
+    assert list(out.columns) == ["group", "sequence", "arena", "value_mean"]
+    assert out["arena"].tolist() == ["a", "b"]
+    assert out["value_mean"].tolist() == [3.0, 4.5]
+
+
+def test_subgroup_col_splits_an_entry_and_drops_null_values() -> None:
+    table = _individual_table().assign(event=[1.0, 1.0, np.nan, 2.0, 2.0, 2.0])
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["count"], "subgroup_col": "event"}, table
+    )
+
+    assert list(out.columns) == ["group", "sequence", "event", "value_count"]
+    assert out["event"].tolist() == [1.0, 2.0]
+    assert out["value_count"].tolist() == [2, 3]
+
+
+def test_once_halves_the_sum_and_not_the_mean_of_one_step() -> None:
+    out = _apply(
+        {"columns": ["AB_dist"], "aggs": ["sum", "mean"], "pairs": "once"},
+        _pair_table(),
+    )
+
+    assert out["AB_dist_sum"].tolist() == [18.0]
+    assert out["AB_dist_mean"].iloc[0] == pytest.approx(4.5)
 
 
 def test_sum_over_pair_input_with_once_counts_each_pair_once() -> None:
-    out = _apply({"column": "AB_dist", "agg": "sum", "pairs": "once"}, _pair_table())
+    out = _apply(
+        {"columns": ["AB_dist"], "aggs": ["sum"], "pairs": "once"}, _pair_table()
+    )
 
     # Perspective 0 only: (3 + 5) at frame 0 and (4 + 6) at frame 1.
     assert out["AB_dist_sum"].tolist() == [18.0]
 
 
 def test_auto_over_pair_input_reads_every_row() -> None:
-    out = _apply({"column": "AB_dist", "agg": "sum"}, _pair_table())
+    out = _apply({"columns": ["AB_dist"], "aggs": ["sum"]}, _pair_table())
 
     assert out["AB_dist_sum"].tolist() == [36.0]
 
 
 def test_count_over_pair_input_with_once_counts_each_pair_once() -> None:
-    out = _apply({"column": "AB_dist", "agg": "count", "pairs": "once"}, _pair_table())
+    out = _apply(
+        {"columns": ["AB_dist"], "aggs": ["count"], "pairs": "once"}, _pair_table()
+    )
 
     assert out["AB_dist_count"].tolist() == [4]
 
 
 def test_mean_over_pair_input_reads_every_row() -> None:
-    out = _apply({"column": "AB_dist", "agg": "mean", "pairs": "once"}, _pair_table())
+    out = _apply(
+        {"columns": ["AB_dist"], "aggs": ["mean"], "pairs": "once"}, _pair_table()
+    )
 
     assert out["AB_dist_mean"].iloc[0] == pytest.approx(4.5)
 
 
 def test_a_filter_that_removes_every_row_gives_no_output() -> None:
     out = _apply(
-        {"column": "value", "agg": "mean", "filter_expr": "id > 100"},
+        {"columns": ["value"], "aggs": ["mean"], "filter_expr": "id > 100"},
         _individual_table(),
     )
 
@@ -122,14 +174,14 @@ def test_a_filter_that_removes_every_row_gives_no_output() -> None:
 
 
 def test_empty_input_gives_no_output() -> None:
-    assert _apply({"column": "value"}, pd.DataFrame()).empty
+    assert _apply({"columns": ["value"]}, pd.DataFrame()).empty
 
 
 def test_nan_values_are_skipped() -> None:
     df = _individual_table()
     df.loc[0, "value"] = np.nan
 
-    out = _apply({"column": "value", "agg": "count"}, df)
+    out = _apply({"columns": ["value"], "aggs": ["count"]}, df)
 
     assert out["value_count"].tolist() == [5]
 
@@ -170,7 +222,7 @@ def test_a_recipe_sum_of_ab_dist_is_planned_once(tracked: Dataset) -> None:
                 "type": "feature",
                 "feature": "sequence-aggregate",
                 "inputs": [{"step": "pairs"}],
-                "params": {"column": "AB_dist", "agg": "sum"},
+                "params": {"columns": ["AB_dist"], "aggs": ["sum"]},
             },
         ]
     )
@@ -196,7 +248,7 @@ def test_a_recipe_of_speed_then_sequence_aggregate_runs(tracked: Dataset) -> Non
                 "type": "feature",
                 "feature": "sequence-aggregate",
                 "inputs": [{"step": "speed"}],
-                "params": {"column": "speed", "agg": "mean"},
+                "params": {"columns": ["speed"], "aggs": ["mean"]},
             },
         ]
     )

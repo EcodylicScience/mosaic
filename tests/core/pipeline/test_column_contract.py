@@ -124,6 +124,20 @@ def test_names_are_renamed_then_prefixed() -> None:
     )
 
 
+def test_suffixes_name_each_column_once_per_item() -> None:
+    ref = ParamColumn("columns", suffixes="aggs")
+    values: dict[str, JsonValue] = {
+        "columns": ["speed", "angvel"],
+        "aggs": ["mean", "max"],
+    }
+
+    named = resolve_names(ref, values)
+
+    assert named.columns == ("speed_mean", "speed_max", "angvel_mean", "angvel_max")
+    assert named.params == ("columns", "aggs")
+    assert resolve_names(ref, {"columns": ["speed"], "aggs": None}).unknown
+
+
 def test_an_unset_field_may_mean_the_data_decides() -> None:
     """``id-tag-columns`` attaches every label field for ``None``, and none for ``[]``."""
     ref = ParamColumn("fields", unset="unknown")
