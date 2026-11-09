@@ -676,6 +676,7 @@ def plan_pipeline(
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
     ignore_unavailable: bool = False,
+    revalidate: bool = True,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -688,8 +689,8 @@ def plan_pipeline(
         request: One submission's choices: its narrowing, and the out-of-graph
             pins in ``bind``, which resolve a step outright and are never
             overridden by anything derived here.
-        inventory: A held inventory to read coverage from, revalidated first. One
-            is built when none is given.
+        inventory: A held inventory to read coverage from. One is built when
+            none is given.
         quarantined: Entries to leave out. They narrow the *intended scope*, so a
             ``scope_dependent`` step's identity moves when entries are
             quarantined -- which is correct, and is the point: a model fitted on
@@ -734,6 +735,9 @@ def plan_pipeline(
         ignore_unavailable: Whether a step type that this installation cannot
             run is no problem. A step that runs sets it, so that a step beside
             one that needs a tool this worker lacks still runs.
+        revalidate: Whether *inventory* is revalidated before it is read. A
+            caller that revalidates its view on a schedule of its own unsets
+            it, and the plan then reads the view as held.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -822,7 +826,8 @@ def plan_pipeline(
     narrowed = dict(step_scopes)
 
     held = InventoryCache(ds) if inventory is None else inventory
-    _ = held.revalidate()
+    if revalidate:
+        _ = held.revalidate()
     inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
     # A pinned run was fit on entries of its own, which a view narrowed to this
     # plan's target would not measure it over. The held view cannot answer: it

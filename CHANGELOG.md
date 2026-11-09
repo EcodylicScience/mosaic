@@ -59,6 +59,13 @@ listed column is declared symmetric, and `once` halves only the `sum` and
 catalog's declarations carry. Every run id of the three features moves with the
 version.
 
+## Unreleased: a caller that holds an inventory decides when it is revalidated
+
+`plan_pipeline` and `submit_request` take `revalidate`, true by default. Unset,
+the plan reads a held `InventoryCache` as held, without the stats that refresh
+it, for a caller that revalidates its view on a schedule of its own. A caller
+that passes no inventory is unaffected. No identifier or name on disk moves.
+
 ## 0.19.0: Python 3.13 is the minimum, a feature step refuses an unrun input and recomputes when it drifts, a params model narrowed by a consumer gives mosaic's answer, feature fits claim their run root, a YOLO training identity follows its labels, raw tracks load without unpickling, and OpenCV is headless
 
 ### Headless OpenCV, and the tool environments on torch 2.14.1

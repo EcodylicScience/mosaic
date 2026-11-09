@@ -293,6 +293,7 @@ def submit_request(
     tracks_run_id: str | None = None,
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
+    revalidate: bool = True,
 ) -> SubmittedRequest:
     """Record one submission of *recipe* against *ds*, and resolve its plan.
 
@@ -348,6 +349,8 @@ def submit_request(
             applies (:func:`~.apply.derive_applied_fit`). The request records
             it, and the pins, the tracks variant and the locked steps derived
             from it, so its steps derive nothing.
+        revalidate: Whether *inventory* is revalidated before the plan reads
+            it (:func:`~.plan.plan_pipeline`).
 
     Returns:
         The request, the plan, the paths of both documents, and the open
@@ -419,7 +422,12 @@ def submit_request(
     # Planned with the choices that each step plans with, so that the bound
     # steps, the variant and the pins are judged here as they are at each step.
     plan = plan_pipeline(
-        ds, recipe, request=planning, inventory=inventory, catalog=catalog
+        ds,
+        recipe,
+        request=planning,
+        inventory=inventory,
+        catalog=catalog,
+        revalidate=revalidate,
     )
     if cleanup is not None and inventory is not None and catalog is not None:
         # What plan_with_cleanup does, with the plan_pipeline of this module.

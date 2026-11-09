@@ -45,6 +45,7 @@ from mosaic.core.pipeline.graph import (
     step_argv,
     submit_request,
 )
+from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.pipeline.parallelism import ParallelSettings
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -118,6 +119,30 @@ def test_an_external_id_that_is_not_a_ulid_writes_nothing(tracked: Dataset) -> N
         _ = submit_request(tracked, Recipe.model_validate(CHAIN), request_id="../x")
 
     assert not (tracked.base_dir / ".mosaic" / "pipelines").exists()
+
+
+def test_a_submission_revalidates_a_held_inventory(tracked: Dataset) -> None:
+    held = InventoryCache(tracked)
+    _ = held.get()
+    _ = run_speed(tracked, 1)
+
+    submitted = submit_request(tracked, speed_recipe_stepping(1), inventory=held)
+
+    assert submitted.plan.step("speed").status == "complete"
+
+
+def test_a_submission_reads_a_held_inventory_as_held_without_revalidation(
+    tracked: Dataset,
+) -> None:
+    held = InventoryCache(tracked)
+    _ = held.get()
+    _ = run_speed(tracked, 1)
+
+    submitted = submit_request(
+        tracked, speed_recipe_stepping(1), inventory=held, revalidate=False
+    )
+
+    assert submitted.plan.step("speed").status == "absent"
 
 
 def test_every_step_is_assigned_its_own_attempt(tracked: Dataset) -> None:

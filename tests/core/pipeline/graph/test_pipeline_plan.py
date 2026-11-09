@@ -54,6 +54,7 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.pipeline.inventory.cache import InventoryCache
 from mosaic.core.pipeline.preprocess import PreprocessParams, preprocess_identity
 from mosaic.core.pipeline.preprocess_layout import media_variants_root
 from mosaic.core.pipeline.run import run_feature
@@ -76,8 +77,10 @@ from tests.helpers import (
     finish_media_variant,
     install_fake_trex,
     make_dataset,
+    run_speed,
     scope_over,
     speed_recipe,
+    speed_recipe_stepping,
     tree_snapshot,
     write_driver_lease,
     write_media_index,
@@ -620,6 +623,31 @@ def test_a_completed_graph_reads_complete_and_pends_nothing(tracked: Dataset) ->
     assert again.is_complete
     assert again.pending == ()
     assert all(planned.reason is None for planned in again.steps)
+
+
+def test_a_held_inventory_is_revalidated_before_planning(tracked: Dataset) -> None:
+    held = InventoryCache(tracked)
+    _ = held.get()
+    _ = run_speed(tracked, 1)
+
+    plan = plan_pipeline(tracked, speed_recipe_stepping(1), inventory=held)
+
+    assert plan.step("speed").status == "complete"
+
+
+def test_a_held_inventory_is_read_as_held_without_revalidation(
+    tracked: Dataset,
+) -> None:
+    """The caller that revalidates on its own schedule plans from its view."""
+    held = InventoryCache(tracked)
+    _ = held.get()
+    _ = run_speed(tracked, 1)
+
+    plan = plan_pipeline(
+        tracked, speed_recipe_stepping(1), inventory=held, revalidate=False
+    )
+
+    assert plan.step("speed").status == "absent"
 
 
 def test_a_partly_covered_step_reports_what_is_covered(tracked: Dataset) -> None:

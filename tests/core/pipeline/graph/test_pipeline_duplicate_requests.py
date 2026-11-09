@@ -247,11 +247,17 @@ def test_a_request_written_while_planning_refuses_the_submission(
         request: Request | None = None,
         inventory: InventoryCache | None = None,
         catalog: DeclarationCatalog | None = None,
+        revalidate: bool = True,
     ) -> Plan:
         monkeypatch.setattr(request_module, "plan_pipeline", plan_pipeline)
         written.append(submit_request(dataset, recipe).request.request_id)
         return plan_pipeline(
-            dataset, recipe, request=request, inventory=inventory, catalog=catalog
+            dataset,
+            recipe,
+            request=request,
+            inventory=inventory,
+            catalog=catalog,
+            revalidate=revalidate,
         )
 
     monkeypatch.setattr(request_module, "plan_pipeline", plan_while_another_submits)
