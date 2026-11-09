@@ -679,7 +679,7 @@ def test_every_ultralytics_column_is_classified(tmp_path: Path) -> None:
     raw.to_parquet(path)
 
     table = UltralyticsTracksConverter().convert(
-        path, UltralyticsTracksParams(), EntryHints(group="g", sequence="s")
+        path, UltralyticsTracksParams(fps=30.0), EntryHints(group="g", sequence="s")
     )
 
     assert "source_track_id" in column_names(table)
@@ -693,7 +693,7 @@ def test_every_sleap_column_is_classified(tmp_path: Path) -> None:
     write_sleap_analysis_h5(path, tracks, scores)
 
     table = SleapAnalysisH5Converter().convert(
-        path, SleapConvertParams(), EntryHints(group="g", sequence="s")
+        path, SleapConvertParams(fps=30.0), EntryHints(group="g", sequence="s")
     )
 
     assert {"poseX2", "poseY2", "poseP2"} <= set(column_names(table))
@@ -707,7 +707,7 @@ def test_every_deeplabcut_and_lightning_pose_column_is_classified(
     _ = write_dlc_csv(path, ["nose", "tail"], n_frames=2)
 
     table = DlcConverter().convert(
-        path, DlcParams(), EntryHints(group="g", sequence="s")
+        path, DlcParams(fps=30.0), EntryHints(group="g", sequence="s")
     )
 
     assert {"poseX1", "poseY1", "poseP1"} <= set(column_names(table))

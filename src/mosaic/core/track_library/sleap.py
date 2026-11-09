@@ -53,8 +53,9 @@ from mosaic.core.params import Declared
 from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.track_converter import (
     EntryHints,
+    TimedTrackConvertParams,
     TrackConverter,
-    TrackConvertParams,
+    conversion_rate,
     register_track_converter,
 )
 from mosaic.core.track_library.helpers import norm_hint
@@ -234,7 +235,6 @@ def _track_to_trex_df(
     if not present.any():
         return None
     frame_idx = np.nonzero(present)[0].astype(int)
-    fps = fps if fps > 0 else 1.0
 
     x = xy[present, :, 0]
     y = xy[present, :, 1]
@@ -262,12 +262,6 @@ def _track_to_trex_df(
     return pd.DataFrame(data)
 
 
-_FPS_DESCRIPTION = (
-    "Frame rate used to derive time. Filled from the source video's measured "
-    "fps by the tracker bridge."
-)
-
-
 _TRACKS_NAMED_DESCRIPTION = (
     "Whether the export's tracks are named: each track index follows one animal "
     "over the video. A SLEAP export records identities only when its tracks are "
@@ -276,10 +270,9 @@ _TRACKS_NAMED_DESCRIPTION = (
 )
 
 
-class SleapConvertParams(TrackConvertParams):
+class SleapConvertParams(TimedTrackConvertParams):
     """Parameters for the SLEAP analysis-HDF5 converter."""
 
-    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
     tracks_named: Annotated[bool | None, Declared(_TRACKS_NAMED_DESCRIPTION)] = None
 
     @override
@@ -289,7 +282,7 @@ class SleapConvertParams(TrackConvertParams):
         A conversion without an answer has the identity it had before the field
         existed. An answer enters the identity, because a table converted again
         under the same identifier would be served from the cache with its old
-        row.
+        row. The rates are left out while unset, as the base does.
         """
         dumped = super().identity_dump()
         if self.tracks_named is None:
@@ -311,7 +304,10 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
     # pair) are no longer invented here -- they belong to features, where
     # the method is chosen and recorded. The params that picked a heading
     # went with them, so the recipe changed twice over.
-    version = "0.2"
+    # 0.3: an unset rate is the entry's measured media rate, else the dataset's
+    # fps_default, and no rate is a refusal. It was 30 fps, so a table converted
+    # under 0.2 may be timed at a rate that its media does not have.
+    version = "0.3"
     output_schema = "mosaic_v1"
     # The file cannot say: its tracks are named only if the user named them.
     carries_tracklets = None
@@ -328,6 +324,7 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
         group = norm_hint(hints.group) or ""
         sequence = norm_hint(hints.sequence) or path.stem
 
+        fps = conversion_rate(params.fps, params.fallback_fps, hints, str(path))
         n_tracks = tracks.shape[1]
         frames: list[pd.DataFrame] = []
         for t in range(n_tracks):
@@ -337,7 +334,7 @@ class SleapAnalysisH5Converter(TrackConverter[SleapConvertParams]):
                 t,
                 group,
                 sequence,
-                params.fps,
+                fps,
             )
             if df is not None:
                 frames.append(df)

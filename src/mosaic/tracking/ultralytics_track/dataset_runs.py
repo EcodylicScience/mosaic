@@ -239,7 +239,8 @@ def bridge_predictions_to_tracks(
     producer_run_id: str,
     consumed_media: Sequence[Path],
     model_files: Sequence[Path],
-    fps: float,
+    measured_fps: float | None,
+    fallback_fps: float | None,
     overwrite: bool,
     axis: EntryAxis,
     frames_read: int | None,
@@ -275,8 +276,8 @@ def bridge_predictions_to_tracks(
     # propagate past that and end the run.
     df = converter.convert(
         predictions_path,
-        UltralyticsTracksParams(fps=fps),
-        EntryHints(group=group, sequence=sequence),
+        UltralyticsTracksParams(fallback_fps=fallback_fps),
+        EntryHints(group=group, sequence=sequence, fps=measured_fps),
     )
 
     return publish_tracks_table(
@@ -596,7 +597,8 @@ def run_ultralytics(
                 producer_run_id=minted.run_id,
                 consumed_media=item.consumed_media,
                 model_files=list(resolved_model.significant_files),
-                fps=item.fps,
+                measured_fps=item.measured_fps,
+                fallback_fps=job.ds.meta_float("fps_default"),
                 overwrite=job.overwrite or recomputed,
                 axis=item.entry_axis(windowed=bool(params.frame_window)),
                 frames_read=frames_read,

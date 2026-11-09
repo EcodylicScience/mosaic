@@ -8,6 +8,22 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: imported SLEAP, DeepLabCut and Ultralytics tracks are timed at the media's rate
+
+The `sleap_analysis_h5`, `deeplabcut` and `ultralytics_tracks` converters are at
+version 0.3. Their `fps` param no longer defaults to 30 and takes only an explicit
+rate, and a new `fallback_fps` takes the dataset's `meta.fps_default`. A table is
+timed at `fps`, else the measured frame rate of the entry's indexed media, else
+`fallback_fps`, and an entry with none of the three fails with
+`FrameRateUnknownError`: `convert-tracks` reports `partial` and the
+`convert-tracks` op fails. A param that is unset leaves the identity, and the
+measured rate is not part of it. Every variant of these three formats is therefore a
+new identifier, and a table converted earlier at an assumed 30 fps keeps its old
+variant. Convert again to replace it. The SLEAP, Lightning Pose and Ultralytics
+trackers pass the clip's measured rate and `fps_default` the same way, so a clip with
+neither fails its entry. `Dataset.measured_entry_fps` returns the rate an entry's
+media measured.
+
 ## Unreleased: the editor catalog flags the ground-truth labels fields
 
 `CatalogEntry` gains two fields, which `mosaic pipeline catalog --json` prints.

@@ -246,7 +246,8 @@ def bridge_analysis_h5_to_tracks(
     producer_run_id: str,
     consumed_media: Sequence[Path],
     model_checkpoints: Sequence[Path],
-    fps: float,
+    measured_fps: float | None,
+    fallback_fps: float | None,
     overwrite: bool,
     axis: EntryAxis,
     recorded_first_frame: int | None,
@@ -295,8 +296,8 @@ def bridge_analysis_h5_to_tracks(
     # the caller and the run reported success having published nothing.
     df = converter.convert(
         h5_path,
-        SleapConvertParams(fps=fps),
-        EntryHints(group=group, sequence=sequence),
+        SleapConvertParams(fallback_fps=fallback_fps),
+        EntryHints(group=group, sequence=sequence, fps=measured_fps),
     )
     appearance: pd.DataFrame | None = None
     unmatched: int | None = None
@@ -1050,7 +1051,8 @@ def run_sleap(
                 producer_run_id=minted.run_id,
                 consumed_media=item.consumed_media,
                 model_checkpoints=checkpoints,
-                fps=item.fps,
+                measured_fps=item.measured_fps,
+                fallback_fps=job.ds.meta_float("fps_default"),
                 overwrite=overwrite_table,
                 axis=axis,
                 recorded_first_frame=job.recorded_first_frame,

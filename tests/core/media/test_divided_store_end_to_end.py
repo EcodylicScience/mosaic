@@ -39,6 +39,7 @@ from tests.helpers import (
     pose_per_frame,
     video_store_maker,
     write_listed_entries,
+    write_sleap_analysis_h5,
 )
 
 pytestmark = [pytest.mark.media, pytest.mark.slow]
@@ -117,6 +118,24 @@ def divisions(dataset: Dataset) -> list[tuple[str, int, int]]:
     ]
 
 
+def index_tracks_raw_dirs(dataset: Dataset, src_format: str, pattern: str) -> None:
+    """Index each sequence directory of ``tracks_raw`` as *src_format* files of *pattern*."""
+    rows = [
+        TracksRawIndexScope(
+            directory=dataset.get_root("tracks_raw") / found,
+            group=RECORDING,
+            sequence=found,
+            src_format=src_format,
+        )
+        for found in sorted(
+            path.name
+            for path in dataset.get_root("tracks_raw").iterdir()
+            if path.is_dir()
+        )
+    ]
+    _ = dataset.write_tracks_raw_index(rows, patterns=pattern)
+
+
 def write_local_tracks(
     dataset: Dataset, sequence: str, frames: int, *, start: int = 0
 ) -> None:
@@ -133,20 +152,14 @@ def write_local_tracks(
             "Y": 1.0,
         }
     ).to_csv(raw / f"{sequence}.csv", index=False)
-    rows = [
-        TracksRawIndexScope(
-            directory=dataset.get_root("tracks_raw") / found,
-            group=RECORDING,
-            sequence=found,
-            src_format=LOCAL_CSV,
-        )
-        for found in sorted(
-            path.name
-            for path in dataset.get_root("tracks_raw").iterdir()
-            if path.is_dir()
-        )
-    ]
-    _ = dataset.write_tracks_raw_index(rows, patterns="*.csv")
+    index_tracks_raw_dirs(dataset, LOCAL_CSV, "*.csv")
+
+
+def write_sleap_tracks(dataset: Dataset, sequence: str, frames: int) -> None:
+    """Index a SLEAP analysis file of one animal over *frames* frames, for *sequence*."""
+    path = dataset.get_root("tracks_raw") / sequence / f"{sequence}.h5"
+    write_sleap_analysis_h5(path, np.random.default_rng(0).random((frames, 1, 1, 2)))
+    index_tracks_raw_dirs(dataset, "sleap_analysis_h5", "*.h5")
 
 
 def converted(dataset: Dataset, sequence: str) -> pd.DataFrame:
@@ -219,6 +232,26 @@ def test_time_continues_across_a_closed_boundary_at_the_division_rate(
 
     for sequence, first_frame, count in placed:
         assert list(converted(dataset, sequence)["time"]) == pytest.approx(
+            [frame / RATE for frame in range(first_frame, first_frame + count)]
+        )
+
+
+def test_a_sleap_table_of_a_division_is_timed_at_the_stores_rate(
+    tmp_path: Path, requires_ffmpeg: None
+) -> None:
+    """The measured rate times each division's table and the division's offset agrees."""
+    dataset = divided_dataset(tmp_path, (5, 5, 5, 5, 2))
+    placed = divisions(dataset)
+    for sequence, _, count in placed:
+        write_sleap_tracks(dataset, sequence, count)
+
+    outcome = dataset.convert_all_tracks(source_format="sleap_analysis_h5")
+
+    assert outcome.ok
+    for sequence, first_frame, count in placed:
+        table = converted(dataset, sequence)
+        assert list(table["frame"]) == list(range(first_frame, first_frame + count))
+        assert list(table["time"]) == pytest.approx(
             [frame / RATE for frame in range(first_frame, first_frame + count)]
         )
 

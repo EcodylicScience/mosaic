@@ -36,9 +36,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Generic, TypeVar
+from typing import Annotated, Any, ClassVar, Generic, TypeVar, override
 
 import pandas as pd
+from pydantic import Field
 
 from mosaic.core.entry import validate_entry_name
 from mosaic.core.params import (
@@ -50,8 +51,11 @@ from mosaic.core.params import (
 __all__ = [
     "TRACK_CONVERTERS",
     "EntryHints",
+    "FrameRateUnknownError",
+    "TimedTrackConvertParams",
     "TrackConvertParams",
     "TrackConverter",
+    "conversion_rate",
     "ensure_track_converters_registered",
     "get_track_converter",
     "merge_on_column_union",
@@ -76,12 +80,13 @@ class EntryHints:
     Both default to empty, which means "the converter decides" -- typically from
     the filename stem.
 
-    ``fps`` is the measured frame rate of the media the tool read, which a caller
-    knows only when it handed the tool that media. It is a fact about the entry's
+    ``fps`` is the measured frame rate of the entry's media: the media the tool
+    read, or the media indexed for an imported file. It is a fact about the entry's
     input, as the file's bytes are, and not a choice of recipe: a converter that
     reads it applies one rule to every entry, and the rate decides only the
-    numbers. ``None`` means not measured, and a converter then keeps the tool's
-    own timing.
+    numbers. ``None`` means not measured. A converter of a tool that times its own
+    output keeps that timing then, and a converter of a file that records no rate
+    takes the rate from its params (:func:`conversion_rate`).
 
     ``first_frame`` is the sequence's first frame on its recording's frame axis,
     0 for an undivided recording, and like ``fps`` a fact about the entry. A
@@ -121,6 +126,44 @@ class EntryHints:
             raise ValueError(msg)
 
 
+class FrameRateUnknownError(ValueError):
+    """A conversion has no frame rate to time its table by."""
+
+
+def conversion_rate(
+    explicit: float | None, fallback: float | None, hints: EntryHints, source: str
+) -> float:
+    """Return the frame rate that times a table whose file records none.
+
+    A SLEAP analysis file, a DeepLabCut export and an Ultralytics predictions file
+    store frame numbers only, so ``time`` is ``frame / rate`` for a rate that the
+    caller supplies. The rate is *explicit*, the converter's ``fps`` parameter,
+    else the measured rate of the entry's media (``hints.fps``), else *fallback*,
+    the dataset's ``fps_default``. Every such converter calls this function.
+
+    Args:
+        explicit: The converter's ``fps`` parameter, ``None`` when unset.
+        fallback: The converter's ``fallback_fps`` parameter, ``None`` when unset.
+        hints: The entry, whose ``fps`` is the measured rate of its media.
+        source: The file being converted, which the refusal names.
+
+    Returns:
+        The positive rate.
+
+    Raises:
+        FrameRateUnknownError: If none of the three rates is known.
+    """
+    for rate in (explicit, hints.fps, fallback):
+        if rate is not None:
+            return rate
+    message = (
+        f"Cannot time {source}: the file records no frame rate, no fps was given, "
+        "the entry's media has no measured rate, and meta.fps_default is not set. "
+        "Pass fps=, index the entry's media, or set meta.fps_default."
+    )
+    raise FrameRateUnknownError(message)
+
+
 class TrackConvertParams(Params):
     """Base for every converter's parameters.
 
@@ -132,6 +175,46 @@ class TrackConvertParams(Params):
     strict_schema: Annotated[
         bool, HASH_EXCLUDE, Declared(_STRICT_SCHEMA_DESCRIPTION)
     ] = False
+
+
+_FPS_DESCRIPTION = (
+    "Frame rate that derives time, taken before the entry's measured media rate and "
+    "the dataset's fps_default. Leave unset to time each entry at its media's "
+    "measured rate."
+)
+
+_FALLBACK_FPS_DESCRIPTION = (
+    "Frame rate for an entry whose media has no measured rate. The dataset fills "
+    "it from meta.fps_default."
+)
+
+
+class TimedTrackConvertParams(TrackConvertParams):
+    """Base of a converter whose file records no frame rate.
+
+    ``time`` is ``frame / rate`` (:func:`conversion_rate`), and the rate is
+    ``fps``, else the entry's measured media rate, else ``fallback_fps``. A field
+    that is unset stays out of ``identity_dump()``, and the measured rate is a fact
+    about the entry (:class:`EntryHints`) and never enters it.
+    """
+
+    fps: Annotated[
+        float | None, Field(gt=0.0, allow_inf_nan=False), Declared(_FPS_DESCRIPTION)
+    ] = None
+    fallback_fps: Annotated[
+        float | None,
+        Field(gt=0.0, allow_inf_nan=False),
+        Declared(_FALLBACK_FPS_DESCRIPTION),
+    ] = None
+
+    @override
+    def identity_dump(self) -> dict[str, object]:
+        """The hashed params, with each rate left out while it is unset."""
+        dumped = super().identity_dump()
+        for name in ("fps", "fallback_fps"):
+            if dumped[name] is None:
+                del dumped[name]
+        return dumped
 
 
 P = TypeVar("P", bound=TrackConvertParams, default=TrackConvertParams)

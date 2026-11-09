@@ -172,7 +172,7 @@ def test_ids_match_the_converter_on_the_analysis_track_axis(tmp_path: Path) -> N
         dim=2,
     )
     converted = SleapAnalysisH5Converter().convert(
-        h5, SleapConvertParams(), EntryHints(group="g", sequence="s")
+        h5, SleapConvertParams(fps=30.0), EntryHints(group="g", sequence="s")
     )
 
     track_names = read_analysis_track_names(h5)

@@ -7653,6 +7653,48 @@ class Dataset:
             placement = members.place(entry_sequence, resolved.facts)
         return dataclasses.replace(resolved, placement=placement)
 
+    def measured_entry_fps(self, group: str, sequence: str) -> float | None:
+        """Return the frame rate that the entry's indexed media measured, if one is known.
+
+        The rate is the one the entry's clips share, within the store tolerance
+        (:func:`~mosaic.core.media.store_rate.store_rate_mismatch`), and the
+        first clip's when they differ by less than it. Cameras are read apart,
+        and they must share a rate as clips do. Nothing is written.
+
+        Returns:
+            The rate, or ``None`` when the entry has no indexed media, a clip
+            has no measured rate, the clips or cameras disagree, or the media
+            cannot be resolved.
+        """
+        try:
+            df = self._load_media_index()
+            matched = self._matched_media_rows(df, group, sequence, None)
+            route_derivatives, derivative_df = self.media_routing_context()
+            rates: list[float] = []
+            for _, rows in matched.groupby(matched["camera"].astype(str), sort=True):
+                resolved = self._resolve_matched_rows(
+                    group, sequence, rows, route_derivatives, derivative_df
+                )
+                rates.extend(float(clip.fps) for clip in resolved.facts)
+        except (FileNotFoundError, KeyError, MediaProbeError):
+            return None
+        if not rates or min(rates) <= 0.0 or store_rate_mismatch(rates) is not None:
+            return None
+        return rates[0]
+
+    def _conversion_fps(
+        self, converter: TrackConverter[Any], entry: Entry
+    ) -> float | None:
+        """Return the measured rate to hand *converter* for *entry*.
+
+        Only a converter of a file that records no rate takes it, which is one whose
+        params declare ``fallback_fps`` (:class:`TimedTrackConvertParams`). A
+        converter of a tool that times its own output keeps that timing on import.
+        """
+        if "fallback_fps" not in type(converter).Params.model_fields:
+            return None
+        return self.measured_entry_fps(*entry)
+
     def _member_placement(
         self,
         df: "pd.DataFrame",
@@ -8763,7 +8805,14 @@ class Dataset:
                     (out_group_canon, canon_seq)
                 )
                 hints = _placed_hints(
-                    EntryHints(group=canon_group_infile, sequence=canon_seq), division
+                    EntryHints(
+                        group=canon_group_infile,
+                        sequence=canon_seq,
+                        fps=self._conversion_fps(
+                            converter, (out_group_canon, canon_seq)
+                        ),
+                    ),
+                    division,
                 )
                 df_std = converter.convert(src_path, conv_params, hints)
 
@@ -8834,7 +8883,12 @@ class Dataset:
             (group_value, seq_value)
         )
         hints = _placed_hints(
-            EntryHints(group=group_value, sequence=seq_value), division
+            EntryHints(
+                group=group_value,
+                sequence=seq_value,
+                fps=self._conversion_fps(converter, (group_value, seq_value)),
+            ),
+            division,
         )
         df_std = converter.convert(src_path, conv_params, hints)
         df_std = _placed_conversion(
@@ -8918,7 +8972,7 @@ class Dataset:
         Args:
             source_format: The registered track converter's ``src_format``.
             params: Converter overrides, as :meth:`convert_all_tracks` takes
-                them. ``fps`` falls back to the dataset's ``fps_default``.
+                them. ``fallback_fps`` is the dataset's ``fps_default``.
             correction: The promoted correction revision, ``0`` for an upload.
 
         Returns:
@@ -8944,9 +8998,10 @@ class Dataset:
         Two resolutions happen here, both *before* the values can be hashed,
         which is the same rule item 1.1 established for upstream references:
 
-        - ``fps`` falls back to the dataset's ``fps_default``, so the value
-          recorded in identity is the one that was actually used rather than a
-          field default standing in for it.
+        - ``fallback_fps`` is the dataset's ``fps_default``, for a converter that
+          declares it, so the value recorded in identity is the one the dataset
+          gave. The entry's measured media rate is not a param
+          (:meth:`measured_entry_fps`), and an explicit ``fps`` outranks both.
         - Entry identity (``group`` / ``sequence``) and the caller-side
           ``group_from`` policy are dropped: they travel as ``EntryHints`` or
           are resolved by the caller, and neither belongs in a recipe.
@@ -8966,10 +9021,10 @@ class Dataset:
             merged.pop(dropped, None)
 
         params_cls = type(converter).Params
-        if "fps" in params_cls.model_fields and "fps" not in merged:
+        if "fallback_fps" in params_cls.model_fields and "fallback_fps" not in merged:
             fps_default = self.meta_float("fps_default")
             if fps_default is not None:
-                merged["fps"] = float(fps_default)
+                merged["fallback_fps"] = float(fps_default)
         # The old dict spelled the same thing two ways; accept the legacy key
         # rather than silently ignoring it, then let the model reject anything
         # genuinely unrecognized.
@@ -9303,7 +9358,13 @@ class Dataset:
 
             division = divisions.get((text_cell(out_group), text_cell(sequence)))
             hints = _placed_hints(
-                EntryHints(group=text_cell(group), sequence=text_cell(sequence)),
+                EntryHints(
+                    group=text_cell(group),
+                    sequence=text_cell(sequence),
+                    fps=self._conversion_fps(
+                        converter, (text_cell(out_group), text_cell(sequence))
+                    ),
+                ),
                 division,
             )
 

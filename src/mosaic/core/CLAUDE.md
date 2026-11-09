@@ -227,7 +227,12 @@ importing `mosaic.tracking` registers neither.
   pinned. A blank schema is `LEGACY_SCHEMA`, so it is refused.
 - A converter receives its entry through `EntryHints`, which is not a `Params` and is
   not hashed (`test_no_converter_can_hash_an_entry_name`). Its `fps` is the measured
-  frame rate of the media the tool read, `None` when unmeasured.
+  frame rate of the entry's media, `None` when unmeasured. A converter of a file that
+  records no rate takes it through `conversion_rate`: `fps`, else `hints.fps`, else
+  `fallback_fps`, which the dataset fills from `fps_default`, else a refusal
+  (`TimedTrackConvertParams`, `tests/core/track_library/test_conversion_rate.py`).
+  `convert_all_tracks` hands `hints.fps` only to such a converter, so a TRex import
+  keeps TRex's timing.
 
 ## Parameter models
 

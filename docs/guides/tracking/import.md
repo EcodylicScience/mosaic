@@ -69,6 +69,21 @@ which schema the output carries.
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
 explain why the three TRex rows differ.
 
+## The frame rate of an imported table
+
+A SLEAP, DeepLabCut or Ultralytics file records frame numbers and no frame rate, so
+mosaic times each entry (`time` is `frame` divided by the rate) at the first of these
+that it has:
+
+1. The `fps` parameter, `--params '{"fps": 25}'`.
+2. The frame rate that the entry's indexed media measured.
+3. The dataset's `meta.fps_default`.
+
+An entry with none of the three fails, the run reports `partial`, and the table is
+not written at a guessed rate. Scan the entry's media, set `fps_default` in the
+manifest, or pass `fps`. A table converted by an earlier mosaic with none of these
+set was timed at 30 fps. Convert it again to replace it.
+
 ## Files mosaic will not unpickle
 
 A raw file can come from someone else, or arrive in an upload. mosaic reads TRex `.npz`,

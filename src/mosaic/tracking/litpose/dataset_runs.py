@@ -176,7 +176,8 @@ def bridge_csv_to_tracks(
     producer_run_id: str,
     consumed_media: Sequence[Path],
     model_files: Sequence[Path],
-    fps: float,
+    measured_fps: float | None,
+    fallback_fps: float | None,
     overwrite: bool,
     axis: EntryAxis,
     recorded_first_frame: int | None,
@@ -209,7 +210,9 @@ def bridge_csv_to_tracks(
     converter = get_track_converter("deeplabcut")
     # Propagates to `publish_or_record` -- see the note in the sleap bridge.
     df = converter.convert(
-        csv_path, DlcParams(fps=fps), EntryHints(group=group, sequence=sequence)
+        csv_path,
+        DlcParams(fallback_fps=fallback_fps),
+        EntryHints(group=group, sequence=sequence, fps=measured_fps),
     )
 
     return publish_tracks_table(
@@ -452,7 +455,8 @@ def run_litpose(
                 producer_run_id=minted.run_id,
                 consumed_media=item.consumed_media,
                 model_files=list(resolved_model.significant_files),
-                fps=item.fps,
+                measured_fps=item.measured_fps,
+                fallback_fps=job.ds.meta_float("fps_default"),
                 overwrite=job.overwrite or recomputed,
                 axis=item.entry_axis(windowed=bool(params.frame_window)),
                 recorded_first_frame=job.recorded_first_frame,

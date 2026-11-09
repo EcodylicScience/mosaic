@@ -331,6 +331,7 @@ def test_a_converter_has_one_spelling_of_fps() -> None:
     value reaches the digest.
     """
     assert "fps" in SleapConvertParams.model_fields
+    assert "fallback_fps" in SleapConvertParams.model_fields
     assert "fps_default" not in SleapConvertParams.model_fields
 
 
@@ -397,8 +398,14 @@ def test_two_sequences_of_one_recipe_share_one_params_payload(tmp_path: Path) ->
     assert "sequence" not in json.dumps(params.identity_dump())
 
 
-def test_the_dataset_resolves_fps_from_its_own_default(tmp_path: Path) -> None:
-    """Resolution before hashing: the recorded value is the one used."""
+def test_the_dataset_resolves_its_default_into_the_fallback_rate(
+    tmp_path: Path,
+) -> None:
+    """Resolution before hashing: the recorded value is the one the dataset gave.
+
+    The default is the last rate that a conversion takes, so it fills the fallback
+    and leaves ``fps``, the explicit rate, unset.
+    """
     from mosaic.core.dataset import Dataset, new_dataset_manifest
 
     manifest = new_dataset_manifest(name="fps", base_dir=tmp_path / "ds")
@@ -408,7 +415,8 @@ def test_the_dataset_resolves_fps_from_its_own_default(tmp_path: Path) -> None:
     resolved = dataset._converter_params(SleapAnalysisH5Converter(), None)
 
     assert isinstance(resolved, SleapConvertParams)
-    assert resolved.fps == 60.0
+    assert resolved.fps is None
+    assert resolved.fallback_fps == 60.0
 
 
 def test_an_explicit_fps_outranks_the_dataset_default(tmp_path: Path) -> None:
@@ -422,6 +430,7 @@ def test_an_explicit_fps_outranks_the_dataset_default(tmp_path: Path) -> None:
 
     assert isinstance(resolved, SleapConvertParams)
     assert resolved.fps == 25.0
+    assert resolved.fallback_fps == 60.0
 
 
 def test_entry_hints_never_reach_the_params(tmp_path: Path) -> None:
@@ -743,8 +752,12 @@ def test_sleap_converter_reorders_by_dims_matlab_equals_standard(
 
     conv = SleapAnalysisH5Converter()
     hints = EntryHints(group="", sequence="x")
-    dm = conv.convert(m, SleapConvertParams(), hints).sort_values(["id", "frame"])
-    dstd = conv.convert(s, SleapConvertParams(), hints).sort_values(["id", "frame"])
+    dm = conv.convert(m, SleapConvertParams(fps=30.0), hints).sort_values(
+        ["id", "frame"]
+    )
+    dstd = conv.convert(s, SleapConvertParams(fps=30.0), hints).sort_values(
+        ["id", "frame"]
+    )
     # the dims attribute makes the transposed and native layouts equivalent
     pd.testing.assert_frame_equal(
         dm.reset_index(drop=True), dstd.reset_index(drop=True)
@@ -761,7 +774,7 @@ def test_sleap_converter_falls_back_to_matlab_when_dims_absent(tmp_path: Path) -
     h5 = tmp_path / "nodims.analysis.h5"
     write_sleap_analysis_h5(h5, tracks, scores, preset="matlab", with_dims=False)
     df = SleapAnalysisH5Converter().convert(
-        h5, SleapConvertParams(), EntryHints(group="", sequence="x")
+        h5, SleapConvertParams(fps=30.0), EntryHints(group="", sequence="x")
     )
     assert set(df["id"]) == {0, 1}
     assert len(df[df["id"] == 0]) == 4
@@ -1125,6 +1138,7 @@ def _converted_flag(ds: Dataset, params: dict[str, object] | None = None) -> str
 
 def _raw_dataset(tmp_path: Path, src_format: str, pattern: str) -> Dataset:
     ds = make_dataset((tmp_path / "ds").resolve(), roots=("tracks_raw", "tracks"))
+    ds.meta["fps_default"] = 30.0
     ds.index_tracks_raw(
         [ds.base_dir / "raw"], patterns=[pattern], src_format=src_format
     )
@@ -1182,7 +1196,7 @@ def test_a_sleap_conversion_without_an_answer_keeps_its_variant(
     assert "tracks_named" not in SleapConvertParams().identity_dump()
     assert (
         ds.track_conversion_variant("sleap_analysis_h5")
-        == "convert-sleap_analysis_h5.0.2-3c20a2e6ea"
+        == "convert-sleap_analysis_h5.0.3-3d47f5c74c"
     )
 
 

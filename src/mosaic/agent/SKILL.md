@@ -248,6 +248,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   aggregated CSV/TSV, DeepLabCut CSV), or ask the user whether they trust the file's
   source, since only the user sets the variable:
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/#files-mosaic-will-not-unpickle.
+- A SLEAP, DeepLabCut or Ultralytics file records no frame rate. `convert-tracks` times
+  each entry at `--params '{"fps": ...}'`, else the rate its indexed media measured,
+  else `meta.fps_default`. An entry with none fails and the run reports `partial`: scan
+  the media, set `fps_default`, or pass `fps`. Tables an older mosaic converted with
+  none of them are timed at 30 fps. Convert them again.
 - Read raw `.h264` streams (Raspberry Pi) only through mosaic, which measures their
   frame count. Other readers misjudge a bare stream.
 - Run `mosaic upgrade-tracks` on TRex tables an older mosaic wrote in centimeters.

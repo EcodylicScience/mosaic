@@ -27,17 +27,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.params import Declared
 from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.track_converter import (
     EntryHints,
+    TimedTrackConvertParams,
     TrackConverter,
-    TrackConvertParams,
+    conversion_rate,
     register_track_converter,
 )
 from mosaic.core.track_library.helpers import norm_hint
@@ -197,16 +197,8 @@ def _individual_to_trex_df(
     return pd.DataFrame(data)
 
 
-_FPS_DESCRIPTION = (
-    "Frame rate used to derive time. Filled from the dataset's fps_default "
-    "when the caller does not set it."
-)
-
-
-class DlcParams(TrackConvertParams):
+class DlcParams(TimedTrackConvertParams):
     """Parameters for the DeepLabCut converter."""
-
-    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
 
 
 @register_track_converter
@@ -216,7 +208,10 @@ class DlcConverter(TrackConverter[DlcParams]):
     src_format = "deeplabcut"
     # 0.2: see the SLEAP converter -- the same derived columns and the same
     # heading params are gone. Also serves Lightning Pose.
-    version = "0.2"
+    # 0.3: an unset rate is the entry's measured media rate, else the dataset's
+    # fps_default, and no rate is a refusal. It was 30 fps, so a table converted
+    # under 0.2 may be timed at a rate that its media does not have.
+    version = "0.3"
     output_schema = "mosaic_v1"
     # An individual keeps its column block through the file.
     carries_tracklets = True
@@ -227,8 +222,9 @@ class DlcConverter(TrackConverter[DlcParams]):
         group = norm_hint(hints.group) or ""
         sequence = norm_hint(hints.sequence) or path.stem
 
+        fps = conversion_rate(params.fps, params.fallback_fps, hints, str(path))
         frames = [
-            _individual_to_trex_df(indiv, a, group, sequence, params.fps)
+            _individual_to_trex_df(indiv, a, group, sequence, fps)
             for a, indiv in enumerate(individuals)
         ]
         out = (

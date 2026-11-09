@@ -45,20 +45,22 @@ from mosaic.core.params import (
 )
 from mosaic.core.track_converter import (
     EntryHints,
+    TimedTrackConvertParams,
     TrackConverter,
-    TrackConvertParams,
 )
-
-_FPS_DESCRIPTION = "Frame rate used to derive time."
 
 _DEBUG_DESCRIPTION = "Print what was found."
 
 
-class MyFormatParams(TrackConvertParams):
-    """Everything that determines this converter's output."""
+class MyFormatParams(TimedTrackConvertParams):
+    """Everything that determines this converter's output.
 
-    # Determines the output, so it is part of the recipe.
-    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
+    A format that records no frame rate subclasses ``TimedTrackConvertParams``,
+    which declares ``fps`` and ``fallback_fps``, and times its table with
+    ``conversion_rate(params.fps, params.fallback_fps, hints, str(path))``. A
+    format that records its rate subclasses ``TrackConvertParams`` and reads it.
+    """
+
     # Diagnostics only, so it is excluded from identity -- flipping it must
     # not mint a second variant.
     debug: Annotated[bool, HASH_EXCLUDE, Declared(_DEBUG_DESCRIPTION)] = False

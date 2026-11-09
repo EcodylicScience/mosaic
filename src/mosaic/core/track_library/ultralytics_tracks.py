@@ -21,17 +21,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Final
+from typing import Final
 
 import numpy as np
 import pandas as pd
 
-from mosaic.core.params import Declared
 from mosaic.core.pose_columns import keypoint_centroid
 from mosaic.core.track_converter import (
     EntryHints,
-    TrackConvertParams,
+    TimedTrackConvertParams,
     TrackConverter,
+    conversion_rate,
     register_track_converter,
 )
 
@@ -171,16 +171,8 @@ def _track_to_trex_df(
     return pd.DataFrame(data)
 
 
-_FPS_DESCRIPTION = (
-    "Frame rate used to derive time. Filled from the source video's measured "
-    "fps by the tracker bridge."
-)
-
-
-class UltralyticsTracksParams(TrackConvertParams):
+class UltralyticsTracksParams(TimedTrackConvertParams):
     """Parameters for the Ultralytics tracker-output converter."""
-
-    fps: Annotated[float, Declared(_FPS_DESCRIPTION)] = 30.0
 
 
 @register_track_converter
@@ -202,7 +194,10 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
     # 0.2: derived columns removed, as for the other pose converters. The
     # box-only heading-from-travel fallback went with them: a box tracker
     # reports no shape, and direction of travel is not a body orientation.
-    version = "0.2"
+    # 0.3: an unset rate is the entry's measured media rate, else the dataset's
+    # fps_default, and no rate is a refusal. It was 30 fps, so a table converted
+    # under 0.2 may be timed at a rate that its media does not have.
+    version = "0.3"
     output_schema = "mosaic_v1"
     # The tracker numbers each track once, and the converter keeps that order.
     carries_tracklets = True
@@ -211,13 +206,13 @@ class UltralyticsTracksConverter(TrackConverter[UltralyticsTracksParams]):
     def convert(
         self, path: Path, params: UltralyticsTracksParams, hints: EntryHints
     ) -> pd.DataFrame:
+        fps = conversion_rate(params.fps, params.fallback_fps, hints, str(path))
         raw = _read_raw(path)
         if raw is None:
             return pd.DataFrame(columns=_EMPTY_COLUMNS)
 
         group = hints.group or ""
         sequence = hints.sequence or path.stem
-        fps = params.fps if params.fps > 0 else 1.0
 
         # Dense ids follow the tracker's own ascending order, so the mapping is a
         # property of the file rather than of the order its rows happen to be in.

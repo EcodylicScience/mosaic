@@ -18,12 +18,12 @@ by `mosaic convert-tracks`.
 | --- | --- | --- | --- | --- | --- |
 | `calms21_json` | `0.4` | `mosaic_v1` | yes | no | The same conversion, reading the ``.json`` spelling of a CalMS21 file. |
 | `calms21_npy` | `0.4` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
-| `deeplabcut` | `0.2` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
-| `sleap_analysis_h5` | `0.2` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
+| `deeplabcut` | `0.3` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
+| `sleap_analysis_h5` | `0.3` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
 | `trex_npz` | `0.3` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |
 | `trex_npz_cm` | `0.2` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
 | `trex_npz_scaled` | `0.2` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
-| `ultralytics_tracks` | `0.2` | `mosaic_v1` | no | no | Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table. |
+| `ultralytics_tracks` | `0.3` | `mosaic_v1` | no | no | Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table. |
 
 ### Converter parameters
 
@@ -46,14 +46,16 @@ by `mosaic convert-tracks`.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
-| `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the dataset's fps_default when the caller does not set it. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
+| `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
 
 #### `sleap_analysis_h5`
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
-| `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the source video's measured fps by the tracker bridge. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
+| `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
 | `tracks_named` | `boolean` \| `None` | `null` |  | Whether the export's tracks are named: each track index follows one animal over the video. A SLEAP export records identities only when its tracks are named, so the file cannot say. Leave unset to record no answer; the plan then does not refuse a step that needs ids following an animal. |
 
 #### `trex_npz`
@@ -80,7 +82,8 @@ by `mosaic convert-tracks`.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
-| `fps` | `number` | `30.0` |  | Frame rate used to derive time. Filled from the source video's measured fps by the tracker bridge. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
+| `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
 
 ## Track schemas
 

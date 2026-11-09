@@ -72,7 +72,7 @@ def test_a_blank_group_never_reaches_a_filename(tmp_path: Path) -> None:
     ds.index_tracks_raw(
         [ds.base_dir / "raw"], patterns=["*.csv"], src_format="deeplabcut"
     )
-    ds.convert_all_tracks()
+    ds.convert_all_tracks(params={"fps": 30.0})
 
     assert _entry_names(ds) == ["myseq"]
     index = read_tracks_index(ds)
@@ -170,6 +170,6 @@ def test_an_unhashed_source_records_no_checksum(tmp_path: Path) -> None:
         src_format="deeplabcut",
         compute_md5=False,
     )
-    ds.convert_all_tracks()
+    ds.convert_all_tracks(params={"fps": 30.0})
 
     assert str(read_tracks_index(ds).iloc[0]["source_md5"]) == ""
