@@ -676,7 +676,6 @@ def _work_item(ds: Dataset, group: str, sequence: str) -> TrackerWorkItem:
         sequence=sequence,
         key=sequence,
         video_paths=(resolved.paths[0],),
-        fps=resolved.facts[0].fps,
         source_facts=(resolved.facts[0],),
     )
 

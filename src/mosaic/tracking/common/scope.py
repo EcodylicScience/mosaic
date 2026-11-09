@@ -114,16 +114,6 @@ class TrackerWorkItem:
     sequence: str
     key: str
     video_paths: tuple[Path, ...]
-    fps: float
-    """The frame rate of ``video_path``, i.e. of the **first** clip.
-
-    Not a mean over the clips, because a mean describes none of them. It is the
-    rate that a tool reads the clips' join at, because the join is labeled at its
-    first clip's rate. No single rate indexes a session whose clips disagree, so
-    the shared bridge retimes a table from several clips by each clip's rate
-    (:meth:`entry_axis`).
-    """
-
     source_facts: tuple[MediaFacts, ...] = ()
     """The probed facts of each file in ``video_paths``, for a tracker that decodes.
 
@@ -227,9 +217,12 @@ class TrackerWorkItem:
         """The measured frame rate of the file the tool reads, or ``None``.
 
         The first clip's probed rate, which a join of the clips is labeled at, or
-        the variant file's. ``None`` where the facts are absent or report no
-        rate. :attr:`fps` falls back to the dataset's default there, and a
-        default is not a measurement to correct a tool's timing by.
+        the variant file's. It is not a mean over the clips, because a mean
+        describes none of them, and no single rate indexes a session whose clips
+        disagree. The shared bridge retimes a table from several clips by each
+        clip's rate (:meth:`entry_axis`). ``None`` where the facts are absent or
+        report no rate, and a default is not a measurement to correct a tool's
+        timing by.
         """
         facts = self.facts
         if facts is None or facts.fps <= 0:
@@ -383,13 +376,11 @@ def build_work_items(
     *,
     kind: str,
     media: str = "",
-    fps_default: float | None = None,
 ) -> WorkItems:
     """Collapse a resolved media scope into one work item per entry.
 
     Args:
-        ds: The dataset, read for its default frame rate when an entry's media
-            index records none, and for the indexed key that a refusal's command
+        ds: The dataset, read for the indexed key that a refusal's command
             names.
         scope: What ``Dataset.resolve_media_scope`` returned.
         kind: The tracker's kind. It prefixes warnings and refusals, so a
@@ -398,8 +389,6 @@ def build_work_items(
         media: The media variant that each entry is read from, or ``""`` to read
             the entry media. A variant's file is resolved for the camera that each
             entry keeps.
-        fps_default: Frame rate for an entry whose facts carry none. Defaults to
-            the dataset's ``fps_default``.
 
     Returns:
         The work items, each entry whose variant is missing or out of date, and
@@ -413,9 +402,6 @@ def build_work_items(
             no content identity. No join of them can be addressed, and no marker
             can prove which clips earlier output was made from.
     """
-    fallback_fps = (
-        ds.meta_float("fps_default", 30.0) if fps_default is None else fps_default
-    )
     items: list[TrackerWorkItem] = []
     lost: list[
         tuple[
@@ -471,7 +457,6 @@ def build_work_items(
                 sequence=sequence,
                 key=key,
                 video_paths=tuple(paths),
-                fps=facts[0].fps if facts and facts[0].fps > 0 else fallback_fps,
                 source_facts=tuple(facts),
                 camera=entry.camera,
                 first_frame=first_frame,
@@ -521,7 +506,6 @@ def _variant_item(
         sequence=entry.sequence,
         key=key,
         video_paths=(variant.path,),
-        fps=variant.placement.fps,
         source_facts=(variant.facts,),
         camera=entry.camera,
         variant=variant,

@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
@@ -328,3 +329,50 @@ def test_a_member_of_a_continuous_group_is_timed_at_the_media_rate_without_a_shi
         np.asarray(table["time"], dtype=float),
         np.asarray(table["frame"], dtype=float) / 15.0,
     )
+
+
+# --- the media index is read once ----------------------------------------------
+
+
+def _count_media_index_reads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the reads of the media indexes, which each load takes with its routing."""
+    reads: list[int] = []
+    original = Dataset.media_routing_context
+
+    def counted(
+        self: Dataset, index_filename: str = "index.csv"
+    ) -> tuple[bool, pd.DataFrame | None]:
+        reads.append(1)
+        return original(self, index_filename)
+
+    monkeypatch.setattr(Dataset, "media_routing_context", counted)
+    return reads
+
+
+def test_the_media_index_is_read_once_for_many_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _dataset(
+        tmp_path,
+        media=(_clip("s1", fps=15.0), _clip("s2", fps=15.0)),
+        sequences=("s1", "s2"),
+    )
+    reads = _count_media_index_reads(monkeypatch)
+
+    assert dataset.measured_entry_fps("", "s1") == 15.0
+    assert dataset.measured_entry_fps("", "s2") == 15.0
+
+    assert len(reads) == 1
+
+
+def test_a_rewritten_media_index_is_read_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _dataset(tmp_path, media=(_clip("s1", fps=15.0),))
+    reads = _count_media_index_reads(monkeypatch)
+    assert dataset.measured_entry_fps("", "s1") == 15.0
+
+    write_media_index(dataset, [_clip("s1", fps=20.0)])
+
+    assert dataset.measured_entry_fps("", "s1") == 20.0
+    assert len(reads) == 2

@@ -316,7 +316,6 @@ def test_a_directory_that_predates_markers_is_adopted_for_one_clip_only(
         sequence=_ENTRY,
         key=_ENTRY,
         video_paths=tuple(Path(f"c{order}.mp4") for order in range(clips)),
-        fps=30.0,
     )
 
     adopt_completed_directory(

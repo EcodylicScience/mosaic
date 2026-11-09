@@ -18,11 +18,12 @@ timed at `fps`, else the measured frame rate of the entry's indexed media, else
 `FrameRateUnknownError`: `convert-tracks` reports `partial` and the
 `convert-tracks` op fails. A param that is unset leaves the identity, and the
 measured rate is not part of it. Every variant of these three formats is therefore a
-new identifier, and a table converted earlier at an assumed 30 fps keeps its old
-variant. Convert again to replace it. The SLEAP, Lightning Pose and Ultralytics
-trackers pass the clip's measured rate and `fps_default` the same way, so a clip with
-neither fails its entry. `Dataset.measured_entry_fps` returns the rate an entry's
-media measured.
+new identifier, and a table converted earlier keeps its old variant. An earlier
+version never read the media's rate. It timed a table at `fps`, else `fps_default`,
+else 30 fps. Convert again any table converted without `fps` or `fps_default`. The
+SLEAP, Lightning Pose and Ultralytics trackers pass the clip's measured rate and
+`fps_default` the same way, so a clip with neither fails its entry.
+`Dataset.measured_entry_fps` returns the rate an entry's media measured.
 
 ## Unreleased: the editor catalog flags the ground-truth labels fields
 

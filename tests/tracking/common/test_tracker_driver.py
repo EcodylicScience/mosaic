@@ -49,7 +49,6 @@ def test_a_run_that_skips_every_entry_ends_at_its_total(tmp_path: Path) -> None:
                 sequence=sequence,
                 key=key,
                 video_paths=(ds.base_dir / f"{sequence}.mp4",),
-                fps=30.0,
             )
         )
         claimed = minted.run_root / key
@@ -104,7 +103,6 @@ def _run_two_entries(
             sequence=sequence,
             key=make_entry_key("g", sequence),
             video_paths=(ds.base_dir / f"{sequence}.mp4",),
-            fps=30.0,
         )
         for sequence in ("s1", "s2")
     )

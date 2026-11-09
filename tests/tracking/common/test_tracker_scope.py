@@ -67,7 +67,7 @@ class TestOneClip:
         (item,) = _items(ds, kind=TREX)
         assert item.n_sources == 1
         assert item.video_path.name == "v.mp4"
-        assert item.fps == 30.0
+        assert item.measured_fps == 30.0
 
     def test_its_reuse_key_is_still_the_video_uuid(self, tmp_path: Path) -> None:
         """The proof that nothing already on disk is invalidated."""
@@ -75,11 +75,12 @@ class TestOneClip:
         (item,) = _items(ds, kind=TREX)
         assert item.source_uid == "uid-v"
 
-    def test_an_unmeasured_rate_still_falls_back(self, tmp_path: Path) -> None:
-        """Only a *joined* entry refuses a missing rate; one clip defaults."""
+    def test_an_unmeasured_rate_is_unknown(self, tmp_path: Path) -> None:
+        """Only a *joined* entry refuses a missing rate. One clip has none, and no
+        default stands in for a measurement."""
         ds = _dataset(tmp_path, [MediaClip(filename="v.mp4", fps=0.0)])
         (item,) = _items(ds, kind=TREX)
-        assert item.fps == 30.0
+        assert item.measured_fps is None
 
 
 class TestSeveralClips:
@@ -112,7 +113,7 @@ class TestSeveralClips:
         """Never a mean: it describes the first clip, and a mean describes none."""
         ds = _dataset(tmp_path, SESSION)
         (item,) = _items(ds, kind=TREX)
-        assert item.fps == 30.0
+        assert item.measured_fps == 30.0
 
     def test_a_heterogeneous_rate_is_carried_not_refused(self, tmp_path: Path) -> None:
         """30 / 29.95 / 31 is a real session and must survive the scope."""
@@ -155,7 +156,6 @@ class TestTheReuseKey:
             sequence="s",
             key="s",
             video_paths=(Path("a.mp4"), Path("b.mp4")),
-            fps=30.0,
             source_facts=(clip_facts(video_uuid="uid-a"), clip_facts(video_uuid="")),
         )
         assert item.source_uid == ""
@@ -330,7 +330,6 @@ class TestTheItemInvariant:
                 sequence="s",
                 key="s",
                 video_paths=(Path("a.mp4"), Path("b.mp4")),
-                fps=30.0,
                 source_facts=(facts,),
             )
 
@@ -341,16 +340,13 @@ class TestTheItemInvariant:
             sequence="s",
             key="s",
             video_paths=(Path("a.mp4"),),
-            fps=30.0,
         )
         assert item.facts is None
         assert item.source_uid == ""
 
     def test_no_paths_is_refused(self) -> None:
         with pytest.raises(ValueError, match="at least one video path"):
-            _ = TrackerWorkItem(
-                group="", sequence="s", key="s", video_paths=(), fps=30.0
-            )
+            _ = TrackerWorkItem(group="", sequence="s", key="s", video_paths=())
 
 
 class TestResolveScope:

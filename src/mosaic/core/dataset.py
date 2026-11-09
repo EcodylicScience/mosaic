@@ -1491,6 +1491,12 @@ class MediaRows:
 type _MediaRowsKey = tuple[IndexStamp, Path, tuple[tuple[Path, Path], ...]]
 """The originals index, the media root and the path map that rows were read under."""
 
+type _RateMediaKey = tuple[IndexStamp, IndexStamp | None]
+"""The originals index and, when reads route to derivatives, the derivative index."""
+
+type _RateMedia = tuple[pd.DataFrame, bool, pd.DataFrame | None]
+"""The originals index, whether reads route to derivatives, and the derivative index."""
+
 
 class LibraryMismatchError(ValueError):
     """A library link resolves to a dataset other than the one it was made to.
@@ -1740,6 +1746,7 @@ class Dataset:
             tuple[tuple[LibraryLink, ...], tuple[LinkedLibrary, ...]] | None
         ) = None
         self._media_rows: dict[str, tuple[_MediaRowsKey, MediaRows]] = {}
+        self._rate_media: tuple[_RateMediaKey, _RateMedia] | None = None
 
     def __repr__(self) -> str:
         return f"Dataset(manifest_path={self.manifest_path!r}, name={self.name!r})"
@@ -7667,9 +7674,8 @@ class Dataset:
             cannot be resolved.
         """
         try:
-            df = self._load_media_index()
+            df, route_derivatives, derivative_df = self._rate_media_read()
             matched = self._matched_media_rows(df, group, sequence, None)
-            route_derivatives, derivative_df = self.media_routing_context()
             rates: list[float] = []
             for _, rows in matched.groupby(matched["camera"].astype(str), sort=True):
                 resolved = self._resolve_matched_rows(
@@ -7681,6 +7687,35 @@ class Dataset:
         if not rates or min(rates) <= 0.0 or store_rate_mismatch(rates) is not None:
             return None
         return rates[0]
+
+    def _rate_media_read(self) -> _RateMedia:
+        """Return the media index and its routing context, read once per change.
+
+        A conversion asks :meth:`measured_entry_fps` for each entry, so the dataset
+        keeps its last read, and reads the indexes again when the stamp of either
+        changed (:class:`~mosaic.core.pipeline.index_stamp.IndexStamp`). The stamps
+        precede the read, so a write during it leaves the stamp stale and the next
+        call reads again. The caller does not modify the frames.
+
+        Raises:
+            FileNotFoundError: If the originals index does not exist.
+            KeyError: If the dataset names no media root.
+        """
+        originals = self.get_root(self.resolve_media_root()) / "index.csv"
+        derivatives = (
+            self.get_root("media") / "index.csv" if self.routes_derivatives() else None
+        )
+        key = (
+            IndexStamp.of(originals),
+            None if derivatives is None else IndexStamp.of(derivatives),
+        )
+        if self._rate_media is not None and self._rate_media[0] == key:
+            return self._rate_media[1]
+        df = self._load_media_index()
+        route_derivatives, derivative_df = self.media_routing_context()
+        read = (df, route_derivatives, derivative_df)
+        self._rate_media = (key, read)
+        return read
 
     def _conversion_fps(
         self, converter: TrackConverter[Any], entry: Entry

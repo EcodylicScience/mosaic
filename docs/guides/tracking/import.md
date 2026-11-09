@@ -81,8 +81,11 @@ that it has:
 
 An entry with none of the three fails, the run reports `partial`, and the table is
 not written at a guessed rate. Scan the entry's media, set `fps_default` in the
-manifest, or pass `fps`. A table converted by an earlier mosaic with none of these
-set was timed at 30 fps. Convert it again to replace it.
+manifest, or pass `fps`.
+
+An earlier mosaic never read the media's rate. It timed a table at `fps`, else
+`fps_default`, else 30 fps, whether or not the media was indexed. Convert again any
+table that was converted without `fps` or `fps_default`.
 
 ## Files mosaic will not unpickle
 

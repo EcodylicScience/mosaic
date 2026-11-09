@@ -140,7 +140,6 @@ def test_a_slot_is_addressed_as_it_was(
         sequence="s",
         key="s",
         video_paths=tuple(Path(f"c{order}.mp4") for order in range(max(len(uids), 1))),
-        fps=30.0,
         source_facts=tuple(clip_facts(video_uuid=uid) for uid in uids),
     )
 
