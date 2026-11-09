@@ -99,6 +99,8 @@ class Pin:
     candidate_step: int = 1
     crop: tuple[int, int, int, int] | None = None
     kmeans_max_candidates: int | None = 5000
+    tied: frozenset[int] = frozenset()
+    """The rows that the picks after ``selected`` come from, one each, in any order."""
 
 
 @dataclass(frozen=True)
@@ -206,8 +208,13 @@ def _assert_pinned(
 ) -> None:
     manifest = _manifest(result)
     assert list(manifest) == MANIFEST_KEYS
-    assert manifest["selected_frame_indices"] == pin.selected
-    assert result.selected_frame_indices == pin.selected
+    picks = result.selected_frame_indices
+    assert manifest["selected_frame_indices"] == picks
+    assert picks[: len(pin.selected)] == pin.selected
+    rest = picks[len(pin.selected) :]
+    assert len(rest) == pin.n_frames - len(pin.selected)
+    assert len(set(rest)) == len(rest)
+    assert set(rest) <= pin.tied
     assert manifest["n_requested"] == manifest["n_extracted"] == pin.n_frames
     sampling = manifest["sampling"]
     assert isinstance(sampling, dict)
@@ -306,7 +313,13 @@ STORE_SEQUENCE_PINS = [
     pytest.param(Pin("uniform", 4, [0, 6, 13, 19], []), id="uniform"),
     pytest.param(Pin("kmeans", 5, [0, 1, 2, 5, 7], kmeans_record(1, 20)), id="kmeans"),
     pytest.param(
-        Pin("kmeans", 12, list(range(12)), kmeans_record(1, 20)),
+        Pin(
+            "kmeans",
+            12,
+            list(range(10)),
+            kmeans_record(1, 20),
+            tied=frozenset(range(10, 20)),
+        ),
         id="kmeans-farthest-point-fill",
     ),
 ]
@@ -314,8 +327,9 @@ STORE_SEQUENCE_PINS = [
 
 The stores hold the same ten frames, so the sequence has ten distinct frames. In
 ``kmeans-farthest-point-fill`` the clusters cover frames 0 to 8. The fill adds frame 9,
-the one distinct frame left, then frames 10 and 11, the first of the remaining frames,
-which all tie at distance zero.
+the one distinct frame left, then two of the remaining frames, which repeat frames
+already picked. Their distances differ from zero only by the float32 kernel that
+computes the features, so the test does not pin which two.
 """
 
 

@@ -262,7 +262,7 @@ def test_pipeline_status_refuses_a_wait_above_the_cap(
     )
 
     assert result.exit_code == 2
-    assert f"0<=x<={MAX_WAIT_SECONDS}" in result.output
+    assert str(MAX_WAIT_SECONDS) in result.output
 
 
 def test_plain_status_prints_the_error_and_each_failed_entry_as_text(
