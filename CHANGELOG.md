@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: imported SLEAP, DeepLabCut and Ultralytics tracks are timed at the media's rate
+## 0.20.0: imported SLEAP, DeepLabCut and Ultralytics tracks are timed at the media's rate, the editor catalog flags the ground-truth labels fields, the aggregates reduce several columns by arena and subgroup, and a caller that holds an inventory decides when it is revalidated
+
+### Imported SLEAP, DeepLabCut and Ultralytics tracks are timed at the media's rate
 
 The `sleap_analysis_h5`, `deeplabcut` and `ultralytics_tracks` converters are at
 version 0.3. Their `fps` param no longer defaults to 30 and takes only an explicit
@@ -25,7 +27,7 @@ SLEAP, Lightning Pose and Ultralytics trackers pass the clip's measured rate and
 `fps_default` the same way, so a clip with neither fails its entry.
 `Dataset.measured_entry_fps` returns the rate an entry's media measured.
 
-## Unreleased: the editor catalog flags the ground-truth labels fields
+### The editor catalog flags the ground-truth labels fields
 
 `CatalogEntry` gains two fields, which `mosaic pipeline catalog --json` prints.
 `ground_truth_fields` lists the labels fields that accept the
@@ -40,7 +42,7 @@ which declares the class attribute `needs_ground_truth = True` for its
 Both fields default to empty and false. A reader of the older wire is
 unaffected. No identifier or name on disk moves.
 
-## Unreleased: the aggregates reduce several columns, split by arena and by a subgroup column
+### The aggregates reduce several columns, split by arena and by a subgroup column
 
 `frame-aggregate` 0.3, `sequence-aggregate` 0.2 and `individual-aggregate` 0.2
 replace `column` and `agg` with the lists `columns` and `aggs`, and drop
@@ -59,7 +61,7 @@ listed column is declared symmetric, and `once` halves only the `sum` and
 catalog's declarations carry. Every run id of the three features moves with the
 version.
 
-## Unreleased: a caller that holds an inventory decides when it is revalidated
+### A caller that holds an inventory decides when it is revalidated
 
 `plan_pipeline` and `submit_request` take `revalidate`, true by default. Unset,
 the plan reads a held `InventoryCache` as held, without the stats that refresh
