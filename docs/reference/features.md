@@ -741,7 +741,7 @@ Subsample tracks rows for downstream per-row features.
 
 ### `trajectory-smooth`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth`
+Version `0.2` &middot; `mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth`
 
 Per-sequence feature that smooths and interpolates trajectory positions.
 
@@ -754,6 +754,7 @@ Per-sequence feature that smooths and interpolates trajectory positions.
 | `expand_frames` | `integer` | `2` |  | How far on each side of a speed-flagged row the bad flag extends. [frames] |
 | `savgol_window` | `integer` \| `None` | `null` |  | Unset, no Savitzky-Golay smoothing is applied. Set, smooths centroid and pose positions regardless of the interpolation settings, for an id with at least this many rows. Must exceed savgol_polyorder. An odd value keeps the filter window centered. [frames] |
 | `savgol_polyorder` | `integer` | `2` |  | The polynomial order of the Savitzky-Golay filter. |
+| `long_run_frames` | `integer` | `30` |  | A filled centroid run longer than this is marked long_interp. [frames] |
 
 ### `visual-network`
 
@@ -867,6 +868,7 @@ Per-sequence summary of focal-individual group metrics.
 | `frame_chunk` | `integer` \| `None` | `null` |  | Splits each sequence into chunks of this size, summarized separately. Unset, each sequence is summarized whole. Ignored when time_chunk_sec is also set and the input has a time column. [frames] |
 | `centroid_heading_col` | `string` | `"centroid_heading"` |  | The centroid-heading column, used to rotate positions into the group's reference frame. Read only when present in the input. |
 | `exclude_cols` | list of `string` | _constructed_ |  | Names of boolean columns whose truthy rows are dropped before computation, for example bad_frame. |
+| `exclude_scope` | `"row"` \| `"frame"` | `"row"` |  | What one flag drops. With row, the flagged row. With frame, every row of the flagged row's frame and arena. |
 
 ### `frame-aggregate`
 
@@ -975,7 +977,7 @@ Per-sequence feature reducing the rows of an entry to one row per group.
 
 ### `social-motion-summary`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary`
+Version `0.3` &middot; `mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary`
 
 Per-fish summary of social-interaction and locomotor-style metrics.
 
@@ -986,6 +988,8 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 | `social_min_group_size` | `integer` | `2` |  | The minimum group_size for a frame to count as social, when group_size is available. |
 | `subgroup_col` | `string` \| `None` | `null` |  | The column that splits the output into one row per id per value, typically group_size from ffgroups. Unset, the output has one row per id. |
 | `compute_burst_coast` | `boolean` | `false` |  | Also emit a burst-and-coast gait summary: kick_rate and burst_coast_ratio. |
+| `exclude_cols` | list of `string` | _constructed_ |  | Names of boolean columns whose truthy rows are left out of every metric, for example unbridgeable from trajectory-smooth. An acceleration or jerk that touches an excluded row is left out too. |
+| `exclude_scope` | `"row"` \| `"frame"` | `"row"` |  | What one flag excludes. With row, the flagged row. With frame, every row of the flagged row's frame and arena. |
 
 ## Global (fit once, apply everywhere)
 

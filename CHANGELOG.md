@@ -8,6 +8,34 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `trajectory-smooth` marks the positions it fills and the runs it cannot bridge, and two summaries exclude flagged rows
+
+`trajectory-smooth` is at version 0.2, so every 0.1 run id is retired. Its positions
+and `bad_frame` are unchanged. It adds four columns:
+
+- `interpolated`: the centroid position was written by interpolation or an edge
+  fill. Until now only `bad_frame` was marked, and the 2.9 % of guppy fish-frames
+  filled from detection gaps could be found only by joining to the tracks table.
+- `interp_run_frames`: the length of the filled run the row lies in, 0 for an
+  observed row. It joins `BOOKKEEPING_COLS`, so no fit reads it as payload.
+- `unbridgeable`: the row lies in a run whose straight line between the observed
+  rows on either side moves faster than `speed_threshold`. The speed gate never
+  compared the rows on either side of a missing run, so a jump across a detection
+  gap was filled with a line at up to 1,760 cm/s in the guppy data. Positions are
+  still filled; a summary excludes the rows.
+- `long_interp`: `interpolated` in a run longer than the new param
+  `long_run_frames` (default 30).
+
+`social-motion-summary` moves to 0.3 and gains `exclude_cols`, which removes
+flagged rows from each fish's samples and the accelerations and jerks that touch
+them. `social-motion-summary` and `ffgroups-metrics` gain `exclude_scope`: `"row"`
+(the default) excludes the flagged row, `"frame"` every row of its frame and arena.
+The run id of a default `ffgroups-metrics` step moves (`0.1-690f995583` to
+`0.1-e3d930e262`) because the new field is hashed; its output for a run that sets
+neither field is unchanged. A recipe that excludes the marks in a summary adds the
+`trajectory-smooth` step to its inputs, and `social-motion-summary` refuses a named
+column its input lacks. A fish whose rows are all excluded emits no row.
+
 ## Unreleased: world-frame 3D tracks have a schema and two features, a converter reads the zebrafish workflow's CSV, and a feature declares the spaces it computes in
 
 The `mosaic_world_v1` track schema is registered: per-frame, per-id tracks in

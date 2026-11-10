@@ -248,6 +248,21 @@ CASES: tuple[Case, ...] = (
         params={"subgroup_col": "group_size"},
     ),
     Case(
+        case_id="social-motion-summary/exclude-unbridgeable-frame-scope",
+        feature="social-motion-summary",
+        params={"exclude_cols": ["unbridgeable"], "exclude_scope": "frame"},
+    ),
+    Case(
+        case_id="ffgroups-metrics/exclude-unbridgeable-frame-scope",
+        feature="ffgroups-metrics",
+        params={"exclude_cols": ["unbridgeable"], "exclude_scope": "frame"},
+    ),
+    Case(
+        case_id="trajectory-smooth/long-run-frames-60",
+        feature="trajectory-smooth",
+        params={"long_run_frames": 60},
+    ),
+    Case(
         case_id="egocentric-crop/center-mode-xy",
         feature="egocentric-crop",
         params={"center_mode": "xy"},

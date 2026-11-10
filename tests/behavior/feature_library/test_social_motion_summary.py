@@ -363,3 +363,84 @@ def test_a_lone_fish_deviates_zero_from_its_own_group_mean() -> None:
     """
     out = _split(social_min_group_size=1).set_index(["id", "group_size"])
     assert out.loc[(0, 1), "speed_match_group"] == pytest.approx(0.0)
+
+
+def _spiked(flag_fish: int) -> pd.DataFrame:
+    """The merged scenario with fish 0's speed spiking at frame 2 and one row flagged.
+
+    The flag sits on *flag_fish*'s frame-2 row. Fish 0's speed reads
+    [1, 2, 100, 4, 5]: the two intervals touching frame 2 are the only
+    accelerations other than 1.
+    """
+    df = _make_merged_df()
+    spike = (df["id"] == 0) & (df["frame"] == 2)
+    df.loc[spike, "speed"] = 100.0
+    df["unbridgeable"] = (df["id"] == flag_fish) & (df["frame"] == 2)
+    return df
+
+
+def _summary(df: pd.DataFrame, **overrides: object) -> pd.DataFrame:
+    params: dict[str, object] = {"fps": 1.0, **overrides}
+    return SocialMotionSummary(params=params).apply(df).set_index("id")
+
+
+def test_an_excluded_row_leaves_its_sample_and_intervals_out() -> None:
+    out = _summary(_spiked(flag_fish=0), exclude_cols=["unbridgeable"])
+    # Kept intervals (0,1) and (3,4), both 1; no jerk spans two kept intervals.
+    assert out.loc[0, "accel_mean"] == pytest.approx(1.0)
+    assert out["jerk_mean"].isna().to_dict()[0]
+    # speed over [1, 2, 4, 5]: IQR 4.25 - 1.75 over median 3
+    assert out.loc[0, "speed_rcv"] == pytest.approx(2.5 / 3.0)
+    assert out.loc[0, "nn_align"] == pytest.approx(1.0)
+    without = _summary(_spiked(flag_fish=0))
+    assert without.loc[0, "accel_mean"] == pytest.approx(49.0)
+
+
+def test_an_excluded_trailing_row_matches_dropping_it() -> None:
+    """Excluding the last row of fish 0 reads as if the row were never there."""
+    df = _make_merged_df()
+    df["unbridgeable"] = (df["id"] == 0) & (df["frame"] == 4)
+    excluded = _summary(df, exclude_cols=["unbridgeable"]).loc[[0]]
+    dropped = _summary(df[~df["unbridgeable"]]).loc[[0]]
+    pd.testing.assert_frame_equal(excluded, dropped, check_exact=True)
+
+
+def test_row_scope_keeps_the_other_fish_and_frame_scope_drops_it() -> None:
+    df = _spiked(flag_fish=1)
+    row = _summary(df, exclude_cols=["unbridgeable"])
+    frame = _summary(df, exclude_cols=["unbridgeable"], exclude_scope="frame")
+    assert row.loc[0, "accel_mean"] == pytest.approx(49.0)
+    assert frame.loc[0, "accel_mean"] == pytest.approx(1.0)
+
+
+def test_frame_scope_stays_within_an_arena() -> None:
+    df = _spiked(flag_fish=1)
+    df["arena"] = df["id"].map({0: "left", 1: "right"})
+    out = _summary(df, exclude_cols=["unbridgeable"], exclude_scope="frame")
+    assert out.loc[0, "accel_mean"] == pytest.approx(49.0)
+
+
+def test_a_subgroup_whose_rows_are_all_excluded_emits_no_row() -> None:
+    df = _make_split_df()
+    df["long_interp"] = df["group_size"] == 1
+    out = SocialMotionSummary(
+        params={
+            "fps": 1.0,
+            "subgroup_col": "group_size",
+            "exclude_cols": ["long_interp"],
+        }
+    ).apply(df)
+    assert out["group_size"].tolist() == [2, 2]
+
+
+def test_a_fish_whose_rows_are_all_excluded_emits_no_row() -> None:
+    df = _make_merged_df()
+    df["unbridgeable"] = df["id"] == 0
+    out = _summary(df, exclude_cols=["unbridgeable"])
+    assert out.index.tolist() == [1]
+
+
+def test_an_exclusion_column_the_input_lacks_is_refused_before_apply() -> None:
+    feature = SocialMotionSummary(params={"exclude_cols": ["unbridgeable"]})
+    with pytest.raises(MissingInputColumns, match="unbridgeable"):
+        check_input_columns(feature, _make_merged_df().columns)

@@ -623,6 +623,25 @@ def test_a_passthrough_keeps_its_input_and_adds_its_own() -> None:
     assert "poseX" in columns.possible_prefixes
 
 
+_SMOOTH_MARKS = frozenset(
+    {"bad_frame", "interpolated", "interp_run_frames", "unbridgeable", "long_interp"}
+)
+
+
+@pytest.mark.parametrize(
+    "inputs", [("smooth", "ff20", "speed"), ("nn", "speed", "ff10", "smooth")]
+)
+def test_the_smoothing_marks_reach_a_summary_under_their_own_names(
+    inputs: tuple[str, ...],
+) -> None:
+    """A summary's ``exclude_cols`` names the marks, wherever ``smooth`` merges in."""
+    columns = resolved_columns(guppies_recipe())
+
+    merged = merged_input([columns[step] for step in inputs])
+
+    assert merged.guaranteed >= _SMOOTH_MARKS
+
+
 def _aggregate(column: str, inputs: list[JsonValue]) -> dict[str, JsonValue]:
     """A ``frame-aggregate`` step over *column*, reading *inputs*."""
     return {

@@ -20,7 +20,13 @@ from mosaic.core.entry import Entry
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.memory_watch import host_memory_bytes
-from mosaic.core.pipeline.types import COLUMNS, META_COLS, NON_PAYLOAD_COLS
+from mosaic.core.pipeline.types import (
+    COLUMNS,
+    META_COLS,
+    NON_PAYLOAD_COLS,
+    resolve_order_col,
+)
+from mosaic.core.schema import ARENA_COLUMN
 
 from .types import InterpolationConfig
 
@@ -32,6 +38,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "BodyFrame",
+    "ExcludeScope",
     "apply_exclude_cols",
     "block_rows",
     "body_frame",
@@ -46,6 +53,7 @@ __all__ = [
     "ensure_columns",
     "entries_of_templates",
     "entry_identity",
+    "exclude_mask",
     "farthest_first",
     "feature_columns",
     "gaussian_radius",
@@ -79,21 +87,52 @@ def gaussian_radius(sigma: float, truncate: float) -> int:
     return int(truncate * sigma + 0.5)
 
 
+ExcludeScope = Literal["row", "frame"]
+"""What one truthy exclusion flag drops: its own row, or its whole frame.
+
+``"frame"`` drops every row of the flagged row's frame and arena (every row of
+the frame when the table has no ``arena``).
+"""
+
+
+def exclude_mask(
+    df: pd.DataFrame,
+    exclude_cols: Sequence[str] | None,
+    scope: ExcludeScope = "row",
+) -> npt.NDArray[np.bool_]:
+    """Return which rows of *df* the truthy *exclude_cols* flags exclude.
+
+    A row is flagged when any of the *exclude_cols* present in *df* is truthy.
+    Names absent from *df* are skipped. Under ``"frame"`` scope a flag excludes
+    every row that shares the flagged row's order column value and, when *df*
+    has an ``arena`` column, its arena.
+    """
+    present = [c for c in exclude_cols or () if c in df.columns]
+    if not present:
+        return np.zeros(len(df), dtype=bool)
+    flagged = df[present].any(axis=1)
+    if scope == "row":
+        return flagged.to_numpy(dtype=bool)
+    keys = [resolve_order_col(df)]
+    if ARENA_COLUMN in df.columns:
+        keys.append(ARENA_COLUMN)
+    spread = flagged.groupby([df[key] for key in keys], dropna=False).transform("any")
+    return spread.to_numpy(dtype=bool)
+
+
 def apply_exclude_cols(
     df: pd.DataFrame,
-    exclude_cols: list[str] | None,
+    exclude_cols: Sequence[str] | None,
+    scope: ExcludeScope = "row",
 ) -> pd.DataFrame:
-    """Drop rows where any *exclude_cols* column is truthy.
+    """Drop the rows that :func:`exclude_mask` excludes.
 
-    Silently skips column names not present in *df*.
-    Returns *df* unchanged when *exclude_cols* is empty/None.
+    Returns *df* unchanged when no exclusion column is present.
     """
-    if not exclude_cols:
+    excluded = exclude_mask(df, exclude_cols, scope)
+    if not excluded.any():
         return df
-    present = [c for c in exclude_cols if c in df.columns]
-    if not present:
-        return df
-    return df[~df[present].any(axis=1)]
+    return df[~excluded]
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:

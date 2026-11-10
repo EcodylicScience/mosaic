@@ -135,6 +135,23 @@ smoothed tracks can never be mistaken for the same feature computed from raw one
 For chains of more than two steps, and for chains that also contain tracking or media
 work, use a pipeline: [Chain steps into a recipe](../pipelines/chain-steps.md).
 
+## Filled positions
+
+`trajectory-smooth` fills every missing or speed-flagged centroid position by
+interpolation, so features that need continuous positions (groups, distances,
+fission-fusion events) can run, and it marks each row it filled:
+
+- `interpolated` and `interp_run_frames`, the length of the filled run;
+- `unbridgeable`, a run whose straight line between the positions on either side is
+  faster than `speed_threshold`, usually a jump between two animals;
+- `long_interp`, a run longer than `long_run_frames`.
+
+Exclude the marks where per-frame values become per-animal numbers. Put the
+`trajectory-smooth` step among the summary's inputs and name the marks in its
+`exclude_cols`, as `social-motion-summary` and `ffgroups-metrics` take them.
+`social-motion-summary` refuses a recipe whose inputs lack a column it names. With
+`exclude_scope="frame"`, one flagged animal excludes its whole frame in its arena.
+
 ## The rule that catches most mistakes
 
 **Inputs must align at one entity level.** A per-individual result has one row per

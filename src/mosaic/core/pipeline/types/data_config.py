@@ -267,6 +267,7 @@ BOOKKEEPING_COLS: frozenset[str] = frozenset(
         "identity_margin",
         "identity_score",
         "identity_source_id",
+        "interp_run_frames",
         "label",
         "nn_id",
         "split",
@@ -298,6 +299,9 @@ from ``nearest-neighbor``'s output.
 ``identity_score``, ``identity_margin`` and ``identity_source_id``
 (``assign-identities``) record how a tracklet was assigned its identity and the
 track id it had before. They describe the assignment and not the individual.
+
+``interp_run_frames`` (``trajectory-smooth``) counts the rows of the filled run
+a position was written in. It describes the tracking, not the movement.
 
 The identity names are in ``META_COLS`` and absent here. The payload and the
 metadata passthrough both read them there. Two lists once disagreed, and

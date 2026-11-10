@@ -6,7 +6,7 @@ from typing import Annotated, ClassVar, Self, final
 
 import numpy as np
 import pandas as pd
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
@@ -32,6 +32,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
+from .helpers import ExcludeScope, exclude_mask
 from .registry import register_feature
 
 _FPS_DESCRIPTION = (
@@ -54,6 +55,17 @@ _SUBGROUP_COL_DESCRIPTION = (
     "The column that splits the output into one row per id per value, "
     "typically group_size from ffgroups. Unset, the output has one row "
     "per id."
+)
+
+_EXCLUDE_COLS_DESCRIPTION = (
+    "Names of boolean columns whose truthy rows are left out of every "
+    "metric, for example unbridgeable from trajectory-smooth. An "
+    "acceleration or jerk that touches an excluded row is left out too."
+)
+
+_EXCLUDE_SCOPE_DESCRIPTION = (
+    "What one flag excludes. With row, the flagged row. With frame, every "
+    "row of the flagged row's frame and arena."
 )
 
 _COMPUTE_BURST_COAST_DESCRIPTION = (
@@ -292,6 +304,17 @@ class SocialMotionSummary:
         deviates from its own mean by zero. Not a bug; it reads as a perfect
         social match.
 
+    **Excluding rows.** ``exclude_cols`` names boolean columns, such as the
+    ``unbridgeable`` and ``long_interp`` marks of ``trajectory-smooth``, whose
+    truthy rows are removed from each row's sample mask as a subgroup's other
+    rows are, so no acceleration or jerk spans an excluded row. Add the
+    ``trajectory-smooth`` step as an input to carry its marks. An excluded row
+    still serves as another fish's nearest neighbor and counts in its group's
+    mean speed. ``exclude_scope="frame"`` excludes every row of a flagged
+    row's frame and arena instead. A fish or subgroup whose rows are all
+    excluded emits no row. A named column the input lacks is refused before
+    ``apply``.
+
     ``subgroup_col="event"`` is not recommended: ``ffgroups`` fills non-event
     rows with ``-1`` and this feature has no ``filter_expr`` to drop them, so
     every non-event frame would pool into a ``-1`` pseudo-subgroup.
@@ -312,7 +335,7 @@ class SocialMotionSummary:
 
     category = "summary"
     name = "social-motion-summary"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     # A summary carries no frame axis for the overlap trim to work on, and the
@@ -328,6 +351,7 @@ class SocialMotionSummary:
         ORDER_COLUMN,
         ParamColumn("speed_col"),
         ParamColumn("subgroup_col"),
+        ParamColumn("exclude_cols"),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(Column(C.id_col), *(Column(name) for name in _METRIC_COLUMNS)),
@@ -358,6 +382,12 @@ class SocialMotionSummary:
         compute_burst_coast: Annotated[
             bool, Declared(_COMPUTE_BURST_COAST_DESCRIPTION)
         ] = False
+        exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
+            default_factory=list
+        )
+        exclude_scope: Annotated[ExcludeScope, Declared(_EXCLUDE_SCOPE_DESCRIPTION)] = (
+            "row"
+        )
 
         @model_validator(mode="after")
         def _check(self) -> Self:
@@ -523,9 +553,9 @@ class SocialMotionSummary:
         has_angle = "nn_delta_angle" in df.columns
         has_ego = "nn_delta_x_ego" in df.columns and "nn_delta_y_ego" in df.columns
 
-        # These two are positional into the whole frame, and the per-fish `idx`
+        # These three are positional into the whole frame, and the per-fish `idx`
         # below indexes them. That is valid only because the reset_index above
-        # runs first -- do not reorder these three statements.
+        # runs first -- do not reorder these statements.
         neighbor_speed = (
             self._neighbor_speed(df, order_col) if has_nn else np.full(len(df), np.nan)
         )
@@ -538,6 +568,7 @@ class SocialMotionSummary:
             )
         else:
             dev_group = np.full(len(df), np.nan)
+        kept = ~exclude_mask(df, p.exclude_cols, p.exclude_scope)
 
         rows: list[dict[str, object]] = []
         for fid, g in df.groupby(C.id_col, sort=True):
@@ -579,7 +610,10 @@ class SocialMotionSummary:
                 has_gm=has_gm,
             )
 
-            for value, sample in _subgroups(g, p.subgroup_col):
+            for value, subgroup in _subgroups(g, p.subgroup_col):
+                sample = subgroup & kept[idx]
+                if not sample.any():
+                    continue
                 row: dict[str, object] = {C.id_col: fid}
                 if p.subgroup_col is not None:
                     row[p.subgroup_col] = value

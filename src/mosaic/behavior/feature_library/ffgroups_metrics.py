@@ -32,7 +32,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import apply_exclude_cols
+from .helpers import ExcludeScope, apply_exclude_cols
 from .registry import register_feature
 
 _GROUP_COL_DESCRIPTION = (
@@ -64,6 +64,11 @@ _CENTROID_HEADING_COL_DESCRIPTION = (
 _EXCLUDE_COLS_DESCRIPTION = (
     "Names of boolean columns whose truthy rows are dropped before "
     "computation, for example bad_frame."
+)
+
+_EXCLUDE_SCOPE_DESCRIPTION = (
+    "What one flag drops. With row, the flagged row. With frame, every "
+    "row of the flagged row's frame and arena."
 )
 
 
@@ -145,6 +150,9 @@ class FFGroupsMetrics:
         exclude_cols: Annotated[list[str], Declared(_EXCLUDE_COLS_DESCRIPTION)] = Field(
             default_factory=list
         )
+        exclude_scope: Annotated[ExcludeScope, Declared(_EXCLUDE_SCOPE_DESCRIPTION)] = (
+            "row"
+        )
 
     def __init__(
         self,
@@ -176,7 +184,7 @@ class FFGroupsMetrics:
         df = df.sort_values(order_col).reset_index(drop=True)
 
         # Drop rows where any exclude_col is truthy (e.g. bad_frame)
-        df = apply_exclude_cols(df, self.params.exclude_cols)
+        df = apply_exclude_cols(df, self.params.exclude_cols, self.params.exclude_scope)
         if df.empty:
             return pd.DataFrame()
 
