@@ -295,14 +295,12 @@ def _resolve_dependencies(
                 pass
 
     # Also resolve dependencies referenced via feature.inputs (typed Result
-    # items), not just params fields. Features like FeralFeature carry their
-    # upstream output location here rather than in a params field. Appended
-    # after the params loop so params-derived lookups keep priority for
-    # consumers that select the first non-empty lookup. Every input here has
-    # already resolved in build_manifest, which refuses one naming no stored run.
+    # items), not just params fields. A feature reads an input's lookup by its
+    # ``_input_<position>`` key. Every input here has already resolved in
+    # build_manifest, which refuses one naming no stored run.
     for idx, result in enumerate(feature.inputs.feature_inputs):
         lookup = _build_result_lookup(ds, result.feature, result.run_id)
-        if lookup:  # skip empty so first-non-empty consumers aren't misled
+        if lookup:  # an empty lookup adds no key
             dependency_lookups[f"_input_{idx}"] = lookup
 
     return artifact_paths, dependency_lookups

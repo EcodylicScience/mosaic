@@ -116,13 +116,13 @@ own environments.
 - **A fitter that streams its inputs hashes its scope, unless it pins its fit set.**
   `fit()` that reads its stream is `scope_dependent = True`
   (`test_stream_fitting_features_declare_scope_dependent`). `sequence-classifier`,
-  `lightning-action`, `probability-ensemble` and `tune-threshold` instead declare
-  `scope_dependent = False` and `fit_set_pinned_by`, the `Params` field or `"inputs"` that
-  names the training entries outside the request scope (`templates`; the input's
-  `cv_folds.parquet`). Their
-  fit skips every other entry before it touches state, so a wider scope is the same run
-  that applies the stored fit to the new entries. The first run must be asked for over a
-  scope that holds the training entries, and `refuse_entries_outside_scope` says so.
+  `lightning-action`, `probability-ensemble`, `tune-threshold` and `feral` instead
+  declare `scope_dependent = False` and `fit_set_pinned_by`, the `Params` field or
+  `"inputs"` that names the training entries outside the request scope (`templates`; the
+  input's `cv_folds.parquet`). Their fit skips every other entry before it touches
+  state, so a wider scope is the same run that applies the stored fit to the new
+  entries. The first run must be asked for over a scope that holds the training entries,
+  and `refuse_entries_outside_scope` says so.
 - **A rendered artifact is `media`.** `overlay`, `egocentric-crop` and
   `interaction-crop-pipeline` live in `visualization_library/` and use the feature
   protocol and its caching. Their videos and crops are addressed by run id. mosaic has

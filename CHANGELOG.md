@@ -8,6 +8,19 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `feral` trains from a dataset's labels and videos, and the editor catalog no longer reads `needs_ground_truth`
+
+### The editor catalog no longer reads the class attribute `needs_ground_truth`
+
+0.20.0 let a feature set the class attribute `needs_ground_truth = True` to
+flag its `CatalogEntry`. The catalog no longer reads it. An entry's
+`needs_ground_truth` is true only when a params field takes the
+`GroundTruthLabelsSource` form and no other, or a params field takes
+`LabeledTemplatesRef`. A feature outside mosaic that set the attribute must
+declare such a field, or its entry reports `needs_ground_truth` false. `feral`
+is flagged through its `templates` field, and its `labels` field is listed in
+`ground_truth_fields`. No identifier or name on disk moves.
+
 ## 0.20.0: imported SLEAP, DeepLabCut and Ultralytics tracks are timed at the media's rate, the editor catalog flags the ground-truth labels fields, the aggregates reduce several columns by arena and subgroup, and a caller that holds an inventory decides when it is revalidated
 
 ### Imported SLEAP, DeepLabCut and Ultralytics tracks are timed at the media's rate

@@ -759,7 +759,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         unavailable=declared.unavailable,
         license_note=license_notes(prerequisites),
         ground_truth_fields=ground_truth_fields,
-        needs_ground_truth=_needs_ground_truth(cls, field_types),
+        needs_ground_truth=_needs_ground_truth(field_types),
     )
 
 
@@ -781,18 +781,15 @@ def _accepts_ground_truth(annotation: object) -> bool:
     return any(form is GroundTruthLabelsSource for form in _field_forms(annotation))
 
 
-def _needs_ground_truth(cls: object, field_types: Mapping[str, object]) -> bool:
+def _needs_ground_truth(field_types: Mapping[str, object]) -> bool:
     """Whether a step type depends on ground-truth labels.
 
-    True when a field takes the ``GroundTruthLabelsSource`` form and no other,
+    True when a field takes the ``GroundTruthLabelsSource`` form and no other, or
     when a field takes labeled templates (``LabeledTemplatesRef``), which only a
-    run over ground-truth labels writes, or when the class declares
-    ``needs_ground_truth = True`` for a dependence its params types do not show.
+    run over ground-truth labels writes.
     """
     from mosaic.core.pipeline.types.artifacts import LabeledTemplatesRef
 
-    if getattr(cls, "needs_ground_truth", False) is True:
-        return True
     for annotation in field_types.values():
         forms = _field_forms(annotation)
         if _accepts_ground_truth(annotation) and all(
