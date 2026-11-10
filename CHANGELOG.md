@@ -8,7 +8,64 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: `feral` trains from a dataset's labels and videos, and the editor catalog no longer reads `needs_ground_truth`
+## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
+
+### `feral` trains from a templates run and a labels kind
+
+`feral` is at version 0.3, so every 0.2 run id is retired. The parameter set of
+the konstanz_trophallaxis inference run is unchanged, but its run id moves from
+`0.2-a3cefdc108` to `0.3-a34166be8c`. The artifacts of the old run stay on disk
+under the old id, and a run under the new id computes again.
+
+**Params.** `feral_code_dir`, `video_dir` and `label_json` are removed, and
+`feral` always imports the installed package. Four params are added:
+
+- `templates`, an `extract-labeled-templates` run. Its `train` entries are the
+  entries the model fits on, and its `test` entries are the entries it is
+  evaluated on.
+- `labels`, a `GroundTruthLabelsSource`, which gives every frame its label.
+- `unlabeled_as`, the label value that a frame without a label trains as. Unset,
+  a video that holds such a frame is left out of its split.
+- `model`, a trained `feral` run to apply.
+
+`training` gains `val_fraction` (default 0.2), the fraction of the train entries,
+drawn whole with `training.seed`, that validates each epoch and chooses the best
+checkpoint. `class_names` and `default_class` are in the original label values.
+
+**One mode per step.** Exactly one of `templates`, `model` and `model_dir` is
+set. `labels` and `training` are required with `templates` and refused without
+it, and `unlabeled_as` is refused without it. `model_dir` stays for a checkpoint
+trained outside mosaic (`model_best.pt` and, optionally, `config.json`), and it
+resolves through the dataset. A step given `templates` fits, and any other step
+fits nothing.
+
+**Files of a trained run.** `feral_model.joblib` replaces `feral_model.pt`, and
+a run applied by `model` reads it. A trained run also writes `feral_labels.json`
+and `config.json`. Its `model_best.pt` records the label value of each class, so
+importing the run through `model_dir` keeps the original values. A fit whose
+train split yields fewer chunks than `training.train_bs` is refused. A
+checkpoint imported without a `config.json` builds with `freeze_encoder_layers`
+set to 0.
+
+**Output.** The columns are `prob_<value>` and `predicted_label`, named and
+valued in the original label values instead of the class indexes. A crop input
+writes a row per video frame, as before. A sequence input, `tracks` for one,
+reads the entry's own media and writes a row per input row of a predicted frame.
+`apply` decodes each frame at `resize_to`, as FERAL's training and evaluation
+do, instead of resizing the full-resolution frame, so a model's probabilities
+differ slightly from those of a 0.2 run.
+
+**Provenance.** `consumed_roots` is `media_raw`, because a sequence input
+decodes the entry's media. It is recorded in `params.json` under
+`_scope.consumed_roots` and does not enter the run id.
+
+**Python API.** `FeralFeature.evaluate` takes `dataset_root` in place of
+`video_dir` and `label_json`, and reads `feral_labels.json` of the run.
+`feral_setup_check` and `load_trained_model` no longer take `feral_code_dir`.
+`CatalogEntry.ground_truth_fields` lists the `labels` field of `feral`.
+
+**Dependency.** The `feral` extra is `feral>=1.0.2,<1.1`. mosaic imports FERAL
+internals outside its `__all__`, and 1.0.2 is the release tested.
 
 ### The editor catalog no longer reads the class attribute `needs_ground_truth`
 

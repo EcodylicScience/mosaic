@@ -99,8 +99,8 @@ xgb_result = ds.run_feature(XgboostFeature(
   and reading the predictions.
 - [Classify mouse behavior with HiDRA](hidra.md): pretrained heads for mouse social
   behavior, without labels of your own.
-- `feral` classifies from video and installs in a separate environment
-  ([installation](../../installation.md#feral)).
+- [Train a FERAL video classifier](classifier-feral.md): `feral`, from video, in an
+  environment of its own.
 - [`calms21-template.ipynb`][template] runs features, wavelets, scaler, temporal stack,
   labeled templates and XGBoost on CalMS21, then draws the predictions onto the t-SNE
   embedding.

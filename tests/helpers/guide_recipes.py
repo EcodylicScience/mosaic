@@ -39,6 +39,7 @@ GUIDE_PAGES = (
     _ANALYSIS / "classifier-thresholds-and-blends.md",
     _ANALYSIS / "classifier-sequence-networks.md",
     _ANALYSIS / "classifier-score-and-evaluate.md",
+    _ANALYSIS / "classifier-feral.md",
 )
 """The pages of the classifier guide. A block is searched on every page, in this order."""
 GUIDE_CLASSES = 4

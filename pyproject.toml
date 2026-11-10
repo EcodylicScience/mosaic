@@ -182,13 +182,14 @@ movement = ["movement>=0.17"]
 lightning-action = ["lightning-action>=1.0"]
 
 # FERAL V-JEPA video behavior classifier (FeralFeature, training + inference),
-# from PyPI as of its 1.0.0 release.
+# from PyPI.
 #
-# The upper bound is load-bearing rather than cautious. Mosaic builds its own
-# training loop out of FERAL's pieces, so it imports thirteen symbols from
-# `feral.model`, `feral.dataset`, `feral.utils`, `feral.metrics` and
-# `feral.backbones`, and ten of them are submodule internals that FERAL's
-# `__all__` does not carry. A major release is free to move any of them.
+# The narrow bound is load-bearing rather than cautious. Mosaic builds its own
+# training loop out of FERAL's pieces, so it imports twenty-one symbols from
+# `feral`, `feral.model`, `feral.backbones`, `feral.data`, `feral.modeling`,
+# `feral.loops`, `feral.metrics`, `feral.dataset` and `feral.utils`, and
+# seventeen of them are submodule internals that FERAL's `__all__` does not
+# carry. Their shape changed within 1.0.x, and 1.0.2 is the release tested.
 #
 # **This extra wants an environment of its own**, and for a different reason
 # from anything above: FERAL pins its dependencies exactly -- `opencv-python`,
@@ -196,7 +197,7 @@ lightning-action = ["lightning-action>=1.0"]
 # mosaic requirement is a floor, so pip resolves the pair happily and downgrades
 # each one. No install layout fixes that; install it into its own environment
 # and point it at the same datasets.
-feral = ["feral>=1.0,<2"]
+feral = ["feral>=1.0.2,<1.1"]
 
 # The MCP SDK behind `mosaic agent serve`, the server an MCP client such as
 # Claude Code starts. Outside `all`: an analysis environment does not need it,

@@ -60,9 +60,7 @@ def test_feral_inference_identity_is_pinned() -> None:
 
     FERAL cannot go in tests/data/identity_golden.json: `build_feature("feral",
     ...)` raises typer.Exit because the feature does not read from tracks by
-    default, and `FeralFeature.__init__` raises ImportError without the optional
-    `feral` extra, which CI does not install. A golden case would be red or
-    permanently skipped -- coverage in name only.
+    default, so a golden case would be red.
 
     So pin the same thing one layer down, where no optional dependency is
     involved: `Params.from_overrides` is a classmethod that never touches
@@ -72,14 +70,13 @@ def test_feral_inference_identity_is_pinned() -> None:
     notebook stops finding its results and asks to recompute them; the notebook
     asserts the same value, so a mismatch should surface here first.
 
-    **The version and the digest moved together.** `feral` went to `0.3`, which
-    retires every `0.2` run id, and the digest moved because the params gained
-    `templates`, `labels`, `unlabeled_as` and `model` and lost `feral_code_dir`,
-    `video_dir` and `label_json`. The run this pins is not reachable by name any
-    more: its artifacts are still on disk under `0.2-a3cefdc108`, and a fresh run
-    asks to recompute all 95 sequences under `0.3-a34166be8c`. The parameter set
-    of the notebook is otherwise untouched, so if the digest moves again, that is
-    a different and unintended thing.
+    The pinned id is `0.3-a34166be8c`. Every `0.3` run id differs from every
+    `0.2` run id. The params include `templates`, `labels`, `unlabeled_as` and
+    `model` and omit `feral_code_dir`, `video_dir` and `label_json`. The
+    notebook's artifacts on disk under `0.2-a3cefdc108` are not found by name,
+    and a fresh run recomputes all 95 sequences under `0.3-a34166be8c`. A digest
+    other than `a34166be8c` means the notebook's parameter set hashes
+    differently, which is unintended.
     """
     from mosaic.behavior.feature_library.feral_feature import FeralFeature
     from mosaic.core.pipeline._utils import hash_params

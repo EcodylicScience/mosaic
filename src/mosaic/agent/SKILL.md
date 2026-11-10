@@ -395,6 +395,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   the members' fold table when they all have the same one, so an average of
   cross-validated runs can be a member of a blend. A list or `uniform` weights fit nothing,
   so those members need no fold table, and mixed members are averaged without one.
+- `feral` trains a video classifier from a `templates` run and a `labels` kind, not
+  from paths, and reads its videos from its input step
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/classifier-feral/).
 - `hidra` runs HiDRA's pretrained mouse heads without labels (Linux; `hidra-predict` in
   its own environment, located by `MOSAIC_HIDRA_BIN`; weights fetched once). It needs
   `keypoint_map`, `heads` and `pix_per_cm`, takes two to four mice per arena and one frame

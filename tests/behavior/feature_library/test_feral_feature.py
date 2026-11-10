@@ -1,8 +1,11 @@
-"""Tests for FeralFeature's FERAL-package compatibility layer.
+"""Tests for FeralFeature, end to end.
 
-These cover the pure-Python compat helpers (checkpoint remap, backbone-key
-resolution) and the optional-dependency import guard. They run without a GPU;
-the parts that need the ``feral`` package are skipped when it isn't installed.
+They cover the FERAL compat helpers and the import guard, the labels dict and
+the validation split, the crop and sequence video sources, ``fit`` and
+``train_feral`` through FERAL's training pieces, loading a checkpoint, and
+``apply`` with its output columns. None needs a GPU, and the ``no_gpu`` fixture
+hides any from torch. The tests marked ``feral`` need the ``feral`` package and
+are skipped when it is not installed.
 """
 
 from __future__ import annotations
@@ -11,7 +14,7 @@ import importlib.util
 import json
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, ClassVar, Protocol
@@ -42,6 +45,7 @@ from mosaic.behavior.feature_library.feral_feature import (
     ensembled_predictions,
     feral_config,
     feral_input_mode,
+    feral_setup_check,
     refuse_crop_without_videos,
     sequence_video,
     train_feral,
@@ -82,6 +86,7 @@ class TestLoadCheckpointStateDict:
             "class_names": {"0": "none", "1": "troph"},
             "is_multilabel": False,
             "cfg": {"backbone": "vjepa2_vitl_diving48"},
+            "class_values": [2, 5],
         }
         sd, meta = _load_checkpoint_state_dict(raw)
         assert sd == {"backbone.model.enc": 1, "head.weight": 2}
@@ -89,6 +94,7 @@ class TestLoadCheckpointStateDict:
             "class_names": {"0": "none", "1": "troph"},
             "is_multilabel": False,
             "cfg": {"backbone": "vjepa2_vitl_diving48"},
+            "class_values": [2, 5],
         }
 
     def test_bare_new_layout_passthrough(self) -> None:
@@ -903,6 +909,46 @@ class TestBuildFeralLabels:
         assert result.labels_json["class_names"] == {"0": "walk", "1": "run"}
         assert result.labels_json["is_multilabel"] is False
 
+    def test_a_swapping_remap_names_each_class_after_the_frames_it_holds(
+        self, tmp_path: Path
+    ) -> None:
+        entry = ("g", "seq")
+        files = _entry_files(tmp_path, {entry: _pair_events(2, 5)})
+        video = _video(tmp_path, entry, range(4), {})
+
+        result = _build(
+            [video], files, labels=GroundTruthLabelsSource(remap={2: 5, 5: 2})
+        )
+
+        assert result.class_values == (2, 5)
+        assert result.labels_json["labels"] == {video.filename: [1, 1, 0, 0]}
+        assert result.labels_json["class_names"] == {"0": "run", "1": "walk"}
+
+    def test_ids_that_a_remap_joins_share_the_joined_name(self, tmp_path: Path) -> None:
+        entry = ("g", "seq")
+        files = _entry_files(tmp_path, {entry: _pair_events(2, 5)})
+        video = _video(tmp_path, entry, range(4), {})
+
+        result = _build([video], files, labels=GroundTruthLabelsSource(remap={5: 2}))
+
+        assert result.class_values == (2,)
+        assert result.labels_json["class_names"] == {"0": "walk+run"}
+
+    def test_a_masked_id_gives_its_name_to_no_class(self, tmp_path: Path) -> None:
+        entry = ("g", "seq")
+        files = _entry_files(tmp_path, {entry: _pair_events(2, 5)})
+        video = _video(tmp_path, entry, range(4), {})
+
+        result = _build(
+            [video],
+            files,
+            labels=GroundTruthLabelsSource(mask=[5]),
+            unlabeled_as=2,
+        )
+
+        assert result.class_values == (2,)
+        assert result.labels_json["class_names"] == {"0": "walk"}
+
     def test_a_value_without_a_vocabulary_is_named_by_its_spelling(
         self, tmp_path: Path
     ) -> None:
@@ -1160,7 +1206,10 @@ class TestCropVideos:
 
         assert [video.filename for video in videos] == ["whole.mp4"]
         assert dropped == 2
-        assert "2" in caplog.text
+        assert any(
+            record.getMessage().startswith("[feral] 2 interaction clip(s)")
+            for record in caplog.records
+        )
 
     def test_an_egocentric_id_is_one_video_over_the_frames_of_its_rows(
         self, tmp_path: Path
@@ -1525,12 +1574,20 @@ class TestFeralConfig:
             _ = feral_config(params, backbone="b", dataset_root=tmp_path)
 
 
-def _interaction_stream(entries: Sequence[str]) -> InputStream:
-    """The crop rows of each entry, as ``fit`` streams them."""
+def _interaction_stream(
+    entries: Sequence[str], frame_counts: Mapping[str, int] | None = None
+) -> InputStream:
+    """The crop rows of each entry, as ``fit`` streams them.
+
+    Each entry holds one clip of four frames, or of the frames *frame_counts* names.
+    """
+    counts = frame_counts or {}
     tables = [
         (
             f"g/{entry}",
-            _interaction_rows((f"{entry}.mp4", 0, 3, 4, 0)).assign(sequence=entry),
+            _interaction_rows(
+                (f"{entry}.mp4", 0, counts.get(entry, 4) - 1, counts.get(entry, 4), 0)
+            ).assign(sequence=entry),
         )
         for entry in entries
     ]
@@ -1550,6 +1607,7 @@ class _FitCalls:
     def __init__(self) -> None:
         self.validated: list[tuple[dict[str, object], Path]] = []
         self.trained: list[tuple[FeralConfig, FeralLabelsJson, Path]] = []
+        self.class_values: list[tuple[int, ...]] = []
         self.evaluated: list[str] = []
 
 
@@ -1564,10 +1622,12 @@ def _stand_in_feral(monkeypatch: pytest.MonkeyPatch) -> _FitCalls:
         cfg: FeralConfig,
         labels_json: FeralLabelsJson,
         *,
+        class_values: Sequence[int],
         run_root: Path,
         progress_callback: object,
     ) -> tuple[_WeightlessModel, float, list[dict[str, float]]]:
         calls.trained.append((cfg, labels_json, run_root))
+        calls.class_values.append(tuple(class_values))
         return _WeightlessModel(), 0.5, [{"epoch": 0, "train_loss": 1.0}]
 
     def evaluate(
@@ -1604,6 +1664,8 @@ class _Fit:
         labeled: Sequence[str],
         val_fraction: float = 0.5,
         bind: bool = True,
+        tables: Mapping[str, int] | None = None,
+        events: Mapping[str, Sequence[Event]] | None = None,
         **params: object,
     ) -> None:
         self.tmp_path = tmp_path
@@ -1620,7 +1682,10 @@ class _Fit:
         self.train = tuple(train)
         label_files = _entry_files(
             tmp_path / "labels",
-            {("g", entry): _pair_events(2, 5, count=2) for entry in labeled},
+            {
+                ("g", entry): (events or {}).get(entry, _pair_events(2, 5, count=2))
+                for entry in labeled
+            },
         )
         self.feature = FeralFeature(
             FeralFeature.Inputs((_CROP_RESULT,)),
@@ -1637,15 +1702,22 @@ class _Fit:
         if bind:
             self.feature.bind_dataset(self.ds)
         templates = _templates_run(tmp_path / "templates", train, test)
+        crop_tables = {("g", "a"): self.crop_root / "table.parquet"}
+        for entry, row_count in (tables or {}).items():
+            crop_tables[("g", entry)] = self._write_table(entry, row_count)
         ready = self.feature.load_state(
             self.run_root,
             {"templates": templates},
-            {
-                "labels": label_files,
-                "_input_0": {("g", "a"): self.crop_root / "table.parquet"},
-            },
+            {"labels": label_files, "_input_0": crop_tables},
         )
         assert ready is False
+
+    def _write_table(self, entry: str, row_count: int) -> Path:
+        """The crop table of *entry* in the crop run, with *row_count* rows."""
+        path = self.crop_root / f"{entry}.parquet"
+        clips = [(f"{entry}.mp4", 0, 3, 4, index) for index in range(max(row_count, 1))]
+        _interaction_rows(*clips).iloc[:row_count].to_parquet(path)
+        return path
 
     def filename(self, entry: str) -> str:
         return f"features/interaction-crop-pipeline__from__tracks/0.1-abc/{entry}.mp4"
@@ -1684,6 +1756,16 @@ class TestFit:
         assert labels_json["labels"][fit.filename("a")] == [0, 0, 1, 1]
         assert cfg["data"]["prefix"] == str(tmp_path)
         assert cfg["backbone"] == "backbone"
+
+    def test_the_class_values_of_the_labels_dict_reach_the_training_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(tmp_path, train=["a", "b"], test=[], labeled="ab", val_fraction=0)
+
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert calls.class_values == [(2, 5)]
 
     def test_the_labels_dict_and_the_config_are_written_to_the_run_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1912,6 +1994,150 @@ class TestFit:
         assert calls.trained == []
         assert calls.validated == []
 
+    def test_a_video_shorter_than_the_chunk_span_leaves_every_split(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        # Two chunk frames three apart span (2 - 1) * 3 + 1 = 4 frames.
+        fit = _Fit(
+            tmp_path,
+            train=["a", "b"],
+            test=[],
+            labeled="ab",
+            val_fraction=0,
+            chunk_length=2,
+            chunk_step=3,
+        )
+
+        fit.feature.fit(_interaction_stream(["a", "b"], {"a": 3, "b": 4}))
+
+        ((_, labels_json, _),) = calls.trained
+        assert labels_json["splits"] == {
+            "train": [fit.filename("b")],
+            "val": [],
+            "test": [],
+        }
+        assert fit.filename("a") not in labels_json["labels"]
+
+    def test_unlabeled_as_labels_the_frames_no_event_covers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        partial: list[Event] = [(0, 0, 1, 2), (1, 0, 1, 5)]
+        fit = _Fit(
+            tmp_path,
+            train=["a", "b"],
+            test=[],
+            labeled="ab",
+            val_fraction=0,
+            events={"b": partial},
+            unlabeled_as=2,
+        )
+
+        fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        ((_, labels_json, _),) = calls.trained
+        assert labels_json["splits"]["train"] == [fit.filename("a"), fit.filename("b")]
+        assert labels_json["labels"][fit.filename("b")] == [0, 1, 0, 0]
+
+    def test_a_train_entry_with_an_empty_crop_table_trains_with_no_video(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(
+            tmp_path,
+            train=["a", "b"],
+            test=["e"],
+            labeled="abe",
+            val_fraction=0,
+            tables={"b": 0},
+        )
+
+        with caplog.at_level(logging.WARNING):
+            fit.feature.fit(_interaction_stream(["a", "e"]))
+
+        ((_, labels_json, _),) = calls.trained
+        assert labels_json["splits"]["train"] == [fit.filename("a")]
+        assert "1 entry(ies) have no crop video" in caplog.text
+
+    def test_every_train_entry_with_an_empty_crop_table_names_that_cause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(
+            tmp_path,
+            train=["a"],
+            test=[],
+            labeled="a",
+            val_fraction=0,
+            tables={"a": 0},
+        )
+
+        with pytest.raises(ValueError, match="no training video is left") as raised:
+            fit.feature.fit(_interaction_stream([]))
+
+        assert "1 no crop video" in str(raised.value)
+        assert "scope" not in str(raised.value)
+        assert calls.trained == []
+
+    def test_a_test_entry_with_an_empty_crop_table_is_evaluated_without_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(
+            tmp_path,
+            train=["a", "b"],
+            test=["e", "f"],
+            labeled="abef",
+            val_fraction=0,
+            tables={"f": 0},
+        )
+
+        fit.feature.fit(_interaction_stream(["a", "b", "e"]))
+
+        ((_, labels_json, _),) = calls.trained
+        assert labels_json["splits"]["test"] == [fit.filename("e")]
+        assert calls.evaluated == ["test"]
+
+    def test_every_test_entry_with_an_empty_crop_table_names_that_cause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = _stand_in_feral(monkeypatch)
+        fit = _Fit(
+            tmp_path,
+            train=["a", "b"],
+            test=["e"],
+            labeled="abe",
+            val_fraction=0,
+            tables={"e": 0},
+        )
+
+        with pytest.raises(ValueError, match=r"none of the 1 test entries") as raised:
+            fit.feature.fit(_interaction_stream(["a", "b"]))
+
+        assert "1 no crop video" in str(raised.value)
+        assert "scope" not in str(raised.value)
+        assert calls.trained == []
+
+    def test_an_entry_with_crop_rows_that_the_scope_lacks_is_still_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _ = _stand_in_feral(monkeypatch)
+        fit = _Fit(
+            tmp_path,
+            train=["a", "b"],
+            test=[],
+            labeled="ab",
+            val_fraction=0,
+            tables={"b": 2},
+        )
+
+        with pytest.raises(ValueError, match="scope"):
+            fit.feature.fit(_interaction_stream(["a"]))
+
     def test_fit_needs_a_bound_dataset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1968,6 +2194,30 @@ class TestCheckpointClasses:
 
         assert names == {0: "rest", 1: "walk"}
         assert multilabel is True
+
+    def test_recorded_class_values_put_the_dense_names_under_their_label_values(
+        self,
+    ) -> None:
+        meta = {**self._META, "class_values": [2, 5]}
+
+        names, _ = checkpoint_classes(None, meta, self._LEGACY)
+
+        assert names == {2: "rest", 5: "walk"}
+
+    def test_class_values_that_do_not_match_the_names_are_refused(self) -> None:
+        meta = {**self._META, "class_values": [2, 5, 7]}
+
+        with pytest.raises(ValueError, match="class_values"):
+            _ = checkpoint_classes(None, meta, None)
+
+    def test_the_param_names_the_label_values_whatever_the_recorded_class_values(
+        self,
+    ) -> None:
+        meta = {**self._META, "class_values": [2, 5]}
+
+        names, _ = checkpoint_classes({"5": "mine"}, meta, None)
+
+        assert names == {5: "mine"}
 
     def test_the_param_wins_over_both_for_the_names(self) -> None:
         names, multilabel = checkpoint_classes({"0": "mine"}, self._META, self._LEGACY)
@@ -2064,8 +2314,17 @@ class TestImportedNetwork:
         defaults = FeralTrainingConfig()
         assert network["model"] == {
             "fc_drop_rate": defaults.fc_drop_rate,
-            "freeze_encoder_layers": defaults.freeze_encoder_layers,
+            "freeze_encoder_layers": 0,
         }
+
+    def test_a_flat_config_without_a_freeze_freezes_no_layer(self) -> None:
+        flat = {"model_name": "vjepa2_vitb_384", "predict_per_item": 32}
+
+        network = imported_network(
+            [flat, None], model_name="param", predict_per_item=64
+        )
+
+        assert network["model"]["freeze_encoder_layers"] == 0
 
 
 # --- FERAL's own pieces ------------------------------------------------------
@@ -2135,6 +2394,59 @@ def _synthetic_answers(labels_json: FeralLabelsJson, split: str) -> list[FeralAn
                     ((filename, frame, position), probs.tolist(), target.tolist())
                 )
     return answers
+
+
+class TestComputeMetricsAreFloats:
+    """A metric is a Python float, which a resume checkpoint can hold."""
+
+    def test_numpy_scalars_from_feral_come_back_as_floats(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def ensembled(
+            answers: Sequence[FeralAnswer], labels_json: Mapping[str, object], part: str
+        ) -> dict[str, object]:
+            return {}
+
+        def multiclass(
+            answers: Sequence[FeralAnswer], names: Mapping[int, str], prefix: str = ""
+        ) -> dict[str, np.float64]:
+            return {f"{prefix}_accuracy": np.float64(0.5)}
+
+        def frame_map(
+            predictions: object, labels_json: Mapping[str, object], partition: str
+        ) -> np.float64:
+            return np.float64(0.25)
+
+        def f1(
+            predictions: object,
+            labels_json: Mapping[str, object],
+            partition: str,
+            is_multilabel: bool,
+            prefix: str,
+            threshold: float,
+        ) -> dict[str, np.float64]:
+            return {f"{prefix}/f1_walk": np.float64(0.75)}
+
+        monkeypatch.setattr(feral_feature, "ensembled_predictions", ensembled)
+        monkeypatch.setattr(
+            feral_feature, "_feral_calculate_multiclass_metrics", lambda: multiclass
+        )
+        monkeypatch.setattr(
+            feral_feature, "_feral_calc_frame_level_map", lambda: frame_map
+        )
+        monkeypatch.setattr(feral_feature, "_feral_calculate_f1_metrics", lambda: f1)
+        answers: list[FeralAnswer] = [(("a.mp4", 0, 0), [0.5, 0.5], [1.0, 0.0])]
+
+        measured = FeralFeature.compute_metrics(
+            answers, {"class_names": {"0": "walk", "1": "run"}}, "val"
+        )
+
+        assert measured == {
+            "val_accuracy": 0.5,
+            "val_frame_level_map": 0.25,
+            "val/f1_walk": 0.75,
+        }
+        assert {type(value) for value in measured.values()} == {float}
 
 
 @pytest.mark.feral
@@ -2293,15 +2605,20 @@ class _WeightsAtEpochEnd(_RecordedEpochs):
         self.weights.append(_linear_weight(self._built[0]))
 
 
-@pytest.fixture
-def cpu_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hide every GPU, so a CPU run never initializes CUDA.
+@pytest.fixture(scope="module", autouse=True)
+def no_gpu() -> Iterator[None]:
+    """Hide every GPU from the file's tests, so none of them initializes CUDA.
 
-    FERAL's epoch functions open a CUDA autocast, which asks the driver about
-    the GPU when there is one. On a machine whose GPU the installed torch has no
-    kernels for, that raises before the CPU run reaches its first batch.
+    FERAL's epoch functions open a CUDA autocast, and ``evaluate`` asks torch
+    whether CUDA is available. Either asks the driver about the GPU when there
+    is one, and the driver reads the device list once per process. On a machine
+    whose GPU the installed torch has no kernels for, the first such query
+    raises, in whichever test of the worker makes it first. The variable is set
+    before the file's first test, so no query precedes it.
     """
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CUDA_VISIBLE_DEVICES", "")
+        yield
 
 
 @pytest.fixture
@@ -2325,6 +2642,22 @@ def tiny_model(monkeypatch: pytest.MonkeyPatch) -> list[torch.nn.Module]:
 
     monkeypatch.setattr(_feral_module("modeling"), "build_model", build_model)
     return built
+
+
+class _Ema(Protocol):
+    """The exponential-moving-average wrapper timm builds around a model."""
+
+    ema: torch.nn.Module
+
+
+class _TimmModelEma(Protocol):
+    def __call__(
+        self, model: torch.nn.Module, *, decay: float, device: str
+    ) -> _Ema: ...
+
+
+def _timm_model_ema() -> _TimmModelEma:
+    return importlib.import_module("timm.utils.model_ema").ModelEma
 
 
 def _validation_maps(monkeypatch: pytest.MonkeyPatch, maps: Sequence[float]) -> None:
@@ -2364,7 +2697,6 @@ _CPU_RUN_WARNINGS = [
 @pytest.mark.feral
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
 @pytest.mark.filterwarnings(*_CPU_RUN_WARNINGS)
-@pytest.mark.usefixtures("cpu_only")
 class TestTrainFeral:
     """`train_feral` runs FERAL's loop pieces for the epochs of one config."""
 
@@ -2381,6 +2713,7 @@ class TestTrainFeral:
         model, best_map, metrics = train_feral(
             _smoke_config(tmp_path),
             built.labels_json,
+            class_values=built.class_values,
             run_root=run_root,
             progress_callback=progress,
         )
@@ -2406,11 +2739,16 @@ class TestTrainFeral:
         config = _smoke_config(tmp_path)
 
         model, _, _ = train_feral(
-            config, built.labels_json, run_root=run_root, progress_callback=None
+            config,
+            built.labels_json,
+            class_values=built.class_values,
+            run_root=run_root,
+            progress_callback=None,
         )
 
         saved = torch.load(run_root / "model_best.pt", map_location="cpu")
         assert saved["class_names"] == built.labels_json["class_names"]
+        assert saved["class_values"] == list(built.class_values)
         assert saved["is_multilabel"] is False
         assert saved["cfg"] == config
         for name, tensor in model.state_dict().items():
@@ -2428,6 +2766,7 @@ class TestTrainFeral:
         model, best_map, metrics = train_feral(
             _smoke_config(tmp_path),
             built.labels_json,
+            class_values=built.class_values,
             run_root=run_root,
             progress_callback=None,
         )
@@ -2465,7 +2804,11 @@ class TestTrainFeral:
 
         with pytest.raises(Stop):
             _ = train_feral(
-                config, built.labels_json, run_root=run_root, progress_callback=None
+                config,
+                built.labels_json,
+                class_values=built.class_values,
+                run_root=run_root,
+                progress_callback=None,
             )
 
         random.seed(123)
@@ -2476,7 +2819,6 @@ class TestTrainFeral:
 @pytest.mark.feral
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
 @pytest.mark.filterwarnings(*_CPU_RUN_WARNINGS)
-@pytest.mark.usefixtures("cpu_only")
 class TestTrainFeralEpochs:
     """`train_feral` keeps the best epoch, stops on patience and resumes."""
 
@@ -2497,6 +2839,7 @@ class TestTrainFeralEpochs:
         model, best_map, metrics = train_feral(
             _epochs_config(tmp_path, epochs=3),
             built.labels_json,
+            class_values=built.class_values,
             run_root=run_root,
             progress_callback=progress,
         )
@@ -2522,6 +2865,7 @@ class TestTrainFeralEpochs:
         model, _, metrics = train_feral(
             _epochs_config(tmp_path, epochs=2),
             built.labels_json,
+            class_values=built.class_values,
             run_root=run_root,
             progress_callback=progress,
         )
@@ -2540,14 +2884,8 @@ class TestTrainFeralEpochs:
         tiny_model: list[torch.nn.Module],
     ) -> None:
         import torch
-        from timm.utils.model_ema import (  # type: ignore[import-not-found]
-            ModelEma,
-        )
 
-        class Ema(Protocol):
-            ema: torch.nn.Module
-
-        averaged: list[Ema] = []
+        averaged: list[_Ema] = []
         evaluated: list[tuple[torch.nn.Module, list[FeralAnswer]]] = []
         loops = _feral_module("loops")
         evaluate = loops.evaluate
@@ -2565,10 +2903,10 @@ class TestTrainFeralEpochs:
             device: str | torch.device,
             *,
             with_ema: bool = True,
-        ) -> tuple[torch.nn.Module, Ema]:
+        ) -> tuple[torch.nn.Module, _Ema]:
             module = _tiny_module(num_classes, cfg["predict_per_item"]).to(device)
             tiny_model.append(module)
-            averaged.append(ModelEma(module, decay=0.9, device=str(device)))
+            averaged.append(_timm_model_ema()(module, decay=0.9, device=str(device)))
             return module, averaged[0]
 
         written: list[str] = []
@@ -2592,6 +2930,7 @@ class TestTrainFeralEpochs:
         model, best_map, metrics = train_feral(
             _epochs_config(tmp_path, epochs=1, ema_decay=0.9),
             built.labels_json,
+            class_values=built.class_values,
             run_root=run_root,
             progress_callback=progress,
         )
@@ -2637,6 +2976,7 @@ class TestTrainFeralEpochs:
         _, best_map, metrics = train_feral(
             _epochs_config(tmp_path, epochs=5, patience=2),
             built.labels_json,
+            class_values=built.class_values,
             run_root=run_root,
             progress_callback=None,
         )
@@ -2677,6 +3017,7 @@ class TestTrainFeralEpochs:
             _ = train_feral(
                 config,
                 built.labels_json,
+                class_values=built.class_values,
                 run_root=run_root,
                 progress_callback=first,
             )
@@ -2703,7 +3044,11 @@ class TestTrainFeralEpochs:
         resumed = _RecordedEpochs()
 
         _, best_map, metrics = train_feral(
-            config, built.labels_json, run_root=run_root, progress_callback=resumed
+            config,
+            built.labels_json,
+            class_values=built.class_values,
+            run_root=run_root,
+            progress_callback=resumed,
         )
 
         assert [epoch for epoch, _, _ in resumed.epochs] == [1]
@@ -2714,6 +3059,110 @@ class TestTrainFeralEpochs:
         assert best_map == 0.9
         saved = torch.load(run_root / "model_best.pt", map_location="cpu")
         assert torch.equal(saved["state_dict"]["linear.weight"], first.weights[0])
+        assert not (run_root / "training_checkpoint.pt").exists()
+
+    def test_a_train_split_with_fewer_chunks_than_a_batch_is_refused(
+        self, tmp_path: Path, tiny_model: list[torch.nn.Module]
+    ) -> None:
+        built = _written_labels(tmp_path, train=["a"], val=[])
+        run_root = tmp_path / "run"
+
+        # One 16-frame video makes 3 chunks, and a batch takes 4.
+        with pytest.raises(ValueError, match=r"3 chunks.*train_bs of 4"):
+            _ = train_feral(
+                _smoke_config(tmp_path, train_bs=4),
+                built.labels_json,
+                class_values=built.class_values,
+                run_root=run_root,
+                progress_callback=None,
+            )
+
+        assert tiny_model == []
+        assert not (run_root / "model_best.pt").exists()
+
+    def test_a_run_interrupted_after_real_validation_metrics_resumes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+
+        def build_model(
+            cfg: FeralConfig,
+            num_classes: int,
+            device: str | torch.device,
+            *,
+            with_ema: bool = True,
+        ) -> tuple[torch.nn.Module, _Ema]:
+            module = _tiny_module(num_classes, cfg["predict_per_item"]).to(device)
+            ema = _timm_model_ema()(module, decay=0.9, device=str(device))
+            return module, ema
+
+        loops = _feral_module("loops")
+        metrics_module = _feral_module("metrics")
+        train_one_epoch = loops.train_one_epoch
+        evaluate = loops.evaluate
+        frame_level_map = metrics_module.calc_frame_level_map
+
+        # FERAL's losses and mAP come back as numpy scalars on some releases,
+        # and the resume checkpoint has to hold plain floats all the same.
+        def numpy_train_one_epoch(
+            *args: object, **kwargs: object
+        ) -> tuple[list[FeralAnswer], np.float64]:
+            answers, loss = train_one_epoch(*args, **kwargs)
+            return answers, np.float64(loss)
+
+        def numpy_evaluate(
+            *args: object, **kwargs: object
+        ) -> tuple[list[FeralAnswer], np.float64 | None]:
+            answers, loss = evaluate(*args, **kwargs)
+            return answers, None if loss is None else np.float64(loss)
+
+        def numpy_frame_level_map(*args: object, **kwargs: object) -> np.float64:
+            return np.float64(frame_level_map(*args, **kwargs))
+
+        monkeypatch.setattr(loops, "train_one_epoch", numpy_train_one_epoch)
+        monkeypatch.setattr(loops, "evaluate", numpy_evaluate)
+        monkeypatch.setattr(
+            metrics_module, "calc_frame_level_map", numpy_frame_level_map
+        )
+        monkeypatch.setattr(_feral_module("modeling"), "build_model", build_model)
+        built = _written_labels(tmp_path, train=["a", "b"], val=["c"])
+        run_root = tmp_path / "run"
+        run_root.mkdir()
+        config = _epochs_config(tmp_path, epochs=2, ema_decay=0.9)
+
+        class Interrupted(Exception):
+            pass
+
+        class InterruptAfterSecondEpoch(_RecordedEpochs):
+            def on_epoch_end(
+                self, epoch: int, total_epochs: int, metrics: dict[str, float]
+            ) -> None:
+                super().on_epoch_end(epoch, total_epochs, metrics)
+                if epoch == 1:
+                    raise Interrupted
+
+        with pytest.raises(Interrupted):
+            _ = train_feral(
+                config,
+                built.labels_json,
+                class_values=built.class_values,
+                run_root=run_root,
+                progress_callback=InterruptAfterSecondEpoch(),
+            )
+        assert (run_root / "training_checkpoint.pt").is_file()
+        resumed = _RecordedEpochs()
+
+        _, _, metrics = train_feral(
+            config,
+            built.labels_json,
+            class_values=built.class_values,
+            run_root=run_root,
+            progress_callback=resumed,
+        )
+
+        assert [epoch for epoch, _, _ in resumed.epochs] == [1]
+        assert [m["epoch"] for m in metrics] == [0, 1]
+        assert any(key.startswith("val/f1_") for key in metrics[0])
+        assert "ema_val_frame_level_map" in metrics[0]
         assert not (run_root / "training_checkpoint.pt").exists()
 
 
@@ -2740,7 +3189,10 @@ def _head_module(num_classes: int) -> torch.nn.Module:
 
 
 def _built_with(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
-    """Replace ``FeralModel`` by a factory of head modules; the list holds each call's kwargs."""
+    """Replace ``FeralModel`` by a factory of head modules.
+
+    Returns the list that records each call's kwargs.
+    """
     calls: list[dict[str, object]] = []
 
     def factory(**kwargs: object) -> torch.nn.Module:
@@ -2786,6 +3238,32 @@ def _saved_head_bundle(
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
 class TestLoadModel:
     """``_load_model`` builds FERAL's model from a bundle or an imported checkpoint."""
+
+    def test_a_checkpoint_of_a_mosaic_run_is_imported_under_its_label_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torch
+
+        _ = _built_with(monkeypatch)
+        model_dir = tmp_path / "imported"
+        model_dir.mkdir()
+        torch.save(
+            {
+                "state_dict": _head_module(2).state_dict(),
+                "class_names": {"0": "walk", "1": "run"},
+                "class_values": [2, 5],
+                "is_multilabel": False,
+                "cfg": _NESTED_CONFIG,
+            },
+            model_dir / "model_best.pt",
+        )
+        feature = _feature({"model_dir": str(model_dir), "device": "cpu"})
+
+        assert feature.load_state(tmp_path / "run", {}, {}) is True
+
+        saved = _saved_config(feature, tmp_path / "saved")
+        assert saved["class_values"] == [2, 5]
+        assert saved["class_names"] == {"2": "walk", "5": "run"}
 
     def test_a_bare_checkpoint_under_model_dir_takes_the_class_names_param(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2869,6 +3347,61 @@ class TestLoadModel:
 
         with pytest.raises(ValueError, match="class_names names the values"):
             _ = feature.load_state(tmp_path / "run", {}, {})
+
+
+@pytest.mark.feral
+@pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
+class TestSetupCheck:
+    """``feral_setup_check`` builds the network a checkpoint records and loads it."""
+
+    def test_the_network_comes_from_the_checkpoints_config_and_class_names(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        import torch
+
+        built = _built_with(monkeypatch)
+        checkpoint = tmp_path / "model_best.pt"
+        torch.save(
+            {
+                "state_dict": _head_module(2).state_dict(),
+                "class_names": {"0": "walk", "1": "run"},
+                "is_multilabel": False,
+                "cfg": _NESTED_CONFIG,
+            },
+            checkpoint,
+        )
+
+        summary = feral_setup_check(checkpoint, build_model=True)
+
+        (kwargs,) = built
+        assert kwargs["num_classes"] == 2
+        assert kwargs["predict_per_item"] == _NESTED_CONFIG["predict_per_item"]
+        assert kwargs["pretrained"] is False
+        assert summary["strict_load_ok"] is True
+        assert (
+            "strict load into FeralModel(num_classes=2) succeeded"
+            in capsys.readouterr().out
+        )
+
+    def test_a_checkpoint_without_a_config_is_built_from_the_backbone_argument(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torch
+
+        built = _built_with(monkeypatch)
+        checkpoint = tmp_path / "model_best.pt"
+        torch.save(_head_module(3).state_dict(), checkpoint)
+
+        summary = feral_setup_check(checkpoint, num_classes=3, build_model=True)
+
+        (kwargs,) = built
+        assert kwargs["backbone"] == "vjepa2_vitl_diving48"
+        assert kwargs["num_classes"] == 3
+        assert kwargs["freeze_encoder_layers"] == 0
+        assert summary["strict_load_ok"] is True
 
 
 @pytest.mark.feral
@@ -3012,8 +3545,11 @@ class TestEvaluate:
         run_root = tmp_path / "run"
         _saved_head_bundle(run_root)
         _ = (run_root / "feral_labels.json").write_text(json.dumps(built.labels_json))
+        trained_with = _smoke_config(tmp_path)
+        # The run's dataset has moved: only the dataset_root argument finds it.
+        trained_with["data"]["prefix"] = str(tmp_path / "moved")
         config = {
-            "cfg": _smoke_config(tmp_path),
+            "cfg": trained_with,
             "class_values": [2, 5],
             "class_names": {"2": "walk", "5": "run"},
             "is_multilabel": False,
@@ -3121,7 +3657,6 @@ class TestEvaluatePartition:
 @pytest.mark.feral
 @pytest.mark.skipif(not _HAS_FERAL, reason="requires the feral package")
 @pytest.mark.filterwarnings(*_CPU_RUN_WARNINGS)
-@pytest.mark.usefixtures("cpu_only")
 class TestFitOnCpu:
     """A whole ``fit`` over crop clips, with FERAL's loop and a tiny model."""
 
@@ -3231,12 +3766,15 @@ def _constant_logits(row: int) -> tuple[float, float]:
 
 
 def _fixed_logits(
-    logit_of_row: Callable[[int], Sequence[float]], tokens_per_chunk: int
+    logit_of_row: Callable[[int], Sequence[float]],
+    tokens_per_chunk: int,
+    batch_shapes: list[tuple[int, ...]] | None = None,
 ) -> torch.nn.Module:
     """A stand-in for FERAL's model that emits *tokens_per_chunk* rows per chunk.
 
     Row ``r`` of a batch holds the logits ``logit_of_row(r)``, so a test reads
-    which row of the model's output each frame was given.
+    which row of the model's output each frame was given. The shape of each
+    batch the model reads is appended to *batch_shapes*.
     """
     import torch
 
@@ -3246,6 +3784,8 @@ def _fixed_logits(
             self.anchor = torch.nn.Parameter(torch.zeros(1))
 
         def forward(self, batch: torch.Tensor) -> torch.Tensor:
+            if batch_shapes is not None:
+                batch_shapes.append(tuple(batch.shape))
             rows = int(batch.shape[0]) * tokens_per_chunk
             logits = torch.tensor([list(logit_of_row(row)) for row in range(rows)])
             return logits + self.anchor
@@ -3253,13 +3793,20 @@ def _fixed_logits(
     return FixedLogits()
 
 
-def _decoding(
-    monkeypatch: pytest.MonkeyPatch, frame_count: int
-) -> list[tuple[str, list[int]]]:
-    """Replace FERAL's frame counter and decoder; the list holds each read."""
-    import torch
+_DECODED_SIZE = (8, 8)
+"""The ``(width, height)`` of every frame the stand-in decoder returns."""
 
-    reads: list[tuple[str, list[int]]] = []
+
+def _decoding(
+    monkeypatch: pytest.MonkeyPatch,
+    frame_count: int,
+    reads: list[tuple[str, list[int], int, int]],
+) -> None:
+    """Replace FERAL's frame counter and decoder.
+
+    Each read is appended to *reads* as ``(path, frames, width, height)``.
+    """
+    import torch
 
     def count(path: str) -> int | None:
         return frame_count
@@ -3267,13 +3814,14 @@ def _decoding(
     def read(
         path: str, frames: list[int], width: int = -1, height: int = -1
     ) -> torch.Tensor:
-        reads.append((path, list(frames)))
-        return torch.zeros(len(frames), 3, 8, 8, dtype=torch.uint8)
+        reads.append((path, list(frames), width, height))
+        return torch.zeros(
+            len(frames), 3, _DECODED_SIZE[1], _DECODED_SIZE[0], dtype=torch.uint8
+        )
 
     dataset = _feral_module("dataset")
     monkeypatch.setattr(dataset, "get_frame_count", count)
     monkeypatch.setattr(dataset, "read_range_video_decord", read)
-    return reads
 
 
 def _applied(
@@ -3288,17 +3836,23 @@ def _applied(
     logit_of_row: Callable[[int], Sequence[float]] = _constant_logits,
     tokens_per_chunk: int = 8,
     frame_count: int = 16,
+    reads: list[tuple[str, list[int], int, int]] | None = None,
+    batch_shapes: list[tuple[int, ...]] | None = None,
 ) -> pd.DataFrame:
-    """Load a cached run of a stand-in model, and apply it to *rows*."""
+    """Load a cached run of a stand-in model, and apply it to *rows*.
+
+    *reads* collects what the stand-in decoder is asked for, and *batch_shapes*
+    the shape of each batch the model reads.
+    """
     import joblib
 
-    stand_in = _fixed_logits(logit_of_row, tokens_per_chunk)
+    stand_in = _fixed_logits(logit_of_row, tokens_per_chunk, batch_shapes)
 
     def build(**kwargs: object) -> torch.nn.Module:
         return stand_in
 
     monkeypatch.setattr(_feral_module("model"), "FeralModel", build)
-    _ = _decoding(monkeypatch, frame_count)
+    _decoding(monkeypatch, frame_count, [] if reads is None else reads)
     run_root = tmp_path / "run"
     run_root.mkdir()
     bundle = {
@@ -3484,6 +4038,30 @@ class TestApply:
         assert list(result["interaction_id"]) == [4, 4]
         assert "id" not in result.columns
 
+    def test_frames_are_decoded_at_the_model_size_and_not_resized_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rows, inputs, lookups = _interaction_clip(tmp_path)
+        reads: list[tuple[str, list[int], int, int]] = []
+        batch_shapes: list[tuple[int, ...]] = []
+
+        _ = _applied(
+            tmp_path,
+            monkeypatch,
+            rows,
+            inputs,
+            lookups=lookups,
+            params={"resize_to": 12},
+            reads=reads,
+            batch_shapes=batch_shapes,
+        )
+
+        assert reads
+        assert {(width, height) for _, _, width, height in reads} == {(12, 12)}
+        assert {shape[3:] for shape in batch_shapes} == {
+            (_DECODED_SIZE[1], _DECODED_SIZE[0])
+        }
+
     def test_the_threshold_falls_back_to_the_default_class_as_an_original_value(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3542,7 +4120,10 @@ class TestApply:
     def test_each_chunk_is_sliced_by_the_models_predictions_per_item(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The step's own ``predict_per_item`` is ignored; the model's config rules."""
+        """The model's config sets the output rows of a chunk.
+
+        The step's ``predict_per_item`` is ignored.
+        """
         rows, inputs, lookups = _interaction_clip(tmp_path, first=0)
 
         def by_row(row: int) -> tuple[float, float]:
@@ -3617,7 +4198,7 @@ class TestChunkProbabilities:
     ) -> None:
         import torch
 
-        def read(path: str, frames: list[int]) -> torch.Tensor:
+        def read(path: str, frames: list[int], width: int, height: int) -> torch.Tensor:
             return torch.zeros(len(frames), 4, dtype=torch.uint8)
 
         monkeypatch.setattr(_feral_module("dataset"), "read_range_video_decord", read)
@@ -3640,6 +4221,7 @@ class TestChunkProbabilities:
             prepare,
             torch.device("cpu"),
             torch.amp.autocast(device_type="cpu", dtype=torch.bfloat16),
+            decode_size=(4, 4),
             is_multilabel=is_multilabel,
             tokens_per_chunk=4,
         )

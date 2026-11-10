@@ -675,6 +675,7 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/11/79/936af42edf90a7bd4e41a6cac89c913d4b47fa48a26b042d5129a9242ee3/decord-0.6.0-py3-none-manylinux2010_x86_64.whl", hash = "sha256:51997f20be8958e23b7c4061ba45d0efcd86bffd5fe81c695d0befee0d442976", size = 13602299, upload-time = "2021-06-14T21:30:55.486Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/be/e15b5b866da452e62635a7b27513f31cb581fa2ea9cc9b768b535d62a955/decord-0.6.0-py3-none-win_amd64.whl", hash = "sha256:02665d7c4f1193a330205a791bc128f7e108eb6ae5b67144437a02f700943bad", size = 24733380, upload-time = "2021-06-14T21:30:57.766Z" },
 ]
 
 [[package]]
@@ -766,10 +767,10 @@ wheels = [
 
 [[package]]
 name = "feral"
-version = "1.0.0"
+version = "1.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "decord", marker = "sys_platform == 'linux'" },
+    { name = "decord", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
     { name = "einops" },
     { name = "eva-decord", marker = "sys_platform == 'darwin'" },
     { name = "hf-transfer" },
@@ -784,9 +785,9 @@ dependencies = [
     { name = "triton-windows", marker = "sys_platform == 'win32'" },
     { name = "wandb" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a0/11/1f4165e0bc363e8e4ec40aeabf24c905ec4bdafd2c9981e1107474acc0f3/feral-1.0.0.tar.gz", hash = "sha256:ebeea9947182cb7e2fe9a020545b7b9487c7494b281b27a3f24e75af31015359", size = 66784, upload-time = "2026-07-05T22:34:12.673Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/91/26907488077c158b80a17836dc7c26f56fcdcae57fd9a9fa8c04c1a1999d/feral-1.0.2.tar.gz", hash = "sha256:418d7e2e209c495d8b8ae00dd251c9c8c3a646985160c635bf2233de05c6a5e0", size = 80253, upload-time = "2026-09-26T09:54:12.994Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/30/fa/de8de471351ddc3d54197c60f97721413ab1f6081e69f8bb67824cc2061f/feral-1.0.0-py3-none-any.whl", hash = "sha256:f5d73676e81fc339c81a4b27eff4138abae5ad82fb868ccaa98e6343b8ee5934", size = 51202, upload-time = "2026-07-05T22:34:11.424Z" },
+    { url = "https://files.pythonhosted.org/packages/98/e2/efbb0a32f7647d4628f404299779527573e4bf9eec5a2e4c0b8fa42e6db7/feral-1.0.2-py3-none-any.whl", hash = "sha256:19a676c46528279defde5f4e3efda13eb25d2946e2a549ec9bd147bf55108570", size = 58756, upload-time = "2026-09-26T09:54:11.677Z" },
 ]
 
 [[package]]
@@ -2087,7 +2088,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "faiss-cpu", marker = "extra == 'faiss'", specifier = ">=1.7" },
-    { name = "feral", marker = "extra == 'feral'", specifier = ">=1.0,<2" },
+    { name = "feral", marker = "extra == 'feral'", specifier = ">=1.0.2,<1.1" },
     { name = "h5py", specifier = ">=3.0" },
     { name = "imbalanced-learn", specifier = ">=0.11" },
     { name = "joblib", specifier = ">=1.3" },

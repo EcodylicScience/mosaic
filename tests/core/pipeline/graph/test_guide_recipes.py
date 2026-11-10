@@ -303,3 +303,9 @@ def test_the_sequence_recipe_trains_on_the_train_group_and_predicts_every_group(
 
 def test_the_external_predictions_recipe_validates_as_written() -> None:
     assert check_recipe(guide_recipe("external-predictions")) == ()
+
+
+def test_the_feral_recipe_validates_as_written() -> None:
+    """FERAL is not installed here, so its availability is ignored and its wiring checked."""
+    recipe = guide_recipe("feral-crops")
+    assert check_recipe(recipe, ignore_unavailable=True) == ()

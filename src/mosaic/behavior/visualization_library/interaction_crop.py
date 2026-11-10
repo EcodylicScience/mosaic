@@ -460,8 +460,7 @@ class InteractionCropPipeline:
         out_dir = self._get_output_dir(group, sequence)
         out_dir.mkdir(parents=True, exist_ok=True)
         # The pair is named low-id-first whichever ordering this clip is, so the
-        # two clips of one segment differ only in the trailing focal id -- the
-        # name a FERAL label JSON already references.
+        # two clips of one segment differ only in the trailing focal id.
         low, high = sorted((focal_id, other_id))
         video_out = (
             out_dir

@@ -335,8 +335,8 @@ FFmpeg
                never x264 or x265.
   Optional:    the movement extra installs imageio-ffmpeg, whose ffmpeg
                executables are GPL builds. The feral extra installs decord
-               on Linux, whose FFmpeg is configured with non-free
-               components and reports itself as "nonfree and
+               on Linux and Windows, whose FFmpeg is configured with
+               non-free components and reports itself as "nonfree and
                unredistributable".
   Obligation:  a redistributor who bundles any of these builds must
                observe that build's terms, which depend on how it was

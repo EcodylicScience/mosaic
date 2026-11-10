@@ -1130,7 +1130,7 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
     | `patience` | `integer` \| `None` | `null` |  | The number of epochs without validation improvement before training stops early. Unset, training never stops early. |
     | `compile` | `boolean` | `true` |  | Compile the model with torch.compile before training. |
     | `do_aa` | `boolean` | `true` |  | Apply data augmentation when building the training dataset. |
-    | `seed` | `integer` | `0` |  | The random seed applied to torch and numpy before training starts. |
+    | `seed` | `integer` | `0` |  | The random seed that draws the validation entries and seeds torch, numpy and Python's random before training starts. |
     | `part_sample` | `number` | `1.0` | > `0`, <= `1` | The fraction of the training partition included when building the training dataset. |
     | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` | The probability threshold for the F1 metrics of a multilabel model. A templates run trains a single-label model, so it never applies to one. |
 

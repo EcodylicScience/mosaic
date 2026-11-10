@@ -165,8 +165,9 @@ class Feature(Protocol):
       per-chunk aggregate over everyone present. ``collective-motion-metrics``,
       ``frame-aggregate``, ``sequence-aggregate``.
     - ``"as-input"`` -- whatever came in goes out. The global fitters augment
-      the frame they were given rather than re-keying it, and ``temporal-stack``,
-      ``feral`` and ``arhmm`` branch on whether their input carries a pair.
+      the frame they were given rather than re-keying it. ``temporal-stack`` and
+      ``arhmm`` branch on whether their input carries a pair, and ``feral`` writes
+      each identity column that its input has.
 
     **No default**, for the reason ``scope_dependent`` and ``accepts_overlap``
     have none: a default would let the next feature ship without answering, and

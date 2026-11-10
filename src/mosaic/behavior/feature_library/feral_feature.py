@@ -1,5 +1,6 @@
 """
-FeralFeature -- FERAL vision-transformer behavior classifier as a Mosaic pipeline feature.
+FeralFeature trains and applies the FERAL vision-transformer behavior classifier
+as a mosaic pipeline feature.
 
 A global feature, like ``xgboost`` and ``lightning-action``: it fits a classifier
 over labeled entries, then applies it per entry. Exactly one of three params
@@ -13,8 +14,9 @@ the test entries it is evaluated on. ``labels`` supplies each frame's
 ground-truth label, and ``unlabeled_as`` the class of a frame with none. A
 seeded ``training.val_fraction`` of the train entries validates each epoch and
 chooses the best checkpoint. The run writes ``feral_labels.json``,
-``config.json``, ``model_best.pt``, ``summary.csv``, ``reports.json`` and the
-model file ``feral_model.joblib``.
+``config.json``, ``model_best.pt``, ``model_ema.pt`` when ``training.ema_decay``
+is set, ``summary.csv``, ``reports.json``, ``feral_config.json`` and the model
+file ``feral_model.joblib``.
 
 Applying a trained run
 ----------------------
@@ -44,7 +46,7 @@ import contextlib
 import importlib
 import json
 import logging
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -71,6 +73,7 @@ from mosaic.core.label_intervals import label_vocabulary
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.loading import labels_for_rows
+from mosaic.core.pipeline.parquet_reader import ParquetUnreadable, output_n_rows
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
@@ -135,8 +138,8 @@ FERAL: Final = OptionalModule("feral", "feral", "the FERAL behavior classifier")
 def _check_feral() -> None:
     """Raise a helpful refusal if the ``feral`` package is not importable.
 
-    Lightweight -- importing the ``feral`` package does not pull torch (its
-    public API is lazily loaded).
+    Importing the ``feral`` package does not import torch, because its public
+    API loads lazily.
 
     Raises:
         ToolUnavailable: The package is not importable.
@@ -152,8 +155,12 @@ def _resolve_backbone_key(value: str) -> str:
 
     Accepts either a BACKBONES key (returned as-is) or a HuggingFace slug such as
     ``"facebook/vjepa2-vitl-fpc32-256-diving48"`` (reverse-looked-up to its key,
-    e.g. ``"vjepa2_vitl_diving48"``). Mosaic's saved configs store the old
-    ``model_name`` HF slug, so this keeps those runs loading unchanged.
+    e.g. ``"vjepa2_vitl_diving48"``). A fit stores the BACKBONES key. A slug comes
+    from the ``model_name`` param or from the ``config.json`` of an imported
+    checkpoint that the ``feral`` feature wrote before its version 0.3.
+
+    Raises:
+        ValueError: *value* is neither a BACKBONES key nor a known slug.
     """
     from feral.backbones import BACKBONES
 
@@ -180,10 +187,11 @@ def _load_checkpoint_state_dict(
     Handles every checkpoint shape FeralFeature may encounter:
 
     * **New dict format** (``{'state_dict': ..., 'class_names': ..., ...}``,
-      written by FERAL's ``save_model``) -- unwraps ``state_dict`` and returns the
-      embedded ``class_names`` / ``is_multilabel`` / ``cfg`` as ``metadata``.
-    * **Bare state_dict** (legacy save) -- used directly.
-    * **Old ``HFModel`` layout** -- keys prefixed ``model.*`` (the encoder lived at
+      written by FERAL's ``save_model``): unwraps ``state_dict`` and returns the
+      embedded ``class_names`` / ``is_multilabel`` / ``cfg`` / ``class_values``
+      as ``metadata``.
+    * **Bare state_dict** (legacy save): used directly.
+    * **Old ``HFModel`` layout**: keys prefixed ``model.*`` (the encoder lived at
       ``HFModel.self.model``) are remapped to ``backbone.model.*`` so they load
       into the new ``FeralModel`` (whose encoder lives at
       ``FeralModel.self.backbone.model``). The classifier keys
@@ -192,7 +200,11 @@ def _load_checkpoint_state_dict(
     meta: dict[str, object] | None = None
     if "state_dict" in raw:
         state_dict = _STATE_DICT.validate_python(raw["state_dict"])
-        meta = {k: raw[k] for k in ("class_names", "is_multilabel", "cfg") if k in raw}
+        meta = {
+            k: raw[k]
+            for k in ("class_names", "is_multilabel", "cfg", "class_values")
+            if k in raw
+        }
     else:
         state_dict = dict(raw)
     is_old_hfmodel = any(k.startswith("model.") for k in state_dict) and not any(
@@ -210,9 +222,9 @@ def _load_into(model: torch.nn.Module, state_dict: Mapping[str, object]) -> None
     """Load ``state_dict`` into ``model`` and fail loudly on any key mismatch.
 
     Uses ``strict=False`` then asserts there are no missing/unexpected keys
-    (ignoring ``num_batches_tracked`` buffers). This converts a silent
-    architecture-drift mismatch -- which would otherwise leave the backbone at
-    random initialization -- into an actionable error.
+    (ignoring ``num_batches_tracked`` buffers). An architecture mismatch would
+    otherwise leave the backbone at random initialization without a word, so it
+    raises instead.
     """
     result = model.load_state_dict(state_dict, strict=False)
     missing = [k for k in result.missing_keys if "num_batches_tracked" not in k]
@@ -237,15 +249,16 @@ FeralSplit = Literal["train", "val", "test"]
 """The partitions of FERAL's labels dict that mosaic fills."""
 
 FeralDropReason = Literal[
-    "no_label_file", "too_short", "unlabeled_frames", "unseen_class"
+    "no_crop_video", "no_label_file", "too_short", "unlabeled_frames", "unseen_class"
 ]
-"""Why :func:`build_feral_labels` leaves a video out of its split."""
+"""Why :func:`build_feral_labels` leaves a video, or an entry, out of its split."""
 
 _DROP_DESCRIPTIONS: Final[Mapping[FeralDropReason, str]] = {
-    "no_label_file": "have no label file",
-    "too_short": "are shorter than the minimum clip length",
-    "unlabeled_frames": "hold unlabeled frames and unlabeled_as is unset",
-    "unseen_class": "hold a label that no training video holds",
+    "no_crop_video": "entry(ies) have no crop video",
+    "no_label_file": "video(s) have no label file",
+    "too_short": "video(s) are shorter than the minimum clip length",
+    "unlabeled_frames": "video(s) hold unlabeled frames and unlabeled_as is unset",
+    "unseen_class": "video(s) hold a label that no training video holds",
 }
 
 
@@ -287,7 +300,8 @@ class FeralLabels:
         labels_json: FERAL's dict: ``class_names``, ``is_multilabel``,
             ``labels`` keyed by video filename, and ``splits``.
         class_values: The label value of each dense class index.
-        dropped: The count of videos left out of their split, by reason.
+        dropped: The count of videos, or entries for ``no_crop_video``, left out
+            of their split, by reason.
     """
 
     labels_json: FeralLabelsJson
@@ -304,15 +318,28 @@ def _frame_table(video: FeralVideo) -> pd.DataFrame:
 
 
 def _train_vocabulary(
-    entries: Sequence[tuple[str, str]], label_files: Mapping[tuple[str, str], Path]
+    entries: Sequence[tuple[str, str]],
+    label_files: Mapping[tuple[str, str], Path],
+    labels: GroundTruthLabelsSource,
 ) -> dict[int, str]:
-    """The names the label files of *entries* give their label values."""
-    names: dict[int, str] = {}
+    """The names the label files of *entries* give the values the labels take.
+
+    A name belongs to the value its file id takes after ``labels`` remaps it, so
+    a swap names each class after the frames it now holds. A masked id has no
+    value. Several ids that map to one value join their names with ``+``, in
+    the order of the ids.
+    """
+    named: dict[int, dict[int, str]] = {}
     for entry in entries:
         with np.load(label_files[entry], allow_pickle=True) as archive:
-            for value, name in label_vocabulary(archive).items():
-                _ = names.setdefault(value, name)
-    return names
+            for source, name in label_vocabulary(archive).items():
+                value = int(labels.relabel([source])[0])
+                if value != UNLABELED:
+                    _ = named.setdefault(value, {}).setdefault(source, name)
+    return {
+        value: "+".join(dict.fromkeys(names[source] for source in sorted(names)))
+        for value, names in named.items()
+    }
 
 
 def build_feral_labels(
@@ -322,6 +349,7 @@ def build_feral_labels(
     *,
     unlabeled_as: int | None,
     min_frames: int,
+    entries_without_video: int = 0,
 ) -> FeralLabels:
     """FERAL's labels dict for the videos of each split.
 
@@ -333,7 +361,9 @@ def build_feral_labels(
     video leaves its split too when it has fewer than ``min_frames`` frames, its
     entry has no label file, or, in the validation and test splits, it holds a
     value that no training video holds. The sorted values left in the training
-    split map to the dense class indices FERAL needs.
+    split map to the dense class indices FERAL needs. An entry with no video at
+    all, which *entries_without_video* counts, has no video to leave a split
+    and is counted under its own reason.
 
     Args:
         videos: The videos of each split.
@@ -342,6 +372,8 @@ def build_feral_labels(
         unlabeled_as: The label value a frame without a label takes, or
             ``None`` to drop the video that holds one.
         min_frames: The fewest frames a video may have.
+        entries_without_video: The count of train and test entries that have no
+            video, such as a crop run's entry whose table has no rows.
 
     Returns:
         The labels dict, the label value of each class index, and the counts of
@@ -351,6 +383,7 @@ def build_feral_labels(
         ValueError: No training video is left.
     """
     dropped: dict[FeralDropReason, int] = {
+        "no_crop_video": entries_without_video,
         "no_label_file": 0,
         "too_short": 0,
         "unlabeled_frames": 0,
@@ -396,13 +429,15 @@ def build_feral_labels(
     for reason, count in dropped.items():
         if count:
             log.warning(
-                "[feral] %d video(s) left their split: they %s",
+                "[feral] %d %s, so they left their split",
                 count,
                 _DROP_DESCRIPTIONS[reason],
             )
 
     dense = {value: index for index, value in enumerate(class_values)}
-    names = _train_vocabulary(sorted({video.entry for video, _ in train}), label_files)
+    names = _train_vocabulary(
+        sorted({video.entry for video, _ in train}), label_files, labels
+    )
     class_names = {
         str(index): names.get(value, str(value)) for value, index in dense.items()
     }
@@ -535,9 +570,42 @@ def refuse_crop_without_videos(input_root: Path) -> None:
 
 def _scalar(value: object) -> int | str:
     """An identity cell as the ``int`` or ``str`` a video's ids hold."""
-    if isinstance(value, (int, np.integer)):
-        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, np.integer):
+        return value.item()
     return str(value)
+
+
+def entries_with_empty_crop_table(
+    entries: Collection[tuple[str, str]], tables: DependencyLookup
+) -> set[tuple[str, str]]:
+    """The *entries* whose crop table exists and holds no row.
+
+    A crop run writes an empty table for an entry it cut nothing from, such as
+    an interaction run's entry with no interaction. The input stream skips such
+    an entry, so this reads the crop run's own tables. An entry with an empty
+    table adds no video under any scope, so it takes part with none.
+
+    Args:
+        entries: The entries to look up.
+        tables: The crop run's table of each entry it stored.
+
+    Returns:
+        The entries with a readable table of zero rows.
+    """
+    empty: set[tuple[str, str]] = set()
+    for entry in entries:
+        path = tables.get(entry)
+        if path is None or not path.exists():
+            continue
+        try:
+            rows = output_n_rows(path)
+        except ParquetUnreadable:
+            continue
+        if rows == 0:
+            empty.add(entry)
+    return empty
 
 
 def _entry_of(rows: pd.DataFrame) -> tuple[str, str]:
@@ -921,7 +989,10 @@ _COMPILE_DESCRIPTION = "Compile the model with torch.compile before training."
 
 _DO_AA_DESCRIPTION = "Apply data augmentation when building the training dataset."
 
-_SEED_DESCRIPTION = "The random seed applied to torch and numpy before training starts."
+_SEED_DESCRIPTION = (
+    "The random seed that draws the validation entries and seeds torch, numpy "
+    "and Python's random before training starts."
+)
 
 _PART_SAMPLE_DESCRIPTION = (
     "The fraction of the training partition included when building the "
@@ -937,7 +1008,8 @@ _MULTILABEL_THRESHOLD_DESCRIPTION = (
 class FeralTrainingConfig(DeclaredModel):
     """Training hyperparameters for FERAL ViT fine-tuning.
 
-    These mirror the FERAL default_vjepa.yaml configuration.
+    ``feral_config`` writes each field into FERAL's config, so FERAL's packaged
+    defaults never apply.
     """
 
     epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION)] = Field(default=10, ge=1)
@@ -1019,19 +1091,17 @@ class FeralFeature:
            must be one plain video file.
 
     **Precision convention**:
-        Training's forward/backward pass and the per-epoch validation
-        inside ``fit()`` run in FERAL's bfloat16 autocast, so the
-        validation numbers that pick the best epoch follow FERAL's own.
-        Everything else -- the post-training test eval
-        (``_evaluate_partition``), the public ``FeralFeature.evaluate()``,
-        and production inference (``apply()``) -- defaults to full
-        float32. The eval and apply paths produce numbers that get stored
-        and acted on downstream (reports.json metrics, per-frame
-        prediction parquets, paper figures), so reproducibility wins over
-        the ~1.5-2x speedup that bfloat16 would buy. bfloat16 shifts
-        decision boundaries near probability 0.5 and can move recall by
-        10+ points on threshold-sensitive classes -- not a trade-off worth
-        taking when the cost is a one-time inference pass.
+        Training's forward and backward passes and the per-epoch validation
+        inside ``fit()`` run in FERAL's bfloat16 autocast. The validation
+        numbers that pick the best epoch therefore match FERAL's.
+        The post-training test evaluation (``_evaluate_partition``), the
+        public ``FeralFeature.evaluate()`` and inference in ``apply()`` run
+        in full float32 by default. Their numbers are stored and read
+        downstream (reports.json metrics, per-frame prediction parquets).
+        Reproducibility of those numbers takes precedence over the 1.5-2x
+        speedup of bfloat16. bfloat16 shifts decision boundaries near
+        probability 0.5 and can move recall by 10 or more points on
+        threshold-sensitive classes.
 
         **Opt-in override for apply()**: set
         ``params.inference_autocast = True`` to run apply()'s forward
@@ -1039,8 +1109,9 @@ class FeralFeature:
         speedup; useful when wall-clock dominates (e.g., dense crop
         pipelines with chunk_shift << chunk_length) and per-frame
         argmax precision can be re-validated downstream. The flag is
-        persisted in feral_config.json so consumers can tell at a glance
-        which precision regime produced any given run's parquets.
+        hashed into the run id and recorded in the run's params.json, so
+        consumers can tell which precision regime produced any given
+        run's parquets.
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.feral_feature.FeralFeature.Params`.
@@ -1066,7 +1137,7 @@ class FeralFeature:
     fit_set_pinned_by: ClassVar[str] = "templates"
     relates: RelatesLevel = "none"
     accepts_overlap = (
-        False  # takes its context from the crop video, not from this frame
+        False  # takes its context from the frames around each frame of its video
     )
     # A sequence input decodes the entry's own media through `resolve_media`.
     consumed_roots: tuple[str, ...] = ("media_raw",)
@@ -1139,16 +1210,15 @@ class FeralFeature:
         chunk_step: Annotated[int, Declared(_CHUNK_STEP_DESCRIPTION, unit="frames")] = 1
         resize_to: Annotated[int, Declared(_RESIZE_TO_DESCRIPTION, unit="px")] = 256
         # Which hardware runs the model, not what the model computes. apply()
-        # takes its device off the loaded model rather than off this field, and
-        # nothing reads it back from disk -- fit() writes cfg["device"] and reads
-        # it once from the same in-memory dict. Precision is governed by
-        # `inference_autocast`, which IS hashed.
-        # HASH_EXCLUDE, on the standard this repo already applied twice
-        # (infer_batch_size below, arhmm's `backend`): equivalent up to
-        # floating-point associativity, not bit-identity -- cpu and cuda float32
-        # kernels reassociate differently. Pinning a run's identity to the card it
-        # happened to land on costs a full recompute for nothing, and blocks
-        # reloading finished results on a machine without a GPU.
+        # takes its device from the loaded model, and fit() reads cfg["device"]
+        # from the in-memory config it builds. The saved config records the
+        # device, but loading places the model on this field instead. Precision
+        # is set by `inference_autocast`, which is hashed.
+        # HASH_EXCLUDE, like infer_batch_size below and arhmm's `backend`. cpu
+        # and cuda float32 kernels reassociate differently, so their outputs
+        # agree up to floating-point associativity. Excluding the device avoids
+        # a full recompute on a different card and lets a machine without a GPU
+        # reload a run computed on one.
         device: Annotated[
             str,
             HASH_EXCLUDE,
@@ -1168,9 +1238,9 @@ class FeralFeature:
         # Production inference precision override. Default False = full float32,
         # matching the class-level "Precision convention". Set True for ~1.5-2x
         # speedup at the cost of bfloat16's decision-boundary noise (~10pp
-        # recall shift on threshold-sensitive classes). Stored in
-        # feral_config.json so re-runs and downstream readers know which
-        # precision regime produced the parquets.
+        # recall shift on threshold-sensitive classes). Hashed into the run
+        # id and recorded in the run's params.json, so re-runs and downstream
+        # readers know which precision regime produced the parquets.
         inference_autocast: Annotated[
             bool, Declared(_INFERENCE_AUTOCAST_DESCRIPTION)
         ] = False
@@ -1241,6 +1311,7 @@ class FeralFeature:
         self._train_entries: set[tuple[str, str]] | None = None
         self._test_entries: set[tuple[str, str]] | None = None
         self._label_files: DependencyLookup = {}
+        self._input_tables: DependencyLookup = {}
 
     def bind_dataset(self, ds: Dataset) -> None:
         """Store dataset reference for resolving media paths."""
@@ -1329,7 +1400,8 @@ class FeralFeature:
     def _load_input_root(self, dependency_lookups: dict[str, DependencyLookup]) -> None:
         """Record the first feature input's run root, and refuse a crop without videos."""
         mode = self._input_mode()
-        self._input_root = input_run_root(dependency_lookups.get("_input_0", {}))
+        self._input_tables = dependency_lookups.get("_input_0", {})
+        self._input_root = input_run_root(self._input_tables)
         if mode == "sequence":
             return
         if self._input_root is None:
@@ -1395,8 +1467,9 @@ class FeralFeature:
         Raises:
             ToolUnavailable: The ``feral`` package is not importable.
             RuntimeError: No dataset is bound, or ``load_state`` loaded no templates.
-            ValueError: The scope lacks a train entry or a labeled test entry, no
-                train video is left, or a test entry leaves no test video.
+            ValueError: The scope lacks a train entry or a labeled test entry,
+                the validation fraction leaves no train entry, no train video is
+                left, or no test entry leaves a test video.
         """
         _check_feral()
         ds = self._ds
@@ -1428,6 +1501,15 @@ class FeralFeature:
             entry = _entry_of(df)
             if entry in train_entries or entry in test_entries:
                 videos_of_entry[entry] = self._videos_of(ds, df)
+
+        # An entry whose crop table is empty adds no video under any scope, so it
+        # takes part with none instead of being refused.
+        if self._input_mode() != "sequence":
+            for entry in entries_with_empty_crop_table(
+                (train_entries | test_entries) - set(videos_of_entry),
+                self._input_tables,
+            ):
+                videos_of_entry[entry] = []
 
         seen = set(videos_of_entry)
         refuse_entries_outside_scope(
@@ -1474,6 +1556,9 @@ class FeralFeature:
             labels_source,
             unlabeled_as=p.unlabeled_as,
             min_frames=(p.chunk_length - 1) * p.chunk_step + 1,
+            entries_without_video=sum(
+                1 for videos in videos_of_entry.values() if not videos
+            ),
         )
         labels_json = labels.labels_json
         renamed = (
@@ -1507,6 +1592,7 @@ class FeralFeature:
         model, best_map, training_metrics = train_feral(
             cfg,
             labels_json,
+            class_values=labels.class_values,
             run_root=run_root,
             progress_callback=self.progress_callback,
         )
@@ -1607,7 +1693,7 @@ class FeralFeature:
             or self._class_values is None
             or self._is_multilabel is None
         ):
-            raise RuntimeError("No model loaded — call load_state() first")
+            raise RuntimeError("No model loaded; call load_state() first")
         if self._ds is None:
             raise RuntimeError(
                 f"[{self.name}] apply needs the dataset, which run_feature binds "
@@ -1621,20 +1707,17 @@ class FeralFeature:
         p = self.params
         model = self._model
         device = next(model.parameters()).device
-        resize = _video_resize(p.resize_to)
         normalize = _video_normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         scale = 1 / 255
 
         def prepare(video: torch.Tensor) -> torch.Tensor:
-            return normalize(resize(video) * scale)
+            return normalize(video * scale)
 
-        # Precision regime, built once and reused across batches. Default full
-        # float32 -- same convention as the eval paths -- because inference
-        # results land in stored parquet outputs that get acted on downstream
-        # (event counts, aggregate analyses, paper figures), so reproducibility
-        # wins over the ~1.5-2x speedup bfloat16 autocast would buy. Opt in via
-        # params.inference_autocast=True when wall-clock dominates over the
-        # ~10pp recall shift on threshold-sensitive classes. See class docstring
+        # The precision context, built once for every batch. Inference runs in
+        # full float32 by default, as the evaluation paths do, because its
+        # predictions are stored and read downstream. params.inference_autocast
+        # switches to bfloat16 on CUDA, which is about 1.5-2x faster and can move
+        # recall on threshold-sensitive classes. See the class docstring,
         # "Precision convention".
         autocast: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
         if p.inference_autocast and device.type == "cuda":
@@ -1713,11 +1796,15 @@ class FeralFeature:
         frame_ids = _feral_get_frame_ids()(
             total_frames, p.chunk_shift, p.chunk_length, p.chunk_step
         )
+        # FERAL's ClsDataset decodes each frame at the model size, so training and
+        # evaluation see the pixels of that resize and apply decodes the same way.
+        # The square decode size is resize_to by resize_to, whatever the source size.
+        decode_size = (p.resize_to, p.resize_to)
         frame_preds = np.zeros((total_frames, len(class_values)), dtype=np.float32)
         frame_counts = np.zeros(total_frames, dtype=np.float32)
 
         # Batch chunks through the model to amortize kernel-launch overhead and
-        # fill the GPU (~infer_bs x fewer forward passes).
+        # fill the GPU, with about infer_batch_size times fewer forward passes.
         for batch_frames in _chunked(frame_ids, max(1, p.infer_batch_size)):
             chunk_probs_list = chunk_probabilities(
                 model,
@@ -1726,6 +1813,7 @@ class FeralFeature:
                 prepare,
                 device,
                 autocast,
+                decode_size=decode_size,
                 is_multilabel=bool(self._is_multilabel),
                 tokens_per_chunk=cfg["predict_per_item"],
             )
@@ -1779,23 +1867,22 @@ class FeralFeature:
         Reads the weights, the classes and the nested config from
         ``feral_model.joblib``, or, without it, the weights from ``model_best.pt``
         and the nested config from the checkpoint's metadata. Moves the model to
-        ``device`` and sets eval mode. Use this when you need just the model --
-        e.g. to feed it custom batches outside FERAL's ClsDataset.
+        ``device`` and sets eval mode. Use it to feed the model batches built
+        outside FERAL's ClsDataset.
 
-        Parameters
-        ----------
-        run_root : Path
-            Directory containing the model (typically a Mosaic feature run
-            directory like ``features/feral__from__.../<run_id>/``).
-        device : str
-            Where to load the model.
+        Args:
+            run_root: Directory containing the model (typically a Mosaic feature
+                run directory like ``features/feral__from__.../<run_id>/``).
+            device: Where to load the model.
 
-        Raises
-        ------
-        FileNotFoundError
-            The directory holds neither ``feral_model.joblib`` nor ``model_best.pt``.
-        ValueError
-            ``model_best.pt`` carries no metadata to build the model from.
+        Returns:
+            The model, in eval mode on *device*.
+
+        Raises:
+            FileNotFoundError: The directory holds neither ``feral_model.joblib``
+                nor ``model_best.pt``.
+            ValueError: ``model_best.pt`` carries no metadata to build the model
+                from.
         """
         _check_feral()
         import torch
@@ -1897,10 +1984,11 @@ class FeralFeature:
         ``calc_frame_level_map``, and ``calculate_f1_metrics``. The chunk
         answers are ensembled into per-frame predictions first, as FERAL's own
         evaluation does, and the frame-level mAP and the F1 metrics read those.
-        Returns a flat dict keyed with ``<prefix>_<metric>``. Returns ``{}`` if
-        ``answers`` is empty. ``prefix`` defaults to ``partition``.
-        ``multilabel_threshold`` is forwarded to ``calculate_f1_metrics``
-        (only affects multilabel runs; matches FERAL's default of 0.85).
+        Returns a flat dict of Python floats keyed with ``<prefix>_<metric>``,
+        which a resume checkpoint can hold. Returns ``{}`` if ``answers`` is
+        empty. ``prefix`` defaults to ``partition``. ``multilabel_threshold`` is
+        forwarded to ``calculate_f1_metrics`` (only affects multilabel runs;
+        matches FERAL's default of 0.85).
         """
         if not answers:
             return {}
@@ -1930,11 +2018,11 @@ class FeralFeature:
                 multilabel_threshold,
             )
         )
-        return metrics
+        return {key: float(value) for key, value in metrics.items()}
 
     @staticmethod
     def read_reports(run_root: Path) -> dict:
-        """Return the contents of ``reports.json`` -- the metrics persisted
+        """Return the contents of ``reports.json``, the metrics written
         by ``save_state()`` at training time (class_names, best_val_map,
         training_metrics list, test_metrics dict). Returns ``{}`` if the
         file is missing.
@@ -1956,6 +2044,9 @@ class FeralFeature:
 _CLASS_NAMES: Final = TypeAdapter(dict[int, str])
 """FERAL's ``class_names``, whose keys are integers spelled as text."""
 
+_CLASS_VALUES: Final = TypeAdapter(list[int])
+"""The label value of each dense class index."""
+
 FeralAnswer = tuple[tuple[str, int, int], Sequence[float], Sequence[float]]
 """One chunk row of FERAL's answers: ``(filename, frame, chunk position)``, the
 class probabilities and the one-hot target."""
@@ -1973,7 +2064,7 @@ class _FeralEma(Protocol):
 class _FeralBuildLoaders(Protocol):
     def __call__(
         self, cfg: FeralConfig, labels_json: FeralLabelsJson, num_classes: int
-    ) -> tuple[dict[str, object], dict[str, object]]: ...
+    ) -> tuple[dict[str, Sized], dict[str, Sized]]: ...
 
 
 class _FeralBuildModel(Protocol):
@@ -2134,7 +2225,9 @@ class _FeralGetFrameCount(Protocol):
 
 
 class _FeralReadRangeVideo(Protocol):
-    def __call__(self, path: str, frames: list[int]) -> torch.Tensor: ...
+    def __call__(
+        self, path: str, frames: list[int], width: int, height: int
+    ) -> torch.Tensor: ...
 
 
 class _VideoTransform(Protocol):
@@ -2181,13 +2274,6 @@ def _feral_get_frame_count() -> _FeralGetFrameCount:
 
 def _feral_read_range_video() -> _FeralReadRangeVideo:
     return importlib.import_module("feral.dataset").read_range_video_decord
-
-
-def _video_resize(size: int) -> _VideoTransform:
-    # torchvision's v2 transforms are not typed for the checker.
-    return importlib.import_module("torchvision.transforms.v2").Resize(
-        (size, size), antialias=True
-    )
 
 
 def _video_normalize(
@@ -2300,7 +2386,7 @@ def _build_network(cfg: FeralNetwork, num_classes: int) -> torch.nn.Module:
 
 
 class _FlatNetwork(TypedDict, total=False):
-    """The architecture keys of a ``config.json`` that mosaic wrote before 0.3."""
+    """The architecture keys of a ``config.json`` from ``feral`` before version 0.3."""
 
     model_name: str
     predict_per_item: int
@@ -2320,10 +2406,13 @@ def imported_network(
 ) -> FeralNetwork:
     """The network of an imported checkpoint, from the first config that records it.
 
-    A nested config, as FERAL writes, wins over a flat one that mosaic wrote
-    before 0.3. A checkpoint that records neither is built from the step's
-    ``model_name`` and ``predict_per_item``, with the training defaults for the
-    weight-agnostic dropout and freeze settings.
+    A nested config, as FERAL writes, takes precedence over a flat one that the
+    ``feral`` feature wrote before its version 0.3. A checkpoint that records
+    neither is built from the step's ``model_name`` and ``predict_per_item``, with
+    the training default dropout rate and no frozen layer. Freezing sets
+    ``requires_grad`` only, so it changes no weight and does nothing at inference,
+    and 0 builds on a backbone of any depth where FERAL refuses a freeze of more
+    layers than the backbone has.
     """
     present = [candidate for candidate in candidates if candidate]
     for candidate in present:
@@ -2341,9 +2430,7 @@ def imported_network(
             "predict_per_item": flat.get("predict_per_item", predict_per_item),
             "model": {
                 "fc_drop_rate": flat.get("fc_drop_rate", defaults.fc_drop_rate),
-                "freeze_encoder_layers": flat.get(
-                    "freeze_encoder_layers", defaults.freeze_encoder_layers
-                ),
+                "freeze_encoder_layers": flat.get("freeze_encoder_layers", 0),
             },
         }
     if present:
@@ -2357,7 +2444,7 @@ def imported_network(
         "predict_per_item": predict_per_item,
         "model": {
             "fc_drop_rate": defaults.fc_drop_rate,
-            "freeze_encoder_layers": defaults.freeze_encoder_layers,
+            "freeze_encoder_layers": 0,
         },
     }
 
@@ -2370,28 +2457,33 @@ def checkpoint_classes(
     """The classes and the multilabel flag of an imported checkpoint.
 
     The names come from the ``class_names`` param, else from the checkpoint's
-    metadata, else from a ``config.json`` that mosaic wrote before 0.3. The keys
-    are the label values, which for a checkpoint of FERAL's own are its dense
-    class indices. ``is_multilabel`` comes from the checkpoint's metadata, else
-    from that ``config.json``.
+    metadata, else from a ``config.json`` that the ``feral`` feature wrote
+    before its version 0.3. The keys are the label values. A checkpoint of
+    FERAL's own names its dense class indices, and one that mosaic trained
+    records the ``class_values`` of those indices too, which put its names under
+    their label values. ``is_multilabel`` comes from the checkpoint's metadata,
+    else from that ``config.json``.
 
     Args:
         param_names: The step's ``class_names`` param.
-        ckpt_meta: The ``class_names``, ``is_multilabel`` and ``cfg`` a FERAL
-            checkpoint embeds, when it embeds any.
+        ckpt_meta: The ``class_names``, ``is_multilabel``, ``cfg`` and
+            ``class_values`` a checkpoint embeds, when it embeds any.
         legacy_config: The ``config.json`` beside the checkpoint, when there is one.
 
     Returns:
         The name of each class by label value, and whether the model is multilabel.
 
     Raises:
-        ValueError: No source names the classes.
+        ValueError: No source names the classes, or the checkpoint's
+            ``class_values`` do not match its class names.
     """
     raw: object = param_names or None
+    from_checkpoint = False
     if not raw:
         for source in (ckpt_meta, legacy_config):
             if source is not None and source.get("class_names"):
                 raw = source["class_names"]
+                from_checkpoint = source is ckpt_meta
                 break
     if not raw:
         raise ValueError(
@@ -2400,6 +2492,10 @@ def checkpoint_classes(
             "Give the class_names param to supply its classes"
         )
     names = _CLASS_NAMES.validate_python(raw)
+    if from_checkpoint and ckpt_meta is not None and "class_values" in ckpt_meta:
+        names = _named_by_value(
+            names, _CLASS_VALUES.validate_python(ckpt_meta["class_values"])
+        )
     for source in (ckpt_meta, legacy_config):
         if source is not None and "is_multilabel" in source:
             return names, bool(source["is_multilabel"])
@@ -2409,6 +2505,23 @@ def checkpoint_classes(
         "an import does not have"
     )
     return names, False
+
+
+def _named_by_value(
+    dense_names: Mapping[int, str], class_values: Sequence[int]
+) -> dict[int, str]:
+    """The names of dense class indices as names of their label values.
+
+    Raises:
+        ValueError: The names do not key exactly the indices of *class_values*.
+    """
+    if sorted(dense_names) != list(range(len(class_values))):
+        raise ValueError(
+            f"{FeralFeature.name}: the imported checkpoint names the classes "
+            f"{sorted(dense_names)}, and its class_values {list(class_values)} "
+            "have one class per index"
+        )
+    return {class_values[index]: name for index, name in dense_names.items()}
 
 
 def _named_values(
@@ -2487,10 +2600,14 @@ def chunk_probabilities(
     device: torch.device,
     autocast: contextlib.AbstractContextManager[object],
     *,
+    decode_size: tuple[int, int],
     is_multilabel: bool,
     tokens_per_chunk: int,
 ) -> list[NDArray[np.float32]]:
     """The class probabilities of each chunk in *batch_frames*.
+
+    Frames are decoded at *decode_size*, ``(width, height)``, as FERAL's
+    ``ClsDataset`` decodes them for training.
 
     Each element is a ``(tokens_per_chunk, num_classes)`` array. The model's
     output is chunk-major, so chunk ``n`` holds rows
@@ -2506,8 +2623,12 @@ def chunk_probabilities(
     import torch
 
     read = _feral_read_range_video()
+    width, height = decode_size
     batch_tensor = torch.stack(
-        [prepare(read(str(video_path), list(frames))) for frames in batch_frames],
+        [
+            prepare(read(str(video_path), list(frames), width, height))
+            for frames in batch_frames
+        ],
         dim=0,
     ).to(device)
     try:
@@ -2532,6 +2653,7 @@ def chunk_probabilities(
             prepare,
             device,
             autocast,
+            decode_size=decode_size,
             is_multilabel=is_multilabel,
             tokens_per_chunk=tokens_per_chunk,
         ) + chunk_probabilities(
@@ -2541,6 +2663,7 @@ def chunk_probabilities(
             prepare,
             device,
             autocast,
+            decode_size=decode_size,
             is_multilabel=is_multilabel,
             tokens_per_chunk=tokens_per_chunk,
         )
@@ -2605,18 +2728,17 @@ def _run_inference_loop(
     progress_label: str = "",
     progress_interval: int = 0,
 ) -> list[FeralAnswer]:
-    """Per-batch inference loop. Returns FERAL `answers` (list of tuples).
+    """Run *model* over *loader* and return FERAL's chunk answers.
 
-    Runs the forward pass in full float32 -- no bfloat16 autocast.
-    Evaluation is a measurement step; the speed/precision trade-off
-    worth taking inside a training inner loop is not worth taking
-    when computing a number we report. bfloat16 shifts decision
-    boundaries near probability 0.5 and breaks reproducibility of
-    the metric. See class-level docstring for the full precision
-    convention across training, eval, and apply.
+    The forward pass runs in full float32, without bfloat16 autocast, because
+    bfloat16 shifts decision boundaries near probability 0.5 and changes the
+    reported metric from run to run. The class docstring gives the precision
+    convention of training, evaluation and apply. A *loader* of ``None`` gives no
+    answers.
 
-    If ``progress_label`` is non-empty and ``progress_interval > 0``,
-    prints a progress line every N batches.
+    With a non-empty ``progress_label`` and a positive ``progress_interval``,
+    prints a progress line every ``progress_interval`` batches and after the
+    last one.
     """
     import torch
 
@@ -2659,9 +2781,9 @@ def _evaluate_partition(
 
     Reads the videos under the dataset root that *cfg* names. For callers outside
     the training loop, use the public ``evaluate()`` and ``compute_metrics()``.
-    The forward pass runs in full float32, so the test metrics that land in
-    ``reports.json`` match what ``FeralFeature.evaluate()`` produces for this run
-    later. See the class docstring for the precision convention.
+    The forward pass runs in full float32, so the test metrics that
+    ``reports.json`` records match what ``FeralFeature.evaluate()`` produces for
+    this run. See the class docstring for the precision convention.
     """
     loader = _build_eval_loader(
         cfg, labels_json, partition, prefix=cfg["data"]["prefix"]
@@ -2825,6 +2947,7 @@ def train_feral(
     cfg: FeralConfig,
     labels_json: FeralLabelsJson,
     *,
+    class_values: Sequence[int],
     run_root: Path,
     progress_callback: TrainingProgressCallback | None,
 ) -> tuple[torch.nn.Module, float, list[dict[str, float]]]:
@@ -2841,6 +2964,8 @@ def train_feral(
         cfg: The config :func:`feral_config` builds.
         labels_json: FERAL's labels dict, with a ``train`` split and an
             optional ``val`` split.
+        class_values: The label value of each dense class index, which
+            ``model_best.pt`` records beside the dense class names.
         run_root: The directory that receives ``model_best.pt``,
             ``summary.csv`` and the resume checkpoint.
         progress_callback: Told of each epoch's metrics, or ``None``.
@@ -2849,6 +2974,9 @@ def train_feral(
         The model, unwrapped from ``torch.compile`` and loaded with the best
         weights, the best validation mAP (``-1.0`` without validation), and the
         metrics of each epoch.
+
+    Raises:
+        ValueError: The train split yields no batch of ``train_bs`` chunks.
     """
     import random
 
@@ -2868,6 +2996,14 @@ def train_feral(
     datasets, loaders = _feral_build_loaders()(cfg, labels_json, num_classes)
     train_loader = loaders["train"]
     val_loader = loaders.get("val")
+    if len(train_loader) == 0:
+        raise ValueError(
+            f"{FeralFeature.name}: the train split holds {len(datasets['train'])} "
+            f"chunks, fewer than the train_bs of {training['train_bs']}, so FERAL's "
+            "train loader, which drops the last incomplete batch, yields none. "
+            "Add or lengthen the training videos, lower training.train_bs, or "
+            "raise training.part_sample"
+        )
     model, model_ema = _feral_build_model()(cfg, num_classes, device)
     criterion, optimizer, scheduler, mixup = _feral_build_training_objects()(
         cfg, model, datasets["train"], train_loader, labels_json, device
@@ -2877,6 +3013,7 @@ def train_feral(
         "class_names": labels_json["class_names"],
         "is_multilabel": is_multilabel,
         "cfg": cfg,
+        "class_values": list(class_values),
     }
     best_path = run_root / "model_best.pt"
     checkpoint_path = run_root / "training_checkpoint.pt"
@@ -2933,7 +3070,7 @@ def train_feral(
             )
             epoch_metrics: dict[str, float] = {
                 "epoch": epoch,
-                "train_loss": train_loss,
+                "train_loss": float(train_loss),
             }
 
             if val_loader is None:
@@ -2955,7 +3092,7 @@ def train_feral(
                 )
                 epoch_metrics.update(val_metrics)
                 epoch_metrics["val_loss"] = (
-                    float("nan") if val_loss is None else val_loss
+                    float("nan") if val_loss is None else float(val_loss)
                 )
                 val_map = epoch_metrics["val_frame_level_map"]
 
@@ -2969,10 +3106,12 @@ def train_feral(
                         is_multilabel=is_multilabel,
                         device=device,
                     )
-                    ema_map = _feral_calc_frame_level_map()(
-                        ensembled_predictions(answers_ema, labels_json, "val"),
-                        labels_json,
-                        "val",
+                    ema_map = float(
+                        _feral_calc_frame_level_map()(
+                            ensembled_predictions(answers_ema, labels_json, "val"),
+                            labels_json,
+                            "val",
+                        )
                     )
                     epoch_metrics["ema_val_frame_level_map"] = ema_map
 
@@ -3033,15 +3172,15 @@ def feral_setup_check(
     num_classes: int | None = None,
     build_model: bool = False,
     device: str = "cpu",
-) -> dict:
+) -> dict[str, object]:
     """Diagnose a FERAL setup (and optionally a checkpoint) for notebooks.
 
-    Verifies the ``feral`` package imports, resolves the backbone, and -- when
-    ``checkpoint_path`` is given -- reports the checkpoint format (new dict /
-    bare / remapped legacy ``HFModel``) and whether it structurally matches
-    ``FeralModel``. With ``build_model=True`` it constructs ``FeralModel``
-    (``pretrained=False`` -- no weight download, but the backbone *config* is
-    fetched from the HF hub) and does a strict load to fully validate.
+    Verifies that the ``feral`` package imports and resolves the backbone. With
+    ``checkpoint_path``, it reports the checkpoint format (new dict, bare, or
+    remapped legacy ``HFModel``) and whether it structurally matches
+    ``FeralModel``. With ``build_model=True`` it constructs ``FeralModel`` with
+    ``pretrained=False``, which downloads no weights but fetches the backbone
+    config from the HF hub, and loads the checkpoint strictly.
 
     Weights are not downloaded here, but they are downloaded elsewhere. Real
     training and inference build the backbone with ``pretrained=True``, which
@@ -3049,28 +3188,31 @@ def feral_setup_check(
     HuggingFace hub on first use and caches it. Mosaic vendors none of them, and
     no hub token or license acceptance is involved for any registry entry: the
     default backbone's model card declares MIT, and none of the entries is
-    gated. The licenses do differ per entry, so which backbone you name decides
-    what terms the weights arrive under -- see ``NOTICE``.
+    gated. The licenses differ per entry, and ``NOTICE`` lists the license of
+    each backbone's weights.
 
-    Prints a human-readable report and returns a summary dict. Designed to
-    replace the old cryptic failures (``HFModel`` ImportError, silent state_dict
-    mismatch) with an actionable diagnostic.
+    Prints a report of each check, which names an unimportable package, an
+    unknown backbone or a checkpoint that does not match ``FeralModel``.
 
-    Parameters
-    ----------
-    checkpoint_path : str or Path or None
-        A ``model_best.pt`` to inspect. ``None`` checks only
-        the package + backbone.
-    backbone : str
-        BACKBONES key or HF slug (default the trophallaxis ViT-L diving48 model).
-    num_classes : int or None
-        Needed for ``build_model=True`` when the checkpoint carries no metadata.
-    build_model : bool
-        Build FeralModel and strict-load the checkpoint (needs torch + network).
-    device : str
-        Where to place the built model (only used with ``build_model=True``).
+    Args:
+        checkpoint_path: A ``model_best.pt`` to inspect. ``None`` checks only
+            the package and backbone.
+        backbone: A BACKBONES key or HF slug (default ``vjepa2_vitl_diving48``).
+            A checkpoint that embeds its own config builds the backbone that
+            config names.
+        num_classes: Needed for ``build_model=True`` when the checkpoint
+            carries no metadata.
+        build_model: Build FeralModel and strict-load the checkpoint (needs
+            torch and the network).
+        device: Where to place the built model (only used with
+            ``build_model=True``).
+
+    Returns:
+        What the check found: ``feral_importable``, and as far as it got
+        ``feral_version``, ``backbone_key``, ``checkpoint_format`` and
+        ``strict_load_ok``.
     """
-    summary: dict = {"feral_importable": False}
+    summary: dict[str, object] = {"feral_importable": False}
     print("=== FERAL setup check ===")
 
     # 1. Package import
@@ -3151,26 +3293,19 @@ def feral_setup_check(
     if build_model:
         nclasses = num_classes
         if nclasses is None and meta and meta.get("class_names"):
-            nclasses = len(meta["class_names"])
+            nclasses = len(_CLASS_NAMES.validate_python(meta["class_names"]))
         if not nclasses:
             print(
                 "[WARN] build_model=True but num_classes is unknown "
                 "(pass num_classes=...). Skipping strict load."
             )
             return summary
-        from feral.model import FeralModel
-
-        predict_per_item = 64
-        if meta and isinstance(meta.get("cfg"), dict):
-            predict_per_item = meta["cfg"].get("predict_per_item", 64)
-        model = FeralModel(
-            backbone=key,
-            num_classes=nclasses,
-            predict_per_item=predict_per_item,
-            fc_drop_rate=0.5,
-            freeze_encoder_layers=0,
-            pretrained=False,
-        )
+        embedded: dict[str, object] | None = None
+        if meta and meta.get("cfg"):
+            with contextlib.suppress(ValidationError):
+                embedded = _OBJECT.validate_python(meta["cfg"])
+        network = imported_network([embedded], model_name=key, predict_per_item=64)
+        model = _build_network(network, nclasses)
         try:
             _load_into(model, state_dict)
             model.to(device).eval()

@@ -499,7 +499,7 @@ native-Windows build and need **WSL2**:
 | Core analysis (indexing, tracks, features, clustering, ARHMM, XGBoost, visualization) | Yes | Yes | Yes |
 | keypoint-MoSeq (`kpms`)                                           | Untested                | Yes          | Yes   |
 | VAME (`vame`)                                                     | Untested, CPU only from PyPI | Yes     | Apple silicon, macOS 14+ |
-| FERAL (`feral`) -- `decord`                                       | No                      | Yes          | Yes   |
+| FERAL (`feral`) -- `decord`                                       | Untested                | Yes          | Yes   |
 | GPU kNN (`faiss`, `faiss-gpu`)                                    | No (`faiss-cpu` works)  | Yes          | n/a   |
 | imgstore recordings (reading is native)                           | Partial                 | Yes          | Yes   |
 | TRex tracking and pose-model training                             | Partial                 | Yes          | Yes   |

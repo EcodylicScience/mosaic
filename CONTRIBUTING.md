@@ -110,8 +110,9 @@ pip does not read that table.
   `--no-deps`, beside the requirements its import needs.
 - Retired extras stay retired, without aliases
   (`tests/meta/test_optional_dependency_messages.py`).
-- `feral>=1.0,<2`: mosaic imports FERAL symbols outside its `__all__`, and the `feral`
-  CI job fails on a release that moves one.
+- `feral>=1.0.2,<1.1`: mosaic imports FERAL internals outside its `__all__`, which
+  changed shape within 1.0.x, and 1.0.2 is the release tested. The `feral` CI job fails
+  on a release that moves one.
 - `imgstore` is in the `test` dependency group, because only the suite writes stores.
 - `mcp` (`mcp>=2.3,<3`) is outside `all`. The `test` CI job installs `.[mcp]`, and
   the extra stays out of the `test` group, which the feral job installs over FERAL's

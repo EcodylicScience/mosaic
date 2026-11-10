@@ -169,6 +169,7 @@ nav:
               - Thresholds, smoothing and blends: guides/analysis/classifier-thresholds-and-blends.md
               - Sequence context and networks: guides/analysis/classifier-sequence-networks.md
               - Score and evaluate a classifier: guides/analysis/classifier-score-and-evaluate.md
+              - Train a FERAL video classifier: guides/analysis/classifier-feral.md
           - Classify mouse behavior with HiDRA: guides/analysis/hidra.md
           - Identify individuals by appearance: guides/analysis/identify-individuals.md
           - Write your own feature: guides/analysis/write-your-own-feature.md
