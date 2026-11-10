@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: `trajectory-smooth` marks the positions it fills and the runs it cannot bridge, and two summaries exclude flagged rows
+## 0.21.0: `trajectory-smooth` flags gaps it cannot bridge, plus world-frame 3D tracks and FERAL training
+
+### `trajectory-smooth` marks the positions it fills and the runs it cannot bridge, and two summaries exclude flagged rows
 
 `trajectory-smooth` is at version 0.2, so every 0.1 run id is retired. Its positions
 and `bad_frame` are unchanged. It adds four columns:
@@ -36,7 +38,7 @@ neither field is unchanged. A recipe that excludes the marks in a summary adds t
 `trajectory-smooth` step to its inputs, and `social-motion-summary` refuses a named
 column its input lacks. A fish whose rows are all excluded emits no row.
 
-## Unreleased: world-frame 3D tracks have a schema and two features, a converter reads the zebrafish workflow's CSV, and a feature declares the spaces it computes in
+### World-frame 3D tracks have a schema and two features, a converter reads the zebrafish workflow's CSV, and a feature declares the spaces it computes in
 
 The `mosaic_world_v1` track schema is registered: per-frame, per-id tracks in
 meters in a right-handed world frame with +Z up, in the new `world_m` space. It
@@ -119,8 +121,6 @@ step-type detail declares its keypoint fields. The providers that
 missing-column problem name for a step that reads tracks leave out a feature that
 reads tracks in other spaces, so a planar step is not offered `pair-world` for
 `speed` and a world-frame step is not offered `speed-angvel`.
-
-## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
 
 ### `feral` trains from a templates run and a labels kind
 
