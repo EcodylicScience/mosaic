@@ -29,6 +29,7 @@ from mosaic.behavior.feature_library.pair_interaction_filter import (
 )
 from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_position import PairPositionFeatures
+from mosaic.behavior.feature_library.pair_world import PairWorld
 from mosaic.core.pipeline.column_contract import Column, declared_provides
 from tests.helpers import mirrored_rows
 
@@ -92,6 +93,21 @@ def _facing() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _moving_world() -> pd.DataFrame:
+    """:func:`_moving` lifted into 3D, each animal at its own rising height.
+
+    Every keypoint of a row sits at the row's height, so the heading stays
+    level, and the animals' heights differ, so ``dz`` changes sign between
+    the two rows of a pair.
+    """
+    table = _moving()
+    height = 0.5 * table["id"].to_numpy(dtype=np.float64) + 0.01 * table["frame"]
+    table["Z"] = height
+    for keypoint in range(_KEYPOINTS):
+        table[f"poseZ{keypoint}"] = height
+    return table
+
+
 class _PairFeature(Protocol):
     def apply(self, df: pd.DataFrame) -> pd.DataFrame: ...
 
@@ -135,6 +151,7 @@ _CASES: dict[str, _Case] = {
         PairInteractionFilter, _facing, "id1", _INTERACTION_PARAMS
     ),
     "pair-keypoints": _Case(PairKeypoints, _moving, params={"heading": [3, 6]}),
+    "pair-world": _Case(PairWorld, _moving_world, "dz", {"front": 0, "rear": 6}),
 }
 """Every feature declaring ``mirrored`` that runs here. ``hidra`` runs an external
 tool, and ``test_hidra_feature.py`` checks its rows against a fake of it."""

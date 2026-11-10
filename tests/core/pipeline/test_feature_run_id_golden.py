@@ -205,6 +205,13 @@ CASES: tuple[Case, ...] = (
         feature="pose-egocentric",
         params={"origin": [1], "heading": [0, 1]},
     ),
+    # pair-world requires ``front`` and ``rear`` and so is not
+    # default-constructible.
+    Case(
+        case_id="pair-world/params-front-rear",
+        feature="pair-world",
+        params={"front": 0, "rear": 1},
+    ),
     Case(
         case_id="pair-keypoints/heading",
         feature="pair-keypoints",

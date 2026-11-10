@@ -52,7 +52,6 @@ from ..loading import merge_naming, widens
 from ..types.data_config import NON_PAYLOAD_COLS
 from .compatibility import (
     TRACKS_DECLARATION,
-    ConsumerDecl,
     Declaration,
     DeclarationCatalog,
     can_connect,
@@ -745,12 +744,29 @@ def _labels(named: NamedColumns) -> tuple[str, ...]:
     return (*named.columns, *(f"{prefix}*" for prefix in named.prefixes))
 
 
+def _other_space(provider: Declaration, consumer: Declaration) -> bool:
+    """Whether *provider* and *consumer* both read tracks in disjoint track spaces.
+
+    One recipe's tracks are in one space, so such a provider could not read the
+    tracks the consumer reads, and a plan would refuse one of the two. A consumer
+    reading only features is not judged here: the producer of its input reads the
+    tracks, and that producer's own step is checked against them.
+    """
+    return (
+        provider.consumes.accepts_tracks
+        and consumer.consumes.accepts_tracks
+        and bool(provider.track_spaces)
+        and bool(consumer.track_spaces)
+        and set(provider.track_spaces).isdisjoint(consumer.track_spaces)
+    )
+
+
 def providers_of(
     need: NamedColumns,
     catalog: DeclarationCatalog,
     tracks: ColumnSet,
     besides: str = "",
-    consumer: ConsumerDecl | None = None,
+    consumer: Declaration | None = None,
 ) -> tuple[ColumnProvider, ...]:
     """The inputs whose output would contain *need*: the tracks, then features.
 
@@ -765,13 +781,18 @@ def providers_of(
         catalog: The declarations to search.
         tracks: The columns of the dataset's tracks.
         besides: A slug to leave out: the step's feature.
-        consumer: The step's consumer side. An input that it cannot read
+        consumer: The step's declaration. An input that it cannot read
             (:func:`~mosaic.core.pipeline.graph.compatibility.can_connect`) is
-            left out.
+            left out, and so is a feature computing in other track spaces
+            (:func:`_other_space`).
     """
 
     def readable(declaration: Declaration) -> bool:
-        return consumer is None or bool(can_connect(declaration.produces, consumer))
+        if consumer is None:
+            return True
+        return bool(
+            can_connect(declaration.produces, consumer.consumes)
+        ) and not _other_space(declaration, consumer)
 
     found: list[ColumnProvider] = []
     if need_status(need, tracks) == "guaranteed" and readable(TRACKS_DECLARATION):

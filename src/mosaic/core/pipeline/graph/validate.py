@@ -847,7 +847,7 @@ def _supplied_by(step: FeatureStepSpec, need: NamedColumns, walk: _Walk) -> str:
         walk.catalog,
         tracks,
         besides=step.feature,
-        consumer=None if declared is None else declared.consumes,
+        consumer=declared,
     )
     if providers:
         named = "; ".join(provider_phrase(provider) for provider in providers)
@@ -1744,7 +1744,7 @@ def input_candidates(
                     walk.catalog,
                     walk.tracks,
                     besides=target.feature,
-                    consumer=declared.consumes,
+                    consumer=declared,
                 ),
             )
             for need, status in still

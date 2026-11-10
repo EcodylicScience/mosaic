@@ -3,7 +3,7 @@
 
 # Features
 
-65 features are registered. Each one runs as
+66 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -562,6 +562,19 @@ CWT spectrograms of numeric columns of pair rows. The columns are those ``cols``
     | --- | --- | --- | --- | --- |
     | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
+
+### `pair-world`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld`
+
+Per-frame geometry of every pair of individuals, in the world frame.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `front` | `integer` \| `string` | _required_ |  | The keypoint at the front of the heading, by index or by name, such as the head. The focal's heading is front minus rear. |
+| `rear` | `integer` \| `string` | _required_ |  | The keypoint at the rear of the heading, by index or by name, such as the pectoral point. It must differ from front. |
+| `position` | `integer` \| `string` \| `None` | `null` |  | The keypoint each individual's position is read from, by index or by name. Unset, the body center X/Y/Z. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | A name for each keypoint, in the table's keypoint order, so that front, rear and position may name keypoints rather than number them. Its length must equal the table's keypoint count. |
 
 ### `pose-egocentric`
 

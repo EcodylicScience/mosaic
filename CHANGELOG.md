@@ -72,6 +72,25 @@ converter times a table as SLEAP does: the `fps` param, else the entry's measure
 media rate, else the dataset's `fps_default`, else `FrameRateUnknownError`. It
 declares `carries_tracklets` as unknown.
 
+A new feature, `pair-world` (version 0.1), measures every pair of individuals in
+the world frame and runs on `mosaic_world_v1` tables only (`track_spaces =
+{"world_m"}`). Its required `front` and `rear` keypoints give each focal's
+heading, and `position` reads each individual's position from a keypoint
+instead of the body center `X`/`Y`/`Z`. It pairs within one arena and writes one
+row per frame, pair and perspective with `frame`, `perspective`, `id1`, `id2`,
+`sequence`, `group` when present, and, as float32, `dist`, `dist_xy`, `dz`,
+`bearing`, `elevation`, `rel_yaw_cos`, `rel_yaw_sin`, `rel_pitch`,
+`heading_angle`, `pitch`, `speed`, `approach_speed` and `closing_speed`, in
+meters, radians and m/s. It declares `dist`, `dist_xy`, `heading_angle`,
+`rel_yaw_cos` and `closing_speed` symmetric, and its rows mirrored. An undefined
+angle is NaN, and the speeds are central differences against `time`, NaN at a
+track's ends and beside a missing frame. The catalog lists it, and the
+step-type detail declares its keypoint fields. The providers that
+`input_candidates` (the editor wire and the MCP `suggest_steps` input mode) and a
+missing-column problem name for a step that reads tracks leave out a feature that
+reads tracks in other spaces, so a planar step is not offered `pair-world` for
+`speed` and a world-frame step is not offered `speed-angvel`.
+
 ## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
 
 ### `feral` trains from a templates run and a labels kind

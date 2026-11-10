@@ -122,6 +122,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     },
     "pair-keypoints": {"heading": [0, 1], "inter_distances": [[0, 1]]},
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
+    "pair-world": {"front": 0, "rear": 1},
     "pose-egocentric": {"origin": [2], "heading": [0, 1], "context": True},
     "probability-ensemble": {"default_class": 0},
     "scale-to-bl": {"length": 10.0},

@@ -36,7 +36,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, ClassVar, Final, Literal, Self, final
+from typing import Annotated, ClassVar, Self, final
 
 import numpy as np
 import pandas as pd
@@ -77,28 +77,16 @@ from .derivatives import (
     KeypointColumns,
     check_keypoint_names,
     keypoint_columns,
-    keypoint_positions,
 )
 from .helpers import meta_columns, wrap_angle
 from .registry import register_feature
+from .world_frame import FrameKind, KeypointRef, body_axes, world_points
 
 __all__ = ["PoseEgocentric"]
 
 _NAME = "pose-egocentric"
 
-KeypointRef = int | str
-"""A keypoint named by its position or, given ``keypoint_names``, by its name."""
-
 _KeypointGroup = Annotated[list[KeypointRef], Field(min_length=1)]
-
-_VERTICAL_TOLERANCE: Final = 1e-6
-"""The smallest horizontal share of the frame's pair vector that still fixes a yaw.
-
-Below this the vector points straight up or down, its horizontal part is
-rounding error, and a direction normalized from it would be noise reported as a
-heading. Relative to the vector's own length, so it does not depend on the
-table's length unit.
-"""
 
 _ORIGIN_DESCRIPTION = (
     "The keypoints whose mean is the body frame's origin, by index or by name, "
@@ -158,9 +146,6 @@ _MAX_GAP_DESCRIPTION = (
     "this set."
 )
 
-FrameKind = Literal["lateral", "heading"]
-"""Which keypoint pair spans the body frame's horizontal axes."""
-
 
 @dataclass(frozen=True, slots=True)
 class _Plan:
@@ -184,38 +169,6 @@ class _Plan:
     scale: tuple[tuple[int, ...], tuple[int, ...]] | None
 
 
-@dataclass(frozen=True, slots=True)
-class _BodyAxes:
-    """Each row's forward and left directions in the world XY plane.
-
-    Attributes:
-        forward_x: The world x component of the body's +X.
-        forward_y: The world y component of the body's +X.
-        left_x: The world x component of the body's +Y.
-        left_y: The world y component of the body's +Y.
-        oriented: Whether the row's pair vector fixes a yaw. The components are
-            NaN where it does not.
-    """
-
-    forward_x: FloatArray
-    forward_y: FloatArray
-    left_x: FloatArray
-    left_y: FloatArray
-    oriented: BoolArray
-
-
-def _xyz(frame: pd.DataFrame, triplet: tuple[str, ...]) -> FloatArray:
-    """One keypoint's ``(n_rows, 3)`` world coordinates, as float64.
-
-    A row missing any of the three axes is missing all of them. A point with no
-    height is not a point on the floor, and keeping its other two axes would
-    give it a forward and a leftward coordinate with a NaN height beside them.
-    """
-    points = keypoint_positions(frame, triplet, np.arange(len(frame), dtype=np.int64))
-    points[np.isnan(points).any(axis=1)] = np.nan
-    return points
-
-
 def _centroid(frame: pd.DataFrame, triplets: Sequence[tuple[str, ...]]) -> FloatArray:
     """The mean of *triplets*, NaN on any row missing one of them.
 
@@ -225,46 +178,8 @@ def _centroid(frame: pd.DataFrame, triplets: Sequence[tuple[str, ...]]) -> Float
     """
     total = np.zeros((len(frame), 3), dtype=np.float64)
     for triplet in triplets:
-        total += _xyz(frame, triplet)
+        total += world_points(frame, triplet)
     return total / len(triplets)
-
-
-def _body_axes(vector: FloatArray, kind: FrameKind) -> _BodyAxes:
-    """The body's horizontal axes from each row's pair vector.
-
-    Args:
-        vector: ``(n_rows, 3)``, left minus right for a lateral pair and front
-            minus rear for a heading pair.
-        kind: Which of the two *vector* is.
-
-    Returns:
-        The axes, NaN on a row where the vector is missing, zero, or no more
-        than :data:`_VERTICAL_TOLERANCE` horizontal.
-    """
-    horizontal = np.hypot(vector[:, 0], vector[:, 1])
-    length = np.linalg.norm(vector, axis=1)
-    # NaN compares false, so a row missing either keypoint is undefined here too.
-    oriented: BoolArray = horizontal > _VERTICAL_TOLERANCE * length
-    with np.errstate(invalid="ignore", divide="ignore"):
-        unit_x: FloatArray = np.where(oriented, vector[:, 0] / horizontal, np.nan)
-        unit_y: FloatArray = np.where(oriented, vector[:, 1] / horizontal, np.nan)
-    if kind == "lateral":
-        # Forward is Y x Z = (left_y, -left_x, 0).
-        return _BodyAxes(
-            forward_x=unit_y,
-            forward_y=-unit_x,
-            left_x=unit_x,
-            left_y=unit_y,
-            oriented=oriented,
-        )
-    # Left is Z x X = (-forward_y, forward_x, 0).
-    return _BodyAxes(
-        forward_x=unit_x,
-        forward_y=unit_y,
-        left_x=-unit_y,
-        left_y=unit_x,
-        oriented=oriented,
-    )
 
 
 def _segment_bounds(segment: IntArray) -> tuple[IntArray, IntArray]:
@@ -566,8 +481,9 @@ class PoseEgocentric:
 
         origin = _centroid(df, [columns[k] for k in plan.origin])
         first, second = plan.pair
-        axes = _body_axes(
-            _xyz(df, columns[first]) - _xyz(df, columns[second]), plan.kind
+        axes = body_axes(
+            world_points(df, columns[first]) - world_points(df, columns[second]),
+            plan.kind,
         )
         scale = (
             self._body_size(df, columns, plan.scale, segment)
@@ -577,7 +493,7 @@ class PoseEgocentric:
 
         measured: dict[str, FloatArray] = {}
         for k in plan.emit:
-            offset = _xyz(df, columns[k]) - origin
+            offset = world_points(df, columns[k]) - origin
             ego = (
                 offset[:, 0] * axes.forward_x + offset[:, 1] * axes.forward_y,
                 offset[:, 0] * axes.left_x + offset[:, 1] * axes.left_y,

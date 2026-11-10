@@ -440,6 +440,12 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   its table for each entry is empty. Validation refuses it as an input
   (`_empty_input_problems`, `test_pipeline_validate.py`), and so does `run_feature`
   before the fit (`InputWritesNoColumns`, `test_pipeline_run.py`).
+- `providers_of` (`columns.py`) names the inputs that would supply a missing column,
+  for `input_candidates` and the problem message. It leaves out an input the step
+  cannot read (`can_connect`), and a feature whose `Declaration.track_spaces` is
+  disjoint from the step's when both read tracks: one recipe's tracks are in one space.
+  A step that reads only features is offered providers in every space
+  (`test_pipeline_columns.py`).
 - A feature's `prerequisites` (`mosaic/optional_dependency.py`) are evaluated once per
   process, without importing, into `Declaration.unavailable`. Validation, the plan and
   `attach_candidates` refuse with that sentence (`test_pipeline_availability.py`).

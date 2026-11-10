@@ -75,6 +75,7 @@ ARENA_AWARE = frozenset(
         "pair-posedistance-pca",
         "pair-position",
         "pair-wavelet",
+        "pair-world",
         "temporal-stack",
         "visual-network",
     }
@@ -456,6 +457,7 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "id-tag-columns": _EVERY_SPACE,
     "label-predictions": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
+    "pair-world": frozenset({"world_m"}),
 }
 """The features that declare their track spaces, and the spaces each declares.
 
@@ -599,6 +601,10 @@ PAIR_SYMMETRY: dict[str, tuple[tuple[str, ...], bool]] = {
         True,
     ),
     "pair-keypoints": ((), True),
+    "pair-world": (
+        ("closing_speed", "dist", "dist_xy", "heading_angle", "rel_yaw_cos"),
+        True,
+    ),
     "hidra": ((), True),
 }
 """Each feature's symmetric columns and whether it writes both rows of every pair.

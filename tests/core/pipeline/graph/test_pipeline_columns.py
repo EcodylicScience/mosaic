@@ -35,6 +35,7 @@ from mosaic.core.pipeline.graph import (
     TRACKS_INPUT,
     UNKNOWN_COLUMNS,
     ColumnSet,
+    Declaration,
     DeclarationCatalog,
     FeatureStepSpec,
     Problem,
@@ -56,8 +57,10 @@ from mosaic.core.pipeline.graph.validate import pair_rules
 from mosaic.core.pipeline.graph.columns import (
     merged_input,
     need_status,
+    needs_of,
     output_columns,
     provided_wire,
+    providers_of,
     requires_wire,
     tracks_columns,
     tracks_provides,
@@ -478,6 +481,93 @@ def test_input_candidates_refuse_a_step_that_reads_no_inputs() -> None:
     assert raised.value.problems[0].where == "kind"
     with pytest.raises(RecipeInvalid):
         _ = input_candidates(recipe, "no-such-step")
+
+
+# --- providers in a track space -----------------------------------------------------
+
+_METRICS: dict[str, JsonValue] = {
+    "id": "metrics",
+    "type": "feature",
+    "feature": "ffgroups-metrics",
+    "inputs": ["tracks"],
+}
+"""A planar tracks reader whose ``speed`` its tracks lack.
+
+``speed-angvel`` (planar) and ``pair-world`` (world frame) both write ``speed``.
+"""
+
+
+def _speed_need() -> NamedColumns:
+    """The ``speed`` requirement of ``ffgroups-metrics``."""
+    declared = declaration_catalog().get("ffgroups-metrics")
+    assert declared is not None and declared.requires is not None
+    [speed] = [
+        need
+        for need in needs_of(declared.requires, declared.param_defaults)
+        if need.label == "'speed'"
+    ]
+    return speed
+
+
+def _speed_providers(consumer: Declaration, besides: str = "") -> list[str]:
+    """The providers of ``speed`` offered to a step declared as *consumer*."""
+    catalog = declaration_catalog()
+    providers = providers_of(
+        _speed_need(),
+        catalog,
+        tracks_columns(catalog),
+        besides=besides,
+        consumer=consumer,
+    )
+    return [provider.feature for provider in providers]
+
+
+def _declared(slug: str) -> Declaration:
+    declared = declaration_catalog().get(slug)
+    assert declared is not None
+    return declared
+
+
+def test_a_planar_tracks_reader_is_offered_no_world_frame_provider() -> None:
+    answer = input_candidates(read_recipe({"steps": [_METRICS]}), "metrics")
+
+    still = {still.need.label: still for still in answer.still_needs}
+    assert [provider.feature for provider in still["'speed'"].providers] == [
+        "speed-angvel"
+    ]
+
+
+def test_a_world_frame_tracks_reader_is_offered_no_planar_provider() -> None:
+    """``pose-egocentric`` as a reader that also takes inputs of any row shape.
+
+    As registered it requires the track shape, which neither provider's output
+    keeps, so the track space would never be the reason one is left out.
+    """
+    world = _declared("pose-egocentric")
+    any_shape = replace(
+        world, consumes=replace(world.consumes, requires_track_shape=False)
+    )
+
+    assert _speed_providers(any_shape) == ["pair-world"]
+
+
+def test_a_reader_of_features_alone_is_offered_providers_in_every_space() -> None:
+    """It reads no tracks, so the space of its input's tracks is its input's to check."""
+    providers = _speed_providers(_declared("global-kmeans"), besides="global-kmeans")
+
+    assert {"pair-world", "speed-angvel"} <= set(providers)
+
+
+def test_the_problem_for_an_absent_column_names_providers_in_the_step_space() -> None:
+    report = validation_report({"steps": [_METRICS]})
+
+    [message] = [
+        problem.message
+        for problem in report.problems
+        if problem.step == "metrics" and "'speed'" in problem.message
+    ]
+    assert message.endswith("speed-angvel provides it"), message
+    assert "pair-world" not in message
 
 
 # --- what decides a column ---------------------------------------------------------------
