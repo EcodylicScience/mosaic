@@ -39,8 +39,8 @@ What lives where:
   roots they consume, for the tests of what a source change reaches, and one
   that fits, for the tests of the claim a fit holds.
 - ``tracks`` contains track tables, keypoint rows, tracks variants, and raw
-  TREx, SLEAP, DeepLabCut and zebrafish 3D workflow exports, and an object
-  member whose unpickling writes a marker file.
+  TREx, SLEAP, DeepLabCut, Tracktor and zebrafish 3D workflow exports, and an
+  object member whose unpickling writes a marker file.
 - ``trex``, ``sleap``, ``litpose`` and ``ultralytics`` contain recording
   stand-ins for the tools that those trackers run, installed over each tracker's
   seams, and ``inference`` the same for the environments of ``infer-pose`` and
@@ -377,9 +377,12 @@ from tests.helpers.tracks import (
     write_calms21_npy,
     write_dlc_csv,
     write_sleap_analysis_h5,
+    write_tracktor_recording,
     write_trex_npz,
     write_zebrafish_3d_csv,
     world_track_table,
+    TRACKTOR_STEM,
+    TracktorRecording,
     WORLD_POINTS_FORMAT,
     WorldPointsConverter,
     raw_world_dataset,
@@ -765,8 +768,11 @@ __all__ = [
     "write_stub_sleap_io",
     "write_stub_slp",
     "write_templates",
+    "write_tracktor_recording",
     "write_trex_npz",
     "write_zebrafish_3d_csv",
+    "TRACKTOR_STEM",
+    "TracktorRecording",
     "write_ultralytics_predictions",
     "RECIPE_SAVED_BY_0_17",
     "recipe_saved_by_0_17",

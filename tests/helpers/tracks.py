@@ -13,6 +13,7 @@ import re
 import zlib
 from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Literal
 
@@ -247,6 +248,167 @@ def write_zebrafish_3d_csv(
     path.parent.mkdir(parents=True, exist_ok=True)
     _ = path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return values
+
+
+TRACKTOR_STEM = "20211117111002_900s_no12-DGRP101-female-2to4-6-1"
+"""A release recording's name without its ``_tracked`` suffix."""
+
+TRACKTOR_TSV_COLUMNS = (
+    "frame",
+    "id",
+    "pos_x",
+    "pos_y",
+    "prefix",
+    "place",
+    "strain",
+    "sex",
+    "age",
+    "n_inds",
+    "N",
+    "timestamp",
+    "seconds_diff",
+    "seconds_total",
+    "stimuli",
+    "pos_x_wma",
+    "pos_y_wma",
+    "travelled_dist_diff",
+    "angle_diff_based",
+)
+"""The header of a corrected ``*_tracked_fixed_final.tsv``, in the release's order."""
+
+
+@dataclass(frozen=True)
+class TracktorRecording:
+    """What :func:`write_tracktor_recording` wrote.
+
+    Attributes:
+        tsv: The corrected table's path.
+        csv: The raw Tracktor table's path.
+        frames: The frame numbers, ascending.
+        seconds: The ``seconds_total`` of each frame. Its steps differ, as they do
+            where a recording dropped frames.
+        corrected: ``(frame, fly, 2)`` positions of the corrected table, whose
+            fly ``k`` follows one animal.
+        raw: The raw table's positions, in the same shape. Flies 1 and 2 trade
+            places from :attr:`swap_frame` on, as the tracker's ids do.
+        stimuli: ``"Y"`` or ``"N"`` for each frame.
+        swap_frame: The first frame where the raw ids of flies 1 and 2 are swapped.
+    """
+
+    tsv: Path
+    csv: Path
+    frames: npt.NDArray[np.int64]
+    seconds: npt.NDArray[np.float64]
+    corrected: npt.NDArray[np.float64]
+    raw: npt.NDArray[np.float64]
+    stimuli: tuple[str, ...]
+    swap_frame: int
+
+
+def write_tracktor_recording(
+    directory: Path,
+    *,
+    stem: str = TRACKTOR_STEM,
+    frames: int = 80,
+    flies: int = 6,
+    first_frame: int = 3,
+    write_tsv: bool = True,
+    write_csv: bool = True,
+    missing_position: tuple[int, int] | None = None,
+) -> TracktorRecording:
+    """Write one arena's Tracktor output, a raw ``.csv`` and a corrected ``.tsv``.
+
+    The frame numbers start at *first_frame* and are contiguous. ``seconds_total``
+    advances by 0.016, 0.020 and 0.0175 s in turn, so the frames are not evenly
+    spaced in time and no single frame rate gives their times. Fly ``k`` is at
+    ``(10 k + f / 2, 5 k + f / 4)`` in the corrected table, at frame ``f``, and the
+    smoothed columns are ``NA`` before frame 62, as in the release. The looming
+    ``stimuli`` is ``Y`` in two pulses.
+
+    Args:
+        directory: Where to write. Created if absent.
+        stem: The recording's name without ``_tracked``.
+        frames: The number of frames.
+        flies: The number of flies, named ``Fly1`` onward.
+        first_frame: The first frame number.
+        write_tsv: Whether to write the corrected table.
+        write_csv: Whether to write the raw table.
+        missing_position: ``(frame, fly)`` whose corrected position is ``NA``.
+
+    Returns:
+        What was written.
+    """
+    frame_numbers = np.arange(first_frame, first_frame + frames, dtype=np.int64)
+    steps = np.resize(np.array([0.016, 0.020, 0.0175]), frames)
+    seconds = np.cumsum(steps)
+    corrected = np.empty((frames, flies, 2), dtype=np.float64)
+    for fly in range(1, flies + 1):
+        corrected[:, fly - 1, 0] = 10 * fly + frame_numbers / 2
+        corrected[:, fly - 1, 1] = 5 * fly + frame_numbers / 4
+    swap_frame = first_frame + frames // 2
+    raw = corrected.copy()
+    if flies >= 2:
+        after = frame_numbers >= swap_frame
+        raw[after, 0], raw[after, 1] = corrected[after, 1], corrected[after, 0]
+    stimuli = tuple(
+        "Y"
+        if first_frame + 30 <= frame < first_frame + 35 or frame >= first_frame + 70
+        else "N"
+        for frame in frame_numbers.tolist()
+    )
+    directory.mkdir(parents=True, exist_ok=True)
+    tsv = directory / f"{stem}_tracked_fixed_final.tsv"
+    csv = directory / f"{stem}_tracked.csv"
+    place, strain, sex, age, n_inds, replicate = stem.split("_", 2)[2].split("-")
+    prefix = stem.split("_", 1)[0]
+
+    if write_tsv:
+        lines = ["\t".join(TRACKTOR_TSV_COLUMNS)]
+        for index, frame in enumerate(frame_numbers.tolist()):
+            smoothed = frame >= 62
+            for fly in range(1, flies + 1):
+                x, y = corrected[index, fly - 1]
+                missing = missing_position == (frame, fly)
+                cells = [
+                    str(frame),
+                    f"Fly{fly}",
+                    "NA" if missing else f"{x:.2f}",
+                    "NA" if missing else f"{y:.2f}",
+                    prefix,
+                    place,
+                    strain,
+                    sex,
+                    age,
+                    n_inds,
+                    replicate,
+                    f"{float(prefix) + 59 + seconds[index]:.2f}",
+                    f"{steps[index]:.6f}",
+                    f"{seconds[index]:.6f}",
+                    stimuli[index],
+                    f"{x:.4f}" if smoothed else "NA",
+                    f"{y:.4f}" if smoothed else "NA",
+                    "0.5" if smoothed else "NA",
+                    "0.1" if smoothed else "NA",
+                ]
+                lines.append("\t".join(cells))
+        _ = tsv.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if write_csv:
+        lines = ["frame,pos_x,pos_y,id,center_x,center_y"]
+        for index, frame in enumerate(frame_numbers.tolist()):
+            for fly in range(1, flies + 1):
+                x, y = raw[index, fly - 1]
+                lines.append(f"{frame}.0,{float(x)!r},{float(y)!r},Fly{fly},85,88")
+        _ = csv.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return TracktorRecording(
+        tsv=tsv,
+        csv=csv,
+        frames=frame_numbers,
+        seconds=seconds,
+        corrected=corrected,
+        raw=raw,
+        stimuli=stimuli,
+        swap_frame=swap_frame,
+    )
 
 
 def add_track_sequences(

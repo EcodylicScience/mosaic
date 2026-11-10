@@ -245,6 +245,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `pair-world` refuse a pixel or centimeter table. A feature whose computation does not
   depend on the space (`keypoint-kinematics`, `label-statistics`) or that reads no
   spatial column (the aggregates) accepts every space.
+- A Tracktor table (`tracktor_corrected_tsv`, `tracktor_raw_csv`) is timed by the file's
+  `seconds_total`, because the recording drops frames and no frame rate gives a frame's
+  time. Leave `fps` unset in `speed-angvel` and `collective-motion-metrics`, so they read
+  `time`. The raw format reads that time from the corrected `.tsv` beside it. The table
+  is in pixels, so scale it with `scale-to-cm` and an explicit `cm_per_pixel`.
 - Velocity, speed and heading angle come from features. The `mosaic_v1` schema refuses
   them in a tracks table. Run `speed-angvel`, or `heading` with its method chosen.
 - Keypoints are optional. Features defined on keypoints refuse a table without them.

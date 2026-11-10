@@ -5,7 +5,7 @@ per individual, with `frame, time, id, group, sequence, X, Y`. Keypoints
 (`poseX*` / `poseY*`) are optional. mosaic writes the result to
 `tracks/<variant>/<group>__<sequence>.parquet` and indexes it.
 
-Check [the track formats reference](../../reference/track-formats.md) first — nine
+Check [the track formats reference](../../reference/track-formats.md) first — eleven
 converters ship, and one may already read your files.
 
 ## Two worked examples

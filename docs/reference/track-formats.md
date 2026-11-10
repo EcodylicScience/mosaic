@@ -3,7 +3,7 @@
 
 # Track formats, schemas and label formats
 
-9 track converters read a tracker's output into one of
+11 track converters read a tracker's output into one of
 5 registered schemas, and 4 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
@@ -20,6 +20,8 @@ by `mosaic convert-tracks`.
 | `calms21_npy` | `0.4` | `mosaic_v1` | yes | no | CalMS21 -> a ``mosaic_v1`` table, one ``(group, sequence)`` at a time. |
 | `deeplabcut` | `0.3` | `mosaic_v1` | no | no | DeepLabCut ``.csv`` / ``.h5`` -> a ``mosaic_v1`` table. |
 | `sleap_analysis_h5` | `0.3` | `mosaic_v1` | no | no | SLEAP analysis ``.h5`` -> a ``mosaic_v1`` table. |
+| `tracktor_corrected_tsv` | `0.1` | `mosaic_v1` | no | no | Corrected Tracktor ``*_tracked_fixed_final.tsv`` -> a ``mosaic_v1`` table. |
+| `tracktor_raw_csv` | `0.1` | `mosaic_v1` | no | no | Raw Tracktor ``*_tracked.csv`` -> a ``mosaic_v1`` table, timed by its sibling. |
 | `trex_npz` | `0.3` | `trex_v2` | no | yes | Per-id TRex NPZ -> the standard T-Rex-like table. |
 | `trex_npz_cm` | `0.2` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
 | `trex_npz_scaled` | `0.2` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
@@ -58,6 +60,20 @@ by `mosaic convert-tracks`.
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
 | `tracks_named` | `boolean` \| `None` | `null` |  | Whether the export's tracks are named: each track index follows one animal over the video. A SLEAP export records identities only when its tracks are named, so the file cannot say. Leave unset to record no answer; the plan then does not refuse a step that needs ids following an animal. |
+
+#### `tracktor_corrected_tsv`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `first_frame` | `integer` | `62` | >= `0` | Rows before this frame number are dropped. The release advises against using anything earlier than 62, and its smoothed columns are not defined there. [frames] |
+
+#### `tracktor_raw_csv`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `first_frame` | `integer` | `62` | >= `0` | Rows before this frame number are dropped. The release advises against using anything earlier than 62, and its smoothed columns are not defined there. [frames] |
 
 #### `trex_npz`
 

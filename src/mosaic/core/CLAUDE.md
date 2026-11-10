@@ -239,6 +239,9 @@ importing `mosaic.tracking` registers neither.
   (`TimedTrackConvertParams`, `tests/core/track_library/test_conversion_rate.py`).
   `convert_all_tracks` hands `hints.fps` only to such a converter, so a TRex import
   keeps TRex's timing.
+  A converter of a file that records its own time (`tracktor`) reads it, takes no rate
+  and writes no `fps` or `frame_rate` column, which `resample-tracks` and several
+  features read as a stated rate (`tests/core/track_library/test_tracktor.py`).
 
 ## Parameter models
 

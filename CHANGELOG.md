@@ -8,6 +8,30 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: two Tracktor track converters read the DGRP looming release
+
+Two new track converters, `tracktor_corrected_tsv` and `tracktor_raw_csv` (both version
+0.1), read one arena recording per file into `mosaic_v1`, in pixels. The corrected
+`*_tracked_fixed_final.tsv` has ids `Fly1` to `FlyN` that follow the animals, and the
+tracks index records `carries_tracklets` true. The raw `*_tracked.csv` has ids that
+swap between animals and is recorded false. `id` is the number in `Fly<n>`.
+
+`time` is the corrected table's `seconds_total`. The recording drops frames, so no
+frame rate gives a frame's time. The converters take no `fps` and no `fallback_fps`,
+so the entry's measured media rate and `fps_default` never reach them, and the table
+has no `fps` or `frame_rate` column, which `pair-position`, `pair-egocentric`,
+`approach-avoidance`, the wavelets and `resample-tracks` would read as a stated rate.
+The raw table has no time column and takes its time, `stimuli` and labels from the
+corrected table beside it (the same stem ending `_tracked_fixed_final.tsv`). An entry
+without that sibling fails with an error naming it. Both name a sequence by the stem
+without `_tracked` or `_tracked_fixed_final`, so a raw and a corrected table of one
+recording are one entry in two tracks variants.
+
+The one param, `first_frame` (default 62), drops the frames before it. `stimuli` (`Y` or
+`N`, as the file spells it) and the constant text columns `strain`, `sex`, `n_inds`,
+`place` and `prefix` ride on every row. The smoothed columns and the raw table's arena
+centre are not carried. A row whose position is `NA` has no row.
+
 ## 0.21.0: `trajectory-smooth` flags gaps it cannot bridge, plus world-frame 3D tracks and FERAL training
 
 ### `trajectory-smooth` marks the positions it fills and the runs it cannot bridge, and two summaries exclude flagged rows

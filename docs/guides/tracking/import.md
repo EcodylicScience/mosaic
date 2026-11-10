@@ -51,7 +51,7 @@ starts.
 
 ## The formats mosaic reads
 
-Nine converters are registered. `--src-format` names one, and the choice also fixes
+Eleven converters are registered. `--src-format` names one, and the choice also fixes
 which schema the output carries.
 
 | `--src-format` | Reads | Emits |
@@ -65,6 +65,8 @@ which schema the output carries.
 | `calms21_npy` | CalMS21 `.npy` arrays, when [you trust the files](#files-mosaic-will-not-unpickle) | `mosaic_v1` |
 | `calms21_json` | The `.json` spelling of CalMS21 | `mosaic_v1` |
 | `zebrafish_3d_workflow_csv` | The per-experiment `.csv` of a zebrafish 3D tracking workflow: `frame_index` and `fish{n}_{part}_{axis}` columns in centimeters, empty fields as gaps. It records no frame rate. The workflow's default rate, and the published release's, is 140 fps: set `fps_default: 140` or pass `fps=140` for those files | `mosaic_world_v1` |
+| `tracktor_corrected_tsv` | The corrected `*_tracked_fixed_final.tsv` of a Tracktor run, as the DGRP looming release writes it: one arena per file, `Fly<n>` ids that follow the animals. Time is its `seconds_total`. Frames before 62 are dropped (`first_frame`). Pixels, with `stimuli` and the recording's labels carried as columns | `mosaic_v1` |
+| `tracktor_raw_csv` | The raw `*_tracked.csv` of the same run, whose ids swap between animals. It has no time column, so the corrected `.tsv` beside it times the table, and a missing `.tsv` fails the entry | `mosaic_v1` |
 
 [The track formats reference](../../reference/track-formats.md) lists each with its
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
@@ -87,6 +89,23 @@ manifest, or pass `fps`.
 An earlier mosaic never read the media's rate. It timed a table at `fps`, else
 `fps_default`, else 30 fps, whether or not the media was indexed. Convert again any
 table that was converted without `fps` or `fps_default`.
+
+## Tracktor tables carry their own time
+
+A Tracktor recording drops frames, so `frame` over a rate gives a wrong time, and the
+two Tracktor formats take no frame rate. `time` is the file's `seconds_total`, and the
+entry's media rate and `fps_default` never reach the table. `speed-angvel` and
+`collective-motion-metrics` read the `time` column while their `fps` is unset, so leave
+it unset. A feature that divides by a constant rate (`social-motion-summary`,
+`pair-position`, `pair-egocentric`, `approach-avoidance`, the wavelets, the two
+delta-response features and `temporal-stack`) is wrong on a table with dropped
+frames. Positions are pixels. For millimeters, run `scale-to-cm` with
+`cm_per_pixel` set, such as `0.019` for a 30 mm arena that is 160 pixels across.
+
+```bash
+mosaic sources add -m dataset.yaml --kind tracks --path /data/tracktor \
+    --patterns '*_tracked_fixed_final.tsv' --src-format tracktor_corrected_tsv
+```
 
 ## Files mosaic will not unpickle
 
