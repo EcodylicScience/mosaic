@@ -59,6 +59,19 @@ the step-type detail declares its keypoint fields. `check_keypoints_distinct`
 takes the parameter it names in its message as a keyword, defaulting to
 `keypoints`.
 
+A new track converter, `zebrafish_3d_workflow_csv` (version 0.1), reads the
+per-experiment CSV of a zebrafish 3D tracking workflow (`frame_index` and
+`fish{n}_{part}_{axis}` columns, empty fields as gaps) into `mosaic_world_v1`.
+`id` is the fish number, keypoint `k` is the `k`-th part in header order, and
+`X`/`Y`/`Z` is the mean of the keypoints with all three axes on that row. A
+fish-frame whose keypoints are all empty has no row. Values are scaled by
+`meters_per_unit` (default 0.01, from centimeters) and then mapped to the world
+axes by `axes` (default `["x", "y", "z"]`), which must be a proper rotation, so a
+reflection is refused at construction. The file records no frame rate, so the
+converter times a table as SLEAP does: the `fps` param, else the entry's measured
+media rate, else the dataset's `fps_default`, else `FrameRateUnknownError`. It
+declares `carries_tracklets` as unknown.
+
 ## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
 
 ### `feral` trains from a templates run and a labels kind

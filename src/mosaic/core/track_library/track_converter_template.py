@@ -14,11 +14,12 @@ The returned DataFrame must have at minimum::
     frame, time, id, X, Y, group, sequence
 
 plus keypoints as ``poseX0..N`` / ``poseY0..N``, and ``poseP<k>`` where the
-source reported a confidence. All spatial columns are video pixels, and ``X`` /
-``Y`` is the body center. Do **not** add ``VX``, ``VY``, ``SPEED``, ``ANGLE`` or
-the rest of the derived set: ``mosaic_v1`` forbids them, so writing one raises
-``ForbiddenTrackColumnError``. A tracker that genuinely measures one declares a
-schema that ``extends`` ``mosaic_v1`` and ``allows`` that column.
+source reported a confidence. All spatial columns are in the space of the schema
+the converter declares, and ``X`` / ``Y`` is the body center. Do **not** add
+``VX``, ``VY``, ``SPEED``, ``ANGLE`` or the rest of the derived set: ``mosaic_v1``
+forbids them, so writing one raises ``ForbiddenTrackColumnError``. A tracker that
+genuinely measures one declares a schema that ``extends`` ``mosaic_v1`` and
+``allows`` that column.
 
 **What goes where.** ``params`` is the *recipe* -- it, plus ``src_format`` and
 ``version``, is what a tracks variant is identified by, so every field must be

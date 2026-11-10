@@ -1,10 +1,11 @@
 """A converter times a table at the explicit rate, else the media's, else the dataset's.
 
-SLEAP analysis files, DeepLabCut exports and Ultralytics tracker output record no frame
-rate, so ``time`` is ``frame / rate`` for a rate that the caller supplies. The order is
-the explicit ``fps`` parameter, then the measured rate of the entry's media
-(``EntryHints.fps``), then the dataset's ``fps_default`` (``fallback_fps``). With none
-of the three the converter refuses and writes no table at an assumed rate.
+SLEAP analysis files, DeepLabCut exports, Ultralytics tracker output and the zebrafish
+3D workflow CSV record no frame rate, so ``time`` is ``frame / rate`` for a rate that
+the caller supplies. The order is the explicit ``fps`` parameter, then the measured
+rate of the entry's media (``EntryHints.fps``), then the dataset's ``fps_default``
+(``fallback_fps``). With none of the three the converter refuses and writes no table
+at an assumed rate.
 """
 
 from __future__ import annotations
@@ -29,10 +30,12 @@ from mosaic.core.track_converter import (
 from mosaic.core.track_library.deeplabcut import DlcParams
 from mosaic.core.track_library.sleap import SleapConvertParams
 from mosaic.core.track_library.ultralytics_tracks import UltralyticsTracksParams
+from mosaic.core.track_library.zebrafish_3d_workflow import Zebrafish3dWorkflowParams
 from tests.helpers import (
     write_dlc_csv,
     write_sleap_analysis_h5,
     write_ultralytics_predictions,
+    write_zebrafish_3d_csv,
 )
 
 FRAMES = 6
@@ -48,6 +51,10 @@ def _write_dlc(path: Path) -> None:
 
 def _write_ultralytics(path: Path) -> None:
     write_ultralytics_predictions(path, n_frames=FRAMES, n_ids=1)
+
+
+def _write_zebrafish_3d(path: Path) -> None:
+    _ = write_zebrafish_3d_csv(path, FRAMES)
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,12 @@ CASES = {
         UltralyticsTracksParams,
         _write_ultralytics,
         "t.parquet",
+    ),
+    "zebrafish_3d_workflow": _Case(
+        "zebrafish_3d_workflow_csv",
+        Zebrafish3dWorkflowParams,
+        _write_zebrafish_3d,
+        "t.csv",
     ),
 }
 

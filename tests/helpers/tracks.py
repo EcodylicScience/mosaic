@@ -185,6 +185,70 @@ def raw_world_dataset(root: Path) -> Dataset:
     return dataset
 
 
+ZEBRAFISH_3D_PARTS = ("head", "pec", "tail")
+"""The keypoints of a release file, in its header order."""
+
+
+def write_zebrafish_3d_csv(
+    path: Path,
+    frames: int,
+    *,
+    fish: Sequence[int] = (1, 2),
+    parts: Sequence[str] = ZEBRAFISH_3D_PARTS,
+    blank: Iterable[tuple[int, int, str | None]] = (),
+) -> npt.NDArray[np.float64]:
+    """Write a ``zebrafish_3d_workflow_csv`` file of *frames* contiguous frames.
+
+    The header is ``frame_index`` and then ``fish{n}_{part}_{axis}`` for each
+    fish, each of its parts and the axes ``x``, ``y``, ``z`` in that order, so the
+    default 19 columns are the release's. Every cell is distinct: the value of
+    fish ``n``, part ``k``, axis ``a`` at frame ``f`` is
+    ``10 n + k + (a + 1) / 10 + f / 100``, in the file's unit.
+
+    Args:
+        path: Where to write the file. Missing parent directories are created.
+        frames: The number of frames, numbered from 0.
+        fish: The fish numbers.
+        parts: The keypoint names.
+        blank: Cells to leave empty, each ``(frame, fish number, part)``. A part
+            of None empties every part of that fish at that frame.
+
+    Returns:
+        The values written, shaped ``(frame, fish, part, axis)``, NaN where a
+        cell is empty.
+    """
+    n_parts = len(parts)
+    frame_axis = np.arange(frames, dtype=np.float64)[:, None, None, None]
+    fish_axis = np.asarray(fish, dtype=np.float64)[None, :, None, None]
+    part_axis = np.arange(n_parts, dtype=np.float64)[None, None, :, None]
+    axis_axis = (np.arange(3, dtype=np.float64) + 1)[None, None, None, :] / 10
+    values = 10 * fish_axis + part_axis + axis_axis + frame_axis / 100
+    values = np.array(np.broadcast_to(values, (frames, len(fish), n_parts, 3)))
+    for frame, number, part in blank:
+        fish_index = list(fish).index(number)
+        if part is None:
+            values[frame, fish_index] = np.nan
+        else:
+            values[frame, fish_index, list(parts).index(part)] = np.nan
+
+    header = ["frame_index"] + [
+        f"fish{number}_{part}_{axis}"
+        for number in fish
+        for part in parts
+        for axis in "xyz"
+    ]
+    lines = [",".join(header)]
+    for index in range(frames):
+        cells = [str(index)] + [
+            "" if np.isnan(value) else repr(float(value))
+            for value in values[index].reshape(-1)
+        ]
+        lines.append(",".join(cells))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return values
+
+
 def add_track_sequences(
     dataset: Dataset | MockDataset,
     *entries: TrackEntry,

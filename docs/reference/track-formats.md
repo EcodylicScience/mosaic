@@ -3,7 +3,7 @@
 
 # Track formats, schemas and label formats
 
-8 track converters read a tracker's output into one of
+9 track converters read a tracker's output into one of
 5 registered schemas, and 4 label
 converters read manual annotations and external predictions. A converter
 declares the schema it emits, in one place, and that declaration is what
@@ -24,6 +24,7 @@ by `mosaic convert-tracks`.
 | `trex_npz_cm` | `0.2` | `mosaic_cm_v1` | no | yes | TRex per-id NPZ kept in the centimeters TRex wrote it in. |
 | `trex_npz_scaled` | `0.2` | `trex_v2` | no | yes | TRex per-id NPZ from before TRex wrote its factor down, told the factor. |
 | `ultralytics_tracks` | `0.3` | `mosaic_v1` | no | no | Ultralytics tracker predictions parquet -> a ``mosaic_v1`` table. |
+| `zebrafish_3d_workflow_csv` | `0.1` | `mosaic_world_v1` | no | no | A zebrafish 3D workflow ``.csv`` -> a ``mosaic_world_v1`` table. |
 
 ### Converter parameters
 
@@ -84,6 +85,16 @@ by `mosaic convert-tracks`.
 | `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
 | `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
 | `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
+
+#### `zebrafish_3d_workflow_csv`
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `strict_schema` | `boolean` | `false` |  | Raise when the converted table is missing a required column or prefix, instead of printing a validation report. |
+| `fps` | `number` \| `None` | `null` |  | Frame rate that derives time, taken before the entry's measured media rate and the dataset's fps_default. Leave unset to time each entry at its media's measured rate. |
+| `fallback_fps` | `number` \| `None` | `null` |  | Frame rate for an entry whose media has no measured rate. The dataset fills it from meta.fps_default. |
+| `meters_per_unit` | `number` | `0.01` | > `0.0` | Meters in one unit of the file's coordinates. The workflow writes centimeters, so the default is 0.01. |
+| `axes` | tuple of (`string`, `string`, `string`) | `["x", "y", "z"]` | min items `3`, max items `3` | The source axis that becomes world X, Y and Z, each one of x, y or z with an optional leading minus. ('x', '-z', 'y') takes world Y from minus source z and world Z from source y. It must be a proper rotation, so a reflection is refused. The default is the workflow's own frame. |
 
 ## Track schemas
 

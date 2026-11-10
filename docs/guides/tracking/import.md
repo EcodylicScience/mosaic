@@ -51,7 +51,7 @@ starts.
 
 ## The formats mosaic reads
 
-Eight converters are registered. `--src-format` names one, and the choice also fixes
+Nine converters are registered. `--src-format` names one, and the choice also fixes
 which schema the output carries.
 
 | `--src-format` | Reads | Emits |
@@ -64,6 +64,7 @@ which schema the output carries.
 | `ultralytics_tracks` | Ultralytics tracker predictions parquet | `mosaic_v1` |
 | `calms21_npy` | CalMS21 `.npy` arrays, when [you trust the files](#files-mosaic-will-not-unpickle) | `mosaic_v1` |
 | `calms21_json` | The `.json` spelling of CalMS21 | `mosaic_v1` |
+| `zebrafish_3d_workflow_csv` | The per-experiment `.csv` of a zebrafish 3D tracking workflow: `frame_index` and `fish{n}_{part}_{axis}` columns in centimeters, empty fields as gaps. It records no frame rate. The workflow's default rate, and the published release's, is 140 fps: set `fps_default: 140` or pass `fps=140` for those files | `mosaic_world_v1` |
 
 [The track formats reference](../../reference/track-formats.md) lists each with its
 parameters, and [the schema families](../../concepts/tracks.md#the-schema-families)
@@ -71,9 +72,9 @@ explain why the three TRex rows differ.
 
 ## The frame rate of an imported table
 
-A SLEAP, DeepLabCut or Ultralytics file records frame numbers and no frame rate, so
-mosaic times each entry (`time` is `frame` divided by the rate) at the first of these
-that it has:
+A SLEAP, DeepLabCut, Ultralytics or zebrafish 3D workflow file records frame numbers and
+no frame rate, so mosaic times each entry (`time` is `frame` divided by the rate) at the
+first of these that it has:
 
 1. The `fps` parameter, `--params '{"fps": 25}'`.
 2. The frame rate that the entry's indexed media measured.

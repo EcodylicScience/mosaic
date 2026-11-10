@@ -34,6 +34,7 @@ from . import deeplabcut
 from . import sleap
 from . import trex
 from . import ultralytics_tracks
+from . import zebrafish_3d_workflow
 
 __all__ = [
     "calms21",
@@ -41,4 +42,5 @@ __all__ = [
     "sleap",
     "trex",
     "ultralytics_tracks",
+    "zebrafish_3d_workflow",
 ]
