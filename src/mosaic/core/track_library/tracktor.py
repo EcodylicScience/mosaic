@@ -21,16 +21,20 @@ began, and a frame has one value of it whatever its animals. The converters take
 no frame rate. They are not ``TimedTrackConvertParams`` converters, so the
 entry's measured media rate and the dataset's ``fps_default`` never reach them
 (``Dataset._conversion_fps`` hands a rate only to a converter that declares
-``fallback_fps``), and the table has no ``fps`` or ``frame_rate`` column. Three
-readers of a table look for a stated rate in such a column
-(``pair-position``, ``pair-egocentric``, ``approach-avoidance`` and the wavelets
-read ``fps``, ``resample-tracks`` reads ``frame_rate`` and then ``fps``), and
-a column here would state a rate that is wrong for every frame.
+``fallback_fps``), and the table has no ``fps`` or ``frame_rate`` column. Readers
+of a table look for a stated rate in such a column (``pair-position``,
+``pair-egocentric``, ``approach-avoidance`` and the wavelets read ``fps``,
+``resample-tracks`` reads ``frame_rate`` and then ``fps``), and a column here would
+state a rate that is wrong for every frame.
 
 **The raw table has no time column**, so it needs its sibling: the same stem with
 ``_tracked_fixed_final.tsv`` in place of ``_tracked.csv``, in the same directory.
 Without the sibling the entry fails with an error that names it. There is no
-fallback to a rate.
+fallback to a rate. The sibling is not part of the raw variant's provenance: the
+``tracks_raw`` composition and ``source_md5`` cover ``_tracked.csv`` alone, and so
+does the check that a table is current. A changed corrected table leaves the raw
+variant stale without a signal, so rerun ``convert-tracks --overwrite`` after
+editing one.
 
 **Pixels.** ``X`` and ``Y`` are Tracktor's ``pos_x`` and ``pos_y``, in pixels of
 the arena video, and the schema is ``mosaic_v1``. No file records the scale, about
@@ -300,8 +304,10 @@ class _TracktorConverter(TrackConverter[TracktorParams]):
     def sequence_from_stem(self, stem: str) -> str:
         """The recording's name: the stem without ``_tracked`` or ``_tracked_fixed_final``.
 
-        Both formats give the one name, so a raw table and its corrected table are
-        one entry in two tracks variants.
+        Both formats give the one name for a recording, so a raw and a corrected
+        table of it can be joined by sequence name across datasets. They are not
+        reachable in one dataset with the files side by side, because two sources on
+        one directory overlap.
         """
         for ending in (CORRECTED_SUFFIX, RAW_SUFFIX):
             tail = ending.removesuffix(".tsv").removesuffix(".csv")

@@ -26,7 +26,6 @@ from mosaic.core.track_converter import (
     EntryHints,
     FrameRateUnknownError,
     TimedTrackConvertParams,
-    get_track_converter,
 )
 from mosaic.core.track_library.tracktor import (
     TracktorParams,
@@ -261,17 +260,21 @@ def test_the_table_records_no_frame_rate_column(tmp_path: Path) -> None:
         assert "frame_rate" not in table.columns
 
 
-def test_the_converters_never_ask_for_a_rate(tmp_path: Path) -> None:
-    recording = _recording(tmp_path)
-    for name in ("tracktor_corrected_tsv", "tracktor_raw_csv"):
-        converter = get_track_converter(name)
-        params = TracktorParams.from_overrides({})
-        path = recording.tsv if name.endswith("tsv") else recording.csv
+def test_a_dataset_default_rate_does_not_time_the_table(tmp_path: Path) -> None:
+    dataset, recording = _dataset_with(
+        tmp_path, "tracktor_corrected_tsv", "*_tracked_fixed_final.tsv"
+    )
+    dataset.meta["fps_default"] = 25.0
 
-        try:
-            _ = converter.convert(path, params, HINTS)
-        except FrameRateUnknownError as error:  # pragma: no cover
-            pytest.fail(f"{name} asked for a frame rate: {error}")
+    _ = dataset.convert_all_tracks()
+
+    table = dataset.load_tracks("", TRACKTOR_STEM)
+    expected = recording.seconds[recording.frames >= 62]
+    np.testing.assert_allclose(
+        table[table["id"] == 1]["time"].to_numpy(dtype=np.float64), expected
+    )
+    assert "fps" not in table.columns
+    assert "frame_rate" not in table.columns
 
 
 # --- the per-frame and per-recording columns -----------------------------------

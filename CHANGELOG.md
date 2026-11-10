@@ -23,9 +23,12 @@ has no `fps` or `frame_rate` column, which `pair-position`, `pair-egocentric`,
 `approach-avoidance`, the wavelets and `resample-tracks` would read as a stated rate.
 The raw table has no time column and takes its time, `stimuli` and labels from the
 corrected table beside it (the same stem ending `_tracked_fixed_final.tsv`). An entry
-without that sibling fails with an error naming it. Both name a sequence by the stem
-without `_tracked` or `_tracked_fixed_final`, so a raw and a corrected table of one
-recording are one entry in two tracks variants.
+without that sibling fails with an error naming it. The sibling is not in the raw
+variant's provenance: the `tracks_raw` composition and `source_md5` cover the `.csv`
+alone, so after a corrected table changes, `convert-tracks --overwrite` rebuilds the
+raw variant. Both formats name a sequence by the stem without `_tracked` or
+`_tracked_fixed_final`, so a raw and a corrected table of one recording share a
+sequence name and join across datasets.
 
 The one param, `first_frame` (default 62), drops the frames before it. `stimuli` (`Y` or
 `N`, as the file spells it) and the constant text columns `strain`, `sex`, `n_inds`,
