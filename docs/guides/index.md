@@ -23,9 +23,10 @@ Declaring a media source and scanning it is dataset setup — see
 | [Train a pose model](tracking/train-a-pose-model.md) | No off-the-shelf model works on your animal |
 | [Write a converter](tracking/write-a-converter.md) | Your format is not one mosaic already reads |
 
-Every tracks table is video pixels with `X`/`Y` at the body center, whichever tracker
-produced it. [What a tracker reports](../concepts/tracks.md) covers the units, and why
-a tracker may not give you a speed.
+A tracker's tracks table is video pixels with `X`/`Y` at the body center. An imported 3D
+table is in world meters instead.
+[What a tracker reports](../concepts/tracks.md) covers the units, and why a tracker may
+not give you a speed.
 
 ## Analysis
 

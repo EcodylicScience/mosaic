@@ -172,7 +172,7 @@ def test_a_centimetre_table_without_a_pixel_factor_refuses(tmp_path: Path) -> No
 
 
 def test_a_world_table_refuses_and_names_the_projection(tmp_path: Path) -> None:
-    """Metres in a world frame land nowhere sensible when read as pixels."""
+    """Meters in a world frame land nowhere sensible when read as pixels."""
     ds = _dataset_recording(tmp_path, "mosaic_world_v1")
     with pytest.raises(ValueError, match="projection"):
         require_pixel_positions(ds, "", "seq", "who")

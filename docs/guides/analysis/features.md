@@ -45,7 +45,9 @@ between keypoints, and with `heading` each keypoint's velocity and position in t
 animal's own frame), `trajectory-smooth`, `body-scale`, `body-length` (length along a
 chain of keypoints, or one a tracker measured), `scale-to-cm`, `scale-to-bl` (lengths in
 body lengths, for comparing animals of different sizes), `individual-wavelet` (the log
-power of chosen columns at a band of frequencies), `track-subsample`.
+power of chosen columns at a band of frequencies), `track-subsample`, and, for 3D tracks
+in the world frame, `pose-egocentric` (each keypoint in the animal's own body frame,
+from a left-right pair or a front-rear pair of keypoints).
 
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at
@@ -55,10 +57,12 @@ whichever level you feed them.
 `pair-egocentric`, `pair-keypoints` (each partner keypoint's position and velocity in
 the focal's body frame, and chosen distances between the two animals' keypoints),
 `pair-facing`, `pair-wavelet`, `pair-posedistance-pca`, `pair-interaction-filter` — plus
-`orientation-rel` and `approach-avoidance`. `visual-network` says which individuals each
-one can see, by casting rays from its eyes against every body outline, and writes only
-the visible pairs. Set its `include_hidden` before `temporal-stack` or
-`frame-aggregate`, which expect every pair in every frame.
+`orientation-rel` and `approach-avoidance`. For 3D tracks in the world frame,
+`pair-world` measures distance, bearing, elevation, relative heading and approach speed
+in meters and radians. `visual-network` says which individuals each one can see, by
+casting rays from its eyes against every body outline, and writes only the visible
+pairs. Set its `include_hidden` before `temporal-stack` or `frame-aggregate`, which
+expect every pair in every frame.
 
 **Neighbors and social forces.** `nearest-neighbor` and its `nn-delta-response` /
 `nn-delta-bins` chain, and `attention-target`. These describe an individual's
@@ -94,6 +98,18 @@ listed with its parameters under *Global* in the
 **Image and video artifacts.** `egocentric-crop` and `interaction-crop-pipeline` cut
 animal-centered clips; `overlay` renders an annotated video. See
 [Render an annotated video](../media/render-a-video.md).
+
+## Features and track spaces
+
+A feature declares the spaces it computes in. Tracks are in pixels, centimeters or, for
+3D data, world meters (see [what a tracker
+reports](../../concepts/tracks.md#spatial-columns-are-in-one-of-three-spaces)). Most
+features are planar and refuse a world-frame table; `pose-egocentric` and `pair-world`
+refuse a planar one. The refusal is `schema_family_mismatch`. It comes before anything
+runs, from a run and from a recipe when it is planned or, for tracks the recipe itself
+writes, when the step starts. Features whose computation does not depend on the space
+(`keypoint-kinematics` measures in the table's own units, meters on a world table) and
+features that read no spatial column (the aggregates) accept every space.
 
 ## Chaining
 

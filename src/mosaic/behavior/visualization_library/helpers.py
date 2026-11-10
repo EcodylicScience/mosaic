@@ -37,7 +37,7 @@ def require_pixel_positions(
     schema: str | None = None,
     tracks_run_id: str | None = None,
 ) -> None:
-    """Refuse to place coordinates on video unless the table records pixels.
+    """Refuse to place a table's centimeter or meter coordinates on video.
 
     Called before anything is drawn or cropped, whether the caller places the
     body centre or the keypoints: in every schema family both are in the same

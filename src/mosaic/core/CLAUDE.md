@@ -203,11 +203,13 @@ importing `mosaic.tracking` registers neither.
   (`TrackingRoot.output_schema` for a tracker). Registration does not check its
   `trex_v1` default. Declare a schema on every new converter, and bump `version` to
   change it.
-- A converter writes pixels with `X`/`Y` at the body centre. A centroid-only converter
-  writes no `poseX*`/`poseY*` columns and does not copy `X`/`Y` into them. A source
-  whose pixel factor is lost declares `mosaic_cm_v1`. TREx specifics are in the
-  `track_library/trex.py` module docstring
-  (`tests/core/track_library/test_trex_converter_units.py`).
+- A converter writes its schema's space, with `X`/`Y` at the body center: pixels for a
+  tracker or a source recorded in them, meters in the world frame for a 3D one, which
+  also writes `Z` and records the transform it applied in its params
+  (`zebrafish_3d_workflow_csv`). A centroid-only converter writes no `poseX*`/`poseY*`
+  columns and does not copy `X`/`Y` into them. A source whose pixel factor is lost
+  declares `mosaic_cm_v1`. TREx specifics are in the `track_library/trex.py` module
+  docstring (`tests/core/track_library/test_trex_converter_units.py`).
 - A converter does not compute a `DERIVED_COLUMNS` quantity. `mosaic_v1` forbids them,
   and `ensure_track_schema` raises `ForbiddenTrackColumnError` whatever `strict` says. A
   tracker that measures one declares a schema with `allows`, as `trex_v2` does.

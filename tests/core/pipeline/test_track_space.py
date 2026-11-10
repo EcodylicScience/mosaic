@@ -124,6 +124,11 @@ def _dataset(tmp_path: Path, *schemas: str) -> Dataset:
     return dataset
 
 
+def _declaring(declared: object) -> object:
+    """A track feature whose class declares *declared* as its track spaces."""
+    return type("_Declared", (_TrackFeature,), {"track_spaces": declared})()
+
+
 def _files_under(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*") if path.is_file())
 
@@ -144,17 +149,13 @@ def test_a_declared_feature_computes_in_what_it_declares() -> None:
 )
 def test_only_a_set_is_a_declaration(declared: object) -> None:
     """``"world_m"`` iterates as letters; refuse it rather than read nonsense."""
-    feature = _TrackFeature()
-    feature.track_spaces = declared  # pyright: ignore[reportAttributeAccessIssue]
     with pytest.raises(TypeError, match="set of track spaces"):
-        _ = feature_track_spaces(feature)
+        _ = feature_track_spaces(_declaring(declared))
 
 
 def test_a_value_outside_the_track_spaces_is_not_a_declaration() -> None:
-    feature = _TrackFeature()
-    feature.track_spaces = frozenset({"image_px", "world_cm"})  # pyright: ignore[reportAttributeAccessIssue]
     with pytest.raises(TypeError, match="world_cm"):
-        _ = feature_track_spaces(feature)
+        _ = feature_track_spaces(_declaring(frozenset({"image_px", "world_cm"})))
 
 
 @pytest.mark.parametrize(
@@ -295,6 +296,27 @@ def test_a_space_independent_feature_runs_on_a_world_table(tmp_path: Path) -> No
 def test_a_feature_declaring_only_the_world_space_is_refused_centimeters() -> None:
     with pytest.raises(TrackSpaceRefused):
         refuse_unsupported_track_space(frozenset({"world_m"}), "test", {"plane_cm"})
+
+
+def test_the_refusal_of_a_planar_feature_explains_the_dropped_axis() -> None:
+    with pytest.raises(TrackSpaceRefused) as excinfo:
+        refuse_unsupported_track_space(
+            frozenset({"image_px", "plane_cm"}), "test", {"world_m"}
+        )
+
+    message = str(excinfo.value)
+    assert "would compute on two of its three axes" in message
+    assert "mosaic_world_v1" not in message
+
+
+def test_the_refusal_of_a_world_feature_names_the_world_frame_table() -> None:
+    with pytest.raises(TrackSpaceRefused) as excinfo:
+        refuse_unsupported_track_space(frozenset({"world_m"}), "test", {"image_px"})
+
+    message = str(excinfo.value)
+    assert "three axes" not in message
+    assert "computes in 3D needs a world-frame table (mosaic_world_v1)" in message
+    assert "narrow the scope" in message
 
 
 def test_a_feature_accepting_every_space_refuses_none() -> None:

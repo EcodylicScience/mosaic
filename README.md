@@ -30,7 +30,7 @@ tells you exactly what a dataset already holds.
 | Step | What mosaic does |
 | --- | --- |
 | **Track** | Run **4 integrated trackers** over your videos from one command — or import tracks you already have, from **9 formats** |
-| **Standardize** | Every tracker's output becomes one validated schema: video pixels, `X`/`Y` at the body centre, keypoints optional |
+| **Standardize** | Every tracker's output becomes one validated schema: `X`/`Y` at the body center, keypoints optional, in video pixels, or in centimeters or 3D world meters when the source is |
 | **Feature** | **66 registered features** — kinematic, social, collective-motion, spectral, reduction, temporal context |
 | **Model** | t-SNE, k-means, Ward, AR-HMM, keypoint-MoSeq, VAME; XGBoost / Lightning-Action / FERAL classifiers; three visual identity models |
 | **Annotate** | Overlay video with identities, poses and predicted behavior; egocentric crops for identity work |

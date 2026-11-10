@@ -52,7 +52,7 @@ type TrackSpace = Literal["image_px", "plane_cm", "world_m"]
 - ``"image_px"`` -- video pixels of the view the producer read. ``mosaic_v1`` and
   everything extending it. The only space a coordinate may be *drawn* in as it
   stands: an overlay or a crop places it on the frame directly.
-- ``"plane_cm"`` -- centimetres in the image plane, for archived tables whose
+- ``"plane_cm"`` -- centimeters in the image plane, for archived tables whose
   pixel factor cannot be recovered (``mosaic_cm_v1``, ``trex_v1``). Nothing draws
   it, though a planar feature computes in it.
 - ``"world_m"`` -- meters in a calibrated world frame, right-handed with +Z up,
@@ -60,7 +60,7 @@ type TrackSpace = Literal["image_px", "plane_cm", "world_m"]
   reaches a video only through a projection with the recording's calibration.
 
 Declared on a schema family rather than inferred from columns, because the two
-2D spaces are indistinguishable by their columns -- a centimetre table and a
+2D spaces are indistinguishable by their columns -- a centimeter table and a
 pixel table both carry ``X`` and ``Y`` -- and the difference reads as a
 plausible number either way.
 """

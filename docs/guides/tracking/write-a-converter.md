@@ -5,7 +5,7 @@ per individual, with `frame, time, id, group, sequence, X, Y`. Keypoints
 (`poseX*` / `poseY*`) are optional. mosaic writes the result to
 `tracks/<variant>/<group>__<sequence>.parquet` and indexes it.
 
-Check [the track formats reference](../../reference/track-formats.md) first — eight
+Check [the track formats reference](../../reference/track-formats.md) first — nine
 converters ship, and one may already read your files.
 
 ## Two worked examples
@@ -40,7 +40,11 @@ different hard case, and together they are the fastest way in.
 3. **Are your coordinates already video pixels?** `mosaic_v1` says they are, and
    nothing checks it — a scaled table validates cleanly and every downstream
    distance is wrong by a factor nobody recorded. Convert in the converter, reading
-   the factor from the file rather than from a parameter.
+   the factor from the file rather than from a parameter. A 3D source is not in pixels
+   at all: declare `mosaic_world_v1` (meters, right-handed, +Z up, with a `Z` column)
+   and convert into that frame. When the file records no factor, make the factor and any
+   axis change parameters, as `zebrafish_3d_workflow_csv` does, so that they enter the
+   variant's identifier.
 
 [What a tracker reports, and in what units](../../concepts/tracks.md) has the rules
 behind all three.

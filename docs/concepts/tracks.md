@@ -5,29 +5,48 @@ parquet table per sequence, validated against a registered schema. Five rules go
 what is in it. Knowing them is what keeps you from comparing quantities that are not
 comparable.
 
-## Spatial columns are video pixels
+## Spatial columns are in one of three spaces
 
-Every position, every distance, every axis length in `tracks/` is in pixels of the
-source video, whichever tracker produced it.
+A track table's spatial columns are in the space its schema declares. A tracker, and a
+2D converter whose source records pixels, writes **pixels**. Every position, every
+distance, every axis length in such a table is in pixels of the source video, whichever
+tracker produced it.
 
 Physical units come from the `scale-to-cm` feature, which reads a per-video
 `cm_per_pixel` from the media index. They are never stored in the table. Set the
 factor with `Dataset.set_media_calibration`, or pass one to the feature directly.
 
-The one exception announces itself in its name: the `mosaic_cm_v1` schema is
-centimeters, for archived data whose factor cannot be recovered. It is its own schema
-family, and a feature run whose scope resolves both families is refused rather than
-mixed.
+Two other spaces announce themselves in the schema's name:
 
-Each schema family declares its coordinate space, pixels or centimeters, and the overlay
-and the crop features refuse a table in centimeters, because a marker placed at those
+- **Centimeters.** The `mosaic_cm_v1` schema is for archived data whose factor cannot be
+  recovered. It is its own schema family, and a feature run whose scope resolves both
+  families is refused rather than mixed.
+- **World meters.** The `mosaic_world_v1` schema holds 3D tracks in a world frame:
+  meters, right-handed, with +Z up. `X`, `Y` and `Z` are the body center, and keypoints
+  are `poseX*`, `poseY*` and `poseZ*`. It has no `camera` column, because a table that
+  is already fused across cameras belongs to no one of them. A source that uses another
+  convention is converted into this frame when it is imported, and the converter's
+  parameters record the transform. A table in the world frame is not a pixel table, and
+  the media calibration (`scale-to-cm`) does not apply to it.
+
+Each schema family declares its coordinate space, and the overlay and the crop features
+refuse a table in centimeters or in the world frame, because a marker placed at those
 coordinates lands somewhere else in the frame. A table whose schema declares no space is
 drawn as pixels, with a warning. Convert a `trex_v1` table with `mosaic upgrade-tracks`.
 
+Each feature likewise declares the spaces it computes in. A planar feature, which is
+nearly every feature, refuses a world-frame table, and `pose-egocentric` and
+`pair-world`, which compute in 3D, refuse a planar one. The run is refused with
+`schema_family_mismatch` before anything is computed. A recipe is refused when it is
+planned or, for tracks the recipe itself writes, when the step starts. Features whose
+computation does not depend on the space (`keypoint-kinematics` measures in the table's
+own units) and features that read no spatial column (the aggregates) accept every space.
+
 ## `X` and `Y` are the body center
 
-On every tracker. For a pose-only tracker that is the mean of the frame's keypoints;
-for one that measures a centroid, its own.
+On every tracker. A world-frame table adds `Z`, the body center's height. For a
+pose-only tracker that is the mean of the frame's keypoints; for one that measures a
+centroid, its own.
 
 Where a tracker reports other landmarks, they arrive under their own names — `trex_v2`
 carries TRex's head position as `X#head` / `Y#head`, for instance. `X` and `Y` stay the
@@ -86,7 +105,7 @@ has to be mapped through the store's own index before it is joined on `frame`.
 
 ## The schema families
 
-Four schemas are registered. Which one a table carries is declared by the converter or
+Five schemas are registered. Which one a table carries is declared by the converter or
 tracker that produced it, and recorded in the tracks index.
 
 | Schema | Units | `X`/`Y` | Use it for |
@@ -94,6 +113,7 @@ tracker that produced it, and recorded in the tracks index.
 | `mosaic_v1` | pixels | body center | The tracker-neutral standard. Keypoints optional |
 | `trex_v2` | pixels | body center | `mosaic_v1` plus what TRex measures: `SPEED`, `ANGLE`, the midline family, and `X#head`/`Y#head` |
 | `mosaic_cm_v1` | centimeters | body center | Archived data whose pixel factor is lost. Its own family |
+| `mosaic_world_v1` | meters | body center, with `Z` | 3D tracks in a right-handed world frame, +Z up, no `camera`. Its own family |
 | `trex_v1` | centimeters | head | Legacy. Registered so archived datasets keep resolving |
 
 The validator never rejects a column merely for being unknown, so additive columns —

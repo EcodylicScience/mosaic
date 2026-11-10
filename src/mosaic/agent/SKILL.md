@@ -227,13 +227,24 @@ A dataset is a directory with `dataset.yaml` and named roots
 
 The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
 
-- Every spatial column is in **video pixels**, and `X`/`Y` are the **body center**, for
-  every tracker. For centimeters, record the scale with `ds.set_media_calibration(...)`
-  (`recording=` and `camera=` narrow it) and run the `scale-to-cm` feature. For body
-  lengths, run `body-length` and then `scale-to-bl` referencing it. Do not rescale a
-  tracks table yourself. The overlay and the crop features refuse a table recorded in
-  centimeters (`trex_v1`, `mosaic_cm_v1`). `mosaic upgrade-tracks` converts a
-  `trex_v1` table to pixels.
+- A spatial column is in the space of the table's schema, and `X`/`Y` are the **body
+  center**, for every tracker. A tracker, and a 2D converter whose source records pixels,
+  writes **video pixels**. For centimeters, record the scale with
+  `ds.set_media_calibration(...)` (`recording=` and `camera=` narrow it) and run the
+  `scale-to-cm` feature. For body lengths, run `body-length` and then `scale-to-bl`
+  referencing it. Do not rescale a tracks table yourself. The overlay and the crop
+  features refuse a table recorded in centimeters (`trex_v1`, `mosaic_cm_v1`) and one in
+  the world frame. `mosaic upgrade-tracks` converts a `trex_v1` table to pixels.
+- A 3D table (`mosaic_world_v1`, from the `zebrafish_3d_workflow_csv` converter) is in
+  **meters** in a right-handed world frame with +Z up, and `Z` is the body center's
+  height. The media calibration does not apply to it. Run `pose-egocentric` (keypoints
+  in each animal's body frame), `pair-world` (distance, bearing and elevation between
+  animals) and `keypoint-kinematics` (per-keypoint speeds in m/s) on it. A planar
+  feature refuses it with `schema_family_mismatch`, as a recipe does when it is planned
+  or, for tracks the recipe itself writes, when the step starts. `pose-egocentric` and
+  `pair-world` refuse a pixel or centimeter table. A feature whose computation does not
+  depend on the space (`keypoint-kinematics`, `label-statistics`) or that reads no
+  spatial column (the aggregates) accepts every space.
 - Velocity, speed and heading angle come from features. The `mosaic_v1` schema refuses
   them in a tracks table. Run `speed-angvel`, or `heading` with its method chosen.
 - Keypoints are optional. Features defined on keypoints refuse a table without them.
@@ -248,12 +259,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   aggregated CSV/TSV, DeepLabCut CSV), or ask the user whether they trust the file's
   source, since only the user sets the variable:
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/#files-mosaic-will-not-unpickle.
-- A SLEAP, DeepLabCut or Ultralytics file records no frame rate. `convert-tracks` times
-  each entry at `--params '{"fps": ...}'`, else the rate its indexed media measured,
-  else `meta.fps_default`. An entry with none fails and the run reports `partial`: scan
-  the media, set `fps_default`, or pass `fps`. An older mosaic never read the media's
-  rate. It timed a table at `fps`, else `fps_default`, else 30 fps. Convert again any
-  table converted without `fps` or `fps_default`.
+- A SLEAP, DeepLabCut, Ultralytics or zebrafish 3D workflow CSV file records no frame
+  rate. `convert-tracks` times each entry at `--params '{"fps": ...}'`, else the rate its
+  indexed media measured, else `meta.fps_default`. An entry with none fails and the run
+  reports `partial`: scan the media, set `fps_default`, or pass `fps`. A dataset of the
+  published zebrafish 3D tracks (Zenodo 18569873) ships no media, so it sets
+  `fps_default: 140`. An older mosaic never read the media's rate for SLEAP, DeepLabCut or
+  Ultralytics. It timed a table at `fps`, else `fps_default`, else 30 fps. Convert again
+  any table converted without `fps` or `fps_default`.
 - Read raw `.h264` streams (Raspberry Pi) only through mosaic, which measures their
   frame count. Other readers misjudge a bare stream.
 - Run `mosaic upgrade-tracks` on TRex tables an older mosaic wrote in centimeters.

@@ -94,11 +94,20 @@ class TrackSpaceRefused(Refusal, ValueError):
         unsupported = sorted(found - accepts)
         accepted: list[JsonValue] = [*sorted(accepts)]
         resolved: list[JsonValue] = [*sorted(found)]
+        if "world_m" in unsupported:
+            explanation = (
+                "A planar feature reading a world-frame table would compute on two "
+                "of its three axes and return plausible numbers"
+            )
+        else:
+            explanation = (
+                "A feature that computes in 3D needs a world-frame table "
+                "(mosaic_world_v1), and a planar table has no third axis"
+            )
         super().__init__(
             f"Feature {feature_name!r} computes in {sorted(accepts)} and this scope's "
-            f"tracks are in {unsupported}. A planar feature reading a world-frame "
-            "table would compute on two of its three axes and return plausible "
-            "numbers; run a feature that declares the space, or narrow the scope.",
+            f"tracks are in {unsupported}. {explanation}; run a feature that "
+            "declares the space, or narrow the scope.",
             reason="schema_family_mismatch",
             detail={"feature": feature_name, "accepts": accepted, "found": resolved},
         )

@@ -8,7 +8,7 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: world-frame 3D tracks
+## Unreleased: world-frame 3D tracks have a schema and two features, a converter reads the zebrafish workflow's CSV, and a feature declares the spaces it computes in
 
 The `mosaic_world_v1` track schema is registered: per-frame, per-id tracks in
 meters in a right-handed world frame with +Z up, in the new `world_m` space. It
@@ -26,10 +26,11 @@ attribute, and a feature that declares none computes in the two 2D spaces. A run
 whose scope resolves a `world_m` table, from a tracks input recorded as
 `mosaic_world_v1` or from a track-shaped `Result` carrying `Z`, is refused for
 such a feature with `schema_family_mismatch` (exit 65), before anything is
-hashed or written. `keypoint-kinematics`, `label-statistics`, `frame-aggregate`,
-`sequence-aggregate`, `individual-aggregate`, `id-tag-columns` and
-`label-predictions` read no spatial column and accept every space. No run id
-moves.
+hashed or written. `keypoint-kinematics` and `label-statistics` compute the same
+way in every space, so they accept all of them: the first measures in the table's
+own units, meters on a world table. `frame-aggregate`, `sequence-aggregate`,
+`individual-aggregate`, `id-tag-columns` and `label-predictions` read no spatial
+column and accept every space too. No run id moves.
 
 A recipe is checked for the same refusal when it is planned. `submit_request`,
 `mosaic pipeline submit` and `mosaic pipeline run` refuse a feature step whose

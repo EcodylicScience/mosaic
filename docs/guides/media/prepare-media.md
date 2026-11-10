@@ -238,8 +238,8 @@ mosaic prerequisites -m dataset.yaml --kind extract-frames \
 
 ## Calibrate for physical units
 
-Tracks are always in video pixels. To get centimeters, record a per-video scale on the
-media index, then run the `scale-to-cm` feature:
+Tracks from a tracker are in video pixels. To get centimeters, record a per-video scale
+on the media index, then run the `scale-to-cm` feature:
 
 ```python
 ds.set_media_calibration(0.043)                              # every recording

@@ -34,9 +34,11 @@ own environments.
 - **A feature declares the track spaces it computes in with `track_spaces`**, a class
   attribute outside the protocol. The default is both 2D spaces (`image_px` and
   `plane_cm`), so a feature handed a `world_m` table is refused with
-  `schema_family_mismatch`. A feature that reads no spatial column declares all three
-  (`TRACK_SPACES`). `refuse_unsupported_track_space` in `core/pipeline/track_space.py`
-  checks it, and `test_feature_conformance.py` pins the declarations.
+  `schema_family_mismatch`. A feature whose computation does not depend on the space
+  (`keypoint-kinematics`, in the table's own units) or that reads no spatial column (the
+  aggregates) declares all three (`TRACK_SPACES`). `refuse_unsupported_track_space` in
+  `core/pipeline/track_space.py` checks it, and `test_feature_conformance.py` pins the
+  declarations.
 - **A feature registers only when its module is imported.** `@register_feature` keys
   `FEATURES` by class name (`feature_library/registry.py`), and a recipe or the CLI
   finds it by its `name` slug. A new module joins the imports of
