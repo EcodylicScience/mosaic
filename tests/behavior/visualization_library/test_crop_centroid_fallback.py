@@ -13,10 +13,11 @@ along the way.
 The fix was blocked on the units question -- ``X``/``Y`` used to be centimetres
 on TREx and pixels everywhere else. It is not any more: every schema family
 declares its space, and a crop or an overlay refuses a table known to be in
-centimetres (``trex_v1``, ``mosaic_cm_v1``). A schema whose space cannot be
-read -- one declaring none, or one registered only by code another process ran --
-is drawn as pixels with a warning, because refusing would stop a legitimate
-render over a fact the rendering process cannot see.
+centimeters (``trex_v1``, ``mosaic_cm_v1``) or in world meters
+(``mosaic_world_v1``). A schema whose space cannot be read -- one declaring
+none, or one registered only by code another process ran -- is drawn as pixels
+with a warning, because refusing would stop a legitimate render over a fact the
+rendering process cannot see.
 
 ``center_mode="xy"`` is that fallback asked for outright: a request for the body
 centre that never consults pose even where pose exists, and that therefore
@@ -170,6 +171,13 @@ def test_a_centimetre_table_without_a_pixel_factor_refuses(tmp_path: Path) -> No
         require_pixel_positions(ds, "", "seq", "who")
 
 
+def test_a_world_table_refuses_and_names_the_projection(tmp_path: Path) -> None:
+    """Metres in a world frame land nowhere sensible when read as pixels."""
+    ds = _dataset_recording(tmp_path, "mosaic_world_v1")
+    with pytest.raises(ValueError, match="projection"):
+        require_pixel_positions(ds, "", "seq", "who")
+
+
 def test_an_unregistered_schema_warns_and_is_drawn_as_pixels(tmp_path: Path) -> None:
     """The process that renders is often not the one that registered the schema."""
     ds = _dataset_recording(tmp_path, "never_registered_v1")
@@ -195,6 +203,8 @@ def test_the_schema_of_the_table_in_hand_wins_over_the_index(tmp_path: Path) -> 
     require_pixel_positions(ds, "", "seq", "who", schema="mosaic_v1")
     with pytest.raises(ValueError, match="centimetres"):
         require_pixel_positions(ds, "", "seq", "who", schema="mosaic_cm_v1")
+    with pytest.raises(ValueError, match="projection"):
+        require_pixel_positions(ds, "", "seq", "who", schema="mosaic_world_v1")
 
 
 def _add_pixel_variant(ds: Dataset) -> str:
@@ -267,6 +277,9 @@ def test_a_crop_reads_the_schema_off_its_scope(
     crop.set_scope(ResolvedScope(tracks_schemas={("", "seq"): "mosaic_cm_v1"}))
     with pytest.raises(ValueError, match="centimetres"):
         _ = getattr(crop, run)(_posed_table())
+    crop.set_scope(ResolvedScope(tracks_schemas={("", "seq"): "mosaic_world_v1"}))
+    with pytest.raises(ValueError, match="projection"):
+        _ = getattr(crop, run)(_posed_table())
 
 
 @pytest.mark.parametrize("std_format", ["trex_v1", "mosaic_cm_v1"])
@@ -276,6 +289,12 @@ def test_the_overlay_refuses_a_posed_centimetre_table(
     """The overlay's gate also ran only for keypoint-less tables."""
     ds = _dataset_recording(tmp_path, std_format, table=_posed_table())
     with pytest.raises(ValueError, match="centimetres"):
+        _ = build_overlay(ds, "", "seq", {}, label_kind=None)
+
+
+def test_the_overlay_refuses_a_world_table(tmp_path: Path) -> None:
+    ds = _dataset_recording(tmp_path, "mosaic_world_v1", table=_posed_table())
+    with pytest.raises(ValueError, match="projection"):
         _ = build_overlay(ds, "", "seq", {}, label_kind=None)
 
 
@@ -293,6 +312,30 @@ def test_the_overlay_judges_the_pinned_variant(tmp_path: Path) -> None:
             label_kind=None,
             tracks_run_id="convert-x.0.1-aaaaaaaaaa",
         )
+
+
+def test_the_overlay_judges_a_pinned_world_variant(tmp_path: Path) -> None:
+    """A pinned world variant refuses although another variant of the entry is pixels."""
+    ds = _dataset_recording(tmp_path, "mosaic_v1")
+    run_id = "convert-z.0.1-cccccccccc"
+    out = ds.get_root("tracks") / "seq_world.parquet"
+    _centroid_table().to_parquet(out)
+    write_tracks_row(
+        ds,
+        run_id=run_id,
+        group="",
+        sequence="seq",
+        out_path=out,
+        producer="convert-z",
+        std_format="mosaic_world_v1",
+        n_rows=5,
+        carries_tracklets=None,
+    )
+    _ = build_overlay(
+        ds, "", "seq", {}, label_kind=None, tracks_run_id="convert-x.0.1-aaaaaaaaaa"
+    )
+    with pytest.raises(ValueError, match="projection"):
+        _ = build_overlay(ds, "", "seq", {}, label_kind=None, tracks_run_id=run_id)
 
 
 # ---------------------------------------------------------------------------

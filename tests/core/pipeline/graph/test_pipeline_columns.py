@@ -28,6 +28,7 @@ from mosaic.core.pipeline.column_contract import (
     PAYLOAD_LABEL,
     NamedColumns,
     Payload,
+    Prefix,
     Provides,
 )
 from mosaic.core.pipeline.graph import (
@@ -59,6 +60,7 @@ from mosaic.core.pipeline.graph.columns import (
     provided_wire,
     requires_wire,
     tracks_columns,
+    tracks_provides,
 )
 from mosaic.core.pipeline.graph.validate import merge_cautions
 from mosaic.core.pipeline.graph.wire import NeedStatus
@@ -561,6 +563,35 @@ def test_a_tracker_column_no_declaration_names_is_a_caution(
     assert report.valid, report.problems
     (caution,) = [caution for caution in report.cautions if caution.step == "aggregate"]
     assert f"'{column}'" in caution.message
+
+
+def test_the_tracks_may_hold_a_third_axis() -> None:
+    """``mosaic_world_v1`` requires ``Z`` and its keypoints carry ``poseZ``."""
+    possible = tracks_provides()
+    columns = {
+        c.column.name for c in possible.conditional if isinstance(c.column, Column)
+    }
+    prefixes = {
+        c.column.prefix for c in possible.conditional if isinstance(c.column, Prefix)
+    }
+
+    assert "Z" in columns
+    assert {"poseX", "poseY", "poseZ"} <= prefixes
+
+
+def test_the_tracks_still_feed_keypoint_kinematics() -> None:
+    steps: list[JsonValue] = [
+        {
+            "id": "kin",
+            "type": "feature",
+            "feature": "keypoint-kinematics",
+            "inputs": [TRACKS_INPUT],
+        }
+    ]
+
+    report = validation_report({"steps": steps})
+
+    assert report.valid, report.problems
 
 
 def test_a_column_a_feature_writes_is_absent_from_the_tracks() -> None:

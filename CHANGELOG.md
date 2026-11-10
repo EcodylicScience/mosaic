@@ -8,6 +8,19 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: world-frame 3D tracks
+
+The `mosaic_world_v1` track schema is registered: per-frame, per-id tracks in
+meters in a right-handed world frame with +Z up, in the new `world_m` space. It
+requires `Z` beside the standard columns, forbids `camera` and the derived
+columns, and may carry `poseX/Y/Z{k}` keypoints, a `gaze*` ray and a `head*`
+pose, so a keypoint with `poseX` and `poseY` and no `poseZ`, and a partly
+present `gaze*` or `head*` group, raise `IncompleteTrackColumnsError` whatever
+`strict` says. `VZ` and `AZ` join the derived columns: `mosaic_v1` and its
+extensions forbid them, and `trex_v2` and `mosaic_cm_v1` allow them. The
+`tracks` catalog entry may provide `poseZ` and `Z`. The overlay and the crops
+refuse a `world_m` table, as they refuse a centimeter one.
+
 ## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
 
 ### `feral` trains from a templates run and a labels kind

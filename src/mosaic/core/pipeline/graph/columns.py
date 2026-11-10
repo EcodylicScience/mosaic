@@ -637,14 +637,16 @@ def tracks_provides() -> Provides:
     (:func:`~mosaic.core.pipeline.column_contract.check_input_columns`). Each
     other column that a registered schema requires, recommends or allows as a
     measured quantity is possible. So is each column family that a schema
-    requires a member of. The registry is read at each call, and a schema
-    registered later is included.
+    requires a member of, and each ``pose`` family of a schema's ``pose_axes``,
+    which a 3D schema carries without requiring. The registry is read at each
+    call, and a schema registered later is included.
     """
     known: set[str] = set()
     families: set[str] = set()
     for schema in TRACK_SCHEMAS.values():
         known.update(schema.required, schema.recommended, schema.allows)
         families.update(schema.required_prefixes)
+        families.update(f"pose{axis}" for axis in schema.pose_axes)
     possible = sorted(known - STANDARD_COLUMNS)
     return Provides(
         adds=tuple(Column(name) for name in sorted(STANDARD_COLUMNS)),

@@ -37,21 +37,27 @@ def require_pixel_positions(
     schema: str | None = None,
     tracks_run_id: str | None = None,
 ) -> None:
-    """Refuse to place coordinates on video where the table records centimetres.
+    """Refuse to place coordinates on video unless the table records pixels.
 
     Called before anything is drawn or cropped, whether the caller places the
     body centre or the keypoints: in every schema family both are in the same
     space, so a keypoint is no safer than ``X``. ``mosaic_v1`` and everything
     extending it store video pixels, so placing them is exact there.
-    ``trex_v1`` and ``mosaic_cm_v1`` store centimetres, and a crop or marker
-    placed at those coordinates lands somewhere else in the frame entirely --
-    silently, which is the failure this guard exists to remove.
 
-    Only a table known to be centimetres is refused. A schema that declares no
-    space, or one that is not registered in this process, is drawn as pixels
-    with a warning: the process that renders a dataset (the CLI, a queue worker)
-    is often not the one that registered the plugin schema its tables carry, and
-    refusing would stop a legitimate render over a fact the process cannot see.
+    Two spaces are refused:
+
+    - ``plane_cm`` (``trex_v1``, ``mosaic_cm_v1``) is centimeters, and a crop
+      or marker placed at those coordinates lands somewhere else in the frame
+      entirely -- silently, which is the failure this guard exists to remove.
+    - ``world_m`` (``mosaic_world_v1``) is meters in a world frame, which
+      reaches a video only through a projection with the recording's
+      calibration.
+
+    A schema that declares no space, or one that is not registered in this
+    process, is drawn as pixels with a warning: the process that renders a
+    dataset (the CLI, a queue worker) is often not the one that registered the
+    plugin schema its tables carry, and refusing would stop a legitimate render
+    over a fact the process cannot see.
 
     Which table is judged matters once an entry holds several variants. A caller
     that knows the schema of the table it was handed passes it as *schema* (a
@@ -73,9 +79,9 @@ def require_pixel_positions(
         tracks_run_id: The tracks variant the caller read, when it does not.
 
     Raises:
-        ValueError: If the table's space is centimetres, or if the entry holds
-            two variants and neither *schema* nor *tracks_run_id* says which
-            one was read.
+        ValueError: If the table's space is centimeters or world meters, or if
+            the entry holds two variants and neither *schema* nor
+            *tracks_run_id* says which one was read.
     """
     recorded = (
         schema
@@ -95,6 +101,12 @@ def require_pixel_positions(
             "pixels. A trex_v1 table is converted to pixels by `mosaic "
             "upgrade-tracks`; a mosaic_cm_v1 table records no pixel factor and "
             "cannot be drawn."
+        )
+    if space == "world_m":
+        raise ValueError(
+            f"{head}, whose spatial columns are meters in a world frame. They reach "
+            "a video only through a projection with the recording's calibration, "
+            f"which {who} does not perform."
         )
     warnings.warn(
         f"{head}, which declares no coordinate space in this process, so its "

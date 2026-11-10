@@ -213,15 +213,19 @@ importing `mosaic.tracking` registers neither.
   tracker that measures one declares a schema with `allows`, as `trex_v2` does.
 - `ensure_track_schema` raises `UnknownTrackSchemaError` for an unregistered name and
   accepts any unlisted column (`tests/core/track_library/test_track_schema.py`).
+- `pose_axes` and `all_or_none` on a schema make `ensure_track_schema` raise
+  `IncompleteTrackColumnsError` whatever `strict` says, for a keypoint missing an axis
+  and for a partly present column group. An extension inherits `pose_axes` and may not
+  change it, and its `all_or_none` groups add to its base's (`mosaic_world_v1`).
 - A new schema joins a family through `extends`. `mosaic_cm_v1` shares
   `STANDARD_COLUMNS` instead, to stay out of the pixel family. `LEGACY_SCHEMA` is what a
   blank recorded schema means. That schema, `trex_v1` (centimeters, `X` at the head),
   stays registered so archived datasets keep resolving. Do not use it for new data.
-- **A schema family declares its `space`**, `image_px` or `plane_cm`, and an extension
-  inherits it and may not change it. `space` is optional, so a third-party root schema
-  registers without one. The overlay and the crops refuse a `plane_cm` table, and draw a
-  table of unknown space (no `space`, or a schema this process never registered) as pixels
-  with a warning (`require_pixel_positions`,
+- **A schema family declares its `space`**, `image_px`, `plane_cm` or `world_m`, and an
+  extension inherits it and may not change it. `space` is optional, so a third-party
+  root schema registers without one. The overlay and the crops refuse a `plane_cm` or a
+  `world_m` table, and draw a table of unknown space (no `space`, or a schema this
+  process never registered) as pixels with a warning (`require_pixel_positions`,
   `tests/behavior/visualization_library/test_crop_centroid_fallback.py`). They judge the
   table they were handed, from `ResolvedScope.tracks_schemas` or the variant the caller
   pinned. A blank schema is `LEGACY_SCHEMA`, so it is refused.

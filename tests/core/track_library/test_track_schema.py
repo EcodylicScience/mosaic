@@ -26,9 +26,12 @@ from mosaic.core.pipeline.manifest import build_manifest, refuse_mixed_track_sch
 from mosaic.core.pipeline.types import Inputs
 from mosaic.core.schema import (
     DERIVED_COLUMNS,
+    GAZE_COLUMNS,
+    HEAD_COLUMNS,
     TRACK_SCHEMAS,
     TRACK_SPACES,
     ForbiddenTrackColumnError,
+    IncompleteTrackColumnsError,
     TrackSchema,
     TrackSchemaError,
     UnknownTrackSchemaError,
@@ -397,7 +400,7 @@ def test_an_unrecorded_schema_still_refuses_beside_a_pixel_native_one(
 
 def test_every_built_in_schema_declares_a_space() -> None:
     """A family is one space; a built-in with none would be guessed at downstream."""
-    for name in ("trex_v1", "trex_v2", "mosaic_v1", "mosaic_cm_v1"):
+    for name in ("trex_v1", "trex_v2", "mosaic_v1", "mosaic_cm_v1", "mosaic_world_v1"):
         assert TRACK_SCHEMAS[name].space in TRACK_SPACES, name
 
 
@@ -406,6 +409,7 @@ def test_the_built_in_spaces() -> None:
     assert schema_space("trex_v2") == "image_px"
     assert schema_space("mosaic_cm_v1") == "plane_cm"
     assert schema_space("trex_v1") == "plane_cm"
+    assert schema_space("mosaic_world_v1") == "world_m"
 
 
 def test_an_unrecorded_schema_is_read_as_the_legacy_space() -> None:
@@ -443,3 +447,162 @@ def test_an_extension_may_not_change_its_base_space() -> None:
             TrackSchema(name="relabelled", extends="mosaic_v1", space="plane_cm")
         )
     assert "relabelled" not in TRACK_SCHEMAS
+
+
+# -- The world-frame schema ---------------------------------------------------
+
+
+def test_the_world_schema_is_its_own_family() -> None:
+    """So a scope mixing it with pixel tables is refused by the existing check."""
+    assert schema_family("mosaic_world_v1") == "mosaic_world_v1"
+    assert schema_family("mosaic_world_v1") != schema_family("mosaic_v1")
+
+
+def _minimal_world_frame() -> pd.DataFrame:
+    """A table satisfying every ``mosaic_world_v1`` requirement, one keypoint."""
+    frame = _minimal_mosaic_v1_frame()
+    frame["Z"] = [0.5, 0.6]
+    for axis in ("X", "Y", "Z"):
+        frame[f"pose{axis}0"] = [0.1, 0.2]
+    frame["poseP0"] = [0.9, 0.8]
+    return frame
+
+
+def test_a_complete_world_table_validates_strictly() -> None:
+    _, report = ensure_track_schema(_minimal_world_frame(), "mosaic_world_v1", True)
+    assert report["missing_required"] == []
+
+
+def test_a_world_table_may_carry_arena() -> None:
+    frame = _minimal_world_frame()
+    frame["arena"] = ["A1", None]
+
+    _ = ensure_track_schema(frame, "mosaic_world_v1", strict=True)
+
+    assert "arena" in TRACK_SCHEMAS["mosaic_world_v1"].optional_text
+
+
+def test_the_world_schema_requires_z() -> None:
+    frame = _minimal_world_frame().drop(columns=["Z"])
+    with pytest.raises(TrackSchemaError):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=True)
+
+
+def test_a_partial_keypoint_triplet_raises_without_strict() -> None:
+    """Read as 2D by every pair-shaped helper, so it is refused, not reported."""
+    frame = _minimal_world_frame()
+    frame["poseX1"] = [0.0, 0.0]
+    frame["poseY1"] = [0.0, 0.0]
+    with pytest.raises(IncompleteTrackColumnsError, match="keypoint 1"):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+def test_a_partial_named_keypoint_raises_without_strict() -> None:
+    """The check covers a keypoint named by a word as it does a numbered one."""
+    frame = _minimal_world_frame()
+    frame["poseXnose"] = [0.0, 0.0]
+    frame["poseYnose"] = [0.0, 0.0]
+    with pytest.raises(IncompleteTrackColumnsError, match="nose"):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+def test_a_complete_named_keypoint_validates() -> None:
+    frame = _minimal_world_frame()
+    for axis in ("X", "Y", "Z"):
+        frame[f"pose{axis}nose"] = [0.0, 0.0]
+    _ = ensure_track_schema(frame, "mosaic_world_v1", strict=True)
+
+
+@pytest.mark.parametrize("group", [GAZE_COLUMNS, HEAD_COLUMNS])
+def test_a_partial_column_group_raises_without_strict(group: frozenset[str]) -> None:
+    frame = _minimal_world_frame()
+    first = sorted(group)[0]
+    frame[first] = [0.0, 0.0]
+    with pytest.raises(IncompleteTrackColumnsError, match="present together"):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+@pytest.mark.parametrize("group", [GAZE_COLUMNS, HEAD_COLUMNS])
+def test_a_complete_column_group_validates(group: frozenset[str]) -> None:
+    frame = _minimal_world_frame()
+    for column in group:
+        frame[column] = [0.0, 0.0]
+    _ = ensure_track_schema(frame, "mosaic_world_v1", strict=True)
+
+
+@pytest.mark.parametrize("column", ["VZ", "AZ", "SPEED", "camera"])
+def test_the_world_schema_forbids_derived_columns_and_a_camera(column: str) -> None:
+    """A fused table spans every camera, so a ``camera`` column would be a lie."""
+    frame = _minimal_world_frame()
+    frame[column] = [0.0, 0.0]
+    with pytest.raises(ForbiddenTrackColumnError):
+        _ = ensure_track_schema(frame, "mosaic_world_v1", strict=False)
+
+
+def test_the_3d_derived_columns_are_forbidden_in_pixel_tables_too() -> None:
+    assert {"VZ", "AZ"} <= DERIVED_COLUMNS
+    frame = _minimal_mosaic_v1_frame()
+    frame["VZ"] = [0.0, 0.0]
+    with pytest.raises(ForbiddenTrackColumnError):
+        _ = ensure_track_schema(frame, "mosaic_v1", strict=False)
+
+
+@pytest.mark.parametrize("schema_name", ["trex_v2", "mosaic_cm_v1"])
+def test_the_3d_derived_columns_are_allowed_where_the_tracker_measures_them(
+    schema_name: str,
+) -> None:
+    frame = _centroid_only_frame()
+    frame["VZ"] = [0.0, 0.0]
+    frame["AZ"] = [0.0, 0.0]
+    _ = ensure_track_schema(frame, schema_name, strict=True)
+
+
+def test_a_2d_schema_does_not_check_keypoint_completeness() -> None:
+    """Every 2D schema predates ``pose_axes``; its tables are judged as before."""
+    frame = _minimal_mosaic_v1_frame()
+    frame["poseX0"] = [1.0, 2.0]
+    _ = ensure_track_schema(frame, "mosaic_v1", strict=True)
+
+
+def test_an_extension_may_not_change_its_base_pose_axes() -> None:
+    with pytest.raises(TrackSchemaError, match="pose axes"):
+        register_track_schema(
+            TrackSchema(
+                name="flattened", extends="mosaic_world_v1", pose_axes=("X", "Y")
+            )
+        )
+    assert "flattened" not in TRACK_SCHEMAS
+
+
+def test_an_extension_of_the_world_schema_inherits_its_completeness_rules() -> None:
+    try:
+        register_track_schema(
+            TrackSchema(
+                name="world_extension",
+                extends="mosaic_world_v1",
+                all_or_none=(frozenset({"tagX", "tagY"}),),
+            )
+        )
+        registered = TRACK_SCHEMAS["world_extension"]
+        assert registered.pose_axes == ("X", "Y", "Z")
+        assert registered.all_or_none == (
+            GAZE_COLUMNS,
+            HEAD_COLUMNS,
+            frozenset({"tagX", "tagY"}),
+        )
+        partial = _minimal_world_frame()
+        partial["poseX1"] = [0.0, 0.0]
+        with pytest.raises(IncompleteTrackColumnsError):
+            _ = ensure_track_schema(partial, "world_extension")
+        tagged = _minimal_world_frame()
+        tagged["tagX"] = [0.0, 0.0]
+        with pytest.raises(IncompleteTrackColumnsError, match="tagY"):
+            _ = ensure_track_schema(tagged, "world_extension")
+    finally:
+        _ = TRACK_SCHEMAS.pop("world_extension", None)
+
+
+def test_a_world_table_refuses_beside_a_pixel_one(tmp_path: Path) -> None:
+    ds = _dataset_mixing(tmp_path, "mosaic_world_v1", "mosaic_v1")
+    with pytest.raises(ValueError, match="incompatible schemas"):
+        _ = build_manifest(ds, Inputs(("tracks",)))
