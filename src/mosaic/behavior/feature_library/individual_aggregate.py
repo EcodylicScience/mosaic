@@ -41,7 +41,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types.feature import RelatesLevel
 
-from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
 
 from .aggregate_common import AggregateParams, reduce_column, split_keys
 from .registry import register_feature
@@ -89,6 +89,7 @@ class IndividualAggregate:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),

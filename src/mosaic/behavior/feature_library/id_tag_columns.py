@@ -25,6 +25,7 @@ from mosaic.core.pipeline.types import (
     LabelsSource,
     TrackInputs,
 )
+from mosaic.core.schema import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 
 from .helpers import entry_identity
@@ -76,6 +77,7 @@ class IdTagColumns:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = ()
     # ``fields=None`` attaches every field in the labels file, and only the data
     # names those columns. An empty list attaches none.

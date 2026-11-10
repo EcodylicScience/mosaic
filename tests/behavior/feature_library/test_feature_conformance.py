@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.core.pipeline.column_contract import Column, declared_provides
+from mosaic.core.schema import TRACK_SPACES
 
 EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
 """Spelled out rather than derived from the type alias, so a value silently
@@ -442,6 +443,48 @@ def test_these_features_declare_follows_ids(slug: str, follows: bool) -> None:
     """A feature that reads each row alone declares False, one that groups by id True."""
     by_slug = {cls.name: cls for cls in FEATURE_CLASSES}
     assert vars(by_slug[slug])["follows_ids"] is follows
+
+
+TRACK_SPACES_DECLARED = frozenset(
+    {
+        "keypoint-kinematics",
+        "label-statistics",
+        "frame-aggregate",
+        "sequence-aggregate",
+        "individual-aggregate",
+        "id-tag-columns",
+        "label-predictions",
+    }
+)
+"""The features that compute in every track space, because they read no spatial column.
+
+Every other registered feature declares nothing and so computes in the two 2D
+spaces, which is what refuses it a world-frame table. A feature joins this set
+only when its computation is independent of the space.
+"""
+
+
+@pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
+def test_only_the_space_independent_features_declare_track_spaces(cls: type) -> None:
+    slug: object = getattr(cls, "name", None)
+    declared: object = getattr(cls, "track_spaces", None)
+    if slug in TRACK_SPACES_DECLARED:
+        assert declared == frozenset(TRACK_SPACES)
+    else:
+        assert declared is None, (
+            f"{cls.__name__} declares track_spaces = {declared!r}. Add it to "
+            f"TRACK_SPACES_DECLARED if it computes in every space."
+        )
+
+
+def test_every_declared_track_space_is_a_feature_and_a_set_of_spaces() -> None:
+    by_slug = {cls.name: cls for cls in FEATURE_CLASSES}
+    assert TRACK_SPACES_DECLARED <= by_slug.keys()
+    for slug in TRACK_SPACES_DECLARED:
+        declared: object = getattr(by_slug[slug], "track_spaces", None)
+        assert isinstance(declared, frozenset)
+        assert declared
+        assert declared <= set(TRACK_SPACES)
 
 
 BANNED_IDENTITY_NAMES = frozenset(

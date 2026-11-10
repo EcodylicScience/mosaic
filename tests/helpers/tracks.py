@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import re
 import zlib
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -30,6 +31,13 @@ from mosaic.core.pipeline.tracks_index import (
     read_tracks_index,
     tracks_index_path,
     write_tracks_row,
+)
+from mosaic.core.track_converter import (
+    TRACK_CONVERTERS,
+    EntryHints,
+    TrackConverter,
+    TrackConvertParams,
+    register_track_converter,
 )
 from tests.helpers.mock_dataset import MockDataset
 
@@ -107,6 +115,74 @@ def keypoint_rows(
         columns[f"poseY{k}"] = -(offset + frame + k / 10)
         columns[f"poseP{k}"] = np.full(len(frame), scores[k])
     return pd.DataFrame(columns)
+
+
+def world_track_table(
+    group: str = "",
+    sequence: str = "",
+    *,
+    n_rows: int = 40,
+    n_ids: int = 1,
+    start_frame: int = 0,
+) -> pd.DataFrame:
+    """One entry's ``mosaic_world_v1`` table: three keypoints, a ``Z`` and ``poseZ``.
+
+    Laid out as :func:`track_table` lays out its rows, in meters. ``Z`` rises
+    with the frame and keypoint ``k`` sits ``k`` tenths of a meter above the body
+    center on every axis, so the body center is not the mean of the keypoints and
+    the three axes differ.
+    """
+    table = track_table(
+        group, sequence, n_rows=n_rows, n_ids=n_ids, start_frame=start_frame
+    ).drop(columns="feat_a")
+    table["Z"] = np.repeat(np.linspace(0.0, 2.0, n_rows), n_ids)
+    for keypoint in range(3):
+        offset = keypoint / 10
+        for axis in ("X", "Y", "Z"):
+            table[f"pose{axis}{keypoint}"] = table[axis] + offset
+        table[f"poseP{keypoint}"] = 0.9
+    return table
+
+
+WORLD_POINTS_FORMAT = "test_world_points"
+"""The raw format of :class:`WorldPointsConverter`."""
+
+
+class WorldPointsConverter(TrackConverter[TrackConvertParams]):
+    """Converts any raw file into the :func:`world_track_table` of two animals."""
+
+    src_format: ClassVar[str] = WORLD_POINTS_FORMAT
+    output_schema: ClassVar[str] = "mosaic_world_v1"
+
+    def convert(
+        self, path: Path, params: TrackConvertParams, hints: EntryHints
+    ) -> pd.DataFrame:
+        return world_track_table(hints.group, hints.sequence or path.stem, n_ids=2)
+
+
+@contextmanager
+def registered_world_points() -> Generator[None]:
+    """Register :class:`WorldPointsConverter` for the duration of the block."""
+    _ = register_track_converter(WorldPointsConverter)
+    try:
+        yield
+    finally:
+        _ = TRACK_CONVERTERS.pop(WORLD_POINTS_FORMAT, None)
+
+
+def raw_world_dataset(root: Path) -> Dataset:
+    """A dataset indexing one raw file, ``seq.txt``, of :data:`WORLD_POINTS_FORMAT`.
+
+    Nothing is converted. Index it inside :func:`registered_world_points`.
+    """
+    from tests.helpers.datasets import make_dataset
+
+    dataset = make_dataset(root)
+    raw = dataset.base_dir / "raw"
+    raw.mkdir(parents=True)
+    _ = (raw / "seq.txt").write_text("points\n", encoding="utf-8")
+    dataset.index_tracks_raw([raw], patterns=["*.txt"], src_format=WORLD_POINTS_FORMAT)
+    return dataset
 
 
 def add_track_sequences(

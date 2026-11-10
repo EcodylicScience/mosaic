@@ -15,6 +15,7 @@ from mosaic.core import scope as scope_module
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.storage_names import text_digest
+from mosaic.core.schema import TrackSpace
 
 # ``now_iso`` / ``new_execution_id`` now live in the dependency-light leaf
 # ``mosaic.runlog`` (so external readers can import them without the heavy pipeline).
@@ -92,6 +93,13 @@ class ResolvedScope:
     for consumers that place coordinates on video, which must ask the space of
     the table they were handed rather than of whichever row an index lookup
     meets first. Never hashed."""
+    track_spaces: frozenset[TrackSpace] = frozenset()
+    """The :data:`~mosaic.core.schema.TrackSpace` of every track-shaped table this
+    run reads: the recorded schema's space for a ``"tracks"`` input, and
+    ``"world_m"`` for a track-shaped ``Result`` carrying ``Z``. A schema not
+    registered in this process contributes nothing, because nothing can be said
+    about it. What :func:`~mosaic.core.pipeline.track_space.refuse_unsupported_track_space`
+    checks a feature's ``track_spaces`` against. Never hashed."""
     input_tracks_compositions: Mapping[tuple[str, str], str] | None = None
     """Per entry, the tracks compositions a run with a feature input read: each
     input's cell joined with ``+`` in input order, ``""`` when every part is

@@ -189,6 +189,17 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `refuse=False` the ambiguity stays a `Problem` at `tracks` or
   `params.source_tracks_run_id`, so a step recording its run keeps it
   (`_ambiguous_tracks_problem`, `test_pipeline_step.py`).
+- `track_space_refusals` (`step_preflight.py`) runs in `plan_pipeline` once the walk
+  ends. For each feature step neither bound nor pinned, it reads the space of the
+  tracks tables the step selects (`tracks_table_schemas`, `schema_space`) and, for a
+  step whose declaration `requires_track_shape`, `world_m` when a run it reads through
+  `inputs` carries `Z` (`run_carries_z`), against `Declaration.track_spaces`. A
+  variant an op of the recipe mints, a parent run not on disk, an ambiguous entry and
+  an unregistered schema add nothing. Under `refuse` the first refused step raises
+  `StepRefused("schema_family_mismatch")`. Otherwise each is a `Problem` at `inputs`
+  and its `TrackSpaceRefused` stays in `Plan.track_space_refusals`, outside the wire,
+  the fingerprint and plan equality, and `_plan` (`step.py`) raises it at the step's
+  start with the same reason, never `recipe_refused` (`test_pipeline_track_spaces.py`).
 - A feature step that names `tracks` in `inputs`, whose declaration has `follows_ids`
   and that is neither bound nor pinned, is a `Problem` at `inputs` when
   `rows_without_tracklets` lists any entry it is asked for, in the variant it resolved,

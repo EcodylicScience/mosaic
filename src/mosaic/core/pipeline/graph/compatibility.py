@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
 from mosaic.core.json_value import JsonValue
+from mosaic.core.schema import TrackSpace
 
 from ..column_contract import Provides, Requirement
 from ..loading import alignment_verdict, widening_hint, widens
@@ -296,6 +297,14 @@ class Declaration:
     ``tracks``; a feature that declares nothing reads ``True``, since a step that
     is not known to read each row alone is not safe over ids that restart. It is
     not hashed.
+    """
+    track_spaces: tuple[TrackSpace, ...] = ()
+    """The track spaces a feature computes in, sorted.
+
+    Read off the feature's ``track_spaces`` class attribute, the two 2D spaces
+    when it declares none (:func:`~mosaic.core.pipeline.track_space.feature_track_spaces`).
+    A plan refuses a step whose tracks are in another space. Empty for an op and
+    for ``tracks``, which compute nothing in a space. It is not hashed.
     """
     temporal_reach: Reach = "undeclared"
     """The frames on each side that one output row depends on, at default params.

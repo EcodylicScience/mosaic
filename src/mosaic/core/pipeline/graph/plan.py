@@ -88,6 +88,7 @@ from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..preprocess_layout import PREPROCESS_KIND
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
+from ..track_space import TrackSpaceRefused
 from .digest import recipe_digest
 from .heldout import deferred_scope_problem, held_out_fit_problem
 from .compatibility import Reach
@@ -471,6 +472,11 @@ class Plan:
         locked: The steps an apply keeps as the request it names ran them
             (:func:`~.apply.derive_applied_fit`), in topological order. Empty
             for a plan that applies no fit. Not part of the fingerprint.
+        track_space_refusals: The refusal of each feature step that would read
+            tracks in a space it does not compute in, keyed by step id
+            (:func:`~.step_preflight.track_space_refusals`). Each is also a
+            problem at the step's ``inputs``. A step refuses with it at its
+            start. Not part of the wire, the fingerprint or plan equality.
         cleanup: The superseded runs of the plan's feature storages, and the
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
@@ -497,6 +503,9 @@ class Plan:
     request_scope: Scope | None = None
     tracks_run_id: str | None = None
     locked: tuple[str, ...] = ()
+    track_space_refusals: Mapping[str, TrackSpaceRefused] = field(
+        default_factory=dict[str, TrackSpaceRefused], compare=False
+    )
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -751,6 +760,11 @@ def plan_pipeline(
             (``schema_family_mismatch``), or a step reads the tracks with no
             variant named while an entry holds two (``variant_ambiguous``).
             Raised before any step resolves, and only when *refuse* is set.
+            Or a feature step would read tracks in a space it does not compute
+            in (``schema_family_mismatch``, the refusal ``run_feature`` raises),
+            the first such step in topological order, raised after the walk and
+            only when *refuse* is set. Unset, each is a problem at the step's
+            ``inputs``.
             Or a pin is unusable (:func:`~.pins.refuse_unusable_pins`), raised
             after the walk whatever *refuse* says. Or the request that
             *applies_request_id* names cannot be applied, raised before the
@@ -924,6 +938,25 @@ def plan_pipeline(
             labels_kind=step_plan.labels_kind,
         )
 
+    # Imported here, because step_preflight imports this module.
+    from .step_preflight import StepRefused, track_space_refusals
+
+    refused_spaces = track_space_refusals(
+        ds,
+        recipe,
+        planned,
+        catalog=catalog,
+        targets={
+            step_id: _step_target(step_id, target, narrowed) for step_id in planned
+        },
+        exempt=exempt,
+    )
+    for step_id, refusal in refused_spaces.items():
+        if refuse:
+            raise StepRefused(
+                "schema_family_mismatch", step_id, str(refusal), refusal.detail
+            ) from refusal
+        findings.problems.append(Problem(step_id, "inputs", str(refusal)))
     reached = reach_findings(recipe, steps, skip=exempt)
     problems = list(findings.problems)
     problems.extend(_pinned_input_problems(recipe, pins))
@@ -960,6 +993,7 @@ def plan_pipeline(
         request_scope=narrowing,
         tracks_run_id=tracks_run_id,
         locked=locked,
+        track_space_refusals=refused_spaces,
     )
     if pinned_inv is not None:
         # Imported here, because pins imports this module.

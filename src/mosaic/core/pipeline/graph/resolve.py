@@ -65,6 +65,7 @@ from ..column_contract import (
 from ..error_kind import ClassifiedError, ErrorKind
 from ..label_controls import LABEL_CONTROL_FIELDS
 from ..refusal import ToolUnavailable
+from ..track_space import feature_track_spaces
 from ..types.data_config import COLUMNS
 from ..types.feature import EmitsLevel
 from .columns import provided_wire, requires_wire, tracks_provides
@@ -561,6 +562,7 @@ def _feature_declaration(cls: type) -> Declaration:
         costly_fit=getattr(cls, "costly_fit", False) is True,
         fits=getattr(cls, "fits", False) is True,
         follows_ids=getattr(cls, "follows_ids", True) is True,
+        track_spaces=tuple(sorted(feature_track_spaces(cls))),
         temporal_reach=class_reach(cls),
         temporal_reach_by_option=tuple(class_reach_by_option(cls).items()),
         pair_rule_column=_pair_rule_column(cls),

@@ -32,6 +32,7 @@ from mosaic.core.label_intervals import (
     label_vocabulary,
     segments_from_npz,
 )
+from mosaic.core.schema import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     Column,
@@ -512,6 +513,7 @@ class LabelStatistics:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column(C.id_col),

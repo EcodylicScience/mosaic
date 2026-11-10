@@ -21,6 +21,31 @@ extensions forbid them, and `trex_v2` and `mosaic_cm_v1` allow them. The
 `tracks` catalog entry may provide `poseZ` and `Z`. The overlay and the crops
 refuse a `world_m` table, as they refuse a centimeter one.
 
+A feature declares the spaces it computes in with a `track_spaces` class
+attribute, and a feature that declares none computes in the two 2D spaces. A run
+whose scope resolves a `world_m` table, from a tracks input recorded as
+`mosaic_world_v1` or from a track-shaped `Result` carrying `Z`, is refused for
+such a feature with `schema_family_mismatch` (exit 65), before anything is
+hashed or written. `keypoint-kinematics`, `label-statistics`, `frame-aggregate`,
+`sequence-aggregate`, `individual-aggregate`, `id-tag-columns` and
+`label-predictions` read no spatial column and accept every space. No run id
+moves.
+
+A recipe is checked for the same refusal when it is planned. `submit_request`,
+`mosaic pipeline submit` and `mosaic pipeline run` refuse a feature step whose
+tracks tables are in a space it does not compute in, or that reads through
+`inputs` a stored run carrying `Z`, with `StepRefused` reason
+`schema_family_mismatch` and the detail `feature`, `accepts` and `found`, and
+write no request. A plan made without refusing, as the MCP `plan_recipe` preview
+makes it, lists the refusal as a problem at the step's `inputs`. Tracks that a
+step of the same recipe writes, and a run not yet on disk, are checked when the
+reading step starts, which refuses with the same reason and never with
+`recipe_refused`. A schema not registered in the process is skipped. The editor
+catalog's `Declaration` gains `track_spaces`, the sorted spaces a feature
+computes in, empty for an op and for `tracks`. It defaults to empty, so a reader
+of the older wire is unaffected. mosaic-app's catalog fixture
+(`src/test/fixtures/pipelineCatalog.ts`) needs a refresh to hold it.
+
 ## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
 
 ### `feral` trains from a templates run and a labels kind

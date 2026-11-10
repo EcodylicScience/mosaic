@@ -52,7 +52,9 @@ if TYPE_CHECKING:
 __all__ = [
     "AmbiguousTrackLeaf",
     "TrackSource",
+    "carries_z",
     "is_track_shaped",
+    "run_carries_z",
     "track_leaf",
     "track_universe",
 ]
@@ -99,6 +101,19 @@ def is_track_shaped(path: Path) -> bool:
     return names is not None and {COLUMNS.x_col, COLUMNS.y_col} <= set(names)
 
 
+def carries_z(path: Path) -> bool:
+    """Does this parquet carry a ``Z`` column, the mark of a world-frame table?
+
+    A track-shaped ``Result`` records no schema, so this is how a 3D table that
+    passed through a track-producing feature is still recognized as 3D by the next
+    one. It reads the footer as :func:`is_track_shaped` does, so the two never
+    disagree about which file they looked at. An absent file and one whose footer
+    does not parse carry no ``Z``.
+    """
+    names = read_parquet_column_names(path)
+    return names is not None and "Z" in names
+
+
 def _sample_output(ds: Dataset, storage: str, run_id: str) -> Path | None:
     """One parquet from this run, or ``None`` when it wrote none."""
     root = feature_run_root(ds, storage, run_id)
@@ -107,6 +122,21 @@ def _sample_output(ds: Dataset, storage: str, run_id: str) -> Path | None:
     for candidate in sorted(root.glob("*.parquet")):
         return candidate
     return None
+
+
+def run_carries_z(ds: Dataset, storage: str, run_id: str) -> bool:
+    """Whether a stored feature run's output carries ``Z``, read off one parquet.
+
+    One run of one producer wrote every file, so one footer answers for all of
+    them. A run that wrote nothing carries no ``Z``.
+
+    Args:
+        ds: The dataset holding the run.
+        storage: The feature's storage name.
+        run_id: The run.
+    """
+    sample = _sample_output(ds, storage, run_id)
+    return sample is not None and carries_z(sample)
 
 
 def _consumed_track_runs(ds: Dataset, storage: str, run_id: str) -> frozenset[str]:

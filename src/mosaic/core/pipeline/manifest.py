@@ -21,7 +21,7 @@ from ...core.recording import (
     adjacent,
     facts_from_frame_extents,
 )
-from ...core.schema import LEGACY_SCHEMA, schema_family
+from ...core.schema import LEGACY_SCHEMA, TrackSpace, schema_family, schema_spaces
 from ...core.scope import Scope
 from ...core.entry import Entry
 from .composition import input_root_part, join_input_cells
@@ -35,7 +35,7 @@ from .index import (
     missing_outputs_error,
 )
 from .loading import PairRowsMissing, load_entry_data
-from .track_universe import current_run_id, is_track_shaped
+from .track_universe import carries_z, current_run_id, is_track_shaped
 from .tracks_index import (
     FrameExtents,
     read_frame_extents,
@@ -220,6 +220,19 @@ def _ensure_track_shaped(
         )
 
 
+def _track_result_is_world(
+    path_map_all: dict[tuple[str, str], tuple[Path, LoadSpec]],
+) -> bool:
+    """Whether a track-shaped ``Result`` input is a world-frame table.
+
+    Peeks one output, as ``_ensure_track_shaped`` does: one run of one producer
+    wrote every file, so they agree on their columns.
+    """
+    if not path_map_all:
+        return False
+    return carries_z(next(iter(path_map_all.values()))[0])
+
+
 def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
     """Which run of *feature_name* an unpinned reference reads.
 
@@ -295,6 +308,7 @@ def build_manifest(
 
     variants: tuple[str, ...] = ()
     tracks_schemas: dict[tuple[str, str], str] = {}
+    result_spaces: set[TrackSpace] = set()
     upstream_runs: list[tuple[str, str | None]] = []
     feature_inputs: list[tuple[str, str]] = []
     # ``None`` marks the tracks input, whose compositions are read once the
@@ -319,6 +333,8 @@ def build_manifest(
             )
             if getattr(type(inputs), "_track_input", False):
                 _ensure_track_shaped(item.feature, input_result.path_map_all)
+                if _track_result_is_world(input_result.path_map_all):
+                    result_spaces.add("world_m")
             upstream_runs.append((item.feature, item.run_id))
             feature_inputs.append((item.feature, input_result.run_id))
             per_input_tracks.append(input_result.tracks_compositions)
@@ -345,6 +361,11 @@ def build_manifest(
     # declares keeps the resolver ignorant of features: what is *hashed* is
     # decided at the one payload site, and what is merely *recorded* on the index
     # row wants the others.
+    shared_schemas = {
+        entry: schema
+        for entry, schema in tracks_schemas.items()
+        if entry in shared_entries
+    }
     resolved = ResolvedScope(
         entries=shared_entries,
         # What was asked for, beside what it resolved to. An empty resolution
@@ -353,11 +374,8 @@ def build_manifest(
         selector=selector,
         tracks_variants=variants,
         compositions=read_entry_compositions(ds, shared_entries),
-        tracks_schemas={
-            entry: schema
-            for entry, schema in tracks_schemas.items()
-            if entry in shared_entries
-        },
+        tracks_schemas=shared_schemas,
+        track_spaces=frozenset(result_spaces) | schema_spaces(shared_schemas.values()),
         input_tracks_compositions=(
             join_input_cells(
                 [
@@ -909,6 +927,29 @@ def tracks_table_columns(
         if names is not None:
             found[entry] = names
     return found
+
+
+def tracks_table_schemas(
+    ds: Dataset, tracks_run_id: str | None, scope: Scope
+) -> dict[tuple[str, str], str]:
+    """The recorded schema of each tracks table that *scope* resolves to.
+
+    The resolver chooses the table of each entry, as it does for a run and for
+    :func:`tracks_table_columns`. An entry without a table on disk is left out.
+
+    Args:
+        ds: The dataset whose tracks index to read.
+        tracks_run_id: Which variant to resolve, or ``None`` for whichever each
+            entry has. A variant without rows yet resolves no table.
+        scope: The entries to read.
+
+    Raises:
+        AmbiguousTracksVariant: *tracks_run_id* is ``None`` and an entry of
+            *scope* holds two variants.
+        ValueError: The tables are of mixed schema families.
+    """
+    resolved = _resolve_tracks(ds, tracks_run_id, scope, "empty")
+    return dict(sorted(resolved.tracks_schemas.items()))
 
 
 def refuse_mixed_track_schemas(

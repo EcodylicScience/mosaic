@@ -96,6 +96,12 @@ class Feature(Protocol):
     ``True``), and it enters no run id or version
     (``tests/behavior/feature_library/test_feature_conformance.py`` fails on a
     feature that leaves it undeclared).
+
+    A feature may also declare ``track_spaces: ClassVar[frozenset[TrackSpace]]``,
+    the coordinate spaces it computes in. A feature that declares nothing computes
+    in the two 2D spaces, ``image_px`` and ``plane_cm``, so it is refused a
+    world-frame table with ``schema_family_mismatch``. A feature that reads no
+    spatial column declares all three. The declaration enters no run id.
     """
 
     name: str

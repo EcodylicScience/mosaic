@@ -23,6 +23,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.schema import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -206,6 +207,7 @@ class KeypointKinematics:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.frame_col),
         Column(C.id_col),

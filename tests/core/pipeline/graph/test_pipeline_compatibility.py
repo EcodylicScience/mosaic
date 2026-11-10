@@ -8,12 +8,14 @@ case here runs in a subprocess where constructing a dataset raises.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 
 import pytest
 
 from mosaic.core.pipeline.graph import (
+    TRACKS_DECLARATION,
     ConsumerDecl,
     Declaration,
     DeclarationCatalog,
@@ -401,6 +403,32 @@ def test_declarations_are_read_off_what_a_class_declares() -> None:
     assert trainer is not None
     assert not trainer.produces.writes_tracks
     assert not trainer.consumes.reads_media
+
+
+def test_the_catalog_lists_the_track_spaces_each_feature_computes_in() -> None:
+    """Read off the feature's ``track_spaces``, sorted; an op and tracks list none."""
+    catalog = declaration_catalog()
+
+    assert catalog.entries["keypoint-kinematics"].track_spaces == (
+        "image_px",
+        "plane_cm",
+        "world_m",
+    )
+    assert catalog.entries["speed-angvel"].track_spaces == ("image_px", "plane_cm")
+    assert catalog.entries["convert-tracks"].track_spaces == ()
+    assert TRACKS_DECLARATION.track_spaces == ()
+
+
+def test_the_editor_catalog_serializes_the_track_spaces() -> None:
+    [entry] = [
+        entry
+        for entry in editor_catalog().entries
+        if entry.name == "keypoint-kinematics"
+    ]
+
+    served = json.loads(entry.model_dump_json())
+
+    assert served["declaration"]["track_spaces"] == ["image_px", "plane_cm", "world_m"]
 
 
 def test_convert_labels_declares_writes_labels() -> None:

@@ -53,6 +53,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import UNLABELED
+from mosaic.core.schema import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -340,6 +341,7 @@ class LabelPredictions:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "as-input"
     follows_ids: bool = True  # labels a row by its ids
+    track_spaces: ClassVar[frozenset[TrackSpace]] = frozenset(TRACK_SPACES)
     requires: ClassVar[tuple[Requirement, ...]] = (Column("frame"),)
     provides: ClassVar[Provides] = Provides(
         adds=(Column("predicted_label"),),

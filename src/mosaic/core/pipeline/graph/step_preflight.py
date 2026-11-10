@@ -27,9 +27,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..manifest import refuse_mixed_track_schemas
+from mosaic.core.schema import schema_spaces
+from mosaic.core.scope import Scope
+
+from ..manifest import refuse_mixed_track_schemas, tracks_table_schemas
 from ..refusal import Refusal, RefusalReason
 from ..gpu_lease import leased_card, names_another_card
+from ..track_space import TrackSpaceRefused, refuse_unsupported_track_space
+from ..track_universe import run_carries_z
+from ..tracks_index import AmbiguousTracksVariant
 from .model import (
     BOUND_STATUS,
     COMPLETE_STATUSES,
@@ -45,16 +51,17 @@ from .plan import (
     step_target,
 )
 from .resolve import build_step_feature
+from .topo import topological_order
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
-    from mosaic.core.scope import Scope
+    from mosaic.core.schema import TrackSpace
 
-    from ..tracks_index import AmbiguousTracksVariant
+    from .compatibility import DeclarationCatalog
     from .wire import Problem
 
 
@@ -64,6 +71,7 @@ __all__ = [
     "StepRefused",
     "preflight",
     "refuse_mixed_schemas",
+    "track_space_refusals",
 ]
 
 
@@ -214,16 +222,107 @@ def refuse_mixed_schemas(
         raise StepRefused("schema_family_mismatch", step_id, str(exc)) from exc
     if not readers:
         return
-    from ..tracks_index import (
-        AmbiguousTracksVariant,
-        read_tracks_index,
-        select_variant_rows,
-    )
+    from ..tracks_index import read_tracks_index, select_variant_rows
 
     try:
         _ = select_variant_rows(read_tracks_index(ds), None)
     except AmbiguousTracksVariant as ambiguous:
         raise _variant_ambiguous(step_id or readers[0], readers, ambiguous) from None
+
+
+def track_space_refusals(
+    ds: Dataset,
+    recipe: Recipe,
+    planned: Mapping[str, PlannedStep],
+    *,
+    catalog: DeclarationCatalog,
+    targets: Mapping[str, frozenset[Entry]],
+    exempt: Collection[str],
+) -> dict[str, TrackSpaceRefused]:
+    """The feature steps that would read tracks in a space they do not compute in.
+
+    The plan-time half of the check ``run_feature`` makes: one refusal and one
+    message for both. A step's spaces are those of the tracks tables it selects,
+    through each recorded schema's space, and ``world_m`` for each step it reads
+    through ``inputs`` as tracks whose stored run carries ``Z``.
+
+    **What is not on disk yet is skipped**, and the step's own plan at its start
+    checks it: a variant an op of the same recipe mints has no rows, and a parent
+    without a run id or whose run holds no output has no footer. A schema this
+    process does not register says nothing. An entry holding two variants under
+    an unpinned reader records nothing, because the step's identity reports it.
+
+    Args:
+        ds: The dataset to read the tracks index and the stored runs of.
+        recipe: The recipe planned.
+        planned: Each step's plan, keyed by step id.
+        catalog: The declarations of the step types.
+        targets: Each step's target entries, keyed by step id.
+        exempt: The steps a request binds or pins to a run. Neither is executed,
+            so neither reads anything.
+
+    Returns:
+        The refusal of each refused step, keyed by step id, in topological order.
+    """
+    refusals: dict[str, TrackSpaceRefused] = {}
+    read: dict[tuple[str | None, frozenset[Entry]], frozenset[TrackSpace]] = {}
+    for step in topological_order(recipe):
+        if not isinstance(step, FeatureStepSpec) or step.id in exempt:
+            continue
+        declared = catalog.entries[step.feature]
+        if not declared.track_spaces:
+            continue
+        spaces = _tracks_spaces(ds, step, planned[step.id], targets[step.id], read)
+        if declared.consumes.requires_track_shape:
+            spaces |= _stored_input_spaces(ds, step, planned)
+        try:
+            refuse_unsupported_track_space(
+                frozenset(declared.track_spaces), step.feature, spaces
+            )
+        except TrackSpaceRefused as refused:
+            refusals[step.id] = refused
+    return refusals
+
+
+def _tracks_spaces(
+    ds: Dataset,
+    step: FeatureStepSpec,
+    planned: PlannedStep,
+    target: frozenset[Entry],
+    read: dict[tuple[str | None, frozenset[Entry]], frozenset[TrackSpace]],
+) -> frozenset[TrackSpace]:
+    """The spaces of the tracks tables *step* selects, empty when it reads none.
+
+    *read* holds the spaces already read for a variant over a target, so steps
+    sharing both read the tracks index once.
+    """
+    variant = planned.spec.tracks_run_id
+    if TRACKS_INPUT not in step.inputs or (step.tracks is not None and not variant):
+        # A tracks reference to a producer whose identity is unresolved names no
+        # variant, and its tables cannot be read.
+        return frozenset()
+    key = (variant, target)
+    if key not in read:
+        try:
+            schemas = tracks_table_schemas(ds, variant, Scope(entries=sorted(target)))
+        except AmbiguousTracksVariant:
+            read[key] = frozenset()
+        else:
+            read[key] = schema_spaces(schemas.values())
+    return read[key]
+
+
+def _stored_input_spaces(
+    ds: Dataset, step: FeatureStepSpec, planned: Mapping[str, PlannedStep]
+) -> frozenset[TrackSpace]:
+    """``world_m`` when a stored run that *step* reads through ``inputs`` carries ``Z``."""
+    for item in step.inputs:
+        if item == TRACKS_INPUT:
+            continue
+        parent = planned[item.step]
+        if parent.run_id and run_carries_z(ds, parent.storage_name, parent.run_id):
+            return frozenset({"world_m"})
+    return frozenset()
 
 
 def _unpinned_readers(

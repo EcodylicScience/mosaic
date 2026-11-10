@@ -378,6 +378,11 @@ from tests.helpers.tracks import (
     write_dlc_csv,
     write_sleap_analysis_h5,
     write_trex_npz,
+    world_track_table,
+    WORLD_POINTS_FORMAT,
+    WorldPointsConverter,
+    raw_world_dataset,
+    registered_world_points,
 )
 from tests.helpers.identity import run_id_digest
 from tests.helpers.index_locks import index_locked_out
@@ -721,6 +726,11 @@ __all__ = [
     "isolate_card_leases",
     "write_reader_params",
     "window_centers",
+    "world_track_table",
+    "WORLD_POINTS_FORMAT",
+    "WorldPointsConverter",
+    "raw_world_dataset",
+    "registered_world_points",
     "track_sequences",
     "track_table",
     "tree_snapshot",

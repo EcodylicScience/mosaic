@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from typing import Final, Literal
@@ -31,6 +32,7 @@ __all__ = [
     "register_track_schema",
     "schema_family",
     "schema_space",
+    "schema_spaces",
 ]
 
 LEGACY_SCHEMA = "trex_v1"
@@ -279,6 +281,21 @@ def schema_space(schema_name: str) -> TrackSpace | None:
     """
     schema = TRACK_SCHEMAS.get(schema_family(schema_name or LEGACY_SCHEMA))
     return None if schema is None else schema.space
+
+
+def schema_spaces(schema_names: Iterable[str]) -> frozenset[TrackSpace]:
+    """The :data:`TrackSpace` of each of *schema_names*, those it can name.
+
+    The one rule by which a run and a plan judge the spaces of the tracks tables
+    they read: :func:`schema_space` of each, a schema that answers ``None``
+    contributing nothing.
+    """
+    spaces: set[TrackSpace] = set()
+    for name in schema_names:
+        space = schema_space(name)
+        if space is not None:
+            spaces.add(space)
+    return frozenset(spaces)
 
 
 def _incomplete_keypoints(

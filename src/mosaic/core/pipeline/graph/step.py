@@ -445,8 +445,14 @@ def _plan(
     the graph writes the tracks that a later step reads, and a problem found then
     belongs to the step it names.
 
+    A step that would read tracks in a space it does not compute in refuses
+    with ``schema_family_mismatch``, the reason a submission gives, also when
+    those tracks were written after the submission.
+
     Raises:
-        RecipeRefusedAtStep: The dataset refuses this step.
+        StepRefused: This step would read tracks in a space it does not compute
+            in (``schema_family_mismatch``).
+        RecipeRefusedAtStep: The dataset refuses this step otherwise.
     """
     plan = plan_pipeline(
         ds,
@@ -459,6 +465,11 @@ def _plan(
         refuse=False,
         ignore_unavailable=True,
     )
+    refusal = plan.track_space_refusals.get(step_id)
+    if refusal is not None:
+        raise StepRefused(
+            "schema_family_mismatch", step_id, str(refusal), refusal.detail
+        ) from refusal
     own = tuple(problem for problem in plan.problems if problem.step == step_id)
     if own:
         raise RecipeRefusedAtStep(step_id, replace(plan, problems=own))
