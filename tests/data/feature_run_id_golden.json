@@ -76,6 +76,7 @@
   "pair-position/default": "0.1-684f4115dc",
   "pair-wavelet/default": "0.2-0fbf2d766d",
   "pair-wavelet/params-nfreq": "0.2-9221abe0f4",
+  "pose-egocentric/params-heading": "0.1-87b00b2eed",
   "probability-ensemble/fit": "0.2-a4cfca157f",
   "probability-ensemble/threshold-mapping": "0.2-052429b39c",
   "probability-ensemble/tuned-threshold": "0.2-330ea9cb79",

@@ -75,6 +75,12 @@ def test_a_keypoint_named_twice_is_refused_whichever_form_names_it() -> None:
         check_keypoints_distinct([0, "nose"], ["nose", "tail"], "t")
 
 
+def test_a_repeated_keypoint_is_refused_under_the_parameter_that_lists_it() -> None:
+    message = "t: origin names a keypoint twice, [0, 0]."
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        check_keypoints_distinct([0, 0], None, "t", param="origin")
+
+
 def test_a_heading_of_one_keypoint_is_refused_whichever_form_names_it() -> None:
     check_heading_pair((0, 1), None, "t")
     message = "t: heading (1, 1) is a keypoint and itself, which points nowhere."

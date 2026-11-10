@@ -3,7 +3,7 @@
 
 # Features
 
-64 features are registered. Each one runs as
+65 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -562,6 +562,23 @@ CWT spectrograms of numeric columns of pair rows. The columns are those ``cols``
     | --- | --- | --- | --- | --- |
     | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
+
+### `pose-egocentric`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.pose_egocentric.PoseEgocentric`
+
+Per-frame 3D keypoints in each individual's own body frame.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `origin` | list of (`integer` \| `string`) | _required_ | min items `1` | The keypoints whose mean is the body frame's origin, by index or by name, such as both hips. Every one must be present on a row for the origin to be defined there: a mean of whichever happen to be detected moves the origin from row to row, and that movement would read as a change of posture. |
+| `lateral` | tuple of (`integer` \| `string`, `integer` \| `string`) \| `None` | `null` |  | The (left, right) keypoint pair, by index or by name. The horizontal part of left minus right is the subject's left, the body frame's +Y, and forward is +Y cross up. Left and right are the subject's own, not the camera's. Set exactly one of lateral and heading. |
+| `heading` | tuple of (`integer` \| `string`, `integer` \| `string`) \| `None` | `null` |  | The (front, rear) keypoint pair, by index or by name, such as head and tail base on a midline skeleton. The horizontal part of front minus rear is forward, the body frame's +X, and the subject's left is up cross +X. Set exactly one of lateral and heading. |
+| `keypoint_names` | list of `string` \| `None` | `null` |  | A name for each keypoint, in the table's keypoint order, so that origin, lateral, heading, keypoints and scale_by may name keypoints rather than number them. Its length must equal the table's keypoint count. Output columns are numbered by position whether or not names are given. |
+| `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | Which keypoints to express in the body frame and emit, by index or by name. An index is a keypoint's position in the table's keypoint order, and keypoint k is emitted as ego_x{k}, ego_y{k} and ego_z{k}. Unset, every keypoint the table carries. |
+| `scale_by` | tuple of (list of (`integer` \| `string`), list of (`integer` \| `string`)) \| `None` | `null` |  | Two keypoint groups, such as the hips and the shoulders. Set, the egocentric coordinates are divided by the median distance between the two groups' centroids, taken per individual and per sequence, so that posture compares across body sizes. Unset, they stay in the table's length unit. |
+| `max_gap` | `integer` | `0` | >= `0` | The longest run of undefined values filled by linear interpolation, per individual and per output column, after the body frame is computed. A longer run stays undefined throughout, and a run at either end of an individual's track is never filled. 0 fills nothing. arhmm replaces an undefined value with zero, which it then fits as a pose, so a run meant for it usually wants this set. [frames] |
+| `context` | `boolean` | `false` |  | Also emit body_yaw and origin_x/y/z: where the body frame sits and which way it faces. They are context, not posture, and a model fitted on every numeric column (arhmm, the template features) would fit them as posture; body_yaw jumps by 2 pi where it wraps. Off by default for that reason. |
 
 ### `scale-to-bl`
 

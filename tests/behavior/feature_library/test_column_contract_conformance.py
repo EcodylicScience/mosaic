@@ -11,7 +11,9 @@ input may leave a requirement unguaranteed, and the chain then gains the
 provider that ``input_candidates`` names for it. A step named in its params,
 such as the templates that a clustering fits on, joins the chain too. The chain
 runs in memory, one small tracks table through the real merge, and a global
-feature fits on its merged input before it applies. Validation's
+feature fits on its merged input before it applies. The tracks are the planar
+:func:`_tracks`, or their 3D lift :func:`_world_tracks` for a feature whose
+``track_spaces`` holds no planar space. Validation's
 ``resolved_columns`` over the same recipe gives the columns each output must and
 may contain.
 
@@ -59,6 +61,10 @@ from mosaic.core.pipeline.graph import (
     topological_order,
 )
 from mosaic.core.pipeline.loading import CROSS_JOIN_FEATURES, load_entry_data
+from mosaic.core.pipeline.track_space import (
+    DEFAULT_TRACK_SPACES,
+    feature_track_spaces,
+)
 from mosaic.core.pipeline.tracks_index import write_tracks_row
 from mosaic.core.pipeline.types import (
     ArtifactSpec,
@@ -116,6 +122,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     },
     "pair-keypoints": {"heading": [0, 1], "inter_distances": [[0, 1]]},
     "pair-posedistance-pca": {"pose": {"pose_n": 3}},
+    "pose-egocentric": {"origin": [2], "heading": [0, 1], "context": True},
     "probability-ensemble": {"default_class": 0},
     "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
@@ -151,7 +158,8 @@ unset, and the media index of :func:`_entry_dataset` records none.
 ``scale-to-bl`` needs a length, stated or read from a ``body-length`` run.
 
 ``egocentric-crop`` writes its crop keypoints, its one conditional output, under
-``transform_keypoints``. ``interaction-crop-pipeline`` writes a color crop
+``transform_keypoints``. ``pose-egocentric`` writes its yaw and origin under
+``context``. ``interaction-crop-pipeline`` writes a color crop
 through the AV1 writer with NVENC requested, and the NVENC probe raises on an
 ffmpeg build without ``av1_nvenc``. OpenCV writes a gray crop.
 """
@@ -327,6 +335,27 @@ def _tracks(n_frames: int = FRAMES, n_ids: int = 3) -> pd.DataFrame:
                 row[f"poseY{keypoint}"] = y + offset * math.sin(heading)
             rows.append(row)
     return pd.DataFrame(rows)
+
+
+def _world_tracks() -> pd.DataFrame:
+    """:func:`_tracks` lifted into 3D, for a feature that refuses planar tables.
+
+    Every keypoint gains a ``poseZ`` and the row a ``Z``. The height rises
+    slowly with the frame, the same for every keypoint of a row, so the pair
+    vector from one keypoint to another is horizontal and fixes a heading.
+    """
+    tracks = _tracks()
+    height = 0.01 * tracks["frame"].to_numpy(dtype=np.float64)
+    tracks["Z"] = height
+    for keypoint in range(3):
+        tracks[f"poseZ{keypoint}"] = height
+    return tracks
+
+
+def _planar(slug: str) -> bool:
+    """Whether the feature *slug* computes in a planar track space."""
+    spaces = feature_track_spaces(FEATURES[_class_name(slug)])
+    return bool(spaces & DEFAULT_TRACK_SPACES)
 
 
 def _labels(directory: Path) -> Path:
@@ -549,15 +578,18 @@ def _stream(merged: pd.DataFrame) -> InputStream:
 
 
 def _run(
-    recipe: Recipe, directory: Path
+    recipe: Recipe, directory: Path, target: str
 ) -> dict[str, tuple[Feature, pd.DataFrame, pd.DataFrame]]:
     """Every step's feature, merged input and output, run in topological order.
 
-    A feature that reads the dataset is bound to one containing the same tracks
-    and a video of the entry. A step without a saved state fits on its merged
-    input, as ``run_feature`` fits on every entry before it applies.
+    The tracks are :func:`_tracks` when *target*, the feature the chain is built
+    for, computes in a planar space, and :func:`_world_tracks` when its
+    ``track_spaces`` names neither ``image_px`` nor ``plane_cm``. A feature that
+    reads the dataset is bound to one containing the same tracks and a video of
+    the entry. A step without a saved state fits on its merged input, as
+    ``run_feature`` fits on every entry before it applies.
     """
-    tracks = _tracks()
+    tracks = _tracks() if _planar(target) else _world_tracks()
     dataset: Dataset | None = None
     ran: dict[str, tuple[Feature, pd.DataFrame, pd.DataFrame]] = {}
     for step in topological_order(recipe):
@@ -613,7 +645,7 @@ def test_a_feature_writes_the_columns_it_declares(slug: str, tmp_path: Path) -> 
     _skip_unless_runnable(slug)
     recipe = _chain(slug)
     predicted = resolved_columns(recipe)[slug]
-    _, merged, output = _run(recipe, tmp_path)[slug]
+    _, merged, output = _run(recipe, tmp_path, slug)[slug]
     provides = declared_provides(FEATURES[_class_name(slug)])
     assert provides is not None
 
@@ -630,7 +662,7 @@ def test_removing_a_required_column_raises_the_uniform_error(
     slug: str, tmp_path: Path
 ) -> None:
     _skip_unless_runnable(slug)
-    feature, merged, _ = _run(_chain(slug), tmp_path)[slug]
+    feature, merged, _ = _run(_chain(slug), tmp_path, slug)[slug]
     requires = declared_requires(type(feature))
     assert requires is not None
     values = param_values(feature.params, contract_fields(requires, None))

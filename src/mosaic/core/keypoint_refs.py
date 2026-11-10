@@ -117,7 +117,11 @@ def keypoint_index(ref: int | str, names: Sequence[str] | None) -> int:
 
 
 def check_keypoints_distinct(
-    keypoints: Sequence[int | str] | None, names: Sequence[str] | None, who: str
+    keypoints: Sequence[int | str] | None,
+    names: Sequence[str] | None,
+    who: str,
+    *,
+    param: str = "keypoints",
 ) -> None:
     """Refuse a keypoint list that names one keypoint twice.
 
@@ -125,13 +129,14 @@ def check_keypoints_distinct(
         keypoints: Keypoint indices or names, or ``None`` when unset.
         names: The keypoint names, or ``None`` when the keypoints are unnamed.
         who: The feature name that opens the error message.
+        param: The parameter that holds the list, named in the message.
 
     Raises:
         ValueError: If two entries are the same keypoint, by index or by name.
     """
     indices = [keypoint_index(ref, names) for ref in keypoints or []]
     if len(set(indices)) != len(indices):
-        raise ValueError(f"{who}: keypoints names a keypoint twice, {keypoints}.")
+        raise ValueError(f"{who}: {param} names a keypoint twice, {keypoints}.")
 
 
 def check_heading_pair(

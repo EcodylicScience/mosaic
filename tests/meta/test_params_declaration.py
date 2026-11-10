@@ -1134,6 +1134,7 @@ _FEATURES = "mosaic.behavior.feature_library"
 _KINEMATICS = f"{_FEATURES}.keypoint_kinematics.KeypointKinematics.Params"
 _BODY_LENGTH = f"{_FEATURES}.body_length.BodyLength.Params"
 _PAIR_KEYPOINTS = f"{_FEATURES}.pair_keypoints.PairKeypoints.Params"
+_POSE_EGOCENTRIC = f"{_FEATURES}.pose_egocentric.PoseEgocentric.Params"
 _VISUAL_NETWORK = f"{_FEATURES}.visual_network.VisualNetwork.Params"
 _VAME = f"{_FEATURES}.vame_feature.VameFeature.Params"
 _CROPS = "mosaic.behavior.visualization_library"
@@ -1159,6 +1160,12 @@ KEYPOINT_FIELDS: dict[tuple[str, str], KeypointKind] = {
     (_PAIR_KEYPOINTS, "keypoints"): "either",
     (_PAIR_KEYPOINTS, "heading"): "either",
     (_PAIR_KEYPOINTS, "inter_distances"): "either",
+    (_POSE_EGOCENTRIC, "keypoint_names"): "name",
+    (_POSE_EGOCENTRIC, "origin"): "either",
+    (_POSE_EGOCENTRIC, "lateral"): "either",
+    (_POSE_EGOCENTRIC, "heading"): "either",
+    (_POSE_EGOCENTRIC, "keypoints"): "either",
+    (_POSE_EGOCENTRIC, "scale_by"): "either",
     (
         f"{_FEATURES}.movement.smooth.MovementSmooth.Params",
         "keypoint_names",

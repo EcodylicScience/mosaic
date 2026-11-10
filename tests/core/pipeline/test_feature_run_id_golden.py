@@ -198,6 +198,13 @@ CASES: tuple[Case, ...] = (
         feature="keypoint-kinematics",
         params={"heading": [3, 6]},
     ),
+    # pose-egocentric has a required ``origin`` and so is not
+    # default-constructible.
+    Case(
+        case_id="pose-egocentric/params-heading",
+        feature="pose-egocentric",
+        params={"origin": [1], "heading": [0, 1]},
+    ),
     Case(
         case_id="pair-keypoints/heading",
         feature="pair-keypoints",

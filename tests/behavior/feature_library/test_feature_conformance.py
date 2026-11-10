@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.core.pipeline.column_contract import Column, declared_provides
-from mosaic.core.schema import TRACK_SPACES
+from mosaic.core.schema import TRACK_SPACES, TrackSpace
 
 EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
 """Spelled out rather than derived from the type alias, so a value silently
@@ -445,41 +445,43 @@ def test_these_features_declare_follows_ids(slug: str, follows: bool) -> None:
     assert vars(by_slug[slug])["follows_ids"] is follows
 
 
-TRACK_SPACES_DECLARED = frozenset(
-    {
-        "keypoint-kinematics",
-        "label-statistics",
-        "frame-aggregate",
-        "sequence-aggregate",
-        "individual-aggregate",
-        "id-tag-columns",
-        "label-predictions",
-    }
-)
-"""The features that compute in every track space, because they read no spatial column.
+_EVERY_SPACE: frozenset[TrackSpace] = frozenset(TRACK_SPACES)
 
-Every other registered feature declares nothing and so computes in the two 2D
-spaces, which is what refuses it a world-frame table. A feature joins this set
-only when its computation is independent of the space.
+TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
+    "keypoint-kinematics": _EVERY_SPACE,
+    "label-statistics": _EVERY_SPACE,
+    "frame-aggregate": _EVERY_SPACE,
+    "sequence-aggregate": _EVERY_SPACE,
+    "individual-aggregate": _EVERY_SPACE,
+    "id-tag-columns": _EVERY_SPACE,
+    "label-predictions": _EVERY_SPACE,
+    "pose-egocentric": frozenset({"world_m"}),
+}
+"""The features that declare their track spaces, and the spaces each declares.
+
+Every space for a feature that reads no spatial column, or whose computation is
+independent of the space. ``world_m`` alone for one defined on world up, which a
+planar table does not have. Every other registered feature declares nothing and
+so computes in the two 2D spaces, which is what refuses it a world-frame table.
 """
 
 
 @pytest.mark.parametrize("cls", FEATURE_CLASSES, ids=FEATURE_IDS)
-def test_only_the_space_independent_features_declare_track_spaces(cls: type) -> None:
+def test_only_the_listed_features_declare_track_spaces(cls: type) -> None:
     slug: object = getattr(cls, "name", None)
     declared: object = getattr(cls, "track_spaces", None)
-    if slug in TRACK_SPACES_DECLARED:
-        assert declared == frozenset(TRACK_SPACES)
+    if isinstance(slug, str) and slug in TRACK_SPACES_DECLARED:
+        assert declared == TRACK_SPACES_DECLARED[slug]
     else:
         assert declared is None, (
             f"{cls.__name__} declares track_spaces = {declared!r}. Add it to "
-            f"TRACK_SPACES_DECLARED if it computes in every space."
+            f"TRACK_SPACES_DECLARED with the spaces it computes in."
         )
 
 
 def test_every_declared_track_space_is_a_feature_and_a_set_of_spaces() -> None:
     by_slug = {cls.name: cls for cls in FEATURE_CLASSES}
-    assert TRACK_SPACES_DECLARED <= by_slug.keys()
+    assert TRACK_SPACES_DECLARED.keys() <= by_slug.keys()
     for slug in TRACK_SPACES_DECLARED:
         declared: object = getattr(by_slug[slug], "track_spaces", None)
         assert isinstance(declared, frozenset)

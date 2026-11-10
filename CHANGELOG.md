@@ -46,6 +46,19 @@ computes in, empty for an op and for `tracks`. It defaults to empty, so a reader
 of the older wire is unaffected. mosaic-app's catalog fixture
 (`src/test/fixtures/pipelineCatalog.ts`) needs a refresh to hold it.
 
+A new feature, `pose-egocentric` (version 0.1), expresses each individual's 3D
+keypoints in its own body frame and runs on `mosaic_world_v1` tables only: it
+declares `track_spaces = {"world_m"}` and is refused a planar table with
+`schema_family_mismatch`. The frame's origin is the mean of the `origin`
+keypoints, +Z is world up, and forward and left come from exactly one of a
+`lateral` (left, right) pair or a `heading` (front, rear) pair. It writes
+`ego_x{k}`, `ego_y{k}` and `ego_z{k}` as float32, `k` the keypoint's position in
+the table's keypoint order, and with `context` set, which is off by default,
+also `body_yaw` and `origin_x`/`origin_y`/`origin_z`. The catalog lists it, and
+the step-type detail declares its keypoint fields. `check_keypoints_distinct`
+takes the parameter it names in its message as a keyword, defaulting to
+`keypoints`.
+
 ## Unreleased: `feral` trains from a templates run and a labels kind and reads its videos from its input, and the editor catalog no longer reads `needs_ground_truth`
 
 ### `feral` trains from a templates run and a labels kind
