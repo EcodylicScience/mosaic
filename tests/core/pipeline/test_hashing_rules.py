@@ -63,7 +63,7 @@ def _fit_reads_its_stream(cls: type) -> bool | None:
 
     Returns None when there is no inspectable ``fit`` (no source, or no
     parameter beyond ``self``). A feature whose ``fit`` merely accepts the
-    stream to satisfy the protocol -- ``xgboost``, ``feral`` -- reads its
+    stream to satisfy the protocol -- ``xgboost`` -- reads its
     training data from params instead and correctly answers False.
     """
     fit = getattr(cls, "fit", None)
@@ -206,6 +206,7 @@ _MEDIA_ACCESSORS = (
     "resolve_media_scope",
     "MultiVideoReader",
     "open_frame_reader",
+    "sequence_video",
 )
 
 

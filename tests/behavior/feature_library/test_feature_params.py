@@ -18,7 +18,7 @@ def test_feral_infer_batch_size_excluded_from_run_id() -> None:
     """The motivating case: FeralFeature.infer_batch_size is hash-excluded."""
     from mosaic.behavior.feature_library.feral_feature import FeralFeature
 
-    base = {"feral_code_dir": "/tmp/feral", "model_dir": "/tmp/model"}
+    base = {"model_dir": "/tmp/model"}
     p4 = FeralFeature.Params.from_overrides({**base, "infer_batch_size": 4})
     p8 = FeralFeature.Params.from_overrides({**base, "infer_batch_size": 8})
     pcs = FeralFeature.Params.from_overrides(
@@ -72,14 +72,14 @@ def test_feral_inference_identity_is_pinned() -> None:
     notebook stops finding its results and asks to recompute them; the notebook
     asserts the same value, so a mismatch should surface here first.
 
-    **The version moved once, deliberately, and the digest did not.** `feral` went
-    to `0.2` when its identity columns were renamed to `id1` / `id2` /
-    `perspective`, and the crop feature it reads went to `0.3` for the same reason.
-    So the run this pins is not reachable by name any more: the artifacts are still
-    on disk under `0.1-a3cefdc108`, and a fresh run asks to recompute all 95
-    sequences under `0.2-a3cefdc108`. The parameter set itself is untouched, which
-    is what the unchanged digest says -- so if the digest ever moves, that is a
-    different and unintended thing.
+    **The version and the digest moved together.** `feral` went to `0.3`, which
+    retires every `0.2` run id, and the digest moved because the params gained
+    `templates`, `labels`, `unlabeled_as` and `model` and lost `feral_code_dir`,
+    `video_dir` and `label_json`. The run this pins is not reachable by name any
+    more: its artifacts are still on disk under `0.2-a3cefdc108`, and a fresh run
+    asks to recompute all 95 sequences under `0.3-a34166be8c`. The parameter set
+    of the notebook is otherwise untouched, so if the digest moves again, that is
+    a different and unintended thing.
     """
     from mosaic.behavior.feature_library.feral_feature import FeralFeature
     from mosaic.core.pipeline._utils import hash_params
@@ -92,7 +92,6 @@ def test_feral_inference_identity_is_pinned() -> None:
     inputs = FeralFeature.Inputs((Result(feature=crop, run_id="0.2-3fcc9dfab9"),))
     params = FeralFeature.Params.from_overrides(
         {
-            "feral_code_dir": None,
             "model_name": "facebook/vjepa2-vitl-fpc32-256-diving48",
             "predict_per_item": 64,
             "chunk_length": 64,
@@ -115,7 +114,7 @@ def test_feral_inference_identity_is_pinned() -> None:
             "_frame_range": [None, None],
         }
     )
-    assert f"{FeralFeature.version}-{digest}" == "0.2-a3cefdc108"
+    assert f"{FeralFeature.version}-{digest}" == "0.3-a34166be8c"
 
 
 def test_pair_filter_on_params() -> None:

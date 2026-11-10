@@ -1071,15 +1071,20 @@ Subsample per-sequence data into a representative template matrix.
 
 ### `feral`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeature`
 
 FERAL vision-transformer behavior classifier as a pipeline feature.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `feral_code_dir` | `string` \| `None` | `null` |  | A local checkout of the feral package, prepended to sys.path. Unset, the pip-installed package is used. |
-| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  | The FERAL backbone: a feral.backbones.BACKBONES key or the matching HuggingFace slug. An unrecognized value raises. The choice also selects the pretrained weights FERAL downloads from the HuggingFace hub on first use, whose license differs per entry; see NOTICE. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own backbone overrides it. |
-| `predict_per_item` | `integer` | `64` |  | How many predictions the model emits per chunk. In inference mode this is a fallback: a loaded config.json or checkpoint that records its own value overrides it. |
+| `templates` | `LabeledTemplatesRef` \| `None` | `null` |  | The extract-labeled-templates run whose train entries the model fits on and whose test entries it evaluates on. Only its template_provenance.parquet is read: the model trains on the videos of those entries, not on the sampled templates. An entry the run does not list never trains or tests. The run names the training set, so the step's scope is not part of its identity: a wider scope applies the fit it has and does not fit again. Exactly one of templates, model or model_dir. |
+| `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | The per-frame ground-truth labels that the frames of the videos are aligned to, resolved from labels/<kind>/index.csv. A frame no label covers takes unlabeled_as, or its video is left out when that is unset. Required with templates. |
+| `unlabeled_as` | `integer` \| `None` | `null` |  | The label value, in the original label space, that a frame without a label trains as, a masked class included. Unset, a video that holds such a frame is left out of its split. Only with templates. |
+| `training` | `FeralTrainingConfig` \| `None` | `null` |  | Training hyperparameters. Required with templates, and refused without it. |
+| `model` | `FeralModelArtifact` \| `None` | `null` |  | A trained feral run to apply in place of training: its feral_model.joblib. Exactly one of templates, model or model_dir. |
+| `model_dir` | `string` \| `None` | `null` |  | A directory that holds a checkpoint trained outside mosaic: model_best.pt and, optionally, config.json. Exactly one of templates, model or model_dir. |
+| `model_name` | `string` | `"facebook/vjepa2-vitl-fpc32-256-diving48"` |  | The FERAL backbone: a feral.backbones.BACKBONES key or the matching HuggingFace slug. An unrecognized value raises. The choice also selects the pretrained weights FERAL downloads from the HuggingFace hub on first use, whose license differs per entry; see NOTICE. Ignored with model, whose trained run records its own. With model_dir this is a fallback: a loaded config.json or checkpoint that records its own backbone overrides it. |
+| `predict_per_item` | `integer` | `64` |  | How many predictions the model emits per chunk. Ignored with model, whose trained run records its own. With model_dir this is a fallback: a loaded config.json or checkpoint that records its own value overrides it. |
 | `chunk_length` | `integer` | `64` |  | The length of one video chunk. [frames] |
 | `chunk_shift` | `integer` | `32` |  | The stride between the starts of consecutive chunks. [frames] |
 | `chunk_step` | `integer` | `1` |  | The stride sampled within one chunk. [frames] |
@@ -1087,25 +1092,35 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
 | `device` | `string` | `"cuda"` |  | Which PyTorch device loads and runs the model. |
 | `infer_batch_size` | `integer` | `4` |  | How many chunks apply() reads in one forward pass. Batching is numerically equivalent to reading them one at a time. |
 | `inference_autocast` | `boolean` | `false` |  | Run apply()'s forward pass under bfloat16 autocast instead of full float32, roughly 1.5-2x faster at the cost of a recall shift of around 10 percentage points on threshold-sensitive classes. Read only when the model is on a CUDA device. |
-| `class_names` | `object` \| `None` | `null` |  | Class index to name mapping, keyed by string index. Unset, the mapping is read from the model config or checkpoint metadata. |
+| `class_names` | `object` \| `None` | `null` |  | Class names, keyed by the original label value as text. Unset, the names a trained run recorded, or an imported checkpoint's metadata, are used. An imported checkpoint with neither needs this to name its classes. |
 | `decision_threshold` | `number` \| `None` | `null` |  | The minimum probability considered when choosing the predicted class. Unset, the predicted class is the argmax over every class. Set, the predicted class is default_class when every class falls below it. |
-| `default_class` | `integer` | `0` |  | The class returned when decision_threshold is set and every class falls below it. |
-| `model_dir` | `string` \| `None` | `null` |  | A directory containing model_best.pt and config.json from a prior training run, for inference mode. |
-| `video_dir` | `string` \| `None` | `null` |  | The directory containing crop videos, for training mode. |
-| `label_json` | `string` \| `None` | `null` |  | A FERAL-format label JSON declaring class_names and splits, for training mode. |
-| `training` | `FeralTrainingConfig` \| `None` | `null` |  | Training hyperparameters. Required to train. Unset without a model to load, fit raises. |
+| `default_class` | `integer` | `0` |  | The label value returned when decision_threshold is set and every class falls below it. |
+
+??? note "`FeralModelArtifact`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `"feral"` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `JoblibLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"feral_model.joblib"` |  | Glob pattern. Auto-derived from load.kind when empty. |
 
 ??? note "`FeralTrainingConfig`"
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
     | `epochs` | `integer` | `10` | >= `1` | The number of training epochs. |
+    | `val_fraction` | `number` | `0.2` | >= `0`, < `1` | The fraction of the train entries of the templates run, drawn whole with the seed, that validate each epoch. The best epoch by validation frame-level mAP is kept. 0 trains without validation and keeps the last epoch. |
     | `train_bs` | `integer` | `4` | >= `1` | The number of samples per training batch. |
     | `val_bs` | `integer` | `8` | >= `1` | The number of samples per validation batch, also used when evaluating a test partition after training. |
     | `num_workers` | `integer` | `4` | >= `0` | The number of subprocess workers for the training and validation data loaders, also used when evaluating a test partition after training. |
     | `lr` | `number` | `4e-05` | > `0` | The learning rate for the AdamW optimizer. |
     | `weight_decay` | `number` | `0.1` | >= `0` | The weight decay for the AdamW optimizer. |
-    | `label_smoothing` | `number` | `0.1` | >= `0`, <= `1` | The label smoothing factor for the cross-entropy loss, applied only when the label JSON is not multilabel. |
+    | `label_smoothing` | `number` | `0.1` | >= `0`, <= `1` | The label smoothing factor for the cross-entropy loss. |
     | `fc_drop_rate` | `number` | `0.5` | >= `0`, <= `1` | The dropout rate before the classifier head. |
     | `freeze_encoder_layers` | `integer` | `14` | >= `0` | The number of backbone encoder layers frozen during fine-tuning. |
     | `class_weights` | `string` | `"inv_freq_sqrt"` |  | The class-weighting scheme forwarded to FERAL's get_weights when building the loss weight tensor. |
@@ -1117,7 +1132,46 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
     | `do_aa` | `boolean` | `true` |  | Apply data augmentation when building the training dataset. |
     | `seed` | `integer` | `0` |  | The random seed applied to torch and numpy before training starts. |
     | `part_sample` | `number` | `1.0` | > `0`, <= `1` | The fraction of the training partition included when building the training dataset. |
-    | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` | The probability threshold used when computing F1 metrics, applied only when the label JSON is multilabel. |
+    | `multilabel_threshold` | `number` | `0.85` | >= `0`, <= `1` | The probability threshold for the F1 metrics of a multilabel model. A templates run trains a single-label model, so it never applies to one. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
+
+??? note "`JoblibLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"joblib"` | `"joblib"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `key` | `string` \| `None` | `null` |  | Dict key extracted from the loaded object. Unset returns the object as loaded. |
+
+??? note "`LabeledTemplatesRef`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `feature` | `string` | `""` |  | Feature name whose output to consume. |
+    | `run_id` | `string` \| `None` | `null` |  | Specific run ID, or None for latest finished run. |
+    | `execution_id` | `string` \| `None` | `null` |  | ULID of the attempt that produced this result. It identifies the attempt, and run_id identifies the content. |
+    | `cache_hit` | `boolean` | `false` |  | Whether the producing run was fully served from cache. |
+    | `failed_entries` | list of `string` | `[]` |  | Entry keys whose apply raised while the run continued. Empty for a clean run. A non-empty list marks a partial run, and its outputs are missing these entities. |
+    | `entries_written` | `integer` | `0` |  | How many entries have a valid output row from the producing run, cache hits included. A resumed run and a fresh one therefore report the same number over the same scope. |
+    | `load` | `ParquetLoadSpec` | _constructed_ |  | How to load the matched files. |
+    | `pattern` | `string` | `"templates.parquet"` |  | Glob pattern. Auto-derived from load.kind when empty. |
+
+??? note "`ParquetLoadSpec`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"parquet"` | `"parquet"` |  | Fixed tag identifying this load specification's format. Selects the matching spec when a LoadSpec value is parsed. |
+    | `transpose` | `boolean` | `false` |  | Transpose the loaded table after column filtering. |
+    | `columns` | list of `string` \| `None` | `null` |  | Column names read from the file. Unset reads every column, and numeric_only then filters the result. |
+    | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
+    | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
+    | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
 
 ### `fit-label-map`
 

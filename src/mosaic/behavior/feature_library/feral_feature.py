@@ -1,45 +1,76 @@
 """
 FeralFeature -- FERAL vision-transformer behavior classifier as a Mosaic pipeline feature.
 
-Supports both **training** and **inference** in a single unified feature,
-following the same global-feature pattern as XgboostFeature and KpmsFeature.
+A global feature, like ``xgboost`` and ``lightning-action``: it fits a classifier
+over labeled entries, then applies it per entry. Exactly one of three params
+chooses the mode.
 
 Training mode
 -------------
-Provide ``video_dir``, ``label_json``, and a ``training`` config dict.
-The ``label_json`` file must contain ``class_names``, ``splits``
-(with ``train`` and optionally ``val``/``test`` keys), and optionally
-``is_multilabel``.  Training runs the full FERAL ViT fine-tuning loop
-with intermediate checkpoints saved to disk for crash recovery.
-After training, the test split (if present) is automatically evaluated.
+Provide ``templates``, ``labels`` and ``training``. The ``templates`` run
+(``extract-labeled-templates``) names the train entries the model fits on and
+the test entries it is evaluated on. ``labels`` supplies each frame's
+ground-truth label, and ``unlabeled_as`` the class of a frame with none. A
+seeded ``training.val_fraction`` of the train entries validates each epoch and
+chooses the best checkpoint. The run writes ``feral_labels.json``,
+``config.json``, ``model_best.pt``, ``summary.csv``, ``reports.json`` and the
+model file ``feral_model.joblib``.
 
-Inference mode
---------------
-Provide ``model_dir`` pointing to a directory with ``model_best.pt``
-and ``config.json`` from a previous training run.
+Applying a trained run
+----------------------
+Provide ``model``, a trained ``feral`` run, whose ``feral_model.joblib`` the
+step applies without fitting.
 
-Output follows the same pattern as XgboostFeature: per-frame rows with
-``prob_<class>`` probability columns and a ``predicted_label`` column.
+Importing a checkpoint
+----------------------
+Provide ``model_dir``, a directory holding a checkpoint trained outside mosaic:
+``model_best.pt`` and, optionally, ``config.json``.
+
+Where the videos come from
+--------------------------
+The step's input decides it. An ``interaction-crop-pipeline`` or
+``egocentric-crop`` input supplies the crop videos under its run root. Any other
+input, ``tracks`` included, is read through the entry's own media.
+
+Output is per-frame rows with ``prob_<class>`` probability columns and a
+``predicted_label`` column.
 
 Requires the FERAL package (``pip install 'mosaic-behavior[feral]'``).
-Optionally set ``feral_code_dir`` to a local checkout of the package to
-override the installed one.
 """
 
 from __future__ import annotations
 
+import contextlib
+import importlib
 import json
 import logging
-import sys
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Annotated, ClassVar, Final, Self, final
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    ClassVar,
+    Final,
+    Literal,
+    NotRequired,
+    Protocol,
+    Self,
+    TypedDict,
+    final,
+)
 
 import numpy as np
 import pandas as pd
-from pydantic import Field, model_validator
+from mosaic_media import MediaProbeError
+from numpy.typing import NDArray
+from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
+from mosaic.core.helpers import UNLABELED
+from mosaic.core.label_intervals import label_vocabulary
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.inventory.params import read_run_params
+from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
@@ -55,9 +86,14 @@ from mosaic.core.pipeline.types import (
     EmitsLevel,
     DependencyLookup,
     InputRequire,
+    GroundTruthLabelsSource,
     Inputs,
     InputStream,
+    JoblibArtifact,
+    JoblibLoadSpec,
+    LabeledTemplatesRef,
     Result,
+    TrackInput,
 )
 from mosaic.core.params import (
     HASH_EXCLUDE,
@@ -68,64 +104,47 @@ from mosaic.core.params import (
 
 from mosaic.core.pipeline.progress import CSVProgressCallback
 from mosaic.core.pipeline.refusal import ToolUnavailable
-from mosaic.optional_dependency import OptionalModule, Prerequisite
+from mosaic.core.pipeline.storage_names import feature_slug_of
+from mosaic.optional_dependency import (
+    MissingOptionalDependency,
+    OptionalModule,
+    Prerequisite,
+)
 
+from .classifier_common import (
+    FIT_SCOPE_REMEDY,
+    input_run_root,
+    refuse_entries_outside_scope,
+)
+from .helpers import entries_of_templates, write_bundle
+from .named_model import named_model_file
 from .registry import register_feature
 
 if TYPE_CHECKING:
+    import torch
+
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.progress import TrainingProgressCallback
 
 log = logging.getLogger(__name__)
 
 FERAL: Final = OptionalModule("feral", "feral", "the FERAL behavior classifier")
-"""The installed FERAL package, as the pipeline catalog checks for it.
-
-The feature imports it through :func:`_import_feral`, which honors a step's
-``feral_code_dir`` as well. The catalog does not read params. A step that names
-a checkout on an installation without the package is therefore reported
-unavailable.
-"""
+"""The installed FERAL package, as the pipeline catalog checks for it."""
 
 
-_FERAL_MISSING: Final = (
-    "FERAL is not installed. Install it with "
-    "`pip install 'mosaic-behavior[feral]'`, or set feral_code_dir to a "
-    "local checkout of the package."
-)
-"""What a :class:`~mosaic.core.pipeline.refusal.ToolUnavailable` says of feral."""
+def _check_feral() -> None:
+    """Raise a helpful refusal if the ``feral`` package is not importable.
 
+    Lightweight -- importing the ``feral`` package does not pull torch (its
+    public API is lazily loaded).
 
-def _import_feral(feral_code_dir: str | Path | None = None):
-    """Ensure the installed ``feral`` package is importable and return its modules.
-
-    FERAL is a pip-installable package (``pip install 'mosaic-behavior[feral]'``).
-    ``feral_code_dir`` is an *optional* ``sys.path`` override for a local
-    editable/pinned checkout of the package; when ``None`` the already-installed
-    ``feral`` package is used.
-
-    Returns a namespace exposing the ``model``, ``dataset``, ``utils`` and
-    ``metrics`` submodules so callers can reach e.g. ``f.model.FeralModel``.
-
-    Parameters
-    ----------
-    feral_code_dir : str or Path or None
-        Optional path to a local checkout of the ``feral`` package, prepended to
-        ``sys.path``. ``None`` (default) uses the installed package.
-
-    Raises
-    ------
-    ToolUnavailable
-        The package is not importable.
+    Raises:
+        ToolUnavailable: The package is not importable.
     """
-    if feral_code_dir is not None:
-        feral_dir = str(feral_code_dir)
-        if feral_dir not in sys.path:
-            sys.path.insert(0, feral_dir)
     try:
-        from feral import dataset, metrics, model, utils
-    except ImportError as e:
-        raise ToolUnavailable("feral", "environment", _FERAL_MISSING) from e
-    return SimpleNamespace(model=model, dataset=dataset, utils=utils, metrics=metrics)
+        _ = FERAL.load()
+    except MissingOptionalDependency as missing:
+        raise ToolUnavailable("feral", "environment", str(missing)) from missing
 
 
 def _resolve_backbone_key(value: str) -> str:
@@ -149,7 +168,13 @@ def _resolve_backbone_key(value: str) -> str:
     )
 
 
-def _load_checkpoint_state_dict(raw):
+_STATE_DICT: Final = TypeAdapter(dict[str, object])
+"""A checkpoint's weights: tensors by parameter name."""
+
+
+def _load_checkpoint_state_dict(
+    raw: Mapping[str, object],
+) -> tuple[dict[str, object], dict[str, object] | None]:
     """Normalize a ``torch.load`` blob into ``(state_dict, metadata | None)``.
 
     Handles every checkpoint shape FeralFeature may encounter:
@@ -164,12 +189,12 @@ def _load_checkpoint_state_dict(raw):
       ``FeralModel.self.backbone.model``). The classifier keys
       (``clip_projector.*``, ``fc_norm.*``, ``head.*``) are unchanged.
     """
-    meta = None
-    if isinstance(raw, dict) and "state_dict" in raw:
-        state_dict = raw["state_dict"]
+    meta: dict[str, object] | None = None
+    if "state_dict" in raw:
+        state_dict = _STATE_DICT.validate_python(raw["state_dict"])
         meta = {k: raw[k] for k in ("class_names", "is_multilabel", "cfg") if k in raw}
     else:
-        state_dict = raw
+        state_dict = dict(raw)
     is_old_hfmodel = any(k.startswith("model.") for k in state_dict) and not any(
         k.startswith("backbone.") for k in state_dict
     )
@@ -181,7 +206,7 @@ def _load_checkpoint_state_dict(raw):
     return state_dict, meta
 
 
-def _load_into(model, state_dict) -> None:
+def _load_into(model: torch.nn.Module, state_dict: Mapping[str, object]) -> None:
     """Load ``state_dict`` into ``model`` and fail loudly on any key mismatch.
 
     Uses ``strict=False`` then asserts there are no missing/unexpected keys
@@ -200,83 +225,589 @@ def _load_into(model, state_dict) -> None:
         )
 
 
-def _check_feral(feral_code_dir: str | Path | None = None) -> None:
-    """Raise a helpful refusal if the ``feral`` package is not importable.
-
-    Applies the optional ``feral_code_dir`` ``sys.path`` override first so a
-    local checkout is honored. Lightweight -- importing the ``feral`` package
-    does not pull torch (its public API is lazily loaded).
-
-    Raises:
-        ToolUnavailable: The package is not importable.
-    """
-    if feral_code_dir is not None:
-        feral_dir = str(feral_code_dir)
-        if feral_dir not in sys.path:
-            sys.path.insert(0, feral_dir)
-    try:
-        import feral  # noqa: F401
-    except ImportError as e:
-        raise ToolUnavailable("feral", "environment", _FERAL_MISSING) from e
-
-
-def _resolve_dataset_path(ds: Dataset | None, value: str | Path) -> Path:
-    """Resolve a stored path through the bound dataset, or leave it alone.
-
-    A dataset-relative ``model_dir`` is the portable spelling: it survives a move
-    between machines, which an absolute one does not, and it is exactly what
-    ``Dataset.resolve_path`` exists to reverse. Bare ``Path(value)`` would resolve
-    it against the process CWD instead -- for a notebook, wherever the kernel
-    happened to start.
-
-    Behavior-preserving for every absolute value: ``resolve_path`` returns an
-    absolute path that exists byte-for-byte unchanged, and one that does not exist
-    unchanged too (after trying the dataset's path map), never raising. So this
-    cannot move a run's identity -- identity hashes ``params.model_dir``, the
-    stored value, which this never touches.
-
-    Falls back to ``Path(value)`` when no dataset is bound, so a direct
-    ``load_state`` call outside ``run_feature`` keeps working as it does today.
-
-    Module-level rather than only a method because ``FeralFeature.__init__``
-    raises without the optional ``feral`` package, which CI does not install --
-    a test routed through the class would be permanently skipped there, while
-    this one always runs.
-    """
-    if ds is None:
-        return Path(value)
-    resolved = ds.resolve_path(value)
-    if str(resolved) != str(value):
-        log.info("[feral] resolved %s -> %s via the bound dataset", value, resolved)
-    return resolved
-
-
-def _chunked(seq, k):
+def _chunked[T](seq: Sequence[T], k: int) -> Iterator[Sequence[T]]:
     """Yield successive k-sized sublists of ``seq`` (last may be shorter)."""
     for i in range(0, len(seq), k):
         yield seq[i : i + k]
 
 
+# --- The labels dict and the validation split -------------------------------
+
+FeralSplit = Literal["train", "val", "test"]
+"""The partitions of FERAL's labels dict that mosaic fills."""
+
+FeralDropReason = Literal[
+    "no_label_file", "too_short", "unlabeled_frames", "unseen_class"
+]
+"""Why :func:`build_feral_labels` leaves a video out of its split."""
+
+_DROP_DESCRIPTIONS: Final[Mapping[FeralDropReason, str]] = {
+    "no_label_file": "have no label file",
+    "too_short": "are shorter than the minimum clip length",
+    "unlabeled_frames": "hold unlabeled frames and unlabeled_as is unset",
+    "unseen_class": "hold a label that no training video holds",
+}
+
+
+@dataclass(frozen=True)
+class FeralVideo:
+    """One video FERAL reads.
+
+    Attributes:
+        entry: The ``(group, sequence)`` the video belongs to.
+        filename: The video's key in FERAL's labels dict.
+        path: The absolute path of the video file.
+        frames: The frame of each video frame, in video order.
+        ids: The identity columns the video's predictions take: ``id1``,
+            ``id2``, ``perspective`` and ``interaction_id`` for an interaction
+            clip, ``id`` for an egocentric video, and none for a sequence video.
+    """
+
+    entry: tuple[str, str]
+    filename: str
+    path: Path
+    frames: tuple[int, ...]
+    ids: Mapping[str, int | str]
+
+
+class FeralLabelsJson(TypedDict):
+    """FERAL's labels dict for single-label classification."""
+
+    class_names: dict[str, str]
+    is_multilabel: bool
+    labels: dict[str, list[int]]
+    splits: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
+class FeralLabels:
+    """FERAL's labels dict, with the mapping from its classes to label values.
+
+    Attributes:
+        labels_json: FERAL's dict: ``class_names``, ``is_multilabel``,
+            ``labels`` keyed by video filename, and ``splits``.
+        class_values: The label value of each dense class index.
+        dropped: The count of videos left out of their split, by reason.
+    """
+
+    labels_json: FeralLabelsJson
+    class_values: tuple[int, ...]
+    dropped: Mapping[FeralDropReason, int]
+
+
+def _frame_table(video: FeralVideo) -> pd.DataFrame:
+    """The ``frame`` column of *video* beside its identity columns."""
+    table = pd.DataFrame({C.frame_col: np.asarray(video.frames, dtype=np.int64)})
+    for column, value in video.ids.items():
+        table[column] = value
+    return table
+
+
+def _train_vocabulary(
+    entries: Sequence[tuple[str, str]], label_files: Mapping[tuple[str, str], Path]
+) -> dict[int, str]:
+    """The names the label files of *entries* give their label values."""
+    names: dict[int, str] = {}
+    for entry in entries:
+        with np.load(label_files[entry], allow_pickle=True) as archive:
+            for value, name in label_vocabulary(archive).items():
+                _ = names.setdefault(value, name)
+    return names
+
+
+def build_feral_labels(
+    videos: Mapping[FeralSplit, Sequence[FeralVideo]],
+    label_files: Mapping[tuple[str, str], Path],
+    labels: GroundTruthLabelsSource,
+    *,
+    unlabeled_as: int | None,
+    min_frames: int,
+) -> FeralLabels:
+    """FERAL's labels dict for the videos of each split.
+
+    Each video's frames are labeled from the label file of its entry
+    (:func:`~mosaic.core.pipeline.loading.labels_for_rows`), so a sequence video
+    aligns by frame alone and an interaction or egocentric video by its own
+    individuals. A frame with no label, including a masked one, takes
+    ``unlabeled_as``, or its video leaves the split when that is ``None``. A
+    video leaves its split too when it has fewer than ``min_frames`` frames, its
+    entry has no label file, or, in the validation and test splits, it holds a
+    value that no training video holds. The sorted values left in the training
+    split map to the dense class indices FERAL needs.
+
+    Args:
+        videos: The videos of each split.
+        label_files: The label file of each entry.
+        labels: The labels source the files were resolved for.
+        unlabeled_as: The label value a frame without a label takes, or
+            ``None`` to drop the video that holds one.
+        min_frames: The fewest frames a video may have.
+
+    Returns:
+        The labels dict, the label value of each class index, and the counts of
+        dropped videos.
+
+    Raises:
+        ValueError: No training video is left.
+    """
+    dropped: dict[FeralDropReason, int] = {
+        "no_label_file": 0,
+        "too_short": 0,
+        "unlabeled_frames": 0,
+        "unseen_class": 0,
+    }
+    labeled: dict[FeralSplit, list[tuple[FeralVideo, NDArray[np.int64]]]] = {}
+    for split, split_videos in videos.items():
+        labeled[split] = []
+        for video in split_videos:
+            label_file = label_files.get(video.entry)
+            if label_file is None:
+                dropped["no_label_file"] += 1
+                continue
+            if len(video.frames) < min_frames:
+                dropped["too_short"] += 1
+                continue
+            values = labels_for_rows(label_file, _frame_table(video), labels)
+            if unlabeled_as is not None:
+                values = np.where(values == UNLABELED, unlabeled_as, values)
+            elif bool((values == UNLABELED).any()):
+                dropped["unlabeled_frames"] += 1
+                continue
+            labeled[split].append((video, values))
+
+    train = labeled.get("train", [])
+    if not train:
+        raise ValueError(
+            f"{FeralFeature.name}: no training video is left to train on "
+            f"({_dropped_summary(dropped)})"
+        )
+    class_values = tuple(
+        int(value) for value in np.unique(np.concatenate([v for _, v in train]))
+    )
+    for split in ("val", "test"):
+        kept = [
+            (video, values)
+            for video, values in labeled.get(split, [])
+            if bool(np.isin(values, class_values).all())
+        ]
+        dropped["unseen_class"] += len(labeled.get(split, [])) - len(kept)
+        labeled[split] = kept
+
+    for reason, count in dropped.items():
+        if count:
+            log.warning(
+                "[feral] %d video(s) left their split: they %s",
+                count,
+                _DROP_DESCRIPTIONS[reason],
+            )
+
+    dense = {value: index for index, value in enumerate(class_values)}
+    names = _train_vocabulary(sorted({video.entry for video, _ in train}), label_files)
+    class_names = {
+        str(index): names.get(value, str(value)) for value, index in dense.items()
+    }
+    label_lists: dict[str, list[int]] = {}
+    splits: dict[str, list[str]] = {}
+    for split in ("train", "val", "test"):
+        splits[split] = [video.filename for video, _ in labeled.get(split, [])]
+        for video, values in labeled.get(split, []):
+            remapped = np.vectorize(dense.__getitem__, otypes=[np.int64])(values)
+            label_lists[video.filename] = remapped.tolist()
+    labels_json: FeralLabelsJson = {
+        "class_names": class_names,
+        "is_multilabel": False,
+        "labels": label_lists,
+        "splits": splits,
+    }
+    return FeralLabels(
+        labels_json=labels_json, class_values=class_values, dropped=dropped
+    )
+
+
+def _dropped_summary(dropped: Mapping[FeralDropReason, int]) -> str:
+    """The nonzero counts of *dropped*, spelled for a refusal."""
+    parts = [
+        f"{count} {reason.replace('_', ' ')}"
+        for reason, count in dropped.items()
+        if count
+    ]
+    return ", ".join(parts) if parts else "none was given"
+
+
+def validation_entries(
+    train_entries: Sequence[tuple[str, str]], fraction: float, seed: int
+) -> list[tuple[str, str]]:
+    """The train entries drawn as the validation split.
+
+    Draws ``round(fraction * n)`` of the sorted entries with
+    ``np.random.default_rng(seed)``, so the same seed gives the same entries
+    for any input order.
+
+    Args:
+        train_entries: The train entries.
+        fraction: The fraction of the entries to draw.
+        seed: The seed of the draw.
+
+    Returns:
+        The drawn entries, sorted. Empty when the count rounds to zero.
+
+    Raises:
+        ValueError: The draw leaves no train entry.
+    """
+    ordered = sorted(train_entries)
+    count = round(fraction * len(ordered))
+    if count >= len(ordered) and ordered:
+        raise ValueError(
+            f"{FeralFeature.name}: a validation fraction of {fraction} draws "
+            f"{count} of {len(ordered)} train entries and leaves no train entry"
+        )
+    if count == 0:
+        return []
+    chosen = np.random.default_rng(seed).choice(len(ordered), size=count, replace=False)
+    return [ordered[index] for index in sorted(int(i) for i in chosen)]
+
+
+# --- Where the videos come from ---------------------------------------------
+
+FeralCropMode = Literal["interaction", "egocentric"]
+"""The crop inputs whose run root holds the videos FERAL reads."""
+
+FeralInputMode = Literal["interaction", "egocentric", "sequence"]
+"""Where FERAL's videos come from: a crop run's videos, or the entry's own media."""
+
+_CROP_MODES: Final[Mapping[str, FeralCropMode]] = {
+    "interaction-crop-pipeline": "interaction",
+    "egocentric-crop": "egocentric",
+}
+
+
+def feral_input_mode(storage_name: str) -> FeralInputMode:
+    """The video source an input's storage name selects.
+
+    The input's feature slug, which a shortened storage name keeps, picks the
+    source. The interaction and egocentric crop features supply their own
+    videos, and any other input, a track input included, is read through the
+    entry's own media.
+
+    Args:
+        storage_name: The storage name of the input, or ``"tracks"``.
+
+    Returns:
+        ``"interaction"``, ``"egocentric"`` or ``"sequence"``.
+    """
+    return _CROP_MODES.get(feature_slug_of(storage_name), "sequence")
+
+
+def refuse_crop_without_videos(input_root: Path) -> None:
+    """Refuse a crop run that wrote no video under its run root.
+
+    A crop run that set ``output_root`` writes its videos there, and an
+    egocentric run with ``output_mode="frames"`` writes no video at all. A run
+    whose ``params.json`` cannot be read has an unknown output mode, so it is
+    refused too.
+
+    Args:
+        input_root: The crop run's root.
+
+    Raises:
+        ValueError: The run has no videos under *input_root*, or its params
+            do not say whether it has.
+    """
+    run = f"{input_root.parent.name}/{input_root.name}"
+    read = read_run_params(input_root)
+    if read.params is None:
+        raise ValueError(
+            f"{FeralFeature.name}: cannot tell whether crop run {run} wrote videos: "
+            f"{read.finding}"
+        )
+    params = read.params.params
+    if params.get("output_root"):
+        raise ValueError(
+            f"{FeralFeature.name}: crop run {run} set output_root, so no video is "
+            "under its run root"
+        )
+    if params.get("output_mode") == "frames":
+        raise ValueError(
+            f"{FeralFeature.name}: crop run {run} wrote frames only "
+            '(output_mode="frames"), so it holds no video'
+        )
+
+
+def _scalar(value: object) -> int | str:
+    """An identity cell as the ``int`` or ``str`` a video's ids hold."""
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    return str(value)
+
+
+def _entry_of(rows: pd.DataFrame) -> tuple[str, str]:
+    """The one ``(group, sequence)`` that *rows* belong to."""
+    entries = {
+        (str(group), str(sequence))
+        for group, sequence in zip(rows["group"], rows["sequence"], strict=True)
+    }
+    if len(entries) != 1:
+        raise ValueError(
+            f"{FeralFeature.name}: one entry's crop rows span {len(entries)} entries"
+        )
+    return next(iter(entries))
+
+
+def _video_filename(path: Path, dataset_root: Path) -> str:
+    """*path* relative to the dataset root, or absolute outside it.
+
+    This is FERAL's key for a video, and FERAL joins it to the dataset root. It
+    is not :meth:`Dataset.relative_to_root`, which resolves symlinks and writes
+    native separators, for two reasons. A crop's videos are named from a run
+    root, where no :class:`Dataset` is at hand, so one rule serves crop and
+    sequence videos alike. And a key that follows the path as the dataset spells
+    it stays the same for a media file that is a link to storage elsewhere,
+    where a resolved path would change with the link's target and the labels
+    JSON written into the run root would differ between machines. The separator
+    is ``/`` on every platform for the same reason.
+    """
+    for root in (dataset_root, dataset_root.resolve()):
+        if path.is_relative_to(root):
+            return path.relative_to(root).as_posix()
+    return str(path)
+
+
+def crop_videos(
+    mode: FeralCropMode, input_root: Path, rows: pd.DataFrame, dataset_root: Path
+) -> tuple[list[FeralVideo], int]:
+    """The videos of one entry's crop rows.
+
+    An interaction row is one clip, ``<input_root>/<video_path>``, over frames
+    ``start_frame..end_frame``. The crop skips a frame whose focal individual is
+    missing, so a clip whose ``n_frames`` is not ``end_frame - start_frame + 1``
+    has no frame list FERAL can align and is dropped with a logged count. An
+    egocentric id is one video,
+    ``<input_root>/<group>__<sequence>/egocentric_id<id>.mp4``, that holds only
+    the frames with a row, so its frames are the sorted ``frame`` values of its
+    rows.
+
+    Args:
+        mode: The crop that wrote the rows.
+        input_root: The crop run's root.
+        rows: The crop rows of one entry.
+        dataset_root: The dataset root, which FERAL joins to each filename.
+
+    Returns:
+        The videos, in row order for an interaction and id order for an
+        egocentric crop, and the count of clips dropped.
+    """
+    if rows.empty:
+        return [], 0
+    entry = _entry_of(rows)
+    videos: list[FeralVideo] = []
+    dropped = 0
+    if mode == "interaction":
+        for _, row in rows.iterrows():
+            start = int(row["start_frame"])
+            end = int(row["end_frame"])
+            if int(row["n_frames"]) != end - start + 1:
+                dropped += 1
+                continue
+            path = input_root / str(row["video_path"])
+            ids = {
+                column: _scalar(row[column])
+                for column in ("id1", "id2", "perspective", "interaction_id")
+            }
+            videos.append(
+                FeralVideo(
+                    entry=entry,
+                    filename=_video_filename(path, dataset_root),
+                    path=path,
+                    frames=tuple(range(start, end + 1)),
+                    ids=ids,
+                )
+            )
+        if dropped:
+            log.warning(
+                "[feral] %d interaction clip(s) of %s/%s skip frames and are dropped",
+                dropped,
+                *entry,
+            )
+        return videos, dropped
+    for target_id, group_rows in rows.groupby(C.id_col, sort=True):
+        path = input_root / f"{entry[0]}__{entry[1]}" / f"egocentric_id{target_id}.mp4"
+        frames = sorted(int(frame) for frame in group_rows[C.frame_col])
+        videos.append(
+            FeralVideo(
+                entry=entry,
+                filename=_video_filename(path, dataset_root),
+                path=path,
+                frames=tuple(frames),
+                ids={C.id_col: _scalar(target_id)},
+            )
+        )
+    return videos, dropped
+
+
+def sequence_video(
+    ds: Dataset,
+    group: str,
+    sequence: str,
+    frame_count: Callable[[str], int | None],
+) -> FeralVideo:
+    """The video of one entry's own media.
+
+    The entry must resolve to one plain file. Its frames are the sequence's
+    first frame on its recording's frame axis plus ``k`` for each frame FERAL
+    counts in the video, and that count must match the stored count when there
+    is one.
+
+    Args:
+        ds: The dataset that resolves the entry's media.
+        group: The entry's group.
+        sequence: The entry's sequence.
+        frame_count: FERAL's frame count of the file at a path, ``None`` when
+            OpenCV cannot count it.
+
+    Returns:
+        The entry's video.
+
+    Raises:
+        ValueError: The entry spans several cameras, files or a store window,
+            cannot be placed, has a missing video or one OpenCV cannot count,
+            or has a count that disagrees with the stored one.
+    """
+    entry = (group, sequence)
+    try:
+        media = ds.resolve_media(group, sequence)
+        first_frame = media.first_frame
+    except MediaProbeError as exc:
+        raise ValueError(
+            f"{FeralFeature.name}: entry {entry!r} has no video FERAL can read: {exc}"
+        ) from exc
+    if len(media.paths) != 1:
+        raise ValueError(
+            f"{FeralFeature.name}: entry {entry!r} has {len(media.paths)} media files, "
+            "and FERAL reads one video"
+        )
+    if media.windows[0] is not None:
+        raise ValueError(
+            f"{FeralFeature.name}: entry {entry!r} reads a window of a store, "
+            "not a video file FERAL can open"
+        )
+    path = media.paths[0]
+    try:
+        counted = frame_count(str(path))
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"{FeralFeature.name}: the video of entry {entry!r} is missing: {path}"
+        ) from exc
+    if counted is None:
+        raise ValueError(
+            f"{FeralFeature.name}: the video of entry {entry!r} is unreadable: "
+            f"OpenCV cannot count the frames of {path}"
+        )
+    stored = media.frame_count
+    if stored is not None and stored != counted:
+        raise ValueError(
+            f"{FeralFeature.name}: the video of entry {entry!r} has {counted} frames "
+            f"by FERAL's count and {stored} in the media index"
+        )
+    return FeralVideo(
+        entry=entry,
+        filename=_video_filename(path, ds.base_dir),
+        path=path,
+        frames=tuple(first_frame + k for k in range(counted)),
+        ids={},
+    )
+
+
+# --- The model file ---------------------------------------------------------
+
+
+class FeralModelConfig(TypedDict):
+    """The ``model`` block of FERAL's config.
+
+    The first two keys shape the network. A run trained in mosaic holds the
+    others too, and a checkpoint imported from outside mosaic need not.
+    """
+
+    fc_drop_rate: float
+    freeze_encoder_layers: int
+    class_weights: NotRequired[str]
+    gradient_checkpointing: NotRequired[bool]
+    max_class_weight: NotRequired[float | None]
+
+
+class FeralNetwork(TypedDict):
+    """The keys of FERAL's config that build the network.
+
+    A trained run holds the whole config, which has these keys too. A checkpoint
+    imported from outside mosaic holds them and no more.
+    """
+
+    backbone: str
+    predict_per_item: int
+    model: FeralModelConfig
+
+
+class FeralModelBundle(TypedDict):
+    """What ``feral_model.joblib`` holds."""
+
+    state_dict: dict[str, torch.Tensor]  # CPU tensors, unwrapped from torch.compile
+    class_values: list[int]  # the original label value of each dense class index
+    class_names: dict[int, str]  # original label value to name
+    is_multilabel: bool
+    cfg: FeralNetwork  # the FERAL config the run trained with
+
+
+class FeralModelArtifact(JoblibArtifact[FeralModelBundle]):
+    """A trained FERAL model."""
+
+    feature: str = "feral"
+    pattern: str = "feral_model.joblib"
+    load: JoblibLoadSpec = Field(default_factory=JoblibLoadSpec)
+
+
 # --- Params ---------------------------------------------------------------
 
-_FERAL_CODE_DIR_DESCRIPTION = (
-    "A local checkout of the feral package, prepended to sys.path. Unset, "
-    "the pip-installed package is used."
+_TEMPLATES_DESCRIPTION = (
+    "The extract-labeled-templates run whose train entries the model fits on and "
+    "whose test entries it evaluates on. Only its template_provenance.parquet is "
+    "read: the model trains on the videos of those entries, not on the sampled "
+    "templates. An entry the run does not list never trains or tests. The run "
+    "names the training set, so the step's scope is not part of its identity: a "
+    "wider scope applies the fit it has and does not fit again. Exactly one of "
+    "templates, model or model_dir."
+)
+
+_LABELS_DESCRIPTION = (
+    "The per-frame ground-truth labels that the frames of the videos are aligned "
+    "to, resolved from labels/<kind>/index.csv. A frame no label covers takes "
+    "unlabeled_as, or its video is left out when that is unset. Required with "
+    "templates."
+)
+
+_UNLABELED_AS_DESCRIPTION = (
+    "The label value, in the original label space, that a frame without a label "
+    "trains as, a masked class included. Unset, a video that holds such a frame "
+    "is left out of its split. Only with templates."
+)
+
+_MODEL_DESCRIPTION = (
+    "A trained feral run to apply in place of training: its feral_model.joblib. "
+    "Exactly one of templates, model or model_dir."
 )
 
 _MODEL_NAME_DESCRIPTION = (
     "The FERAL backbone: a feral.backbones.BACKBONES key or the matching "
     "HuggingFace slug. An unrecognized value raises. The choice also "
     "selects the pretrained weights FERAL downloads from the HuggingFace "
-    "hub on first use, whose license differs per entry; see NOTICE. In "
-    "inference mode this is a fallback: a loaded config.json or "
-    "checkpoint that records its own backbone overrides it."
+    "hub on first use, whose license differs per entry; see NOTICE. Ignored "
+    "with model, whose trained run records its own. With model_dir this is a "
+    "fallback: a loaded config.json or checkpoint that records its own "
+    "backbone overrides it."
 )
 
 _PREDICT_PER_ITEM_DESCRIPTION = (
-    "How many predictions the model emits per chunk. In inference mode "
-    "this is a fallback: a loaded config.json or checkpoint that "
-    "records its own value overrides it."
+    "How many predictions the model emits per chunk. Ignored with model, whose "
+    "trained run records its own. With model_dir this is a fallback: a loaded "
+    "config.json or checkpoint that records its own value overrides it."
 )
 
 _CHUNK_LENGTH_DESCRIPTION = "The length of one video chunk."
@@ -302,8 +833,9 @@ _INFERENCE_AUTOCAST_DESCRIPTION = (
 )
 
 _CLASS_NAMES_DESCRIPTION = (
-    "Class index to name mapping, keyed by string index. Unset, the "
-    "mapping is read from the model config or checkpoint metadata."
+    "Class names, keyed by the original label value as text. Unset, the names "
+    "a trained run recorded, or an imported checkpoint's metadata, are used. "
+    "An imported checkpoint with neither needs this to name its classes."
 )
 
 _DECISION_THRESHOLD_DESCRIPTION = (
@@ -314,27 +846,27 @@ _DECISION_THRESHOLD_DESCRIPTION = (
 )
 
 _DEFAULT_CLASS_DESCRIPTION = (
-    "The class returned when decision_threshold is set and every class falls below it."
+    "The label value returned when decision_threshold is set and every class "
+    "falls below it."
 )
 
 _MODEL_DIR_DESCRIPTION = (
-    "A directory containing model_best.pt and config.json from a prior "
-    "training run, for inference mode."
-)
-
-_VIDEO_DIR_DESCRIPTION = "The directory containing crop videos, for training mode."
-
-_LABEL_JSON_DESCRIPTION = (
-    "A FERAL-format label JSON declaring class_names and splits, for training mode."
+    "A directory that holds a checkpoint trained outside mosaic: model_best.pt "
+    "and, optionally, config.json. Exactly one of templates, model or model_dir."
 )
 
 _TRAINING_DESCRIPTION = (
-    "Training hyperparameters. Required to train. Unset without a model "
-    "to load, fit raises."
+    "Training hyperparameters. Required with templates, and refused without it."
 )
 
 
 _EPOCHS_DESCRIPTION = "The number of training epochs."
+
+_VAL_FRACTION_DESCRIPTION = (
+    "The fraction of the train entries of the templates run, drawn whole with "
+    "the seed, that validate each epoch. The best epoch by validation frame-level "
+    "mAP is kept. 0 trains without validation and keeps the last epoch."
+)
 
 _TRAIN_BS_DESCRIPTION = "The number of samples per training batch."
 
@@ -352,10 +884,7 @@ _LR_DESCRIPTION = "The learning rate for the AdamW optimizer."
 
 _WEIGHT_DECAY_DESCRIPTION = "The weight decay for the AdamW optimizer."
 
-_LABEL_SMOOTHING_DESCRIPTION = (
-    "The label smoothing factor for the cross-entropy loss, applied only "
-    "when the label JSON is not multilabel."
-)
+_LABEL_SMOOTHING_DESCRIPTION = "The label smoothing factor for the cross-entropy loss."
 
 _FC_DROP_RATE_DESCRIPTION = "The dropout rate before the classifier head."
 
@@ -400,8 +929,8 @@ _PART_SAMPLE_DESCRIPTION = (
 )
 
 _MULTILABEL_THRESHOLD_DESCRIPTION = (
-    "The probability threshold used when computing F1 metrics, applied "
-    "only when the label JSON is multilabel."
+    "The probability threshold for the F1 metrics of a multilabel model. A "
+    "templates run trains a single-label model, so it never applies to one."
 )
 
 
@@ -412,6 +941,9 @@ class FeralTrainingConfig(DeclaredModel):
     """
 
     epochs: Annotated[int, Declared(_EPOCHS_DESCRIPTION)] = Field(default=10, ge=1)
+    val_fraction: Annotated[float, Declared(_VAL_FRACTION_DESCRIPTION)] = Field(
+        default=0.2, ge=0, lt=1
+    )
     train_bs: Annotated[int, Declared(_TRAIN_BS_DESCRIPTION)] = Field(default=4, ge=1)
     val_bs: Annotated[int, Declared(_VAL_BS_DESCRIPTION)] = Field(default=8, ge=1)
     num_workers: Annotated[int, Declared(_NUM_WORKERS_DESCRIPTION)] = Field(
@@ -455,32 +987,51 @@ class FeralTrainingConfig(DeclaredModel):
 class FeralFeature:
     """FERAL vision-transformer behavior classifier as a pipeline feature.
 
-    Supports two operating modes:
+    Exactly one of three params chooses the mode.
 
-    **Training mode** (``video_dir`` + ``label_json`` + ``training``):
-        Runs the full FERAL ViT fine-tuning loop, saves checkpoints,
-        evaluates the test split (if present), then applies to all
-        sequences in the apply phase.
+    **Training mode** (``templates`` + ``labels`` + ``training``):
+        Trains FERAL's ViT on the videos of the entries that the ``templates``
+        run (``extract-labeled-templates``) assigned to ``train``, with each
+        frame labeled from ``labels``. A seeded ``training.val_fraction`` of
+        those entries validates each epoch and picks the best checkpoint. The
+        test entries are evaluated afterwards. The ``templates`` run names the
+        training set, so the run id does not cover the step's scope: a wider
+        scope applies the stored model to the new entries and trains nothing
+        again. The first run has to be asked for over a scope that holds the
+        train entries and the labeled test entries.
 
-    **Inference mode** (``model_dir``):
-        Loads a pre-trained FERAL model and runs per-frame behavior
-        classification on crop videos.
+    **Applying a trained run** (``model``):
+        Loads the ``feral_model.joblib`` of a trained ``feral`` run and
+        classifies each frame of its input.
+
+    **Importing a checkpoint** (``model_dir``):
+        Loads ``model_best.pt``, and ``config.json`` when there is one, of a
+        checkpoint trained outside mosaic.
+
+    **Inputs**:
+        The step's input decides where FERAL reads its videos from:
+
+        1. An **interaction-crop-pipeline** input (pair-level): one row per crop
+           video, read from the crop run's root.
+        2. An **egocentric-crop** input (individual-level): one video per
+           individual under the crop run's root.
+        3. Any other input, ``tracks`` included: the entry's own media, which
+           must be one plain video file.
 
     **Precision convention**:
-        Training's forward/backward pass runs in bfloat16 autocast --
-        mixed precision is the standard speedup for the inner training
-        loop where the forward/backward runs millions of times. Everything
-        else -- per-epoch validation inside ``fit()``, the post-training
-        test eval (``_evaluate_partition``), the public
-        ``FeralFeature.evaluate()``, and production inference
-        (``apply()``) -- defaults to full float32. The eval and apply
-        paths produce numbers that get stored and acted on downstream
-        (reports.json metrics, per-frame prediction parquets, paper
-        figures), so reproducibility wins over the ~1.5-2x speedup that
-        bfloat16 would buy. bfloat16 shifts decision boundaries near
-        probability 0.5 and can move recall by 10+ points on
-        threshold-sensitive classes -- not a trade-off worth taking when
-        the cost is a one-time inference pass.
+        Training's forward/backward pass and the per-epoch validation
+        inside ``fit()`` run in FERAL's bfloat16 autocast, so the
+        validation numbers that pick the best epoch follow FERAL's own.
+        Everything else -- the post-training test eval
+        (``_evaluate_partition``), the public ``FeralFeature.evaluate()``,
+        and production inference (``apply()``) -- defaults to full
+        float32. The eval and apply paths produce numbers that get stored
+        and acted on downstream (reports.json metrics, per-frame
+        prediction parquets, paper figures), so reproducibility wins over
+        the ~1.5-2x speedup that bfloat16 would buy. bfloat16 shifts
+        decision boundaries near probability 0.5 and can move recall by
+        10+ points on threshold-sensitive classes -- not a trade-off worth
+        taking when the cost is a one-time inference pass.
 
         **Opt-in override for apply()**: set
         ``params.inference_autocast = True`` to run apply()'s forward
@@ -491,16 +1042,6 @@ class FeralFeature:
         persisted in feral_config.json so consumers can tell at a glance
         which precision regime produced any given run's parquets.
 
-    Supports two input formats for the apply phase:
-
-    1. **InteractionCropPipeline** output (pair-level):
-       One row per crop video with ``video_path``, ``id_a``, ``id_b``,
-       ``target_id``, ``interaction_id``, ``start_frame``, ``end_frame``.
-
-    2. **EgocentricCrop** output (individual-level):
-       One row per frame with ``target_id``, ``frame``.  Videos are
-       derived as ``egocentric_id{target_id}.mp4``.
-
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.feral_feature.FeralFeature.Params`.
     """
@@ -510,55 +1051,70 @@ class FeralFeature:
     # category groups it in the pipeline diagram and `mosaic features list`. A GPU
     # feature of category global is also offered to the queue's gpu-train lane.
     category = "global"
-    # Trains on the ground-truth labels of ``label_json``, a path the params
-    # types do not mark as labels.
-    needs_ground_truth = True
     costly_fit = True  # a superseded-run cleanup keeps its runs
+    # A run given a `model` or a `model_dir` fits nothing, and `__init__` clears this.
     fits = True  # learns from its inputs, so a held-out group must stay out of its fit
     # V-JEPA on CUDA by default (`device="cuda"`), so a run holds a GPU.
     resource_class = "gpu"
     name = "feral"
     tool: ClassVar[str] = "feral"
-    version = "0.2"
+    version = "0.3"
     parallelizable = False
+    # The fit streams the step's inputs but trains only on the entries that
+    # `templates` assigned to train, and skips the others before touching state.
     scope_dependent = False
+    fit_set_pinned_by: ClassVar[str] = "templates"
     relates: RelatesLevel = "none"
     accepts_overlap = (
         False  # takes its context from the crop video, not from this frame
     )
-    consumed_roots: tuple[str, ...] = ()
+    # A sequence input decodes the entry's own media through `resolve_media`.
+    consumed_roots: tuple[str, ...] = ("media_raw",)
     prerequisites: tuple[Prerequisite, ...] = (FERAL,)
     emits: EmitsLevel = "as-input"
     follows_ids: bool = False
-    # Apply predicts each frame of the crop videos that its input names: one per
-    # row of an interaction crop table, or one per individual of an egocentric
-    # crop table. A pair input, one with id1 and id2, keeps its pair columns,
-    # and any other input keeps id. A condition cannot name an absent column,
-    # so id is left to the data.
+    # Apply predicts each frame of the videos that its input names: one per row
+    # of an interaction crop table, one per individual of an egocentric crop
+    # table, or one per sequence of any other input. A crop input writes a row
+    # per video frame, and any other input writes a row per input row of a
+    # predicted frame. Each identity column is written when the input has it.
     requires: ClassVar[tuple[Requirement, ...]] = (
-        AnyOf((Column("video_path"), Column(C.id_col))),
+        AnyOf((Column("video_path"), Column(C.frame_col))),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(Column(C.frame_col), Prefix("prob_"), Column("predicted_label")),
         conditional=(
-            *(
-                Conditional(Column(name), when_present=Column("id1"))
-                for name in ("id1", "id2", "perspective", "interaction_id")
+            Conditional(Column("id1"), when_present=Column("id1")),
+            Conditional(Column("id2"), when_present=Column("id1")),
+            Conditional(Column("perspective"), when_present=Column("perspective")),
+            Conditional(
+                Column("interaction_id"), when_present=Column("interaction_id")
             ),
-            Conditional(Column(C.id_col)),
+            Conditional(Column(C.id_col), when_present=Column(C.id_col)),
             *kept(C.group_col, C.seq_col),
         ),
     )
+    ModelArtifact = FeralModelArtifact
 
-    class Inputs(Inputs[Result]):
+    class Inputs(Inputs[TrackInput | Result]):
         _require: ClassVar[InputRequire] = "nonempty"
 
     class Params(Params):
-        # Optional sys.path override for a local checkout of the `feral`
-        # package; None uses the pip-installed package (mosaic-behavior[feral]).
-        feral_code_dir: Annotated[
-            Path | None, Declared(_FERAL_CODE_DIR_DESCRIPTION)
+        # Training mode: the templates run, the labels and the training config
+        templates: Annotated[
+            LabeledTemplatesRef | None, Declared(_TEMPLATES_DESCRIPTION)
         ] = None
+        labels: Annotated[
+            GroundTruthLabelsSource | None, Declared(_LABELS_DESCRIPTION)
+        ] = None
+        unlabeled_as: Annotated[int | None, Declared(_UNLABELED_AS_DESCRIPTION)] = None
+        training: Annotated[
+            FeralTrainingConfig | None, Declared(_TRAINING_DESCRIPTION)
+        ] = None
+        # Applying a trained run
+        model: Annotated[FeralModelArtifact | None, Declared(_MODEL_DESCRIPTION)] = None
+        # Importing a checkpoint trained outside mosaic
+        model_dir: Annotated[Path | None, Declared(_MODEL_DIR_DESCRIPTION)] = None
         # Shared model config. The backbone also selects the pretrained weights
         # FERAL downloads from the HuggingFace hub on first use. The default's
         # model card declares MIT; per-entry licenses are in NOTICE.
@@ -618,7 +1174,7 @@ class FeralFeature:
         inference_autocast: Annotated[
             bool, Declared(_INFERENCE_AUTOCAST_DESCRIPTION)
         ] = False
-        # Class configuration (auto-detected from model config if None)
+        # Class configuration (read from the model when None)
         class_names: Annotated[
             dict[str, str] | None, Declared(_CLASS_NAMES_DESCRIPTION)
         ] = None
@@ -627,24 +1183,36 @@ class FeralFeature:
             float | None, Declared(_DECISION_THRESHOLD_DESCRIPTION)
         ] = None
         default_class: Annotated[int, Declared(_DEFAULT_CLASS_DESCRIPTION)] = 0
-        # Inference mode: point to pre-trained model directory
-        model_dir: Annotated[Path | None, Declared(_MODEL_DIR_DESCRIPTION)] = None
-        # Training mode: video directory + labels + training config
-        video_dir: Annotated[Path | None, Declared(_VIDEO_DIR_DESCRIPTION)] = None
-        label_json: Annotated[Path | None, Declared(_LABEL_JSON_DESCRIPTION)] = None
-        training: Annotated[
-            FeralTrainingConfig | None, Declared(_TRAINING_DESCRIPTION)
-        ] = None
 
         @model_validator(mode="after")
         def _check_mode(self) -> Self:
-            has_model = self.model_dir is not None
-            has_training = self.video_dir is not None and self.label_json is not None
-            if not has_model and not has_training:
+            """Exactly one source, and the params that go with a fit only with it."""
+            given = [
+                field
+                for field in ("templates", "model", "model_dir")
+                if getattr(self, field) is not None
+            ]
+            if len(given) != 1:
                 raise ValueError(
-                    "Either model_dir (inference) or video_dir + label_json "
-                    "(training) must be provided."
+                    "Exactly one of templates (train), model (apply a trained "
+                    "run) or model_dir (import a checkpoint) must be set, "
+                    f"and {len(given)} are: {', '.join(given) or 'none'}."
                 )
+            if self.templates is None:
+                for field in ("labels", "training", "unlabeled_as"):
+                    if getattr(self, field) is not None:
+                        raise ValueError(
+                            f"{field} is read when training from templates, and "
+                            "a run given a model or a model_dir fits nothing."
+                        )
+                return self
+            for field in ("labels", "training"):
+                if getattr(self, field) is None:
+                    raise ValueError(
+                        f"{field} is required with templates: the model trains "
+                        "on the videos of the entries the templates run assigned "
+                        "to train, labeled from labels."
+                    )
             return self
 
     def __init__(
@@ -654,28 +1222,45 @@ class FeralFeature:
     ) -> None:
         self.inputs = inputs
         self.params = self.Params.from_overrides(params)
-        self._model = None  # torch.nn.Module
-        self._config: dict = {}
-        self._classes: list[int] = []
-        self._class_names: dict[int, str] = {}
+        self.fits = self.params.templates is not None
         self._ds: Dataset | None = None
-        self._video_dir: Path | None = None
+        self.progress_callback: TrainingProgressCallback | None = None
+        self._reset()
+
+    def _reset(self) -> None:
+        self._model: torch.nn.Module | None = None
+        # The four fields below describe the loaded or fitted model together.
+        self._cfg: FeralNetwork | None = None
+        self._class_values: tuple[int, ...] | None = None
+        self._class_names: dict[int, str] | None = None
+        self._is_multilabel: bool | None = None
+        self._metrics: dict[str, object] | None = None
+        self._training_metrics: list[dict[str, float]] = []
         self._run_root: Path | None = None
-        self._metrics: dict | None = None
-        self.progress_callback = None  # optional TrainingProgressCallback
+        self._input_root: Path | None = None
+        self._train_entries: set[tuple[str, str]] | None = None
+        self._test_entries: set[tuple[str, str]] | None = None
+        self._label_files: DependencyLookup = {}
 
     def bind_dataset(self, ds: Dataset) -> None:
         """Store dataset reference for resolving media paths."""
         self._ds = ds
 
-    def _resolve(self, value: str | Path) -> Path:
-        """``_resolve_dataset_path`` against the dataset ``bind_dataset`` supplied.
+    def _input_mode(self) -> FeralInputMode:
+        """Where the first feature input has FERAL read its videos from."""
+        first = next(iter(self.inputs.feature_inputs), None)
+        return "sequence" if first is None else feral_input_mode(first.feature)
 
-        Every call site has already established that *value* is set -- either by
-        a ``is not None`` guard on the param or by a truthiness check on the
-        config key -- so this takes a non-optional value and returns one.
-        """
-        return _resolve_dataset_path(self._ds, value)
+    def _videos_of(self, ds: Dataset, df: pd.DataFrame) -> list[FeralVideo]:
+        """The videos of one entry's input rows, from its crop run or its own media."""
+        mode = self._input_mode()
+        if mode == "sequence":
+            group, sequence = _entry_of(df)
+            return [sequence_video(ds, group, sequence, _feral_get_frame_count())]
+        if self._input_root is None:
+            raise ValueError(f"{self.name}: no crop run root was loaded for its input")
+        videos, _ = crop_videos(mode, self._input_root, df, ds.base_dir)
+        return videos
 
     # --- State management ---
 
@@ -685,769 +1270,305 @@ class FeralFeature:
         artifact_paths: dict[str, Path],
         dependency_lookups: dict[str, DependencyLookup],
     ) -> bool:
-        self._model = None
-        self._config = {}
-        self._classes = []
-        self._class_names = {}
-        self._metrics = None
+        self._reset()
         self._run_root = run_root
-
-        # Resolve crop video directory from dependency lookups
-        for _field_name, lookup in dependency_lookups.items():
-            if lookup:
-                some_path = next(iter(lookup.values()))
-                self._video_dir = some_path.parent
-                break
-
-        # Fallback: use params.video_dir if set (training mode)
-        if self._video_dir is None and self.params.video_dir is not None:
-            self._video_dir = self._resolve(self.params.video_dir)
+        self._load_input_root(dependency_lookups)
+        p = self.params
 
         # Branch 1: cached model in run_root (from prior fit+save_state)
-        cached_model = run_root / "feral_model.pt"
-        cached_config = run_root / "feral_config.json"
-        if cached_model.exists() and cached_config.exists():
-            self._load_model(cached_model, cached_config)
-            if self._video_dir is None and self._config.get("video_dir"):
-                self._video_dir = self._resolve(self._config["video_dir"])
+        cached_model = run_root / "feral_model.joblib"
+        if cached_model.exists() and (run_root / "feral_config.json").exists():
+            _check_feral()
+            self._load_model(FeralModelArtifact().from_path(cached_model))
             return True
 
-        # Branch 2: pre-trained model from params.model_dir
-        if self.params.model_dir is not None:
-            model_dir = self._resolve(self.params.model_dir)
-            checkpoint = model_dir / "model_best.pt"
-            config_path = model_dir / "config.json"
-            if checkpoint.exists():
-                self._load_model(
-                    checkpoint,
-                    config_path if config_path.exists() else None,
-                )
-                if self._video_dir is None and self._config.get("video_dir"):
-                    self._video_dir = self._resolve(self._config["video_dir"])
-                return True
+        # Branch 2: a trained run named by params.model
+        if p.model is not None:
+            path = named_model_file(self.name, p.model, artifact_paths)
+            _check_feral()
+            self._load_model(p.model.from_path(path))
+            return True
 
-        # Branch 3: training mode -- return False to trigger fit()
+        # Branch 3: a checkpoint trained outside mosaic, from params.model_dir
+        if p.model_dir is not None:
+            model_dir = (
+                self._ds.resolve_path(p.model_dir)
+                if self._ds is not None
+                else Path(p.model_dir)
+            )
+            checkpoint = model_dir / "model_best.pt"
+            if not checkpoint.exists():
+                raise FileNotFoundError(
+                    f"[{self.name}] model_dir {p.model_dir} resolves to {model_dir}, "
+                    "which holds no model_best.pt"
+                )
+            config_path = model_dir / "config.json"
+            self._load_model(checkpoint, config_path if config_path.exists() else None)
+            return True
+
+        # Branch 4: the entries of the templates run to fit on
+        templates_path = artifact_paths.get("templates")
+        if templates_path is None:
+            raise FileNotFoundError(
+                f"[{self.name}] the templates run holds no templates.parquet to read "
+                "its train and test entries from"
+            )
+        train_entries = entries_of_templates(templates_path, "train")
+        test_entries = entries_of_templates(templates_path, "test")
+        if train_entries is None or test_entries is None:
+            raise ValueError(
+                f"[{self.name}] the templates run left no template_provenance.parquet "
+                "beside its templates, so the entries it held out are unknown. "
+                "Rerun extract-labeled-templates"
+            )
+        self._train_entries = set(train_entries)
+        self._test_entries = set(test_entries)
+        self._label_files = dependency_lookups.get("labels", {})
         return False
+
+    def _load_input_root(self, dependency_lookups: dict[str, DependencyLookup]) -> None:
+        """Record the first feature input's run root, and refuse a crop without videos."""
+        mode = self._input_mode()
+        self._input_root = input_run_root(dependency_lookups.get("_input_0", {}))
+        if mode == "sequence":
+            return
+        if self._input_root is None:
+            first = self.inputs.feature_inputs[0]
+            raise ValueError(
+                f"[{self.name}] its {mode} crop input {first.feature!r} resolved no "
+                "stored output, so no crop video can be found"
+            )
+        refuse_crop_without_videos(self._input_root)
 
     def _load_model(
         self,
-        checkpoint_path: Path,
-        config_path: Path | None,
+        source: FeralModelBundle | Path,
+        config_path: Path | None = None,
     ) -> None:
-        """Load FERAL model from checkpoint + config."""
-        _import_feral(self.params.feral_code_dir)
-        import torch
-        from feral.model import FeralModel  # type: ignore[import-not-found]
+        """Load a FERAL model from a trained run's bundle or an imported checkpoint.
 
-        # Load config if available
-        if config_path is not None and config_path.exists():
-            with open(config_path) as f:
-                self._config = json.load(f)
+        A bundle carries its weights, classes and config. A checkpoint path is one
+        trained outside mosaic, read with its optional ``config.json``.
+        """
+        _check_feral()
+        import torch
 
         p = self.params
-        num_classes = 2  # default
+        if isinstance(source, Path):
+            state_dict, cfg, names, is_multilabel = _read_imported(
+                source, config_path, p
+            )
+            class_values = tuple(sorted(names))
+            class_names = names
+        else:
+            state_dict, cfg = source["state_dict"], source["cfg"]
+            class_values = tuple(source["class_values"])
+            class_names = dict(source["class_names"])
+            is_multilabel = source["is_multilabel"]
+            if p.class_names is not None:
+                class_names = {
+                    **class_names,
+                    **_named_values(p.class_names, class_values),
+                }
 
-        # Read the checkpoint once: unwrap the new dict format and remap old
-        # HFModel keys (model.* -> backbone.model.*) so they load into FeralModel.
-        ckpt_state_dict, ckpt_meta = _load_checkpoint_state_dict(
-            torch.load(str(checkpoint_path), map_location="cpu")
-        )
-
-        # Try to get class info from config -> label_json
-        if "label_json" in self._config:
-            label_json_path = self._resolve(self._config["label_json"])
-            if label_json_path.exists():
-                with open(label_json_path) as f:
-                    labels_json = json.load(f)
-                class_names_raw = labels_json.get("class_names", {})
-                num_classes = len(class_names_raw)
-                self._class_names = {int(k): v for k, v in class_names_raw.items()}
-
-        # Try class_names from config itself (saved by save_state)
-        if not self._class_names and "class_names" in self._config:
-            cfg_names = self._config["class_names"]
-            self._class_names = {int(k): v for k, v in cfg_names.items()}
-            num_classes = len(self._class_names)
-
-        # Fall back to checkpoint-embedded metadata (new dict-format checkpoints)
-        if not self._class_names and ckpt_meta and ckpt_meta.get("class_names"):
-            self._class_names = {int(k): v for k, v in ckpt_meta["class_names"].items()}
-            num_classes = len(self._class_names)
-
-        # Override from params if explicitly set
-        if p.class_names is not None:
-            self._class_names = {int(k): v for k, v in p.class_names.items()}
-            num_classes = len(p.class_names)
-
-        self._classes = list(range(num_classes))
-
-        device = torch.device(p.device)
-
-        # Architecture params from config, falling back to self.params or the
-        # cfg embedded in a new-format checkpoint. backbone + predict_per_item
-        # must match the saved weights; fc_drop_rate/freeze are weight-agnostic.
-        ckpt_cfg = (ckpt_meta or {}).get("cfg") or {}
-        model_name = self._config.get(
-            "model_name", ckpt_cfg.get("backbone", p.model_name)
-        )
-        predict_per_item = self._config.get(
-            "predict_per_item",
-            ckpt_cfg.get("predict_per_item", p.predict_per_item),
-        )
-        fc_drop_rate = self._config.get("fc_drop_rate", 0.5)
-        freeze_encoder_layers = self._config.get("freeze_encoder_layers", 14)
-
-        # Inference: build the architecture only (pretrained=False -> no HF
-        # weight download); trained weights come from the checkpoint below.
-        model = FeralModel(
-            backbone=_resolve_backbone_key(model_name),
-            num_classes=num_classes,
-            predict_per_item=predict_per_item,
-            fc_drop_rate=fc_drop_rate,
-            freeze_encoder_layers=freeze_encoder_layers,
-            pretrained=False,
-        )
-        _load_into(model, ckpt_state_dict)
-        model.to(device)
+        model = _build_network(cfg, len(class_values))
+        _load_into(model, state_dict)
+        model.to(torch.device(p.device))
         model.eval()
         self._model = model
+        self._cfg = cfg
+        self._class_values = class_values
+        self._class_names = class_names
+        self._is_multilabel = is_multilabel
 
     # --- Fit (training) ---
 
     def fit(self, inputs: InputStream) -> None:
-        """Train a FERAL model or verify pre-trained model is loaded.
+        """Train a FERAL model on the videos of the templates run's train entries.
 
-        In training mode (``video_dir`` + ``label_json`` + ``training`` set),
-        runs the full ViT fine-tuning loop with intermediate checkpoints.
-        After training, evaluates the test split if present.
-
-        In inference mode (``model_dir`` set), the model is already loaded
-        by ``load_state()`` and this method is not called.
-
-        The ``inputs`` argument is not consumed -- FERAL reads video files
-        directly from ``params.video_dir``.
+        Streams the step's inputs and keeps the entries that the ``templates`` run
+        assigned to ``train`` or ``test``. Each entry's videos come from the
+        crop run or the entry's own media. A seeded ``training.val_fraction`` of
+        the train entries validates, FERAL's loop pieces train, and the test
+        entries are evaluated afterwards.
 
         Raises:
             ToolUnavailable: The ``feral`` package is not importable.
+            RuntimeError: No dataset is bound, or ``load_state`` loaded no templates.
+            ValueError: The scope lacks a train entry or a labeled test entry, no
+                train video is left, or a test entry leaves no test video.
         """
-        _check_feral(self.params.feral_code_dir)
-        if self._model is not None:
-            return
-
-        p = self.params
-        if p.video_dir is None or p.label_json is None or p.training is None:
+        _check_feral()
+        ds = self._ds
+        if ds is None:
             raise RuntimeError(
-                "FeralFeature requires either a pre-trained model (model_dir) "
-                "or training data (video_dir + label_json + training config)."
+                f"[{self.name}] fit needs the dataset, which run_feature binds with "
+                "bind_dataset"
             )
-
-        _import_feral(p.feral_code_dir)
-        import torch
-        from feral.model import FeralModel  # type: ignore[import-not-found]
-        from feral.dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
-        from feral.utils import prep_for_answers, save_model, get_weights  # type: ignore[import-not-found]
-
-        tc = p.training  # FeralTrainingConfig
+        p = self.params
+        training, labels_source = p.training, p.labels
+        train_entries, test_entries = self._train_entries, self._test_entries
         run_root = self._run_root
-        if run_root is not None:
-            run_root.mkdir(parents=True, exist_ok=True)
+        if (
+            training is None
+            or labels_source is None
+            or train_entries is None
+            or test_entries is None
+            or run_root is None
+        ):
+            raise RuntimeError(
+                f"[{self.name}] no templates were loaded to fit on: fit follows a "
+                "load_state that returned False for a step given templates"
+            )
 
-        # Build a flat config dict for FERAL compatibility and saving
-        cfg: dict = {
-            "feral_code_dir": str(p.feral_code_dir),
-            "video_dir": str(p.video_dir),
-            "label_json": str(p.label_json),
-            "model_name": p.model_name,
-            "predict_per_item": p.predict_per_item,
-            "chunk_length": p.chunk_length,
-            "chunk_shift": p.chunk_shift,
-            "chunk_step": p.chunk_step,
-            "resize_to": p.resize_to,
-            "device": p.device,
-            "epochs": tc.epochs,
-            "train_bs": tc.train_bs,
-            "val_bs": tc.val_bs,
-            "num_workers": tc.num_workers,
-            "lr": tc.lr,
-            "weight_decay": tc.weight_decay,
-            "label_smoothing": tc.label_smoothing,
-            "fc_drop_rate": tc.fc_drop_rate,
-            "freeze_encoder_layers": tc.freeze_encoder_layers,
-            "class_weights": tc.class_weights,
-            "ema_decay": tc.ema_decay,
-            "mixup_alpha": tc.mixup_alpha,
-            "part_warmup": tc.part_warmup,
-            "patience": tc.patience,
-            "compile": tc.compile,
-            "do_aa": tc.do_aa,
-            "seed": tc.seed,
-            "part_sample": tc.part_sample,
-            "multilabel_threshold": tc.multilabel_threshold,
+        videos_of_entry: dict[tuple[str, str], list[FeralVideo]] = {}
+        for _, df in inputs():
+            if df.empty:
+                continue
+            entry = _entry_of(df)
+            if entry in train_entries or entry in test_entries:
+                videos_of_entry[entry] = self._videos_of(ds, df)
+
+        seen = set(videos_of_entry)
+        refuse_entries_outside_scope(
+            self.name,
+            "train entries of the templates run",
+            train_entries,
+            self._label_files,
+            seen,
+            consequence="The model would train on fewer entries than its templates name.",
+            remedy=FIT_SCOPE_REMEDY,
+        )
+        refuse_entries_outside_scope(
+            self.name,
+            "test entries of the templates run",
+            test_entries,
+            self._label_files,
+            seen,
+            consequence="Its test metrics would cover fewer entries than its templates name.",
+            remedy=FIT_SCOPE_REMEDY,
+        )
+
+        val_entries = set(
+            validation_entries(
+                sorted(train_entries), training.val_fraction, training.seed
+            )
+        )
+        split_videos: dict[FeralSplit, list[FeralVideo]] = {
+            "train": [],
+            "val": [],
+            "test": [],
         }
-        self._config = cfg
-
-        # Save config for reproducibility / crash recovery
-        if run_root is not None:
-            with open(run_root / "config.json", "w") as f:
-                json.dump(cfg, f, indent=2, default=str)
-
-        # Load labels
-        with open(self._resolve(p.label_json)) as f:
-            labels_json = json.load(f)
-        class_names = {int(k): v for k, v in labels_json["class_names"].items()}
-        num_classes = len(class_names)
-        self._class_names = class_names
-        self._classes = list(range(num_classes))
-
-        # Set seeds
-        torch.manual_seed(tc.seed)
-        np.random.seed(tc.seed)
-
-        device = torch.device(cfg["device"])
-
-        # Build datasets. The refactored ClsDataset takes a parsed labels dict
-        # (label_json_dict), not a path.
-        data_kwargs = {
-            "label_json_dict": labels_json,
-            "prefix": str(self._resolve(p.video_dir)),
-            "chunk_shift": cfg["chunk_shift"],
-            "chunk_length": cfg["chunk_length"],
-            "chunk_step": cfg["chunk_step"],
-            "resize_to": cfg["resize_to"],
-        }
-
-        train_dataset = ClsDataset(
-            partition="train",
-            do_aa=tc.do_aa,
-            predict_per_item=p.predict_per_item,
-            num_classes=num_classes,
-            part_sample=tc.part_sample,
-            **data_kwargs,
-        )
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            shuffle=True,
-            batch_size=tc.train_bs,
-            num_workers=tc.num_workers,
-            pin_memory=True,
-            drop_last=True,
-            persistent_workers=tc.num_workers > 0,
-        )
-
-        val_loader = None
-        if "val" in labels_json["splits"] and labels_json["splits"]["val"]:
-            val_dataset = ClsDataset(
-                partition="val",
-                do_aa=False,
-                predict_per_item=p.predict_per_item,
-                num_classes=num_classes,
-                **data_kwargs,
-            )
-            val_loader = torch.utils.data.DataLoader(
-                val_dataset,
-                shuffle=False,
-                batch_size=tc.val_bs,
-                num_workers=tc.num_workers,
-                pin_memory=True,
-                drop_last=False,
-                persistent_workers=tc.num_workers > 0,
-                collate_fn=collate_fn_val,
-            )
-
-        # Build model. Training fine-tunes from the pretrained backbone weights
-        # (pretrained=True downloads the HF base on first use).
-        model = FeralModel(
-            backbone=_resolve_backbone_key(cfg["model_name"]),
-            num_classes=num_classes,
-            predict_per_item=p.predict_per_item,
-            fc_drop_rate=tc.fc_drop_rate,
-            freeze_encoder_layers=tc.freeze_encoder_layers,
-            pretrained=True,
-        )
-        model.to(device)
-
-        if tc.compile:
-            model = torch.compile(model, mode="max-autotune", dynamic=True)
-
-        # EMA
-        model_ema = None
-        if tc.ema_decay is not None:
-            from timm.utils import ModelEma
-
-            model_ema = ModelEma(model, decay=tc.ema_decay, device=device)
-
-        # Loss
-        class_weights_tensor = get_weights(
-            train_dataset.json_data, tc.class_weights, device
-        )
-        is_multilabel = labels_json.get("is_multilabel", False)
-
-        # Metadata embedded in every checkpoint by FERAL's save_model (new dict
-        # format). Lets checkpoints reload without a separate config/label JSON
-        # and makes them usable by feral.run_inference_folder.
-        ckpt_metadata = {
-            "class_names": {str(k): v for k, v in class_names.items()},
-            "is_multilabel": is_multilabel,
-            "cfg": cfg,
-        }
-
-        if is_multilabel:
-            criterion = torch.nn.BCEWithLogitsLoss(pos_weight=class_weights_tensor)
-        else:
-            criterion = torch.nn.CrossEntropyLoss(
-                label_smoothing=tc.label_smoothing, weight=class_weights_tensor
-            )
-
-        # Optimizer + scheduler
-        optimizer = torch.optim.AdamW(
-            filter(lambda param: param.requires_grad, model.parameters()),
-            lr=tc.lr,
-            weight_decay=tc.weight_decay,
-        )
-        total_steps = len(train_loader) * tc.epochs
-        warmup_steps = round(total_steps * tc.part_warmup)
-        from transformers import get_cosine_schedule_with_warmup
-
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=warmup_steps,
-            num_training_steps=total_steps,
-        )
-
-        # MixUp
-        mixup = None
-        if tc.mixup_alpha is not None:
-            from torchvision.transforms.v2 import MixUp
-
-            mixup = MixUp(alpha=tc.mixup_alpha, num_classes=tc.train_bs)
-
-        # A reader that is not under the run claim can load ``model_best.pt`` while
-        # the fit is still writing it, so each write lands whole or not at all.
-        def write_best_model(temporary: Path) -> None:
-            save_model(model, str(temporary), ckpt_metadata)
-
-        # Training loop
-        best_checkpoint_path = run_root / "model_best.pt" if run_root else None
-        best_map = -1.0
-        epochs_without_improvement = 0
-        training_metrics: list[dict] = []
-        start_epoch = 0
-
-        # Resume from checkpoint if training was interrupted
-        checkpoint_path = run_root / "training_checkpoint.pt" if run_root else None
-        if checkpoint_path is not None and checkpoint_path.exists():
-            ckpt = torch.load(str(checkpoint_path), map_location=device)
-            model.load_state_dict(ckpt["model_state_dict"])
-            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-            lr_scheduler.load_state_dict(ckpt["scheduler_state_dict"])
-            best_map = ckpt.get("best_map", -1.0)
-            epochs_without_improvement = ckpt.get("epochs_without_improvement", 0)
-            training_metrics = ckpt.get("training_metrics", [])
-            start_epoch = ckpt["epoch"] + 1
-            if model_ema is not None and "ema_state_dict" in ckpt:
-                model_ema.ema.load_state_dict(ckpt["ema_state_dict"])
-            log.info(
-                "Resuming training from epoch %d (best_map=%.4f)",
-                start_epoch,
-                best_map,
-            )
-
-        # Progress callback -- writes summary.csv after each epoch
-        csv_progress = (
-            CSVProgressCallback(run_root / "summary.csv")
-            if run_root is not None
-            else None
-        )
-
-        for epoch in range(start_epoch, tc.epochs):
-            # --- Train ---
-            model.train()
-            train_losses: list[float] = []
-            for data, target in train_loader:
-                data = data.to(device)
-                target = target.to(device)
-
-                optimizer.zero_grad()
-                # Mixed precision is intentional in the training inner loop:
-                # the forward/backward pass runs many thousands of times per
-                # epoch and the bfloat16 speedup is worth the precision
-                # trade-off here. Every other forward pass in this file
-                # (per-epoch val, _evaluate_partition, public evaluate,
-                # apply) runs full float32 -- see class docstring
-                # "Precision convention".
-                with torch.amp.autocast(dtype=torch.bfloat16, device_type="cuda"):
-                    if mixup is not None:
-                        N, T, Ch, A, B = data.shape
-                        data = data.reshape(N, T, Ch, A * B)
-                        batch_size = data.shape[0]
-                        eye = torch.eye(batch_size, device=device)
-                        data, mix = mixup(data, eye)
-                        data = data.reshape(N, T, Ch, A, B)
-                        if p.predict_per_item != 1:
-                            target = target.permute(1, 0, 2)
-                            target = mix.unsqueeze(0) @ target
-                            target = target.permute(1, 0, 2)
-                        else:
-                            target = mix @ target
-                    target = target.reshape(-1, num_classes)
-                    output = model(data)
-                    loss = criterion(output, target)
-
-                loss.backward()
-                optimizer.step()
-                lr_scheduler.step()
-                if model_ema is not None:
-                    model_ema.update(model)
-                train_losses.append(loss.item())
-
-            epoch_train_loss = sum(train_losses) / len(train_losses)
-            epoch_metrics: dict = {"epoch": epoch, "train_loss": epoch_train_loss}
-
-            # --- Validate ---
-            if val_loader is not None:
-                model.eval()
-                answers = []
-                val_losses: list[float] = []
-                answers_ema = []
-                # Per-epoch val runs full float32 -- same convention as the
-                # final test eval (_evaluate_partition) and the public
-                # FeralFeature.evaluate(). Ensures summary.csv and
-                # reports.json agree on numerics, and the metric used for
-                # best-epoch selection is deterministic.
-                with torch.no_grad():
-                    for data, target, names in val_loader:
-                        data = data.to(device)
-                        target = target.to(device).view(-1, num_classes)
-                        output = model(data)
-                        loss = criterion(output, target)
-                        output_prob = (
-                            torch.sigmoid(output)
-                            if is_multilabel
-                            else torch.nn.functional.softmax(output, 1)
-                        )
-                        answers.extend(prep_for_answers(output_prob, target, names))
-                        val_losses.append(loss.item())
-
-                        if model_ema is not None:
-                            output_ema = model_ema.ema(data)
-                            output_ema_prob = (
-                                torch.sigmoid(output_ema)
-                                if is_multilabel
-                                else torch.nn.functional.softmax(output_ema, 1)
-                            )
-                            answers_ema.extend(
-                                prep_for_answers(output_ema_prob, target, names)
-                            )
-
-                from feral.metrics import (  # type: ignore[import-not-found]
-                    calculate_multiclass_metrics,
-                    calc_frame_level_map,
-                    calculate_f1_metrics,
-                )
-
-                val_metrics = calculate_multiclass_metrics(answers, class_names, "val")
-                val_f1 = calculate_f1_metrics(
-                    answers,
-                    labels_json,
-                    "val",
-                    is_multilabel,
-                    "val",
-                    cfg.get("multilabel_threshold", 0.85),
-                )
-                val_map = calc_frame_level_map(answers, labels_json, "val")
-
-                epoch_metrics.update(val_metrics)
-                epoch_metrics.update(val_f1)
-                epoch_metrics["val_frame_level_map"] = val_map
-                epoch_metrics["val_loss"] = sum(val_losses) / len(val_losses)
-
-                ema_map = -2.0
-                if model_ema is not None and answers_ema:
-                    ema_map = calc_frame_level_map(answers_ema, labels_json, "val")
-                    epoch_metrics["ema_val_frame_level_map"] = ema_map
-
-                # Checkpoint best model
-                if val_map > ema_map and val_map > best_map:
-                    if best_checkpoint_path is not None:
-                        atomic_write(best_checkpoint_path, write_best_model)
-                    best_map = val_map
-                    epochs_without_improvement = 0
-                elif model_ema is not None and ema_map > val_map and ema_map > best_map:
-                    if best_checkpoint_path is not None:
-
-                        def write_best_ema(temporary: Path) -> None:
-                            save_model(model_ema.ema, str(temporary), ckpt_metadata)
-
-                        atomic_write(best_checkpoint_path, write_best_ema)
-                    best_map = ema_map
-                    epochs_without_improvement = 0
-                else:
-                    epochs_without_improvement += 1
+        for entry in sorted(videos_of_entry):
+            if entry in val_entries:
+                split = "val"
+            elif entry in train_entries:
+                split = "train"
             else:
-                if best_checkpoint_path is not None:
-                    atomic_write(best_checkpoint_path, write_best_model)
+                split = "test"
+            split_videos[split].extend(videos_of_entry[entry])
 
-            training_metrics.append(epoch_metrics)
-            log.info("Epoch %d: %s", epoch, epoch_metrics)
-
-            # Write progress (summary.csv + optional external callback)
-            if csv_progress is not None:
-                csv_progress.on_epoch_end(epoch, tc.epochs, epoch_metrics)
-            if self.progress_callback is not None:
-                self.progress_callback.on_epoch_end(epoch, tc.epochs, epoch_metrics)
-
-            # Save training checkpoint for resume
-            if checkpoint_path is not None:
-                ckpt_data = {
-                    "epoch": epoch,
-                    "best_map": best_map,
-                    "epochs_without_improvement": epochs_without_improvement,
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": lr_scheduler.state_dict(),
-                    "model_state_dict": model.state_dict(),
-                    "training_metrics": training_metrics,
-                }
-                if model_ema is not None:
-                    ckpt_data["ema_state_dict"] = model_ema.ema.state_dict()
-                atomic_write(
-                    checkpoint_path,
-                    lambda temporary: torch.save(ckpt_data, temporary),
-                )
-
-            if tc.patience is not None and epochs_without_improvement >= tc.patience:
-                log.info("Early stopping at epoch %d", epoch)
-                break
-
-        # Training complete -- clean up resume checkpoint
-        if checkpoint_path is not None and checkpoint_path.exists():
-            checkpoint_path.unlink()
-        if csv_progress is not None:
-            csv_progress.close()
-
-        # Save EMA model separately
-        if model_ema is not None and run_root is not None:
-            save_model(model_ema.ema, str(run_root / "model_ema.pt"), ckpt_metadata)
-
-        # Load best checkpoint into self._model for apply phase
-        if best_checkpoint_path is not None and best_checkpoint_path.exists():
-            self._load_model(best_checkpoint_path, None)
-        else:
-            # No checkpoint saved (no val loader, no run_root) -- use current model
-            model_ref = model
-            if hasattr(model_ref, "_orig_mod"):
-                model_ref = model_ref._orig_mod
-            model_ref.eval()
-            self._model = model_ref
-
-        # --- Test set evaluation ---
-        test_metrics = {}
-        if "test" in labels_json.get("splits", {}) and labels_json["splits"]["test"]:
-            test_metrics = self._evaluate_partition(
-                cfg,
-                labels_json,
-                num_classes,
-                is_multilabel,
-                class_names,
-                "test",
-                device,
+        labels = build_feral_labels(
+            split_videos,
+            self._label_files,
+            labels_source,
+            unlabeled_as=p.unlabeled_as,
+            min_frames=(p.chunk_length - 1) * p.chunk_step + 1,
+        )
+        labels_json = labels.labels_json
+        renamed = (
+            {}
+            if p.class_names is None
+            else _named_values(p.class_names, labels.class_values)
+        )
+        if split_videos["val"] and not labels_json["splits"]["val"]:
+            log.warning(
+                "[feral] none of the %d validation video(s) is left (%s), so "
+                "training runs without validation and keeps the last epoch",
+                len(split_videos["val"]),
+                _dropped_summary(labels.dropped),
             )
+        if test_entries and not labels_json["splits"]["test"]:
+            raise ValueError(
+                f"{self.name}: none of the {len(test_entries)} test entries of the "
+                f"templates run leaves a test video to evaluate ("
+                f"{len(split_videos['test'])} test videos, "
+                f"{_dropped_summary(labels.dropped)})"
+            )
+        _validate_feral_labels(labels_json, ds.base_dir)
 
-        # Store metrics
+        cfg = feral_config(
+            p, backbone=_resolve_backbone_key(p.model_name), dataset_root=ds.base_dir
+        )
+        run_root.mkdir(parents=True, exist_ok=True)
+        _write_json(run_root / "feral_labels.json", labels_json)
+        _write_json(run_root / "config.json", cfg)
+
+        model, best_map, training_metrics = train_feral(
+            cfg,
+            labels_json,
+            run_root=run_root,
+            progress_callback=self.progress_callback,
+        )
+
+        self._model = model
+        self._cfg = cfg
+        self._class_values = labels.class_values
+        class_names = {
+            value: labels_json["class_names"][str(index)]
+            for index, value in enumerate(labels.class_values)
+        }
+        class_names = {**class_names, **renamed}
+        self._class_names = class_names
+        self._is_multilabel = labels_json["is_multilabel"]
+
+        test_metrics: dict[str, float] = {}
+        if test_entries:
+            test_metrics = _evaluate_partition(
+                model, cfg, labels_json, "test", cfg["device"]
+            )
+        self._training_metrics = training_metrics
         self._metrics = {
-            "class_names": {str(k): v for k, v in class_names.items()},
+            "class_names": {str(value): name for value, name in class_names.items()},
             "best_val_map": best_map,
             "training_metrics": training_metrics,
             "test_metrics": test_metrics,
         }
 
-    def _evaluate_partition(
-        self,
-        cfg: dict,
-        labels_json: dict,
-        num_classes: int,
-        is_multilabel: bool,
-        class_names: dict[int, str],
-        partition: str,
-        device,
-    ) -> dict:
-        """Run evaluation on a given partition (e.g. 'test') and return metrics.
-
-        Internal helper used during fit(). For callers outside the training
-        loop, use the public ``evaluate()`` and ``compute_metrics()`` methods.
-        """
-        if self._model is None:
-            return {}
-        loader = self._build_eval_loader(
-            cfg,
-            labels_json,
-            num_classes,
-            partition,
-            # Same resolution the training loader got, so both read one directory.
-            prefix=str(self._resolve(cfg["video_dir"])),
-        )
-        # Post-training test eval runs full float32 (no autocast). This is
-        # the canonical test_metrics number that lands in reports.json --
-        # we want it deterministic and consistent with what
-        # FeralFeature.evaluate() will produce when called on this run
-        # later. See class docstring for the full precision convention.
-        answers = self._run_inference_loop(
-            self._model,
-            loader,
-            num_classes,
-            is_multilabel,
-            device,
-        )
-        # _evaluate_partition uses partition both as the split name and as
-        # the metric-name prefix (matches pre-refactor behavior).
-        labels_json_with_names = {
-            **labels_json,
-            "class_names": {str(k): v for k, v in class_names.items()},
-        }
-        return self.compute_metrics(
-            answers,
-            labels_json_with_names,
-            partition,
-            prefix=partition,
-            multilabel_threshold=cfg.get("multilabel_threshold", 0.85),
-        )
-
-    @staticmethod
-    def _build_eval_loader(
-        cfg: dict,
-        labels_json: dict,
-        num_classes: int,
-        partition: str,
-        *,
-        prefix: str | None = None,
-        batch_size: int | None = None,
-        num_workers: int | None = None,
-    ):
-        """Construct a DataLoader over `partition` using FERAL's ClsDataset.
-
-        Caller supplies the merged config dict (`cfg["label_json"]`,
-        `cfg["video_dir"]`, chunking params, etc.). Returns ``None`` if the
-        partition is absent or empty.
-
-        *prefix* is the directory the clips are read from. It is a parameter
-        rather than `cfg["video_dir"]` read directly because resolving a stored
-        path needs the bound dataset, which a ``staticmethod`` has no access to:
-        an instance caller passes the resolved directory, and the classmethod
-        entry point, which binds no dataset, falls back to the stored value --
-        exactly what ``_resolve_dataset_path`` does with no dataset.
-        """
-        import torch
-        from feral.dataset import ClsDataset, collate_fn_val  # type: ignore[import-not-found]
-
-        if (
-            partition not in labels_json.get("splits", {})
-            or not labels_json["splits"][partition]
-        ):
-            return None
-
-        eval_dataset = ClsDataset(
-            partition=partition,
-            label_json_dict=labels_json,
-            do_aa=False,
-            predict_per_item=cfg.get("predict_per_item", 64),
-            num_classes=num_classes,
-            prefix=prefix if prefix is not None else str(cfg["video_dir"]),
-            resize_to=cfg.get("resize_to", 256),
-            chunk_shift=cfg.get("chunk_shift", 16),
-            chunk_length=cfg.get("chunk_length", 64),
-            chunk_step=cfg.get("chunk_step", 1),
-        )
-        bs = batch_size if batch_size is not None else cfg.get("val_bs", 4)
-        nw = num_workers if num_workers is not None else cfg.get("num_workers", 4)
-        return torch.utils.data.DataLoader(
-            eval_dataset,
-            shuffle=False,
-            batch_size=bs,
-            num_workers=nw,
-            pin_memory=True,
-            drop_last=False,
-            collate_fn=collate_fn_val,
-        )
-
-    @staticmethod
-    def _run_inference_loop(
-        model,
-        loader,
-        num_classes: int,
-        is_multilabel: bool,
-        device,
-        *,
-        progress_label: str = "",
-        progress_interval: int = 0,
-    ) -> list:
-        """Per-batch inference loop. Returns FERAL `answers` (list of tuples).
-
-        Runs the forward pass in full float32 -- no bfloat16 autocast.
-        Evaluation is a measurement step; the speed/precision trade-off
-        worth taking inside a training inner loop is not worth taking
-        when computing a number we report. bfloat16 shifts decision
-        boundaries near probability 0.5 and breaks reproducibility of
-        the metric. See class-level docstring for the full precision
-        convention across training, eval, and apply.
-
-        If ``progress_label`` is non-empty and ``progress_interval > 0``,
-        prints a progress line every N batches.
-        """
-        import torch
-        from feral.utils import prep_for_answers  # type: ignore[import-not-found]
-
-        if loader is None:
-            return []
-
-        answers: list = []
-        total = len(loader)
-        with torch.no_grad():
-            for i, (data, target, names) in enumerate(loader):
-                data = data.to(device)
-                target = target.to(device).view(-1, num_classes)
-                output = model(data)
-                output_prob = (
-                    torch.sigmoid(output)
-                    if is_multilabel
-                    else torch.nn.functional.softmax(output, 1)
-                )
-                answers.extend(prep_for_answers(output_prob, target, names))
-                if (
-                    progress_label
-                    and progress_interval > 0
-                    and ((i + 1) % progress_interval == 0 or i == total - 1)
-                ):
-                    print(
-                        f"    {progress_label}: batch {i + 1}/{total}",
-                        flush=True,
-                    )
-        return answers
-
     # --- Save state ---
 
     def save_state(self, run_root: Path) -> None:
-        if self._model is None:
+        model = self._model
+        cfg = self._cfg
+        class_values = self._class_values
+        class_names = self._class_names
+        is_multilabel = self._is_multilabel
+        if (
+            model is None
+            or cfg is None
+            or class_values is None
+            or class_names is None
+            or is_multilabel is None
+        ):
             return
-
-        import torch
 
         run_root.mkdir(parents=True, exist_ok=True)
 
-        # Save model in FERAL's new dict format (handle compiled models). Embeds
-        # class_names / is_multilabel / cfg so the checkpoint reloads without a
-        # separate config and is usable by feral.run_inference_folder.
-        model = self._model
-        if hasattr(model, "_orig_mod"):
-            model = model._orig_mod
-        checkpoint: dict[str, object] = {
-            "state_dict": model.state_dict(),
-            "class_names": {str(k): v for k, v in self._class_names.items()},
-            "is_multilabel": self._config.get("is_multilabel", False),
-            "cfg": self._config,
+        # The model file goes first, then the reports, and the config last:
+        # ``load_state`` tests for the model and the config, and takes the state
+        # to be whole when both are there.
+        unwrapped: torch.nn.Module = getattr(model, "_orig_mod", model)
+        bundle: FeralModelBundle = {
+            "state_dict": {
+                name: weight.detach().cpu()
+                for name, weight in unwrapped.state_dict().items()
+            },
+            "class_values": list(class_values),
+            "class_names": class_names,
+            "is_multilabel": is_multilabel,
+            "cfg": cfg,
         }
-        atomic_write(
-            run_root / "feral_model.pt",
-            lambda temporary: torch.save(checkpoint, temporary),
-        )
+        write_bundle(run_root / "feral_model.joblib", bundle)
 
         # Save training metrics if available
         if self._metrics is not None:
@@ -1456,68 +1577,56 @@ class FeralFeature:
                 run_root / "reports.json",
                 lambda temporary: temporary.write_text(reports),
             )
-            if "training_metrics" in self._metrics:
-                summary_df = pd.DataFrame(self._metrics["training_metrics"])
-                atomic_write(
-                    run_root / "summary.csv",
-                    lambda temporary: summary_df.to_csv(temporary, index=False),
-                )
+            summary_df = pd.DataFrame(self._training_metrics)
+            atomic_write(
+                run_root / "summary.csv",
+                lambda temporary: summary_df.to_csv(temporary, index=False),
+            )
 
-        # The config goes last, after the model: ``load_state`` tests for both.
-        config_to_save = {
-            **self._config,
-            "num_classes": len(self._classes),
-            "class_names": {str(k): v for k, v in self._class_names.items()},
-            "model_name": self._config.get("model_name", self.params.model_name),
-            "predict_per_item": self._config.get(
-                "predict_per_item", self.params.predict_per_item
-            ),
-            "fc_drop_rate": self._config.get("fc_drop_rate", 0.5),
-            "freeze_encoder_layers": self._config.get("freeze_encoder_layers", 14),
-            "version": self.version,
-        }
-        atomic_write(
+        _write_json(
             run_root / "feral_config.json",
-            lambda temporary: temporary.write_text(
-                json.dumps(config_to_save, indent=2, default=str)
-            ),
+            {
+                "cfg": cfg,
+                "class_values": list(class_values),
+                "class_names": {
+                    str(value): name for value, name in class_names.items()
+                },
+                "is_multilabel": is_multilabel,
+                "inference_autocast": self.params.inference_autocast,
+                "version": self.version,
+            },
         )
 
     # --- Apply ---
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
-        _check_feral(self.params.feral_code_dir)
-        if self._model is None:
+        _check_feral()
+        if (
+            self._model is None
+            or self._cfg is None
+            or self._class_values is None
+            or self._is_multilabel is None
+        ):
             raise RuntimeError("No model loaded — call load_state() first")
+        if self._ds is None:
+            raise RuntimeError(
+                f"[{self.name}] apply needs the dataset, which run_feature binds "
+                "with bind_dataset"
+            )
         if df.empty:
             return pd.DataFrame()
 
-        _import_feral(self.params.feral_code_dir)
         import torch
-        import torchvision
-        from feral.dataset import (
-            get_frame_ids,
-            read_range_video_decord,
-            get_frame_count,
-        )  # type: ignore[import-not-found]
 
         p = self.params
-        device = next(self._model.parameters()).device
+        model = self._model
+        device = next(model.parameters()).device
+        resize = _video_resize(p.resize_to)
+        normalize = _video_normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        scale = 1 / 255
 
-        resize = torchvision.transforms.v2.Resize(
-            (p.resize_to, p.resize_to), antialias=True
-        )
-        norm = torchvision.transforms.v2.Normalize(
-            (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
-        )
-        scale = 0.00392156862745098  # 1/255
-
-        # Batched-inference setup (all constant across videos -- built once).
-        # out_tokens = predictions the attention pooler emits per chunk
-        # (== predict_per_item); the model output is chunk-major, so chunk n's
-        # rows are the contiguous slice [n*out_tokens : (n+1)*out_tokens].
-        out_tokens = self._config.get("predict_per_item", p.predict_per_item)
-        infer_bs = max(1, p.infer_batch_size)
+        def prepare(video: torch.Tensor) -> torch.Tensor:
+            return normalize(resize(video) * scale)
 
         # Precision regime, built once and reused across batches. Default full
         # float32 -- same convention as the eval paths -- because inference
@@ -1527,160 +1636,42 @@ class FeralFeature:
         # params.inference_autocast=True when wall-clock dominates over the
         # ~10pp recall shift on threshold-sensitive classes. See class docstring
         # "Precision convention".
+        autocast: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
         if p.inference_autocast and device.type == "cuda":
             import torch.amp
 
-            ac_ctx = torch.amp.autocast(dtype=torch.bfloat16, device_type="cuda")
-        else:
-            import contextlib
+            autocast = torch.amp.autocast(dtype=torch.bfloat16, device_type="cuda")
 
-            ac_ctx = contextlib.nullcontext()
-
-        def _run_chunk_batch(abs_video_path, batch_frames):
-            """Run the model on a list of chunks -> list of per-chunk prob
-            arrays (one (out_tokens, num_classes) array per chunk).
-
-            Batching does not change per-sample outputs: model.eval() freezes
-            BatchNorm1d running stats and disables dropout, and all attention is
-            within-sample -- so this is numerically equivalent to the old
-            per-chunk path. On CUDA OOM the batch is split in half and retried
-            recursively, down to a single chunk.
-            """
-            tensors = []
-            for frames in batch_frames:
-                vt = read_range_video_decord(
-                    str(abs_video_path), frames
-                )  # (T, C, H, W)
-                vt = resize(vt)
-                vt = norm(vt * scale)
-                tensors.append(vt)
-            batch_tensor = torch.stack(tensors, dim=0).to(device)  # (K, T, C, H, W)
-            try:
-                with torch.no_grad(), ac_ctx:
-                    output = self._model(batch_tensor)  # (K*out_tokens, num_classes)
-                    probs = torch.nn.functional.softmax(output, dim=1)
-                    probs = probs.cpu().numpy()
-            except torch.cuda.OutOfMemoryError:
-                del batch_tensor
-                torch.cuda.empty_cache()
-                if len(batch_frames) == 1:
-                    raise
-                mid = len(batch_frames) // 2
-                return _run_chunk_batch(
-                    abs_video_path, batch_frames[:mid]
-                ) + _run_chunk_batch(abs_video_path, batch_frames[mid:])
-            return [
-                probs[n * out_tokens : (n + 1) * out_tokens]
-                for n in range(len(batch_frames))
-            ]
-
-        # Detect input format and normalize to per-video rows
-        is_pair_input = "id1" in df.columns and "id2" in df.columns
-        video_rows = self._normalize_input(df)
-
-        # Resolve video directory (fallback chain: cached → config → params)
-        video_dir = self._video_dir
-        if video_dir is None and self._config.get("video_dir"):
-            video_dir = self._resolve(self._config["video_dir"])
-        if video_dir is None and self.params.video_dir is not None:
-            video_dir = self._resolve(self.params.video_dir)
-        if video_dir is None:
-            raise RuntimeError(
-                "Could not resolve crop video directory. "
-                "Set video_dir in params or ensure the upstream crop "
-                "feature has been run."
-            )
-
-        num_classes = len(self._classes)
-        all_predictions: list[dict] = []
+        videos = self._videos_of(self._ds, df)
+        frame_tables: list[pd.DataFrame] = []
         skipped_missing = 0
-
-        for _, row in video_rows.iterrows():
-            video_path_str = row.get("video_path")
-            if video_path_str is None:
-                continue
-
-            # Resolve absolute path
-            abs_video_path = video_dir / video_path_str
-            if not abs_video_path.exists():
+        for video in videos:
+            if not video.path.exists():
                 skipped_missing += 1
                 continue
-
-            total_frames = get_frame_count(str(abs_video_path))
-            if total_frames is None or total_frames == 0:
-                continue
-
-            frame_ids = get_frame_ids(
-                total_frames,
-                p.chunk_shift,
-                p.chunk_length,
-                p.chunk_step,
+            table = self._video_predictions(
+                video, model, prepare, device, autocast, self._cfg, self._class_values
             )
-
-            # Per-frame prediction accumulator
-            frame_preds = np.zeros((total_frames, num_classes), dtype=np.float32)
-            frame_counts = np.zeros(total_frames, dtype=np.float32)
-
-            # Batch chunks through the model to amortize kernel-launch overhead
-            # and fill the GPU (~infer_bs x fewer forward passes). The output is
-            # chunk-major, so each chunk's predictions map back to its frames
-            # exactly as in the old per-chunk path.
-            for batch_frames in _chunked(frame_ids, infer_bs):
-                chunk_probs_list = _run_chunk_batch(abs_video_path, batch_frames)
-                for chunk_probs, frames in zip(chunk_probs_list, batch_frames):
-                    for i, frame_idx in enumerate(frames):
-                        if i < len(chunk_probs):
-                            frame_preds[frame_idx] += chunk_probs[i]
-                            frame_counts[frame_idx] += 1
-
-            # Average overlapping predictions
-            valid = frame_counts > 0
-            frame_preds[valid] /= frame_counts[valid, np.newaxis]
-
-            # Build per-frame rows
-            start_frame = int(row.get("start_frame", 0))
-            for i in range(total_frames):
-                if not valid[i]:
-                    continue
-
-                pred_row: dict = {C.frame_col: start_frame + i}
-
-                # Identity columns — adapt to input type. The pair case carries
-                # the ordered pair through; the individual case is keyed on the
-                # cropped individual alone.
-                if is_pair_input:
-                    pred_row["id1"] = row.get("id1")
-                    pred_row["id2"] = row.get("id2")
-                    pred_row["perspective"] = row.get("perspective")
-                    pred_row["interaction_id"] = row.get("interaction_id")
-                else:
-                    pred_row[C.id_col] = row.get(C.id_col)
-
-                # Probability columns (prob_0, prob_1, ...)
-                for cls_idx, cls in enumerate(self._classes):
-                    pred_row[f"prob_{cls}"] = float(frame_preds[i, cls_idx])
-
-                # Predicted label (with optional threshold)
-                pred_row["predicted_label"] = self._predict_label(frame_preds[i])
-
-                all_predictions.append(pred_row)
+            if table is not None:
+                frame_tables.append(table)
 
         if skipped_missing:
             log.warning(
-                "FeralFeature.apply: %d of %d crop videos not found under %s; "
-                "produced %d predictions. If all are missing, the crop "
-                "directory failed to resolve (check the upstream crop run / a "
-                "stale video_dir in feral_config.json).",
+                "FeralFeature.apply: %d of %d videos not found; produced %d "
+                "predictions. If all are missing, check that the upstream crop run "
+                "still holds its videos.",
                 skipped_missing,
-                len(video_rows),
-                video_dir,
-                len(all_predictions),
+                len(videos),
+                sum(len(table) for table in frame_tables),
             )
 
-        if not all_predictions:
+        if not frame_tables:
             return pd.DataFrame()
 
-        result = pd.DataFrame(all_predictions)
+        if self._input_mode() == "sequence":
+            result = _rows_of_frames(df, pd.concat(frame_tables, ignore_index=True))
+        else:
+            result = pd.concat(frame_tables, ignore_index=True)
 
         # Carry over group/sequence from input
         for col in (C.group_col, C.seq_col):
@@ -1689,59 +1680,91 @@ class FeralFeature:
 
         return result
 
-    def _normalize_input(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Normalize input to per-video rows with video_path + start_frame.
+    def _video_predictions(
+        self,
+        video: FeralVideo,
+        model: torch.nn.Module,
+        prepare: Callable[[torch.Tensor], torch.Tensor],
+        device: torch.device,
+        autocast: contextlib.AbstractContextManager[object],
+        cfg: FeralNetwork,
+        class_values: Sequence[int],
+    ) -> pd.DataFrame | None:
+        """The per-frame predictions of one video, ``None`` when it has no frames.
 
-        Handles two formats:
-        1. InteractionCropPipeline: already per-video, has video_path
-        2. EgocentricCrop: per-frame, derive video_path from the cropped id
+        Overlapping chunks are averaged per frame, and a frame no chunk covers is
+        left out. The table holds ``frame``, the video's identity columns,
+        ``prob_<value>`` for each class and ``predicted_label``.
+
+        Raises:
+            ValueError: FERAL counts a different number of frames than the video
+                has frame numbers.
         """
-        if "video_path" in df.columns:
-            # InteractionCropPipeline format — already per-video rows
-            return df
-
-        # EgocentricCrop format — per-frame rows, aggregate to per-video
-        if C.id_col not in df.columns:
+        p = self.params
+        total_frames = _feral_get_frame_count()(str(video.path))
+        if total_frames is None or total_frames == 0:
+            return None
+        if total_frames != len(video.frames):
             raise ValueError(
-                "Input must have either 'video_path' (InteractionCropPipeline) "
-                "or 'id' + 'frame' columns (EgocentricCrop)."
+                f"{self.name}: the video {video.filename!r} has {total_frames} frames "
+                f"by FERAL's count and {len(video.frames)} frame numbers"
             )
 
-        rows = []
-        for target_id, sub in df.groupby(C.id_col):
-            rows.append(
-                {
-                    "video_path": f"egocentric_id{target_id}.mp4",
-                    C.id_col: target_id,
-                    "start_frame": int(sub[C.frame_col].min())
-                    if C.frame_col in sub.columns
-                    else 0,
-                    "end_frame": int(sub[C.frame_col].max())
-                    if C.frame_col in sub.columns
-                    else 0,
-                    "n_frames": len(sub),
-                    C.group_col: sub[C.group_col].iloc[0]
-                    if C.group_col in sub.columns
-                    else "",
-                    C.seq_col: sub[C.seq_col].iloc[0]
-                    if C.seq_col in sub.columns
-                    else "",
-                }
-            )
-        return pd.DataFrame(rows)
+        frame_ids = _feral_get_frame_ids()(
+            total_frames, p.chunk_shift, p.chunk_length, p.chunk_step
+        )
+        frame_preds = np.zeros((total_frames, len(class_values)), dtype=np.float32)
+        frame_counts = np.zeros(total_frames, dtype=np.float32)
 
-    def _predict_label(self, frame_probs: np.ndarray) -> int:
-        """Determine predicted class from frame probabilities."""
+        # Batch chunks through the model to amortize kernel-launch overhead and
+        # fill the GPU (~infer_bs x fewer forward passes).
+        for batch_frames in _chunked(frame_ids, max(1, p.infer_batch_size)):
+            chunk_probs_list = chunk_probabilities(
+                model,
+                batch_frames,
+                video.path,
+                prepare,
+                device,
+                autocast,
+                is_multilabel=bool(self._is_multilabel),
+                tokens_per_chunk=cfg["predict_per_item"],
+            )
+            for chunk_probs, frames in zip(chunk_probs_list, batch_frames, strict=True):
+                for i, frame_idx in enumerate(frames):
+                    if i < len(chunk_probs):
+                        frame_preds[frame_idx] += chunk_probs[i]
+                        frame_counts[frame_idx] += 1
+
+        valid = frame_counts > 0
+        frame_preds[valid] /= frame_counts[valid, np.newaxis]
+        kept = np.flatnonzero(valid)
+        if kept.size == 0:
+            return None
+
+        table = _frame_table(video).iloc[kept].reset_index(drop=True)
+        for position, value in enumerate(class_values):
+            table[f"prob_{value}"] = frame_preds[kept, position]
+        table["predicted_label"] = [
+            self._predict_label(frame_preds[index], class_values) for index in kept
+        ]
+        return table
+
+    def _predict_label(
+        self, frame_probs: NDArray[np.float32], class_values: Sequence[int]
+    ) -> int:
+        """The original label value of the class a frame's probabilities choose.
+
+        With a ``decision_threshold``, a class below it cannot be chosen, and a
+        frame where none reaches it takes ``default_class``. Both the chosen
+        class and ``default_class`` are original label values.
+        """
         threshold = self.params.decision_threshold
-        if threshold is not None:
-            masked = frame_probs.copy()
-            for cls_idx in range(len(self._classes)):
-                if masked[cls_idx] < threshold:
-                    masked[cls_idx] = 0.0
-            if masked.sum() == 0:
-                return self.params.default_class
-            return self._classes[int(np.argmax(masked))]
-        return self._classes[int(np.argmax(frame_probs))]
+        if threshold is None:
+            return class_values[int(np.argmax(frame_probs))]
+        masked = np.where(frame_probs < threshold, 0.0, frame_probs)
+        if masked.sum() == 0:
+            return self.params.default_class
+        return class_values[int(np.argmax(masked))]
 
     # --- Post-training utilities (operate on a saved run directory) ---
 
@@ -1750,82 +1773,56 @@ class FeralFeature:
         cls,
         run_root: Path,
         device: str = "cuda",
-        feral_code_dir: str | Path | None = None,
-    ):
+    ) -> torch.nn.Module:
         """Reconstruct the trained ``nn.Module`` from a saved run directory.
 
-        Reads architecture params from ``feral_config.json`` (fallback
-        ``config.json``) and weights from ``model_best.pt`` (fallback
-        ``feral_model.pt``). Moves the model to ``device`` and sets eval
-        mode. Use this when you need just the model -- e.g. to feed it
-        custom batches outside FERAL's ClsDataset.
+        Reads the weights, the classes and the nested config from
+        ``feral_model.joblib``, or, without it, the weights from ``model_best.pt``
+        and the nested config from the checkpoint's metadata. Moves the model to
+        ``device`` and sets eval mode. Use this when you need just the model --
+        e.g. to feed it custom batches outside FERAL's ClsDataset.
 
         Parameters
         ----------
         run_root : Path
-            Directory containing model + config (typically a Mosaic feature
-            run directory like
-            ``features/feral__from__.../<run_id>/``).
-        device : str or torch.device
+            Directory containing the model (typically a Mosaic feature run
+            directory like ``features/feral__from__.../<run_id>/``).
+        device : str
             Where to load the model.
-        feral_code_dir : str or Path or None
-            Optional path to a local checkout of the ``feral`` package,
-            prepended to ``sys.path``. ``None`` (default) uses the
-            pip-installed package.
+
+        Raises
+        ------
+        FileNotFoundError
+            The directory holds neither ``feral_model.joblib`` nor ``model_best.pt``.
+        ValueError
+            ``model_best.pt`` carries no metadata to build the model from.
         """
-        _import_feral(feral_code_dir)
+        _check_feral()
         import torch
-        from feral.model import FeralModel  # type: ignore[import-not-found]
 
-        config_path = run_root / "feral_config.json"
-        if not config_path.exists():
-            config_path = run_root / "config.json"
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"No feral_config.json or config.json under {run_root}"
+        bundle_path = run_root / "feral_model.joblib"
+        if bundle_path.exists():
+            bundle = FeralModelArtifact().from_path(bundle_path)
+            model = _build_network(bundle["cfg"], len(bundle["class_values"]))
+            _load_into(model, bundle["state_dict"])
+        else:
+            checkpoint = run_root / "model_best.pt"
+            if not checkpoint.exists():
+                raise FileNotFoundError(
+                    f"No feral_model.joblib or model_best.pt under {run_root}"
+                )
+            state_dict, meta = _load_checkpoint_state_dict(
+                torch.load(str(checkpoint), map_location="cpu")
             )
-        with open(config_path) as f:
-            cfg = json.load(f)
-
-        # Resolve num_classes
-        num_classes: int | None = None
-        if "class_names" in cfg:
-            num_classes = len(cfg["class_names"])
-        elif "label_json" in cfg and Path(cfg["label_json"]).exists():
-            with open(cfg["label_json"]) as f:
-                labels_json = json.load(f)
-            num_classes = len(labels_json.get("class_names", {}))
-        if not num_classes:
-            raise ValueError(
-                f"Cannot determine num_classes for run at {run_root}: neither "
-                "config.class_names nor a readable label_json was found."
-            )
-
-        model = FeralModel(
-            backbone=_resolve_backbone_key(
-                cfg.get("model_name", "facebook/vjepa2-vitl-fpc32-256-diving48")
-            ),
-            num_classes=num_classes,
-            predict_per_item=cfg.get("predict_per_item", 64),
-            fc_drop_rate=cfg.get("fc_drop_rate", 0.5),
-            freeze_encoder_layers=cfg.get("freeze_encoder_layers", 14),
-            pretrained=False,
-        )
-
-        ckpt_path = run_root / "model_best.pt"
-        if not ckpt_path.exists():
-            ckpt_path = run_root / "feral_model.pt"
-        if not ckpt_path.exists():
-            raise FileNotFoundError(
-                f"No model_best.pt or feral_model.pt under {run_root}"
-            )
-
-        torch_device = torch.device(device) if isinstance(device, str) else device
-        state_dict, _meta = _load_checkpoint_state_dict(
-            torch.load(str(ckpt_path), map_location="cpu")
-        )
-        _load_into(model, state_dict)
-        model.to(torch_device).eval()
+            if meta is None or "cfg" not in meta or "class_names" not in meta:
+                raise ValueError(
+                    f"{checkpoint} carries no class_names and cfg to build the "
+                    "model from; it is not a checkpoint of a mosaic training run"
+                )
+            names = _CLASS_NAMES.validate_python(meta["class_names"])
+            model = _build_network(_NETWORK.validate_python(meta["cfg"]), len(names))
+            _load_into(model, state_dict)
+        model.to(torch.device(device)).eval()
         return model
 
     @classmethod
@@ -1834,68 +1831,48 @@ class FeralFeature:
         run_root: Path,
         partition: str,
         *,
-        video_dir: Path | str | None = None,
-        label_json: Path | str | None = None,
+        dataset_root: Path,
         device: str = "cuda",
         batch_size: int | None = None,
         num_workers: int | None = None,
         progress_interval: int = 5,
-        feral_code_dir: str | Path | None = None,
-    ) -> list:
+    ) -> list[FeralAnswer]:
         """Run inference on ``partition`` of the trained model's labels JSON
         and return the FERAL `answers` list (per-chunk probabilities + truth).
 
-        The saved ``feral_config.json`` records the absolute paths of
-        ``label_json`` and ``video_dir`` at training time. Those paths become
-        stale after dataset relocation -- pass ``label_json`` and
-        ``video_dir`` explicitly to override them. If both are ``None``, the
-        values from the saved config are used (works for in-place
-        re-evaluation only).
+        Reads ``feral_labels.json`` and the nested config of
+        ``feral_config.json`` from the run, and the videos from *dataset_root*,
+        which FERAL's video filenames are relative to.
 
         Returns an empty list if the partition is missing or empty.
         """
-        _import_feral(feral_code_dir)
+        _check_feral()
         import torch
 
-        config_path = run_root / "feral_config.json"
-        if not config_path.exists():
-            config_path = run_root / "config.json"
-        with open(config_path) as f:
-            cfg = json.load(f)
+        saved = _TRAINED_RUN.validate_json((run_root / "feral_config.json").read_text())
+        labels_json = _LABELS_JSON.validate_json(
+            (run_root / "feral_labels.json").read_text()
+        )
 
-        if label_json is not None:
-            cfg["label_json"] = str(label_json)
-        if video_dir is not None:
-            cfg["video_dir"] = str(video_dir)
-
-        with open(cfg["label_json"]) as f:
-            labels_json = json.load(f)
-        num_classes = len(labels_json["class_names"])
-        is_multilabel = labels_json.get("is_multilabel", False)
-
-        loader = cls._build_eval_loader(
-            cfg,
+        loader = _build_eval_loader(
+            saved["cfg"],
             labels_json,
-            num_classes,
             partition,
+            prefix=str(dataset_root),
             batch_size=batch_size,
             num_workers=num_workers,
         )
         if loader is None:
             return []
 
-        model = cls.load_trained_model(
-            run_root,
-            device=device,
-            feral_code_dir=feral_code_dir,
-        )
+        model = cls.load_trained_model(run_root, device=device)
         try:
             torch_device = next(model.parameters()).device
-            answers = cls._run_inference_loop(
+            answers = _run_inference_loop(
                 model,
                 loader,
-                num_classes,
-                is_multilabel,
+                len(labels_json["class_names"]),
+                labels_json["is_multilabel"],
                 torch_device,
                 progress_label=partition,
                 progress_interval=progress_interval,
@@ -1908,45 +1885,44 @@ class FeralFeature:
 
     @staticmethod
     def compute_metrics(
-        answers: list,
-        labels_json: dict,
+        answers: Sequence[FeralAnswer],
+        labels_json: Mapping[str, object],
         partition: str,
         prefix: str | None = None,
         multilabel_threshold: float = 0.85,
-    ) -> dict:
+    ) -> dict[str, float]:
         """Compute multiclass + F1 + frame-level mAP metrics on ``answers``.
 
         Thin orchestrator over FERAL's ``calculate_multiclass_metrics``,
-        ``calc_frame_level_map``, and ``calculate_f1_metrics``. Returns a
-        flat dict keyed with ``<prefix>_<metric>``. Returns ``{}`` if
+        ``calc_frame_level_map``, and ``calculate_f1_metrics``. The chunk
+        answers are ensembled into per-frame predictions first, as FERAL's own
+        evaluation does, and the frame-level mAP and the F1 metrics read those.
+        Returns a flat dict keyed with ``<prefix>_<metric>``. Returns ``{}`` if
         ``answers`` is empty. ``prefix`` defaults to ``partition``.
         ``multilabel_threshold`` is forwarded to ``calculate_f1_metrics``
         (only affects multilabel runs; matches FERAL's default of 0.85).
         """
-        from feral.metrics import (  # type: ignore[import-not-found]
-            calculate_multiclass_metrics,
-            calc_frame_level_map,
-            calculate_f1_metrics,
-        )
-
         if not answers:
             return {}
         if prefix is None:
             prefix = partition
 
-        class_names = {int(k): v for k, v in labels_json["class_names"].items()}
-        is_multilabel = labels_json.get("is_multilabel", False)
+        class_names = _CLASS_NAMES.validate_python(labels_json["class_names"])
+        is_multilabel = bool(labels_json.get("is_multilabel", False))
+        predictions = ensembled_predictions(answers, labels_json, partition)
 
-        metrics: dict = {}
-        metrics.update(calculate_multiclass_metrics(answers, class_names, prefix))
-        metrics[f"{prefix}_frame_level_map"] = calc_frame_level_map(
-            answers,
+        metrics: dict[str, float] = {}
+        metrics.update(
+            _feral_calculate_multiclass_metrics()(answers, class_names, prefix)
+        )
+        metrics[f"{prefix}_frame_level_map"] = _feral_calc_frame_level_map()(
+            predictions,
             labels_json,
             partition,
         )
         metrics.update(
-            calculate_f1_metrics(
-                answers,
+            _feral_calculate_f1_metrics()(
+                predictions,
                 labels_json,
                 partition,
                 is_multilabel,
@@ -1970,11 +1946,1090 @@ class FeralFeature:
             return json.load(f)
 
 
+# --- FERAL's functions, typed -------------------------------------------------
+#
+# FERAL is an optional dependency that the type checker cannot resolve, and a
+# module attribute read through ``importlib`` is untyped. Each function the
+# training loop uses is declared as a callable protocol and fetched when it is
+# called, so a test can replace one on its module with ``monkeypatch.setattr``.
+
+_CLASS_NAMES: Final = TypeAdapter(dict[int, str])
+"""FERAL's ``class_names``, whose keys are integers spelled as text."""
+
+FeralAnswer = tuple[tuple[str, int, int], Sequence[float], Sequence[float]]
+"""One chunk row of FERAL's answers: ``(filename, frame, chunk position)``, the
+class probabilities and the one-hot target."""
+
+FramePredictions = dict[str, NDArray[np.float64]]
+"""Per-frame class scores of each video, by filename."""
+
+
+class _FeralEma(Protocol):
+    """The exponential-moving-average wrapper FERAL builds around a model."""
+
+    ema: torch.nn.Module
+
+
+class _FeralBuildLoaders(Protocol):
+    def __call__(
+        self, cfg: FeralConfig, labels_json: FeralLabelsJson, num_classes: int
+    ) -> tuple[dict[str, object], dict[str, object]]: ...
+
+
+class _FeralBuildModel(Protocol):
+    def __call__(
+        self,
+        cfg: FeralConfig,
+        num_classes: int,
+        device: torch.device,
+        *,
+        with_ema: bool = True,
+    ) -> tuple[torch.nn.Module, _FeralEma | None]: ...
+
+
+class _FeralBuildTrainingObjects(Protocol):
+    def __call__(
+        self,
+        cfg: FeralConfig,
+        model: torch.nn.Module,
+        train_dataset: object,
+        train_loader: object,
+        labels_json: FeralLabelsJson,
+        device: torch.device,
+    ) -> tuple[
+        torch.nn.Module,
+        torch.optim.Optimizer,
+        torch.optim.lr_scheduler.LRScheduler,
+        object,
+    ]: ...
+
+
+class _FeralTrainOneEpoch(Protocol):
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        loader: object,
+        criterion: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: torch.optim.lr_scheduler.LRScheduler,
+        *,
+        mixup: object,
+        model_ema: _FeralEma | None,
+        num_classes: int,
+        is_multilabel: bool,
+        predict_per_item: int,
+        device: torch.device,
+        log_fn: None,
+        grad_clip_norm: float | None,
+        log_grad_norm: bool,
+        heavy_log_every: int | None,
+    ) -> tuple[list[FeralAnswer], float]: ...
+
+
+class _FeralEvaluate(Protocol):
+    def __call__(
+        self,
+        model: torch.nn.Module,
+        loader: object,
+        criterion: torch.nn.Module | None = None,
+        *,
+        num_classes: int,
+        is_multilabel: bool,
+        device: torch.device,
+    ) -> tuple[list[FeralAnswer], float | None]: ...
+
+
+class _FeralSaveModel(Protocol):
+    def __call__(
+        self, model: torch.nn.Module, path: str, metadata: Mapping[str, object]
+    ) -> None: ...
+
+
+class _FeralEnsemblePredictions(Protocol):
+    def __call__(
+        self, ans: Sequence[FeralAnswer], logits: FramePredictions
+    ) -> FramePredictions: ...
+
+
+class _FeralGenerateEmptyLogits(Protocol):
+    def __call__(
+        self, labels_json: Mapping[str, object], partition: str
+    ) -> FramePredictions: ...
+
+
+class _FeralPostprocessPredictions(Protocol):
+    def __call__(
+        self, predictions: FramePredictions, smoothing_window: int | None = None
+    ) -> FramePredictions: ...
+
+
+class _FeralCalcFrameLevelMap(Protocol):
+    def __call__(
+        self,
+        predictions: FramePredictions,
+        labels_json: Mapping[str, object],
+        partition: str,
+    ) -> float: ...
+
+
+class _FeralCalculateF1Metrics(Protocol):
+    def __call__(
+        self,
+        predictions: FramePredictions,
+        labels_json: Mapping[str, object],
+        partition: str,
+        is_multilabel: bool,
+        prefix: str,
+        multilabel_threshold: float,
+    ) -> dict[str, float]: ...
+
+
+class _FeralCalculateMulticlassMetrics(Protocol):
+    def __call__(
+        self,
+        ans: Sequence[FeralAnswer],
+        class_names: Mapping[int, str],
+        prefix: str = "",
+    ) -> dict[str, float]: ...
+
+
+class _FeralModelClass(Protocol):
+    def __call__(
+        self,
+        *,
+        backbone: str,
+        num_classes: int,
+        predict_per_item: int,
+        fc_drop_rate: float,
+        freeze_encoder_layers: int,
+        pretrained: bool,
+    ) -> torch.nn.Module: ...
+
+
+class _FeralClsDataset(Protocol):
+    def __call__(
+        self,
+        *,
+        partition: str,
+        label_json_dict: FeralLabelsJson,
+        do_aa: bool,
+        predict_per_item: int,
+        num_classes: int,
+        prefix: str,
+        resize_to: int,
+        chunk_shift: int,
+        chunk_length: int,
+        chunk_step: int,
+    ) -> torch.utils.data.Dataset[object]: ...
+
+
+class _FeralPrepForAnswers(Protocol):
+    def __call__(
+        self, outputs: torch.Tensor, targets: torch.Tensor, names: object
+    ) -> list[FeralAnswer]: ...
+
+
+class _FeralGetFrameCount(Protocol):
+    def __call__(self, path: str) -> int | None: ...
+
+
+class _FeralReadRangeVideo(Protocol):
+    def __call__(self, path: str, frames: list[int]) -> torch.Tensor: ...
+
+
+class _VideoTransform(Protocol):
+    def __call__(self, video: torch.Tensor) -> torch.Tensor: ...
+
+
+class _FeralGetFrameIds(Protocol):
+    def __call__(
+        self, total_frames: int, chunk_shift: int, chunk_length: int, chunk_step: int
+    ) -> list[list[int]]: ...
+
+
+class _FeralValidateLabels(Protocol):
+    def __call__(
+        self, labels_json: Mapping[str, object], video_folder: Path
+    ) -> None: ...
+
+
+class _TorchManualSeed(Protocol):
+    def __call__(self, seed: int) -> object: ...
+
+
+def _torch_manual_seed() -> _TorchManualSeed:
+    # torch's own annotation of the generator it returns is partly unknown to the
+    # type checker.
+    return importlib.import_module("torch").manual_seed
+
+
+def _feral_model_class() -> _FeralModelClass:
+    return importlib.import_module("feral.model").FeralModel
+
+
+def _feral_cls_dataset() -> _FeralClsDataset:
+    return importlib.import_module("feral.dataset").ClsDataset
+
+
+def _feral_collate_fn_val() -> Callable[[list[object]], object]:
+    return importlib.import_module("feral.dataset").collate_fn_val
+
+
+def _feral_get_frame_count() -> _FeralGetFrameCount:
+    return importlib.import_module("feral.dataset").get_frame_count
+
+
+def _feral_read_range_video() -> _FeralReadRangeVideo:
+    return importlib.import_module("feral.dataset").read_range_video_decord
+
+
+def _video_resize(size: int) -> _VideoTransform:
+    # torchvision's v2 transforms are not typed for the checker.
+    return importlib.import_module("torchvision.transforms.v2").Resize(
+        (size, size), antialias=True
+    )
+
+
+def _video_normalize(
+    mean: tuple[float, float, float], std: tuple[float, float, float]
+) -> _VideoTransform:
+    return importlib.import_module("torchvision.transforms.v2").Normalize(mean, std)
+
+
+def _feral_get_frame_ids() -> _FeralGetFrameIds:
+    return importlib.import_module("feral.dataset").get_frame_ids
+
+
+def _feral_prep_for_answers() -> _FeralPrepForAnswers:
+    return importlib.import_module("feral.utils").prep_for_answers
+
+
+def _feral_validate_labels() -> _FeralValidateLabels:
+    return importlib.import_module("feral").validate_labels_json
+
+
+def _feral_build_loaders() -> _FeralBuildLoaders:
+    return importlib.import_module("feral.data").build_datasets_and_loaders
+
+
+def _feral_build_model() -> _FeralBuildModel:
+    return importlib.import_module("feral.modeling").build_model
+
+
+def _feral_build_training_objects() -> _FeralBuildTrainingObjects:
+    return importlib.import_module("feral.modeling").build_training_objects
+
+
+def _feral_train_one_epoch() -> _FeralTrainOneEpoch:
+    return importlib.import_module("feral.loops").train_one_epoch
+
+
+def _feral_evaluate() -> _FeralEvaluate:
+    return importlib.import_module("feral.loops").evaluate
+
+
+def _feral_save_model() -> _FeralSaveModel:
+    return importlib.import_module("feral.utils").save_model
+
+
+def _feral_ensemble_predictions() -> _FeralEnsemblePredictions:
+    return importlib.import_module("feral.metrics").ensemble_predictions
+
+
+def _feral_generate_empty_logits() -> _FeralGenerateEmptyLogits:
+    return importlib.import_module("feral.metrics").generate_empty_logits
+
+
+def _feral_postprocess_predictions() -> _FeralPostprocessPredictions:
+    return importlib.import_module("feral.metrics").postprocess_predictions
+
+
+def _feral_calc_frame_level_map() -> _FeralCalcFrameLevelMap:
+    return importlib.import_module("feral.metrics").calc_frame_level_map
+
+
+def _feral_calculate_f1_metrics() -> _FeralCalculateF1Metrics:
+    return importlib.import_module("feral.metrics").calculate_f1_metrics
+
+
+def _feral_calculate_multiclass_metrics() -> _FeralCalculateMulticlassMetrics:
+    return importlib.import_module("feral.metrics").calculate_multiclass_metrics
+
+
+def ensembled_predictions(
+    answers: Sequence[FeralAnswer], labels_json: Mapping[str, object], partition: str
+) -> FramePredictions:
+    """Per-frame predictions of *partition* from the chunk *answers*.
+
+    Overlapping chunk predictions are averaged and the frames no chunk covers
+    are interpolated, by FERAL's ``ensemble_predictions``.
+    """
+    return _feral_postprocess_predictions()(
+        _feral_ensemble_predictions()(
+            answers, _feral_generate_empty_logits()(labels_json, partition)
+        )
+    )
+
+
+def _validate_feral_labels(labels_json: FeralLabelsJson, dataset_root: Path) -> None:
+    """Have FERAL check *labels_json* against the videos under *dataset_root*."""
+    _feral_validate_labels()(labels_json, dataset_root)
+
+
+def _write_json(path: Path, payload: Mapping[str, object]) -> None:
+    """Write *payload* to *path* as JSON, all at once."""
+    text = json.dumps(payload, indent=2, default=str)
+    atomic_write(path, lambda temporary: temporary.write_text(text))
+
+
+def _build_network(cfg: FeralNetwork, num_classes: int) -> torch.nn.Module:
+    """FERAL's model for *cfg* and *num_classes*, with its weights untrained.
+
+    ``pretrained=False`` skips the weight download, because the weights are
+    loaded from a checkpoint or a model file.
+    """
+    settings = cfg["model"]
+    return _feral_model_class()(
+        backbone=_resolve_backbone_key(cfg["backbone"]),
+        num_classes=num_classes,
+        predict_per_item=cfg["predict_per_item"],
+        fc_drop_rate=settings["fc_drop_rate"],
+        freeze_encoder_layers=settings["freeze_encoder_layers"],
+        pretrained=False,
+    )
+
+
+class _FlatNetwork(TypedDict, total=False):
+    """The architecture keys of a ``config.json`` that mosaic wrote before 0.3."""
+
+    model_name: str
+    predict_per_item: int
+    fc_drop_rate: float
+    freeze_encoder_layers: int
+
+
+_NETWORK: Final = TypeAdapter(FeralNetwork)
+_FLAT_NETWORK: Final = TypeAdapter(_FlatNetwork)
+
+
+def imported_network(
+    candidates: Sequence[Mapping[str, object] | None],
+    *,
+    model_name: str,
+    predict_per_item: int,
+) -> FeralNetwork:
+    """The network of an imported checkpoint, from the first config that records it.
+
+    A nested config, as FERAL writes, wins over a flat one that mosaic wrote
+    before 0.3. A checkpoint that records neither is built from the step's
+    ``model_name`` and ``predict_per_item``, with the training defaults for the
+    weight-agnostic dropout and freeze settings.
+    """
+    present = [candidate for candidate in candidates if candidate]
+    for candidate in present:
+        try:
+            return _NETWORK.validate_python(candidate)
+        except ValidationError:
+            continue
+    defaults = FeralTrainingConfig()
+    for candidate in present:
+        if "model_name" not in candidate:
+            continue
+        flat = _FLAT_NETWORK.validate_python(candidate)
+        return {
+            "backbone": flat.get("model_name", model_name),
+            "predict_per_item": flat.get("predict_per_item", predict_per_item),
+            "model": {
+                "fc_drop_rate": flat.get("fc_drop_rate", defaults.fc_drop_rate),
+                "freeze_encoder_layers": flat.get(
+                    "freeze_encoder_layers", defaults.freeze_encoder_layers
+                ),
+            },
+        }
+    if present:
+        log.warning(
+            "[feral] no config of the imported checkpoint records its backbone and "
+            "predict_per_item, so the model is built from the step's model_name "
+            "and predict_per_item"
+        )
+    return {
+        "backbone": model_name,
+        "predict_per_item": predict_per_item,
+        "model": {
+            "fc_drop_rate": defaults.fc_drop_rate,
+            "freeze_encoder_layers": defaults.freeze_encoder_layers,
+        },
+    }
+
+
+def checkpoint_classes(
+    param_names: Mapping[str, str] | None,
+    ckpt_meta: Mapping[str, object] | None,
+    legacy_config: Mapping[str, object] | None,
+) -> tuple[dict[int, str], bool]:
+    """The classes and the multilabel flag of an imported checkpoint.
+
+    The names come from the ``class_names`` param, else from the checkpoint's
+    metadata, else from a ``config.json`` that mosaic wrote before 0.3. The keys
+    are the label values, which for a checkpoint of FERAL's own are its dense
+    class indices. ``is_multilabel`` comes from the checkpoint's metadata, else
+    from that ``config.json``.
+
+    Args:
+        param_names: The step's ``class_names`` param.
+        ckpt_meta: The ``class_names``, ``is_multilabel`` and ``cfg`` a FERAL
+            checkpoint embeds, when it embeds any.
+        legacy_config: The ``config.json`` beside the checkpoint, when there is one.
+
+    Returns:
+        The name of each class by label value, and whether the model is multilabel.
+
+    Raises:
+        ValueError: No source names the classes.
+    """
+    raw: object = param_names or None
+    if not raw:
+        for source in (ckpt_meta, legacy_config):
+            if source is not None and source.get("class_names"):
+                raw = source["class_names"]
+                break
+    if not raw:
+        raise ValueError(
+            f"{FeralFeature.name}: the imported checkpoint names no classes: it "
+            "embeds no class_names, and no config.json beside it records them. "
+            "Give the class_names param to supply its classes"
+        )
+    names = _CLASS_NAMES.validate_python(raw)
+    for source in (ckpt_meta, legacy_config):
+        if source is not None and "is_multilabel" in source:
+            return names, bool(source["is_multilabel"])
+    log.warning(
+        "[feral] the imported checkpoint records no is_multilabel, so it is read as "
+        "single-label. FERAL's own loader would read it from a labels JSON, which "
+        "an import does not have"
+    )
+    return names, False
+
+
+def _named_values(
+    param_names: Mapping[str, str], class_values: Sequence[int]
+) -> dict[int, str]:
+    """The ``class_names`` param as names of *class_values*.
+
+    Raises:
+        ValueError: A name is keyed by a value that is not a class of the model.
+    """
+    names = _CLASS_NAMES.validate_python(param_names)
+    unknown = sorted(set(names) - set(class_values))
+    if unknown:
+        raise ValueError(
+            f"{FeralFeature.name}: class_names names the values {unknown}, and the "
+            f"model's classes are {sorted(class_values)}"
+        )
+    return names
+
+
+def _read_imported(
+    checkpoint: Path, config_path: Path | None, params: FeralFeature.Params
+) -> tuple[dict[str, object], FeralNetwork, dict[int, str], bool]:
+    """The weights, network, classes and multilabel flag of a checkpoint under ``model_dir``."""
+    import torch
+
+    state_dict, meta = _load_checkpoint_state_dict(
+        torch.load(str(checkpoint), map_location="cpu")
+    )
+    config = (
+        _OBJECT.validate_json(config_path.read_text())
+        if config_path is not None
+        else None
+    )
+    names, is_multilabel = checkpoint_classes(params.class_names, meta, config)
+    embedded = None if meta is None else meta.get("cfg")
+    network = imported_network(
+        [config, _OBJECT.validate_python(embedded) if embedded else None],
+        model_name=params.model_name,
+        predict_per_item=params.predict_per_item,
+    )
+    return state_dict, network, names, is_multilabel
+
+
+_OBJECT: Final = TypeAdapter(dict[str, object])
+"""A JSON object, read without its values being checked."""
+
+_LABELS_JSON: Final = TypeAdapter(FeralLabelsJson)
+
+
+_IDENTITY_COLUMNS: Final[tuple[str, ...]] = (
+    C.id_col,
+    "id1",
+    "id2",
+    "perspective",
+    "interaction_id",
+)
+
+
+def _rows_of_frames(rows: pd.DataFrame, predictions: pd.DataFrame) -> pd.DataFrame:
+    """Each row of *rows* on a predicted frame, with that frame's predictions.
+
+    A row keeps its identity columns, whichever of ``id`` or ``id1``, ``id2``,
+    ``perspective`` and ``interaction_id`` it has. A row on a frame the video
+    does not cover, or that no chunk covers, is left out.
+    """
+    keep = [column for column in _IDENTITY_COLUMNS if column in rows.columns]
+    return rows[[*keep, C.frame_col]].merge(predictions, on=C.frame_col, how="inner")
+
+
+def chunk_probabilities(
+    model: torch.nn.Module,
+    batch_frames: Sequence[list[int]],
+    video_path: Path,
+    prepare: Callable[[torch.Tensor], torch.Tensor],
+    device: torch.device,
+    autocast: contextlib.AbstractContextManager[object],
+    *,
+    is_multilabel: bool,
+    tokens_per_chunk: int,
+) -> list[NDArray[np.float32]]:
+    """The class probabilities of each chunk in *batch_frames*.
+
+    Each element is a ``(tokens_per_chunk, num_classes)`` array. The model's
+    output is chunk-major, so chunk ``n`` holds rows
+    ``[n * tokens_per_chunk : (n + 1) * tokens_per_chunk]``. The probabilities
+    are sigmoids for a multilabel model and a softmax over the classes
+    otherwise.
+
+    Batching does not change per-sample outputs: ``model.eval()`` freezes
+    BatchNorm1d running stats and disables dropout, and all attention is
+    within-sample. On CUDA OOM the batch is split in half and retried
+    recursively, down to a single chunk.
+    """
+    import torch
+
+    read = _feral_read_range_video()
+    batch_tensor = torch.stack(
+        [prepare(read(str(video_path), list(frames))) for frames in batch_frames],
+        dim=0,
+    ).to(device)
+    try:
+        with torch.no_grad(), autocast:
+            # Autocast may leave the logits in bfloat16, which numpy cannot hold.
+            output = model(batch_tensor).float()
+            if is_multilabel:
+                probs = torch.sigmoid(output)
+            else:
+                probs = torch.nn.functional.softmax(output, dim=1)
+            array: NDArray[np.float32] = probs.cpu().numpy()
+    except torch.cuda.OutOfMemoryError:
+        del batch_tensor
+        torch.cuda.empty_cache()
+        if len(batch_frames) == 1:
+            raise
+        mid = len(batch_frames) // 2
+        return chunk_probabilities(
+            model,
+            batch_frames[:mid],
+            video_path,
+            prepare,
+            device,
+            autocast,
+            is_multilabel=is_multilabel,
+            tokens_per_chunk=tokens_per_chunk,
+        ) + chunk_probabilities(
+            model,
+            batch_frames[mid:],
+            video_path,
+            prepare,
+            device,
+            autocast,
+            is_multilabel=is_multilabel,
+            tokens_per_chunk=tokens_per_chunk,
+        )
+    return [
+        array[n * tokens_per_chunk : (n + 1) * tokens_per_chunk]
+        for n in range(len(batch_frames))
+    ]
+
+
+def _build_eval_loader(
+    cfg: FeralConfig,
+    labels_json: FeralLabelsJson,
+    partition: str,
+    *,
+    prefix: str,
+    batch_size: int | None = None,
+    num_workers: int | None = None,
+) -> torch.utils.data.DataLoader[object] | None:
+    """A DataLoader over *partition* of *labels_json*, through FERAL's ``ClsDataset``.
+
+    *prefix* is the directory FERAL joins to each video filename. Returns
+    ``None`` if the partition is absent or empty.
+    """
+    import torch
+
+    if not labels_json["splits"].get(partition):
+        return None
+    data = cfg["data"]
+    training = cfg["training"]
+    dataset = _feral_cls_dataset()(
+        partition=partition,
+        label_json_dict=labels_json,
+        do_aa=False,
+        predict_per_item=cfg["predict_per_item"],
+        num_classes=len(labels_json["class_names"]),
+        prefix=prefix,
+        resize_to=data["resize_to"],
+        chunk_shift=data["chunk_shift"],
+        chunk_length=data["chunk_length"],
+        chunk_step=data["chunk_step"],
+    )
+    return torch.utils.data.DataLoader(
+        dataset,
+        shuffle=False,
+        batch_size=batch_size if batch_size is not None else training["val_bs"],
+        num_workers=(
+            num_workers if num_workers is not None else training["num_workers"]
+        ),
+        pin_memory=True,
+        drop_last=False,
+        collate_fn=_feral_collate_fn_val(),
+    )
+
+
+def _run_inference_loop(
+    model: torch.nn.Module,
+    loader: torch.utils.data.DataLoader[object] | None,
+    num_classes: int,
+    is_multilabel: bool,
+    device: torch.device | str,
+    *,
+    progress_label: str = "",
+    progress_interval: int = 0,
+) -> list[FeralAnswer]:
+    """Per-batch inference loop. Returns FERAL `answers` (list of tuples).
+
+    Runs the forward pass in full float32 -- no bfloat16 autocast.
+    Evaluation is a measurement step; the speed/precision trade-off
+    worth taking inside a training inner loop is not worth taking
+    when computing a number we report. bfloat16 shifts decision
+    boundaries near probability 0.5 and breaks reproducibility of
+    the metric. See class-level docstring for the full precision
+    convention across training, eval, and apply.
+
+    If ``progress_label`` is non-empty and ``progress_interval > 0``,
+    prints a progress line every N batches.
+    """
+    import torch
+
+    if loader is None:
+        return []
+
+    answers: list[FeralAnswer] = []
+    total = len(loader)
+    with torch.no_grad():
+        for i, (data, target, names) in enumerate(loader):
+            data = data.to(device)
+            target = target.to(device).view(-1, num_classes)
+            output = model(data)
+            output_prob = (
+                torch.sigmoid(output)
+                if is_multilabel
+                else torch.nn.functional.softmax(output, 1)
+            )
+            answers.extend(_feral_prep_for_answers()(output_prob, target, names))
+            if (
+                progress_label
+                and progress_interval > 0
+                and ((i + 1) % progress_interval == 0 or i == total - 1)
+            ):
+                print(
+                    f"    {progress_label}: batch {i + 1}/{total}",
+                    flush=True,
+                )
+    return answers
+
+
+def _evaluate_partition(
+    model: torch.nn.Module,
+    cfg: FeralConfig,
+    labels_json: FeralLabelsJson,
+    partition: str,
+    device: torch.device | str,
+) -> dict[str, float]:
+    """Run evaluation on a given partition (e.g. 'test') and return metrics.
+
+    Reads the videos under the dataset root that *cfg* names. For callers outside
+    the training loop, use the public ``evaluate()`` and ``compute_metrics()``.
+    The forward pass runs in full float32, so the test metrics that land in
+    ``reports.json`` match what ``FeralFeature.evaluate()`` produces for this run
+    later. See the class docstring for the precision convention.
+    """
+    loader = _build_eval_loader(
+        cfg, labels_json, partition, prefix=cfg["data"]["prefix"]
+    )
+    answers = _run_inference_loop(
+        model,
+        loader,
+        len(labels_json["class_names"]),
+        labels_json["is_multilabel"],
+        device,
+    )
+    return FeralFeature.compute_metrics(
+        answers,
+        labels_json,
+        partition,
+        prefix=partition,
+        multilabel_threshold=cfg["multilabel_threshold"],
+    )
+
+
+class FeralDataConfig(TypedDict):
+    """The ``data`` block of FERAL's config."""
+
+    prefix: str
+    chunk_length: int
+    chunk_shift: int
+    chunk_step: int
+    eval_chunk_shift: int | None
+    eval_smoothing_window: int | None
+    resize_to: int
+    resize_style: Literal["square", "rectangle"]
+    do_aa: bool
+    part_sample: float
+    subsample_keep_rare_threshold: float | None
+
+
+class FeralTrainingBlock(TypedDict):
+    """The ``training`` block of FERAL's config."""
+
+    epochs: int
+    train_bs: int
+    val_bs: int
+    num_workers: int
+    part_warmup: float
+    lr: float
+    weight_decay: float
+    label_smoothing: float
+    compile: bool
+    patience: int | None
+    grad_clip_norm: float | None
+    log_grad_norm: bool
+    heavy_log_every: int | None
+
+
+class FeralConfig(TypedDict):
+    """The nested config FERAL's data, model and loop functions read."""
+
+    run_name: str
+    backbone: str
+    predict_per_item: int
+    model: FeralModelConfig
+    data: FeralDataConfig
+    training: FeralTrainingBlock
+    mixup_alpha: float | None
+    ema_decay: float | None
+    seed: int
+    device: str
+    starting_checkpoint: str | None
+    max_batches: int | None
+    multilabel_threshold: float
+
+
+class FeralTrainedRun(TypedDict):
+    """What ``feral_config.json`` holds."""
+
+    cfg: FeralConfig
+    class_values: list[int]
+    class_names: dict[int, str]
+    is_multilabel: bool
+    inference_autocast: bool
+    version: str
+
+
+_TRAINED_RUN: Final = TypeAdapter(FeralTrainedRun)
+
+
+def feral_config(
+    params: FeralFeature.Params, *, backbone: str, dataset_root: Path | str
+) -> FeralConfig:
+    """FERAL's whole config for *params*.
+
+    Every key FERAL reads is set here from a param or a fixed value, and none
+    comes from FERAL's packaged defaults, so a change to a FERAL default never
+    reaches an output under an unchanged run id.
+
+    Args:
+        params: The feature's params. ``training`` must be set.
+        backbone: The ``feral.backbones.BACKBONES`` key of the backbone.
+        dataset_root: The directory that FERAL's video filenames are relative
+            to.
+
+    Returns:
+        The nested config.
+
+    Raises:
+        ValueError: ``params.training`` is not set.
+    """
+    training = params.training
+    if training is None:
+        raise ValueError(f"{FeralFeature.name}: the FERAL config needs training params")
+    return {
+        "run_name": "mosaic",
+        "backbone": backbone,
+        "predict_per_item": params.predict_per_item,
+        "model": {
+            "fc_drop_rate": training.fc_drop_rate,
+            "class_weights": training.class_weights,
+            "freeze_encoder_layers": training.freeze_encoder_layers,
+            "gradient_checkpointing": False,
+            "max_class_weight": None,
+        },
+        "data": {
+            "prefix": str(dataset_root),
+            "chunk_length": params.chunk_length,
+            "chunk_shift": params.chunk_shift,
+            "chunk_step": params.chunk_step,
+            "eval_chunk_shift": None,
+            "eval_smoothing_window": None,
+            "resize_to": params.resize_to,
+            "resize_style": "square",
+            "do_aa": training.do_aa,
+            "part_sample": training.part_sample,
+            "subsample_keep_rare_threshold": None,
+        },
+        "training": {
+            "epochs": training.epochs,
+            "train_bs": training.train_bs,
+            "val_bs": training.val_bs,
+            "num_workers": training.num_workers,
+            "part_warmup": training.part_warmup,
+            "lr": training.lr,
+            "weight_decay": training.weight_decay,
+            "label_smoothing": training.label_smoothing,
+            "compile": training.compile,
+            "patience": training.patience,
+            "grad_clip_norm": None,
+            "log_grad_norm": False,
+            "heavy_log_every": None,
+        },
+        "mixup_alpha": training.mixup_alpha,
+        "ema_decay": training.ema_decay,
+        "seed": training.seed,
+        "device": params.device,
+        "starting_checkpoint": None,
+        "max_batches": None,
+        "multilabel_threshold": training.multilabel_threshold,
+    }
+
+
+def train_feral(
+    cfg: FeralConfig,
+    labels_json: FeralLabelsJson,
+    *,
+    run_root: Path,
+    progress_callback: TrainingProgressCallback | None,
+) -> tuple[torch.nn.Module, float, list[dict[str, float]]]:
+    """Train FERAL's model for the epochs of *cfg* on FERAL's loop pieces.
+
+    The loaders, model, loss, optimizer, schedule and mixup come from FERAL, and
+    so do the training epoch and the validation pass. Validation answers are
+    ensembled into per-frame predictions before they are measured. The best
+    model by validation mAP, the base or the EMA model, is written to
+    ``model_best.pt`` in *run_root*, and the last epoch is kept when there is no
+    validation split. An interrupted run resumes from ``training_checkpoint.pt``.
+
+    Args:
+        cfg: The config :func:`feral_config` builds.
+        labels_json: FERAL's labels dict, with a ``train`` split and an
+            optional ``val`` split.
+        run_root: The directory that receives ``model_best.pt``,
+            ``summary.csv`` and the resume checkpoint.
+        progress_callback: Told of each epoch's metrics, or ``None``.
+
+    Returns:
+        The model, unwrapped from ``torch.compile`` and loaded with the best
+        weights, the best validation mAP (``-1.0`` without validation), and the
+        metrics of each epoch.
+    """
+    import random
+
+    import torch
+
+    seed = cfg["seed"]
+    _ = _torch_manual_seed()(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    training = cfg["training"]
+    num_classes = len(labels_json["class_names"])
+    is_multilabel = labels_json["is_multilabel"]
+    device = torch.device(cfg["device"])
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    datasets, loaders = _feral_build_loaders()(cfg, labels_json, num_classes)
+    train_loader = loaders["train"]
+    val_loader = loaders.get("val")
+    model, model_ema = _feral_build_model()(cfg, num_classes, device)
+    criterion, optimizer, scheduler, mixup = _feral_build_training_objects()(
+        cfg, model, datasets["train"], train_loader, labels_json, device
+    )
+
+    checkpoint_metadata: dict[str, object] = {
+        "class_names": labels_json["class_names"],
+        "is_multilabel": is_multilabel,
+        "cfg": cfg,
+    }
+    best_path = run_root / "model_best.pt"
+    checkpoint_path = run_root / "training_checkpoint.pt"
+    best_map = -1.0
+    epochs_without_improvement = 0
+    training_metrics: list[dict[str, float]] = []
+    start_epoch = 0
+
+    if checkpoint_path.exists():
+        resume = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(resume["model_state_dict"])
+        optimizer.load_state_dict(resume["optimizer_state_dict"])
+        scheduler.load_state_dict(resume["scheduler_state_dict"])
+        best_map = resume["best_map"]
+        epochs_without_improvement = resume["epochs_without_improvement"]
+        training_metrics = resume["training_metrics"]
+        start_epoch = resume["epoch"] + 1
+        if model_ema is not None and "ema_state_dict" in resume:
+            model_ema.ema.load_state_dict(resume["ema_state_dict"])
+        log.info(
+            "Resuming training from epoch %d (best_map=%.4f)", start_epoch, best_map
+        )
+
+    csv_progress = CSVProgressCallback(run_root / "summary.csv")
+
+    def save_model(path: Path, source: torch.nn.Module) -> None:
+        # A reader that is not under the run claim can load a model file while
+        # the fit is still writing it, so each write lands whole or not at all.
+        atomic_write(
+            path,
+            lambda temporary: _feral_save_model()(
+                source, str(temporary), checkpoint_metadata
+            ),
+        )
+
+    try:
+        for epoch in range(start_epoch, training["epochs"]):
+            _, train_loss = _feral_train_one_epoch()(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                scheduler,
+                mixup=mixup,
+                model_ema=model_ema,
+                num_classes=num_classes,
+                is_multilabel=is_multilabel,
+                predict_per_item=cfg["predict_per_item"],
+                device=device,
+                log_fn=None,
+                grad_clip_norm=training["grad_clip_norm"],
+                log_grad_norm=training["log_grad_norm"],
+                heavy_log_every=training["heavy_log_every"],
+            )
+            epoch_metrics: dict[str, float] = {
+                "epoch": epoch,
+                "train_loss": train_loss,
+            }
+
+            if val_loader is None:
+                save_model(best_path, model)
+            else:
+                answers, val_loss = _feral_evaluate()(
+                    model,
+                    val_loader,
+                    criterion,
+                    num_classes=num_classes,
+                    is_multilabel=is_multilabel,
+                    device=device,
+                )
+                val_metrics = FeralFeature.compute_metrics(
+                    answers,
+                    dict(labels_json),
+                    "val",
+                    multilabel_threshold=cfg["multilabel_threshold"],
+                )
+                epoch_metrics.update(val_metrics)
+                epoch_metrics["val_loss"] = (
+                    float("nan") if val_loss is None else val_loss
+                )
+                val_map = epoch_metrics["val_frame_level_map"]
+
+                ema_map = -2.0
+                if model_ema is not None:
+                    answers_ema, _ = _feral_evaluate()(
+                        model_ema.ema,
+                        val_loader,
+                        None,
+                        num_classes=num_classes,
+                        is_multilabel=is_multilabel,
+                        device=device,
+                    )
+                    ema_map = _feral_calc_frame_level_map()(
+                        ensembled_predictions(answers_ema, labels_json, "val"),
+                        labels_json,
+                        "val",
+                    )
+                    epoch_metrics["ema_val_frame_level_map"] = ema_map
+
+                if val_map > ema_map and val_map > best_map:
+                    save_model(best_path, model)
+                    best_map = val_map
+                    epochs_without_improvement = 0
+                elif model_ema is not None and ema_map > val_map and ema_map > best_map:
+                    save_model(best_path, model_ema.ema)
+                    best_map = ema_map
+                    epochs_without_improvement = 0
+                else:
+                    epochs_without_improvement += 1
+
+            training_metrics.append(epoch_metrics)
+            log.info("Epoch %d: %s", epoch, epoch_metrics)
+            csv_progress.on_epoch_end(epoch, training["epochs"], epoch_metrics)
+            if progress_callback is not None:
+                progress_callback.on_epoch_end(epoch, training["epochs"], epoch_metrics)
+
+            resume_state: dict[str, object] = {
+                "epoch": epoch,
+                "best_map": best_map,
+                "epochs_without_improvement": epochs_without_improvement,
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "model_state_dict": model.state_dict(),
+                "training_metrics": training_metrics,
+            }
+            if model_ema is not None:
+                resume_state["ema_state_dict"] = model_ema.ema.state_dict()
+            atomic_write(
+                checkpoint_path, lambda temporary: torch.save(resume_state, temporary)
+            )
+
+            patience = training["patience"]
+            if patience is not None and epochs_without_improvement >= patience:
+                log.info("Early stopping at epoch %d", epoch)
+                break
+    finally:
+        csv_progress.close()
+
+    checkpoint_path.unlink(missing_ok=True)
+    if model_ema is not None:
+        save_model(run_root / "model_ema.pt", model_ema.ema)
+
+    trained = getattr(model, "_orig_mod", model)
+    if val_loader is not None and best_path.exists():
+        trained.load_state_dict(torch.load(best_path, map_location="cpu")["state_dict"])
+    trained.eval()
+    return trained, best_map, training_metrics
+
+
 def feral_setup_check(
     checkpoint_path: str | Path | None = None,
     *,
     backbone: str = "vjepa2_vitl_diving48",
-    feral_code_dir: str | Path | None = None,
     num_classes: int | None = None,
     build_model: bool = False,
     device: str = "cpu",
@@ -2004,12 +3059,10 @@ def feral_setup_check(
     Parameters
     ----------
     checkpoint_path : str or Path or None
-        A ``model_best.pt`` / ``feral_model.pt`` to inspect. ``None`` checks only
+        A ``model_best.pt`` to inspect. ``None`` checks only
         the package + backbone.
     backbone : str
         BACKBONES key or HF slug (default the trophallaxis ViT-L diving48 model).
-    feral_code_dir : str or Path or None
-        Optional ``sys.path`` override for a local checkout of the package.
     num_classes : int or None
         Needed for ``build_model=True`` when the checkpoint carries no metadata.
     build_model : bool
@@ -2022,15 +3075,9 @@ def feral_setup_check(
 
     # 1. Package import
     try:
-        _import_feral(feral_code_dir)
+        _check_feral()
     except ToolUnavailable as e:
         print(f"[FAIL] {e}")
-        if feral_code_dir is not None:
-            print(
-                "       Note: for a source checkout, feral_code_dir must be the "
-                "directory CONTAINING the `feral/` package (the repo root with "
-                "pyproject.toml), not the inner package directory."
-            )
         return summary
     import feral
 

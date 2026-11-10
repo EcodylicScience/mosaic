@@ -201,7 +201,7 @@ payload that a global feature samples or fits on.
 _CROPS = "it reads the crop images that egocentric-crop writes and fits a network"
 
 UNRUN: dict[str, str] = {
-    "feral": "it reads crop videos and fine-tunes a video transformer",
+    "feral": "it reads crop videos or a sequence's media and fine-tunes a video transformer",
     "global-identity-dinov2-temporal": _CROPS,
     "global-identity-embedding": _CROPS,
     "global-identity-model": _CROPS,

@@ -138,7 +138,7 @@ def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None
     ``label-statistics`` also takes a ``ResultColumn`` and does not depend on
     ground truth. ``label-predictions`` reads the ``predictions`` kind through a
     subclass, and ``overlay`` names a kind by a string field: neither is flagged.
-    ``xgboost`` takes labeled templates and ``feral`` declares the dependence.
+    ``xgboost`` takes labeled templates.
     """
     entries = editor_catalog().entries
     fields = {entry.name: entry.ground_truth_fields for entry in entries}
@@ -147,6 +147,7 @@ def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None
     assert {name: names for name, names in fields.items() if names} == {
         "evaluate-labels": ("labels",),
         "extract-labeled-templates": ("labels",),
+        "feral": ("labels",),
         "fit-label-map": ("labels",),
         "label-statistics": ("labels",),
         "lightning-action": ("labels",),

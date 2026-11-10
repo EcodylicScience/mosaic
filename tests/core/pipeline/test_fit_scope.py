@@ -135,7 +135,7 @@ class _ScopeFreeFit(_StatefulStub):
     """Fits from its stream but is scope-free, and pins no artifact.
 
     The shape of a fitter that reads its training data from somewhere no record
-    describes (feral reads a directory of videos), so its fit scope is unknown.
+    describes, so its fit scope is unknown.
     """
 
     name = "fit-scope-probe"
