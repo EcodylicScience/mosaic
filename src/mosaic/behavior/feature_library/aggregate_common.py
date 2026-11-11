@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Annotated, Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator
 
@@ -146,6 +147,22 @@ def split_keys(df: pd.DataFrame, params: AggregateParams) -> list[str]:
     return keys
 
 
+def _plain_values(values: pd.Series) -> np.ndarray:
+    """The values of one column as an array a group-by aggregates.
+
+    A pandas extension column of numbers or booleans (a nullable ``boolean`` or
+    ``Int64``) becomes floats with NaN for a null, which every aggregation skips.
+    As an object array of numbers and ``NA`` it would sum to a mix of types and
+    raise in ``std``. Any other column is its own numpy array.
+    """
+    dtype = values.dtype
+    if isinstance(dtype, pd.api.extensions.ExtensionDtype) and (
+        pd.api.types.is_numeric_dtype(dtype) or pd.api.types.is_bool_dtype(dtype)
+    ):
+        return values.to_numpy(dtype=float, na_value=np.nan)
+    return values.to_numpy()
+
+
 def reduce_column(
     df: pd.DataFrame,
     params: AggregateParams,
@@ -192,7 +209,7 @@ def reduce_column(
             values = values.abs()
         if params.threshold is not None:
             values = (values > params.threshold).astype(float)
-        work[f"_v{index}"] = values.to_numpy()
+        work[f"_v{index}"] = _plain_values(values)
 
     once = pairs == "once" and _PERSPECTIVE_COLUMN in df.columns
     halved = work[(df[_PERSPECTIVE_COLUMN] == 0).to_numpy()] if once else work

@@ -43,6 +43,13 @@ from mosaic.core.pipeline.graph import (
     step_type_detail,
     validation_report,
 )
+from mosaic.behavior.feature_library.label_predictions import PredictionsLabelsSource
+from mosaic.core.pipeline.graph.resolve import fields_need_ground_truth
+from mosaic.core.pipeline.types import (
+    GroundTruthLabelsSource,
+    LabeledTemplatesRef,
+    ResultColumn,
+)
 from tests.helpers import add_tracks_variant, make_dataset
 
 runner = CliRunner()
@@ -138,7 +145,9 @@ def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None
     ``label-statistics`` also takes a ``ResultColumn`` and does not depend on
     ground truth. ``label-predictions`` reads the ``predictions`` kind through a
     subclass, and ``overlay`` names a kind by a string field: neither is flagged.
-    ``xgboost`` takes labeled templates.
+    ``xgboost`` takes labeled templates. ``event-response`` and
+    ``probability-ensemble`` accept ground-truth labels as one option among
+    others, so an optional field marks the field and not the entry.
     """
     entries = editor_catalog().entries
     fields = {entry.name: entry.ground_truth_fields for entry in entries}
@@ -146,6 +155,7 @@ def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None
 
     assert {name: names for name, names in fields.items() if names} == {
         "evaluate-labels": ("labels",),
+        "event-response": ("labels",),
         "extract-labeled-templates": ("labels",),
         "feral": ("labels",),
         "fit-label-map": ("labels",),
@@ -161,7 +171,6 @@ def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None
         "feral",
         "fit-label-map",
         "lightning-action",
-        "probability-ensemble",
         "sequence-classifier",
         "tune-threshold",
         "xgboost",
@@ -169,6 +178,25 @@ def test_the_catalog_flags_each_field_and_entry_of_ground_truth_labels() -> None
     for entry in entries:
         labels = {f for f, kind in entry.reference_fields.items() if kind == "labels"}
         assert set(entry.ground_truth_fields) <= labels, entry.name
+
+
+def test_dependency_on_ground_truth_needs_a_required_field_or_templates() -> None:
+    """An optional ground-truth field does not, since the step runs without it."""
+    required: dict[str, object] = {"labels": GroundTruthLabelsSource}
+    optional: dict[str, object] = {"labels": GroundTruthLabelsSource | None}
+    alongside: dict[str, object] = {"labels": GroundTruthLabelsSource | ResultColumn}
+    predictions: dict[str, object] = {"labels": PredictionsLabelsSource}
+    templates: dict[str, object] = {"templates": LabeledTemplatesRef}
+    optional_templates: dict[str, object] = {"templates": LabeledTemplatesRef | None}
+
+    assert fields_need_ground_truth(required)
+    assert not fields_need_ground_truth(optional)
+    assert not fields_need_ground_truth(alongside)
+    assert not fields_need_ground_truth(predictions)
+    assert not fields_need_ground_truth({"fps": float})
+    assert fields_need_ground_truth(templates)
+    assert fields_need_ground_truth(optional_templates)
+    assert fields_need_ground_truth({**optional, **required})
 
 
 def test_a_catalog_entry_carries_its_schema_version_and_summary() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -136,6 +137,32 @@ def test_pair_input_mean_reads_every_focal_row() -> None:
     out = _apply({"columns": ["A_speed"], "aggs": ["mean"]}, _pair_table())
 
     assert out["A_speed_mean"].tolist() == [1.5, 6.5, 25.0]
+
+
+@pytest.mark.parametrize("dtype", ["boolean", "Int64"])
+def test_a_nullable_column_skips_its_nulls_in_every_aggregation(
+    dtype: Literal["boolean", "Int64"],
+) -> None:
+    table = pd.DataFrame(
+        {"frame": [0, 1, 2, 0, 1], "id": [0, 0, 0, 1, 1]}, dtype="int64"
+    ).assign(group="G", sequence="S1")
+    table["value"] = (
+        pd.array([True, False, None, True, True], dtype="boolean")
+        if dtype == "boolean"
+        else pd.array([1, 0, None, 1, 1], dtype="Int64")
+    )
+
+    out = _apply(
+        {"columns": ["value"], "aggs": ["sum", "std", "max", "median", "mean"]}, table
+    )
+
+    assert out["value_sum"].tolist() == [1.0, 2.0]
+    assert out["value_std"].tolist() == pytest.approx([2**-0.5, 0.0])
+    assert out["value_max"].tolist() == [1.0, 1.0]
+    assert out["value_median"].tolist() == [0.5, 1.0]
+    assert out["value_mean"].tolist() == [0.5, 1.0]
+    for agg in ("sum", "std", "max", "median", "mean"):
+        assert out[f"value_{agg}"].dtype == np.float64
 
 
 def test_the_params_have_no_pairs_field() -> None:

@@ -3,7 +3,7 @@
 
 # Features
 
-66 features are registered. Each one runs as
+67 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -853,6 +853,32 @@ Score a run's predictions or clusters against ground-truth labels.
     | `drop_columns` | list of `string` \| `None` | `null` |  | Column names dropped after loading. A name absent from the file is ignored. |
     | `numeric_only` | `boolean` | `true` |  | Keep only numeric-dtype columns. Ignored when columns is set. |
     | `frame_column` | `string` \| `None` | `null` |  | Column that becomes the table's index, read even when columns does not list it. It leaves the table's values before drop_columns, numeric_only and transpose apply. A file without it is refused. Unset keeps the table's own index. |
+
+### `event-response`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.event_response.EventResponse`
+
+Per-sequence feature measuring a value around each event, per individual.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `value_column` | `string` | `"speed"` |  | The column measured around each onset, such as the speed column of speed-angvel. |
+| `onset_column` | `string` \| `None` | `null` |  | A column whose rising edge is an onset: each row where it is active after a row where it is not. The first row of an individual has no row before it, so it is never an onset. A null is not active. Give exactly one of onset_column, labels and onset_times. |
+| `onset_value` | `string` \| `number` \| `boolean` \| `None` | `null` |  | The value of onset_column that means active, such as Y for Tracktor's stimuli column. Unset, a boolean column is active where true and a numeric column where it is not 0. A column of text needs it. |
+| `labels` | `GroundTruthLabelsSource` \| `None` | `null` |  | A label kind of the dataset whose runs of onset_classes are the events. An individual's label follows each of its rows, and its remap and mask apply before onset_classes. The first row of an individual is never an onset. Give exactly one of onset_column, labels and onset_times. |
+| `onset_classes` | list of `integer` \| `None` | `null` |  | The label classes that count as an event, after the labels' remap. Each run of rows labeled with one of them starts an event at its first row. Only with labels. |
+| `onset_times` | list of `number` \| `None` | `null` |  | The onset times, in the units of the time column. Every individual has a row for every time, numbered in ascending order. Give exactly one of onset_column, labels and onset_times. [s] |
+| `baseline_s` | `number` | `10.0` | > `0.0` | The length of the window before each onset whose mean is the baseline. It holds the rows whose time is at or after the onset minus this and before the onset. [s] |
+| `response_s` | `number` | `30.0` | > `0.0` | The length of the window from each onset over which the minimum, the mean and the recovery are measured. It holds the rows whose time is at or after the onset and before the onset plus this. A window that runs past the end of the table holds the rows there are. [s] |
+| `recover_fraction` | `number` | `0.9` | > `0.0` | The fraction of the baseline that the value must return to. The latency is the time from the onset to the first row after the response window's minimum whose value is at or above that level. A response whose minimum is at or above the level recovers at latency 0. One that does not return has a NaN latency and recovered false, and one with no baseline or no response rows has a NaN latency and a null recovered. |
+
+??? note "`GroundTruthLabelsSource`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `string` | `"behavior"` | min length `1` | Which labels/<kind> subdirectory the ground-truth labels resolve to. Defaults to behavior; another kind resolves the same way, through labels/<kind>/index.csv. |
+    | `remap` | `object` \| `None` | `null` |  | Maps a class id of the label file to the id every reader sees, as {file_id: id}. |
+    | `mask` | list of `integer` \| `None` | `null` |  | Class ids whose frames are unlabeled, so no step trains on or scores them. |
 
 ### `ffgroups-metrics`
 

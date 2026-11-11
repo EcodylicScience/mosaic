@@ -17,6 +17,7 @@
   "evaluate-labels/classifier": "0.2-0ef7fefa45",
   "evaluate-labels/clusters-label-map": "0.2-a9563e494e",
   "evaluate-labels/label-mask": "0.2-09629c53c7",
+  "event-response/onset-times": "0.1-b51c3920ed",
   "extract-templates/from-pair-wavelet": "0.4-78abade640",
   "ffgroups-metrics/default": "0.1-e3d930e262",
   "ffgroups-metrics/exclude-unbridgeable-frame-scope": "0.1-90e7de2869",

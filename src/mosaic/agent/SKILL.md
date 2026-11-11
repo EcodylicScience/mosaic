@@ -326,6 +326,22 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `pairs` to `once` there. `individual-aggregate` has no `pairs`: over pair rows it
   reads every row of each focal `id1`, so a directional column such as `A_speed` belongs
   to its focal.
+- `event-response` gives one row per individual and event: the mean of `value_column`
+  (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
+  and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to
+  the first value at or above `recover_fraction` times the baseline after the response
+  window's minimum (NaN with `recovered` false when it does not return, and `recovered`
+  null when the baseline or the response has no value). `event` counts an individual's
+  own onsets under `onset_column` and `labels`, so join one stimulus across individuals
+  on `onset_time`. A single low sample sets the minimum, so filter a noisy value first:
+  `speed-angvel` writes `speed_smooth` under `smooth_window` (set `value_column` to
+  it), and `trajectory-smooth` smooths the positions before `speed-angvel`.
+  Give exactly one source of onsets: `onset_times`, `onset_column` (its rising edge;
+  `onset_value` names the active value of a text column, `Y` for Tracktor's `stimuli`,
+  and the column must reach the step through an input such as `tracks` beside the
+  `speed-angvel` result), or `labels` with `onset_classes`. Windows and latency read the
+  `time` column in seconds, never a frame rate. Reduce its rows with
+  `individual-aggregate` or `sequence-aggregate`.
 - To reuse a fit over other sequences, pin its step to the finished run:
   `pins={"<step id>": "<run id>"}` on `submit_request` or `run_pipeline`
   (`--pin STEP=RUN_ID`, repeatable, on `mosaic pipeline plan`, `submit` and `run`;

@@ -82,6 +82,22 @@ column gives one row per arena, and `subgroup_col` splits the rows by a column s
 tag. Over pair rows, `individual-aggregate` reduces every row of a focal `id1` to that
 individual's row.
 
+**Responses to events.** `event-response` measures a value, by default the speed of
+`speed-angvel`, around each onset, one row per individual and event: the baseline mean
+over `baseline_s` before it, the minimum and mean over `response_s` after it, and the
+latency from the onset to the first value at or above `recover_fraction` times its
+baseline after the response window's minimum (NaN, with `recovered` false, when it does
+not; `recovered` is null when the baseline or the response has no value). A single low
+sample sets the minimum, so filter a noisy value first: `speed-angvel` writes
+`speed_smooth` when `smooth_window` is set (use it as `value_column`), and
+`trajectory-smooth` smooths the positions before `speed-angvel`. `event` counts an
+individual's own onsets under `onset_column` and `labels`; `onset_time` joins one
+stimulus across individuals. Give the onsets as `onset_times`, as the rising edge of
+`onset_column` (`onset_value` names the active value of a text column, such as `Y` for
+Tracktor's `stimuli`), or as the runs of `onset_classes` in a `labels` kind. The windows
+and the latency follow the `time` column in seconds, so a table that dropped frames is
+measured the same way. `individual-aggregate` then summarizes the rows.
+
 **A label sequence as a fingerprint.** `label-statistics` reduces labels to one row per
 individual: how much of the time each state occupies, how often it starts, how long its
 bouts last and what tends to follow it. It reads ground-truth labels or a categorical

@@ -212,9 +212,10 @@ class CatalogEntry(GraphModel):
             accept the ``GroundTruthLabelsSource`` form, which reads the converted
             ground-truth labels of a kind, sorted. Such a field may accept another
             form beside it.
-        needs_ground_truth: Whether it depends on ground-truth labels: a field of
-            ``ground_truth_fields`` accepts that form alone, or a params field takes
-            labeled templates.
+        needs_ground_truth: Whether it depends on ground-truth labels: a required
+            field of ``ground_truth_fields`` accepts that form alone, or a params
+            field takes labeled templates. An optional field does not make it
+            dependent.
         requires: The columns it reads from its merged input, under its default
             params. ``None`` when undeclared, and validation then lists a step
             that runs it as unchecked.

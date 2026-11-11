@@ -238,6 +238,11 @@ CASES: tuple[Case, ...] = (
         params={"columns": ["SPEED"]},
     ),
     Case(
+        case_id="event-response/onset-times",
+        feature="event-response",
+        params={"onset_times": [1.0, 2.5], "value_column": "SPEED"},
+    ),
+    Case(
         case_id="collective-motion-metrics/subgroups-alpha",
         feature="collective-motion-metrics",
         params={"subgroup_col": "event", "area_method": "alpha_shape", "alpha": 60.0},

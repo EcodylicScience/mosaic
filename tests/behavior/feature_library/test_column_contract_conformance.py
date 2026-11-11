@@ -87,6 +87,7 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "arhmm": {"n_states": 2, "n_iter": 5},
     "egocentric-crop": {"transform_keypoints": True},
     "evaluate-labels": {"mode": "clusters", "prediction_column": "cluster"},
+    "event-response": {"onset_times": [1.0]},
     "extract-labeled-templates": {"labels": {"kind": "behavior"}, "n_total": 40},
     "fit-label-map": {"prediction_column": "cluster"},
     "extract-templates": {"n_templates": 50},
@@ -179,6 +180,7 @@ their one writer.
 
 SOURCES: dict[str, tuple[str, ...]] = {
     "attention-target": ("pair-facing",),
+    "event-response": ("speed-angvel",),
     "individual-wavelet": ("keypoint-kinematics", "speed-angvel"),
     "nn-delta-bins": ("nn-delta-response",),
     "pair-wavelet": ("pair-posedistance-pca",),
@@ -195,6 +197,7 @@ whose rows are individuals, as the category column of ``id-tag-columns`` is;
 ``individual-wavelet`` transforms the columns of ``keypoint-kinematics``, whose
 measures are all conditional, so ``speed-angvel`` guarantees the numeric payload
 that its declaration requires.
+``event-response`` measures ``speed``, which only ``speed-angvel`` writes.
 """
 
 FOLD_TABLES = frozenset({"smooth-probabilities", "tune-threshold"})

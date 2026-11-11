@@ -8,6 +8,33 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `event-response` measures a value around each event
+
+`event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It
+writes one row per individual and event (`emits` `individual`): `group`, `sequence`,
+`id`, `arena` when the input has it, `event`, `onset_time`, `baseline_mean`,
+`response_min`, `response_mean`, `recovery_latency_s`, `recovered`, `n_baseline` and
+`n_response`. `value_column` (default `speed`) is measured over `baseline_s` (10) before
+each onset and `response_s` (30) from it. The latency is the time from the onset to the
+first value at or above `recover_fraction` (0.9) times the baseline after the response
+window's minimum. It is NaN with `recovered` false when the value does not return, 0
+when the minimum is at or above that level, and NaN with `recovered` null (a nullable
+boolean) when the baseline or the response has no value. Onsets come from exactly one of
+`onset_times`, the rising edge of `onset_column` (`onset_value` names the active value
+of a text column such as Tracktor's `stimuli`), or the runs of `onset_classes` in a
+`labels` kind. Windows and latency select rows by the `time` column in its own units and
+read no frame rate or time step, so a table that dropped frames is measured by its
+seconds. The first row of an individual is never an onset. The aggregates skip the nulls
+of a nullable boolean or integer column and write its aggregates as floats, so
+`individual-aggregate` over `recovered` runs. No existing run id moves.
+
+The editor catalog's `needs_ground_truth` rule changes: a `GroundTruthLabelsSource`
+field marks a step type as dependent only when it is required. `event-response` and
+`probability-ensemble`, whose `labels` field also accepts `None`, are no longer marked,
+so mosaic-app's picker offers them on a project without ground-truth labels. mosaic-api
+reads the same flag. Every other entry's flag and every `ground_truth_fields` is
+unchanged.
+
 ## Unreleased: a declined or unanswered `open_duplicate` names the open requests
 
 When `submit_pipeline`'s confirmation is declined or unanswered and its conditions

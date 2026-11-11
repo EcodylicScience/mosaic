@@ -114,6 +114,7 @@ __all__ = [
     "describe_step_type",
     "editor_catalog",
     "feature_class_for_slug",
+    "fields_need_ground_truth",
     "op_class_for_kind",
     "params_reference_site",
     "resolve_step_spec",
@@ -761,7 +762,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         unavailable=declared.unavailable,
         license_note=license_notes(prerequisites),
         ground_truth_fields=ground_truth_fields,
-        needs_ground_truth=_needs_ground_truth(field_types),
+        needs_ground_truth=fields_need_ground_truth(field_types),
     )
 
 
@@ -783,19 +784,24 @@ def _accepts_ground_truth(annotation: object) -> bool:
     return any(form is GroundTruthLabelsSource for form in _field_forms(annotation))
 
 
-def _needs_ground_truth(field_types: Mapping[str, object]) -> bool:
-    """Whether a step type depends on ground-truth labels.
+def fields_need_ground_truth(field_types: Mapping[str, object]) -> bool:
+    """Whether a step type with these params fields depends on ground-truth labels.
 
-    True when a field takes the ``GroundTruthLabelsSource`` form and no other, or
-    when a field takes labeled templates (``LabeledTemplatesRef``), which only a
-    run over ground-truth labels writes.
+    True when a field takes the ``GroundTruthLabelsSource`` form and no other and
+    is required, or when a field takes labeled templates (``LabeledTemplatesRef``),
+    which only a run over ground-truth labels writes. A field that also accepts
+    ``None`` leaves the step runnable without ground truth, as ``event-response``
+    does with its other onset sources, so it does not make the step dependent.
     """
     from mosaic.core.pipeline.types.artifacts import LabeledTemplatesRef
 
     for annotation in field_types.values():
         forms = _field_forms(annotation)
-        if _accepts_ground_truth(annotation) and all(
-            _accepts_ground_truth(form) for form in forms
+        optional = type(None) in getattr(annotation, "__args__", ())
+        if (
+            not optional
+            and _accepts_ground_truth(annotation)
+            and all(_accepts_ground_truth(form) for form in forms)
         ):
             return True
         if any(
