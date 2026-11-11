@@ -28,7 +28,7 @@ from mosaic.core.pipeline.index_lock import (
     index_lock_unless_dry_run,
     lock_path_for,
 )
-from tests.helpers import index_locked_out, wait_for
+from tests.helpers import index_locked_out, read_line, wait_for
 
 
 # --- P7: index writes are serialized ------------------------------------------
@@ -191,8 +191,7 @@ def test_a_first_write_cannot_erase_a_racing_writers_row(
                 text=True,
             )
             rivals.append(rival)
-            assert rival.stdout is not None
-            _ = rival.stdout.readline()
+            _ = read_line(rival)
         atomic_write(final_path, write_fn)
 
     monkeypatch.setattr(

@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests.helpers.processes import CHILD_TIMEOUT_SECONDS
+
 __all__ = ["index_locked_out"]
 
 _LOCK_PROBE = """
@@ -40,7 +42,7 @@ def index_locked_out(index_path: Path, timeout: float = 1.0) -> bool:
     proc = subprocess.run(
         [sys.executable, "-c", _LOCK_PROBE, str(index_path), str(timeout)],
         capture_output=True,
-        timeout=120,
+        timeout=CHILD_TIMEOUT_SECONDS,
         check=False,
     )
     if proc.returncode not in (0, 3):

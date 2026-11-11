@@ -9,7 +9,6 @@ rewrites what is already on disk.
 from __future__ import annotations
 
 import fnmatch
-import subprocess
 from pathlib import Path
 
 import pandas as pd
@@ -30,7 +29,7 @@ from mosaic.core.pipeline.tracking_roots import (
 )
 from mosaic.core.pipeline.tracks_raw_index import iter_track_files
 
-from tests.helpers import SOURCE_ROOT, write_mpeg4_mp4
+from tests.helpers import SOURCE_ROOT, run_child, write_mpeg4_mp4
 
 
 # --- The registry ------------------------------------------------------------
@@ -105,11 +104,8 @@ def test_no_module_spells_the_tracker_root_path_itself() -> None:
     rejects is duplication and duplication is invisible to a passing test. The
     registry module is excluded -- it is where the string is allowed to live.
     """
-    hits = subprocess.run(
-        ["grep", "-rn", '"_tracking/', str(SOURCE_ROOT)],
-        capture_output=True,
-        text=True,
-        check=False,
+    hits = run_child(
+        ["grep", "-rn", '"_tracking/', str(SOURCE_ROOT)]
     ).stdout.splitlines()
     stray = [line for line in hits if "tracking_roots.py" not in line]
     assert not stray, (

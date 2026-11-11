@@ -45,6 +45,7 @@ from mosaic.tracking.sleap.params import SleapParams
 from mosaic.tracking.sleap.run import SLEAP_ENV
 
 from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
     cancel_when,
     index_media_sequence,
     install_fake_litpose,
@@ -588,6 +589,7 @@ def test_a_tool_without_a_probe_is_never_probed(
         ],
         check=True,
         capture_output=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
 
     refuse_undecodable_codec(

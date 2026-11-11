@@ -20,7 +20,7 @@ from mosaic.core.pipeline.graph import (
     request_status_wire,
 )
 from mosaic.runlog import JsonlRunLog, run_log_path
-from tests.helpers import SLEEPER_COMMAND, exited_pid
+from tests.helpers import CHILD_TIMEOUT_SECONDS, SLEEPER_COMMAND, exited_pid
 
 
 def _log(base: Path, execution_id: str) -> JsonlRunLog:
@@ -251,7 +251,7 @@ def test_a_wait_returns_when_a_request_turns_orphaned(tmp_path: Path) -> None:
         def lose_the_process(count: int) -> None:
             if count == 2:
                 step.kill()
-                _ = step.wait()
+                _ = step.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
         clock.on_sleep = lose_the_process
 
@@ -264,7 +264,7 @@ def test_a_wait_returns_when_a_request_turns_orphaned(tmp_path: Path) -> None:
         )
     finally:
         step.kill()
-        _ = step.wait()
+        _ = step.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
     assert len(clock.slept) == 2
     assert report.verdict == "orphaned"

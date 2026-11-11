@@ -37,6 +37,7 @@ from mosaic.core.pipeline.joined_export import (
 from mosaic.core.scope import Scope
 from tests.helpers.datasets import make_dataset
 from tests.helpers.environment import require_ffmpeg
+from tests.helpers.processes import CHILD_TIMEOUT_SECONDS
 
 
 def _shade_for_name(name: str) -> int:
@@ -125,6 +126,7 @@ def write_h264_mp4(
         input=payload,
         check=True,
         capture_output=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
 
 

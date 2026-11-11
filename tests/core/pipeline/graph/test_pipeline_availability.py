@@ -11,7 +11,6 @@ installation meets. Their outcome does not depend on the packages installed here
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -35,6 +34,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.graph import validate as validate_module
 from mosaic.optional_dependency import Prerequisite, unmet
+from tests.helpers import run_child
 
 type Document = dict[str, object]
 
@@ -130,9 +130,7 @@ def test_building_the_catalog_imports_none_of_the_modules_it_checks() -> None:
         f"print(sorted(set({checked!r}) & set(sys.modules)))\n"
     )
 
-    proc = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=False
-    )
+    proc = run_child([sys.executable, "-c", script])
 
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "[]"

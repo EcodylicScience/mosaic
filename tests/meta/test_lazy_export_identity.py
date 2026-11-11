@@ -13,12 +13,11 @@ without an edit here.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 
 import pytest
 
-from tests.helpers import SOURCE_ROOT, package_of
+from tests.helpers import SOURCE_ROOT, package_of, run_child
 
 LAZY_PACKAGES = tuple(
     sorted(
@@ -55,12 +54,7 @@ def test_the_lazy_packages_are_found() -> None:
 @pytest.mark.parametrize("package", LAZY_PACKAGES)
 def test_every_public_name_is_the_object_its_table_names(package: str) -> None:
     """No public name equals a submodule basename, and each resolves to its source."""
-    completed = subprocess.run(
-        [sys.executable, "-c", _CHECK.format(package=package)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = run_child([sys.executable, "-c", _CHECK.format(package=package)])
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "shadowed=[] rebound=[]", (
         f"{package}: a public name in 'shadowed' is also a submodule basename. "

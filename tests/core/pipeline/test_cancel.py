@@ -42,6 +42,7 @@ from mosaic.core.pipeline.graph import (
 from mosaic.core.pipeline.markers import process_running
 from mosaic.runlog import JsonlRunLog, new_execution_id, read_run, run_log_dir
 from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
     SLEEPER_COMMAND,
     add_tracks_variant,
     chain_recipe,
@@ -89,7 +90,7 @@ def sleeper() -> Iterator[subprocess.Popen[bytes]]:
     process = subprocess.Popen([*SLEEPER_COMMAND, "600"], stdin=subprocess.DEVNULL)
     yield process
     process.kill()
-    _ = process.wait()
+    _ = process.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
 
 def _start(
@@ -269,7 +270,7 @@ def test_a_detached_request_is_cancelled_through_its_driver(
     finally:
         if driver.poll() is None:
             driver.kill()
-            _ = driver.wait()
+            _ = driver.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
     log = driver_log_path(tracked.base_dir, submitted.request_id).read_text()
     assert f"step speed exited with code {-signal.SIGTERM}" in log

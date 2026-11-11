@@ -15,13 +15,11 @@ not: same words, same geometry, different colors.
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from xml.etree import ElementTree
 
 import pytest
 
-from tests.helpers import REPO_ROOT
+from tests.helpers import REPO_ROOT, run_fresh
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 ASSETS = REPO_ROOT / "docs" / "assets"
@@ -118,14 +116,7 @@ def registry_sizes() -> dict[str, int]:
     A fresh interpreter reports what the README is claiming: the registry a user
     gets, before any test has added to it.
     """
-    completed = subprocess.run(
-        [sys.executable, "-c", COUNT_REGISTRIES],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=REPO_ROOT,
-    )
-    counts: dict[str, int] = json.loads(completed.stdout)
+    counts: dict[str, int] = json.loads(run_fresh(COUNT_REGISTRIES, cwd=REPO_ROOT))
     return counts
 
 

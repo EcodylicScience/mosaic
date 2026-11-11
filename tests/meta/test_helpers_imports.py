@@ -9,10 +9,9 @@ that a CI job builds.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 
-from tests.helpers import REPO_ROOT
+from tests.helpers import REPO_ROOT, run_child
 
 _FEATURE_LIBRARY = "mosaic.behavior.feature_library"
 
@@ -37,12 +36,8 @@ def test_importing_the_helpers_does_not_import_the_feature_library() -> None:
     feature library already. ``-c`` places the working directory, the repository
     root, first on ``sys.path``.
     """
-    completed = subprocess.run(
-        [sys.executable, "-c", _REPORT_FEATURE_LIBRARY_MODULES],
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-        check=False,
+    completed = run_child(
+        [sys.executable, "-c", _REPORT_FEATURE_LIBRARY_MODULES], cwd=REPO_ROOT
     )
 
     assert completed.returncode == 0, completed.stderr

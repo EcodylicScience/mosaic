@@ -46,7 +46,7 @@ from mosaic.core.pipeline.markers import (
     write_phase_marker,
 )
 from mosaic.runlog import JsonlRunLog, run_log_path
-from tests.helpers import wait_for
+from tests.helpers import CHILD_TIMEOUT_SECONDS, wait_for
 
 UTC = datetime.timezone.utc
 
@@ -491,4 +491,4 @@ def test_an_exited_child_that_is_not_reaped_is_not_running() -> None:
         )
         assert not process_running_since(child.pid, "not-a-timestamp")
     finally:
-        _ = child.wait()
+        _ = child.wait(timeout=CHILD_TIMEOUT_SECONDS)

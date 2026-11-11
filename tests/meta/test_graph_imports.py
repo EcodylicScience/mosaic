@@ -17,13 +17,12 @@ nothing. Both are easy to undo by accident while editing.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 import mosaic.core.pipeline.graph as graph_pkg
 
-from tests.helpers import imports_of, run_fresh
+from tests.helpers import imports_of, run_child, run_fresh
 
 _REGISTRY_MODULE = "mosaic.behavior.feature_library"
 
@@ -52,11 +51,7 @@ print("OK")
 
 def test_importing_the_graph_package_does_not_import_the_feature_library() -> None:
     """A fresh interpreter must import the package with the registry blocked."""
-    proc = subprocess.run(
-        [sys.executable, "-c", _IMPORT_WITH_REGISTRY_BLOCKED],
-        capture_output=True,
-        text=True,
-    )
+    proc = run_child([sys.executable, "-c", _IMPORT_WITH_REGISTRY_BLOCKED])
     assert proc.returncode == 0, (
         "importing mosaic.core.pipeline.graph reaches the feature library, which "
         "puts a multi-second floor on every read path.\n"

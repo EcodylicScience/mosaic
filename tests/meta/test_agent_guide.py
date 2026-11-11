@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 import shutil
-import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -18,7 +17,7 @@ from typing import Final
 import pytest
 
 from mosaic.agent import SITE_URL
-from tests.helpers import REPO_ROOT, SOURCE_ROOT
+from tests.helpers import REPO_ROOT, SOURCE_ROOT, run_child
 
 GUIDE: Final = SOURCE_ROOT / "agent" / "SKILL.md"
 SITE_LINK: Final = re.compile(re.escape(SITE_URL) + r"[^\s)>\]`\"']*")
@@ -47,12 +46,9 @@ def build_inputs() -> list[str]:
     """The tracked and unignored files a wheel is built from, relative to the root."""
     if shutil.which("git") is None:
         pytest.skip("git is not on PATH")
-    completed = subprocess.run(
+    completed = run_child(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
         + ["--", *BUILD_INPUTS],
-        capture_output=True,
-        text=True,
-        check=False,
         cwd=REPO_ROOT,
     )
     if completed.returncode != 0:
@@ -68,11 +64,7 @@ def wheel_command(source: Path, dist: Path) -> list[str]:
     uv = shutil.which("uv")
     if uv is not None:
         return [uv, "build", "--wheel", "--out-dir", str(dist), str(source)]
-    probe = subprocess.run(
-        [sys.executable, "-m", "pip", "--version"],
-        capture_output=True,
-        check=False,
-    )
+    probe = run_child([sys.executable, "-m", "pip", "--version"])
     if probe.returncode != 0:
         pytest.skip("neither uv nor pip is available to build a wheel")
     return [sys.executable, "-m", "pip", "wheel", "--no-deps"] + [
@@ -91,9 +83,7 @@ def test_the_wheel_ships_the_guide_and_no_developer_guide(tmp_path: Path) -> Non
         target.parent.mkdir(parents=True, exist_ok=True)
         _ = shutil.copy2(REPO_ROOT / name, target)
     dist = tmp_path / "dist"
-    completed = subprocess.run(
-        wheel_command(source, dist), capture_output=True, text=True, check=False
-    )
+    completed = run_child(wheel_command(source, dist))
     assert completed.returncode == 0, completed.stderr[-2000:]
     (wheel,) = dist.glob("mosaic_behavior-*.whl")
     with zipfile.ZipFile(wheel) as archive:

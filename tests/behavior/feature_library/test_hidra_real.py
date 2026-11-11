@@ -32,6 +32,7 @@ from mosaic.behavior.feature_library.hidra_feature import (
     weights_dir,
 )
 from mosaic.core.pipeline.toolenv import locate_tool, subprocess_env
+from tests.helpers import CHILD_TIMEOUT_SECONDS
 
 pytestmark = pytest.mark.hidra
 
@@ -139,6 +140,7 @@ def _direct_run(clip: pd.DataFrame, models: Path, root: Path) -> pd.DataFrame:
         env=subprocess_env({"HIDRA_MODELS_DIR": str(models)}),
         check=True,
         capture_output=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
     return pd.read_parquet(out / "clip.frames.parquet")
 

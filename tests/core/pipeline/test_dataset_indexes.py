@@ -8,7 +8,6 @@ are in it.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -27,6 +26,7 @@ from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from tests.helpers import (
     inside_a_virtualenv,
     make_dataset,
+    run_child,
     runs_in_an_external_environment,
 )
 
@@ -266,9 +266,7 @@ def test_the_core_indexes_are_reconcilable_in_a_fresh_interpreter() -> None:
         "print([k for k in keys if reconcilable_index(k) is None] or 'all')"
     )
 
-    completed = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
-    )
+    completed = run_child([sys.executable, "-c", probe])
 
     assert completed.stdout.strip() == "all", completed.stderr
 

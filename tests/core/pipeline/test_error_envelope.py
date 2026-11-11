@@ -7,8 +7,6 @@ keeps the base that its callers already catch it by.
 
 from __future__ import annotations
 
-import subprocess
-import sys
 
 import pytest
 
@@ -21,6 +19,7 @@ from mosaic.core.pipeline.graph.wire import Problem
 from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal, ToolUnavailable
 from mosaic.optional_dependency import MissingOptionalDependency
+from tests.helpers import run_fresh
 
 
 def test_a_step_refusal_is_refused_with_its_reason_step_and_detail() -> None:
@@ -169,12 +168,9 @@ def test_the_optional_dependency_leaf_loads_no_pydantic() -> None:
         "loaded = sorted(m for m in sys.modules if m.startswith(('mosaic', 'pydantic')))\n"
         "print(loaded)"
     )
-    completed = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
+    loaded = run_fresh(code)
 
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout.strip() == repr(
+    assert loaded == repr(
         [
             "mosaic",
             "mosaic.core",

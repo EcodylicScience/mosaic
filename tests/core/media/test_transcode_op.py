@@ -25,7 +25,12 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import to_safe_name
 from mosaic.core.media.facts_columns import MEDIA_INDEX_COLUMNS, row_to_facts
 from mosaic.core.scope import Scope
-from tests.helpers import entry_error_lines, resolved_scope
+from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
+    entry_error_lines,
+    resolved_scope,
+    run_fresh,
+)
 from mosaic.core.pipeline.media_index import (
     MediaIndexScope,
     frame_from_rows,
@@ -86,7 +91,7 @@ def _write_analysis_required_mp4(path: Path, duration: str = "2") -> None:
         "libx264",
         str(path),
     ]
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, timeout=CHILD_TIMEOUT_SECONDS)
     if result.returncode != 0 or not path.exists():
         pytest.skip("this environment could not produce an mp4 fixture with ffmpeg")
 
@@ -785,13 +790,7 @@ def test_the_recipe_hash_is_stable_across_processes() -> None:
         "ANALYSIS_ENCODING, CHROME_149, media_thresholds()))\n"
     )
     digests = {
-        subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            check=True,
-            env={**os.environ, "PYTHONHASHSEED": seed},
-        ).stdout.strip()
+        run_fresh(script, env={**os.environ, "PYTHONHASHSEED": seed})
         for seed in ("0", "1", "random")
     }
     assert len(digests) == 1

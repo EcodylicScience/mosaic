@@ -32,7 +32,6 @@ a built environment is marked with the job that builds it.
 from __future__ import annotations
 
 import re
-import subprocess
 import tomllib
 from pathlib import Path, PurePosixPath
 from types import ModuleType
@@ -63,6 +62,7 @@ from tests.helpers import (
     inside_a_virtualenv,
     project_requirements,
     requirements_reaching,
+    run_child,
     runs_in_an_external_environment,
 )
 
@@ -442,13 +442,8 @@ def test_mosaic_is_not_importable_in_a_built_environment(
         "found = importlib.util.find_spec('mosaic');"
         "sys.stdout.write('present' if found else 'absent')"
     )
-    completed = subprocess.run(
-        [*invocation, "-c", report],
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-        env=subprocess_env(),
-        check=False,
+    completed = run_child(
+        [*invocation, "-c", report], cwd=tmp_path, env=subprocess_env()
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip().splitlines()[-1] == "absent", (

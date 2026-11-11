@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import ClassVar, override
@@ -41,6 +42,7 @@ from tests.helpers import (
     add_tracks_table,
     calms21_dataset,
     make_dataset,
+    run_child,
     track_table,
     tree_snapshot,
     write_listed_entries,
@@ -525,14 +527,7 @@ def test_the_label_registry_fills_without_an_explicit_import() -> None:
     claims to test. The property is about a *fresh* interpreter that has only
     ever imported ``mosaic.core``, which is what the control plane does.
     """
-    import subprocess
-    import sys
-
-    proc = subprocess.run(
-        [sys.executable, "-c", _FILL_FROM_CORE_ALONE],
-        capture_output=True,
-        text=True,
-    )
+    proc = run_child([sys.executable, "-c", _FILL_FROM_CORE_ALONE])
 
     assert proc.returncode == 0, f"stdout: {proc.stdout}\nstderr: {proc.stderr}"
     assert "OK" in proc.stdout

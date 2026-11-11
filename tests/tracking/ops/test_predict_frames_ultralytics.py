@@ -39,7 +39,7 @@ from mosaic.tracking.external.runner.ultralytics_protocol import (
     request_columns,
 )
 from mosaic.tracking.pose_training.ultralytics_infer import run_predict_images_tool
-from tests.helpers import write_marked_images
+from tests.helpers import CHILD_TIMEOUT_SECONDS, write_marked_images
 
 pytestmark = pytest.mark.tracker
 
@@ -91,6 +91,7 @@ def _built_weights(argv: list[str], configuration: str, tmp_path: Path) -> Path:
         check=True,
         capture_output=True,
         text=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
     return weights
 

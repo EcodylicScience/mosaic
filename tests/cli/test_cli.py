@@ -19,7 +19,13 @@ from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
-from tests.helpers import SLEEPER_COMMAND, hide_package, invoke_json, speed_recipe
+from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
+    SLEEPER_COMMAND,
+    hide_package,
+    invoke_json,
+    speed_recipe,
+)
 
 runner = CliRunner()
 
@@ -306,7 +312,7 @@ def test_cancel_on_a_live_process_leaves_the_run_log_alone(
         assert sleeper.wait(timeout=10) == -signal.SIGTERM
     finally:
         sleeper.kill()
-        _ = sleeper.wait()
+        _ = sleeper.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
     snapshot = read_run(run_log_dir(ds.base_dir), execution_id)
     assert snapshot is not None
@@ -456,7 +462,7 @@ def test_pipeline_run_recipe_exits_130_on_sigterm(
     finally:
         if driver.poll() is None:
             driver.kill()
-            _ = driver.wait()
+            _ = driver.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
     (summary,) = list_requests(ds.base_dir).items
     request = load_request(ds.base_dir, summary.request_id)

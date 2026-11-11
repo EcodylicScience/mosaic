@@ -9,7 +9,6 @@ result is published atomically, and that nothing is left behind either way.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -36,6 +35,7 @@ from mosaic.tracking.sleap.labels import (
     write_slp,
 )
 from mosaic.tracking.sleap.run import SleapError
+from tests.helpers import run_child
 
 SCHEMA = KeypointSchema(names=("nose", "thorax", "tail"), skeleton=((0, 1), (1, 2)))
 
@@ -239,13 +239,7 @@ def test_each_track_of_the_slp_is_named_by_its_track_id(
 
     def run(argv: Sequence[str], **kw: object) -> tuple[str, str, int]:
         snippet = argv[argv.index("-c") + 1]
-        done = subprocess.run(
-            [sys.executable, "-c", snippet, *argv[-3:]],
-            cwd=fake,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        done = run_child([sys.executable, "-c", snippet, *argv[-3:]], cwd=fake)
         return (done.stdout, done.stderr, done.returncode)
 
     monkeypatch.setattr(sleap_run, "run_supervised", run)

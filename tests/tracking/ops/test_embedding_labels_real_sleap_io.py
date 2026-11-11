@@ -27,7 +27,7 @@ from mosaic.tracking.sleap.embedding_windows import (
 from mosaic.tracking.sleap.labels import sleap_label_files
 from mosaic.tracking.sleap.probe import probe_sleap
 from mosaic.tracking.sleap.run import SleapNotFoundError, sleap_invocation
-from tests.helpers import write_mpeg4_mp4
+from tests.helpers import CHILD_TIMEOUT_SECONDS, write_mpeg4_mp4
 
 _PREDICTIONS_SNIPPET = """
 import sys
@@ -162,6 +162,7 @@ def _read_back(video: Path, shards: Sequence[Path]) -> _ReadBack:
         check=True,
         capture_output=True,
         text=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
     return _ReadBack.model_validate_json(completed.stdout.strip().splitlines()[-1])
 
@@ -207,6 +208,7 @@ def _source(
         check=True,
         capture_output=True,
         text=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
     source = EmbeddingSource(
         predictions=predictions, windows=_windows(entry_key, frames)

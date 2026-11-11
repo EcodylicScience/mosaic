@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,7 +23,7 @@ from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.parallelism import ParallelLimits
 from mosaic.core.pipeline.graph import CleanupPolicy
-from tests.helpers import TWO_CARDS, install_fake_nvidia_smi, make_dataset
+from tests.helpers import TWO_CARDS, install_fake_nvidia_smi, make_dataset, run_child
 
 runner = CliRunner()
 
@@ -40,12 +39,7 @@ def frontmatter(text: str) -> dict[str, object]:
 
 def test_python_dash_m_mosaic_runs_the_cli() -> None:
     """The stub and the pointer fall back on this command when no script exists."""
-    completed = subprocess.run(
-        [sys.executable, "-m", "mosaic", "agent", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    completed = run_child([sys.executable, "-m", "mosaic", "agent", "--help"])
     assert completed.returncode == 0, completed.stderr
     assert "install" in completed.stdout
 

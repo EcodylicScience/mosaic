@@ -9,22 +9,108 @@ test process is checked by its process id instead.
 ``line_children`` closes when the test ends. :func:`cancel_when` fires a cancel
 token from another thread once a condition is true. :data:`SLEEPER_COMMAND` stands
 in for a long step.
+
+:data:`CHILD_TIMEOUT_SECONDS` is the bound on every wait for a child process to
+finish, and :func:`run_child` runs a command under it. :func:`read_line` reads one
+line of a child's output under it. Every wait for a child takes a ``timeout``, this
+constant unless the test needs a shorter one.
 """
 
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Final
 
 import pytest
 
 from mosaic.core.pipeline.job import CancelToken
 from mosaic.core.pipeline.subprocess_util import LineChild
+
+CHILD_TIMEOUT_SECONDS: Final[float] = 120.0
+"""The longest a test waits for a child process to finish.
+
+A cold import of the library takes seconds on an idle machine, and several
+times that on a loaded one. A child that outlasts the bound is hung, and its
+test fails instead of holding the run. ``pytest-timeout`` is not a dependency,
+so this bound is the only one.
+"""
+
+
+def read_line[T: (str, bytes)](
+    process: subprocess.Popen[T], timeout: float = CHILD_TIMEOUT_SECONDS
+) -> T:
+    """Read one line of *process*'s standard output, which the test piped.
+
+    Args:
+        process: A child started with ``stdout=subprocess.PIPE``.
+        timeout: Seconds the child has to write the line.
+
+    Returns:
+        The line, with its newline, or an empty value when the child closed its
+        output without writing one.
+
+    Raises:
+        AssertionError: The child wrote no line within *timeout*. The child is
+            killed and reaped and its output closed first, and the message names
+            the command and the timeout.
+    """
+    stream = process.stdout
+    assert stream is not None, "the child was not started with stdout=subprocess.PIPE"
+    lines: queue.Queue[T] = queue.Queue(maxsize=1)
+    reader = threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True)
+    reader.start()
+    try:
+        return lines.get(timeout=timeout)
+    except queue.Empty:
+        process.kill()
+        _ = process.wait(timeout=CHILD_TIMEOUT_SECONDS)
+        reader.join(timeout=CHILD_TIMEOUT_SECONDS)
+        stream.close()
+        message = f"a child process wrote no line within {timeout} s: {process.args!r}"
+        raise AssertionError(message) from None
+
+
+def run_child(
+    argv: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout: float = CHILD_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    """Run *argv* to completion and return the process with its output as text.
+
+    The exit status is the caller's to check.
+
+    Args:
+        argv: The command and its arguments.
+        cwd: The working directory of the child, this process's by default.
+        env: The environment of the child, this process's by default.
+        timeout: Seconds the command has to finish. A longer run is killed.
+
+    Raises:
+        AssertionError: The command runs past *timeout*. The message names the
+            command and the timeout.
+    """
+    try:
+        return subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as expired:
+        message = f"a child process did not finish within {timeout} s: {list(argv)!r}"
+        raise AssertionError(message) from expired
 
 
 SLEEPER_COMMAND: tuple[str, ...] = (
@@ -58,7 +144,7 @@ def appender_program(path: Path | str) -> str:
 def exited_pid() -> int:
     """Return the pid of a child process that has exited and been reaped."""
     finished = subprocess.Popen([sys.executable, "-c", "pass"])
-    _ = finished.wait()
+    _ = finished.wait(timeout=CHILD_TIMEOUT_SECONDS)
     return finished.pid
 
 

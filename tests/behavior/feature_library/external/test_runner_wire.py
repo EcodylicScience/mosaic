@@ -36,10 +36,12 @@ from mosaic.behavior.feature_library.external.runner_wire import (
 from mosaic.core.pipeline.subprocess_util import LineChild, supervised_popen_kwargs
 from mosaic.core.pipeline.toolenv import subprocess_env
 from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
     FAKE_HANDLERS,
     RUNNER_LINE_SECONDS,
     EventRecorder,
     LineChildren,
+    read_line,
     import_runner_program,
     write_fake_runner,
 )
@@ -364,7 +366,7 @@ def test_a_runner_whose_reader_is_gone_exits(tmp_path: Path) -> None:
     stdin, stdout = process.stdin, process.stdout
     assert stdin is not None and stdout is not None
     try:
-        assert REPLIES.validate_json(stdout.readline()) == Ready(
+        assert REPLIES.validate_json(read_line(process)) == Ready(
             tool="fake", version="1.0"
         )
         stdout.close()
@@ -379,7 +381,7 @@ def test_a_runner_whose_reader_is_gone_exits(tmp_path: Path) -> None:
     finally:
         if process.poll() is None:
             process.kill()
-            _ = process.wait()
+            _ = process.wait(timeout=CHILD_TIMEOUT_SECONDS)
         stdin.close()
 
 

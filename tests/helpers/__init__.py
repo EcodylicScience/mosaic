@@ -63,7 +63,8 @@ What lives where:
 - ``index_locks`` probes from a child process whether an index's lock is held.
 - ``processes`` contains a child program that appends to a file, a sleeper
   command, checks of whether a process stopped writing to it or exited, the line
-  children of a test, and a cancel fired once a condition is true.
+  children of a test, a cancel fired once a condition is true, the timeout on every
+  wait for a child, a command run under it, and a line read from a child under it.
 - ``media`` -- media files, media-index rows, transcode derivatives.
 - ``variants`` contains media variant files, their index rows and recorded
   recipes, and a count of the index reads that a variant's consumers make.
@@ -224,6 +225,7 @@ from tests.helpers.guide_recipes import (
 )
 from tests.helpers.mock_dataset import MockDataset
 from tests.helpers.processes import (
+    CHILD_TIMEOUT_SECONDS,
     SLEEPER_COMMAND,
     LineChildren,
     appender_program,
@@ -231,6 +233,8 @@ from tests.helpers.processes import (
     assert_stopped_writing,
     cancel_when,
     exited_pid,
+    read_line,
+    run_child,
     wait_for,
 )
 from tests.helpers.recipes import (
@@ -477,6 +481,7 @@ __all__ = [
     "with_params",
     "CONSUMER_OWNED",
     "CONVERT_TRACKS_STEP",
+    "CHILD_TIMEOUT_SECONDS",
     "CI_FERAL_MODULES",
     "CI_LIGHTNING_ACTION_MODULES",
     "CI_IDENTITY_MODULES",
@@ -702,6 +707,8 @@ __all__ = [
     "revision_file",
     "rewrite_as_older_prepared_index",
     "rule_reaching_op_params",
+    "read_line",
+    "run_child",
     "run_fresh",
     "run_id_digest",
     "record_open_attempt",

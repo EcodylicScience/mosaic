@@ -51,6 +51,7 @@ from mosaic.core.pipeline.subprocess_util import (
 )
 from mosaic.core.pipeline.toolenv import subprocess_env
 from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
     LineChildren,
     appender_program,
     assert_stopped_writing,
@@ -840,7 +841,7 @@ def test_a_tool_keeps_the_card_after_its_step_is_killed(tmp_path: Path) -> None:
         tool_pid = int(ready.read_text())
 
         stand_in.kill()
-        _ = stand_in.wait()
+        _ = stand_in.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
         assert not _card_is_free(), "the tool lost the card with its step"
         _ = release.write_text("")
@@ -849,7 +850,7 @@ def test_a_tool_keeps_the_card_after_its_step_is_killed(tmp_path: Path) -> None:
         _ = release.write_text("")
         if stand_in.poll() is None:
             stand_in.kill()
-            _ = stand_in.wait()
+            _ = stand_in.wait(timeout=CHILD_TIMEOUT_SECONDS)
         if tool_pid:
             try:
                 os.kill(tool_pid, signal.SIGKILL)

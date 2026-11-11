@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -46,7 +45,7 @@ from mosaic.core.pipeline.preprocess_layout import (
     media_variant_run_root,
 )
 
-from tests.helpers import EVEN_STORE_TIMING, add_media_variant, make_dataset
+from tests.helpers import EVEN_STORE_TIMING, add_media_variant, make_dataset, run_child
 
 _RUN = "preprocess.0.1-aaaaaaaaaa"
 
@@ -250,9 +249,7 @@ def test_loading_a_dataset_registers_the_index() -> None:
         f"print(reconcilable_index({PREPROCESS_KIND!r}) is not None)"
     )
 
-    completed = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
-    )
+    completed = run_child([sys.executable, "-c", probe])
 
     assert completed.stdout.strip() == "True", completed.stderr
 

@@ -35,6 +35,7 @@ from mosaic.core.pipeline.graph import submit_request
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
+    CHILD_TIMEOUT_SECONDS,
     add_tracks_variant,
     chain_recipe,
     make_dataset,
@@ -45,7 +46,7 @@ VARIANT = "convert-trex.0.2-1111111111"
 
 STORAGE = "speed-angvel__from__tracks"
 
-RESPONSE_SECONDS: Final = 120.0
+RESPONSE_SECONDS: Final = CHILD_TIMEOUT_SECONDS
 """The longest one response takes, the first catalog build included."""
 
 REQUEST_SECONDS: Final = 360.0

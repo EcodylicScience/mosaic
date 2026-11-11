@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from mosaic.core.media.video_io import get_video_metadata, open_frame_reader
-from tests.helpers import write_mpeg4_mp4
+from tests.helpers import CHILD_TIMEOUT_SECONDS, write_mpeg4_mp4
 
 # Both tests here shell out to the toolchain directly rather than reaching it
 # through a guarded helper -- `_write_raw_h264` invokes `ffmpeg` itself, because a
@@ -34,6 +34,7 @@ def _write_raw_h264(path: Path, n_frames: int = 15) -> None:
         ],
         check=True,
         capture_output=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
 
 

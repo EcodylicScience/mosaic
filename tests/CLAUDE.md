@@ -39,6 +39,8 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
 - `test_optional_dependency_messages.py`: an install hint or `require` call naming
   an undeclared extra, or a self-referential extra that does not resolve.
 - `test_helpers_imports.py`: `import tests.helpers` importing the feature library.
+- `test_fresh_interpreter.py`: `run_fresh` not failing a child that outlives its
+  timeout.
 - `test_graph_imports.py`: `core.pipeline.graph` importing the feature library or a
   submodule at import, an exported name that does not resolve, or a module other
   than `resolve` importing `FEATURES`.

@@ -18,8 +18,9 @@ unnoticed here until something else imported it.
 
 from __future__ import annotations
 
-import subprocess
 import sys
+
+from tests.helpers import run_child
 
 _BLOCK_TORCH_AND_IMPORT = """
 import importlib.abc
@@ -61,11 +62,7 @@ print("OK")
 
 def test_behavior_imports_without_torch() -> None:
     """Importing the behavior package with torch blocked must still succeed."""
-    proc = subprocess.run(
-        [sys.executable, "-c", _BLOCK_TORCH_AND_IMPORT],
-        capture_output=True,
-        text=True,
-    )
+    proc = run_child([sys.executable, "-c", _BLOCK_TORCH_AND_IMPORT])
     assert proc.returncode == 0, (
         f"importing mosaic.behavior requires torch.\n"
         f"stdout: {proc.stdout}\nstderr: {proc.stderr}"

@@ -51,6 +51,7 @@ from mosaic.core.pipeline.markers import process_running
 from mosaic.runlog import JsonlRunLog, read_run, run_log_dir, run_log_path
 from tests.helpers import (
     CHAIN_RECIPE,
+    CHILD_TIMEOUT_SECONDS,
     SLEEPER_COMMAND,
     add_tracks_variant,
     cancel_when,
@@ -532,7 +533,7 @@ def test_a_step_process_named_by_a_stale_lease_refuses_a_resume_until_it_ends(
             _ = run_request(tracked, submitted)
     finally:
         step.kill()
-        _ = step.wait()
+        _ = step.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
     resumed = run_request(tracked, submitted)
 
@@ -626,7 +627,7 @@ def test_a_killed_driver_reads_orphaned_once_its_step_ends(
         "the driver never started the first step",
     )
     driver.kill()
-    _ = driver.wait()
+    _ = driver.wait(timeout=CHILD_TIMEOUT_SECONDS)
 
     # The killed driver's step runs in a session of its own. The request is not
     # orphaned while it runs, and a resume is refused until it has ended.

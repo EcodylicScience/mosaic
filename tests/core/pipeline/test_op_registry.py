@@ -7,6 +7,7 @@ imported, so this module registers them before asserting on their domain.
 from __future__ import annotations
 
 from mosaic.tracking import register_ops
+from tests.helpers import run_fresh
 
 register_ops()
 
@@ -67,9 +68,6 @@ def test_describe_op_includes_domain():
 
 
 def test_register_ops_populates_registry_in_a_fresh_interpreter():
-    import subprocess
-    import sys
-
     script = (
         "from mosaic.core.pipeline.ops import list_ops\n"
         "early = {e['kind'] for e in list_ops(domain='tracking')}\n"
@@ -79,10 +77,7 @@ def test_register_ops_populates_registry_in_a_fresh_interpreter():
         "kinds = {e['kind'] for e in list_ops(domain='tracking')}\n"
         "assert 'infer-pose' in kinds and 'trex' in kinds, sorted(kinds)\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
+    _ = run_fresh(script)
 
 
 CORE_MEDIA_OPS = ("export-joined", "export-store", "preprocess", "transcode")
@@ -97,24 +92,15 @@ CORE_OPS = (*CORE_CONVERT_OPS, *CORE_MEDIA_OPS)
 
 def test_registered_op_registers_the_core_ops_in_a_fresh_interpreter():
     """A lookup succeeds without importing the media op modules first."""
-    import subprocess
-    import sys
-
     script = (
         "from mosaic.core.pipeline.ops import registered_op\n"
         f"for kind in {CORE_OPS!r}:\n"
         "    assert registered_op(kind).kind == kind, kind\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
+    _ = run_fresh(script)
 
 
 def test_register_ops_registers_the_core_ops_in_a_fresh_interpreter():
-    import subprocess
-    import sys
-
     script = (
         "from mosaic.core.pipeline.ops import OPS\n"
         "from mosaic.tracking import register_ops\n"
@@ -122,17 +108,11 @@ def test_register_ops_registers_the_core_ops_in_a_fresh_interpreter():
         f"missing = [k for k in {CORE_OPS!r} if k not in OPS]\n"
         "assert not missing, missing\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
+    _ = run_fresh(script)
 
 
 def test_list_ops_and_op_resource_class_register_the_core_ops_in_a_fresh_interpreter():
     """``preprocess`` is placed on the heavy lane before any media module loads."""
-    import subprocess
-    import sys
-
     script = (
         "from mosaic.core.pipeline.ops import list_ops, op_resource_class\n"
         "assert op_resource_class('preprocess') == 'heavy'\n"
@@ -140,7 +120,4 @@ def test_list_ops_and_op_resource_class_register_the_core_ops_in_a_fresh_interpr
         f"missing = [k for k in {CORE_OPS!r} if k not in kinds]\n"
         "assert not missing, missing\n"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
+    _ = run_fresh(script)

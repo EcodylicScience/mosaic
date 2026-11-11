@@ -9,7 +9,6 @@ case here runs in a subprocess where constructing a dataset raises.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 
 import pytest
@@ -32,6 +31,7 @@ from mosaic.core.pipeline.graph import (
     possible_connections,
     resolve_emits,
 )
+from tests.helpers import run_child
 
 # --- hand-built declarations, so the unit tests need no registry -------------
 
@@ -505,11 +505,7 @@ def test_a_mismatched_join_is_refused_with_no_dataset_constructed() -> None:
     blocked module would prove only that the package was imported, which is not
     the claim. The claim is that no dataset is *opened* to answer this.
     """
-    proc = subprocess.run(
-        [sys.executable, "-c", _REFUSE_WITH_NO_DATASET],
-        capture_output=True,
-        text=True,
-    )
+    proc = run_child([sys.executable, "-c", _REFUSE_WITH_NO_DATASET])
     assert proc.returncode == 0, (
         f"answering a connection question opened a dataset.\n"
         f"stdout: {proc.stdout}\nstderr: {proc.stderr}"

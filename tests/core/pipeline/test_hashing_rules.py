@@ -13,8 +13,6 @@ import ast
 import csv
 import json
 import inspect
-import subprocess
-import sys
 import textwrap
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -51,6 +49,7 @@ from mosaic.core.pipeline.run import (
     compute_run_id,
 )
 from mosaic.core.scope import Scope
+from tests.helpers import run_fresh
 
 PIPELINE_DIR = Path(inspect.getfile(compute_run_id)).parent
 
@@ -342,14 +341,9 @@ _SET_PAYLOAD_PROBE = (
 
 
 def _digest_under_hash_seed(seed: str) -> str:
-    completed = subprocess.run(
-        [sys.executable, "-c", _SET_PAYLOAD_PROBE],
-        capture_output=True,
-        text=True,
-        check=True,
-        env={"PYTHONHASHSEED": seed, "PATH": "/usr/bin:/bin"},
+    return run_fresh(
+        _SET_PAYLOAD_PROBE, env={"PYTHONHASHSEED": seed, "PATH": "/usr/bin:/bin"}
     )
-    return completed.stdout.strip()
 
 
 def test_set_valued_identity_term_is_process_stable() -> None:

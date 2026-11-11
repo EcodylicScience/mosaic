@@ -62,6 +62,7 @@ from mosaic.core.scope import Scope
 from mosaic.tracking.common.scope import build_work_items
 from mosaic.tracking.common.tool_input import resolve_tool_inputs
 from tests.helpers import (
+    CHILD_TIMEOUT_SECONDS,
     EVEN_STORE_TIMING,
     add_media_sequence,
     add_transcode_derivative,
@@ -741,6 +742,7 @@ def _clip_at_rate(dest: Path, *, fps: int, timescale: int, frames: int) -> Media
             str(dest),
         ],
         check=True,
+        timeout=CHILD_TIMEOUT_SECONDS,
     )
     return probe_media(dest)
 

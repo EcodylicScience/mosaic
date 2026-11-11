@@ -20,8 +20,6 @@ has not registered is reported apart from one whose run cannot be established.
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -62,6 +60,7 @@ from tests.helpers import (
     install_fake_trex,
     install_fake_ultralytics,
     make_dataset,
+    run_fresh,
     set_tracks_cell,
     stub_join,
     write_litpose_model,
@@ -574,13 +573,8 @@ def test_a_row_whose_producer_is_not_registered_is_reported_apart(
     set_tracks_cell(ds, "media_frames", "")
     set_tracks_cell(ds, "frames_read", "")
 
-    completed = subprocess.run(
-        [sys.executable, "-c", _CORE_ONLY_BACKFILL, str(ds.manifest_path)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    reported = json.loads(completed.stdout.strip().splitlines()[-1])
+    output = run_fresh(_CORE_ONLY_BACKFILL, args=[str(ds.manifest_path)])
+    reported = json.loads(output.splitlines()[-1])
 
     assert reported["tracking"] is False, "the probe imported mosaic.tracking"
     assert reported["media"] == [0, 0]

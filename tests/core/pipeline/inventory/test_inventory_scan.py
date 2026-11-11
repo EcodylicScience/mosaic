@@ -8,8 +8,6 @@ registry. These pin the answer for the kinds ``core`` can report on by itself.
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +36,7 @@ from tests.helpers import (
     add_track_sequences,
     add_tracks_variant,
     make_dataset,
+    run_fresh,
 )
 
 STORAGE = "speed-angvel__from__tracks"
@@ -395,13 +394,7 @@ print(json.dumps({{
     "unavailable": sorted(found.unavailable_kinds),
 }}))
 """
-    completed = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    reported = json.loads(completed.stdout.strip().splitlines()[-1])
+    reported = json.loads(run_fresh(probe).splitlines()[-1])
 
     assert reported["records"] == 0
     assert reported["unavailable"] == ["tracker-run"]

@@ -42,7 +42,7 @@ from mosaic.behavior.feature_library.sequence_training import (
     sub_seed,
 )
 from mosaic.core.pipeline.types import InputStream
-from tests.helpers import write_templates_study
+from tests.helpers import run_child, write_templates_study
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -269,10 +269,8 @@ def _child(
     )
     inherited = os.environ.get("PYTHONPATH")
     path = os.pathsep.join([str(tmp_path), inherited] if inherited else [str(tmp_path)])
-    return subprocess.run(
+    return run_child(
         [sys.executable, "-c", textwrap.dedent(script)],
-        capture_output=True,
-        text=True,
         env={**os.environ, "PYTHONPATH": path},
     )
 

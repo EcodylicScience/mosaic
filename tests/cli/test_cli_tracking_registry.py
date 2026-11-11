@@ -35,6 +35,7 @@ from mosaic.tracking.trex.dataset_runs import (
     trex_index_path,
     trex_run_root,
 )
+from tests.helpers import run_child
 
 RUN_ID = "trex.0.1-aaaaaaaaaa"
 ENTRY = "g__vid1"
@@ -42,12 +43,7 @@ ENTRY = "g__vid1"
 
 def _cli(*args: str) -> subprocess.CompletedProcess[str]:
     """Run the mosaic CLI in a fresh interpreter."""
-    return subprocess.run(
-        [sys.executable, "-c", "from mosaic.cli import app; app()", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    return run_child([sys.executable, "-c", "from mosaic.cli import app; app()", *args])
 
 
 @pytest.fixture

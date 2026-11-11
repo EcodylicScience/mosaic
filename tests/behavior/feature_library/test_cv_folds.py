@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import mosaic
@@ -30,6 +28,7 @@ from mosaic.behavior.feature_library.helpers import (
     _cv_block_key,  # pyright: ignore[reportPrivateUsage]
     _cv_entry_key,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.helpers import run_fresh
 
 ENTRIES = [(f"g{i % 3}", f"seq{i:02d}") for i in range(23)]
 
@@ -73,14 +72,7 @@ class TestFoldAssignment:
         dealt: list[object] = []
         for hash_seed in ("1", "2"):
             env = {**os.environ, "PYTHONHASHSEED": hash_seed, "PYTHONPATH": source}
-            done = subprocess.run(
-                [sys.executable, "-c", program],
-                env=env,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            dealt.append(json.loads(done.stdout))
+            dealt.append(json.loads(run_fresh(program, env=env)))
 
         assert dealt[0] == dealt[1]
         expected = cv_fold_assignment(ENTRIES, 5, seed=2)
@@ -299,14 +291,7 @@ class TestBlockAssignment:
         dealt: list[object] = []
         for hash_seed in ("1", "2"):
             env = {**os.environ, "PYTHONHASHSEED": hash_seed, "PYTHONPATH": source}
-            done = subprocess.run(
-                [sys.executable, "-c", program],
-                env=env,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            dealt.append(json.loads(done.stdout))
+            dealt.append(json.loads(run_fresh(program, env=env)))
 
         assert dealt[0] == dealt[1]
         expected = cv_block_assignment(BLOCKS, 4, seed=2)
