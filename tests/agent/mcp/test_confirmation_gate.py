@@ -540,6 +540,24 @@ def test_an_open_request_of_the_recipe_asks_to_confirm_a_second(
     assert first.request_id in second.message
 
 
+def test_the_open_duplicate_finding_lists_each_open_request_as_data(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    first = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
+    second = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
+
+    assert isinstance(first, SubmittedPipeline)
+    assert isinstance(second, ErrorEnvelope)
+    assert second.detail is not None
+    findings = second.detail["findings"]
+    assert isinstance(findings, list)
+    [finding] = findings
+    assert isinstance(finding, dict)
+    assert finding["duplicates"] == [
+        {"request_id": first.request_id, "steps": ["speed"], "steps_omitted": 0}
+    ]
+
+
 def test_a_step_below_a_bound_step_is_not_an_open_duplicate(
     backend: LocalBackend, dataset: Dataset
 ) -> None:

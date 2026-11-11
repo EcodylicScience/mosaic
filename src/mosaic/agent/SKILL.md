@@ -777,6 +777,11 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   unattended may approve conditions in advance with a hook
   (`mosaic agent confirm-hook`). A confirmation it does not approve comes back
   declined or unanswered.
+- When the only condition is `open_duplicate`, the refusal names the open requests in
+  its message and in `detail.duplicates`. Wait for them with
+  `get_request_status(wait_seconds=45)` until each ends, then submit again. A request
+  still open refuses the submission again. A refusal that lists another condition too
+  is the stop above.
 - Wait with `get_request_status(wait_seconds=45)`, which returns when a step or the
   request ends. It lists only the steps still running, not finished cleanly or waiting
   for a GPU card, and `brief: false` lists every step. A request reads `failed` as soon

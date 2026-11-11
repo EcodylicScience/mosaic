@@ -1894,10 +1894,10 @@ def _submission_findings(
     from mosaic.core.pipeline.graph import (
         GPU_LANES,
         computed_runs,
-        describe_duplicates,
         open_duplicates,
         retired_recipe_names,
     )
+    from mosaic.core.pipeline.graph.store import open_requests_sentence
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
     from mosaic.core.scope import Scope
 
@@ -1970,8 +1970,8 @@ def _submission_findings(
         findings.append(
             ConfirmationFinding(
                 "open_duplicate",
-                f"request(s) {describe_duplicates(duplicates)} have not ended and "
-                f"compute runs of this submission",
+                open_requests_sentence(duplicates),
+                duplicates,
             )
         )
     return findings

@@ -30,6 +30,7 @@ from pydantic import (
     AwareDatetime,
     BaseModel,
     Field,
+    TypeAdapter,
     ValidationError,
     model_validator,
 )
@@ -57,6 +58,12 @@ from mosaic.core.pipeline.graph.digest import DIGEST_LENGTH
 from mosaic.core.pipeline.graph.model import StepStatus
 from mosaic.core.pipeline.graph.model import refuse_pins_beside_apply
 from mosaic.core.pipeline.graph.patch import PatchOp
+from mosaic.core.pipeline.graph.store import (
+    DUPLICATE_STEP_SAMPLE,
+    REQUEST_ID_PATTERN,
+    OpenDuplicate,
+    open_requests_sentence,
+)
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
@@ -130,6 +137,7 @@ __all__ = [
     "ListSequencesInput",
     "ManageDatasetInput",
     "ModelRef",
+    "OpenDuplicateWire",
     "PatchRecipeInput",
     "PlanRecipeInput",
     "PreviewOutputInput",
@@ -160,6 +168,9 @@ __all__ = [
     "confirmation_unavailable",
     "dataset_managed",
     "invalid_cursor",
+    "open_duplicates_in",
+    "open_duplicates_json",
+    "open_duplicates_of",
     "read_confirmation_tag",
     "result_too_large",
     "tool_spec",
@@ -1740,7 +1751,8 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "confirmation_required: ask the user, then call again with confirm "
             "true. Do not set confirm without the user's agreement. After "
             "confirmation_unanswered, confirmation_declined or "
-            "confirmation_unavailable, stop and report."
+            "confirmation_unavailable, stop and report, unless the refusal names "
+            "open requests to wait for in detail.duplicates."
         ),
         input_model=SubmitPipelineInput,
         output=SubmittedPipeline,
@@ -2127,10 +2139,73 @@ class ConfirmationFinding:
     Attributes:
         condition: The condition.
         message: What in the call meets it, naming the step or the count.
+        duplicates: The open requests that meet ``open_duplicate``, empty for
+            any other condition.
     """
 
     condition: ConfirmationCondition
     message: str
+    duplicates: tuple[OpenDuplicate, ...] = ()
+
+
+_MAX_STEPS_OMITTED: Final = 100_000
+"""The most shared steps that a wire open request counts as omitted."""
+
+
+class OpenDuplicateWire(StrictModel):
+    """An open request that computes a run that a submission computes.
+
+    The wire form of :class:`~mosaic.core.pipeline.graph.store.OpenDuplicate`,
+    as ``confirmation_required`` lists it and a declined or unanswered
+    confirmation repeats it. A client returns it in a request state, so its
+    fields are bounded: a message built from it holds no free text.
+
+    Attributes:
+        request_id: The open request, a ULID.
+        steps: The submission's steps whose runs it also computes, at most
+            ``DUPLICATE_STEP_SAMPLE``. Empty for a request that recorded no
+            runs, which is matched by its recipe.
+        steps_omitted: How many more shared steps ``steps`` leaves out.
+    """
+
+    request_id: str = Field(pattern=REQUEST_ID_PATTERN)
+    steps: tuple[str, ...] = Field(default=(), max_length=DUPLICATE_STEP_SAMPLE)
+    steps_omitted: int = Field(default=0, ge=0, le=_MAX_STEPS_OMITTED)
+
+    @classmethod
+    def of(cls, duplicate: OpenDuplicate) -> Self:
+        """Return the wire form of *duplicate*."""
+        return cls(
+            request_id=duplicate.request_id,
+            steps=duplicate.named_steps,
+            steps_omitted=duplicate.steps_omitted,
+        )
+
+    @property
+    def named_steps(self) -> tuple[str, ...]:
+        """The shared steps that are named, as ``describe_duplicates`` reads them."""
+        return self.steps
+
+
+_OPEN_DUPLICATES: Final = TypeAdapter(tuple[OpenDuplicateWire, ...])
+
+
+def open_duplicates_json(duplicates: Iterable[OpenDuplicateWire]) -> list[JsonValue]:
+    """Return *duplicates* as JSON: the one dump of their wire form."""
+    return [duplicate.model_dump(mode="json") for duplicate in duplicates]
+
+
+def open_duplicates_in(listed: object) -> tuple[OpenDuplicateWire, ...]:
+    """Return the open requests in *listed*, or none when it is not a list of them.
+
+    Args:
+        listed: A decoded JSON value: the ``duplicates`` of a finding, or of a
+            decline that an earlier question carried in its request state.
+    """
+    try:
+        return _OPEN_DUPLICATES.validate_python(listed)
+    except ValidationError:
+        return ()
 
 
 def confirmation_required(
@@ -2144,17 +2219,22 @@ def confirmation_required(
 
     Returns:
         An ``invalid`` envelope with reason :data:`CONFIRMATION_REQUIRED`, whose
-        detail lists each condition and what meets it.
+        detail lists each condition and what meets it. A finding with open
+        requests also lists them as ``duplicates``.
     """
     conditions: list[JsonValue] = [finding.condition for finding in findings]
-    listed: list[JsonValue] = [
-        {
+    listed: list[JsonValue] = []
+    for finding in findings:
+        entry: dict[str, JsonValue] = {
             "condition": finding.condition,
             "meaning": CONFIRMATION_CONDITIONS[finding.condition],
             "message": finding.message,
         }
-        for finding in findings
-    ]
+        if finding.duplicates:
+            entry["duplicates"] = open_duplicates_json(
+                OpenDuplicateWire.of(duplicate) for duplicate in finding.duplicates
+            )
+        listed.append(entry)
     sentences = "; ".join(finding.message for finding in findings)
     message = (
         f"{name} needs the user's confirmation: {sentences}. Ask the user, and "
@@ -2166,6 +2246,24 @@ def confirmation_required(
         message=message,
         detail={"tool": name, "conditions": conditions, "findings": listed},
     )
+
+
+def open_duplicates_of(refusal: ErrorEnvelope) -> tuple[OpenDuplicateWire, ...]:
+    """Return the open requests that a :func:`confirmation_required` refusal names.
+
+    Args:
+        refusal: The call's refusal.
+
+    Returns:
+        The ``duplicates`` of its ``open_duplicate`` finding, empty when it has none.
+    """
+    findings = None if refusal.detail is None else refusal.detail.get("findings")
+    if not isinstance(findings, list):
+        return ()
+    for finding in findings:
+        if isinstance(finding, dict) and finding.get("condition") == "open_duplicate":
+            return open_duplicates_in(finding.get("duplicates"))
+    return ()
 
 
 def confirmation_unavailable(refusal: ErrorEnvelope) -> ErrorEnvelope:
@@ -2203,57 +2301,131 @@ def confirmation_unavailable(refusal: ErrorEnvelope) -> ErrorEnvelope:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _DuplicateGuidance:
+    """What a declined or unanswered confirmation says of the open requests.
+
+    Attributes:
+        notice: The sentence naming the requests.
+        waits: Whether ``open_duplicate`` is the only condition, so that the
+            requests ending is all the call needs.
+    """
+
+    notice: str
+    waits: bool
+
+
+def _duplicate_guidance(
+    conditions: Sequence[ConfirmationCondition],
+    duplicates: Sequence[OpenDuplicateWire],
+) -> _DuplicateGuidance | None:
+    """Return what to say of *duplicates*, or ``None`` when no request is named."""
+    if "open_duplicate" not in conditions or not duplicates:
+        return None
+    named = open_requests_sentence(duplicates)
+    if any(condition != "open_duplicate" for condition in conditions):
+        return _DuplicateGuidance(
+            f"{named}, and waiting for them does not answer the other conditions.",
+            waits=False,
+        )
+    return _DuplicateGuidance(
+        f"{named}. Wait for them to end with get_request_status and "
+        "wait_seconds, then submit again. The submission is refused again while "
+        "any of them has not ended.",
+        waits=True,
+    )
+
+
+def _detail_of(
+    name: ToolName,
+    conditions: Sequence[ConfirmationCondition],
+    duplicates: Sequence[OpenDuplicateWire],
+) -> dict[str, JsonValue]:
+    """Return the detail of a declined or unanswered confirmation."""
+    listed: list[JsonValue] = list(conditions)
+    detail: dict[str, JsonValue] = {"tool": name, "conditions": listed}
+    if duplicates:
+        detail["duplicates"] = open_duplicates_json(duplicates)
+    return detail
+
+
 def confirmation_declined(
-    name: ToolName, conditions: Sequence[ConfirmationCondition] = ()
+    name: ToolName,
+    conditions: Sequence[ConfirmationCondition] = (),
+    duplicates: Sequence[OpenDuplicateWire] = (),
 ) -> ErrorEnvelope:
     """Report a call to *name* whose confirmation was declined when the server asked.
 
     The decline may come from the user or from a client's hook, so the message
-    does not say who declined.
+    does not say who declined. When ``open_duplicate`` is the only condition, the
+    message names the open requests and says the call may be made again once
+    they end.
 
     Args:
         name: The tool that did not run.
         conditions: The conditions the question asked about.
+        duplicates: The open requests that met ``open_duplicate``.
     """
-    listed: list[JsonValue] = list(conditions)
-    message = (
-        f"the confirmation of {name} was declined, so it did not run. Do not call "
-        "it again unless the user asks for it."
-    )
+    stop = "Do not call it again unless the user asks for it."
+    message = f"the confirmation of {name} was declined, so it did not run"
+    guidance = _duplicate_guidance(conditions, duplicates)
+    if guidance is None:
+        message = f"{message}. {stop}"
+    elif guidance.waits:
+        message = f"{message}: {guidance.notice}"
+    else:
+        message = f"{message}: {guidance.notice} {stop}"
     return ErrorEnvelope(
         kind="invalid",
         reason=CONFIRMATION_DECLINED,
         message=message,
-        detail={"tool": name, "conditions": listed},
+        detail=_detail_of(name, conditions, duplicates),
     )
 
 
 def confirmation_unanswered(
-    name: ToolName, conditions: Sequence[ConfirmationCondition]
+    name: ToolName,
+    conditions: Sequence[ConfirmationCondition],
+    duplicates: Sequence[OpenDuplicateWire] = (),
 ) -> ErrorEnvelope:
     """Report a call to *name* whose confirmation nobody answered.
 
     A client that cannot show the question cancels it. No one can confirm in
     that session, so the message tells the model to report and stop rather
-    than run the same work another way.
+    than run the same work another way. When ``open_duplicate`` is the only
+    condition, it names the open requests and says the call may be made again
+    once they end.
 
     Args:
         name: The tool that did not run.
         conditions: The conditions the question asked about.
+        duplicates: The open requests that met ``open_duplicate``.
     """
-    listed: list[JsonValue] = list(conditions)
     asked = ", ".join(conditions) or "its conditions"
     message = (
         f"nobody answered the confirmation that {name} asked for ({asked}), so it "
-        "did not run. No one can confirm in this session: report the plan and "
-        "the conditions that need approval, and stop. Do not call it again, or "
-        "run the same work through the mosaic CLI, unless the user asks."
+        "did not run"
     )
+    stop = (
+        "No one can confirm in this session: report the plan and the conditions "
+        "that need approval, and stop. Do not call it again, or run the same work "
+        "through the mosaic CLI, unless the user asks."
+    )
+    guidance = _duplicate_guidance(conditions, duplicates)
+    if guidance is None:
+        message = f"{message}. {stop}"
+    elif guidance.waits:
+        message = (
+            f"{message}: {guidance.notice} Do not run the same work through the "
+            "mosaic CLI."
+        )
+    else:
+        message = f"{message}: {guidance.notice} {stop}"
     return ErrorEnvelope(
         kind="invalid",
         reason=CONFIRMATION_UNANSWERED,
         message=message,
-        detail={"tool": name, "conditions": listed},
+        detail=_detail_of(name, conditions, duplicates),
     )
 
 

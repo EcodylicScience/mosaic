@@ -52,8 +52,8 @@ from .retirement import validate_retirement
 from .store import (
     OpenDuplicate,
     check_request_id,
-    describe_duplicate,
     open_duplicates,
+    open_requests_sentence,
     save_computes,
     save_recipe,
     save_request,
@@ -80,7 +80,6 @@ __all__ = [
     "PlanChanged",
     "SubmittedRequest",
     "computed_runs",
-    "describe_duplicates",
     "load_recipe_for_request",
     "planning_request",
     "step_argv",
@@ -152,9 +151,8 @@ class DuplicateRequest(ClassifiedError):
         self, *, recipe_digest: str, duplicates: tuple[OpenDuplicate, ...]
     ) -> None:
         message = (
-            f"request(s) {describe_duplicates(duplicates)} have not ended and "
-            f"compute runs of this submission, which would compute them again at "
-            f"once. Run the open request with 'mosaic pipeline run --request "
+            f"{open_requests_sentence(duplicates)}, which would compute them again "
+            f"at once. Run the open request with 'mosaic pipeline run --request "
             f"<id>', or delete its file under .mosaic/pipelines/requests/ if it "
             f"will not run, then submit again."
         )
@@ -168,21 +166,6 @@ class DuplicateRequest(ClassifiedError):
             "recipe_digest": self.recipe_digest,
             "duplicates": [duplicate.as_json() for duplicate in self.duplicates],
         }
-
-
-def describe_duplicates(duplicates: Iterable[OpenDuplicate]) -> str:
-    """Name each open request and the submission's steps whose runs it computes.
-
-    Each names at most :data:`~.store.DUPLICATE_STEP_SAMPLE` steps and counts
-    the rest. A request that recorded no runs is named as one of the same
-    recipe.
-    """
-    return ", ".join(
-        describe_duplicate(
-            duplicate.request_id, duplicate.named_steps, duplicate.steps_omitted
-        )
-        for duplicate in duplicates
-    )
 
 
 class CleanupNeedsPlan(ClassifiedError):

@@ -358,6 +358,12 @@ outcomes:
 The call did not run in either case. The agent stops and reports. It does not repeat
 the call, or run the same work through the `mosaic` CLI, unless you ask.
 
+The exception is a submission whose only condition is `open_duplicate`, such as one
+that a hook declines. Both results name each open request and its shared steps in the
+message and in `detail.duplicates`. The agent may wait for those requests to end
+(`get_request_status` with `wait_seconds`) and submit again. The submission is declined
+again while one is still open.
+
 The last line of the form's message names the tool and the conditions, sorted, for a
 hook to read:
 

@@ -8,6 +8,18 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a declined or unanswered `open_duplicate` names the open requests
+
+When `submit_pipeline`'s confirmation is declined or unanswered and its conditions
+include `open_duplicate`, the `confirmation_declined` or `confirmation_unanswered`
+envelope names the open requests and their shared steps in its message and lists them in
+`detail.duplicates` (`request_id`, `steps`, `steps_omitted`). Where `open_duplicate` is
+the only condition, the message says to wait with `get_request_status` and
+`wait_seconds` and submit again, and the same request is declined again while one
+stays open. The `confirmation_required` finding lists them too. A decline of any other
+condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
+the two envelope builders a defaulted `duplicates` argument.
+
 ## Unreleased: two Tracktor track converters read the DGRP looming release
 
 Two new track converters, `tracktor_corrected_tsv` and `tracktor_raw_csv` (both version

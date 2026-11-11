@@ -26,7 +26,7 @@ import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol
 
 from pydantic import TypeAdapter
 
@@ -56,16 +56,19 @@ from .status import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping, Sequence
+    from collections.abc import Generator, Iterable, Mapping, Sequence
 
     from mosaic.core.json_value import JsonValue
     from mosaic.core.scope import Scope
 
 __all__ = [
     "DUPLICATE_STEP_SAMPLE",
+    "NamedDuplicate",
     "OpenDuplicate",
     "REQUEST_ID_PATTERN",
     "describe_duplicate",
+    "describe_duplicates",
+    "open_requests_sentence",
     "RequestIdMalformed",
     "RequestUnreadable",
     "check_request_id",
@@ -430,6 +433,47 @@ def describe_duplicate(request_id: str, steps: Sequence[str], omitted: int) -> s
     named = ", ".join(map(repr, steps))
     more = f" and {omitted} more" if omitted else ""
     return f"{request_id} (steps {named}{more})"
+
+
+class NamedDuplicate(Protocol):
+    """An open request, as :func:`describe_duplicates` names it."""
+
+    @property
+    def request_id(self) -> str:
+        """The open request."""
+        ...
+
+    @property
+    def named_steps(self) -> Sequence[str]:
+        """The shared steps that are named."""
+        ...
+
+    @property
+    def steps_omitted(self) -> int:
+        """How many shared steps are left out of :attr:`named_steps`."""
+        ...
+
+
+def describe_duplicates(duplicates: Iterable[NamedDuplicate]) -> str:
+    """Name each open request and the submission's steps whose runs it computes.
+
+    Each names at most :data:`DUPLICATE_STEP_SAMPLE` steps and counts the rest.
+    A request that recorded no runs is named as one of the same recipe.
+    """
+    return ", ".join(
+        describe_duplicate(
+            duplicate.request_id, duplicate.named_steps, duplicate.steps_omitted
+        )
+        for duplicate in duplicates
+    )
+
+
+def open_requests_sentence(duplicates: Iterable[NamedDuplicate]) -> str:
+    """Say that *duplicates* have not ended and compute runs of a submission."""
+    return (
+        f"request(s) {describe_duplicates(duplicates)} have not ended and compute "
+        f"runs of this submission"
+    )
 
 
 def open_duplicates(

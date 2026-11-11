@@ -762,14 +762,13 @@ def _failed_attempt(
 
 def _warn_duplicates(duplicates: tuple[OpenDuplicate, ...]) -> None:
     """Warn on stderr about the open requests that compute runs of a submission."""
-    from mosaic.core.pipeline.graph import describe_duplicates
+    from mosaic.core.pipeline.graph.store import open_requests_sentence
 
     if not duplicates:
         return
     warning = (
-        f"warning: request(s) {describe_duplicates(duplicates)} have not ended "
-        f"and compute runs of this submission. Running both computes those runs "
-        f"twice at once."
+        f"warning: {open_requests_sentence(duplicates)}. Running both computes "
+        f"those runs twice at once."
     )
     log(warning)
 

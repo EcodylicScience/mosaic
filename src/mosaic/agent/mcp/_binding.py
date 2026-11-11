@@ -72,6 +72,7 @@ from .spec import (
     CONFIRMATION_REQUIRED,
     TOOLS,
     ConfirmationCondition,
+    OpenDuplicateWire,
     ToolName,
     ToolSpec,
     call_tool,
@@ -79,6 +80,9 @@ from .spec import (
     confirmation_tag,
     confirmation_unanswered,
     confirmation_unavailable,
+    open_duplicates_in,
+    open_duplicates_json,
+    open_duplicates_of,
     tool_spec,
 )
 from .summaries import summarize
@@ -100,7 +104,8 @@ _CONFIRMATION_RULES: Final = (
     "cancel_request ask the user themselves when the work is costly; set "
     "confirm only when the user agreed in this conversation. After "
     "confirmation_declined, confirmation_unanswered or confirmation_unavailable, "
-    "stop and report: do not "
+    "stop and report, unless the refusal names open requests to wait for in "
+    "detail.duplicates: do not "
     "run the same work another way, such as through the mosaic CLI. For what "
     "these tools do not offer, propose the mosaic CLI command to the user."
 )
@@ -379,7 +384,7 @@ async def _call_tool(
     ):
         _ = arguments.pop(_CONFIRM_ARGUMENT, None)
     call_digest = _call_digest(params.name, arguments)
-    digest, _, asked = (params.request_state or "").partition(_STATE_SEPARATOR)
+    digest, asked, duplicates = _read_state(params.request_state)
     answered = (
         _answered_confirmation(params.input_responses)
         if eliciting and hmac.compare_digest(digest, call_digest)
@@ -390,7 +395,7 @@ async def _call_tool(
         # only name what was asked in the refusal, and an answer confirms no
         # more than those.
         if answered != "accepted":
-            return _refused(params.name, answered, _known(asked.split(",")))
+            return _refused(params.name, answered, _known(asked.split(",")), duplicates)
         output = await _run_confirmed(
             backend, params.name, arguments, _known(asked.split(","))
         )
@@ -404,6 +409,7 @@ async def _call_tool(
     for _ in range(_MAX_QUESTIONS):
         assert isinstance(output, ErrorEnvelope)
         conditions = _conditions_of(output)
+        duplicates = open_duplicates_of(output)
         question = _confirmation_question(params.name, output, conditions)
         if ctx.protocol_version in MODERN_PROTOCOL_VERSIONS:
             return types.InputRequiredResult(
@@ -414,16 +420,14 @@ async def _call_tool(
                         )
                     )
                 },
-                request_state=(
-                    f"{call_digest}{_STATE_SEPARATOR}{','.join(conditions)}"
-                ),
+                request_state=_write_state(call_digest, conditions, duplicates),
             )
         elicited = await ctx.session.elicit_form(
             question, _CONFIRM_SCHEMA, related_request_id=ctx.request_id
         )
         answer = _answer(elicited)
         if answer != "accepted":
-            return _refused(params.name, answer, conditions)
+            return _refused(params.name, answer, conditions, duplicates)
         output = await _run_confirmed(backend, params.name, arguments, conditions)
         if not _asks_to_confirm(output):
             break
@@ -585,13 +589,55 @@ def _tool_name(name: str) -> ToolName:
 
 
 def _refused(
-    name: str, answer: _Answer, conditions: Sequence[ConfirmationCondition]
+    name: str,
+    answer: _Answer,
+    conditions: Sequence[ConfirmationCondition],
+    duplicates: Sequence[OpenDuplicateWire],
 ) -> types.CallToolResult:
-    """Return the refusal of a call to *name* whose confirmation was not given."""
+    """Return the refusal of a call to *name* whose confirmation was not given.
+
+    *duplicates* are the open requests that the question named, which the
+    refusal names again so the model can wait for them.
+    """
     tool = _tool_name(name)
     if answer == "unanswered":
-        return _tool_result(confirmation_unanswered(tool, conditions))
-    return _tool_result(confirmation_declined(tool, conditions))
+        return _tool_result(confirmation_unanswered(tool, conditions, duplicates))
+    return _tool_result(confirmation_declined(tool, conditions, duplicates))
+
+
+def _write_state(
+    call_digest: str,
+    conditions: Sequence[ConfirmationCondition],
+    duplicates: Sequence[OpenDuplicateWire],
+) -> str:
+    """Return the request state of a question.
+
+    It holds the call digest, the conditions asked and, when the question named
+    open requests, those as JSON.
+    """
+    state = f"{call_digest}{_STATE_SEPARATOR}{','.join(conditions)}"
+    if not duplicates:
+        return state
+    named = json.dumps(open_duplicates_json(duplicates), separators=(",", ":"))
+    return f"{state}{_STATE_SEPARATOR}{named}"
+
+
+def _read_state(
+    state: str | None,
+) -> tuple[str, str, tuple[OpenDuplicateWire, ...]]:
+    """Split a request state into the call digest, the conditions and the open requests.
+
+    The open requests come back from the client and are not trusted: one that is
+    not a list of requests with their steps reads as none, and a message quotes
+    each step.
+    """
+    digest, _, rest = (state or "").partition(_STATE_SEPARATOR)
+    asked, _, named = rest.partition(_STATE_SEPARATOR)
+    try:
+        decoded: object = json.loads(named) if named else None
+    except ValueError:
+        decoded = None
+    return digest, asked, open_duplicates_in(decoded)
 
 
 def _tool_result(output: BaseModel) -> types.CallToolResult:
