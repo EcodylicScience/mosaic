@@ -1,18 +1,30 @@
-"""A refusal survives a trip through a process worker with its reason and detail.
+"""A classified error survives a trip through a process worker with its detail.
 
 A process pool pickles the exception a worker raised and rebuilds it in the parent.
-Default exception pickling calls the class with its ``args``, which no refusal
-subclass with its own ``__init__`` signature accepts.
+Default exception pickling calls the class with its ``args``, which no classified
+error with its own ``__init__`` signature accepts, so the parent would see a broken
+pool where the worker raised a refusal.
 """
 
 from __future__ import annotations
 
 import pickle
 
+import pytest
+
 from mosaic.core.pipeline.entry_claim import RunRootHeld
+from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.graph.step_preflight import CoverageShortfall, StepRefused
 from mosaic.core.pipeline.markers import InflightMarker
+from mosaic.core.pipeline.preview import PreviewInvalid, PreviewNotFound
 from mosaic.core.pipeline.refusal import Refusal, ToolUnavailable
+from mosaic.core.pipeline.run_matrix import (
+    AmbiguousRunLeaf,
+    RunColumnsConflict,
+    RunNotFound,
+    RunTooLarge,
+)
+from mosaic.core.pipeline.track_universe import AmbiguousTrackLeaf
 
 
 def _round_trip[E: BaseException](error: E) -> E:
@@ -106,3 +118,56 @@ def test_an_unreadable_holder_names_no_one() -> None:
         "holder_expires_at": "",
         "holder_pid": None,
     }
+
+
+@pytest.mark.parametrize(
+    ("error", "base"),
+    [
+        pytest.param(
+            RunNotFound("no runs", feature="speed", run_id=None),
+            FileNotFoundError,
+            id="run-not-found",
+        ),
+        pytest.param(
+            RunTooLarge("too big", feature="speed", run_id="0.1-abc"),
+            MemoryError,
+            id="run-too-large",
+        ),
+        pytest.param(
+            AmbiguousRunLeaf("two leaves", feature="speed", run_id=None),
+            AmbiguousTrackLeaf,
+            id="ambiguous-run-leaf",
+        ),
+        pytest.param(
+            RunColumnsConflict(
+                "columns differ",
+                feature="speed",
+                run_id="0.1-abc",
+                entries=[("g", "a"), ("g", "b")],
+                columns=["w5"],
+            ),
+            ValueError,
+            id="run-columns-conflict",
+        ),
+        pytest.param(
+            PreviewInvalid("bad column", field="columns", extra={"unknown": ["x"]}),
+            ValueError,
+            id="preview-invalid",
+        ),
+        pytest.param(
+            PreviewNotFound("no table", ref="speed", entry=("g", "a")),
+            LookupError,
+            id="preview-not-found",
+        ),
+    ],
+)
+def test_a_classified_error_survives_pickle_with_its_kind_and_detail(
+    error: ClassifiedError, base: type[BaseException]
+) -> None:
+    restored = _round_trip(error)
+
+    assert type(restored) is type(error)
+    assert isinstance(restored, base)
+    assert str(restored) == str(error)
+    assert restored.error_kind == error.error_kind
+    assert restored.error_detail() == error.error_detail()

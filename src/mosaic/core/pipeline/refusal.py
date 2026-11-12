@@ -115,16 +115,6 @@ reference that does not resolve (``ModelReferenceRefusedError``).
 """
 
 
-def _restore_refusal[R: Refusal](
-    cls: type[R], args: tuple[object, ...], state: dict[str, object]
-) -> R:
-    """Rebuild a refusal of *cls* from its ``args`` and attributes, without ``__init__``."""
-    refusal = cls.__new__(cls)
-    refusal.args = args
-    refusal.__dict__.update(state)
-    return refusal
-
-
 class Refusal(ClassifiedError):
     """An error that is a refusal, and names which one.
 
@@ -153,15 +143,6 @@ class Refusal(ClassifiedError):
         self.reason: RefusalReason = reason
         self.step_id: str = step_id
         self.detail: dict[str, JsonValue] = dict(detail or {})
-
-    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
-        """Pickle the refusal whatever its subclass's ``__init__`` takes.
-
-        A process worker sends the refusal it raised to its parent through a
-        pickle, and the default rebuilds an exception by calling its class with
-        ``args``. A subclass takes other arguments than the message.
-        """
-        return (_restore_refusal, (type(self), self.args, self.__dict__))
 
     def error_reason(self) -> str:
         """Return :attr:`reason`."""

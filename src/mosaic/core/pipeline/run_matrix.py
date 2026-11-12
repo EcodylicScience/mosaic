@@ -18,6 +18,12 @@ A file whose columns would take more than :data:`BLOCK_BYTES` to decode is there
 read a block of columns at a time, and the estimate that a read is checked against
 counts the largest block.
 
+A read that cannot go on raises a :class:`~mosaic.core.pipeline.error_kind.ClassifiedError`
+that keeps the type a caller caught before (``FileNotFoundError``, ``ValueError``,
+``MemoryError`` or ``AmbiguousTrackLeaf``), so a caller that sorts failures by kind
+and a caller that catches the old type both work. Each carries the feature, the run
+and, where it knows them, the entries or columns its message lists.
+
 ``mosaic.core.pipeline`` binds the names of this module on access.
 """
 
@@ -26,7 +32,7 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 
 import numpy as np
 import numpy.typing as npt
@@ -36,18 +42,31 @@ from mosaic.core.entry import Entry
 from mosaic.core.scope import Scope
 
 from .dataset_indexes import feature_storages
+from .error_kind import ClassifiedError, ErrorKind
 from .index import feature_index, feature_index_path, missing_outputs_error
 from .memory_watch import host_memory_bytes
 from .parquet_reader import ParquetFooter, iter_column_batches, read_footer
-from .track_universe import current_run_id
+from .track_universe import AmbiguousTrackLeaf, current_run_id
 from .types import BOOKKEEPING_COLS, META_COLS, Result
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
+    from mosaic.core.json_value import JsonValue
 
-__all__ = ["RunMatrix", "load_run_matrix"]
+__all__ = [
+    "AmbiguousRunLeaf",
+    "RunColumnsConflict",
+    "RunIncomplete",
+    "RunIndexEmpty",
+    "RunMatrix",
+    "RunNotFound",
+    "RunOutputsGone",
+    "RunReadInvalid",
+    "RunTooLarge",
+    "load_run_matrix",
+]
 
 BATCH_ROWS: Final = 65_536
 """The most rows of a file that one batch holds."""
@@ -81,6 +100,89 @@ _NUMERIC_KINDS: Final = frozenset({"integer", "floating", "boolean"})
 
 _LISTED: Final = 12
 """How many names a message lists before it counts the rest."""
+
+
+class _RunReadError(Exception):
+    """What every refusal of the reader says beyond its message.
+
+    Attributes:
+        feature: The storage name of the feature that was read.
+        run_id: The run that was read, or ``None`` where the read had not chosen one.
+        entries: The entries that the message lists.
+        columns: The columns that the message lists.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        feature: str,
+        run_id: str | None,
+        entries: Sequence[Entry] = (),
+        columns: Sequence[str] = (),
+    ) -> None:
+        super().__init__(message)
+        self.feature: str = feature
+        self.run_id: str | None = run_id
+        self.entries: tuple[Entry, ...] = tuple(entries)
+        self.columns: tuple[str, ...] = tuple(columns)
+
+    def error_detail(self) -> dict[str, JsonValue]:
+        """Return the feature and run, and the entries and columns the message lists."""
+        detail: dict[str, JsonValue] = {"feature": self.feature, "run_id": self.run_id}
+        if self.entries:
+            detail["entries"] = list(_names(self.entries))
+        if self.columns:
+            detail["columns"] = list(self.columns)
+        return detail
+
+
+class RunNotFound(_RunReadError, ClassifiedError, FileNotFoundError):
+    """The feature has no runs here, or the run is not in its index."""
+
+    error_kind: ClassVar[ErrorKind] = "not_found"
+
+
+class RunIndexEmpty(_RunReadError, ClassifiedError, ValueError):
+    """An unpinned read of a feature whose index lists no run."""
+
+    error_kind: ClassVar[ErrorKind] = "not_found"
+
+
+class AmbiguousRunLeaf(_RunReadError, ClassifiedError, AmbiguousTrackLeaf):
+    """An unpinned read where two runs are leaves, so there is no default. Pin one."""
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+
+class RunIncomplete(_RunReadError, ClassifiedError, ValueError):
+    """The scope names entries the run lacks, or the run is not finished."""
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+
+class RunOutputsGone(_RunReadError, ClassifiedError, FileNotFoundError):
+    """An output that the index lists is gone from disk."""
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+
+class RunColumnsConflict(_RunReadError, ClassifiedError, ValueError):
+    """Two entries of the run write different columns."""
+
+    error_kind: ClassVar[ErrorKind] = "conflict"
+
+
+class RunReadInvalid(_RunReadError, ClassifiedError, ValueError):
+    """The request cannot be answered from this run: its scope, columns or dtype."""
+
+    error_kind: ClassVar[ErrorKind] = "invalid"
+
+
+class RunTooLarge(_RunReadError, ClassifiedError, MemoryError):
+    """The array would not fit in the memory available."""
+
+    error_kind: ClassVar[ErrorKind] = "unavailable"
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -177,18 +279,29 @@ def load_run_matrix(
         The rows of the run.
 
     Raises:
-        FileNotFoundError: The feature has no runs here, the run is not in its index,
-            or an output it lists is gone. The last also covers every output being
-            gone, as when a dataset moved and its paths did not.
-        ValueError: The scope selects no output of the run, names an entry it does
-            not hold, or the run is not finished. A pattern in *columns* matches no
-            numeric column, two entries write different columns, or *dtype* is not
-            floating point.
-        MemoryError: The array would not fit in the memory available. Narrow the
+        RunNotFound: The feature has no runs here, or the run is not in its index
+            (a ``FileNotFoundError``, kind ``not_found``).
+        RunIndexEmpty: An unpinned read of an index that lists no run (a
+            ``ValueError``, kind ``not_found``).
+        AmbiguousRunLeaf: An unpinned read where two runs are leaves of the chain
+            (an ``AmbiguousTrackLeaf``, so a ``RuntimeError``, kind ``conflict``).
+            Pin a run through ``result.run_id``.
+        RunOutputsGone: An output that the index lists is gone, or every output is
+            gone, as when a dataset moved and its paths did not (a
+            ``FileNotFoundError``, kind ``conflict``).
+        RunIncomplete: The scope names an entry that the run does not hold, or the
+            run is not finished (a ``ValueError``, kind ``conflict``).
+        RunColumnsConflict: Two entries write different columns (a ``ValueError``,
+            kind ``conflict``).
+        RunReadInvalid: The scope selects no output of the run, a pattern in
+            *columns* matches no numeric column, a run has no numeric payload
+            column, or *dtype* is not floating point (a ``ValueError``, kind
+            ``invalid``).
+        RunTooLarge: The array would not fit in the memory available. Narrow the
             read with *scope*, *perspective* or *columns*, or choose a smaller
-            *dtype*.
+            *dtype* (a ``MemoryError``, kind ``unavailable``).
     """
-    value_dtype = _floating_dtype(dtype)
+    value_dtype = _floating_dtype(dtype, result)
     selector = scope if scope is not None else Scope()
     run_id = _resolve_run_id(ds, result)
     outputs = _run_outputs(ds, result.feature, run_id, selector)
@@ -216,7 +329,7 @@ def load_run_matrix(
     )
 
 
-def _floating_dtype(dtype: npt.DTypeLike) -> np.dtype[Any]:
+def _floating_dtype(dtype: npt.DTypeLike, result: Result[str]) -> np.dtype[Any]:
     """The dtype asked for, which has to hold NaN."""
     resolved = np.dtype(dtype)
     if resolved.kind != "f":
@@ -224,7 +337,7 @@ def _floating_dtype(dtype: npt.DTypeLike) -> np.dtype[Any]:
             f"dtype={resolved} cannot hold a missing value. Pass a floating-point "
             f"dtype such as numpy.float32 or numpy.float64."
         )
-        raise ValueError(msg)
+        raise RunReadInvalid(msg, feature=result.feature, run_id=result.run_id)
     return resolved
 
 
@@ -243,10 +356,17 @@ def _resolve_run_id(ds: Dataset, result: Result[str]) -> str:
             f"as 'speed-angvel__from__tracks'. The features that have runs are: "
             f"{_listed(with_runs)}."
         )
-        raise FileNotFoundError(msg)
+        raise RunNotFound(msg, feature=result.feature, run_id=result.run_id)
     if result.run_id is not None:
         return result.run_id
-    return current_run_id(ds, result.feature)
+    try:
+        return current_run_id(ds, result.feature)
+    except AmbiguousTrackLeaf as error:
+        raise AmbiguousRunLeaf(
+            str(error), feature=result.feature, run_id=None
+        ) from error
+    except ValueError as error:
+        raise RunIndexEmpty(str(error), feature=result.feature, run_id=None) from error
 
 
 def _run_outputs(ds: Dataset, feature: str, run_id: str, selector: Scope) -> _Outputs:
@@ -256,9 +376,12 @@ def _run_outputs(ds: Dataset, feature: str, run_id: str, selector: Scope) -> _Ou
     an entry that the scope names outright can be told from one the scope did not
     ask for.
     """
-    rows = feature_index(feature_index_path(ds, feature)).read(
-        run_id=run_id, filter_ext=".parquet", scope=selector
-    )
+    try:
+        rows = feature_index(feature_index_path(ds, feature)).read(
+            run_id=run_id, filter_ext=".parquet", scope=selector
+        )
+    except FileNotFoundError as error:
+        raise RunNotFound(str(error), feature=feature, run_id=run_id) from error
     finished_at = rows["finished_at"] if "finished_at" in rows.columns else None
     found: list[tuple[Entry, Path]] = []
     unreadable: list[tuple[Entry, Path]] = []
@@ -274,10 +397,16 @@ def _run_outputs(ds: Dataset, feature: str, run_id: str, selector: Scope) -> _Ou
             f"{selector!r} selects no output of {feature} run {run_id}. Check the "
             f"group and sequence names against the entries that the run holds."
         )
-        raise ValueError(msg)
+        raise RunReadInvalid(msg, feature=feature, run_id=run_id)
     if unreadable and not found:
-        raise missing_outputs_error(
+        gone = missing_outputs_error(
             feature, run_id, [path for _, path in unreadable], len(rows)
+        )
+        raise RunOutputsGone(
+            str(gone),
+            feature=feature,
+            run_id=run_id,
+            entries=sorted(entry for entry, _ in unreadable),
         )
     return _Outputs(
         found=tuple(sorted(found, key=lambda item: item[0])),
@@ -297,7 +426,7 @@ def _refuse_a_partial_run(
             f"{feature} run {run_id} holds no output for the entries the scope "
             f"names: {_listed(_names(outputs.absent))}."
         )
-        raise ValueError(msg)
+        raise RunIncomplete(msg, feature=feature, run_id=run_id, entries=outputs.absent)
     if allow_partial:
         return
     if outputs.unreadable:
@@ -307,14 +436,16 @@ def _refuse_a_partial_run(
             f"drop their stale index rows with ds.reindex_features(), or read the "
             f"others with scope=, or with allow_partial=True."
         )
-        raise FileNotFoundError(msg)
+        raise RunOutputsGone(
+            msg, feature=feature, run_id=run_id, entries=outputs.unreadable
+        )
     if outputs.absent:
         msg = (
             f"The scope names entries that {feature} run {run_id} holds no output "
             f"for: {_listed(_names(outputs.absent))}. Compute them, drop them from "
             f"the scope, or pass allow_partial=True."
         )
-        raise ValueError(msg)
+        raise RunIncomplete(msg, feature=feature, run_id=run_id, entries=outputs.absent)
     if outputs.unfinished:
         msg = (
             f"{feature} run {run_id} is not finished: {outputs.unfinished} of "
@@ -323,7 +454,7 @@ def _refuse_a_partial_run(
             f"resubmit it to compute the lost entries, or pass allow_partial=True "
             f"to read the entries it has."
         )
-        raise ValueError(msg)
+        raise RunIncomplete(msg, feature=feature, run_id=run_id)
 
 
 def _plan(
@@ -345,20 +476,27 @@ def _plan(
     file_rows: list[int] = []
     for entry, path in found:
         footer = read_footer(path)
-        chosen = _select_columns(footer, patterns, f"{feature} run {run_id}", entry)
+        chosen = _select_columns(footer, patterns, feature, run_id, entry)
         identity = tuple(
             name for name in _IDENTITY_COLUMNS if _has_column(footer, name)
         )
         if first is None:
             first = (chosen, identity)
         elif set(chosen + identity) != set(first[0] + first[1]):
+            lacks, adds = _differences(first[0] + first[1], chosen + identity)
             msg = (
                 f"{feature} run {run_id}: entry {_name(entry)} writes different "
                 f"columns from entry {_name(first_entry)}"
-                f"{_difference(first[0] + first[1], chosen + identity)}. A matrix "
-                f"needs one set of columns, so narrow the read with scope=."
+                f"{_difference_clause(lacks, adds)}. A matrix needs one set of "
+                f"columns, so narrow the read with scope=."
             )
-            raise ValueError(msg)
+            raise RunColumnsConflict(
+                msg,
+                feature=feature,
+                run_id=run_id,
+                entries=[first_entry, entry],
+                columns=[*lacks, *adds],
+            )
         entry_rows.append(_rows_returned(path, footer, perspective))
         file_rows.append(footer.n_rows)
     assert first is not None
@@ -382,7 +520,8 @@ def _rows_returned(path: Path, footer: ParquetFooter, perspective: int | None) -
 def _select_columns(
     footer: ParquetFooter,
     patterns: tuple[str, ...] | None,
-    where: str,
+    feature: str,
+    run_id: str,
     entry: Entry,
 ) -> tuple[str, ...]:
     """The columns of one entry that *patterns* select, in the order they return.
@@ -391,6 +530,7 @@ def _select_columns(
     pattern that is the exact name of such a column takes it literally, so a name
     holding glob characters still selects itself.
     """
+    where = f"{feature} run {run_id}"
     candidates = [
         column.name
         for column in footer.columns
@@ -406,7 +546,9 @@ def _select_columns(
                 f"the columns to read with columns=. Its numeric columns are: "
                 f"{_listed(candidates)}."
             )
-            raise ValueError(msg)
+            raise RunReadInvalid(
+                msg, feature=feature, run_id=run_id, entries=[entry], columns=candidates
+            )
         return chosen
     taken: list[str] = []
     for pattern in patterns:
@@ -420,7 +562,9 @@ def _select_columns(
                 f"perspective) is not a value, and nor is a string column. The "
                 f"numeric columns are: {_listed(candidates)}."
             )
-            raise ValueError(msg)
+            raise RunReadInvalid(
+                msg, feature=feature, run_id=run_id, entries=[entry], columns=candidates
+            )
         taken.extend(name for name in matched if name not in taken)
     return tuple(taken)
 
@@ -488,7 +632,7 @@ def _check_memory(
         f"available. Narrow the read with scope=, perspective= or columns=, or "
         f"pass a smaller dtype=."
     )
-    raise MemoryError(msg)
+    raise RunTooLarge(msg, feature=feature, run_id=run_id)
 
 
 def _read(
@@ -565,10 +709,17 @@ def _listed(names: Sequence[str]) -> str:
     return shown if rest <= 0 else f"{shown}, and {rest} more"
 
 
-def _difference(expected: tuple[str, ...], actual: tuple[str, ...]) -> str:
-    """What one entry lacks and adds against the first, as a clause for a message."""
+def _differences(
+    expected: tuple[str, ...], actual: tuple[str, ...]
+) -> tuple[list[str], list[str]]:
+    """The columns one entry lacks and the columns it adds, against the first."""
     lacks = [name for name in expected if name not in actual]
     adds = [name for name in actual if name not in expected]
+    return lacks, adds
+
+
+def _difference_clause(lacks: list[str], adds: list[str]) -> str:
+    """What one entry lacks and adds against the first, as a clause for a message."""
     clauses = [
         text
         for text in (

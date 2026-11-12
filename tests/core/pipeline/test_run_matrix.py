@@ -16,9 +16,11 @@ and no write.
 from __future__ import annotations
 
 import hashlib
+import json
 import tracemalloc
 import zlib
 from collections.abc import Callable, Generator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +34,12 @@ from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline import load_run_matrix as exported_load_run_matrix
 from mosaic.core.pipeline import run_matrix as run_matrix_module
-from mosaic.core.pipeline.index import feature_index_path
+from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
+from mosaic.core.pipeline.index import feature_index_path, feature_run_root
 from mosaic.core.pipeline.parquet_reader import ParquetUnreadable, iter_column_batches
 from mosaic.core.pipeline.run import load_values
 from mosaic.core.pipeline.run_matrix import RunMatrix, load_run_matrix
-from mosaic.core.pipeline.track_universe import current_run_id
+from mosaic.core.pipeline.track_universe import AmbiguousTrackLeaf, current_run_id
 from mosaic.core.pipeline.types import Result, ResultColumn
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -591,8 +594,12 @@ def test_a_file_that_shrinks_between_the_count_and_the_read_is_refused(
 
     monkeypatch.setattr(run_matrix_module, "host_memory_bytes", shrinking)
 
-    with pytest.raises(RuntimeError, match=r"g1/s1 changed while it was being read"):
+    with pytest.raises(
+        RuntimeError, match=r"g1/s1 changed while it was being read"
+    ) as raised:
         _ = load_run_matrix(ds, result)
+
+    assert not isinstance(raised.value, ClassifiedError)
 
 
 # --- the batch reader -------------------------------------------------------
@@ -843,3 +850,264 @@ def test_reading_a_run_changes_no_file_of_the_dataset(tmp_path: Path) -> None:
 
     assert tree_digest(base) == before_digest
     assert tree_snapshot(base) == before_stats
+
+
+# --- classified refusals ----------------------------------------------------
+
+
+class KeysOnlyFeature(PlainFeature):
+    """A table whose only numeric columns are identity and bookkeeping."""
+
+    name = "prov-keys-only"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "frame": df["frame"].to_numpy(),
+                "id": df["id"].to_numpy(),
+                "group": df["group"].to_numpy(),
+                "sequence": df["sequence"].to_numpy(),
+                "fps": np.full(len(df), 30.0),
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """One way the reader refuses, and what a caller can tell about it."""
+
+    provoke: Callable[[Path, pytest.MonkeyPatch], object]
+    base: type[BaseException]
+    kind: ErrorKind
+    name: str
+
+
+def _no_runs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, _ = wide_run(tmp_path)
+    return load_run_matrix(ds, Result(feature="wide"))
+
+
+def _pinned_run_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    return load_run_matrix(ds, Result(feature=result.feature, run_id="0.1-0000000000"))
+
+
+def _index_lists_no_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    rewrite_index(ds, result, lambda frame: frame.iloc[0:0])
+    return load_run_matrix(ds, Result(feature=result.feature))
+
+
+def _two_leaves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("g", "a"), n_rows=6)
+    feature = "speed-angvel__from__tracks"
+    first, second, _ = (run_speed(ds, step) for step in (1, 2, 3))
+    params = feature_run_root(ds, feature, second) / "params.json"
+    record = json.loads(params.read_text())
+    record["_resolved"] = [
+        *record.get("_resolved", []),
+        {"where": "inputs[0]", "feature": feature, "run_id": first},
+    ]
+    _ = params.write_text(json.dumps(record))
+    return load_run_matrix(ds, Result(feature=feature))
+
+
+def _scope_selects_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    return load_run_matrix(ds, result, scope=Scope(groups=["absent"]))
+
+
+def _only_absent_entries(allow_partial: bool) -> Callable[..., object]:
+    def provoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+        ds, result = wide_run(tmp_path)
+        return load_run_matrix(
+            ds,
+            result,
+            scope=Scope(entries=[("g9", "never")]),
+            allow_partial=allow_partial,
+        )
+
+    return provoke
+
+
+def _another_absent_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    scope = Scope(entries=[("g1", "s1"), ("g9", "never")])
+    return load_run_matrix(ds, result, scope=scope)
+
+
+def _unfinished(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    rewrite_index(ds, result, lambda frame: frame.assign(finished_at=""))
+    return load_run_matrix(ds, result)
+
+
+def _some_outputs_gone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    output_of(ds, result, "g1", "s2").unlink()
+    return load_run_matrix(ds, result)
+
+
+def _all_outputs_gone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    for group, sequence in ENTRIES:
+        output_of(ds, result, group, sequence).unlink()
+    return load_run_matrix(ds, result, allow_partial=True)
+
+
+def _pattern_matches_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    return load_run_matrix(ds, result, columns="nope*")
+
+
+def _no_numeric_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, *ENTRIES, n_rows=4, n_ids=2)
+    return load_run_matrix(ds, ds.run_feature(KeysOnlyFeature()))
+
+
+def _entries_write_different_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> object:
+    ds, result = wide_run(tmp_path)
+    path = output_of(ds, result, "g1", "s2")
+    pd.read_parquet(path).drop(columns=["w5"]).to_parquet(path, index=False)
+    return load_run_matrix(ds, result)
+
+
+def _dtype_cannot_hold_nan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    return load_run_matrix(ds, result, dtype=np.int64)
+
+
+def _read_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
+    ds, result = wide_run(tmp_path)
+    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", lambda: (4096, 1024))
+    return load_run_matrix(ds, result)
+
+
+READER_REFUSALS = [
+    pytest.param(
+        Refusal(_no_runs, FileNotFoundError, "not_found", "RunNotFound"),
+        id="the-feature-has-no-runs",
+    ),
+    pytest.param(
+        Refusal(_pinned_run_absent, FileNotFoundError, "not_found", "RunNotFound"),
+        id="a-pinned-run-is-not-in-the-index",
+    ),
+    pytest.param(
+        Refusal(_index_lists_no_run, ValueError, "not_found", "RunIndexEmpty"),
+        id="an-unpinned-read-of-an-index-listing-no-run",
+    ),
+    pytest.param(
+        Refusal(_two_leaves, AmbiguousTrackLeaf, "conflict", "AmbiguousRunLeaf"),
+        id="two-track-shaped-leaves",
+    ),
+    pytest.param(
+        Refusal(_scope_selects_nothing, ValueError, "invalid", "RunReadInvalid"),
+        id="the-scope-selects-no-output",
+    ),
+    pytest.param(
+        Refusal(_only_absent_entries(False), ValueError, "conflict", "RunIncomplete"),
+        id="the-scope-names-only-absent-entries",
+    ),
+    pytest.param(
+        Refusal(_only_absent_entries(True), ValueError, "conflict", "RunIncomplete"),
+        id="the-scope-names-only-absent-entries-with-allow-partial",
+    ),
+    pytest.param(
+        Refusal(_another_absent_entry, ValueError, "conflict", "RunIncomplete"),
+        id="the-scope-names-another-absent-entry",
+    ),
+    pytest.param(
+        Refusal(_unfinished, ValueError, "conflict", "RunIncomplete"),
+        id="an-unfinished-run",
+    ),
+    pytest.param(
+        Refusal(_some_outputs_gone, FileNotFoundError, "conflict", "RunOutputsGone"),
+        id="some-outputs-are-gone",
+    ),
+    pytest.param(
+        Refusal(_all_outputs_gone, FileNotFoundError, "conflict", "RunOutputsGone"),
+        id="all-outputs-are-gone",
+    ),
+    pytest.param(
+        Refusal(_pattern_matches_nothing, ValueError, "invalid", "RunReadInvalid"),
+        id="a-pattern-matches-no-numeric-column",
+    ),
+    pytest.param(
+        Refusal(_no_numeric_payload, ValueError, "invalid", "RunReadInvalid"),
+        id="a-run-with-no-numeric-payload-column",
+    ),
+    pytest.param(
+        Refusal(
+            _entries_write_different_columns,
+            ValueError,
+            "conflict",
+            "RunColumnsConflict",
+        ),
+        id="entries-write-different-columns",
+    ),
+    pytest.param(
+        Refusal(_dtype_cannot_hold_nan, ValueError, "invalid", "RunReadInvalid"),
+        id="a-non-floating-dtype",
+    ),
+    pytest.param(
+        Refusal(_read_too_large, MemoryError, "unavailable", "RunTooLarge"),
+        id="a-read-too-large",
+    ),
+]
+
+
+@pytest.mark.parametrize("refusal", READER_REFUSALS)
+def test_every_refusal_of_the_reader_is_classified_and_keeps_its_base_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, refusal: Refusal
+) -> None:
+    with pytest.raises(refusal.base) as raised:
+        _ = refusal.provoke(tmp_path, monkeypatch)
+
+    error = raised.value
+    assert isinstance(error, ClassifiedError)
+    assert error.error_kind == refusal.kind
+    assert type(error).__name__ == refusal.name
+    assert refusal.name in run_matrix_module.__all__
+    detail = error.error_detail()
+    assert detail is not None
+    assert isinstance(detail["feature"], str) and detail["feature"]
+    assert "run_id" in detail
+
+
+def test_the_unpinned_ambiguity_is_caught_as_the_track_universes_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(AmbiguousTrackLeaf) as raised:
+        _ = _two_leaves(tmp_path, monkeypatch)
+
+    assert isinstance(raised.value, RuntimeError)
+    assert isinstance(raised.value, ClassifiedError)
+    assert "Name one by passing its run_id" in str(raised.value)
+
+
+def test_the_refusal_of_a_partial_run_names_the_entries_and_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ClassifiedError) as raised:
+        _ = _another_absent_entry(tmp_path, monkeypatch)
+
+    detail = raised.value.error_detail()
+    assert detail is not None
+    assert detail["entries"] == ["g9/never"]
+    assert isinstance(detail["run_id"], str)
+
+
+def test_the_refusal_of_entries_with_different_columns_names_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ClassifiedError) as raised:
+        _ = _entries_write_different_columns(tmp_path, monkeypatch)
+
+    detail = raised.value.error_detail()
+    assert detail is not None
+    assert detail["entries"] == ["/solo", "g1/s2"]
+    assert detail["columns"] == ["w5"]

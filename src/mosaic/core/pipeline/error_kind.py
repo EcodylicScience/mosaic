@@ -42,6 +42,24 @@ type ErrorKind = Literal["refused", "invalid", "unavailable", "not_found", "conf
 """
 
 
+def _restore_error[E: ClassifiedError](
+    cls: type[E], args: tuple[object, ...], state: dict[str, object]
+) -> E:
+    """Rebuild an error of *cls* from its ``args`` and attributes, without ``__init__``.
+
+    A class that also subclasses ``MemoryError`` finds that base's ``__new__`` first
+    and CPython refuses it for a subclass that did not inherit its allocator, so
+    ``BaseException.__new__`` allocates it instead.
+    """
+    try:
+        error = cls.__new__(cls)
+    except TypeError:
+        error = BaseException.__new__(cls)
+    error.args = args
+    error.__dict__.update(state)
+    return error
+
+
 class ClassifiedError(Exception):
     """An error with a declared kind of failure.
 
@@ -66,6 +84,15 @@ class ClassifiedError(Exception):
                 f"{cls.__name__} declares error_kind 'refused' and names no "
                 "reason. Subclass Refusal instead."
             )
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Pickle the error whatever its subclass's ``__init__`` takes.
+
+        A process worker sends the error it raised to its parent through a pickle,
+        and the default rebuilds an exception by calling its class with ``args``. A
+        subclass takes other arguments than the message.
+        """
+        return (_restore_error, (type(self), self.args, self.__dict__))
 
     def error_reason(self) -> str | None:
         """Return which failure of its kind this is, or ``None`` when one is not named."""

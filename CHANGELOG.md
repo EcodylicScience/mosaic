@@ -8,6 +8,18 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: run summaries across entries
+
+`load_run_matrix` raises classified errors, so `error_envelope` renders each refusal
+with a kind (`not_found`, `conflict`, `invalid` or `unavailable`) and the feature and
+run it concerns. The base types are unchanged: `RunNotFound` and `RunOutputsGone` are
+`FileNotFoundError`, `RunIndexEmpty`, `RunIncomplete`, `RunColumnsConflict` and
+`RunReadInvalid` are `ValueError`, `RunTooLarge` is `MemoryError`, and
+`AmbiguousRunLeaf` is `AmbiguousTrackLeaf`, so a caller that catches the old type
+catches what it caught before. The messages are the same. Every `ClassifiedError`
+now survives the pickle a process worker sends its parent, which `PreviewInvalid` and
+the other errors with their own `__init__` arguments did not.
+
 ## Unreleased: `event-response` measures a value around each event
 
 `event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It
