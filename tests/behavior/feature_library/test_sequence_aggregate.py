@@ -287,6 +287,42 @@ def test_a_kept_label_may_vary_among_the_rows_a_filter_drops() -> None:
     assert out["strain"].tolist() == ["a"]
 
 
+def test_an_entry_the_filter_empties_keeps_its_label_from_the_rows_before_it() -> None:
+    table = _individual_table().assign(strain="wild")
+    kept = _apply(_kept(aggs=["count", "mean"]), table)
+
+    blank = _apply(_kept(aggs=["count", "mean"], filter_expr="id > 100"), table)
+
+    assert list(blank.columns) == list(kept.columns)
+    assert blank["strain"].tolist() == ["wild"]
+    assert blank["value_count"].tolist() == [0]
+    assert np.isnan(blank["value_mean"].iloc[0])
+
+
+def test_an_entry_the_filter_empties_keeps_each_subgroup_label() -> None:
+    table = _individual_table().assign(
+        strain=["a", "a", "a", "b", "b", "b"], event=[1.0, 1.0, 1.0, 2.0, 2.0, 2.0]
+    )
+
+    blank = _apply(_kept(subgroup_col="event", filter_expr="id > 100"), table)
+
+    assert blank["event"].tolist() == [1.0, 2.0]
+    assert blank["strain"].tolist() == ["a", "b"]
+
+
+def test_a_label_that_varies_before_a_filter_that_empties_the_entry_is_refused() -> (
+    None
+):
+    table = _individual_table().assign(strain=["a", "a", "b", "a", "a", "a"])
+
+    with pytest.raises(ValueError) as refused:
+        _ = _apply(_kept(filter_expr="id > 100"), table)
+
+    message = str(refused.value)
+    assert "'strain'" in message
+    assert "group='G', sequence='S1'" in message
+
+
 @pytest.mark.parametrize(
     ("strain", "values"),
     [

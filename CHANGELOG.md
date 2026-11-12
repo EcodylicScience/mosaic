@@ -40,6 +40,9 @@ counting as a value, and the input must hold it. A group that disagrees, or a mi
 column, raises from `apply`. The refusal of a disagreeing group names the column, its key
 and up to five values, and that of a missing column names the column. The run records an
 `entry_error` and lists the entry in `Result.failed_entries`.
+The row `sequence-aggregate` writes for an entry whose `filter_expr` keeps no row holds
+each kept column from the entry's rows before the filter, under the same one-value rule,
+so the entry joins its group with a count of 0.
 `group`, `sequence`, `frame`, `time`, `id`, `id1`, `id2`, `perspective`, `arena`, a name
 in `columns` and `subgroup_col` are refused. An empty `keep_columns` is left out of the
 run identity, so every existing run id stays, the versions stay, and the runs downstream

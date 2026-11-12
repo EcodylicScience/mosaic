@@ -12,7 +12,8 @@ rule (:class:`PairAggregateParams`). Each feature also groups by the input's
 
 ``keep_columns`` names columns of the input that the output carries beside the
 reduction keys: a label such as a strain, which every row of a reduced group
-shares. :func:`reduce_column` refuses a group whose rows disagree on one.
+shares. :func:`reduce_column` refuses a group whose rows disagree on one, and
+:func:`blank_reduction` reads it from an emptied entry's rows before the filter.
 """
 
 from __future__ import annotations
@@ -346,12 +347,7 @@ def reduce_column(
     once = pairs == "once" and _PERSPECTIVE_COLUMN in df.columns
     halved = work[(df[_PERSPECTIVE_COLUMN] == 0).to_numpy()] if once else work
     group_keys = list(keys)
-    grouped = work.groupby(group_keys, sort=True)
-    reduced = (
-        grouped[list(carried)].first()
-        if carried
-        else pd.DataFrame(index=grouped.size().index)
-    )
+    reduced = _carried_by_group(work, keys, carried)
     for index, column in enumerate(params.columns):
         for agg in params.aggs:
             counting = agg in PAIR_COUNTING_AGGS
@@ -374,22 +370,42 @@ def blank_reduction(
     """One row per distinct ``keys`` of ``df`` that reduces no values.
 
     For an entry whose ``filter_expr`` keeps no row. It has the columns that
-    :func:`reduce_column` gives an entry that keeps rows: each of the ``sum``
-    and ``count`` aggregations is 0, as for a group none of whose rows it reads,
-    and every other aggregation is NaN. A row whose key is null belongs to no
-    group.
+    :func:`reduce_column` gives an entry that keeps rows: each of
+    ``params.keep_columns`` holds its one value in the group's rows before the
+    filter, each of the ``sum`` and ``count`` aggregations is 0, as for a group
+    none of whose rows it reads, and every other aggregation is NaN. A row whose
+    key is null belongs to no group.
 
     Args:
-        df: The rows before the filter, which hold the keys.
-        params: The columns and aggregations of the result.
+        df: The rows before the filter, which hold the keys and the kept columns.
+        params: The columns, aggregations and kept columns of the result.
         keys: The columns to group by.
 
     Returns:
         The blank rows, sorted by ``keys``.
+
+    Raises:
+        ValueError: A kept column takes more than one value in a group of ``df``.
     """
-    groups = df[list(keys)].dropna().drop_duplicates().sort_values(list(keys))
-    blank = groups.reset_index(drop=True)
+    kept = tuple(params.keep_columns)
+    _refuse_a_varying_column(df, keys, kept)
+    work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *kept)})
+    blank = _carried_by_group(work, keys, kept).reset_index()
     for column in params.columns:
         for agg in params.aggs:
             blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
     return blank
+
+
+def _carried_by_group(
+    work: pd.DataFrame, keys: Sequence[str], carried: Sequence[str]
+) -> pd.DataFrame:
+    """The first value of each of *carried* per group of *keys*, indexed by the keys.
+
+    A row whose key is null belongs to no group. Without *carried*, the frame
+    holds only the index of the groups.
+    """
+    grouped = work.groupby(list(keys), sort=True)
+    if carried:
+        return grouped[list(carried)].first()
+    return pd.DataFrame(index=grouped.size().index)
