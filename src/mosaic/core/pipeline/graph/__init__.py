@@ -201,6 +201,7 @@ if TYPE_CHECKING:
     from .request import (
         DuplicateRequest as DuplicateRequest,
         PlanChanged as PlanChanged,
+        ReviewedPlan as ReviewedPlan,
         SubmittedRequest as SubmittedRequest,
         computed_runs as computed_runs,
         load_recipe_for_request as load_recipe_for_request,
@@ -550,6 +551,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "refuse_mixed_schemas": ".step_preflight",
     "DuplicateRequest": ".request",
     "PlanChanged": ".request",
+    "ReviewedPlan": ".request",
     "SubmittedRequest": ".request",
     "computed_runs": ".request",
     "describe_duplicate": ".store",
@@ -929,6 +931,7 @@ __all__ = [
     "RetireOwnRecipe",
     "RetireUnknownRecipe",
     "RetryState",
+    "ReviewedPlan",
     "RunStatusWire",
     "ScoreAnswers",
     "ScoreProtocol",

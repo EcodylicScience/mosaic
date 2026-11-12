@@ -47,6 +47,48 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
+## Unreleased: `convert-tracks` and a feature run cost the same per entry at any size
+
+`convert-tracks` and `resample-tracks` write the tracks index once for each batch of
+tables, where each table reread and rewrote the whole index, and `run_feature` no longer
+runs a full garbage collection after each entry, rebuilds the map of its entries for each
+one, or writes its feature index every ten rows however large the index is. On the
+Tracktor study dataset, `convert-tracks` over 800 entries with four threads went from 13.7
+to 53.2 entries a second, and over 8,400 entries with six threads from 4.5 entries a
+second (1,880 s) to 132 (63.6 s). `speed-angvel` over 800 entries with four threads went from 6.2 to
+32.5 entries a second, and over 8,400 entries with six workers from 1,572 s (5.3 a second,
+process mode) to 205.6 s in thread mode and 90.8 s in process mode. The tables, the index
+rows and the run ids are those of the earlier code, which the golden and parallelism tests
+and a comparison of the 8,400 tables and rows of both runs check, apart from the write
+times in a row. A batch of tables is published when a thousand are waiting, or when the longer of ten
+seconds and four times the duration of the last write has passed since it ended, so a
+killed run leaves the tables of one batch without rows, and those are made again. A batch
+that names a colliding entry is refused before any table moves. A rerun of `convert-tracks`
+over entries already converted reads the tracks index and the source compositions once,
+where it read both for each entry (`ConversionFacts`), and a worker is handed the facts of
+its own entries. When a run with workers is under its memory floor with nothing in flight,
+it collects garbage once before it stops.
+`write_tracks_rows` writes a batch of `TracksRowDraft` in one read-modify-write of the
+index, and `Scope.selecting` returns the test that `Scope.selects` applies, built once
+for a caller that tests many entries. The index of a feature run lags the outputs by the
+rows written in the last two seconds, or in four times the cost of the last write.
+
+## Unreleased: planning a recipe over thousands of entries takes seconds
+
+`plan_recipe` and `submit_pipeline` on a dataset of 8,400 entries took 216 s and 244 s
+cold and 20 s and 42 s warm, on a recipe of `convert-tracks`, `speed-angvel`,
+`nearest-neighbor` and `sequence-aggregate` with the first two finished. They take 11 s and
+8 s cold and 3 s and 3 s warm. A plan, its fingerprint and its steps are unchanged.
+The inventory checked each variant row's table by a pass over the whole index per row,
+the planner built the set of selected entries once per entry tested, and
+a run's outputs were matched to entries by every stem against every key. Each is one pass
+now. `submit_pipeline` records the plan it reviewed unless an index moved since
+(`submit_request(reviewed=ReviewedPlan(...))`, `InventoryCache.generation`), and plans
+again when one did. `InventoryCache.revalidate` rereads the `feature` kind alone when only
+a feature index moved, and every kind otherwise, and keeps the parquet footers that parsed
+by path, size and modification time (`ParquetFooterMemo`). `Dataset.resolve_paths`
+resolves a list of stored paths with one resolution of each directory.
+
 ## Unreleased: `convert-tracks` and `resample-tracks` compute their entries at once
 
 `Op` gains the class attribute `parallelizable`, false unless an op sets it, and

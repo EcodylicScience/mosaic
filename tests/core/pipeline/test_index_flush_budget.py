@@ -36,11 +36,11 @@ def _rows(directory: Path, count: int) -> list[FeatureIndexRow]:
     return made
 
 
-def test_the_batch_size_is_importable_rather_than_buried(tmp_path: Path) -> None:
+def test_the_budget_is_importable_rather_than_buried(tmp_path: Path) -> None:
     """It was a function-local constant inside run_feature: not importable, not
     configurable, and not testable without running a feature."""
-    assert run_module.IDX_FLUSH_EVERY >= 1
     assert run_module.IDX_FLUSH_SECONDS > 0
+    assert run_module.IDX_FLUSH_COST_FACTOR > 0
 
 
 def test_per_row_flushing_rewrites_the_whole_index_every_time(
@@ -95,10 +95,7 @@ def test_a_slow_producer_does_not_hold_rows_indefinitely(
     for row in rows:
         pending.append(row)
         time.sleep(0.02)
-        if (
-            len(pending) >= run_module.IDX_FLUSH_EVERY
-            or time.monotonic() - last_flush >= 0.01
-        ):
+        if time.monotonic() - last_flush >= 0.01:
             index.append(list(pending))
             pending.clear()
             last_flush = time.monotonic()

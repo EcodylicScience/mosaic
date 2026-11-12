@@ -13,6 +13,7 @@ submits, and writes what a result holds. The pool does none of that.
 
 from __future__ import annotations
 
+import gc
 import multiprocessing as mp
 import pickle
 import traceback
@@ -263,16 +264,22 @@ class EntryPool[Tag, Result]:
     def _wait_for_memory(self) -> None:
         """Hold dispatch while the host's available memory is under the floor.
 
-        Waits for in-flight calls, whose tables free memory as they finish, and
-        raises when the host is still under the floor with none in flight.
+        Waits for in-flight calls, whose tables free memory as they finish. With
+        none in flight it collects garbage once, which the run no longer does after
+        each entry, and raises when the host is still under the floor.
         """
         if self._floor <= 0.0:
             return
+        collected = False
         while True:
             free = self._watch.free_fraction()
             if free is None or free >= self._floor:
                 return
             if not self._pending:
+                if not collected:
+                    _ = gc.collect()
+                    collected = True
+                    continue
                 self.report(final=True)
                 raise MemoryFloorReached(
                     self._memory_use(), free_fraction=free, floor=self._floor

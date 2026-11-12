@@ -24,6 +24,7 @@ from mosaic.core.pipeline.inventory import (
     inventory_wire,
     reclassify,
 )
+from mosaic.core.pipeline.inventory._read import ParquetFooterMemo
 from mosaic.core.pipeline.inventory.scan import (
     entry_universe,
     narrow_target,
@@ -119,6 +120,112 @@ def test_a_global_marker_answers_for_every_entry(tmp_path: Path) -> None:
 
     assert coverage.covers_all
     assert coverage.is_satisfied
+
+
+def test_the_stems_a_run_holds_account_for_entries_by_key_or_key_and_double_underscore() -> (
+    None
+):
+    """The rule each entry is tested against, whatever the number of stems."""
+    from mosaic.core.helpers import make_entry_key
+    from mosaic.core.pipeline.inventory.scan import _entries_held  # pyright: ignore[reportPrivateUsage]
+
+    entries = frozenset(
+        {
+            ("", "a"),
+            ("", "ab"),
+            ("", "a_"),
+            ("g", "s"),
+            ("g", "t"),
+            ("", "g"),
+            ("", "x__y"),
+            ("", "z"),
+        }
+    )
+    stems = {"a__id0", "ab", "g__s", "x__y__id1", "a___q", "zz", "g__"}
+
+    held = _entries_held(stems, entries)
+
+    expected = {
+        entry
+        for entry in entries
+        for key in (make_entry_key(*entry),)
+        if any(stem == key or stem.startswith(f"{key}__") for stem in stems)
+    }
+    assert held == expected
+    assert ("", "z") not in held
+    assert ("", "a_") in held
+
+
+def _count_footer_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record each parquet footer that a scan reads."""
+    import mosaic.core.pipeline.inventory._read as reading
+
+    read: list[Path] = []
+    real = reading.parquet_is_readable
+
+    def counted(path: Path) -> bool:
+        read.append(path)
+        return real(path)
+
+    monkeypatch.setattr(reading, "parquet_is_readable", counted)
+    return read
+
+
+def test_a_footer_is_read_once_until_its_file_moves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    target = frozenset({("", "seq_a"), ("", "seq_b")})
+    for name in ("seq_a", "seq_b"):
+        pd.DataFrame({"a": [1]}).to_parquet(run_root / f"{name}.parquet", index=False)
+    read = _count_footer_reads(monkeypatch)
+    footers = ParquetFooterMemo()
+
+    first = run_covers(run_root, target, footers=footers)
+    again = run_covers(run_root, target, footers=footers)
+
+    assert first.covered == again.covered == target
+    assert len(read) == 2
+
+    _ = (run_root / "seq_b.parquet").write_bytes(b"torn")
+    torn = run_covers(run_root, target, footers=footers)
+
+    assert torn.covered == frozenset({("", "seq_a")})
+    assert read[2:] == [run_root / "seq_b.parquet"]
+
+
+def test_a_deleted_output_is_forgotten_by_the_next_scan_of_its_directory(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    for name in ("seq_a", "seq_b"):
+        pd.DataFrame({"a": [1]}).to_parquet(run_root / f"{name}.parquet", index=False)
+    footers = ParquetFooterMemo()
+    assert footers.whole_stems(run_root) == {"seq_a", "seq_b"}
+
+    (run_root / "seq_b.parquet").unlink()
+
+    assert footers.whole_stems(run_root) == {"seq_a"}
+    assert set(footers._known[run_root]) == {"seq_a.parquet"}  # pyright: ignore[reportPrivateUsage]
+
+
+def test_a_rebuild_after_an_index_moved_reads_no_footer_of_a_file_that_did_not(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.core.pipeline.inventory import InventoryCache
+
+    _ = _run(scenario_dataset)
+    holder = InventoryCache(scenario_dataset)
+    _ = holder.get(kinds=["feature"])
+    index_path = scenario_dataset.get_root("features") / STORAGE / "index.csv"
+    _ = index_path.write_text(index_path.read_text() + "\n")
+    read = _count_footer_reads(monkeypatch)
+
+    assert holder.revalidate().stale
+
+    assert read == []
 
 
 def test_an_absent_run_root_covers_nothing_rather_than_raising(tmp_path: Path) -> None:
@@ -680,3 +787,33 @@ def test_the_tracks_index_is_read_once_however_many_variants_it_holds(
 
     assert sorted(record.run_id for record in found.records) == ["v1", "v2", "v3"]
     assert len(reads) == 1
+
+
+def _index_record_reads_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entries: int
+) -> int:
+    """How many times a scan of one variant of *entries* entries builds index records."""
+    import mosaic.core.pipeline.inventory.scan as scan
+
+    ds = make_dataset(tmp_path / f"ds{entries}")
+    add_tracks_variant(ds, "v1", *(f"s{index}" for index in range(entries)), n_rows=2)
+    reads: list[int] = []
+    real = scan.index_records
+
+    def counted(frame: pd.DataFrame) -> list[dict[str, str]]:
+        reads.append(len(frame))
+        return real(frame)
+
+    monkeypatch.setattr(scan, "index_records", counted)
+    _ = inventory(ds, kinds=["tracks-variant"])
+    return len(reads)
+
+
+def test_a_variants_tables_are_checked_by_one_pass_over_its_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cost is rows, not rows times entries, which an 8,400-entry plan cannot pay."""
+    few = _index_record_reads_for(tmp_path, monkeypatch, 3)
+    many = _index_record_reads_for(tmp_path, monkeypatch, 12)
+
+    assert many == few

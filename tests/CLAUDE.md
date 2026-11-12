@@ -12,7 +12,7 @@ The placement, import and conftest rules are "Where a test goes" in
 - Keep `--dist worksteal`. A case costs anywhere from microseconds to a video
   encode, and a static split leaves workers idle at the end of a run.
 - `tests/conftest.py` freezes the objects that outlive collection, and again every
-  100 tests, so that the `gc.collect()` that `run_feature` makes after each entry walks
+  100 tests, so that the collections that `run_feature` makes between entries walk
   only what the current test made. Without it a pipeline test runs about three times
   slower late in a worker.
 - Warnings are errors, every `xfail` is strict, and an empty parametrize fails

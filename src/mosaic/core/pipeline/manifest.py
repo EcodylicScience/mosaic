@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import gc
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -52,6 +51,7 @@ from .types import (
     ParquetLoadSpec,
     resolve_order_col,
 )
+from .pacing import PacedCollector
 from .parquet_reader import read_parquet_column_names
 
 if TYPE_CHECKING:
@@ -745,45 +745,46 @@ def _tables_on_disk(
     """Split the rows of *df* into the tables on disk and the paths that are not."""
     tables: list[_TracksTable] = []
     missing: list[Path] = []
-    for _, series in df.iterrows():
-        # Materialized as a string-keyed mapping once per row. A pandas ``Series``
-        # is keyed by an untyped index, so every cell read off it is untyped too
-        # -- and the columns here are all read as text. Cheap beside the ``Series``
-        # ``iterrows`` already builds.
-        row: dict[str, object] = {str(key): value for key, value in series.items()}
-        path = ds.resolve_path(str(row["abs_path"]))
+    # The columns are read straight off the row rather than through ``.get``: the
+    # reader projects onto the typed schema, so each is always present and an index
+    # predating one carries "" rather than lacking it.
+    named = df.loc[:, ["abs_path", "group", "sequence", "std_format", "run_id"]]
+    rows = list(named.itertuples(index=False, name=None))
+    paths = ds.resolve_paths(str(row[0]) for row in rows)
+    for path, (_, group, sequence, schema, variant) in zip(paths, rows, strict=True):
         if not path.exists():
             missing.append(path)
             continue
         tables.append(
             _TracksTable(
-                entry=(str(row["group"]), str(row["sequence"])),
+                entry=(str(group), str(sequence)),
                 path=path,
-                # Read straight off the row rather than through ``.get``: the
-                # reader projects onto the typed schema, so the column is always
-                # present and an index predating it carries "" rather than being
-                # absent.
-                schema=text_cell(row["std_format"]),
-                variant=str(row["run_id"]),
+                schema=text_cell(schema),
+                variant=str(variant),
             )
         )
     return tables, missing
 
 
-def _entry_selected(entry: tuple[str, str], selector: Scope) -> bool:
-    """Whether *selector* covers *entry*.
+def _entry_selected(selector: Scope) -> Callable[[tuple[str, str]], bool]:
+    """Return a test of whether *selector* covers an entry.
 
     Each test is against ``None`` and never against emptiness. A selector that
     lists nothing names nothing, the rule every other narrowing follows, from
-    ``IndexCSV.read`` to ``narrow_target``.
+    ``IndexCSV.read`` to ``narrow_target``. The entry pairs are built once, not
+    for each entry tested.
     """
-    group, sequence = entry
-    if selector.groups is not None and group not in selector.groups:
-        return False
-    if selector.sequences is not None and sequence not in selector.sequences:
-        return False
     pairs = selector.entry_pairs
-    return pairs is None or entry in pairs
+
+    def selected(entry: tuple[str, str]) -> bool:
+        group, sequence = entry
+        if selector.groups is not None and group not in selector.groups:
+            return False
+        if selector.sequences is not None and sequence not in selector.sequences:
+            return False
+        return pairs is None or entry in pairs
+
+    return selected
 
 
 def _resolve_tracks(
@@ -869,8 +870,9 @@ def _resolve_tracks(
     # Filter for scoped subset.
     scoped: set[tuple[str, str]] = set()
     path_map: dict[tuple[str, str], tuple[Path, LoadSpec]] = {}
+    selected = _entry_selected(selector)
     for entry, spec in path_map_all.items():
-        if _entry_selected(entry, selector):
+        if selected(entry):
             scoped.add(entry)
             path_map[entry] = spec
 
@@ -984,10 +986,9 @@ def refuse_mixed_track_schemas(
     selector = scope if scope is not None else Scope()
     candidates = variant_candidate_rows(read_tracks_index(ds), tracks_run_id)
     tables, _ = _tables_on_disk(ds, candidates)
+    selected = _entry_selected(selector)
     _refuse_mixed_schemas(
-        (table.entry, table.schema)
-        for table in tables
-        if _entry_selected(table.entry, selector)
+        (table.entry, table.schema) for table in tables if selected(table.entry)
     )
 
 
@@ -1298,6 +1299,7 @@ def iter_manifest(
     rows is handed to *on_pairs_missing* and skipped, and raises without it.
     """
     n_entries = len(manifest)
+    collector = PacedCollector()
     for i, (entry_key, entry) in enumerate(manifest.items()):
         # Build filters for this entry
         filters: Iterable[Callable[[pd.DataFrame], pd.DataFrame]] = ()
@@ -1361,8 +1363,8 @@ def iter_manifest(
 
             yield entry_key, df, selector
 
+        collector.finished(int(df.memory_usage(index=True).sum()))
         del df
-        gc.collect()
         pa.default_memory_pool().release_unused()
 
         if progress_label and ((i + 1) % progress_interval == 0 or i == n_entries - 1):

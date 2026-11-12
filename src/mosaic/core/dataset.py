@@ -89,6 +89,7 @@ from .stored_paths import (
     manifest_file_path,
     remap_single_path as _remap_single_path,
     resolve_stored_path,
+    resolve_stored_paths,
 )
 from .track_converter import (
     TRACK_CONVERTERS,
@@ -284,6 +285,7 @@ from .pipeline.tracks_index import (
     frame_axis_mismatches,
     frame_tail_shortfalls,
     consumed_composition_for,
+    consumed_compositions_for,
     legacy_view,
     read_frame_extent,
     read_tracks_index,
@@ -1485,6 +1487,59 @@ class TrackFileOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversionFacts:
+    """What a conversion run reads once about the tables its variants already hold.
+
+    A table that exists is skipped only if a row describes it and the sources it
+    records still hold what they held (``Dataset._conversion_is_current``). Asking
+    that of the index for each entry makes a rerun quadratic in the entries, so the
+    process that owns the run reads the rows of its variants once and hands each
+    call the facts of the entries it covers.
+
+    Attributes:
+        variants: The tracks variants the facts cover. A call that works under
+            another reads the index itself.
+        recorded: For each ``(group, sequence)`` that has a row under a variant,
+            the composition the row of each variant records. An entry with no row
+            is absent.
+        current: The composition the raw source of each of those entries holds
+            now.
+    """
+
+    variants: frozenset[str]
+    recorded: Mapping[tuple[str, str], Mapping[str, str]]
+    current: Mapping[tuple[str, str], str]
+
+    def is_current(self, variant: str, group: str, sequence: str) -> bool:
+        """Whether the table of an entry was made from what its source holds now.
+
+        Answers as ``Dataset._conversion_is_current`` does for a variant that the
+        facts cover.
+        """
+        recorded = self.recorded.get((group, sequence), {}).get(variant)
+        if recorded is None:
+            return False
+        current = self.current.get((group, sequence), "")
+        if not current:
+            return True
+        return not recorded or recorded == current
+
+    def restricted_to(self, entries: Collection[tuple[str, str]]) -> ConversionFacts:
+        """The facts of *entries* alone, which is what one call needs."""
+        return ConversionFacts(
+            variants=self.variants,
+            recorded={
+                entry: self.recorded[entry]
+                for entry in entries
+                if entry in self.recorded
+            },
+            current={
+                entry: self.current[entry] for entry in entries if entry in self.current
+            },
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TrackMergeJob:
     """One sequence whose per-individual files merge into one table.
 
@@ -1517,9 +1572,13 @@ class _TrackWork:
 
 
 def _convert_track_file_in_worker(
-    ref: Dataset | str, raw_row: pd.Series, params: dict[str, object], overwrite: bool
+    ref: Dataset | str,
+    raw_row: pd.Series,
+    params: dict[str, object],
+    overwrite: bool,
+    facts: ConversionFacts,
 ) -> TrackFileOutcome:
-    return worker_dataset(ref).convert_track_file(raw_row, params, overwrite)
+    return worker_dataset(ref).convert_track_file(raw_row, params, overwrite, facts)
 
 
 def _convert_track_merge_in_worker(
@@ -1528,8 +1587,11 @@ def _convert_track_merge_in_worker(
     params: dict[str, object] | None,
     group_from: str,
     overwrite: bool,
+    facts: ConversionFacts,
 ) -> TrackFileOutcome:
-    return worker_dataset(ref).convert_track_merge(job, params, group_from, overwrite)
+    return worker_dataset(ref).convert_track_merge(
+        job, params, group_from, overwrite, facts
+    )
 
 
 def _merge_output_group(group: str, first_row: pd.Series, group_from: str) -> str:
@@ -3467,6 +3529,16 @@ class Dataset:
             base = p if p.is_absolute() else _dataset_base_dir(self)
         return resolve_stored_path(p, base, path_map=self._path_map)
 
+    def resolve_paths(self, stored_paths: Iterable[str | Path]) -> list[Path]:
+        """Resolve each of *stored_paths* as :meth:`resolve_path` does.
+
+        For a list of thousands of paths: the dataset root and each directory are
+        resolved once instead of once per path.
+        """
+        return resolve_stored_paths(
+            stored_paths, lambda: _dataset_base_dir(self), path_map=self._path_map
+        )
+
     def _relative_to_root(self, abs_path: Path) -> str:
         """Convert an absolute path to relative-to-dataset-root for storage.
 
@@ -3728,7 +3800,13 @@ class Dataset:
         except pd.errors.EmptyDataError:
             return None
 
-    def _conversion_is_current(self, run_id: str, group: str, sequence: str) -> bool:
+    def _conversion_is_current(
+        self,
+        run_id: str,
+        group: str,
+        sequence: str,
+        facts: ConversionFacts | None = None,
+    ) -> bool:
         """Whether an existing table was made from what its sources hold *now*.
 
         The existence of the output says only that *this recipe* has *a* table for
@@ -3747,7 +3825,13 @@ class Dataset:
         evidence of currency: a legacy row that predates the projection, or a
         dataset whose ``sequences.csv`` has not been written, keeps skipping exactly
         as before rather than recomputing every entry on every call.
+
+        *facts*, read once by the run that makes the call, answer for the variants
+        they cover. Without them the index and the source compositions are read for
+        this entry alone.
         """
+        if facts is not None and run_id in facts.variants:
+            return facts.is_current(run_id, group, sequence)
         index = read_tracks_index(self)
         rows = index[
             (index["run_id"] == run_id)
@@ -8864,16 +8948,22 @@ class Dataset:
         try:
             self._convert_track_file_into(raw_row, params or {}, overwrite, outcome)
         finally:
-            lost = self._commit_track_outcome(
-                outcome, covered, variants, TableCommitter(self, overwrite=overwrite)
-            )
+            committer = TableCommitter(self, overwrite=overwrite)
+            lost = [
+                *self._commit_track_outcome(outcome, covered, variants, committer),
+                *committer.flush(),
+            ]
         if lost:
             raise lost[0].error
         assert outcome.path is not None
         return outcome.path
 
     def convert_track_file(
-        self, raw_row: pd.Series, params: dict[str, object], overwrite: bool
+        self,
+        raw_row: pd.Series,
+        params: dict[str, object],
+        overwrite: bool,
+        facts: ConversionFacts | None = None,
     ) -> TrackFileOutcome:
         """Convert one raw file and return what it produced, writing no index row.
 
@@ -8886,7 +8976,7 @@ class Dataset:
         """
         outcome = TrackFileOutcome()
         try:
-            self._convert_track_file_into(raw_row, params, overwrite, outcome)
+            self._convert_track_file_into(raw_row, params, overwrite, outcome, facts)
         except TrackSchemaError:
             raise
         except Exception as exc:
@@ -8902,16 +8992,18 @@ class Dataset:
         variants: set[str] | None,
         committer: TableCommitter,
     ) -> list[EntryFailure]:
-        """Publish the tables of *outcome*, and add what it reached to the sets.
+        """Add the tables of *outcome* to *committer*, and what it reached to the sets.
+
+        The caller flushes the committer when it has added the last outcome.
 
         Returns:
-            The failures of the tables that were gone when they were published.
+            The failures of the tables that were gone when a batch was published.
         """
         if covered is not None:
             covered.update(outcome.covered)
         if variants is not None and outcome.variant:
             variants.add(outcome.variant)
-        return committer.commit(outcome.tables)
+        return committer.add(outcome.tables)
 
     def _convert_track_file_into(
         self,
@@ -8919,6 +9011,7 @@ class Dataset:
         params: dict[str, object],
         overwrite: bool,
         outcome: TrackFileOutcome,
+        facts: ConversionFacts | None = None,
     ) -> None:
         """Convert one raw file, filling *outcome* as it goes.
 
@@ -8990,7 +9083,9 @@ class Dataset:
                 if (
                     out_path.exists()
                     and not overwrite
-                    and self._conversion_is_current(variant, out_group_canon, canon_seq)
+                    and self._conversion_is_current(
+                        variant, out_group_canon, canon_seq, facts
+                    )
                 ):
                     continue
 
@@ -9068,7 +9163,7 @@ class Dataset:
         if (
             out_path.exists()
             and not overwrite
-            and self._conversion_is_current(variant, group_value, seq_value)
+            and self._conversion_is_current(variant, group_value, seq_value, facts)
         ):
             outcome.path = out_path
             return
@@ -9397,8 +9492,10 @@ class Dataset:
         committer = TableCommitter(self, overwrite=overwrite)
         # Files that a run killed before this one left staged are no table of any
         # row, and a worker of this run stages under names of its own.
-        for variant_id in self._conversion_variant_ids(df, params, group_from):
+        variant_ids = self._conversion_variant_ids(df, params, group_from)
+        for variant_id in variant_ids:
             _ = sweep_staged(tracks_variant_root(self.get_root("tracks"), variant_id))
+        facts = self._conversion_facts(variant_ids)
 
         def report_lost(lost: EntryFailure) -> None:
             """Report a table that was gone when it was published, as a failure."""
@@ -9440,7 +9537,7 @@ class Dataset:
         try:
             for index, work in enumerate(
                 self._track_conversion_work(
-                    df, merging, params, group_from, overwrite, ref
+                    df, merging, params, group_from, overwrite, ref, facts
                 )
             ):
                 if cancel_check is not None:
@@ -9448,6 +9545,8 @@ class Dataset:
                 works[index] = work
                 pool.submit(index, work.fn, *work.args)
             pool.finish()
+            for lost in committer.flush():
+                report_lost(lost)
         except BaseException:
             # A table a worker finished is published with its row.
             pool.settle()
@@ -9457,6 +9556,8 @@ class Dataset:
                         result, covered, minted, committer
                     ):
                         report_lost(lost)
+            for lost in committer.flush():
+                report_lost(lost)
             raise
         finally:
             pool.close()
@@ -9474,6 +9575,38 @@ class Dataset:
                 file=sys.stderr,
             )
         return outcome
+
+    def _conversion_facts(self, variant_ids: set[str]) -> ConversionFacts:
+        """Read, once, what the tracks index and the raw sources say of *variant_ids*.
+
+        The facts that ``_conversion_is_current`` would otherwise read for each
+        entry: the composition each row of the variants records, and what the raw
+        source of each such entry holds now.
+        """
+        index = read_tracks_index(self)
+        recorded: dict[tuple[str, str], dict[str, str]] = {}
+        for run_id, group, sequence, composition in zip(
+            index["run_id"],
+            index["group"],
+            index["sequence"],
+            index["consumed_composition"],
+            strict=True,
+        ):
+            if run_id in variant_ids:
+                # A later row of an entry replaces an earlier one, as the last row
+                # of the entry answered before.
+                recorded.setdefault((group, sequence), {})[run_id] = text_cell(
+                    composition
+                )
+        entries = sorted(recorded)
+        cells = consumed_compositions_for(
+            self, [(entry, ("tracks_raw",)) for entry in entries]
+        )
+        return ConversionFacts(
+            variants=frozenset(variant_ids),
+            recorded=recorded,
+            current=dict(zip(entries, cells, strict=True)),
+        )
 
     def _conversion_variant_ids(
         self,
@@ -9516,22 +9649,35 @@ class Dataset:
         group_from: str,
         overwrite: bool,
         ref: Dataset | str,
+        facts: ConversionFacts,
     ) -> Iterator[_TrackWork]:
         """Yield the calls that convert the raw rows of *df*, in the order they run.
 
         One call per raw file, except that the files of a format that merges per
         sequence are one call per ``(group, sequence)``. A generator, so that the
-        planning of a sequence happens as the pool takes it.
+        planning of a sequence happens as the pool takes it. Each call carries the
+        *facts* of the entry its raw row names, or all of them for a row that names
+        no sequence, which a converter expands into entries of its own.
         """
 
         def file_work(row: pd.Series) -> _TrackWork:
             call_params = dict(params) if params else {}
             call_params["group_from"] = group_from
+            group, sequence = (
+                text_cell(row.get("group", "")),
+                text_cell(row.get("sequence", "")),
+            )
             return _TrackWork(
                 size=1,
                 path=str(row.get("abs_path")),
                 fn=_convert_track_file_in_worker,
-                args=(ref, row, call_params, overwrite),
+                args=(
+                    ref,
+                    row,
+                    call_params,
+                    overwrite,
+                    facts if not sequence else facts.restricted_to([(group, sequence)]),
+                ),
             )
 
         if not merging:
@@ -9603,7 +9749,14 @@ class Dataset:
                 size=int(len(group_df)),
                 path=str(self.resolve_path(group_df.iloc[0]["abs_path"])),
                 fn=_convert_track_merge_in_worker,
-                args=(ref, job, params, group_from, overwrite),
+                args=(
+                    ref,
+                    job,
+                    params,
+                    group_from,
+                    overwrite,
+                    facts.restricted_to([(text_cell(out_group), text_cell(sequence))]),
+                ),
             )
 
     def convert_track_merge(
@@ -9612,6 +9765,7 @@ class Dataset:
         params: dict[str, object] | None,
         group_from: str,
         overwrite: bool,
+        facts: ConversionFacts | None = None,
     ) -> TrackFileOutcome:
         """Merge one sequence's files into one table, writing no index row.
 
@@ -9648,7 +9802,7 @@ class Dataset:
         if (
             out_path.exists()
             and not overwrite
-            and self._conversion_is_current(variant, out_group, sequence)
+            and self._conversion_is_current(variant, out_group, sequence, facts)
         ):
             return outcome
 

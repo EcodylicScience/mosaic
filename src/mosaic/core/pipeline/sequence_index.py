@@ -485,9 +485,10 @@ def read_entry_compositions(
     found: dict[tuple[str, str], dict[str, str]] = {}
     for root in get_args(SourceRoot):
         frame = read_sequence_index(ds, root)
-        for _, row in frame.iterrows():
-            key = (str(row["group"]), str(row["sequence"]))
-            digest = str(row["composition"])
+        named = frame.loc[:, ["group", "sequence", "composition"]]
+        for group, sequence, composition in named.itertuples(index=False, name=None):
+            key = (str(group), str(sequence))
+            digest = str(composition)
             if key not in wanted or not digest:
                 continue
             found.setdefault(key, {})[root] = digest

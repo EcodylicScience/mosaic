@@ -24,8 +24,13 @@ are in `graph/CLAUDE.md`.
   reads its workers from `ctx.parallel`. A worker stages a tracks table under a hidden
   `.stage-*.staged` name beside its final one (`staged_tables.py`) and returns it with
   its index row (`TracksRowDraft`). The calling process, through `OrderedResults`, in
-  submission order, publishes each table with its row (`TableCommitter`), reports the
-  failures and the progress, so the outputs do not depend on the worker count. Of two
+  submission order, publishes the tables in batches (`TableCommitter`: the tables of a
+  batch move into place, then one write of the index records their rows, so a run is
+  not quadratic in the index; a batch is due after `max_batch` tables, or after the
+  longer of 10 s and four times the duration of the last write; a batch with a key
+  collision is refused before any table moves), reports the failures and the progress, so the
+  outputs do not depend on the worker count. The caller flushes the committer at the
+  end of the run and when it stops early. Of two
   files naming one entry the first keeps it, or the last when overwriting. The op
   removes the staged files of an earlier run at its start, and a table with no row is
   made again, not skipped. A process worker reopens the dataset from its manifest path
@@ -100,8 +105,10 @@ are in `graph/CLAUDE.md`.
 
 ## The tracks index
 
-- `write_tracks_row` is the only appender and `read_tracks_index` the only reader
-  (`tracks_index.py`). Rewrites (`delete_set`, `reconcile_variants`,
+- `write_tracks_row` and `write_tracks_rows` (one read-modify-write for a batch of
+  `TracksRowDraft`) are the only appenders and `read_tracks_index` the only reader
+  (`tracks_index.py`). A writer of many rows uses the batch. Rows written one at a time
+  reread the whole index each. Rewrites (`delete_set`, `reconcile_variants`,
   `Dataset.drop_entries`, the backfill passes) take `index_lock` on the same file.
 - One row per `(run_id, group, sequence)`, with no camera column. An absent index reads
   as an empty frame with the full schema. An older schema is widened in memory inside
@@ -303,6 +310,13 @@ are in `graph/CLAUDE.md`.
 
 - The inventory only reads. Truth is the indexes and files on disk, every view is a
   cache, and `InventoryCache.revalidate()` stats the index files to find a stale one.
+  A moved feature index rereads the `feature` kind alone, and any other moved index
+  every kind. `InventoryCache.generation` advances with each reread, and
+  `ParquetFooterMemo` keeps the parquet footers that parsed, by path, size and
+  modification time, so a scan reads only the outputs that moved. A scan reads each
+  index once, so a per-entry lookup is one set or dict built per index, never a pass
+  over its rows per entry (`tests/core/pipeline/inventory/test_inventory_scan.py`,
+  `tests/core/pipeline/graph/test_pipeline_plan_scale.py`).
 - `classify` (`inventory/model.py`) is the one place a status is decided. Files ahead
   of index rows are damage only on a finished run
   (`tests/core/pipeline/inventory/test_inventory_model.py`).

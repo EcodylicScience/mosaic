@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import gc
 import importlib
 import json
 import sys
-import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar, Final, TYPE_CHECKING
@@ -103,6 +101,7 @@ from .types import (
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .entry_pool import EntryPool
+from .pacing import PacedCollector, Pacer
 from .parallelism import MemoryFloorReached, ParallelMode, WorkerProcessDied
 from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
@@ -415,10 +414,12 @@ def _make_filter_factory(
     if pair_filter_spec is None and not has_frame_filter:
         return None
 
+    entry_map = scope.entry_map if pair_filter_spec is not None else {}
+
     def factory(entry_key: str) -> list[Callable[[pd.DataFrame], pd.DataFrame]]:
         filters: list[Callable[[pd.DataFrame], pd.DataFrame]] = []
         if pair_filter_spec is not None:
-            group, sequence = resolve_sequence_identity(entry_key, scope.entry_map)
+            group, sequence = resolve_sequence_identity(entry_key, entry_map)
             nn_filter = _build_nn_filter(ds, group, sequence, pair_filter_spec)
             if nn_filter is not None:
                 filters.append(nn_filter)
@@ -1065,29 +1066,32 @@ def resolve_feature_identity(
     return run_id, resolved
 
 
-IDX_FLUSH_EVERY: Final = 10
-"""How many index rows may be pending before the batch is written.
+IDX_FLUSH_SECONDS: Final = 2.0
+"""The least time between one write of the pending index rows and the next.
 
-The index lags the filesystem by up to this many rows, and that direction is
-deliberate: a parquet is renamed into place before its row is even queued, so a
-kill leaves outputs with no row rather than rows with no output. A file check
-resumes correctly from that; an index check would recompute.
+The index lags the filesystem by the rows finished in this time, and that
+direction is deliberate: a parquet is renamed into place before its row is even
+queued, so a kill leaves outputs with no row rather than rows with no output. A
+file check resumes correctly from that; an index check would recompute.
 
-**Not 1.** Every append re-reads the whole CSV, re-masks it per new row and
-rewrites it under the lock, so flushing per row is superlinear -- measured on
-this schema, 2000 entries costs 4.2s batched and 33.6s per-row, and the gap
+**Not a row at a time.** Every append re-reads the whole CSV, re-masks it per new
+row and rewrites it under the lock, so flushing per row is superlinear -- measured
+on this schema, 2000 entries costs 4.2s batched and 33.6s per-row, and the gap
 widens with the run. It is worse under contention, because the lock is held
 across each read-modify-write.
+
+Bounding the lag in seconds rather than entries makes it a property of the clock
+instead of a property of how fast the feature happens to be: a slow feature that
+produces one entry a minute leaves no output unrecorded for longer than this. It
+moves no identifier and changes no output -- only when rows land.
 """
 
-IDX_FLUSH_SECONDS: Final = 2.0
-"""How long a pending row may wait, whatever the count reaches.
+IDX_FLUSH_COST_FACTOR: Final = 4.0
+"""How many times the cost of a write the next one waits.
 
-What closes the window without paying the per-row cost: a slow feature that
-produces one entry a minute would otherwise leave nine outputs unrecorded for
-nine minutes. Bounding it in seconds rather than entries makes the lag a
-property of the clock instead of a property of how fast the feature happens to
-be. It moves no identifier and changes no output -- only when rows land.
+A write grows with the index, so a count or a fixed time between writes still
+makes a long run quadratic. Waiting a multiple of the last write keeps the writes
+to a fifth of the run however many entries the index holds.
 """
 
 _FIT_IDLE_SECONDS: Final = 4 * INFLIGHT_REFRESH_SECONDS
@@ -1503,6 +1507,10 @@ def _run_feature_impl(
             stack=stacks_inputs(feature),
         )
 
+    # Built once: the property rebuilds the map on each access, and the run asks
+    # for it once for each entry.
+    entry_map = resolved.entry_map
+
     # A planar feature handed a world-frame table would compute on two of its
     # three axes and report success, so the space is checked before anything is
     # hashed or read.
@@ -1704,15 +1712,15 @@ def _run_feature_impl(
     # Apply phase — index rows are flushed periodically for interrupt recovery
     _pending_idx_rows: list[FeatureIndexRow] = []
     _total_written = 0
-    _last_flush = time.monotonic()
+    index_pacer = Pacer(interval=IDX_FLUSH_SECONDS, cost_factor=IDX_FLUSH_COST_FACTOR)
 
     def _flush_idx() -> None:
-        nonlocal _total_written, _last_flush
+        nonlocal _total_written
         if _pending_idx_rows:
-            idx.append(list(_pending_idx_rows))
-            _total_written += len(_pending_idx_rows)
+            rows = list(_pending_idx_rows)
+            index_pacer.timed(lambda: idx.append(rows))
+            _total_written += len(rows)
             _pending_idx_rows.clear()
-        _last_flush = time.monotonic()
 
     def _record_row(row: FeatureIndexRow) -> None:
         _pending_idx_rows.append(row)
@@ -1723,10 +1731,7 @@ def _run_feature_impl(
             done, ctx.total, make_entry_key(row.group, row.sequence)
         )
         ctx.heartbeat(done)
-        if (
-            len(_pending_idx_rows) >= IDX_FLUSH_EVERY
-            or time.monotonic() - _last_flush >= IDX_FLUSH_SECONDS
-        ):
+        if index_pacer.due():
             _flush_idx()
 
     # --- Cache-hit pre-pass --------------------------------------------------
@@ -1815,7 +1820,7 @@ def _run_feature_impl(
     blind_layouts = ds.arena_layouts() if relates == "arena-blind" else None
     if state_ready and not overwrite:
         for entry_key in manifest:
-            group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
+            group, sequence = resolve_sequence_identity(entry_key, entry_map)
             meta = build_feature_meta(group, sequence, run_root)
             if not meta.out_path.exists():
                 continue
@@ -2001,6 +2006,8 @@ def _run_feature_impl(
         if isinstance(exc, ToolUnavailable):
             raise exc
 
+    collector = PacedCollector()
+
     def _record_result(
         tag: tuple[FeatureMeta, CoreSelector | None], result_df: FeatureOutput
     ) -> None:
@@ -2034,8 +2041,10 @@ def _run_feature_impl(
                 identity_scheme=FEATURE_IDENTITY_SCHEME,
             )
         )
+        collector.finished(
+            0 if result_df is None else int(result_df.memory_usage(index=True).sum())
+        )
         del result_df
-        gc.collect()
 
     def _record_failure(
         tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
@@ -2054,7 +2063,7 @@ def _run_feature_impl(
 
     def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
         """Record an entry with no pair rows to widen onto as lost."""
-        group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
+        group, sequence = resolve_sequence_identity(entry_key, entry_map)
         _entry_failed(group, sequence, exc)
 
     def _process_entry(
@@ -2065,7 +2074,7 @@ def _run_feature_impl(
         # Cooperative cancel checkpoint: covers both apply loops and both the
         # executor and inline branches. Completed entries are already durable.
         ctx.check_cancel()
-        group, sequence = resolve_sequence_identity(entry_key, resolved.entry_map)
+        group, sequence = resolve_sequence_identity(entry_key, entry_map)
         meta = build_feature_meta(group, sequence, run_root)
 
         # Pipeline validation checks the recipe against this declaration, and
@@ -2198,8 +2207,7 @@ def _run_feature_impl(
     # feature that resolved to nothing now writes no row above, so this marks
     # nothing: ``mark_finished`` is a no-op when no row carries the run_id.
     all_entries = {
-        resolve_sequence_identity(entry_key, resolved.entry_map)
-        for entry_key in manifest
+        resolve_sequence_identity(entry_key, entry_map) for entry_key in manifest
     }
     complete = all(
         build_output_path(group, sequence, run_root).exists()
@@ -2438,8 +2446,9 @@ def load_values(
 
     all_parts: list[pd.DataFrame] = []
 
+    entry_map = resolved_scope.entry_map
     for entry_key, entry_df in iter_manifest(manifest, filter_factory=filter_factory):
-        group, sequence = resolve_sequence_identity(entry_key, resolved_scope.entry_map)
+        group, sequence = resolve_sequence_identity(entry_key, entry_map)
 
         entry_data: dict[str, object] = {}
 

@@ -168,6 +168,34 @@ def test_the_memory_floor_fails_the_run_when_nothing_is_in_flight(
     assert "MemoryFloorReached" in snapshot["error_json"]
 
 
+def test_the_memory_floor_collects_garbage_before_it_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _dataset(tmp_path)
+    collections: list[int] = []
+    # Under the floor until garbage has been collected, as when finished entries'
+    # tables are held by reference cycles.
+    free = _free_fractions([0.01, 0.9])
+
+    def counting_collect(generation: int = 2) -> int:
+        collections.append(generation)
+        return 0
+
+    monkeypatch.setattr(memory_watch.MemoryWatch, "free_fraction", free)
+    monkeypatch.setattr(entry_pool.gc, "collect", counting_collect)
+
+    result = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=2,
+        parallel_mode="thread",
+        min_free_memory_fraction=0.5,
+    )
+
+    assert result.failed_entries == ()
+    assert collections
+
+
 def test_the_floor_applies_to_a_run_with_several_workers_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

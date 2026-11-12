@@ -838,6 +838,61 @@ def add_tracks_variant(
         )
 
 
+def add_tracks_variant_in_bulk(
+    dataset: Dataset,
+    run_id: str,
+    sequences: Sequence[str],
+    *,
+    n_rows: int = 4,
+    std_format: str = "mosaic_v1",
+) -> None:
+    """Write a track table per sequence into variant *run_id*, and index them at once.
+
+    What :func:`add_tracks_variant` leaves, for thousands of sequences: it writes
+    each row under the index lock and rereads the index each time, which is
+    quadratic in the sequences. This one appends the rows in one call of the
+    production appender, so a test of a large dataset is not spent building it.
+    The tables hold two individuals and no keypoints.
+    """
+    from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
+    from mosaic.core.pipeline.tracks_identity import tracks_variant_root
+    from mosaic.core.pipeline.tracks_index import (
+        TracksIndexRow,
+        frame_extent,
+        tracks_index,
+    )
+
+    root = tracks_variant_root(dataset.get_root("tracks"), run_id)
+    root.mkdir(parents=True, exist_ok=True)
+    rows: list[TracksIndexRow] = []
+    for sequence in sequences:
+        table = track_table("", sequence, n_rows=n_rows, n_ids=2)
+        out_path = root / f"{make_entry_key('', sequence)}.parquet"
+        table.to_parquet(out_path)
+        extent = frame_extent(out_path)
+        rows.append(
+            TracksIndexRow(
+                abs_path=Path(dataset.relative_to_root(out_path)),
+                run_id=run_id,
+                group="",
+                sequence=sequence,
+                producer=run_id.split(".")[0],
+                std_format=std_format,
+                n_rows=len(table),
+                n_keypoints=0,
+                frame_min="" if extent is None else str(extent[0]),
+                frame_max="" if extent is None else str(extent[1]),
+                carries_tracklets="true",
+            )
+        )
+    append_refusing_key_collision(
+        dataset,
+        tracks_index(tracks_index_path(dataset)),
+        rows,
+        [("", sequence) for sequence in sequences],
+    )
+
+
 def convert_tracks_from_raw(
     dataset: Dataset,
     run_id: str,

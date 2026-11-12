@@ -1383,7 +1383,8 @@ def _step_target(
     narrowed = step_scopes.get(step_id)
     if narrowed is None:
         return target
-    return frozenset(entry for entry in target if narrowed.selects(entry))
+    selected = narrowed.selecting()
+    return frozenset(entry for entry in target if selected(entry))
 
 
 def _step_scope_problems(

@@ -46,6 +46,10 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   (`planning_request`: the binds, the variant and the pins), so the returned plan, its
   fingerprint and an MCP `plan_recipe` given the same choices agree. `plan_pipeline`
   also takes each choice as an argument, and an unset one falls back to the request's.
+  Given `reviewed` (`ReviewedPlan`, the plan and the `InventoryCache.generation` it
+  read), it records that plan and plans nothing again while no index has moved since,
+  as the MCP `submit_pipeline` does after it reviews the plan
+  (`tests/core/pipeline/graph/test_pipeline_submit.py`).
   The request records the runs that plan leaves to compute (`computed_runs`), which a
   bound step is not among, in `computes/<rid>.json` (`save_computes`), under
   `submission_lock` and before the request file. The request file gains no key, so an

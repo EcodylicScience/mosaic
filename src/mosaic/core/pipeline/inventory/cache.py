@@ -28,7 +28,7 @@ out.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -41,10 +41,11 @@ from mosaic.core.scope import Scope
 
 from .contributors import registered_inventory_kinds
 from .model import ArtifactKind, DatasetInventory
+from ._read import ParquetFooterMemo
 from .scan import inventory
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from mosaic.core.dataset import Dataset
 
@@ -90,8 +91,23 @@ class InventoryCache:
     ds: Dataset
     _held: DatasetInventory | None = field(default=None, init=False)
     _stamps: dict[Path, IndexStamp] = field(default_factory=dict, init=False)
+    _root_keys: dict[Path, frozenset[str]] = field(default_factory=dict, init=False)
     _schemes: tuple[str, str, str] = field(default=("", "", ""), init=False)
     _kinds: frozenset[ArtifactKind] = field(default=frozenset(), init=False)
+    _generation: int = field(default=0, init=False)
+    _footers: ParquetFooterMemo = field(default_factory=ParquetFooterMemo, init=False)
+
+    @property
+    def generation(self) -> int:
+        """How many views this holder has built or dropped.
+
+        A result computed from the held view is current while this number is the
+        one it was computed under: a rebuild after an index moved, and
+        :meth:`invalidate`, each advance it. Call :meth:`revalidate` first, because
+        a view that has not been checked still carries the number of the one the
+        files have since left.
+        """
+        return self._generation
 
     def get(
         self,
@@ -137,10 +153,7 @@ class InventoryCache:
                 stat_count=0, full_rebuild=True, reason="a contributor registered"
             )
 
-        current = {
-            index.path: IndexStamp.of(index.path)
-            for index in iter_dataset_indexes(self.ds)
-        }
+        current, root_keys = self._stamp_indexes()
         changed = tuple(
             sorted(
                 path
@@ -150,7 +163,12 @@ class InventoryCache:
         )
         gone = tuple(sorted(set(self._stamps) - set(current)))
         if changed or gone:
-            self._rebuild(kinds=self._kinds)
+            moved = changed + gone
+            kinds = self._kinds_of(moved, {**self._root_keys, **root_keys})
+            if kinds is None:
+                self._rebuild(kinds=self._kinds, stamped=(current, root_keys))
+            else:
+                self._rebuild_kinds(kinds, (current, root_keys))
         return RevalidationReport(stat_count=len(current), changed=changed + gone)
 
     def invalidate(self) -> None:
@@ -169,6 +187,79 @@ class InventoryCache:
         """
         self._held = None
         self._stamps = {}
+        self._root_keys = {}
+        self._generation += 1
+
+    def _stamp_indexes(
+        self,
+    ) -> tuple[dict[Path, IndexStamp], dict[Path, frozenset[str]]]:
+        """Stat every index now, with the root keys that declare each one.
+
+        One file can be declared by two roots when a root sits inside another.
+        """
+        stamps: dict[Path, IndexStamp] = {}
+        keys: dict[Path, set[str]] = {}
+        for index in iter_dataset_indexes(self.ds):
+            stamps[index.path] = IndexStamp.of(index.path)
+            keys.setdefault(index.path, set()).add(index.root_key)
+        return stamps, {path: frozenset(found) for path, found in keys.items()}
+
+    def _kinds_of(
+        self, moved: Iterable[Path], root_keys: Mapping[Path, frozenset[str]]
+    ) -> frozenset[ArtifactKind] | None:
+        """The kinds that a move of the indexes *moved* can change, or ``None`` for all.
+
+        A feature run's index is read by the ``feature`` kind alone: the tracks
+        variants, the label variants and the media do not read it, and a run is
+        measured against tracks that did not move. Any other index may be read by
+        any kind, so a move of one rebuilds every kind. An index is a feature
+        index by the root that declares it, and by that alone.
+        """
+        features = frozenset({"features"})
+        if all(root_keys.get(path) == features for path in moved):
+            return frozenset({"feature"})
+        return None
+
+    def _rebuild_kinds(
+        self,
+        kinds: frozenset[ArtifactKind],
+        stamped: tuple[dict[Path, IndexStamp], dict[Path, frozenset[str]]],
+    ) -> None:
+        """Read *kinds* again and keep the other records as they are.
+
+        *stamped* is what the indexes looked like before the scan began, so an
+        index that moves during it is seen on the next revalidation.
+        """
+        held = self._held
+        assert held is not None
+        again = kinds & self._kinds
+        if again:
+            fresh = inventory(
+                self.ds,
+                kinds=again,
+                scope=held.scope.selector,
+                tracks_run_id=held.scope.tracks_run_id,
+                footers=self._footers,
+            )
+            order = sorted(held.scope.kinds)
+            self._held = replace(
+                held,
+                records=tuple(
+                    record
+                    for kind in order
+                    for record in (fresh if kind in again else held).of_kind(kind)
+                ),
+                errors=(
+                    *(
+                        error
+                        for error in held.errors
+                        if error.split(":", 1)[0] not in again
+                    ),
+                    *fresh.errors,
+                ),
+            )
+        self._generation += 1
+        self._stamps, self._root_keys = stamped
 
     def _rebuild(
         self,
@@ -176,8 +267,13 @@ class InventoryCache:
         kinds: Iterable[ArtifactKind] | None = None,
         scope: Scope | None = None,
         tracks_run_id: str | None = None,
+        stamped: tuple[dict[Path, IndexStamp], dict[Path, frozenset[str]]]
+        | None = None,
     ) -> None:
         held = self._held
+        # Stamped before the scan, so that an index that moves while it runs is
+        # seen as moved by the next revalidation.
+        stamps, root_keys = self._stamp_indexes() if stamped is None else stamped
         built = inventory(
             self.ds,
             kinds=kinds,
@@ -187,14 +283,14 @@ class InventoryCache:
             tracks_run_id=tracks_run_id
             if tracks_run_id is not None
             else (held.scope.tracks_run_id if held else None),
+            footers=self._footers,
         )
         self._held = built
+        self._generation += 1
         self._kinds = built.scope.kinds
         self._schemes = identity_schemes()
-        self._stamps = {
-            index.path: IndexStamp.of(index.path)
-            for index in iter_dataset_indexes(self.ds)
-        }
+        self._stamps = stamps
+        self._root_keys = root_keys
 
 
 def _kinds_available(previous: frozenset[ArtifactKind]) -> frozenset[ArtifactKind]:

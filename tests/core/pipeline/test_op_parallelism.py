@@ -23,7 +23,7 @@ import pytest
 import mosaic.core.dataset as dataset_module
 import mosaic.core.pipeline.graph.step as step_module
 import mosaic.core.pipeline.parallelism as parallelism
-from mosaic.core.dataset import Dataset, TrackFileOutcome
+from mosaic.core.dataset import ConversionFacts, Dataset, TrackFileOutcome
 from mosaic.core.params import Params
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.job import CancelToken, Cancelled, JobContext
@@ -312,12 +312,16 @@ def test_index_rows_follow_the_raw_index_whichever_file_finishes_first(
     convert = Dataset.convert_track_file
 
     def slower_when_earlier(
-        self: Dataset, raw_row: pd.Series, params: dict[str, object], overwrite: bool
+        self: Dataset,
+        raw_row: pd.Series,
+        params: dict[str, object],
+        overwrite: bool,
+        facts: ConversionFacts | None = None,
     ) -> TrackFileOutcome:
         # g0 finishes last and g5 first.
         position = int(str(raw_row["group"]).removeprefix("g") or 0)
         time.sleep(0.05 * (5 - position))
-        return convert(self, raw_row, params, overwrite)
+        return convert(self, raw_row, params, overwrite, facts)
 
     monkeypatch.setattr(Dataset, "convert_track_file", slower_when_earlier)
 
@@ -618,11 +622,15 @@ def test_the_file_that_finishes_last_does_not_replace_the_entry_of_the_first(
     convert = Dataset.convert_track_file
 
     def slow_fourth_file(
-        self: Dataset, raw_row: pd.Series, params: dict[str, object], overwrite: bool
+        self: Dataset,
+        raw_row: pd.Series,
+        params: dict[str, object],
+        overwrite: bool,
+        facts: ConversionFacts | None = None,
     ) -> TrackFileOutcome:
         if str(raw_row["abs_path"]).endswith("g3.npy"):
             time.sleep(0.5)
-        return convert(self, raw_row, params, overwrite)
+        return convert(self, raw_row, params, overwrite, facts)
 
     monkeypatch.setattr(Dataset, "convert_track_file", slow_fourth_file)
 

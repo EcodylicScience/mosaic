@@ -40,7 +40,7 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.scope import Scope
 
-from ._read import IndexReader
+from ._read import IndexReader, ParquetFooterMemo
 from ._runs import finish_state, run_ids
 from .contributors import inventory_contributor, registered_inventory_kinds
 from .label_series import label_series_records
@@ -78,7 +78,6 @@ __all__ = [
     "feature_run_target",
     "inventory",
     "narrow_target",
-    "parquet_is_readable",
     "reportable_universe",
     "run_covers",
 ]
@@ -107,25 +106,6 @@ CORE_KINDS: frozenset[ArtifactKind] = frozenset(
 """The kinds ``core`` can report on by itself, with no producer registered."""
 
 
-def parquet_is_readable(path: Path) -> bool:
-    """Is this parquet whole? Footer-only, so it costs one seek rather than a read.
-
-    A parquet's footer is written last, so a file torn by an interrupted write
-    has no readable metadata. That is cheap enough to run per file on a gate
-    while still catching the failure presence alone cannot.
-    """
-    import pyarrow.parquet as pq
-
-    try:
-        # pyarrow ships no type stubs, the same gap ``track_universe`` documents
-        # at its own ``read_schema`` call. Only whether the footer parsed
-        # matters, so the result is discarded rather than described.
-        pq.read_metadata(path)  # pyright: ignore[reportUnknownMemberType, reportUnusedCallResult]
-    except Exception:
-        return False
-    return True
-
-
 def entry_universe(ds: Dataset, tracks_run_id: str | None = None) -> frozenset[Entry]:
     """Every ``(group, sequence)`` this dataset can process, from its tracks.
 
@@ -140,18 +120,26 @@ def entry_universe(ds: Dataset, tracks_run_id: str | None = None) -> frozenset[E
     directory it never had.
     """
     frame = select_variant_rows(read_tracks_index(ds), tracks_run_id)
-    return _entries_of(existing_tracks_records(ds, frame))
+    return _entries_of(existing_tracks_records(ds, _entry_columns(frame)))
 
 
 def existing_tracks_records(ds: Dataset, frame: pd.DataFrame) -> list[dict[str, str]]:
-    """Return the rows of the tracks index *frame* whose table exists on disk."""
-    return [record for record in index_records(frame) if _table_exists(ds, record)]
+    """Return the rows of the tracks index *frame* whose table exists on disk.
+
+    The one rule for which rows of an index have a table: a row names a stored
+    path, and the file it resolves to is there. The paths are resolved together
+    (:meth:`~mosaic.core.dataset.Dataset.resolve_paths`).
+    """
+    records = [record for record in index_records(frame) if record.get("abs_path")]
+    paths = ds.resolve_paths(record["abs_path"] for record in records)
+    return [
+        record for record, path in zip(records, paths, strict=True) if path.exists()
+    ]
 
 
-def _table_exists(ds: Dataset, record: dict[str, str]) -> bool:
-    """Return whether the table that a tracks index *record* names is on disk."""
-    stored = record.get("abs_path", "")
-    return bool(stored) and ds.resolve_path(stored).exists()
+def _entry_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """The columns of a tracks index that name an entry and its table."""
+    return frame.loc[:, ["group", "sequence", "abs_path"]]
 
 
 def _entries_of(records: Iterable[dict[str, str]]) -> frozenset[Entry]:
@@ -175,9 +163,9 @@ def narrow_target(
     selector = scope if scope is not None else Scope()
     pairs = selector.entry_pairs
     if pairs is not None:
-        # ``Scope.selects`` would rebuild the pairs for each entry.
         return universe & pairs
-    return frozenset(entry for entry in universe if selector.selects(entry))
+    selected = selector.selecting()
+    return frozenset(entry for entry in universe if selected(entry))
 
 
 def _entries_held(stems: set[str], candidates: frozenset[Entry]) -> set[Entry]:
@@ -191,25 +179,29 @@ def _entries_held(stems: set[str], candidates: frozenset[Entry]) -> set[Entry]:
     output -- damage, where the outputs are in fact right there under a
     convention the exact match did not know about.
 
-    Longest key first, so an entry whose key is a prefix of another's cannot
-    claim the other's files.
+    An entry is held when its key is a stem, or a stem begins ``<key>__``. Each
+    stem is cut at every ``__`` once, and the keys are looked up among the cuts,
+    so the cost is the stems and the candidates, not their product.
     """
     by_key = {
         make_entry_key(group, sequence): (group, sequence)
         for group, sequence in candidates
     }
-    held: set[Entry] = set()
-    for key in sorted(by_key, key=len, reverse=True):
-        prefix = f"{key}__"
-        if any(stem == key or stem.startswith(prefix) for stem in stems):
-            held.add(by_key[key])
-    return held
+    named: set[str] = set()
+    for stem in stems:
+        named.add(stem)
+        cut = stem.find("__")
+        while cut != -1:
+            named.add(stem[:cut])
+            cut = stem.find("__", cut + 1)
+    return {entry for key, entry in by_key.items() if key in named}
 
 
 def run_covers(
     run_root: Path,
     target: frozenset[Entry],
     known: frozenset[Entry] = frozenset(),
+    footers: ParquetFooterMemo | None = None,
 ) -> Coverage[Entry]:
     """Which of *target* this run root holds, as evidence rather than a verdict.
 
@@ -232,12 +224,15 @@ def run_covers(
     as holding nothing at all. Passing the run's own index rows means the
     question stays "which entries are on disk" rather than becoming "which
     entries are on disk *and* still resolvable from tracks".
+
+    *footers* remembers the files whose footer parsed, so that a caller that scans
+    one run root again reads only the files that moved. Without one, every footer
+    is read.
     """
     if not run_root.exists():
         return Coverage(target=target, present=frozenset())
-    stems = {
-        path.stem for path in run_root.glob("*.parquet") if parquet_is_readable(path)
-    }
+    memo = ParquetFooterMemo() if footers is None else footers
+    stems = memo.whole_stems(run_root)
     held = _entries_held(stems, target | known)
     if GLOBAL_MARKER in stems:
         # The per-entry mapping still applies. A global fit may write per-entry
@@ -330,7 +325,9 @@ def reportable_universe(
     try:
         return entry_universe(ds, tracks_run_id)
     except ValueError:
-        return _entries_of(existing_tracks_records(ds, read_tracks_index(ds)))
+        return _entries_of(
+            existing_tracks_records(ds, _entry_columns(read_tracks_index(ds)))
+        )
 
 
 def feature_run_target(
@@ -398,7 +395,7 @@ def _feature_records(
             read = read_run_params(run_root)
             # The run's own index rows are what make its outputs recognisable
             # when the target cannot name them -- see ``run_covers``.
-            on_disk = run_covers(run_root, target, known=rows)
+            on_disk = run_covers(run_root, target, known=rows, footers=reader.footers)
             files = on_disk.present
             coverage = Coverage[Entry](
                 target=feature_run_target(target, read.params, rows),
@@ -466,13 +463,12 @@ def _variant_records(
         return []
     records: list[ArtifactRecord[Entry]] = []
     findings = frame_axis_findings(frame)
+    on_disk = _tables_on_disk(ds, frame)
     for run_id in run_ids(frame):
         rows = _rows_of(frame, run_id)
         wanted = scope.selector.entry_pairs
         target = frozenset(rows if wanted is None else rows & wanted)
-        files = frozenset(
-            entry for entry in rows if _variant_table_exists(ds, frame, run_id, entry)
-        )
+        files = rows & on_disk.get(run_id, frozenset())
         coverage = Coverage(target=target, present=files)
         started, finished_at, finished = finish_state(frame, run_id)
         drift = media_drift(ds, frame[frame["run_id"].astype(str) == run_id])
@@ -509,17 +505,19 @@ def _variant_records(
     return records
 
 
-def _variant_table_exists(
-    ds: Dataset, frame: pd.DataFrame, run_id: str, entry: Entry
-) -> bool:
-    """Does the table this row names resolve to a file that is there?"""
-    for record in index_records(frame):
-        if str(record.get("run_id", "")) != run_id:
-            continue
-        if (str(record.get("group", "")), str(record.get("sequence", ""))) != entry:
-            continue
-        return _table_exists(ds, record)
-    return False
+def _tables_on_disk(ds: Dataset, frame: pd.DataFrame) -> dict[str, frozenset[Entry]]:
+    """Each run's entries whose index row names a table that is on disk.
+
+    One pass over the rows of *frame*, which holds every run of one index.
+    """
+    wanted = ("run_id", "group", "sequence", "abs_path")
+    named = frame.loc[:, [column for column in wanted if column in frame.columns]]
+    present: dict[str, set[Entry]] = {}
+    for record in existing_tracks_records(ds, named):
+        run_id = record.get("run_id", "")
+        entry = (record.get("group", ""), record.get("sequence", ""))
+        present.setdefault(run_id, set()).add(entry)
+    return {run_id: frozenset(entries) for run_id, entries in present.items()}
 
 
 def _labels_records(
@@ -532,15 +530,12 @@ def _labels_records(
         frame = reader.frame(index_path, lambda k=kind: read_labels_index(ds, k))
         if frame.empty or "run_id" not in frame.columns:
             continue
+        on_disk = _tables_on_disk(ds, frame)
         for run_id in run_ids(frame):
             rows = _rows_of(frame, run_id)
             wanted = scope.selector.entry_pairs
             target = frozenset(rows if wanted is None else rows & wanted)
-            files = frozenset(
-                entry
-                for entry in rows
-                if _variant_table_exists(ds, frame, run_id, entry)
-            )
+            files = rows & on_disk.get(run_id, frozenset())
             coverage = Coverage(target=target, present=files)
             started, finished_at, finished = finish_state(frame, run_id)
             records.append(
@@ -567,6 +562,7 @@ def inventory(
     kinds: Iterable[ArtifactKind] | None = None,
     scope: Scope | None = None,
     tracks_run_id: str | None = None,
+    footers: ParquetFooterMemo | None = None,
 ) -> DatasetInventory:
     """What this dataset holds: every artifact, its identity and its coverage.
 
@@ -580,6 +576,8 @@ def inventory(
         tracks_run_id: Which tracks variant defines the entry universe. Pass the
             one the runs were made under; measuring a variant-pinned run against
             the whole index reads as permanently incomplete.
+        footers: The parquet files already known to be whole, which a holder of
+            several scans keeps so that each reads only the files that moved.
 
     Returns:
         A :class:`DatasetInventory`, which is a cache and never the record.
@@ -590,7 +588,7 @@ def inventory(
         selector=scope if scope is not None else Scope(),
         tracks_run_id=tracks_run_id,
     )
-    reader = IndexReader()
+    reader = IndexReader(footers)
     records: list[AnyRecord] = []
     errors: list[str] = []
     unavailable: set[ArtifactKind] = set()

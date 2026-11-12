@@ -30,7 +30,7 @@ the camera the triple names.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import ClassVar, Self, TypeIs
 
 from pydantic import ConfigDict, field_validator, model_validator
@@ -203,7 +203,8 @@ class Scope(StrictModel):
 
         ``entries`` names its pairs, and a camera-addressed one names the pair of
         each camera. ``groups`` and ``sequences`` name their cross product, and
-        an unset one names every value.
+        an unset one names every value. A caller that tests many entries takes
+        :meth:`selecting` once instead, because this builds the pairs each time.
 
         Args:
             entry: The ``(group, sequence)`` pair to test.
@@ -211,13 +212,23 @@ class Scope(StrictModel):
         Returns:
             Whether the selector names *entry*.
         """
+        return self.selecting()(entry)
+
+    def selecting(self) -> Callable[[Entry], bool]:
+        """Return the test that :meth:`selects` applies, built once for many entries."""
         pairs = self.entry_pairs
         if pairs is not None:
-            return entry in pairs
-        group, sequence = entry
-        return (self.groups is None or group in self.groups) and (
-            self.sequences is None or sequence in self.sequences
-        )
+            return pairs.__contains__
+        groups = None if self.groups is None else frozenset(self.groups)
+        sequences = None if self.sequences is None else frozenset(self.sequences)
+
+        def selected(entry: Entry) -> bool:
+            group, sequence = entry
+            return (groups is None or group in groups) and (
+                sequences is None or sequence in sequences
+            )
+
+        return selected
 
     def overlaps(self, other: Scope) -> bool:
         """Return whether some entry is selected by this selector and by *other*.
@@ -238,9 +249,11 @@ class Scope(StrictModel):
         if mine is not None and theirs is not None:
             return not mine.isdisjoint(theirs)
         if mine is not None:
-            return any(other.selects(entry) for entry in mine)
+            selected = other.selecting()
+            return any(selected(entry) for entry in mine)
         if theirs is not None:
-            return any(self.selects(entry) for entry in theirs)
+            selected = self.selecting()
+            return any(selected(entry) for entry in theirs)
         return _names_meet(self.groups, other.groups) and _names_meet(
             self.sequences, other.sequences
         )

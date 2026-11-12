@@ -19,7 +19,7 @@ those. Its one import, ``mosaic.user_paths``, is a leaf of the same shape.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePosixPath
 
 from mosaic.user_paths import user_path
@@ -72,6 +72,48 @@ def resolve_stored_path(
         return path
     remapped = remap_single_path(path, path_map)
     return path if remapped is None else remapped
+
+
+def resolve_stored_paths(
+    stored: Iterable[str | Path],
+    anchor: Callable[[], Path],
+    *,
+    path_map: Sequence[tuple[Path, Path]] | None = None,
+) -> list[Path]:
+    """Resolve each cell of *stored* as :func:`resolve_stored_path` does.
+
+    The answers are those of the one-at-a-time call. The difference is cost for a
+    list of thousands of cells: *anchor* is called once, and each directory is
+    resolved once, where the call resolves every component of every path. A cell
+    that is absolute, or that holds ``..``, goes through the one-at-a-time call.
+
+    Args:
+        stored: The cells to resolve.
+        anchor: Gives the directory that a relative cell is resolved against. It is
+            called when the first relative cell needs it, and not at all when none
+            does.
+        path_map: As for :func:`resolve_stored_path`.
+    """
+    base: Path | None = None
+    directories: dict[Path, Path] = {}
+    resolved: list[Path] = []
+    for cell in stored:
+        path = user_path(cell)
+        if path.is_absolute():
+            resolved.append(resolve_stored_path(path, path, path_map=path_map))
+            continue
+        if base is None:
+            base = anchor()
+        if ".." in path.parts or not path.parts:
+            resolved.append(resolve_stored_path(path, base, path_map=path_map))
+            continue
+        joined = base / path
+        parent = directories.get(joined.parent)
+        if parent is None:
+            parent = directories[joined.parent] = joined.parent.resolve()
+        target = parent / joined.name
+        resolved.append(target.resolve() if target.is_symlink() else target)
+    return resolved
 
 
 def manifest_file_path(recorded: str) -> str:

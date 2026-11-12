@@ -16,7 +16,12 @@ from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.inventory import InventoryCache
 from mosaic.core.pipeline.inventory import cache as cache_module
-from tests.helpers import assert_tree_unchanged, tree_snapshot
+from tests.helpers import (
+    add_tracks_variant,
+    assert_tree_unchanged,
+    make_dataset,
+    tree_snapshot,
+)
 
 
 def test_a_held_view_is_reused_rather_than_rebuilt(
@@ -108,3 +113,103 @@ def test_nothing_is_written_to_the_dataset(scenario_dataset: Dataset) -> None:
 
     assert_tree_unchanged(root, before)
     assert not (root / ".mosaic" / "inventory.json").exists()
+
+
+def _scanned_kinds(monkeypatch: pytest.MonkeyPatch) -> list[frozenset[str]]:
+    """Record the kinds of each scan that the holder makes."""
+    scans: list[frozenset[str]] = []
+    real = cache_module.inventory
+
+    def recorded(*args: object, **kwargs: object) -> object:
+        kinds = kwargs.get("kinds")
+        scans.append(frozenset(kinds))  # pyright: ignore[reportArgumentType]
+        return real(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(cache_module, "inventory", recorded)
+    return scans
+
+
+def test_a_new_run_rereads_the_feature_kind_alone(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = InventoryCache(scenario_dataset)
+    before = holder.get()
+    variants = before.of_kind("tracks-variant")
+    assert variants
+    scans = _scanned_kinds(monkeypatch)
+
+    _ = scenario_dataset.run_feature(build_feature("speed-angvel", None, None))
+    report = holder.revalidate()
+
+    assert report.stale
+    assert scans == [frozenset({"feature"})]
+    after = holder.get()
+    assert after.of_kind("tracks-variant") == variants
+    assert [record.name for record in after.of_kind("feature")] == [
+        "speed-angvel__from__tracks"
+    ]
+
+
+def test_the_records_of_a_partial_reread_are_those_of_a_full_one(
+    scenario_dataset: Dataset,
+) -> None:
+    holder = InventoryCache(scenario_dataset)
+    _ = holder.get()
+    _ = scenario_dataset.run_feature(build_feature("speed-angvel", None, None))
+
+    _ = holder.revalidate()
+
+    assert holder.get().records == InventoryCache(scenario_dataset).get().records
+
+
+def test_a_moved_tracks_index_rereads_every_kind(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = InventoryCache(scenario_dataset)
+    _ = holder.get()
+    scans = _scanned_kinds(monkeypatch)
+    index_path = scenario_dataset.get_root("tracks") / "index.csv"
+    _ = index_path.write_text(index_path.read_text() + "\n")
+
+    assert holder.revalidate().stale
+
+    [scanned] = scans
+    assert {"feature", "tracks-variant"} <= scanned
+
+
+def test_a_tracks_root_inside_the_features_root_rereads_every_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The index sits under ``features/``, and it is the tracks index all the same."""
+    ds = make_dataset(tmp_path / "ds")
+    ds.roots["tracks"] = "features/tracks"
+    ds.get_root("tracks").mkdir(parents=True)
+    add_tracks_variant(ds, "v1", "s1", "s2")
+    holder = InventoryCache(ds)
+    _ = holder.get()
+    scans = _scanned_kinds(monkeypatch)
+    index_path = ds.get_root("tracks") / "index.csv"
+    _ = index_path.write_text(index_path.read_text() + "\n")
+
+    assert holder.revalidate().stale
+
+    [scanned] = scans
+    assert {"feature", "tracks-variant"} <= scanned
+
+
+def test_an_index_that_moves_during_a_scan_is_seen_by_the_next_revalidation(
+    scenario_dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index_path = scenario_dataset.get_root("tracks") / "index.csv"
+    real = cache_module.inventory
+
+    def moving(*args: object, **kwargs: object) -> object:
+        _ = index_path.write_text(index_path.read_text() + "\n")
+        return real(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(cache_module, "inventory", moving)
+    holder = InventoryCache(scenario_dataset)
+    _ = holder.get()
+    monkeypatch.setattr(cache_module, "inventory", real)
+
+    assert holder.revalidate().stale

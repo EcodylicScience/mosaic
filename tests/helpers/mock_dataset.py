@@ -93,6 +93,9 @@ class MockDataset:
         path = Path(str(stored_path))
         return path if path.is_absolute() else self._root / path
 
+    def resolve_paths(self, stored_paths: Iterable[object]) -> list[Path]:
+        return [self.resolve_path(stored) for stored in stored_paths]
+
     def relative_to_root(self, path: object) -> str:
         try:
             return str(Path(str(path)).resolve().relative_to(self._root.resolve()))

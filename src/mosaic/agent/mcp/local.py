@@ -889,6 +889,7 @@ class LocalBackend:
             GPU_TRAIN_LANE,
             CleanupNeedsPlan,
             PlanChanged,
+            ReviewedPlan,
             plan_fingerprint,
             plan_with_cleanup,
             start_detached_driver,
@@ -927,6 +928,8 @@ class LocalBackend:
                 applies_request_id=args.applies_request_id,
             )
             found = plan_fingerprint(plan)
+            # The submission records this plan unless an index has moved since.
+            reviewed = ReviewedPlan(plan, cache.generation)
             if args.plan_fingerprint is not None and found != args.plan_fingerprint:
                 raise PlanChanged(expected=args.plan_fingerprint, found=found)
             findings = _submission_findings(dataset, plan, args, catalog)
@@ -955,6 +958,7 @@ class LocalBackend:
                 tracks_run_id=args.tracks_run_id,
                 pins=args.pins,
                 applies_request_id=args.applies_request_id,
+                reviewed=reviewed,
             )
         request = submitted.request
         start = self._start_driver or start_detached_driver

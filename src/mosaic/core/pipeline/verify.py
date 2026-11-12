@@ -714,6 +714,7 @@ def _stored_outputs(
 
 def _entries_of(rebuilt: _Rebuilt) -> Iterator[tuple[tuple[str, str], pd.DataFrame]]:
     """Each manifest entry's frame, with the frames' identity, in the engine's order."""
+    entry_map = rebuilt.resolved.entry_map
     for key, frame in iter_manifest(
         rebuilt.manifest,
         filter_factory=rebuilt.filter_factory,
@@ -721,7 +722,7 @@ def _entries_of(rebuilt: _Rebuilt) -> Iterator[tuple[tuple[str, str], pd.DataFra
         expands_individuals=rebuilt.widens_individuals,
         on_pairs_missing=skip_pairs_missing,
     ):
-        yield resolve_sequence_identity(key, rebuilt.resolved.entry_map), frame
+        yield resolve_sequence_identity(key, entry_map), frame
 
 
 # --- Fitting steps --------------------------------------------------------------
@@ -874,9 +875,10 @@ def _verify_fit(
     worst = 0.0
     n_rows = n_agree = n_compared = 0
     entries: list[EntryDiff] = []
+    entry_map = rebuilt.resolved.entry_map
     if overlap > 0:
         stream = (
-            (resolve_sequence_identity(key, rebuilt.resolved.entry_map), frame, sel)
+            (resolve_sequence_identity(key, entry_map), frame, sel)
             for key, frame, sel in iter_manifest(
                 rebuilt.manifest,
                 filter_factory=rebuilt.filter_factory,
@@ -1035,9 +1037,11 @@ def _verify_scores(
         base = stream
         overlay_from = source.outputs
 
+        entry_map = rebuilt.resolved.entry_map
+
         def overlaid() -> Iterator[tuple[str, pd.DataFrame]]:
             for key, frame in base():
-                entry = resolve_sequence_identity(key, rebuilt.resolved.entry_map)
+                entry = resolve_sequence_identity(key, entry_map)
                 path = build_output_path(*entry, overlay_from)
                 merged = (
                     _overlay(frame, pd.read_parquet(path)) if path.exists() else None

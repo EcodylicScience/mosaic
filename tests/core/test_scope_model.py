@@ -225,6 +225,50 @@ class TestSelects:
     ) -> None:
         assert not scope.selects(("A", "one"))
 
+    @pytest.mark.parametrize(
+        "scope",
+        [
+            Scope(),
+            Scope(entries=[("A", "one"), ("B", "two")]),
+            Scope(entries=[("B", "two", "top")]),
+            Scope(entries=[]),
+            Scope(groups=["A"]),
+            Scope(sequences=["two"]),
+            Scope(groups=["A", "B"], sequences=["one"]),
+            Scope(groups=[]),
+        ],
+    )
+    def test_a_test_built_once_answers_as_selects_does(self, scope: Scope) -> None:
+        selected = scope.selecting()
+
+        for entry in [
+            ("A", "one"),
+            ("A", "two"),
+            ("B", "one"),
+            ("B", "two"),
+            ("C", "x"),
+        ]:
+            assert selected(entry) == scope.selects(entry)
+
+    def test_a_test_built_once_builds_the_entry_pairs_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        built: list[int] = []
+        original = Scope.entry_pairs.fget  # pyright: ignore[reportAttributeAccessIssue]
+        assert original is not None
+
+        def counting(self: Scope) -> set[tuple[str, str]] | None:
+            built.append(1)
+            return original(self)
+
+        monkeypatch.setattr(Scope, "entry_pairs", property(counting))
+        selected = Scope(entries=[("A", str(index)) for index in range(50)]).selecting()
+
+        for index in range(100):
+            _ = selected(("A", str(index)))
+
+        assert len(built) == 1
+
 
 class TestOverlaps:
     """Two selectors overlap when some entry is selected by both."""

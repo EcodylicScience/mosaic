@@ -42,9 +42,12 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, get_args
 
 import pandas as pd
 
-from mosaic.core.entry import Entry, validate_entry_name
+from mosaic.core.entry import Entry, EntryKeyCollisionError, validate_entry_name
 from mosaic.core.helpers import text_cell, to_safe_name
-from mosaic.core.pipeline.entry_keys import append_refusing_key_collision
+from mosaic.core.pipeline.entry_keys import (
+    append_refusing_key_collision,
+    key_collision_at_write,
+)
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.pipeline.parquet_reader import read_parquet_column_names
@@ -101,6 +104,7 @@ __all__ = [
     "backfill_known_tail_loss",
     "backfill_media_frames",
     "consumed_composition_for",
+    "consumed_compositions_for",
     "consumed_roots_for",
     "count_cell",
     "encode_source_roots",
@@ -132,7 +136,9 @@ __all__ = [
     "tracks_index",
     "tracks_index_path",
     "tracks_made_with",
+    "refuse_colliding_drafts",
     "write_tracks_row",
+    "write_tracks_rows",
 ]
 
 
@@ -992,14 +998,34 @@ def consumed_composition_for(
     Read per entry rather than per variant, deliberately. One variant covers many
     sequences and their compositions differ, so there is no per-variant answer to
     cache. The two small reads this costs sit beside a parquet write and a locked
-    whole-file index append, which dominate them.
+    whole-file index append, which dominate them. A writer of many rows asks
+    :func:`consumed_compositions_for` once instead.
     """
-    source_roots = [root for root in roots if root in get_args(SourceRoot)]
-    if not source_roots:
-        return ""
-    entry = (group, sequence)
-    recorded = read_entry_compositions(ds, [entry]).get(entry, {})
-    return encode_entry_composition(recorded, source_roots)
+    return consumed_compositions_for(ds, [((group, sequence), roots)])[0]
+
+
+def consumed_compositions_for(
+    ds: Dataset, wanted: Sequence[tuple[Entry, Iterable[str]]]
+) -> list[str]:
+    """What each entry's roots recorded, as :func:`consumed_composition_for` gives it.
+
+    Reads each source root's per-sequence index once for all of *wanted*.
+
+    Returns:
+        One cell for each element of *wanted*, in its order.
+    """
+    asked = [
+        (entry, [root for root in roots if root in get_args(SourceRoot)])
+        for entry, roots in wanted
+    ]
+    entries = [entry for entry, source_roots in asked if source_roots]
+    recorded = read_entry_compositions(ds, entries) if entries else {}
+    return [
+        encode_entry_composition(recorded.get(entry, {}), source_roots)
+        if source_roots
+        else ""
+        for entry, source_roots in asked
+    ]
 
 
 def count_keypoints(path: Path) -> int:
@@ -1927,7 +1953,7 @@ class TracksRowDraft:
 
     def write(self, ds: Dataset) -> None:
         """Write the row, as :func:`write_tracks_row` does."""
-        write_tracks_row(ds, **{f.name: getattr(self, f.name) for f in fields(self)})
+        write_tracks_rows(ds, [self])
 
 
 def write_tracks_row(
@@ -2010,57 +2036,190 @@ def write_tracks_row(
     parquet: ``IndexRowBase`` existence-checks an absolute ``abs_path``, which is
     what a ``tracks`` root outside the dataset tree produces.
     """
-    # Validated first, because the composition is looked up by the same key the
-    # row is written under: a lookup on the raw value would miss for the caller
-    # that reads its group off a pandas Series as a numpy scalar.
-    entry_group = validate_entry_name(text_cell(group), "group")
-    entry_sequence = validate_entry_name(text_cell(sequence), "sequence")
+    write_tracks_rows(
+        ds,
+        [
+            TracksRowDraft(
+                run_id=run_id,
+                group=group,
+                sequence=sequence,
+                out_path=out_path,
+                producer=producer,
+                std_format=std_format,
+                n_rows=n_rows,
+                carries_tracklets=carries_tracklets,
+                producer_run_id=producer_run_id,
+                source=source,
+                source_md5=source_md5,
+                consumed_source_roots=consumed_source_roots,
+                records_media=records_media,
+                media_frames=media_frames,
+                frames_read=frames_read,
+                known_tail_loss=known_tail_loss,
+                first_frame=first_frame,
+                consumed_composition=consumed_composition,
+                appearance_path=appearance_path,
+            )
+        ],
+    )
+
+
+def write_tracks_rows(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> None:
+    """Record several standardized-tracks tables in one write of the index.
+
+    What :func:`write_tracks_row` does for one table, for a writer that publishes
+    many: the rows are built, checked for key collisions and appended in one
+    read-modify-write of the index under its lock, and the compositions they
+    record are read once. Writing each row alone rereads and rewrites the whole
+    index, which makes a run over thousands of entries quadratic.
+
+    The result is the index that writing the drafts one after another gives. A
+    draft that names an entry (and variant) another draft of the batch names
+    replaces it, so the last of them keeps its row, at its place in the order. A
+    collision between any two entries of the batch, or with the index, refuses
+    the whole batch and writes none of it.
+
+    Raises:
+        EntryKeyCollisionError: If a new entry shares its key with an entry of
+            the index, of the media index or of the batch, or takes a continuous
+            group's name.
+    """
+    from mosaic.core.pipeline.sequence_index import media_compositions_for
+
+    if not drafts:
+        return
+    entries = _draft_entries(drafts)
+    unrecorded = [
+        position
+        for position, draft in enumerate(drafts)
+        if draft.consumed_composition is None
+    ]
+    looked_up = dict(
+        zip(
+            unrecorded,
+            consumed_compositions_for(
+                ds,
+                [
+                    (entries[position], drafts[position].consumed_source_roots)
+                    for position in unrecorded
+                ],
+            ),
+            strict=True,
+        )
+    )
+    media = media_compositions_for(
+        ds,
+        [
+            entry
+            for entry, draft in zip(entries, drafts, strict=True)
+            if draft.records_media
+        ],
+    )
+    rows = [
+        _tracks_row(
+            ds,
+            draft,
+            entry,
+            consumed_composition=(
+                looked_up[position]
+                if draft.consumed_composition is None
+                else draft.consumed_composition
+            ),
+            media_composition=media.get(entry, "") if draft.records_media else "",
+        )
+        for position, (entry, draft) in enumerate(zip(entries, drafts, strict=True))
+    ]
+    last_of = {
+        (row.run_id, row.group, row.sequence): position
+        for position, row in enumerate(rows)
+    }
+    survivors = set(last_of.values())
+    kept = [row for position, row in enumerate(rows) if position in survivors]
+    append_refusing_key_collision(
+        ds, tracks_index(tracks_index_path(ds)), kept, set(entries)
+    )
+
+
+def _draft_entries(drafts: Sequence[TracksRowDraft]) -> list[Entry]:
+    """The validated ``(group, sequence)`` of each draft.
+
+    Validated before anything else, because the composition is looked up by the
+    same key the row is written under: a lookup on the raw value would miss for the
+    caller that reads its group off a pandas Series as a numpy scalar.
+    """
+    return [
+        (
+            validate_entry_name(text_cell(draft.group), "group"),
+            validate_entry_name(text_cell(draft.sequence), "sequence"),
+        )
+        for draft in drafts
+    ]
+
+
+def refuse_colliding_drafts(ds: Dataset, drafts: Sequence[TracksRowDraft]) -> None:
+    """Refuse *drafts* that :func:`write_tracks_rows` would refuse for a key collision.
+
+    Reads the index without its lock, as the first check of a write does, so a
+    caller can refuse a batch before it moves the tables the batch describes. The
+    write checks again under the lock.
+
+    Raises:
+        EntryKeyCollisionError: As :func:`write_tracks_rows` does.
+    """
+    reason = key_collision_at_write(ds, _draft_entries(drafts), tracks_index_path(ds))
+    if reason is not None:
+        raise EntryKeyCollisionError(reason)
+
+
+def _tracks_row(
+    ds: Dataset,
+    draft: TracksRowDraft,
+    entry: Entry,
+    *,
+    consumed_composition: str,
+    media_composition: str,
+) -> TracksIndexRow:
+    """The index row of one draft, measured from the table it describes."""
+    out_path = draft.out_path
     # An unknown extent is recorded as a blank pair, never as (0, 0): frame 0 is
     # a real and common value, so a substituted zero would read as the start of a
     # recording rather than as the absence of an answer.
     extent = frame_extent(out_path)
-    row = TracksIndexRow(
+    return TracksIndexRow(
         abs_path=Path(ds.relative_to_root(out_path)),
-        run_id=run_id,
-        group=entry_group,
-        sequence=entry_sequence,
-        producer=producer,
-        std_format=std_format,
-        producer_run_id=producer_run_id,
-        source_abs_path=ds.relative_to_root(source) if source else "",
-        source_md5=source_md5,
-        consumed_source_roots=encode_source_roots(consumed_source_roots),
-        n_rows=int(n_rows),
+        run_id=draft.run_id,
+        group=entry[0],
+        sequence=entry[1],
+        producer=draft.producer,
+        std_format=draft.std_format,
+        producer_run_id=draft.producer_run_id,
+        source_abs_path=ds.relative_to_root(draft.source) if draft.source else "",
+        source_md5=draft.source_md5,
+        consumed_source_roots=encode_source_roots(draft.consumed_source_roots),
+        n_rows=int(draft.n_rows),
         n_keypoints=count_keypoints(out_path),
-        consumed_composition=(
-            consumed_composition_for(
-                ds, entry_group, entry_sequence, consumed_source_roots
-            )
-            if consumed_composition is None
-            else consumed_composition
-        ),
-        consumed_media_composition=(
-            media_composition_for(ds, entry_group, entry_sequence)
-            if records_media
-            else ""
-        ),
+        consumed_composition=consumed_composition,
+        consumed_media_composition=media_composition,
         frame_min="" if extent is None else str(extent[0]),
         frame_max="" if extent is None else str(extent[1]),
-        media_frames="" if media_frames is None else str(int(media_frames)),
-        frames_read="" if frames_read is None else str(int(frames_read)),
-        known_tail_loss=("" if known_tail_loss is None else str(int(known_tail_loss))),
-        first_frame="" if first_frame is None else str(int(first_frame)),
+        media_frames=(
+            "" if draft.media_frames is None else str(int(draft.media_frames))
+        ),
+        frames_read="" if draft.frames_read is None else str(int(draft.frames_read)),
+        known_tail_loss=(
+            "" if draft.known_tail_loss is None else str(int(draft.known_tail_loss))
+        ),
+        first_frame="" if draft.first_frame is None else str(int(draft.first_frame)),
         appearance_abs_path=(
-            "" if appearance_path is None else ds.relative_to_root(appearance_path)
+            ""
+            if draft.appearance_path is None
+            else ds.relative_to_root(draft.appearance_path)
         ),
         carries_tracklets=(
             ""
-            if carries_tracklets is None
-            else (_TRACKLETS_TRUE if carries_tracklets else _TRACKLETS_FALSE)
+            if draft.carries_tracklets is None
+            else (_TRACKLETS_TRUE if draft.carries_tracklets else _TRACKLETS_FALSE)
         ),
-    )
-    append_refusing_key_collision(
-        ds, tracks_index(tracks_index_path(ds)), [row], [(entry_group, entry_sequence)]
     )
 
 

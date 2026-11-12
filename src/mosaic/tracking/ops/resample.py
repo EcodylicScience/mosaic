@@ -230,7 +230,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
                 failed.append(item.failure.key)
                 item.failure.record(ctx.entry_failed)
             if item.table is not None:
-                for lost in committer.commit([item.table]):
+                for lost in committer.add([item.table]):
                     failed.append(lost.key)
                     lost.record(ctx.entry_failed)
             done += 1
@@ -272,13 +272,18 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
                     entry in indexed,
                 )
             pool.finish()
+            for lost in committer.flush():
+                failed.append(lost.key)
+                lost.record(ctx.entry_failed)
         except BaseException:
             # A table a worker finished is published with its row.
             pool.settle()
             for item in ordered.held():
                 if not isinstance(item, Exception) and item.table is not None:
-                    for lost in committer.commit([item.table]):
+                    for lost in committer.add([item.table]):
                         lost.record(ctx.entry_failed)
+            for lost in committer.flush():
+                lost.record(ctx.entry_failed)
             raise
         finally:
             pool.close()

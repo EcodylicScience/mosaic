@@ -20,6 +20,8 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import EntryKeyCollisionError
+from mosaic.core.pipeline.index_csv import IndexCSV
 from mosaic.core.scope import Scope
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 from mosaic.core.pipeline.tracks_index import (
@@ -54,6 +56,7 @@ from mosaic.core.pipeline.tracks_index import (
     tracks_index,
     tracks_index_path,
     write_tracks_row,
+    write_tracks_rows,
 )
 from tests.helpers import add_track_sequences, add_tracks_variant, track_table
 
@@ -1998,3 +2001,108 @@ def test_an_index_the_lock_just_created_reads_as_an_empty_one(tmp_path: Path) ->
     assert list(index.columns) == list(
         read_tracks_index(_dataset(tmp_path / "x")).columns
     )
+
+
+_BATCH_RUN = "convert-x.0.1-aaaaaaaaaa"
+
+
+def _draft(
+    ds: Dataset, sequence: str, *, group: str = "", source_md5: str = ""
+) -> TracksRowDraft:
+    return TracksRowDraft(
+        run_id=_BATCH_RUN,
+        group=group,
+        sequence=sequence,
+        out_path=_track_parquet(ds, sequence),
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        carries_tracklets=None,
+        source_md5=source_md5,
+    )
+
+
+def test_a_batch_of_drafts_gives_the_index_of_the_same_rows_written_one_by_one(
+    tmp_path: Path,
+) -> None:
+    batched, single = _dataset(tmp_path / "a"), _dataset(tmp_path / "b")
+    names = [f"s{i}" for i in range(6)]
+
+    write_tracks_rows(batched, [_draft(batched, name) for name in names])
+    for name in names:
+        _draft(single, name).write(single)
+
+    def cells(ds: Dataset) -> list[list[object]]:
+        return read_tracks_index(ds).drop(columns=["started_at"]).to_numpy().tolist()
+
+    assert cells(batched) == cells(single)
+    assert list(read_tracks_index(batched).columns) == TRACKS_INDEX_COLUMNS
+
+
+def test_a_batch_writes_the_index_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = _dataset(tmp_path)
+    drafts = [_draft(ds, f"s{i}") for i in range(12)]
+    appended: list[int] = []
+    original = IndexCSV[TracksIndexRow].append_holding_lock
+
+    def counting(self: IndexCSV[TracksIndexRow], rows: list[TracksIndexRow]) -> None:
+        appended.append(len(rows))
+        original(self, rows)
+
+    monkeypatch.setattr(IndexCSV, "append_holding_lock", counting)
+
+    write_tracks_rows(ds, drafts)
+
+    assert appended == [12]
+    assert len(read_tracks_index(ds)) == 12
+
+
+def test_a_batch_keeps_the_last_draft_of_an_entry_it_names_twice(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    write_tracks_rows(
+        ds,
+        [
+            _draft(ds, "a", source_md5="1"),
+            _draft(ds, "b"),
+            _draft(ds, "a", source_md5="2"),
+        ],
+    )
+
+    index = read_tracks_index(ds)
+    assert list(index["sequence"]) == ["b", "a"]
+    assert list(index["source_md5"]) == ["", "2"]
+
+
+def test_a_batch_replaces_the_row_an_earlier_write_made_for_an_entry(
+    tmp_path: Path,
+) -> None:
+    ds = _dataset(tmp_path)
+    write_tracks_rows(ds, [_draft(ds, "a", source_md5="1"), _draft(ds, "b")])
+
+    write_tracks_rows(ds, [_draft(ds, "c"), _draft(ds, "a", source_md5="2")])
+
+    index = read_tracks_index(ds)
+    assert list(index["sequence"]) == ["b", "c", "a"]
+    assert list(index["source_md5"]) == ["", "", "2"]
+
+
+def test_a_batch_with_a_colliding_entry_writes_none_of_it(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+    write_tracks_rows(ds, [_draft(ds, "x", group="a__b")])
+
+    with pytest.raises(EntryKeyCollisionError):
+        write_tracks_rows(ds, [_draft(ds, "fresh"), _draft(ds, "b__x", group="a")])
+
+    assert list(read_tracks_index(ds)["sequence"]) == ["x"]
+
+
+def test_an_empty_batch_creates_no_index(tmp_path: Path) -> None:
+    ds = _dataset(tmp_path)
+
+    write_tracks_rows(ds, [])
+
+    assert not tracks_index_path(ds).exists()

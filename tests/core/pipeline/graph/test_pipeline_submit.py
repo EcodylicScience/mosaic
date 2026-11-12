@@ -31,6 +31,7 @@ from mosaic.core.pipeline.graph import (
     RequestIdMalformed,
     RetireNeedsCleanup,
     RetireUnknownRecipe,
+    ReviewedPlan,
     declared_version,
     load_request,
     plan_fingerprint,
@@ -715,3 +716,77 @@ def test_a_request_document_without_the_field_loads(tmp_path: Path) -> None:
 def test_a_request_refuses_a_blank_variant(blank: str) -> None:
     with pytest.raises(ValueError, match="names no variant"):
         _ = Request(request_id="R", recipe_digest="0" * 16, tracks_run_id=blank)
+
+
+# --- a reviewed plan ---------------------------------------------------------
+
+
+def _count_plans(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the plans that a submission resolves."""
+    import mosaic.core.pipeline.graph.request as request_module
+
+    resolved: list[int] = []
+    real = request_module.plan_pipeline
+
+    def counted(*args: object, **kwargs: object) -> Plan:
+        resolved.append(1)
+        return real(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(request_module, "plan_pipeline", counted)
+    return resolved
+
+
+def test_a_reviewed_plan_is_recorded_without_planning_again(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recipe = Recipe.model_validate(CHAIN)
+    held = InventoryCache(tracked)
+    plan = plan_pipeline(tracked, recipe, inventory=held)
+    resolved = _count_plans(monkeypatch)
+
+    submitted = submit_request(
+        tracked,
+        recipe,
+        inventory=held,
+        expect_plan=plan_fingerprint(plan),
+        reviewed=ReviewedPlan(plan, held.generation),
+    )
+
+    assert resolved == []
+    assert submitted.plan is plan
+
+
+def test_a_reviewed_plan_is_resolved_again_once_an_index_moved(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Computing a run writes its index, and the plan then names the run complete."""
+    recipe = speed_recipe_stepping(1)
+    held = InventoryCache(tracked)
+    plan = plan_pipeline(tracked, recipe, inventory=held)
+    reviewed = ReviewedPlan(plan, held.generation)
+    _ = run_speed(tracked, 1)
+    resolved = _count_plans(monkeypatch)
+
+    submitted = submit_request(tracked, recipe, inventory=held, reviewed=reviewed)
+
+    assert resolved == [1]
+    assert submitted.plan is not plan
+    assert plan_fingerprint(submitted.plan) != plan_fingerprint(plan)
+
+
+def test_a_plan_reviewed_before_an_index_moved_is_refused_by_its_fingerprint(
+    tracked: Dataset,
+) -> None:
+    recipe = speed_recipe_stepping(1)
+    held = InventoryCache(tracked)
+    plan = plan_pipeline(tracked, recipe, inventory=held)
+    _ = run_speed(tracked, 1)
+
+    with pytest.raises(PlanChanged):
+        _ = submit_request(
+            tracked,
+            recipe,
+            inventory=held,
+            expect_plan=plan_fingerprint(plan),
+            reviewed=ReviewedPlan(plan, held.generation),
+        )
