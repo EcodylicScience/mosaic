@@ -484,12 +484,39 @@ def test_the_summary_lists_each_arena_layout_by_recording(tmp_path: Path) -> Non
     summary = dataset_summary(ds)
 
     assert [
-        (layout.recording, layout.camera, layout.arenas, layout.digest)
+        (
+            layout.recording,
+            layout.camera,
+            layout.arenas,
+            layout.digest,
+            layout.assignment_digest,
+        )
         for layout in summary.arena_layouts
     ] == [
-        ("solo", "top", ("A1", "B1"), grid.digest()),
-        ("rec", "", ("A1", "B1"), grid.digest()),
+        ("solo", "top", ("A1", "B1"), grid.digest(), grid.digest()),
+        ("rec", "", ("A1", "B1"), grid.digest(), grid.digest()),
     ]
+
+
+def test_the_summary_holds_both_digests_of_a_layout_with_a_boundary(
+    tmp_path: Path,
+) -> None:
+    from mosaic.core.arenas import ArenaLayout
+    from mosaic.core.regions import CircleShape
+
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("", "solo"))
+    plain = ArenaLayout.grid(xs=(0, 100), ys=(0, 100))
+    layout = ArenaLayout.single(
+        CircleShape(cx=50.0, cy=50.0, r=50.0), width=100, height=100
+    )
+    _ = ds.set_arena_layout(layout, group="", sequence="solo")
+
+    (summary,) = dataset_summary(ds).arena_layouts
+
+    assert summary.digest == layout.digest()
+    assert summary.assignment_digest == plain.digest()
+    assert summary.digest != summary.assignment_digest
 
 
 def test_an_unreadable_arenas_index_is_an_inventory_error(tmp_path: Path) -> None:

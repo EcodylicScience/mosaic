@@ -1,17 +1,21 @@
 """Arena layouts: the tanks of a camera's view, keyed by recording and camera.
 
 A layout names each arena of one camera's frame by a rectangle in source pixels.
-It is declared once per recording, keyed by ``(RecordingKey, camera)``, and a
-lookup for one entry falls back from its own key to its recording's and from its
-camera to every camera (:func:`layout_lookup_order`). This module imports
-pydantic, the standard library and :mod:`mosaic.core.recording` only, so the
-agent tool contract can declare a field over a layout.
+An arena may also carry a boundary, its wall when it is not a rectangle, and
+named regions of interest (:class:`~mosaic.core.regions.Roi`). A layout is
+declared once per recording, keyed by ``(RecordingKey, camera)``, and a lookup
+for one entry falls back from its own key to its recording's and from its camera
+to every camera (:func:`layout_lookup_order`). This module imports pydantic, the
+standard library, :mod:`mosaic.core.entry`, :mod:`mosaic.core.recording` and
+:mod:`mosaic.core.regions` only, as a pure model that the agent server imports
+lazily and whose schema the API routes publish.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import combinations, pairwise
@@ -29,6 +33,7 @@ from pydantic import (
 
 from .entry import validate_entry_name
 from .recording import RecordingKey
+from .regions import CircleShape, PolygonShape, RectShape, Roi, bounding_box
 
 __all__ = [
     "Arena",
@@ -37,6 +42,7 @@ __all__ = [
     "ArenaSpace",
     "Rect",
     "layout_lookup_order",
+    "region_boundary",
     "validate_arena_name",
 ]
 
@@ -95,6 +101,44 @@ class Rect(_FrozenModel):
         )
 
 
+def region_boundary(rect: Rect) -> RectShape:
+    """Return *rect* as a rect boundary, its float box.
+
+    An arena without a boundary uses its region as one wherever a boundary is
+    read.
+    """
+    return RectShape(
+        x0=float(rect.x0), y0=float(rect.y0), x1=float(rect.x1), y1=float(rect.y1)
+    )
+
+
+def _is_none(value: object) -> bool:
+    return value is None
+
+
+def _is_empty(value: tuple[Roi, ...]) -> bool:
+    return not value
+
+
+def _clipped_box(
+    shape: CircleShape | PolygonShape, width: float | None, height: float | None
+) -> tuple[float, float, float, float] | None:
+    """Return the bounding box of *shape* clipped to the frame, ``None`` if empty.
+
+    The frame's near edges are ``x = 0`` and ``y = 0``. *width* and *height* clip
+    the far edges when given.
+    """
+    x_min, y_min, x_max, y_max = bounding_box(shape)
+    x_min, y_min = max(x_min, 0.0), max(y_min, 0.0)
+    if width is not None:
+        x_max = min(x_max, width)
+    if height is not None:
+        y_max = min(y_max, height)
+    if x_min >= x_max or y_min >= y_max:
+        return None
+    return (x_min, y_min, x_max, y_max)
+
+
 def validate_arena_name(name: str) -> str:
     """Return *name* when it can be an arena's name, an entry-name token.
 
@@ -125,12 +169,22 @@ class Arena(_FrozenModel):
             reflection of a neighboring tank.
         capacity: The most individuals the arena holds in one frame, ``None``
             for no limit.
+        boundary: The arena's wall in source pixels, ``None`` for a rectangle:
+            the region is then the boundary. Its bounding box, clipped to the
+            frame, lies inside the region. Left out of a dump when ``None``, so
+            a layout without one keeps its digest.
+        rois: The arena's named regions of interest, with unique names. Left
+            out of a dump when empty.
     """
 
     name: str
     region: Rect
     exclude: tuple[Rect, ...] = ()
     capacity: PositiveInt | None = None
+    boundary: CircleShape | PolygonShape | None = Field(
+        default=None, discriminator="kind", exclude_if=_is_none
+    )
+    rois: tuple[Roi, ...] = Field(default=(), exclude_if=_is_empty)
 
     @field_validator("name")
     @classmethod
@@ -146,6 +200,24 @@ class Arena(_FrozenModel):
                 raise ValueError(message)
         return self
 
+    @model_validator(mode="after")
+    def _check_roi_names(self) -> Self:
+        """Refuse two regions of interest of one name."""
+        names = [roi.name for roi in self.rois]
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if repeated:
+            message = f"arena {self.name!r} repeats ROI names in rois: {repeated}"
+            raise ValueError(message)
+        return self
+
+
+def _digest_of(layout: ArenaLayout) -> str:
+    """Return the SHA-256 of *layout*'s canonical JSON, in hex."""
+    canonical = json.dumps(
+        layout.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
 
 class ArenaLayout(_FrozenModel):
     """The arenas of one camera's frame.
@@ -155,17 +227,36 @@ class ArenaLayout(_FrozenModel):
         width: The frame's width in pixels.
         height: The frame's height in pixels.
         arenas: The arenas, in ordinal order. Their regions are disjoint and
-            lie inside the frame.
+            lie inside the frame, and each boundary lies inside its region where
+            it is inside the frame.
     """
 
     space: ArenaSpace = "image_px"
     width: PositiveInt
     height: PositiveInt
-    arenas: tuple[Arena, ...] = Field(min_length=1)
+    arenas: tuple[Arena, ...] = Field(json_schema_extra={"minItems": 1})
+
+    @field_validator("arenas")
+    @classmethod
+    def _check_not_empty(cls, arenas: tuple[Arena, ...]) -> tuple[Arena, ...]:
+        """Refuse a layout without an arena.
+
+        A length constraint on the field would also count the arenas that failed
+        their own checks, and report a bad arena as an empty layout besides.
+        """
+        if not arenas:
+            message = "a layout names at least one arena"
+            raise ValueError(message)
+        return arenas
 
     @model_validator(mode="after")
     def _check_arenas(self) -> Self:
-        """Refuse a repeated name, a region outside the frame or two overlapping."""
+        """Refuse a repeated name, a region outside the frame or two overlapping.
+
+        A boundary is refused when its bounding box, clipped to the frame, leaves
+        the arena's region. A boundary may reach past the frame, as an arena the
+        camera crops does.
+        """
         frame = Rect(x0=0, y0=0, x1=self.width, y1=self.height)
         names = [arena.name for arena in self.arenas]
         repeated = sorted({name for name in names if names.count(name) > 1})
@@ -178,11 +269,39 @@ class ArenaLayout(_FrozenModel):
                     f"arena {arena.name!r} leaves the {self.width}x{self.height} frame"
                 )
                 raise ValueError(message)
+            if arena.boundary is not None:
+                self._check_boundary(arena, arena.boundary)
         for first, second in combinations(self.arenas, 2):
             if first.region.overlaps(second.region):
                 message = f"arenas {first.name!r} and {second.name!r} overlap"
                 raise ValueError(message)
         return self
+
+    def _check_boundary(
+        self, arena: Arena, boundary: CircleShape | PolygonShape
+    ) -> None:
+        """Refuse a boundary whose clipped box is empty or leaves the region."""
+        box = _clipped_box(boundary, self.width, self.height)
+        if box is None:
+            message = (
+                f"arena {arena.name!r} has a boundary with no part inside the "
+                f"{self.width}x{self.height} frame"
+            )
+            raise ValueError(message)
+        region = arena.region
+        x_min, y_min, x_max, y_max = box
+        if not (
+            region.x0 <= x_min
+            and x_max <= region.x1
+            and region.y0 <= y_min
+            and y_max <= region.y1
+        ):
+            message = (
+                f"arena {arena.name!r} has a boundary reaching outside its region "
+                f"{region!r}: its box clipped to the frame is ({x_min}, {y_min}) to "
+                f"({x_max}, {y_max})"
+            )
+            raise ValueError(message)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -194,10 +313,74 @@ class ArenaLayout(_FrozenModel):
 
         Equal layouts have one digest, whatever order their keys were given in.
         """
-        canonical = json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        return _digest_of(self)
+
+    def assignment_digest(self) -> str:
+        """Return the digest of the layout without its boundaries and ROIs.
+
+        It equals :meth:`digest` for a layout that has none, and it stays put
+        when a boundary or a region of interest is added, because the arena a
+        row falls in depends on the regions alone.
+        """
+        bare = tuple(
+            arena.model_copy(update={"boundary": None, "rois": ()})
+            for arena in self.arenas
         )
-        return hashlib.sha256(canonical.encode()).hexdigest()
+        return _digest_of(self.model_copy(update={"arenas": bare}))
+
+    @classmethod
+    def single(
+        cls,
+        boundary: CircleShape | PolygonShape,
+        *,
+        name: str = "A1",
+        capacity: int | None = 1,
+        rois: Sequence[Roi] = (),
+        width: int | None = None,
+        height: int | None = None,
+    ) -> ArenaLayout:
+        """Return a layout of one arena bounded by *boundary*.
+
+        The region is the boundary's bounding box rounded outward to whole
+        pixels and clipped to ``x, y >= 0`` and, when given, to *width* and
+        *height*, so a circle that the camera crops still has a valid region.
+        The frame defaults to the region's far edges, as :meth:`grid` defaults
+        to the last edges.
+
+        Args:
+            boundary: The arena's wall.
+            name: The arena's name.
+            capacity: The arena's capacity.
+            rois: The arena's regions of interest.
+            width: The frame's width, the region's right edge when ``None``.
+            height: The frame's height, the region's bottom edge when ``None``.
+
+        Raises:
+            ValueError: If no part of *boundary* lies inside the frame.
+        """
+        box = _clipped_box(boundary, width, height)
+        if box is None:
+            message = "the boundary has no part inside the frame"
+            raise ValueError(message)
+        region = Rect(
+            x0=math.floor(box[0]),
+            y0=math.floor(box[1]),
+            x1=math.ceil(box[2]),
+            y1=math.ceil(box[3]),
+        )
+        return cls(
+            width=region.x1 if width is None else width,
+            height=region.y1 if height is None else height,
+            arenas=(
+                Arena(
+                    name=name,
+                    region=region,
+                    capacity=capacity,
+                    boundary=boundary,
+                    rois=tuple(rois),
+                ),
+            ),
+        )
 
     @classmethod
     def grid(

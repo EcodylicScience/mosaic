@@ -8,26 +8,36 @@ renumbered so that each id stays in one arena. The arithmetic is
 
 The variant identifier names the recipe: the op's params and the variant it
 chains from. A layout is data the op read, as a source file is to a conversion,
-so each row records its layout's digest beside the source row's composition. A
-changed layout recomputes its recording's tables under the same variant, and
-the features that read them see a new tracks composition. The op's run
-identifier covers the digests of the layouts its scope read. Frames are
-unchanged, and each row records its source row's first frame.
+so each row records its layout's assignment digest beside the source row's
+composition. The assignment digest leaves out a boundary and the regions of
+interest, which the assignment does not read, so adding one recomputes nothing.
+A changed region or exclusion recomputes its recording's tables under the same
+variant, and the features that read them see a new tracks composition. The op's
+run identifier covers the assignment digests of the layouts its scope read.
+Frames are unchanged, and each row records its source row's first frame.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Final
 
 import pandas as pd
 
 from mosaic.core.arenas import ArenaKey
-from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key, text_cell
 from mosaic.core.params import Declared, Params
-from mosaic.core.pipeline.arena_index import DeclaredLayout
+from mosaic.core.pipeline.arena_index import (
+    ArenaIndexError,
+    DeclaredLayout,
+    IndexedLayout,
+    entry_arena_row,
+    media_cameras,
+    read_arena_index_rows,
+    read_declared_layout,
+)
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
@@ -90,7 +100,7 @@ def assign_arenas_run_id(
         version: The op's version.
         params: The run's params.
         upstream: The tracks variant it reads.
-        layouts: The digest of each entry's layout, by entry key.
+        layouts: The assignment digest of each entry's layout, by entry key.
     """
     payload = {
         "params": params.identity_dump(),
@@ -100,68 +110,67 @@ def assign_arenas_run_id(
     return op_run_id(kind, version, payload)
 
 
-def _media_cameras(ds: Dataset) -> dict[Entry, set[str]]:
-    """Return the cameras of each entry's media rows."""
-    cameras: dict[Entry, set[str]] = {}
-    for row in ds.read_media_index():
-        entry = (row.get("group", ""), row.get("sequence", ""))
-        cameras.setdefault(entry, set()).add(row.get("camera", ""))
-    return cameras
+@dataclass(frozen=True, slots=True)
+class _EntryLayout:
+    """The layout one entry assigns by, and the digest the op records for it.
 
-
-def _entry_layout(
-    ds: Dataset,
-    entry: Entry,
-    cameras: set[str],
-    declared: Mapping[ArenaKey, DeclaredLayout],
-) -> DeclaredLayout | None:
-    """Return the one layout of *entry*'s cameras, ``None`` without one.
-
-    A tracks table names no camera. An entry of several cameras is assigned when
-    every camera finds the same layout.
-
-    Raises:
-        ValueError: If the entry's cameras find different layouts.
+    Attributes:
+        declared: The layout the entry's index row names.
+        digest: Its assignment digest, which a boundary or a region of interest
+            does not move.
     """
-    found = {
-        camera: ds.arena_layout(*entry, camera, declared=declared)
-        for camera in sorted(cameras or {""})
-    }
-    digests = {layout.digest for layout in found.values() if layout is not None}
-    if len(digests) > 1:
-        message = (
-            f"the cameras of {entry!r} find {len(digests)} arena layouts, and its "
-            "tracks name no camera. Declare one layout for every camera."
-        )
-        raise ValueError(message)
-    return next((layout for layout in found.values() if layout is not None), None)
+
+    declared: DeclaredLayout
+    digest: str
 
 
 def _layout_digests(
     ds: Dataset, rows: pd.DataFrame
-) -> tuple[dict[str, DeclaredLayout | ValueError | None], dict[str, str]]:
+) -> tuple[dict[str, _EntryLayout | ValueError | None], dict[str, str]]:
     """Return each source row's layout and the digests found, by entry key.
 
-    An entry whose cameras find different layouts maps to the refusal, which
-    the run records as that entry's failure.
+    Each entry's index row is looked up in the rows of one read, and each
+    layout file the entries name is read once. An entry whose cameras find
+    different layouts, or whose file fails its check, maps to the refusal, which
+    the run records as that entry's failure. A file no entry needs is not read.
+
+    Raises:
+        ArenaIndexError: If the index cannot be read or declares a key twice.
     """
-    declared = ds.arena_layouts()
-    cameras = _media_cameras(ds)
-    layouts: dict[str, DeclaredLayout | ValueError | None] = {}
+    index_rows = read_arena_index_rows(ds)
+    cameras = media_cameras(ds)
+    read: dict[ArenaKey, _EntryLayout | ValueError] = {}
+    layouts: dict[str, _EntryLayout | ValueError | None] = {}
     for _, row in rows.iterrows():
         entry = (text_cell(row.get("group", "")), text_cell(row.get("sequence", "")))
-        found: DeclaredLayout | ValueError | None
+        found: _EntryLayout | ValueError | None
         try:
-            found = _entry_layout(ds, entry, cameras.get(entry, set()), declared)
+            index_row = entry_arena_row(
+                ds, entry, cameras.get(entry, set()), index_rows
+            )
+            found = None
+            if index_row is not None:
+                if index_row.key not in read:
+                    read[index_row.key] = _read_entry_layout(ds, index_row)
+                found = read[index_row.key]
         except ValueError as exc:
             found = exc
         layouts[make_entry_key(*entry)] = found
     digests = {
         key: layout.digest
         for key, layout in layouts.items()
-        if isinstance(layout, DeclaredLayout)
+        if isinstance(layout, _EntryLayout)
     }
     return layouts, digests
+
+
+def _read_entry_layout(ds: Dataset, row: IndexedLayout) -> _EntryLayout | ValueError:
+    """Read *row*'s file, or return the refusal of a file that fails its check."""
+    try:
+        declared = read_declared_layout(ds, row)
+    except ArenaIndexError as exc:
+        return exc
+    return _EntryLayout(declared, declared.layout.assignment_digest())
 
 
 @register_op
@@ -277,7 +286,9 @@ class AssignArenasOp(Op[AssignArenasParams]):
                     ctx.heartbeat(done)
                     continue
                 source = Path(ds.resolve_path(text_cell(row.get("abs_path", ""))))
-                table, report = assign_arenas(read_parquet_table(source), layout.layout)
+                table, report = assign_arenas(
+                    read_parquet_table(source), layout.declared.layout
+                )
                 std_format = text_cell(row.get("std_format", "")) or "trex_v1"
                 _ = ensure_track_schema(
                     table, std_format, strict=False, source=f"{group}/{sequence}"

@@ -217,13 +217,16 @@ class ArenaLayoutSummary(StrictModel):
         recording: The name of the recording it is declared for.
         camera: The camera it applies to, ``""`` for every camera.
         arenas: Its arena names, in ordinal order.
-        digest: The digest of the layout, which the assigned tracks record.
+        digest: The layout's digest, recorded on its index row.
+        assignment_digest: The digest of the layout without its boundaries and
+            regions of interest, which the assigned tracks record.
     """
 
     recording: str
     camera: str
     arenas: tuple[str, ...]
     digest: str
+    assignment_digest: str
 
 
 def arena_layout_summaries(ds: Dataset) -> tuple[ArenaLayoutSummary, ...]:
@@ -238,6 +241,7 @@ def arena_layout_summaries(ds: Dataset) -> tuple[ArenaLayoutSummary, ...]:
             camera=key.camera,
             arenas=declared.layout.names,
             digest=declared.digest,
+            assignment_digest=declared.layout.assignment_digest(),
         )
         for key, declared in sorted(ds.arena_layouts().items())
     )

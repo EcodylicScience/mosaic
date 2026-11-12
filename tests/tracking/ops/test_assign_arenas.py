@@ -10,7 +10,10 @@ import pandas as pd
 import pytest
 
 from mosaic.core.arenas import ArenaLayout, Rect
+from mosaic.core.regions import CircleShape, Roi
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import make_entry_key
+from mosaic.core.pipeline.arena_index import ArenaIndexError, arena_index_path
 from mosaic.core.pipeline.arena_assignment import (
     ArenaCapacityError,
     assign_arenas,
@@ -383,3 +386,134 @@ class TestAssignArenasOp:
         (failure,) = _run_events(dataset, "entry_error")
         assert failure["key"] == "rec__s1"
         assert "find 2 arena layouts" in str(failure["error"])
+
+
+def _with_rois(layout: ArenaLayout) -> ArenaLayout:
+    """*layout* with one region of interest in every arena."""
+    nest = Roi(name="nest", shape=CircleShape(cx=10.0, cy=10.0, r=5.0))
+    arenas = tuple(
+        arena.model_copy(update={"rois": (nest,)}) for arena in layout.arenas
+    )
+    return layout.model_copy(update={"arenas": arenas})
+
+
+class TestAssignmentDigestIdentity:
+    def test_adding_rois_leaves_the_identity_and_recomputes_no_table(
+        self, dataset: Dataset
+    ) -> None:
+        first = run_op(dataset, "assign-arenas", {}, track=False)
+        before = _assigned_rows(dataset)
+        written = {
+            path: path.stat().st_mtime_ns
+            for path in (
+                dataset.resolve_path(row["abs_path"]) for _, row in before.iterrows()
+            )
+        }
+        with_rois = _with_rois(princeton_layout())
+        assert with_rois.digest() != princeton_layout().digest()
+        _ = dataset.set_arena_layout(with_rois, group="rec")
+
+        again = run_op(dataset, "assign-arenas", {}, track=False)
+
+        after = _assigned_rows(dataset)
+        assert again == first
+        assert list(after["run_id"]) == list(before["run_id"])
+        assert list(after["consumed_composition"]) == list(
+            before["consumed_composition"]
+        )
+        assert {path: path.stat().st_mtime_ns for path in written} == written
+
+
+def _undivided_dataset(tmp_path: Path) -> Dataset:
+    """Two undivided recordings, ``a`` and ``b``, each with its own layout file."""
+    ds = make_dataset(tmp_path / "ds")
+    for sequence in ("a", "b"):
+        table = princeton_table(sequence, frames=range(2), id_of=_ids(0), group="")
+        _seed(ds, table, None)
+        _ = ds.set_arena_layout(princeton_layout(), group="", sequence=sequence)
+    return ds
+
+
+def _store_missing_absolute(ds: Dataset, sequence: str) -> None:
+    """Make *sequence*'s index row name a file that does not exist, by absolute path."""
+    index = arena_index_path(ds)
+    cell = f"arenas/{sequence}.json"
+    assert cell in index.read_text()
+    missing = ds.base_dir / "elsewhere" / f"{sequence}.json"
+    _ = index.write_text(index.read_text().replace(cell, str(missing)))
+
+
+class TestLayoutFileFailures:
+    def test_a_file_edited_by_hand_fails_only_its_recording_s_entries(
+        self, tmp_path: Path
+    ) -> None:
+        ds = _undivided_dataset(tmp_path)
+        edited = ds.arena_layout("", "b")
+        assert edited is not None
+        _ = edited.path.write_text(
+            ArenaLayout.grid(xs=XS, ys=YS, width=1024, height=1080).model_dump_json()
+        )
+
+        with pytest.raises(RuntimeError, match="1 of 2 entries unwritten"):
+            _ = run_op(ds, "assign-arenas", {})
+
+        (failure,) = _run_events(ds, "entry_error")
+        assert failure["key"] == make_entry_key("", "b")
+        assert "digest" in str(failure["error"])
+        assert list(_assigned_rows(ds)["sequence"]) == ["a"]
+
+    def test_a_bad_file_of_a_recording_outside_the_scope_leaves_the_run_alone(
+        self, tmp_path: Path
+    ) -> None:
+        ds = _undivided_dataset(tmp_path)
+        bad = ds.arena_layout("", "b")
+        assert bad is not None
+        bad.path.unlink()
+
+        _ = run_op(
+            ds,
+            "assign-arenas",
+            {},
+            scope=Scope(entries=[("", "a")]),
+        )
+
+        assert list(_assigned_rows(ds)["sequence"]) == ["a"]
+        assert _run_events(ds, "entry_error") == []
+
+    def test_a_missing_absolute_file_of_a_recording_outside_the_scope_is_left_alone(
+        self, tmp_path: Path
+    ) -> None:
+        ds = _undivided_dataset(tmp_path)
+        _store_missing_absolute(ds, "b")
+
+        _ = run_op(ds, "assign-arenas", {}, scope=Scope(entries=[("", "a")]))
+
+        assert list(_assigned_rows(ds)["sequence"]) == ["a"]
+        assert _run_events(ds, "entry_error") == []
+
+    def test_a_missing_absolute_file_fails_only_its_recording_s_entries(
+        self, tmp_path: Path
+    ) -> None:
+        ds = _undivided_dataset(tmp_path)
+        _store_missing_absolute(ds, "b")
+
+        with pytest.raises(RuntimeError, match="1 of 2 entries unwritten"):
+            _ = run_op(ds, "assign-arenas", {})
+
+        (failure,) = _run_events(ds, "entry_error")
+        assert failure["key"] == make_entry_key("", "b")
+        assert "cannot be read as a layout" in str(failure["error"])
+        assert list(_assigned_rows(ds)["sequence"]) == ["a"]
+
+    def test_an_index_declaring_a_key_twice_refuses_the_op(
+        self, tmp_path: Path
+    ) -> None:
+        ds = _undivided_dataset(tmp_path)
+        path = arena_index_path(ds)
+        lines = path.read_text().splitlines()
+        _ = path.write_text("\n".join([*lines, lines[-1]]) + "\n")
+
+        with pytest.raises(ArenaIndexError, match="two layouts"):
+            _ = run_op(ds, "assign-arenas", {})
+
+        assert _assigned_rows(ds).empty

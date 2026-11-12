@@ -17,6 +17,27 @@ keeps its digest and its file bytes. `mosaic.core.regions` declares the shapes
 (`circle`, `ring`, `rect` and `polygon`) and the named `Roi` that those regions are
 made of.
 
+An arena may carry a `boundary` (a circle or a polygon, with its `kind` written) and a
+list of named `rois`, and `ArenaLayout.single(boundary, ...)` builds a one-arena layout
+around a boundary. An arena's boundary must lie inside its region once clipped to the
+frame, and its ROI names are unique. A layout without either keeps its digest, its
+file bytes and every `assign-arenas` run id: `exclude_if` leaves both fields out of a
+dump while they are unset. A layout with either gets a new digest and a new file, and a
+toolkit older than this change refuses that file. `ArenaLayout.assignment_digest()` is
+the digest without them, and `ArenaLayoutSummary.assignment_digest` carries it in
+`describe_dataset`, `mosaic describe --json` and `mosaic arenas show --json`.
+`manage_dataset`'s `arena_layout` is a JSON object in the wire schema, so the tool's
+input schema no longer lists the layout's fields. The server validates it as an
+`ArenaLayout` and answers `invalid_arenas` with a `detail.errors` list of `field` and
+`message` pairs.
+
+`assign-arenas` reads the assignment digest, so no existing run id, variant id or
+composition moves, and adding a boundary or ROIs to a layout recomputes nothing. A
+layout file that is missing, unparsable or edited against the digest in its index row
+now fails only the entries that read it, and a bad file outside the scope no longer
+refuses the op. An unreadable index or a key declared twice still refuses it.
+`Dataset.arena_layout` no longer takes `declared`.
+
 ## Unreleased: run summaries across entries
 
 `load_run_matrix` raises classified errors, so `error_envelope` renders each refusal

@@ -128,7 +128,7 @@ from .entry import (
     validate_entry_name,
 )
 from .individuals import refuse_repeated_rows
-from .arenas import ArenaKey, ArenaLayout, layout_lookup_order
+from .arenas import ArenaKey, ArenaLayout
 from .recording import (
     OrderFacts,
     Recording,
@@ -264,7 +264,10 @@ from .pipeline.sequence_index import (
 from .pipeline.dataset_indexes import iter_dataset_indexes, label_kinds
 from .pipeline.arena_index import (
     DeclaredLayout,
+    entry_arena_row,
+    read_arena_index_rows,
     read_arena_layouts,
+    read_declared_layout,
     write_arena_layout,
 )
 from .pipeline.entry_keys import (
@@ -2533,12 +2536,7 @@ class Dataset:
         return read_arena_layouts(self)
 
     def arena_layout(
-        self,
-        group: str,
-        sequence: str,
-        camera: str = "",
-        *,
-        declared: Mapping[ArenaKey, DeclaredLayout] | None = None,
+        self, group: str, sequence: str, camera: str = ""
     ) -> DeclaredLayout | None:
         """Return the arena layout of one entry and camera, ``None`` without one.
 
@@ -2551,20 +2549,14 @@ class Dataset:
             group: The entry's group.
             sequence: The entry's sequence.
             camera: The camera whose pixels are looked up.
-            declared: The layouts to look in, :meth:`arena_layouts` when
-                ``None``.
+
+        Raises:
+            ArenaIndexError: If the arenas index declares a key twice, or the
+                file of the row found disagrees with its recorded digest.
         """
-        layouts = self.arena_layouts() if declared is None else declared
-        entry = RecordingKey(group, sequence)
-        for key in layout_lookup_order(
-            entry, self.recording_of(group, sequence), camera
-        ):
-            if not key.sequence and self.recording_kind(key.group) != "divided":
-                continue
-            found = layouts.get(key)
-            if found is not None:
-                return found
-        return None
+        rows = read_arena_index_rows(self)
+        row = entry_arena_row(self, (group, sequence), {camera}, rows)
+        return None if row is None else read_declared_layout(self, row)
 
     def _indexed_entries(self) -> set[Entry]:
         """Return every entry of the media, tracks_raw, tracks and labels indexes."""

@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from mosaic.core.media.division_wire import DivisionReportWire
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
@@ -86,6 +86,7 @@ from .spec import (
     dataset_managed,
     invalid_cursor,
     unknown_dataset,
+    validation_errors,
 )
 
 if TYPE_CHECKING:
@@ -1868,12 +1869,31 @@ def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:
 
 def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
     """Declare the arena layout *args* names, and say what changed."""
+    from mosaic.core.arenas import ArenaLayout
+
     if args.recording is None or args.arena_layout is None:
         raise ToolFailure(missing_field("set_arenas", "recording and arena_layout"))
     try:
+        layout = ArenaLayout.model_validate(args.arena_layout)
+    except ValidationError as invalid:
+        raise ToolFailure(
+            ErrorEnvelope(
+                kind="invalid",
+                reason="invalid_arenas",
+                message=(
+                    f"the arena layout is invalid: {invalid.error_count()} problem(s)"
+                ),
+                detail={
+                    "recording": args.recording,
+                    "camera": args.camera,
+                    "errors": validation_errors(invalid),
+                },
+            )
+        ) from invalid
+    try:
         key = dataset.recording_named(args.recording)
         _ = dataset.set_arena_layout(
-            args.arena_layout,
+            layout,
             group=key.group,
             sequence=key.sequence,
             camera=args.camera,
@@ -1888,7 +1908,7 @@ def _set_arenas(dataset: Dataset, args: ManageDatasetInput) -> str:
             )
         ) from invalid
     where = f" of camera {args.camera!r}" if args.camera else ""
-    count = len(args.arena_layout.arenas)
+    count = len(layout.arenas)
     return f"set {count} arenas of {args.recording!r}{where}"
 
 

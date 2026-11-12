@@ -28,13 +28,14 @@ from types import ModuleType
 
 import pytest
 
+import mosaic.core.arenas as arenas_module
 import mosaic.core.entry as entry_module
 import mosaic.core.individuals as individuals_module
 import mosaic.core.params as params_module
 import mosaic.core.region_geometry as region_geometry_module
 import mosaic.core.regions as regions_module
 import mosaic.core.strict_model as strict_model_module
-from tests.helpers import imports_of, source_tree
+from tests.helpers import imports_of, imports_reaching, package_of, source_tree
 
 LEAF_MODULES = (
     entry_module,
@@ -171,10 +172,48 @@ def test_region_geometry_imports_only_numpy_the_standard_library_and_regions() -
     assert third_party == {"numpy"}
 
 
+def test_arenas_imports_only_entry_recording_and_regions() -> None:
+    """``core.arenas`` reaches ``entry``, ``recording`` and ``regions`` in mosaic.
+
+    ``arenas`` is a pure model that the agent server imports lazily and whose
+    schema the API routes publish, so it carries none of the numpy geometry or
+    the rest of ``core``. The check reads each module an import may reach, so
+    ``from mosaic.core import region_geometry`` fails it, as
+    ``import mosaic.core.region_geometry`` does.
+    """
+    path = Path(arenas_module.__file__)
+    reached = {
+        module
+        for imported in imports_reaching(source_tree(path), package_of(path))
+        for module in imported.reaches
+        if module.split(".", 1)[0] == "mosaic"
+    }
+    allowed = {"mosaic.core.entry", "mosaic.core.recording", "mosaic.core.regions"}
+    outside = sorted(
+        module
+        for module in reached
+        if not any(module == name or module.startswith(f"{name}.") for name in allowed)
+    )
+    assert not outside, (
+        f"core/arenas.py reaches {outside}. Its mosaic imports are entry, recording "
+        f"and regions."
+    )
+    assert {module for module in reached if module in allowed} == allowed
+
+
 def test_the_agent_tool_contract_does_not_import_region_geometry() -> None:
-    """The MCP contract declares regions through ``core.regions`` alone."""
+    """The MCP contract declares regions through ``core.regions`` alone.
+
+    Each import is checked for every module it may reach, so
+    ``from mosaic.core import region_geometry`` is caught as well.
+    """
     spec = Path(regions_module.__file__).parents[1] / "agent" / "mcp" / "spec.py"
-    assert "mosaic.core.region_geometry" not in _mosaic_imports(spec)
+    reaching = [
+        imported.statement
+        for imported in imports_reaching(source_tree(spec), package_of(spec))
+        if "mosaic.core.region_geometry" in imported.reaches
+    ]
+    assert not reaching, f"agent/mcp/spec.py imports region_geometry: {reaching}"
 
 
 @pytest.mark.parametrize("module", LEAF_MODULES, ids=lambda module: module.__name__)

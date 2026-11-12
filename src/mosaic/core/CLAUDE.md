@@ -175,14 +175,32 @@ importing `mosaic.tracking` registers neither.
   `params` and `strict_model` only (`tests/meta/test_core_params_is_a_leaf.py`). It
   holds no numpy.
 - `arenas.py` declares a layout and its lookup order, and imports pydantic,
-  `entry` and `recording` only. `pipeline/arena_index.py` stores one JSON file per
-  `(RecordingKey, camera)` and a row of `arenas/index.csv` with its digest.
-  `Dataset.set_arena_layout` writes under the index lock and refuses keys that name
-  no recording. `arena_layout` and `arena_layouts` write nothing
-  (`tests/core/test_arenas.py`).
+  `entry`, `recording` and `regions` only (`tests/meta/test_core_params_is_a_leaf.py`).
+  An arena's `boundary` (a circle or a polygon, told apart by `kind`) and `rois` leave
+  a dump when `None` or empty (`Field(exclude_if=...)`), so a layout without them keeps
+  its digest and its file bytes (`tests/core/test_arenas.py`).
+  `ArenaLayout.assignment_digest()` is the digest with every boundary and region of
+  interest cleared. It equals `digest()` for a layout without them.
+  `pipeline/arena_index.py` stores one JSON file per `(RecordingKey, camera)` and a row
+  of `arenas/index.csv` with its digest. `Dataset.set_arena_layout` writes under the
+  index lock and refuses keys that name no recording. `arena_layout` and
+  `arena_layouts` write nothing (`tests/core/test_arenas.py`).
+- One lookup finds a layout in the index rows (`tests/core/pipeline/test_arena_index.py`).
+  `read_arena_index_rows` reads the rows without opening a file, `entry_arena_row`
+  finds the row that an entry's cameras look up (the order of `layout_lookup_order`,
+  skipping a sequence-less key of a group that is not divided, refusing cameras whose
+  rows differ in digest), and `read_arena_layout` reads that row's file against its
+  digest. `Dataset.arena_layout` and `assign-arenas` read through them, so a caller
+  parses only the files it needs, where `read_arena_layouts` parses every layout. The
+  rows read as `IndexedLayout`, which checks no path, so a row's absolute path from
+  another machine is resolved through `path_map` when its file is read.
 - `assign-arenas` (`tracking/ops/assign_arenas.py`) writes `arena` and per-arena ids.
-  A layout's digest is recorded in each row's composition and its run id, not in
-  its variant id (`tests/tracking/ops/test_assign_arenas.py`).
+  A layout's assignment digest is recorded in each row's composition and its run id,
+  not in its variant id, so a boundary or a region of interest moves none of them
+  (`tests/tracking/ops/test_assign_arenas.py`). An unreadable index or a key declared
+  twice refuses the op. A layout file that is missing, unparsable or edited against its
+  row fails the entries whose row names it, and a file no entry of the scope needs is
+  not read.
 
 ## The `group` column
 

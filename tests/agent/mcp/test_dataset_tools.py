@@ -18,8 +18,10 @@ from mosaic.agent.mcp.spec import DatasetChange, DatasetList, call_tool
 from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_summary import DatasetSummary
+from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import PlanWire
+from mosaic.core.regions import CircleShape, RectShape, Roi
 from tests.helpers import (
     add_track_sequences,
     CONVERT_TRACKS_STEP,
@@ -375,6 +377,147 @@ def test_set_arenas_declares_a_recording_s_layout(
         (item.recording, item.camera, item.arenas, item.digest)
         for item in summary.arena_layouts
     ] == [("pilot", "", ("A1", "B1"), layout.digest())]
+
+
+def test_set_arenas_declares_a_layout_with_a_boundary_and_regions(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    dataset = open_dataset(roots[0] / "study" / "dataset.yaml")
+    add_track_sequences(dataset, ("", "pilot"))
+    layout = ArenaLayout.single(
+        CircleShape(cx=50.0, cy=50.0, r=40.0),
+        rois=(Roi(name="nest", shape=RectShape(x0=0.0, y0=0.0, x1=20.0, y1=20.0)),),
+        width=100,
+        height=100,
+    )
+
+    changed = _call(
+        backend,
+        DatasetChange,
+        action="set_arenas",
+        dataset=uuid,
+        recording="pilot",
+        arena_layout=layout.model_dump(mode="json"),
+    )
+
+    assert changed.message == "set 1 arenas of 'pilot'"
+    found = open_dataset(roots[0] / "study" / "dataset.yaml").arena_layout("", "pilot")
+    assert found is not None and found.layout == layout
+
+
+@pytest.mark.parametrize(
+    ("broken", "field"),
+    [
+        pytest.param(
+            {"boundary": {"cx": 50.0, "cy": 50.0, "r": 40.0}},
+            "boundary",
+            id="a boundary without its kind",
+        ),
+        pytest.param(
+            {"boundary": {"kind": "circle", "cx": 50.0, "cy": 50.0, "r": -1.0}},
+            "boundary",
+            id="a circle with a negative radius",
+        ),
+        pytest.param(
+            {"rois": [{"name": "None", "shape": {"kind": "circle", "cx": 1, "cy": 1}}]},
+            "rois",
+            id="a malformed region",
+        ),
+        pytest.param(
+            {
+                "rois": [
+                    {
+                        "name": "nest",
+                        "shape": {"kind": "circle", "cx": 1, "cy": 1, "r": 1},
+                    },
+                    {
+                        "name": "nest",
+                        "shape": {"kind": "circle", "cx": 5, "cy": 5, "r": 1},
+                    },
+                ]
+            },
+            "rois",
+            id="a repeated region name",
+        ),
+    ],
+)
+def test_a_malformed_boundary_or_region_answers_invalid_arenas_naming_the_field(
+    backend: LocalBackend,
+    roots: tuple[Path, Path],
+    broken: dict[str, JsonValue],
+    field: str,
+) -> None:
+    uuid = _created(backend).dataset
+    dataset = open_dataset(roots[0] / "study" / "dataset.yaml")
+    add_track_sequences(dataset, ("", "pilot"))
+    arena: dict[str, JsonValue] = {
+        "name": "A1",
+        "region": {"x0": 0, "y0": 0, "x1": 100, "y1": 100},
+    }
+    wire: dict[str, JsonValue] = {
+        "width": 100,
+        "height": 100,
+        "arenas": [{**arena, **broken}],
+    }
+
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        recording="pilot",
+        arena_layout=wire,
+    )
+
+    assert refused.reason == "invalid_arenas"
+    assert refused.detail is not None
+    errors = refused.detail["errors"]
+    assert isinstance(errors, list) and errors
+    assert any(
+        isinstance(item, dict) and field in f"{item['field']} {item['message']}"
+        for item in errors
+    )
+    assert not open_dataset(roots[0] / "study" / "dataset.yaml").arena_layouts()
+
+
+def test_an_invalid_layout_answers_a_short_message_and_a_field_message_list(
+    backend: LocalBackend,
+) -> None:
+    uuid = _created(backend).dataset
+    wire: dict[str, JsonValue] = {
+        "width": 100,
+        "height": 100,
+        "arenas": [
+            {
+                "name": "A1",
+                "region": {"x0": 0, "y0": 0, "x1": 100, "y1": 100},
+                "boundary": {"kind": "circle", "cx": 50.0, "cy": 50.0, "r": -1.0},
+            }
+        ],
+    }
+
+    refused = _call(
+        backend,
+        ErrorEnvelope,
+        action="set_arenas",
+        dataset=uuid,
+        recording="pilot",
+        arena_layout=wire,
+    )
+
+    assert refused.reason == "invalid_arenas"
+    assert refused.message == "the arena layout is invalid: 1 problem(s)"
+    assert refused.detail == {
+        "recording": "pilot",
+        "camera": "",
+        "errors": [
+            {
+                "field": "arenas.0.boundary.circle.r",
+                "message": "Input should be greater than 0",
+            }
+        ],
+    }
 
 
 def test_no_action_moves_the_operators_splits(

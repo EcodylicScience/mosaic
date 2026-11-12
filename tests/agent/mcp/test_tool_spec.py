@@ -14,6 +14,7 @@ from mosaic.agent.mcp.spec import (
     CONFIRMATION_CONDITIONS,
     MAX_PREVIEW_ROWS,
     MAX_RESULT_CHARS,
+    MAX_SCHEMA_BYTES,
     MAX_WAIT_SECONDS,
     RECIPE_EXAMPLE,
     RESULT_TOO_LARGE,
@@ -90,6 +91,32 @@ def test_resolving_the_preview_output_loads_neither_the_reader_nor_scipy() -> No
         )
         == []
     )
+
+
+def test_the_contract_declares_an_arena_layout_without_importing_the_arena_models() -> (
+    None
+):
+    """A layout is a JSON object on the wire and the server validates it."""
+    statement = "import mosaic.agent.mcp.spec"
+
+    assert (
+        modules_loaded_by(statement, ("mosaic.core.arenas", "mosaic.core.regions"))
+        == []
+    )
+
+
+DEFINE_FEATURE_ESTIMATE_BYTES = 400
+"""The room a ``define_feature`` action of ``manage_dataset`` is estimated to need:
+about 300 bytes, with margin."""
+
+
+def test_manage_dataset_input_schema_leaves_room_for_define_feature() -> None:
+    (manage_dataset,) = (spec for spec in TOOLS if spec.name == "manage_dataset")
+    schema = manage_dataset.input_schema()
+
+    size = len(json.dumps(schema, separators=(",", ":")))
+
+    assert size + DEFINE_FEATURE_ESTIMATE_BYTES < MAX_SCHEMA_BYTES, size
 
 
 def test_building_a_local_backend_loads_neither_an_sdk_nor_the_analysis_stack() -> None:

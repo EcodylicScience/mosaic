@@ -1,0 +1,36 @@
+{
+  "space": "image_px",
+  "width": 200,
+  "height": 100,
+  "arenas": [
+    {
+      "name": "left",
+      "region": {
+        "x0": 0,
+        "y0": 0,
+        "x1": 100,
+        "y1": 100
+      },
+      "exclude": [
+        {
+          "x0": 40,
+          "y0": 0,
+          "x1": 60,
+          "y1": 100
+        }
+      ],
+      "capacity": 2
+    },
+    {
+      "name": "right",
+      "region": {
+        "x0": 100,
+        "y0": 0,
+        "x1": 200,
+        "y1": 100
+      },
+      "exclude": [],
+      "capacity": 1
+    }
+  ]
+}

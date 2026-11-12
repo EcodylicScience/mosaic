@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from pydantic.json_schema import JsonSchemaMode
 
 from mosaic.core.arenas import (
     Arena,
@@ -13,6 +15,7 @@ from mosaic.core.arenas import (
     ArenaLayout,
     Rect,
     layout_lookup_order,
+    region_boundary,
 )
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.arena_index import (
@@ -22,10 +25,19 @@ from mosaic.core.pipeline.arena_index import (
     arena_index_path,
 )
 from mosaic.core.recording import RecordingKey
-from tests.helpers import add_track_sequences, make_dataset
+from mosaic.core.regions import CircleShape, PolygonShape, RectShape, Roi
+from mosaic.tracking.ops.assign_arenas import AssignArenasParams, assign_arenas_run_id
+from tests.helpers import GOLDEN_DIR, add_track_sequences, make_dataset
 
 PRINCETON_XS = (0, 506, 1012)
 PRINCETON_YS = (0, 170, 346, 524, 702, 878, 1068)
+TWO_ARENAS_FILE = GOLDEN_DIR / "arenas" / "two_arenas.json"
+
+TWO_ARENAS_DIGEST = "de511afdfccdc88cebe112053afc690e9bef213ea3ce9297d5b4d6cda1465ba2"
+FITTED_LAYOUT_DIGEST = (
+    "1f8c5b43a3cbe09a589f8d42176aa56661f1050ca1af938ae28cd8da35986190"
+)
+FITTED_LAYOUT_RUN_ID = "assign-arenas.0.1-afb0b50bcd"
 
 
 def _two_arenas(width: int = 200) -> ArenaLayout:
@@ -45,6 +57,46 @@ def _one_arena() -> ArenaLayout:
         width=200,
         height=100,
         arenas=(Arena(name="all", region=Rect(x0=0, y0=0, x1=200, y1=100)),),
+    )
+
+
+def _fitted_layout() -> ArenaLayout:
+    """A two-arena layout with an excluded rect and capacities."""
+    return ArenaLayout(
+        width=200,
+        height=100,
+        arenas=(
+            Arena(
+                name="left",
+                region=Rect(x0=0, y0=0, x1=100, y1=100),
+                exclude=(Rect(x0=40, y0=0, x1=60, y1=100),),
+                capacity=2,
+            ),
+            Arena(
+                name="right",
+                region=Rect(x0=100, y0=0, x1=200, y1=100),
+                capacity=1,
+            ),
+        ),
+    )
+
+
+def _nest() -> Roi:
+    return Roi(name="nest", shape=RectShape(x0=0.0, y0=0.0, x1=10.0, y1=10.0))
+
+
+def _with_boundary(
+    boundary: CircleShape | PolygonShape | None,
+    *,
+    rois: tuple[Roi, ...] = (),
+    region: Rect = Rect(x0=0, y0=0, x1=100, y1=100),
+    width: int = 200,
+) -> ArenaLayout:
+    """A layout of one arena over *region* of a *width* by 100 frame."""
+    return ArenaLayout(
+        width=width,
+        height=100,
+        arenas=(Arena(name="left", region=region, boundary=boundary, rois=rois),),
     )
 
 
@@ -116,8 +168,33 @@ class TestGeometry:
                     Arena(name="a", region=Rect(x0=10, y0=0, x1=20, y1=10)),
                 ),
             )
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="at least one arena"):
             _ = ArenaLayout(width=30, height=10, arenas=())
+
+    def test_a_bad_arena_reports_its_own_error_and_no_empty_layout(self) -> None:
+        wire = {
+            "width": 100,
+            "height": 100,
+            "arenas": [
+                {
+                    "name": "A1",
+                    "region": {"x0": 0, "y0": 0, "x1": 100, "y1": 100},
+                    "boundary": {"kind": "circle", "cx": 50, "cy": 50, "r": -1},
+                }
+            ],
+        }
+
+        with pytest.raises(ValidationError) as refused:
+            _ = ArenaLayout.model_validate(wire)
+
+        assert [error["loc"] for error in refused.value.errors()] == [
+            ("arenas", 0, "boundary", "circle", "r")
+        ]
+
+    def test_the_schema_still_requires_an_arena(self) -> None:
+        schema = ArenaLayout.model_json_schema()
+
+        assert schema["properties"]["arenas"]["minItems"] == 1
 
     def test_a_rect_without_area_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="x0 < x1"):
@@ -151,6 +228,254 @@ class TestDigest:
         )
 
         assert moved.digest() != _two_arenas().digest()
+
+
+class TestDigestStability:
+    """A layout without a boundary or ROIs keeps its digest and its file bytes."""
+
+    def test_a_layout_with_an_excluded_rect_and_a_capacity_keeps_its_digest(
+        self,
+    ) -> None:
+        assert _fitted_layout().digest() == FITTED_LAYOUT_DIGEST
+
+    def test_a_layout_without_either_keeps_its_digest(self) -> None:
+        assert _two_arenas().digest() == TWO_ARENAS_DIGEST
+
+    def test_a_layout_file_written_before_the_change_dumps_to_the_same_bytes(
+        self,
+    ) -> None:
+        text = TWO_ARENAS_FILE.read_text(encoding="utf-8")
+
+        layout = ArenaLayout.model_validate_json(text)
+
+        assert layout == _fitted_layout()
+        assert layout.model_dump_json(indent=2) + "\n" == text
+
+    def test_a_layout_without_them_dumps_the_keys_it_always_did(self) -> None:
+        dumped = _fitted_layout().model_dump(mode="json")
+
+        assert [set(arena) for arena in dumped["arenas"]] == [
+            {"name", "region", "exclude", "capacity"}
+        ] * 2
+
+    def test_the_two_fields_leave_a_default_out_of_a_dump(self) -> None:
+        """Without ``exclude_if`` a dump carries ``boundary: null`` and ``rois: []``."""
+        assert Arena.model_fields["boundary"].exclude_if is not None
+        assert Arena.model_fields["rois"].exclude_if is not None
+
+    def test_the_assignment_run_id_over_the_fitted_layout_stays_put(self) -> None:
+        layout = _fitted_layout()
+
+        run_id = assign_arenas_run_id(
+            "assign-arenas",
+            "0.1",
+            AssignArenasParams(),
+            "upstream-tracks-run",
+            {"rec__s1": layout.assignment_digest()},
+        )
+
+        assert layout.assignment_digest() == FITTED_LAYOUT_DIGEST
+        assert run_id == FITTED_LAYOUT_RUN_ID
+
+    def test_a_layout_with_a_boundary_and_a_roi_dumps_both(self) -> None:
+        layout = _with_boundary(CircleShape(cx=50.0, cy=50.0, r=40.0), rois=(_nest(),))
+
+        (arena,) = layout.model_dump(mode="json")["arenas"]
+
+        assert arena["boundary"]["kind"] == "circle"
+        assert [roi["name"] for roi in arena["rois"]] == ["nest"]
+        assert ArenaLayout.model_validate_json(layout.model_dump_json()) == layout
+
+
+class TestSchema:
+    @pytest.mark.parametrize("mode", ["serialization", "validation"])
+    def test_the_schema_names_the_boundary_and_the_rois_with_their_types(
+        self, mode: JsonSchemaMode
+    ) -> None:
+        schema = ArenaLayout.model_json_schema(mode=mode)
+        properties = schema["$defs"]["Arena"]["properties"]
+
+        boundary = json.dumps(properties["boundary"])
+        assert "CircleShape" in boundary
+        assert "PolygonShape" in boundary
+        assert "RingShape" not in boundary
+        assert properties["rois"]["type"] == "array"
+        assert properties["rois"]["items"] == {"$ref": "#/$defs/Roi"}
+        assert {"CircleShape", "PolygonShape", "Roi"} <= set(schema["$defs"])
+
+
+class TestBoundaryKind:
+    def test_a_boundary_without_a_kind_is_refused(self) -> None:
+        arena = {
+            "name": "left",
+            "region": {"x0": 0, "y0": 0, "x1": 100, "y1": 100},
+            "boundary": {"cx": 50.0, "cy": 50.0, "r": 20.0},
+        }
+
+        with pytest.raises(ValidationError, match="kind"):
+            _ = Arena.model_validate(arena)
+
+    def test_a_boundary_with_a_kind_is_read_as_that_shape(self) -> None:
+        arena = Arena.model_validate(
+            {
+                "name": "left",
+                "region": {"x0": 0, "y0": 0, "x1": 100, "y1": 100},
+                "boundary": {"kind": "circle", "cx": 50.0, "cy": 50.0, "r": 20.0},
+            }
+        )
+
+        assert arena.boundary == CircleShape(cx=50.0, cy=50.0, r=20.0)
+
+    def test_a_ring_is_not_a_boundary(self) -> None:
+        arena = {
+            "name": "left",
+            "region": {"x0": 0, "y0": 0, "x1": 100, "y1": 100},
+            "boundary": {
+                "kind": "ring",
+                "cx": 50.0,
+                "cy": 50.0,
+                "r_inner": 5.0,
+                "r_outer": 20.0,
+            },
+        }
+
+        with pytest.raises(ValidationError, match="boundary"):
+            _ = Arena.model_validate(arena)
+
+
+class TestAssignmentDigest:
+    def test_it_equals_the_digest_without_a_boundary_or_rois(self) -> None:
+        layout = _two_arenas()
+
+        assert layout.assignment_digest() == layout.digest()
+
+    def test_it_ignores_a_boundary_and_rois_that_the_digest_covers(self) -> None:
+        plain = _with_boundary(None)
+        fitted = _with_boundary(CircleShape(cx=50.0, cy=50.0, r=40.0), rois=(_nest(),))
+
+        assert fitted.assignment_digest() == plain.digest()
+        assert fitted.digest() != plain.digest()
+
+    def test_a_roi_alone_changes_the_digest_and_not_the_assignment_digest(
+        self,
+    ) -> None:
+        plain = _with_boundary(None)
+        with_roi = _with_boundary(None, rois=(_nest(),))
+
+        assert with_roi.assignment_digest() == plain.assignment_digest()
+        assert with_roi.digest() != plain.digest()
+
+    def test_it_follows_the_regions_and_exclusions(self) -> None:
+        assert _fitted_layout().assignment_digest() != _two_arenas().assignment_digest()
+
+
+class TestBoundaryValidation:
+    def test_a_circle_past_the_region_inside_the_frame_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="boundary"):
+            _ = _with_boundary(CircleShape(cx=80.0, cy=50.0, r=30.0))
+
+    def test_a_circle_in_another_arena_s_region_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="left"):
+            _ = _with_boundary(CircleShape(cx=150.0, cy=50.0, r=20.0))
+
+    def test_a_circle_past_the_frame_s_left_edge_is_accepted_when_its_clip_fits(
+        self,
+    ) -> None:
+        layout = _with_boundary(CircleShape(cx=10.0, cy=50.0, r=30.0))
+
+        assert layout.arenas[0].boundary == CircleShape(cx=10.0, cy=50.0, r=30.0)
+
+    def test_a_circle_past_the_frame_s_far_edge_is_accepted_when_its_clip_fits(
+        self,
+    ) -> None:
+        layout = _with_boundary(
+            CircleShape(cx=190.0, cy=50.0, r=30.0),
+            region=Rect(x0=100, y0=0, x1=200, y1=100),
+        )
+
+        assert layout.arenas[0].boundary is not None
+
+    def test_a_boundary_with_no_part_in_the_frame_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="frame"):
+            _ = _with_boundary(CircleShape(cx=-50.0, cy=50.0, r=20.0))
+
+    def test_a_polygon_inside_the_region_is_accepted(self) -> None:
+        polygon = PolygonShape(vertices=((10.0, 10.0), (90.0, 10.0), (50.0, 90.0)))
+
+        assert _with_boundary(polygon).arenas[0].boundary == polygon
+
+    def test_a_polygon_past_the_region_is_refused(self) -> None:
+        polygon = PolygonShape(vertices=((10.0, 10.0), (110.0, 10.0), (50.0, 90.0)))
+
+        with pytest.raises(ValidationError, match="boundary"):
+            _ = _with_boundary(polygon)
+
+    def test_a_repeated_roi_name_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="nest"):
+            _ = Arena(
+                name="left",
+                region=Rect(x0=0, y0=0, x1=100, y1=100),
+                rois=(_nest(), _nest()),
+            )
+
+
+class TestSingle:
+    def test_a_circle_is_boxed_outward_and_clipped_to_the_frame(self) -> None:
+        circle = CircleShape(cx=50.0, cy=60.0, r=80.0)
+
+        layout = ArenaLayout.single(circle, width=640)
+
+        assert layout.arenas[0].region == Rect(x0=0, y0=0, x1=130, y1=140)
+        assert (layout.width, layout.height) == (640, 140)
+        assert layout.names == ("A1",)
+        assert layout.arenas[0].boundary == circle
+        assert layout.arenas[0].capacity == 1
+
+    def test_a_given_height_clips_the_region(self) -> None:
+        circle = CircleShape(cx=50.0, cy=60.0, r=80.0)
+
+        layout = ArenaLayout.single(circle, width=640, height=100)
+
+        assert layout.arenas[0].region == Rect(x0=0, y0=0, x1=130, y1=100)
+        assert (layout.width, layout.height) == (640, 100)
+
+    def test_the_box_rounds_outward(self) -> None:
+        layout = ArenaLayout.single(CircleShape(cx=10.5, cy=10.5, r=5.0))
+
+        assert layout.arenas[0].region == Rect(x0=5, y0=5, x1=16, y1=16)
+        assert (layout.width, layout.height) == (16, 16)
+
+    def test_the_name_capacity_and_rois_are_the_arena_s(self) -> None:
+        layout = ArenaLayout.single(
+            CircleShape(cx=50.0, cy=50.0, r=40.0),
+            name="tank",
+            capacity=None,
+            rois=(_nest(),),
+        )
+
+        arena = layout.arenas[0]
+        assert (arena.name, arena.capacity, arena.rois) == ("tank", None, (_nest(),))
+
+    def test_a_boundary_wholly_at_negative_x_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="frame"):
+            _ = ArenaLayout.single(CircleShape(cx=-100.0, cy=50.0, r=20.0))
+
+    def test_a_boundary_wholly_past_the_given_width_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="frame"):
+            _ = ArenaLayout.single(CircleShape(cx=700.0, cy=50.0, r=20.0), width=640)
+
+    def test_a_polygon_is_boxed_by_its_vertices(self) -> None:
+        polygon = PolygonShape(vertices=((2.5, 3.0), (20.0, 3.0), (10.0, 30.2)))
+
+        layout = ArenaLayout.single(polygon)
+
+        assert layout.arenas[0].region == Rect(x0=2, y0=3, x1=20, y1=31)
+
+
+def test_a_rect_region_is_its_float_box() -> None:
+    assert region_boundary(Rect(x0=1, y0=2, x1=30, y1=40)) == RectShape(
+        x0=1.0, y0=2.0, x1=30.0, y1=40.0
+    )
 
 
 def test_a_lookup_tries_the_entry_then_its_recording_then_every_camera() -> None:

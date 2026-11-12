@@ -77,6 +77,7 @@ def test_a_layout_file_is_set_for_one_camera(dataset: Dataset, tmp_path: Path) -
                 "camera": "top",
                 "arenas": ["A1"],
                 "digest": layout.digest(),
+                "assignment_digest": layout.assignment_digest(),
             }
         ]
     }

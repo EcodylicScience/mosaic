@@ -35,7 +35,6 @@ from pydantic import (
     model_validator,
 )
 
-from mosaic.core.arenas import ArenaLayout
 from mosaic.core.json_value import JsonValue
 from mosaic.core.media.division_wire import DivisionSpanWire
 from mosaic.core.media.store_division import RecordingIdentity
@@ -179,6 +178,7 @@ __all__ = [
     "tool_spec",
     "unknown_dataset",
     "unknown_tool",
+    "validation_errors",
 ]
 
 SHARED_TOOL_LIMIT: Final = 16
@@ -1283,11 +1283,18 @@ class ManageDatasetInput(ToolInput):
     camera: str = Field(
         default="", description="set_arenas: the camera; '' for every camera."
     )
-    arena_layout: ArenaLayout | None = Field(
+    arena_layout: dict[str, JsonValue] | None = Field(
         default=None,
         description=(
-            "set_arenas: the arenas as half-open pixel rects of the source "
-            "frame. assign-arenas then names each tracks row's arena."
+            "set_arenas: an ArenaLayout as a JSON object, validated by the "
+            "server: space ('image_px'), width and height of the frame, and "
+            "arenas, each with name, region ({x0, y0, x1, y1}, half-open source "
+            "pixels), exclude (rects inside the region whose rows are dropped), "
+            "capacity, boundary (a circle {kind, cx, cy, r} or a polygon {kind, "
+            "vertices}, kind always written, inside the region once clipped to "
+            "the frame) and rois (named shapes: name, shape, placement, anchor). "
+            "assign-arenas then names each tracks row's arena. See the Arenas "
+            "section of docs/dataset.md."
         ),
     )
     tags: dict[str, TagValue] | None = Field(
@@ -2281,15 +2288,20 @@ def unknown_tool(name: str) -> ErrorEnvelope:
     )
 
 
-def _invalid_arguments(name: ToolName, error: ValidationError) -> ErrorEnvelope:
-    """Report the arguments of a call to *name* that its input model refuses."""
-    errors: list[JsonValue] = [
+def validation_errors(error: ValidationError) -> list[JsonValue]:
+    """Return one ``{field, message}`` object per problem *error* found."""
+    return [
         {
             "field": ".".join(str(part) for part in item["loc"]),
             "message": item["msg"],
         }
         for item in error.errors(include_url=False)
     ]
+
+
+def _invalid_arguments(name: ToolName, error: ValidationError) -> ErrorEnvelope:
+    """Report the arguments of a call to *name* that its input model refuses."""
+    errors = validation_errors(error)
     message = (
         f"the arguments of {name} do not fit its input: "
         f"{error.error_count()} problem(s)"
