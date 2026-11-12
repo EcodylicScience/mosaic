@@ -3,7 +3,7 @@
 
 # Features
 
-67 features are registered. Each one runs as
+68 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -550,6 +550,68 @@ Per-frame 3D keypoints in each individual's own body frame.
 | `scale_by` | tuple of (list of (`integer` \| `string`), list of (`integer` \| `string`)) \| `None` | `null` |  | Two keypoint groups, such as the hips and the shoulders. Set, the egocentric coordinates are divided by the median distance between the two groups' centroids, taken per individual and per sequence, so that posture compares across body sizes. Unset, they stay in the table's length unit. |
 | `max_gap` | `integer` | `0` | >= `0` | The longest run of undefined values filled by linear interpolation, per individual and per output column, after the body frame is computed. A longer run stays undefined throughout, and a run at either end of an individual's track is never filled. 0 fills nothing. arhmm replaces an undefined value with zero, which it then fits as a pose, so a run meant for it usually wants this set. [frames] |
 | `context` | `boolean` | `false` |  | Also emit body_yaw and origin_x/y/z: where the body frame sits and which way it faces. They are context, not posture, and a model fitted on every numeric column (arhmm, the template features) would fit them as posture; body_yaw jumps by 2 pi where it wraps. Off by default for that reason. |
+
+### `roi-occupancy`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.roi_occupancy.RoiOccupancy`
+
+Per-frame membership of each region of interest, and the distance to it.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `rois` | list of (`string` \| `Roi`) | _required_ | min items `1` | The regions of interest, at least one. A name is a region stored on the row's arena; an object is a region defined here. Each name is unique, and names the in_<name> and dist_<name> columns. |
+| `priority` | list of `string` \| `None` | `null` |  | The order in which roi names a row's region when it lies in several. Lists exactly the names of rois. Unset, the order of rois. |
+| `boundary` | `"arena"` \| `"estimate"` | `"arena"` |  | Where an arena's boundary comes from: its layout's boundary, else its region (arena), or a fit to the positions (estimate). |
+| `estimate_shape` | `"circle"` \| `"rect"` | `"circle"` |  | The shape that boundary estimate fits. Left at circle unless boundary is estimate. |
+| `estimate_quantile` | `number` | `0.0` | >= `0.0`, < `0.5` | The share of positions that the estimate trims at each end of each axis, from 0 up to but excluding 0.5. Left at 0 unless boundary is estimate. |
+| `center_distance` | `boolean` | `false` |  | Write arena_center_dist, the distance in pixels from the boundary's center, and arena_radius_norm, that distance as a fraction of the wall's along the same ray: 0 at the center, 1 on the wall. On a concave polygon a position past a notch reads above 1; use a circle or rect boundary, or regions, where that matters. |
+| `x_col` | `string` | `"X"` |  | The column of each row's x position, such as a keypoint's. |
+| `y_col` | `string` | `"Y"` |  | The column of each row's y position, such as a keypoint's. |
+
+??? note "`CircleShape`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"circle"` | `"circle"` |  | The shape's kind. |
+    | `cx` | `number` | _required_ |  | The x coordinate of the center. |
+    | `cy` | `number` | _required_ |  | The y coordinate of the center. |
+    | `r` | `number` | _required_ | > `0.0` | The radius, above zero. |
+
+??? note "`PolygonShape`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"polygon"` | `"polygon"` |  | The shape's kind. |
+    | `vertices` | list of tuple of (`number`, `number`) | _required_ | min items `3`, max items `256` | The outline's vertices as (x, y) pairs, 3 to 256 of them. The last vertex joins the first. The outline has an area and no two non-adjacent edges touch. |
+
+??? note "`RectShape`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"rect"` | `"rect"` |  | The shape's kind. |
+    | `x0` | `number` | _required_ |  | The left edge, below the right edge. |
+    | `y0` | `number` | _required_ |  | The top edge, above the bottom edge. |
+    | `x1` | `number` | _required_ |  | The right edge. |
+    | `y1` | `number` | _required_ |  | The bottom edge. |
+
+??? note "`RingShape`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `kind` | `"ring"` | `"ring"` |  | The shape's kind. |
+    | `cx` | `number` | _required_ |  | The x coordinate of the center. |
+    | `cy` | `number` | _required_ |  | The y coordinate of the center. |
+    | `r_inner` | `number` | _required_ | >= `0.0` | The radius of the hole, below the outer radius. |
+    | `r_outer` | `number` | _required_ | > `0.0` | The radius of the outer edge. |
+
+??? note "`Roi`"
+
+    | Parameter | Type | Default | Constraints | Description |
+    | --- | --- | --- | --- | --- |
+    | `name` | `string` | _required_ | matches `^[a-z][a-z0-9_]{0,31}$` | The region's name, a lowercase identifier of at most 32 characters that is not none. It names the in_<name> and dist_<name> columns and a value of roi. |
+    | `shape` | `CircleShape` \| `RingShape` \| `RectShape` \| `PolygonShape` | _required_ |  | The region's geometry. |
+    | `placement` | `"absolute"` \| `"arena"` | `"absolute"` |  | What the shape's coordinates are measured from: source pixels (absolute) or offsets from an anchor of the arena's boundary, in boundary units (arena). |
+    | `anchor` | `"center"` \| `"top"` \| `"bottom"` \| `"left"` \| `"right"` \| `"top_left"` \| `"top_right"` \| `"bottom_left"` \| `"bottom_right"` | `"center"` |  | The point of the arena's boundary that an arena-placed shape is offset from. Left at center for an absolute shape. |
 
 ### `scale-to-bl`
 

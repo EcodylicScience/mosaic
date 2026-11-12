@@ -228,6 +228,10 @@ A dataset is a directory with `dataset.yaml` and named roots
   `social-motion-summary`, `attention-target`, `nn-delta-response` and
   `nn-delta-bins` on an entry of several arenas
   (https://ecodylicscience.github.io/mosaic/concepts/features/#arenas).
+- Time in a region of an arena: run `roi-occupancy` with `rois` naming regions
+  stored on the arenas or defined inline. Each row gains `in_<roi>`, `dist_<roi>`
+  in pixels and `roi`, the first region holding it. Read pixel tracks, not a
+  `scale-to-cm` result: scale the `dist_*` columns afterwards.
 - Classifiers: https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 

@@ -87,6 +87,7 @@ from . import (
     pairposedistancepca,
     pose_egocentric,
     probability_ensemble,
+    roi_occupancy,
     scale_to_bl,
     scale_to_cm,
     sequence_aggregate,
@@ -148,6 +149,7 @@ from .pair_position import PairPositionFeatures
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
 from .probability_ensemble import ProbabilityEnsembleFeature
+from .roi_occupancy import RoiOccupancy
 from .scale_to_bl import ScaleToBodyLength
 from .scale_to_cm import ScaleToCm
 from .registry import FEATURES, register_feature
@@ -248,6 +250,7 @@ __all__ = [
     "PairPositionFeatures",
     "PairPoseDistancePCA",
     "ProbabilityEnsembleFeature",
+    "RoiOccupancy",
     "PairWavelet",
     "ScaleToBodyLength",
     "ScaleToCm",
@@ -317,6 +320,7 @@ __all__ = [
     "pairposedistancepca",
     "pose_egocentric",
     "probability_ensemble",
+    "roi_occupancy",
     "scale_to_bl",
     "scale_to_cm",
     "sequence_aggregate",

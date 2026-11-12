@@ -15,6 +15,7 @@ from mosaic.core.region_geometry import (
     boundary_center,
     contains,
     estimate_boundary,
+    inside,
     radius_norm,
     resolve_roi,
     signed_distance,
@@ -115,6 +116,11 @@ def test_contains_counts_the_edge_as_inside(
     x = _array([p[0] for p in points])
     y = _array([p[1] for p in points])
     assert contains(shape, x, y).tolist() == [bool(e) for e in expected]
+
+
+def test_inside_counts_a_zero_distance_as_inside_and_a_missing_one_as_outside() -> None:
+    distances = _array([-2.0, 0.0, 1e-12, 3.0, NAN])
+    assert inside(distances).tolist() == [True, True, False, False, False]
 
 
 @pytest.mark.parametrize(

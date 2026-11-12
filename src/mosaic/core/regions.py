@@ -24,6 +24,7 @@ from pydantic import (
 from mosaic.core.params import Declared, DeclaredModel, has_fields
 
 __all__ = [
+    "NO_REGION_NAME",
     "Anchor",
     "CircleShape",
     "Placement",

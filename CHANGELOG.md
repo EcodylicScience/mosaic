@@ -48,6 +48,26 @@ different layouts, has no `arenas` composition. While the arenas index cannot be
 no entry has one, so every run that recorded one reads as drifted, and one note on
 stderr names the index. A feature that does not declare `arenas` reads neither index.
 
+`roi-occupancy` (version 0.1) is a new feature, so the registry grows from 67 to 68. It
+writes one row per input row (`emits` `individual`): the metadata columns, `arena` when
+the input has it, `in_<roi>` (nullable boolean) and `dist_<roi>` (pixels, negative
+inside) for each region of `rois` in order, `roi` (the first region in `priority` order
+that holds the row, else `none`), and with `center_distance` `arena_center_dist` and
+`arena_radius_norm`. A region is defined inline or named from the row's arena. A row
+without a position has null `in_` values and `roi` and NaN distances. It declares the
+`arenas` root only when its params read the layout, and computes in `image_px`: it
+refuses an input made by `scale-to-cm` or `scale-to-bl`. `boundary="estimate"` fits each
+arena's boundary to the positions of its rows instead of reading the layout: a circle
+centered on the box of the `estimate_quantile` and `1 - estimate_quantile` quantiles of
+`x_col` and `y_col`, with the mean of its half-width and half-height as radius, or that
+box as a rect. The fit is written as columns constant within an arena: `boundary_cx`,
+`boundary_cy` and `boundary_r`, or `boundary_x0`, `boundary_y0`, `boundary_x1` and
+`boundary_y1`, and `boundary_rows`, the positions it read. An arena with no position
+fails its entry. Stored and inline regions placed relative to the arena resolve against
+the fit, and no layout is read unless a region is named from the arena. The fit pools
+every frame of the arena, so `temporal_reach` is unknown under `estimate` and `0`
+otherwise.
+
 ## Unreleased: run summaries across entries
 
 `load_run_matrix` raises classified errors, so `error_envelope` renders each refusal

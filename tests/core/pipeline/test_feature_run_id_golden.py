@@ -243,6 +243,18 @@ CASES: tuple[Case, ...] = (
         params={"onset_times": [1.0, 2.5], "value_column": "SPEED"},
     ),
     Case(
+        case_id="roi-occupancy/inline-disc",
+        feature="roi-occupancy",
+        params={
+            "rois": [
+                {
+                    "name": "center",
+                    "shape": {"kind": "circle", "cx": 320.0, "cy": 240.0, "r": 50.0},
+                }
+            ]
+        },
+    ),
+    Case(
         case_id="collective-motion-metrics/subgroups-alpha",
         feature="collective-motion-metrics",
         params={"subgroup_col": "event", "area_method": "alpha_shape", "alpha": 60.0},

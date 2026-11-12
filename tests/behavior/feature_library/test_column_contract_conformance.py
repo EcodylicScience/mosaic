@@ -126,6 +126,11 @@ PARAMS: dict[str, dict[str, JsonValue]] = {
     "pair-world": {"front": 0, "rear": 1},
     "pose-egocentric": {"origin": [2], "heading": [0, 1], "context": True},
     "probability-ensemble": {"default_class": 0},
+    "roi-occupancy": {
+        "rois": [
+            {"name": "zone", "shape": {"kind": "circle", "cx": 5, "cy": 5, "r": 3}}
+        ]
+    },
     "scale-to-bl": {"length": 10.0},
     "scale-to-cm": {"cm_per_pixel": 0.1},
     "sequence-aggregate": {"columns": ["X"]},

@@ -19,6 +19,7 @@ from mosaic.behavior.feature_library.individual_wavelet import IndividualWavelet
 from mosaic.behavior.feature_library.label_predictions import LabelPredictions
 from mosaic.behavior.feature_library.pair_keypoints import PairKeypoints
 from mosaic.behavior.feature_library.pair_wavelet import PairWavelet
+from mosaic.behavior.feature_library.roi_occupancy import RoiOccupancy
 from mosaic.behavior.feature_library.sequence_heads import (
     TcnConfig,
     TransformerConfig,
@@ -33,6 +34,7 @@ from mosaic.behavior.feature_library.smooth_probabilities import (
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.behavior.feature_library.trajectory_smooth import TrajectorySmooth
+from mosaic.core.pipeline.graph.reach import UNKNOWN, class_reach, feature_reach
 from mosaic.core.pipeline.types import Result
 from tests.helpers import write_predictions
 
@@ -477,3 +479,29 @@ def test_a_unet_reaches_no_further_than_its_network_reach(config: UnetConfig) ->
     assert reach is not None
     assert reach < length // 2
     assert reach - 2**config.depth <= measured <= reach
+
+
+DISC: dict[str, object] = {
+    "name": "disc",
+    "shape": {"kind": "circle", "cx": 0.0, "cy": 0.0, "r": 5.0},
+}
+
+
+def test_a_region_occupancy_reads_only_its_own_frame_under_the_arena_boundary() -> None:
+    feature = RoiOccupancy(params={"rois": [DISC]})
+
+    measured = _farthest_change(feature.apply, _track(), "X")
+
+    assert measured == 0
+    assert class_reach(RoiOccupancy) == 0
+    assert feature_reach(feature) == 0
+
+
+def test_an_estimated_boundary_reads_every_frame_and_declares_no_reach() -> None:
+    feature = RoiOccupancy(params={"rois": [DISC], "boundary": "estimate"})
+
+    measured = _farthest_change(feature.apply, _track(), "X")
+
+    # The fit pools every frame of the arena, so moving one frame moves every row.
+    assert measured == max(AT, N - 1 - AT)
+    assert feature_reach(feature) == UNKNOWN

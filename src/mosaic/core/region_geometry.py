@@ -35,6 +35,7 @@ __all__ = [
     "boundary_center",
     "contains",
     "estimate_boundary",
+    "inside",
     "radius_norm",
     "resolve_roi",
     "signed_distance",
@@ -147,13 +148,22 @@ def signed_distance(shape: Shape, x: FloatArray, y: FloatArray) -> FloatArray:
     return np.where(np.isfinite(xs) & np.isfinite(ys), out, np.nan)
 
 
+def inside(distance: FloatArray) -> BoolArray:
+    """Whether each signed *distance* is that of a position in its shape.
+
+    The boundary counts as inside, so a distance of zero reads ``True``. A NaN
+    distance reads ``False``.
+    """
+    return distance <= 0.0
+
+
 def contains(shape: Shape, x: FloatArray, y: FloatArray) -> BoolArray:
     """Whether each position lies in *shape*, its boundary included.
 
     A position with a NaN coordinate reads ``False``. Its NaN
     :func:`signed_distance` tells it from a position seen outside.
     """
-    return signed_distance(shape, x, y) <= 0.0
+    return inside(signed_distance(shape, x, y))
 
 
 def boundary_center(shape: Shape) -> tuple[float, float]:

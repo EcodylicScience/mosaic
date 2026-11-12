@@ -85,6 +85,7 @@
   "probability-ensemble/tuned-threshold": "0.2-330ea9cb79",
   "probability-ensemble/uniform": "0.2-452b8784fe",
   "probability-ensemble/weights-listed": "0.2-e69374cdc4",
+  "roi-occupancy/inline-disc": "0.1-ee3ab501ba",
   "scale-to-bl/length": "0.1-16a1a3f731",
   "scale-to-cm/default": "0.2-c4a726ae48",
   "sequence-aggregate/column-speed": "0.3-437a94ac59",

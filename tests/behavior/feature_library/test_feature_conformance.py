@@ -436,6 +436,7 @@ def test_every_feature_declares_whether_it_follows_ids(cls: type) -> None:
         ("sequence-aggregate", False),
         ("individual-aggregate", True),
         ("event-response", True),
+        ("roi-occupancy", False),
         ("feral", False),
         ("extract-labeled-templates", True),
         ("id-tag-columns", True),
@@ -460,12 +461,14 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "label-predictions": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
     "pair-world": frozenset({"world_m"}),
+    "roi-occupancy": frozenset({"image_px"}),
 }
 """The features that declare their track spaces, and the spaces each declares.
 
 Every space for a feature that reads no spatial column, or whose computation is
 independent of the space. ``world_m`` alone for one defined on world up, which a
-planar table does not have. Every other registered feature declares nothing and
+planar table does not have. ``image_px`` alone for one whose geometry is in the
+pixels of the arena layouts. Every other registered feature declares nothing and
 so computes in the two 2D spaces, which is what refuses it a world-frame table.
 """
 
