@@ -23,7 +23,7 @@ from mosaic.runlog import EntryErrorRecord, read_entry_errors, run_log_dir
 from tests.helpers.datasets import make_dataset
 from tests.helpers.tracks import add_track_sequences
 
-__all__ = ["MIXED", "STEADY", "LabeledRun", "run_over_labeled_tracks"]
+__all__ = ["MIXED", "STEADY", "LabeledTracksRun", "run_over_labeled_tracks"]
 
 STEADY: Entry = ("g1", "steady")
 MIXED: Entry = ("g1", "mixed")
@@ -33,7 +33,7 @@ _LABEL = "strain"
 
 
 @dataclass(frozen=True)
-class LabeledRun:
+class LabeledTracksRun:
     """What a feature run over the labeled tracks wrote and lost.
 
     Attributes:
@@ -47,7 +47,7 @@ class LabeledRun:
     written: list[str]
 
 
-def run_over_labeled_tracks(tmp_path: Path, feature: Feature) -> LabeledRun:
+def run_over_labeled_tracks(tmp_path: Path, feature: Feature) -> LabeledTracksRun:
     """Run *feature* over the two labeled entries.
 
     Args:
@@ -65,7 +65,7 @@ def run_over_labeled_tracks(tmp_path: Path, feature: Feature) -> LabeledRun:
     run_root = ds.get_root("features") / result.feature / result.run_id
     written = sorted(path.stem for path in run_root.glob("*.parquet"))
     errors = read_entry_errors(run_log_dir(ds.base_dir), _EXECUTION_ID)["items"]
-    return LabeledRun(result=result, errors=errors, written=written)
+    return LabeledTracksRun(result=result, errors=errors, written=written)
 
 
 def _label_tracks(ds: Dataset) -> None:

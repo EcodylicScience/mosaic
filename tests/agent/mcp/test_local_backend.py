@@ -10,6 +10,7 @@ import json
 import socket
 import threading
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -63,6 +64,10 @@ from mosaic.core.pipeline.media_index import frame_from_rows, write_media_index_
 from mosaic.core.pipeline.markers import process_running
 from mosaic.core.pipeline.parallelism import ParallelLimits, host_cpus
 from mosaic.core.pipeline.preview import ArtifactPreview
+from mosaic.core.pipeline import graph as graph_package
+from mosaic.core.pipeline import run_summary as run_summary_module
+from mosaic.core.pipeline.run_summary import RunSummaryWire
+from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
 from mosaic.runlog import JsonlRunLog, run_log_path
 from tests.helpers import (
@@ -78,6 +83,8 @@ from tests.helpers import (
     calms21_dataset,
     chain_recipe,
     convert_tracks_from_raw,
+    invoke_ok,
+    labeled_run,
     exited_pid,
     make_dataset,
     speed_recipe,
@@ -1679,6 +1686,357 @@ def test_a_preview_of_another_kind_is_invalid(
     )
 
     assert refused.kind == "invalid"
+
+
+def _labeled(tmp_path: Path) -> tuple[Dataset, Result[str], LocalBackend]:
+    """Two strains over four entries of two groups, served by a local backend."""
+    rows = {
+        ("g", "a"): {"strain": ["A", "B", "A"], "value": [1.0, 2.5, float("nan")]},
+        ("g", "b"): {"strain": ["A", "A"], "value": [2.0, 3.0]},
+        ("h", "c"): {"strain": ["B", "B"], "value": [6.0, 7.0]},
+        ("h", "d"): {"strain": ["B", "A"], "value": [8.0, 0.5]},
+    }
+    ds, result = labeled_run(
+        tmp_path, {entry: pd.DataFrame(table) for entry, table in rows.items()}
+    )
+    return ds, result, LocalBackend([ds.manifest_path], warm=False)
+
+
+def _run_ref(result: Result[str]) -> str:
+    return f"feature/{result.feature}/{result.run_id}"
+
+
+def test_an_entry_preview_returns_the_json_it_returned_before_summaries(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _labeled(tmp_path)
+
+    preview = _call(
+        backend,
+        "preview_output",
+        ArtifactPreview,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        group="g",
+        sequence="a",
+        limit=2,
+    )
+
+    returned = preview.model_dump(mode="json")
+    path = Path(str(returned.pop("path")))
+    run_dir = ds.base_dir / "features" / result.feature / str(result.run_id)
+    assert path.resolve() == (run_dir / "g__a.parquet").resolve()
+    assert returned == {
+        "ref": _run_ref(result),
+        "group": "g",
+        "sequence": "a",
+        "columns": [
+            {
+                "name": "strain",
+                "type": "text",
+                "arrow_type": "large_string",
+                "statistics": None,
+            },
+            {
+                "name": "value",
+                "type": "float",
+                "arrow_type": "double",
+                "statistics": {
+                    "min": 1.0,
+                    "max": 2.5,
+                    "mean": 1.75,
+                    "nan_fraction": 0.3333333333333333,
+                },
+            },
+            {
+                "name": "group",
+                "type": "text",
+                "arrow_type": "large_string",
+                "statistics": None,
+            },
+            {
+                "name": "sequence",
+                "type": "text",
+                "arrow_type": "large_string",
+                "statistics": None,
+            },
+        ],
+        "n_rows": 3,
+        "frame_min": None,
+        "frame_max": None,
+        "read_columns": ["strain", "value", "group", "sequence"],
+        "rows": [["A", 1.0, "g", "a"], ["B", 2.5, "g", "a"]],
+        "has_more": True,
+        "n_columns": 4,
+        "columns_omitted": [],
+        "columns_omitted_has_more": False,
+        "labels": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("arguments", "options"),
+    [
+        pytest.param({}, [], id="no key"),
+        pytest.param({"by": ["strain"]}, ["--by", "strain"], id="by"),
+        pytest.param(
+            {"by": ["strain"], "tests": ["kruskal", "mannwhitney"]},
+            ["--by", "strain", "--test", "kruskal", "--test", "mannwhitney"],
+            id="tests",
+        ),
+        pytest.param(
+            {"by": ["group"], "where": {"strain": ["B"]}, "columns": ["val*"]},
+            ["--by", "group", "--where", "strain=B", "--column", "val*"],
+            id="where and a column pattern",
+        ),
+        pytest.param(
+            {"by": ["strain"], "groups": ["h"]},
+            ["--by", "strain", "--group", "h"],
+            id="groups",
+        ),
+    ],
+)
+def test_a_summary_is_what_mosaic_summarize_prints(
+    tmp_path: Path, arguments: dict[str, object], options: list[str]
+) -> None:
+    ds, result, backend = _labeled(tmp_path)
+
+    summary = _call(
+        backend,
+        "preview_output",
+        RunSummaryWire,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        **arguments,
+    )
+    printed = invoke_ok(
+        [
+            "summarize",
+            _run_ref(result),
+            "--manifest",
+            str(ds.manifest_path),
+            *options,
+            "--json",
+        ]
+    )
+
+    assert summary.model_dump(mode="json") == json.loads(printed.stdout)
+
+
+HELD_SECONDS = 0.5
+"""How long a summary is given to start while the warming thread is held."""
+
+WARM_SECONDS = 60.0
+"""The longest the warming test waits for the warming thread or a call to end."""
+
+
+def _held[**P, R](
+    call: Callable[P, R], reached: threading.Event, release: threading.Event
+) -> Callable[P, R]:
+    """*call*, which signals *reached* and then waits for *release* first."""
+
+    def held(*args: P.args, **kwargs: P.kwargs) -> R:
+        reached.set()
+        assert release.wait(timeout=WARM_SECONDS)
+        return call(*args, **kwargs)
+
+    return held
+
+
+def _noted[**P, R](call: Callable[P, R], began: threading.Event) -> Callable[P, R]:
+    """*call*, which signals *began* when it is called."""
+
+    def noted(*args: P.args, **kwargs: P.kwargs) -> R:
+        began.set()
+        return call(*args, **kwargs)
+
+    return noted
+
+
+def test_a_summary_waits_for_the_warming_thread_and_an_entry_preview_does_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds, result, _ = _labeled(tmp_path)
+    reached, release, began = threading.Event(), threading.Event(), threading.Event()
+    monkeypatch.setattr(
+        graph_package, "catalog_index", _held(catalog_index, reached, release)
+    )
+    monkeypatch.setattr(
+        run_summary_module,
+        "summarize_ref",
+        _noted(run_summary_module.summarize_ref, began),
+    )
+    backend = LocalBackend([ds.manifest_path])
+    answered: list[object] = []
+    summary = threading.Thread(
+        target=lambda: answered.append(
+            call_tool(
+                backend,
+                "preview_output",
+                {
+                    "dataset": _uuid(ds),
+                    "ref": _run_ref(result),
+                    "mode": "summary",
+                    "by": ["strain"],
+                },
+            )
+        )
+    )
+    try:
+        assert reached.wait(timeout=WARM_SECONDS)
+        entry = _call(
+            backend,
+            "preview_output",
+            ArtifactPreview,
+            dataset=_uuid(ds),
+            ref=_run_ref(result),
+            group="g",
+            sequence="a",
+        )
+        summary.start()
+        started_while_warming = began.wait(timeout=HELD_SECONDS)
+    finally:
+        release.set()
+    summary.join(timeout=WARM_SECONDS)
+
+    assert entry.n_rows == 3
+    assert not started_while_warming
+    assert began.is_set()
+    (output,) = answered
+    assert isinstance(output, RunSummaryWire)
+
+
+def _typed_run(tmp_path: Path) -> tuple[Dataset, Result[str], LocalBackend]:
+    """Integer, boolean and text keys that look alike, over four entries."""
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): pd.DataFrame(
+                {"n_inds": [1, 1], "fed": [True, True], "code": ["1", "1"]}
+            ).assign(value=[1.0, 2.0]),
+            ("g", "b"): pd.DataFrame(
+                {"n_inds": [2, 2], "fed": [False, False], "code": ["2", "2"]}
+            ).assign(value=[3.0, 4.0]),
+        },
+    )
+    return ds, result, LocalBackend([ds.manifest_path], warm=False)
+
+
+@pytest.mark.parametrize(
+    ("key", "where", "kept"),
+    [
+        pytest.param("n_inds", ["1"], 1, id="text of an integer key"),
+        pytest.param("n_inds", [1], 1, id="number of an integer key"),
+        pytest.param("fed", ["true"], True, id="text of a boolean key"),
+        pytest.param("fed", [True], True, id="boolean of a boolean key"),
+        pytest.param("code", ["1"], "1", id="text of a text key"),
+        pytest.param("code", ["1", 2], "1", id="number of a text key matches nothing"),
+    ],
+)
+def test_a_where_string_is_read_as_mosaic_summarize_reads_it(
+    tmp_path: Path, key: str, where: list[object], kept: object
+) -> None:
+    ds, result, backend = _typed_run(tmp_path)
+
+    summary = _call(
+        backend,
+        "preview_output",
+        RunSummaryWire,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        by=[key],
+        where={key: where},
+    )
+
+    assert [group.key for group in summary.groups] == [{key: kept}]
+
+
+def test_a_where_string_and_the_cli_keep_the_same_rows(tmp_path: Path) -> None:
+    ds, result, backend = _typed_run(tmp_path)
+
+    summary = _call(
+        backend,
+        "preview_output",
+        RunSummaryWire,
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        by=["n_inds"],
+        where={"n_inds": ["1"]},
+    )
+    printed = invoke_ok(
+        [
+            "summarize",
+            _run_ref(result),
+            "--manifest",
+            str(ds.manifest_path),
+            "--by",
+            "n_inds",
+            "--where",
+            "n_inds=1",
+            "--json",
+        ]
+    )
+
+    assert summary.model_dump(mode="json") == json.loads(printed.stdout)
+
+
+def test_a_summary_with_entry_arguments_is_refused_before_the_backend(
+    tmp_path: Path,
+) -> None:
+    ds, result, backend = _labeled(tmp_path)
+
+    refused = _refusal(
+        backend,
+        "preview_output",
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        group="g",
+    )
+
+    assert (refused.kind, refused.reason) == ("invalid", "invalid_arguments")
+
+
+def test_a_summary_of_a_per_frame_run_is_invalid(tmp_path: Path) -> None:
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): pd.DataFrame(
+                {"frame": [0, 1, 2], "strain": ["A"] * 3, "value": [1.0, 2.0, 3.0]}
+            )
+        },
+    )
+    backend = LocalBackend([ds.manifest_path], warm=False)
+
+    refused = _refusal(
+        backend,
+        "preview_output",
+        dataset=_uuid(ds),
+        ref=_run_ref(result),
+        mode="summary",
+        by=["strain"],
+    )
+
+    assert refused.kind == "invalid"
+    assert refused.detail is not None
+    assert refused.detail["feature"] == result.feature
+
+
+def test_a_summary_of_a_tracks_variant_is_invalid_naming_the_ref(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    refused = _refusal(
+        backend,
+        "preview_output",
+        dataset=_uuid(dataset),
+        ref=f"tracks-variant/{VARIANT}",
+        mode="summary",
+    )
+
+    assert (refused.kind, refused.detail) == ("invalid", {"field": "ref"})
 
 
 def test_activity_since_a_page_lists_only_what_changed_after_it(

@@ -751,6 +751,20 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   report `.entries` as what was read: `.finished` is then False for a run that lost
   entries, and `.missing` lists only the scope's entries that have no file. It
   carries no labels, so take those from `align_predictions_to_labels`.
+- To compare groups, such as strains or sexes, reduce the run to one row per entry or
+  individual with `sequence-aggregate` or `individual-aggregate`. Keep the labels with
+  `keep_columns`, and list `"tracks"` after the feature's output among the inputs for a
+  label of the tracks table (a pair-level feature cannot take it). Then call
+  `summarize_run` in Python, `mosaic summarize --json`, or `preview_output` with
+  `mode: "summary"`, with `by`, `where` and `tests`. It refuses a run of one row per
+  frame. Individuals of one recording are not independent replicates of a
+  recording-level key such as a strain, so read `n_entries` beside `n_rows`. A `where`
+  string, on the command line or in the MCP call, also matches an integer, float or
+  boolean key where its text reads as one (`"1"`, `"true"`). A JSON number matches an
+  integer or float key, and a JSON boolean a boolean key. A design of hundreds of
+  groups exceeds an MCP result, so read it through the CLI or Python. Mixed models and
+  factorial designs are not in mosaic: do them in your own code over `load_run_matrix`
+  (https://ecodylicscience.github.io/mosaic/guides/analysis/features/#summaries-across-entries).
 
 ## Mosaic's MCP tools
 
@@ -815,13 +829,14 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   time.
 - A run's report, such as `evaluate-labels`' scores or the explained variance of a
   `pair-posedistance-pca` fit, is the resource
-  `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`. `preview_output`
-  shows one entry's rows and never the pooled metrics, so a client that does not read
-  resources must get them from that report.
+  `mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}/report`. `preview_output` in
+  entry mode shows one entry's rows and never the pooled metrics, so a client that does
+  not read resources must get them from that report.
 - A read returns at most 40,000 characters. A `result_too_large` error names the
-  arguments that narrow the call. Narrow a preview with `columns` patterns
-  (`W_*_f0`) and `max_columns`. `preview_output` also previews a labels variant
-  (`labels-variant/<kind>/<run_id>`) with its events per class.
+  arguments that narrow the call. Narrow an entry preview with `columns` patterns
+  (`W_*_f0`) and `max_columns`, and a summary with `where`, `columns` and `by`.
+  `preview_output` also previews a labels variant (`labels-variant/<kind>/<run_id>`)
+  with its events per class.
 - This guide is also the `mosaic://guide` resource. Read it once.
 - Set `confirm` only after the user agrees in the conversation to the conditions
   that the refusal lists.

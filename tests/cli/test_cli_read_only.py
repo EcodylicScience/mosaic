@@ -56,6 +56,8 @@ from mosaic.core.pipeline.inventory import FeatureRunRef
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.preview import preview_artifact
 from mosaic.core.pipeline.run_log import read_runs, run_log_dir
+from mosaic.core.pipeline.run_summary import summarize_run
+from mosaic.core.pipeline.types import Result
 from mosaic.runlog import JsonlRunLog, list_runs, run_log_path
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
@@ -101,6 +103,7 @@ MODEL_RUN_ID = "train-pose.0.1-0123456789"
 MODEL_REF = f"trained-model/{MODEL_KIND}/{MODEL_RUN_ID}"
 LOSSY_EXECUTION_ID = "01H00000000000000000000000"
 SPEED_STORAGE = "speed-angvel__from__tracks"
+AGGREGATE_STORAGE = "sequence-aggregate__from__speed-angvel__from__tracks+tracks"
 LOSSY_TARGET = SPEED_STORAGE
 LOSSY_RUN_ID = "0.2-abcdef0123"
 PREDICTION_RUN_ID = "predict-frames.0.1-0123456789"
@@ -118,6 +121,7 @@ class ReadDataset:
     execution_id: str = ""
     lossy_execution_id: str = ""
     feature_run_id: str = ""
+    aggregate_run_id: str = ""
 
     @property
     def root(self) -> Path:
@@ -135,6 +139,31 @@ def _strip_to_content(root: Path) -> None:
     for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
+
+
+def _aggregate_recipe() -> Recipe:
+    """``speed-angvel`` and, from it, one row of its mean speed per entry."""
+    return Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "speed aggregate",
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                },
+                {
+                    "id": "aggregate",
+                    "type": "feature",
+                    "feature": "sequence-aggregate",
+                    "inputs": [{"step": "speed"}, "tracks"],
+                    "params": {"columns": ["speed"], "aggs": ["mean"]},
+                },
+            ],
+        }
+    )
 
 
 def _recipe_file(tmp_path: Path) -> Path:
@@ -175,6 +204,7 @@ def populated(tmp_path: Path) -> ReadDataset:
     add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
     _record_appearance(dataset, "seq_a")
     done = run_pipeline(dataset, speed_recipe())
+    aggregated = run_pipeline(dataset, _aggregate_recipe())
     run_root = model_run_root(dataset, MODEL_KIND, MODEL_RUN_ID)
     run_root.mkdir(parents=True)
     weights = run_root / "best.pt"
@@ -200,6 +230,7 @@ def populated(tmp_path: Path) -> ReadDataset:
         execution_id=done.outcomes[0].execution_id,
         lossy_execution_id=LOSSY_EXECUTION_ID,
         feature_run_id=done.outcomes[0].run_id or "",
+        aggregate_run_id=aggregated.outcomes[1].run_id or "",
     )
 
 
@@ -376,6 +407,14 @@ CLI_READS: dict[str, CliArguments] = {
     "sources list": lambda _: ["sources", "list"],
     "splits list": lambda _: ["splits", "list"],
     "status": lambda f: ["status", "--execution-id", f.execution_id, "--progress"],
+    "summarize": lambda f: [
+        "summarize",
+        f"feature/{AGGREGATE_STORAGE}/{f.aggregate_run_id}",
+        "--by",
+        "group",
+        "--test",
+        "kruskal",
+    ],
     "sweep-tracking --dry-run": lambda _: ["sweep-tracking"],
     "tags list": lambda _: ["tags", "list"],
     "upgrade-tracks --dry-run": lambda _: ["upgrade-tracks"],
@@ -666,6 +705,12 @@ LIBRARY_READS: dict[str, LibraryRead] = {
     "request_status_wire": _request_status,
     "run_status_wire": lambda f: run_status_wire(f.root, f.execution_id, progress=True),
     "selected_frames": lambda f: selected_frames(f.reopened(), SELECTION_RUN_ID),
+    "summarize_run": lambda f: summarize_run(
+        f.reopened(),
+        Result[str](feature=AGGREGATE_STORAGE, run_id=f.aggregate_run_id),
+        by=["group"],
+        tests=["kruskal"],
+    ),
 }
 
 

@@ -12,6 +12,7 @@ JSON-RPC message.
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -26,7 +27,11 @@ import pytest
 
 pytest.importorskip("mcp")
 
+import anyio
 import mcp_types as types
+import pandas as pd
+from mcp.client import Client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from mosaic.agent.mcp.spec import MAX_WAIT_SECONDS, TOOLS
 from mosaic.core.dataset import Dataset
@@ -38,6 +43,7 @@ from tests.helpers import (
     CHILD_TIMEOUT_SECONDS,
     add_tracks_variant,
     chain_recipe,
+    labeled_run,
     make_dataset,
     wait_for,
 )
@@ -425,3 +431,63 @@ def test_a_wait_over_stdio_returns_when_a_step_ends_and_leaves_the_server_answer
     assert code == 0
     for line in session.lines:
         _ = types.jsonrpc_message_adapter.validate_json(line)
+
+
+SERVE: Final = """
+import sys
+from mosaic.cli import app
+app(["agent", "serve", "--dataset", sys.argv[1]], prog_name="mosaic")
+"""
+"""``mosaic agent serve`` over the dataset its first argument names."""
+
+
+def test_the_sdk_client_accepts_an_entry_preview_and_a_summary_over_stdio(
+    tmp_path: Path,
+) -> None:
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): pd.DataFrame({"strain": ["A", "B"], "value": [1.0, 2.0]}),
+            ("g", "b"): pd.DataFrame({"strain": ["A", "B"], "value": [3.0, 5.0]}),
+        },
+    )
+    uuid = ds.manifest.uuid
+    assert uuid is not None
+    ref = f"feature/{result.feature}/{result.run_id}"
+    server = StdioServerParameters(
+        command=sys.executable,
+        args=["-c", SERVE, str(ds.base_dir)],
+        env=dict(os.environ),
+    )
+
+    async def previews() -> tuple[types.CallToolResult, types.CallToolResult]:
+        with (tmp_path / "server.stderr").open("w") as errors:
+            with anyio.fail_after(RESPONSE_SECONDS):
+                async with Client(stdio_client(server, errlog=errors)) as client:
+                    _ = await client.list_tools()
+                    entry = await client.call_tool(
+                        "preview_output",
+                        {"dataset": uuid, "ref": ref, "group": "g", "sequence": "a"},
+                    )
+                    summary = await client.call_tool(
+                        "preview_output",
+                        {
+                            "dataset": uuid,
+                            "ref": ref,
+                            "mode": "summary",
+                            "by": ["strain"],
+                            "tests": ["kruskal", "mannwhitney"],
+                        },
+                    )
+                    return entry, summary
+
+    entry, summary = anyio.run(previews)
+
+    assert not entry.is_error, entry.content
+    assert not summary.is_error, summary.content
+    previewed: dict[str, JsonValue] = entry.structured_content
+    summarized: dict[str, JsonValue] = summary.structured_content
+    assert previewed["read_columns"] == ["strain", "value", "group", "sequence"]
+    assert summarized["by"] == ["strain"]
+    pairs = summarized["mann_whitney"]
+    assert isinstance(pairs, list) and len(pairs) == 1

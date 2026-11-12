@@ -24,7 +24,7 @@ import importlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, Self, override
 
 from pydantic import (
     AwareDatetime,
@@ -65,6 +65,7 @@ from mosaic.core.pipeline.graph.store import (
     open_requests_sentence,
 )
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
+from mosaic.core.pipeline.summary_arguments import KeyValue, SummaryTest
 from mosaic.core.scan_findings import ScanFinding
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
@@ -74,6 +75,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import ValidationReport
     from mosaic.core.pipeline.inventory import InventoryWire
     from mosaic.core.pipeline.preview import ArtifactPreview
+    from mosaic.core.pipeline.run_summary import RunSummaryWire
 
     from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 
@@ -596,6 +598,22 @@ AppliesRequestId = Annotated[
 class ToolInput(StrictModel):
     """The arguments of one tool call. Each tool's input model subclasses it."""
 
+    def narrowing(self, declared: tuple[str, ...]) -> tuple[str, ...]:
+        """Return the arguments that make this call's result smaller.
+
+        Args:
+            declared: The tool's :attr:`ToolSpec.narrowing`, which every call
+                of a tool narrows by unless its input model says otherwise.
+        """
+        return declared
+
+    def whole_result_advice(self) -> str:
+        """Return what to add to a ``result_too_large`` refusal, or ``""``.
+
+        A tool whose result another route returns whole names that route.
+        """
+        return ""
+
 
 class ListDatasetsInput(ToolInput):
     """The arguments of ``list_datasets``."""
@@ -1016,41 +1034,156 @@ class DiagnoseFailuresInput(ToolInput):
     )
 
 
+type PreviewMode = Literal["entry", "summary"]
+"""What ``preview_output`` returns: one entry's table, or a run's rows by group."""
+
+
 class PreviewOutputInput(ToolInput):
-    """The arguments of ``preview_output``."""
+    """The arguments of ``preview_output``.
+
+    ``entry`` mode takes ``group`` and ``sequence`` and none of ``by``,
+    ``tests``, ``where``, ``groups`` and ``allow_partial``. ``summary`` mode takes
+    neither ``group`` nor ``sequence``, and ignores ``max_columns``, ``listed``
+    and ``limit``.
+    """
 
     dataset: DatasetId
     ref: str = Field(
         description=(
             "'feature/<storage>/<run_id>', 'tracks-variant/<run_id>' or "
-            "'labels-variant/<kind>/<run_id>', as get_inventory names an artifact."
+            "'labels-variant/<kind>/<run_id>', as get_inventory names an artifact. "
+            "summary: a feature run."
         )
     )
-    group: str = Field(description="The entry's group, '' when it has none.")
-    sequence: str = Field(description="The entry's sequence.")
+    mode: PreviewMode = Field(
+        default="entry",
+        description=(
+            "'entry' previews one entry's table. 'summary' counts and describes a "
+            "feature run's rows by group across its entries."
+        ),
+    )
+    group: str | None = Field(
+        default=None, description="entry: the entry's group, '' when it has none."
+    )
+    sequence: str | None = Field(
+        default=None, description="entry: the entry's sequence."
+    )
     columns: list[str] | None = Field(
         default=None,
         description=(
             "The columns to read, by name or fnmatch pattern ('W_*_f0'). Null "
-            "reads the identity and bookkeeping columns first."
+            "reads the identity and bookkeeping columns first, or in summary "
+            "every numeric column."
         ),
     )
     max_columns: int = Field(
         default=PREVIEW_MAX_COLUMNS,
         ge=1,
         le=200,
-        description="The most columns to read. The rest are named as omitted.",
+        description="entry: the most columns to read. The rest are named as omitted.",
     )
     listed: Literal["read", "all"] = Field(
         default="read",
-        description="List only the columns read, or every column of the table.",
+        description="entry: list only the columns read, or every column of the table.",
     )
     limit: int = Field(
         default=PREVIEW_DEFAULT_ROWS,
         ge=0,
         le=MAX_PREVIEW_ROWS,
-        description=f"The rows of the head to return, 0 to {MAX_PREVIEW_ROWS}.",
+        description=f"entry: the rows of the head to return, 0 to {MAX_PREVIEW_ROWS}.",
     )
+    by: list[str] = Field(
+        default_factory=list,
+        description=(
+            "summary: the group keys, 'group', 'sequence' or a column the run "
+            "writes, such as a label kept with keep_columns. Empty: one group."
+        ),
+    )
+    tests: list[SummaryTest] = Field(
+        default_factory=list,
+        description=(
+            "summary: kruskal across the groups, mannwhitney for each pair "
+            "(Holm within a column)."
+        ),
+    )
+    where: dict[str, list[KeyValue]] | None = Field(
+        default=None,
+        description=(
+            "summary: keep the rows whose key takes one of the values listed, "
+            "such as {'strain': ['A', 'B']}. A key need not be in by. A string "
+            "also matches an int, float or bool key where its text reads as one "
+            "('1', '2.5', 'true'). A JSON number matches an int or float key, "
+            "a JSON bool a bool key."
+        ),
+    )
+    groups: list[str] | None = Field(
+        default=None, description="summary: read the entries of these groups only."
+    )
+    allow_partial: bool = Field(
+        default=False,
+        description="summary: read a run that lacks entries or is not finished.",
+    )
+
+    @model_validator(mode="after")
+    def _arguments_of_its_mode(self) -> Self:
+        if self.mode == "entry":
+            missing = [
+                name
+                for name, value in (("group", self.group), ("sequence", self.sequence))
+                if value is None
+            ]
+            if missing:
+                msg = f"entry mode needs {' and '.join(missing)}"
+                raise ValueError(msg)
+            stray = [
+                name
+                for name, given in (
+                    ("by", bool(self.by)),
+                    ("tests", bool(self.tests)),
+                    ("where", self.where is not None),
+                    ("groups", self.groups is not None),
+                    ("allow_partial", self.allow_partial),
+                )
+                if given
+            ]
+            if stray:
+                msg = f"{', '.join(stray)} apply to summary mode, not entry mode"
+                raise ValueError(msg)
+        else:
+            stray = [
+                name
+                for name, value in (("group", self.group), ("sequence", self.sequence))
+                if value is not None
+            ]
+            if stray:
+                msg = (
+                    f"summary mode reads every entry of the run and takes no "
+                    f"{' or '.join(stray)}. Narrow it with groups or where."
+                )
+                raise ValueError(msg)
+        return self
+
+    @override
+    def narrowing(self, declared: tuple[str, ...]) -> tuple[str, ...]:
+        """Return the arguments that shrink this mode's result.
+
+        ``entry`` mode narrows by ``columns``, ``max_columns`` and ``limit``, and
+        ``summary`` mode by ``where``, ``columns`` and ``by``, all of them in
+        *declared*. ``groups`` is left out: it narrows entries, and a group of
+        key values spans many of them.
+        """
+        if self.mode == "entry":
+            return ("columns", "max_columns", "limit")
+        return ("where", "columns", "by")
+
+    @override
+    def whole_result_advice(self) -> str:
+        """Return that the CLI and Python return a summary whole, in ``summary`` mode."""
+        if self.mode == "summary":
+            return (
+                "mosaic summarize and summarize_run in Python return a summary whole."
+            )
+        return ""
 
 
 type DatasetAction = Literal[
@@ -1876,12 +2009,16 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "class's events and the frames labeled. One entry's rows hold no "
             "pooled scores: read an evaluate-labels run's pooled metrics in its "
             "report, at mosaic://dataset/{id}/artifacts/feature/{name}/{run_id}"
-            "/report."
+            "/report. mode 'summary' instead counts a feature run's rows by group "
+            "across entries, with each value column's statistics and the tests "
+            "asked for, for a run of one row per entry or individual such as "
+            "sequence-aggregate. A design too large for one result is read whole "
+            "with mosaic summarize or summarize_run."
         ),
         input_model=PreviewOutputInput,
-        output=ModelRef("mosaic.core.pipeline.preview", "ArtifactPreview"),
+        output=ModelRef("mosaic.core.pipeline.run_summary", "PreviewOutput"),
         annotations=READ,
-        narrowing=("columns", "max_columns", "limit"),
+        narrowing=("columns", "max_columns", "limit", "where", "by"),
     ),
     ToolSpec(
         name="manage_dataset",
@@ -1996,8 +2133,14 @@ class ToolBackend(Protocol):
         """Answer ``diagnose_failures``."""
         ...
 
-    def preview_output(self, args: PreviewOutputInput) -> ToolResult[ArtifactPreview]:
-        """Answer ``preview_output``."""
+    def preview_output(
+        self, args: PreviewOutputInput
+    ) -> ToolResult[ArtifactPreview | RunSummaryWire]:
+        """Answer ``preview_output``: an entry's preview, or in ``summary`` mode a run's.
+
+        A backend without a route for ``summary`` mode returns a classified
+        refusal, such as ``invalid`` naming the mode, and does not raise.
+        """
         ...
 
     def manage_dataset(self, args: ManageDatasetInput) -> ToolResult[DatasetChange]:
@@ -2047,12 +2190,13 @@ def _bounded(spec: ToolSpec, request: ToolInput, output: BaseModel) -> BaseModel
 def result_too_large(spec: ToolSpec, request: ToolInput, chars: int) -> ErrorEnvelope:
     """Refuse a result of *chars* characters, naming the arguments that narrow it.
 
-    A flag already true in *request* is left out, since calling again with it
-    narrows nothing.
+    The arguments are ``request.narrowing(spec.narrowing)``. A flag already true
+    in *request* is left out, since calling again with it narrows nothing. A
+    summary's refusal adds that the CLI and Python return it whole.
     """
     arguments = [
         argument
-        for argument in spec.narrowing
+        for argument in request.narrowing(spec.narrowing)
         if getattr(request, argument, None) is not True
     ]
     narrow_with: list[JsonValue] = list(arguments)
@@ -2061,6 +2205,8 @@ def result_too_large(spec: ToolSpec, request: ToolInput, chars: int) -> ErrorEnv
         if arguments
         else "No argument narrows it. The mosaic CLI prints it whole."
     )
+    if whole := request.whole_result_advice():
+        advice += f" {whole}"
     return ErrorEnvelope(
         kind="invalid",
         reason=RESULT_TOO_LARGE,

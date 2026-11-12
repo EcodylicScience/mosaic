@@ -55,7 +55,11 @@ if TYPE_CHECKING:
         plan_run_read as plan_run_read,
         read_run as read_run,
     )
-    from .run_summary import RunSummary as RunSummary, summarize_run as summarize_run
+    from .run_summary import (
+        RunSummary as RunSummary,
+        RunSummaryWire as RunSummaryWire,
+        summarize_run as summarize_run,
+    )
     from .types import (
         Feature as Feature,
         Inputs as Inputs,
@@ -96,6 +100,7 @@ _MODULE_OF: Final[dict[str, str]] = {
     "plan_run_read": ".run_matrix",
     "read_run": ".run_matrix",
     "RunSummary": ".run_summary",
+    "RunSummaryWire": ".run_summary",
     "summarize_run": ".run_summary",
     "Feature": ".types",
     "Inputs": ".types",
@@ -133,6 +138,7 @@ __all__ = [
     "RunMatrix",
     "RunRead",
     "RunSummary",
+    "RunSummaryWire",
     "build_manifest",
     "feature_index_path",
     "feature_run_root",

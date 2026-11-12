@@ -11,6 +11,7 @@ too many pairs, and to one result whatever the order of the index.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from pydantic import BaseModel
 from scipy import stats
 
 from mosaic.core import pipeline as pipeline_package
@@ -25,15 +27,21 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline import run_matrix as run_matrix_module
 from mosaic.core.pipeline.error_kind import ClassifiedError
+from mosaic.core.json_value import JsonValue
+from mosaic.core.pipeline.graph.param_table import strip_schema_keywords
+from mosaic.core.pipeline.preview import ArtifactPreview
 from mosaic.core.pipeline.run_matrix import RunRead, RunReadInvalid
 from mosaic.core.pipeline.run_summary import (
     MAX_PAIRWISE_GROUPS,
-    KeyValue,
+    PreviewOutput,
     RunSummary,
+    RunSummaryWire,
     SummaryConflict,
     SummaryInvalid,
+    run_summary_wire,
     summarize_run,
 )
+from mosaic.core.pipeline.summary_arguments import KeyValue
 from mosaic.core.pipeline.types import Result
 from mosaic.core.scope import Scope
 from tests.helpers import labeled_run, rewrite_index
@@ -1086,6 +1094,300 @@ def test_the_summary_does_not_depend_on_the_order_of_the_index(
     assert_same_summary(before, after)
 
 
+# --- wire -------------------------------------------------------------------
+
+REF = "feature/prov-labeled/0.1-0123456789"
+
+
+def wire_of(summary: RunSummary) -> RunSummaryWire:
+    return run_summary_wire(summary, REF)
+
+
+def dumped(model: BaseModel) -> dict[str, JsonValue]:
+    """*model* as the command line and the server print it."""
+    document: dict[str, JsonValue] = model.model_dump(mode="json")
+    return document
+
+
+def test_the_wire_names_the_run_and_counts_what_it_read(tmp_path: Path) -> None:
+    ds, result = three_strains(tmp_path)
+
+    wire = wire_of(summarize_run(ds, result, by=["strain"]))
+
+    assert wire.ref == REF
+    assert wire.by == ("strain",)
+    assert wire.columns == ("value", "other")
+    assert wire.n_entries == 4
+    assert wire.missing == ()
+    assert wire.finished is True
+    assert wire.entries_without_rows == ()
+    assert wire.rows_without_key == 0
+    assert wire.max_rows_per_entry == 3
+    assert [dumped(group) for group in wire.groups] == [
+        {"key": {"strain": "A"}, "n_rows": 5, "n_entries": 2},
+        {"key": {"strain": "B"}, "n_rows": 3, "n_entries": 1},
+        {"key": {"strain": "C"}, "n_rows": 2, "n_entries": 1},
+    ]
+    assert wire.kruskal == () and wire.mann_whitney == ()
+
+
+def test_the_wire_dumps_every_non_finite_float_as_null_in_strict_json(
+    tmp_path: Path,
+) -> None:
+    ds, result = three_strains(tmp_path)
+    wire = wire_of(
+        summarize_run(ds, result, by=["strain"], tests=["kruskal", "mannwhitney"])
+    )
+
+    json.dumps(dumped(wire), allow_nan=False)
+    by_group = {(row.key["strain"], row.column): dumped(row) for row in wire.statistics}
+    assert by_group["C", "value"] == {
+        "column": "value",
+        "key": {"strain": "C"},
+        "n": 0,
+        "n_missing": 2,
+        "mean": None,
+        "sd": None,
+        "sem": None,
+        "median": None,
+    }
+    one = by_group["B", "value"]
+    assert (one["n"], one["mean"], one["sd"], one["sem"]) == (1, 3.0, None, None)
+    empty_pair = next(
+        dumped(row)
+        for row in wire.mann_whitney
+        if row.column == "value" and row.b == {"strain": "C"}
+    )
+    assert empty_pair["a"] == {"strain": "A"}
+    assert (empty_pair["statistic"], empty_pair["p"], empty_pair["p_holm"]) == (
+        None,
+        None,
+        None,
+    )
+    assert empty_pair["reason"] == "no_values"
+    assert empty_pair["comparisons"] == 1
+
+
+def test_the_wire_keeps_the_degrees_of_freedom_an_integer_and_null_without_groups(
+    tmp_path: Path,
+) -> None:
+    ds, result = three_strains(tmp_path)
+
+    tested = wire_of(summarize_run(ds, result, by=["strain"], tests=["kruskal"]))
+    alone = wire_of(
+        summarize_run(
+            ds,
+            result,
+            by=["strain"],
+            where={"strain": ["A"]},
+            tests=["kruskal"],
+        )
+    )
+
+    other = next(row for row in tested.kruskal if row.column == "other")
+    assert (other.k, other.n, other.df, other.reason) == (3, 9, 2, None)
+    assert isinstance(other.df, int)
+    assert other.statistic is not None and other.p is not None
+    assert [dumped(row) for row in alone.kruskal] == [
+        {
+            "column": column,
+            "k": 1,
+            "n": 4,
+            "statistic": None,
+            "df": None,
+            "p": None,
+            "reason": "too_few_groups",
+        }
+        for column in ("value", "other")
+    ]
+
+
+def test_the_wire_lists_entries_as_group_and_sequence_pairs(tmp_path: Path) -> None:
+    ds, result = run_of(
+        tmp_path,
+        {
+            ("g", "a"): table(strain=["A"], value=[1.0]),
+            ("g", "c"): table(
+                strain=pd.Series([], dtype="object"),
+                value=pd.Series([], dtype="float64"),
+            ),
+        },
+    )
+
+    wire = wire_of(summarize_run(ds, result, by=["strain"]))
+
+    assert wire.n_entries == 2
+    assert wire.entries_without_rows == (("g", "c"),)
+    assert dumped(wire)["entries_without_rows"] == [["g", "c"]]
+
+
+def test_the_wire_keeps_each_key_in_its_type(tmp_path: Path) -> None:
+    ds, result = run_of(
+        tmp_path,
+        {
+            ("g", "a"): table(
+                strain=["A", "A"],
+                n_inds=np.array([1, 1], dtype=np.int64),
+                fed=[True, True],
+                size=[0.5, 0.5],
+                value=[1.0, 2.0],
+            ),
+            ("g", "b"): table(
+                strain=["B", "B"],
+                n_inds=np.array([2, 2], dtype=np.int64),
+                fed=[False, False],
+                size=[1.5, 1.5],
+                value=[3.0, 4.0],
+            ),
+        },
+    )
+
+    wire = wire_of(
+        summarize_run(
+            ds,
+            result,
+            by=["strain", "n_inds", "fed", "size"],
+            tests=["mannwhitney"],
+        )
+    )
+
+    key = wire.groups[0].key
+    assert key == {"strain": "A", "n_inds": 1, "fed": True, "size": 0.5}
+    assert {name: type(value) for name, value in key.items()} == {
+        "strain": str,
+        "n_inds": int,
+        "fed": bool,
+        "size": float,
+    }
+    (pair,) = wire.mann_whitney
+    assert pair.a == key
+    assert pair.b == {"strain": "B", "n_inds": 2, "fed": False, "size": 1.5}
+
+
+def test_the_wire_regroups_the_pair_columns_of_keys_that_end_in_a_side(
+    tmp_path: Path,
+) -> None:
+    ds, result = run_of(
+        tmp_path,
+        {
+            ("g", "a"): table(x=["p", "p"], x_a=["q", "q"], value=[1.0, 2.0]),
+            ("g", "b"): table(x=["p", "p"], x_a=["r", "r"], value=[3.0, 4.0]),
+        },
+    )
+
+    wire = wire_of(summarize_run(ds, result, by=["x", "x_a"], tests=["mannwhitney"]))
+
+    (pair,) = wire.mann_whitney
+    assert pair.a == {"x": "p", "x_a": "q"}
+    assert pair.b == {"x": "p", "x_a": "r"}
+
+
+def test_the_wire_validates_from_its_own_dump(tmp_path: Path) -> None:
+    ds, result = three_strains(tmp_path)
+    wire = wire_of(
+        summarize_run(ds, result, by=["strain"], tests=["kruskal", "mannwhitney"])
+    )
+
+    assert RunSummaryWire.model_validate(dumped(wire)) == wire
+
+
+def test_a_summary_without_keys_has_one_group_with_an_empty_key(
+    tmp_path: Path,
+) -> None:
+    ds, result = three_strains(tmp_path)
+
+    wire = wire_of(summarize_run(ds, result, tests=["mannwhitney"]))
+
+    assert [dumped(group) for group in wire.groups] == [
+        {"key": {}, "n_rows": 10, "n_entries": 4}
+    ]
+    assert wire.mann_whitney == ()
+
+
+# --- the output of preview_output -------------------------------------------
+
+_OUTPUT_DROPPED = frozenset({"title", "description", "default"})
+"""The keywords an MCP output schema leaves out."""
+
+
+def stripped_output_schema() -> dict[str, JsonValue]:
+    schema: dict[str, JsonValue] = PreviewOutput.model_json_schema(mode="serialization")
+    return strip_schema_keywords(schema, _OUTPUT_DROPPED)
+
+
+def branches_accepting(schema: Mapping[str, JsonValue], value: JsonValue) -> list[int]:
+    """The ``anyOf`` branches whose required and permitted properties *value* meets.
+
+    Both members are strict models, whose schemas list every field as required and
+    forbid others, so a result is told apart by these two keywords alone.
+    """
+    definitions = schema["$defs"]
+    branches = schema["anyOf"]
+    assert isinstance(definitions, dict) and isinstance(branches, list)
+    assert isinstance(value, dict)
+    accepted: list[int] = []
+    for position, branch in enumerate(branches):
+        assert isinstance(branch, dict)
+        reference = branch["$ref"]
+        assert isinstance(reference, str)
+        definition = definitions[reference.removeprefix("#/$defs/")]
+        assert isinstance(definition, dict)
+        required = definition["required"]
+        properties = definition["properties"]
+        assert isinstance(required, list) and isinstance(properties, dict)
+        assert definition["additionalProperties"] is False
+        if set(required) <= set(value) and set(value) <= set(properties):
+            accepted.append(position)
+    return accepted
+
+
+def an_artifact_preview() -> ArtifactPreview:
+    return ArtifactPreview(
+        ref="feature/prov-labeled/0.1-0123456789",
+        group="g",
+        sequence="a",
+        path="/dataset/features/a.parquet",
+        columns=(),
+        n_rows=0,
+        frame_min=None,
+        frame_max=None,
+        read_columns=(),
+        rows=(),
+        has_more=False,
+    )
+
+
+def test_the_output_schema_is_an_object_of_two_branches() -> None:
+    schema = PreviewOutput.model_json_schema(mode="serialization")
+
+    assert schema["type"] == "object"
+    assert [branch["$ref"].rpartition("/")[2] for branch in schema["anyOf"]] == [
+        "ArtifactPreview",
+        "RunSummaryWire",
+    ]
+
+
+def test_each_member_validates_against_its_own_branch_only(tmp_path: Path) -> None:
+    ds, result = three_strains(tmp_path)
+    schema = stripped_output_schema()
+
+    preview = dumped(an_artifact_preview())
+    summary = dumped(wire_of(summarize_run(ds, result, by=["strain"])))
+
+    assert branches_accepting(schema, preview) == [0]
+    assert branches_accepting(schema, summary) == [1]
+
+
+def test_the_output_model_validates_each_member_as_itself(tmp_path: Path) -> None:
+    ds, result = three_strains(tmp_path)
+    wire = wire_of(summarize_run(ds, result, by=["strain"]))
+    preview = an_artifact_preview()
+
+    assert PreviewOutput.model_validate(dumped(preview)).root == preview
+    assert PreviewOutput.model_validate(dumped(wire)).root == wire
+
+
 def test_the_package_exports_the_summary_lazily() -> None:
     assert pipeline_package.summarize_run is summarize_run
     assert pipeline_package.RunSummary is RunSummary
+    assert pipeline_package.RunSummaryWire is RunSummaryWire

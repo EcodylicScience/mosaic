@@ -151,6 +151,117 @@ smoothed tracks can never be mistaken for the same feature computed from raw one
 For chains of more than two steps, and for chains that also contain tracking or media
 work, use a pipeline: [Chain steps into a recipe](../pipelines/chain-steps.md).
 
+## Summaries across entries
+
+To compare groups of recordings or individuals, such as strains or sexes, reduce each
+recording or individual to one row and then summarize the rows by group. A feature run
+summarizes by its rows, so a run of one row per frame is not a candidate.
+
+**Keep the labels.** `frame-aggregate`, `sequence-aggregate` and `individual-aggregate`
+write only their reduction keys and their aggregates. `keep_columns` carries columns of
+the input to each output row, after the reduction keys, so a label such as `strain`
+reaches the rows that are compared. A kept column must take one value over the rows
+reduced together, null counting as a value. A group that disagrees, or an input
+without the column, fails the entry and the run lists it in `failed_entries`. A label
+of the tracks table, such as Tracktor's `strain`, comes through by listing `"tracks"`
+after the feature's output among the aggregate's inputs:
+
+```json
+{"id": "by_recording", "type": "feature", "feature": "sequence-aggregate",
+ "inputs": [{"step": "speed"}, "tracks"],
+ "params": {"columns": ["speed"], "aggs": ["mean"],
+            "keep_columns": ["strain", "sex"]}}
+```
+
+The tracks table comes second, so a column that both hold is read from the feature. A
+plan cautions that it cannot check a label of the tracks table, and refuses a kept
+column that no input can provide, when the tracks table is not among the inputs. The
+feature's output cannot take `"tracks"` beside it when it is pair-level, so a tracks
+label does not reach a pair feature's aggregate: key it by a dataset group or by a
+column that the pair feature's own input carries.
+
+**Summarize.** In Python:
+
+```python
+from mosaic.core.pipeline import summarize_run
+
+summary = summarize_run(
+    ds,
+    result,
+    by=["strain", "sex"],
+    columns="speed_mean",
+    tests=["kruskal"],
+    where={"sex": ["female", "male"]},
+)
+summary.groups, summary.statistics, summary.kruskal
+```
+
+On the command line, with the run's ref as `mosaic inventory` prints it:
+
+```bash
+mosaic summarize feature/<storage>/<run_id> -m dataset.yaml \
+    --by strain --by sex --column speed_mean --test kruskal \
+    --where sex=female --where sex=male
+```
+
+`by` takes `group`, `sequence`, an identity column the run writes or any other column it
+writes, such as a kept label. Several keys cross into one grouping. `where` keeps the
+rows whose key takes one of the values listed, and a key of `where` need not be in
+`by`. `--json` prints the same summary as `RunSummaryWire`, and `--allow-partial` reads
+a run that lacks entries or is not finished. Rows with a null key are counted in
+`rows_without_key`, and the entries that have no row in `entries_without_rows`.
+
+A `where` value from the command line, or a string in a `where` of the MCP tool, is read
+as text and as a number or a boolean where the key holds one. `--where n_inds=1` keeps
+the integer 1, `--where code=1` keeps the text `"1"` of a text key, and `true` and
+`false` match a boolean key. A JSON number in an MCP call, or a Python number, matches an
+integer or float key alike, and a boolean matches a boolean key. `where` in Python does
+not read a string as a number or a boolean.
+
+**The statistics.** Each group and column has `n`, `n_missing`, `mean`, `sd` (`ddof=1`),
+`sem` and `median`. A NaN or infinite cell is missing, so one infinite value does not
+turn a mean infinite. Each column is handled alone: a row missing one column still
+counts in another. `mean` and `median` are NaN when `n` is 0, and `sd` and `sem` when
+`n` is below 2.
+
+**The tests.** `kruskal` is Kruskal-Wallis across all groups of a column. `mannwhitney`
+is a two-sided Mann-Whitney test for every pair of groups, with `p_holm`, Holm's
+step-down adjustment over the pairs of that column. Columns are not adjusted against
+each other: a table of many columns holds an uncorrected family, and the correction
+across them is yours. A test row without a statistic names its `reason`:
+`too_few_groups`, `no_values` or `no_variation` (every value the test reads is equal).
+`mannwhitney` over more than 12 groups is refused before it runs, since 66 pairs per
+column leave little power. Narrow with `where`, group by fewer keys, or run `kruskal`
+alone.
+
+**The unit of analysis.** A row is one observation: a recording for `sequence-aggregate`
+and an individual for `individual-aggregate`. A run with a `frame` or a `time` column is
+refused, because frames of one recording are not independent and a test over them
+returns p values near zero. Reduce it first. Rows of one recording are not independent
+either. When a recording holds several rows (`max_rows_per_entry` above 1) and a key is
+constant within it, as a strain is, the tests count each individual of a recording as a
+replicate of its strain. `n_entries` beside `n_rows` shows how many recordings stand
+behind a group, so read it before reading a p value.
+
+**Through MCP.** `preview_output` with `mode: "summary"` takes `by`, `tests`, `where`,
+`columns`, `groups` and `allow_partial` and returns the same summary. A summary has no
+default bound: about 265 characters per group and column, so about 150 groups of one
+column fit under the 40,000 characters a result may hold. The tests add to that.
+`mann_whitney` takes about 190 characters per pair and column with one short key, and
+about 230 with three, more for longer key text. Its limit of 12 groups makes 66 pairs,
+so 12,700 to 15,000 characters per column, and three columns of 12 groups exceed a
+result. `kruskal` adds a small row per column. A larger design is refused with
+`result_too_large`, which names `where`, `columns` and `by`. The command line and
+`summarize_run` return it whole.
+
+**What this does not do.** Variance components, mixed models, heritability, interaction
+terms and other multi-factor designs are not part of mosaic. A summary crosses its keys
+into one grouping, and its tests compare those groups as the levels of one factor. For
+a factorial analysis, or a test per frame, read the rows in your own code with
+`load_run_matrix`. To read a label beside the values, call `plan_run_read(..., keys=[...])`
+and `read_run`, which `load_run_matrix` calls in turn, and the keys come back in
+`.index`.
+
 ## Filled positions
 
 `trajectory-smooth` fills every missing or speed-flagged centroid position by

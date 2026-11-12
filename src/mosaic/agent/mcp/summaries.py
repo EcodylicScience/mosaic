@@ -28,6 +28,7 @@ from mosaic.core.pipeline.graph import (
 )
 from mosaic.core.pipeline.inventory import InventoryWire
 from mosaic.core.pipeline.preview import ArtifactPreview
+from mosaic.core.pipeline.run_summary import RunSummaryWire
 
 from .outputs import PatchedRecipe, PlanPage, StepSuggestions, StepTypes
 from .spec import (
@@ -92,6 +93,8 @@ def summarize(output: BaseModel) -> str:
             return _diagnosis(output)
         case ArtifactPreview():
             return _preview(output)
+        case RunSummaryWire():
+            return _run_summary(output)
         case DatasetChange():
             return _dataset_change(output)
         case _:
@@ -445,4 +448,25 @@ def _preview(preview: ArtifactPreview) -> str:
         f"The table has {preview.n_rows} row(s) and {len(preview.columns)} "
         f"column(s){extent}. The preview returns {len(preview.rows)} row(s){more}. "
         f"{_STRUCTURED}"
+    )
+
+
+def _run_summary(summary: RunSummaryWire) -> str:
+    """Count what a run summary holds. Key values and column names are dataset text."""
+    _, _, run_id = summary.ref.rpartition("/")
+    kruskal = sum(row.reason is None for row in summary.kruskal)
+    pairs = sum(row.reason is None for row in summary.mann_whitney)
+    tests = [
+        f" {name} tested {count} {noun}(s)."
+        for name, count, noun, rows in (
+            ("Kruskal-Wallis", kruskal, "column", summary.kruskal),
+            ("Mann-Whitney", pairs, "pair", summary.mann_whitney),
+        )
+        if rows
+    ]
+    return (
+        f"Run {run_id}: {len(summary.groups)} group(s) and "
+        f"{len(summary.columns)} column(s) over {summary.n_entries} entries read, "
+        f"{len(summary.missing)} missing, {summary.rows_without_key} row(s) "
+        f"without a key.{''.join(tests)} {_STRUCTURED}"
     )

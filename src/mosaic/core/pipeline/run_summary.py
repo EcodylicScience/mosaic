@@ -8,6 +8,14 @@ statistic is taken over the finite cells of one column of one group.
 
 The reader and scipy are imported inside the functions that use them, so a module
 that names :class:`RunSummary` loads neither.
+
+:func:`run_summary_wire` turns a summary into :class:`RunSummaryWire`, the model that
+``mosaic summarize --json`` prints and the MCP server returns. Every non-finite
+float is ``null``, so the model dumps as strict JSON, and an entry is a
+``[group, sequence]`` pair. :func:`summarize_ref` reads a run by its address
+and returns that model. :class:`PreviewOutput` is the output schema of
+``preview_output``, whose result is an :class:`~.preview.ArtifactPreview` or a
+:class:`RunSummaryWire`.
 """
 
 from __future__ import annotations
@@ -22,9 +30,16 @@ from typing import TYPE_CHECKING, ClassVar, Final, Literal
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+from pydantic import ConfigDict, RootModel
+
+from mosaic.core.strict_model import StrictModel
 
 from .error_kind import ClassifiedError, ErrorKind
+from .inventory.model import FeatureRunRef
+from .inventory.wire import ref_address
+from .preview import ArtifactPreview, PreviewInvalid, preview_ref
 from .run_errors import RunError, entry_label
+from .summary_arguments import SUMMARY_TESTS, KeyValue, SummaryTest
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -36,20 +51,20 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MAX_PAIRWISE_GROUPS",
-    "KeyValue",
+    "GroupWire",
+    "KruskalWire",
+    "MannWhitneyWire",
+    "PreviewOutput",
     "RunSummary",
+    "RunSummaryWire",
+    "StatisticsWire",
     "SummaryConflict",
     "SummaryInvalid",
     "SummaryReason",
-    "SummaryTest",
+    "run_summary_wire",
+    "summarize_ref",
     "summarize_run",
 ]
-
-type KeyValue = str | int | float | bool
-"""One value of a group key."""
-
-type SummaryTest = Literal["kruskal", "mannwhitney"]
-"""A test between groups: Kruskal-Wallis over all groups, or Mann-Whitney per pair."""
 
 type SummaryReason = Literal["too_few_groups", "no_values", "no_variation"]
 """Why a test row has no statistic: fewer than two groups with values, a side of a
@@ -70,8 +85,6 @@ _RESERVED: Final = (
     "median",
 )
 """The summary's own column names, which no key may take."""
-
-_TESTS: Final[tuple[SummaryTest, ...]] = ("kruskal", "mannwhitney")
 
 MAX_PAIRWISE_GROUPS: Final = 12
 """The most groups that ``mannwhitney`` compares pairwise, 66 pairs per column."""
@@ -201,6 +214,144 @@ class RunSummary:
     statistics: pd.DataFrame
     kruskal: pd.DataFrame
     mann_whitney: pd.DataFrame
+
+
+class GroupWire(StrictModel):
+    """One group: the values of its keys and how many rows and entries it holds.
+
+    Attributes:
+        key: Each ``by`` key with the group's value of it.
+        n_rows: The rows in the group.
+        n_entries: The distinct ``(group, sequence)`` of those rows.
+    """
+
+    key: dict[str, KeyValue]
+    n_rows: int
+    n_entries: int
+
+
+class StatisticsWire(StrictModel):
+    """The statistics of one column over the finite cells of one group.
+
+    Attributes:
+        column: The value column.
+        key: The group's key.
+        n: The finite cells.
+        n_missing: The cells that are not finite.
+        mean: The mean, ``None`` without a finite cell.
+        sd: The sample standard deviation, ``None`` below two finite cells.
+        sem: The standard error of the mean, ``None`` below two finite cells.
+        median: The median, ``None`` without a finite cell.
+    """
+
+    column: str
+    key: dict[str, KeyValue]
+    n: int
+    n_missing: int
+    mean: float | None
+    sd: float | None
+    sem: float | None
+    median: float | None
+
+
+class KruskalWire(StrictModel):
+    """The Kruskal-Wallis test of one column across the groups with a finite cell.
+
+    Attributes:
+        column: The value column.
+        k: The groups entered.
+        n: Their finite cells.
+        statistic: The H statistic, ``None`` when not computed.
+        df: ``k - 1``, ``None`` below two groups.
+        p: The p value, ``None`` when not computed.
+        reason: Why there is no statistic, ``None`` on a tested row.
+    """
+
+    column: str
+    k: int
+    n: int
+    statistic: float | None
+    df: int | None
+    p: float | None
+    reason: SummaryReason | None
+
+
+class MannWhitneyWire(StrictModel):
+    """The two-sided Mann-Whitney test of one column between two groups.
+
+    Attributes:
+        column: The value column.
+        a: The key of the first group.
+        b: The key of the second group.
+        n_a: The first group's finite cells.
+        n_b: The second group's finite cells.
+        statistic: U of the first group, ``None`` when not computed.
+        p: The p value, ``None`` when not computed.
+        p_holm: ``p`` adjusted by Holm's step-down over the column's pairs.
+        comparisons: The pairs of the column that have a ``p``.
+        reason: Why there is no statistic, ``None`` on a tested row.
+    """
+
+    column: str
+    a: dict[str, KeyValue]
+    b: dict[str, KeyValue]
+    n_a: int
+    n_b: int
+    statistic: float | None
+    p: float | None
+    p_holm: float | None
+    comparisons: int
+    reason: SummaryReason | None
+
+
+class RunSummaryWire(StrictModel):
+    """A :class:`RunSummary` as it is printed and returned: JSON with no NaN.
+
+    Attributes:
+        ref: The run's address, as ``mosaic inventory`` prints it.
+        by: The group keys, in order.
+        columns: The value columns summarized, in order.
+        n_entries: The entries read.
+        missing: The entries in the scope that the run has no readable output for.
+        finished: Whether the run is marked finished.
+        entries_without_rows: The entries read whose output holds no row.
+        rows_without_key: The rows left out because a key is null.
+        max_rows_per_entry: The most rows that one entry contributes.
+        groups: One item per group, sorted by the keys.
+        statistics: One item per group and column.
+        kruskal: One item per column, empty when the test was not asked.
+        mann_whitney: One item per column and pair of groups, empty when the test
+            was not asked.
+    """
+
+    ref: str
+    by: tuple[str, ...]
+    columns: tuple[str, ...]
+    n_entries: int
+    missing: tuple[tuple[str, str], ...]
+    finished: bool
+    entries_without_rows: tuple[tuple[str, str], ...]
+    rows_without_key: int
+    max_rows_per_entry: int
+    groups: tuple[GroupWire, ...]
+    statistics: tuple[StatisticsWire, ...]
+    kruskal: tuple[KruskalWire, ...]
+    mann_whitney: tuple[MannWhitneyWire, ...]
+
+
+class PreviewOutput(RootModel[ArtifactPreview | RunSummaryWire]):
+    """The result of ``preview_output``: one entry's preview, or a run's summary.
+
+    The members are told apart by their required fields, ``path`` in
+    :class:`~.preview.ArtifactPreview` and ``by`` in :class:`RunSummaryWire`, and
+    both forbid other properties, so a result validates against one branch. The
+    schema is an ``anyOf`` of the two under ``"type": "object"``, which a tool's
+    output schema must state at its top level.
+    """
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        json_schema_extra={"type": "object"}
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +518,195 @@ def summarize_run(
     )
 
 
+def run_summary_wire(summary: RunSummary, ref: str) -> RunSummaryWire:
+    """Return *summary* as the wire model, every non-finite float ``None``.
+
+    Args:
+        summary: The summary to convert.
+        ref: The run's address, as ``mosaic inventory`` prints it.
+    """
+    by = summary.by
+    group_columns = _cells(summary.groups, (*by, "n_rows", "n_entries"))
+    statistic_columns = _cells(
+        summary.statistics,
+        (*by, "column", "n", "n_missing", "mean", "sd", "sem", "median"),
+    )
+    kruskal_columns = _cells(summary.kruskal, tuple(_KRUSKAL_COLUMNS))
+    pair_columns = _cells(
+        summary.mann_whitney,
+        (
+            "column",
+            *(f"{name}_{side}" for name in by for side in "ab"),
+            *_MANN_WHITNEY_COLUMNS,
+        ),
+    )
+    return RunSummaryWire(
+        ref=ref,
+        by=by,
+        columns=summary.columns,
+        n_entries=len(summary.entries),
+        missing=summary.missing,
+        finished=summary.finished,
+        entries_without_rows=summary.entries_without_rows,
+        rows_without_key=summary.rows_without_key,
+        max_rows_per_entry=summary.max_rows_per_entry,
+        groups=tuple(
+            GroupWire(
+                key=_key_of(by, group_columns, row),
+                n_rows=_whole(group_columns["n_rows"][row]),
+                n_entries=_whole(group_columns["n_entries"][row]),
+            )
+            for row in range(len(summary.groups))
+        ),
+        statistics=tuple(
+            StatisticsWire(
+                column=str(statistic_columns["column"][row]),
+                key=_key_of(by, statistic_columns, row),
+                n=_whole(statistic_columns["n"][row]),
+                n_missing=_whole(statistic_columns["n_missing"][row]),
+                mean=_finite_or_none(statistic_columns["mean"][row]),
+                sd=_finite_or_none(statistic_columns["sd"][row]),
+                sem=_finite_or_none(statistic_columns["sem"][row]),
+                median=_finite_or_none(statistic_columns["median"][row]),
+            )
+            for row in range(len(summary.statistics))
+        ),
+        kruskal=tuple(
+            KruskalWire(
+                column=str(kruskal_columns["column"][row]),
+                k=_whole(kruskal_columns["k"][row]),
+                n=_whole(kruskal_columns["n"][row]),
+                statistic=_finite_or_none(kruskal_columns["statistic"][row]),
+                df=_degrees_of_freedom(kruskal_columns["df"][row]),
+                p=_finite_or_none(kruskal_columns["p"][row]),
+                reason=_reason(kruskal_columns["reason"][row]),
+            )
+            for row in range(len(summary.kruskal))
+        ),
+        mann_whitney=tuple(
+            MannWhitneyWire(
+                column=str(pair_columns["column"][row]),
+                a=_key_of(by, pair_columns, row, "_a"),
+                b=_key_of(by, pair_columns, row, "_b"),
+                n_a=_whole(pair_columns["n_a"][row]),
+                n_b=_whole(pair_columns["n_b"][row]),
+                statistic=_finite_or_none(pair_columns["statistic"][row]),
+                p=_finite_or_none(pair_columns["p"][row]),
+                p_holm=_finite_or_none(pair_columns["p_holm"][row]),
+                comparisons=_whole(pair_columns["comparisons"][row]),
+                reason=_reason(pair_columns["reason"][row]),
+            )
+            for row in range(len(summary.mann_whitney))
+        ),
+    )
+
+
+def summarize_ref(
+    ds: Dataset,
+    ref: str,
+    *,
+    by: Sequence[str] = (),
+    columns: str | Sequence[str] | None = None,
+    tests: Sequence[SummaryTest] = (),
+    where: Mapping[str, Sequence[KeyValue]] | None = None,
+    scope: Scope | None = None,
+    allow_partial: bool = False,
+) -> RunSummaryWire:
+    """Summarize the feature run that the address *ref* names, as the wire model.
+
+    ``mosaic summarize`` and the ``summary`` mode of the MCP tool ``preview_output``
+    both answer through it. The other arguments are those of :func:`summarize_run`.
+
+    Args:
+        ds: The dataset holding the run.
+        ref: ``feature/<storage>/<run_id>``, as ``mosaic inventory`` prints it.
+        by: The group keys.
+        columns: The value columns.
+        tests: The tests between groups.
+        where: The values a row's key must take to be kept, by key.
+        scope: The entries to read.
+        allow_partial: Read what the run holds where it is partial.
+
+    Raises:
+        PreviewInvalid: *ref* is malformed, or names a tracks or labels variant.
+    """
+    from .types import Result
+
+    run = preview_ref(ref)
+    if not isinstance(run, FeatureRunRef):
+        msg = (
+            f"{ref!r} names a {run.kind}, and a summary reads the rows of a "
+            f"feature run. Give 'feature/<storage>/<run_id>'."
+        )
+        raise PreviewInvalid(msg, field="ref")
+    summary = summarize_run(
+        ds,
+        Result[str](feature=run.name, run_id=run.run_id),
+        by=by,
+        columns=columns,
+        tests=tests,
+        where=where,
+        scope=scope,
+        allow_partial=allow_partial,
+    )
+    return run_summary_wire(summary, ref_address(run))
+
+
+def _cells(frame: pd.DataFrame, names: Sequence[str]) -> dict[str, list[object]]:
+    """Each of the columns *names* of *frame* as a list of Python values."""
+    return {name: list(frame[name].tolist()) for name in names}
+
+
+def _key_of(
+    by: tuple[str, ...], columns: Mapping[str, list[object]], row: int, suffix: str = ""
+) -> dict[str, KeyValue]:
+    """The key of one row, from the columns ``<key><suffix>`` of each key in *by*."""
+    return {name: _key_value(columns[f"{name}{suffix}"][row]) for name in by}
+
+
+def _key_value(cell: object) -> KeyValue:
+    """A key cell of a summary frame, which is text, a boolean or a number."""
+    if isinstance(cell, str | int | float):
+        return cell
+    msg = f"a group key holds {type(cell).__name__}, which is not a key value"
+    raise TypeError(msg)
+
+
+def _whole(cell: object) -> int:
+    """A count cell of a summary frame."""
+    if isinstance(cell, int):
+        return cell
+    msg = f"a count holds {type(cell).__name__}, not an integer"
+    raise TypeError(msg)
+
+
+def _finite_or_none(cell: object) -> float | None:
+    """A statistic cell, ``None`` where it is NaN or infinite."""
+    if isinstance(cell, int | float) and math.isfinite(cell):
+        return float(cell)
+    return None
+
+
+def _degrees_of_freedom(cell: object) -> int | None:
+    """The degrees of freedom of a Kruskal-Wallis row, ``None`` where it is NaN."""
+    value = _finite_or_none(cell)
+    return None if value is None else int(value)
+
+
+def _reason(cell: object) -> SummaryReason | None:
+    """The reason of a test row, ``None`` where the row was tested."""
+    if cell is None:
+        return None
+    if cell == "too_few_groups":
+        return "too_few_groups"
+    if cell == "no_values":
+        return "no_values"
+    if cell == "no_variation":
+        return "no_variation"
+    msg = f"a test row holds the reason {cell!r}"
+    raise ValueError(msg)
+
+
 def _refuse_arguments(
     run: Result[str],
     by: tuple[str, ...],
@@ -396,7 +736,7 @@ def _refuse_arguments(
     )
     reserved = [name for name in by if name in _RESERVED]
     empty = [name for name, values in where.items() if not values]
-    unknown = [test for test in tests if test not in _TESTS]
+    unknown = [test for test in tests if test not in SUMMARY_TESTS]
     if valued:
         named_twice = " and ".join(
             f"{argument}={shown!r} names {names!r}"
@@ -420,7 +760,7 @@ def _refuse_arguments(
     elif unknown:
         msg = (
             f"tests={list(tests)!r} names {unknown!r}. The tests are "
-            f"{', '.join(_TESTS)}."
+            f"{', '.join(SUMMARY_TESTS)}."
         )
     else:
         return

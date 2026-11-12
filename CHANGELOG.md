@@ -85,6 +85,42 @@ values, and `no_variation` when every value the test reads is equal, in which ca
 is not called. `mannwhitney` over more than `MAX_PAIRWISE_GROUPS` (12) groups is
 refused as `SummaryInvalid` before any test runs.
 
+`mosaic summarize REF` prints `summarize_run` for a feature run: the groups, the statistics
+of each column and each test asked for. It takes `--by`, `--column`, `--test` (`kruskal`
+or `mannwhitney`), `--where KEY=VALUE`, `--entry`, `--group`, `--allow-partial` and
+`--manifest`, and opens the dataset read-only. Values of one `--where` key are
+alternatives, and a value matches a key of any type that it reads as: `--where n_inds=1`
+keeps the integer 1, and `--where code=1` keeps the text `"1"`. A tracks or labels variant
+ref is refused as `invalid` naming `ref`. Notes on stderr give the rows without a key, the
+entries without rows, the entries missing and an unfinished run. `--json` prints
+`RunSummaryWire`, exported from `mosaic.core.pipeline`: `ref`, `by`, `columns`,
+`n_entries`, `missing`, `finished`, `entries_without_rows`, `rows_without_key`,
+`max_rows_per_entry`, and the `groups`, `statistics`, `kruskal` and `mann_whitney` items,
+each key as an object (`key`, or `a` and `b` for a pair). An entry is a
+`[group, sequence]` pair and every non-finite float is `null`.
+`run_summary_wire(summary, ref)` builds it, and `PreviewOutput` in
+`mosaic.core.pipeline.run_summary` is a root model over `ArtifactPreview` and
+`RunSummaryWire` whose schema is their `anyOf` under `"type": "object"`.
+
+The MCP tool `preview_output` takes `mode`: `entry`, the default, previews one entry as
+before, and `summary` returns the `RunSummaryWire` of a feature run, as
+`mosaic summarize --json` prints it, so the server stays at 16 tools. `summary` mode
+takes `by`, `tests`, `where` (values by key, read as `mosaic summarize --where` reads
+them: a string such as `"1"` also matches an integer key, and a JSON number or boolean
+stays as it is), `groups` (the dataset groups to read) and `allow_partial`, reads
+`columns` as `summarize_run` does, and ignores `max_columns`, `listed` and `limit`.
+`group` and `sequence` are now optional: `entry` mode requires both and refuses the
+summary arguments, and `summary` mode refuses both. A tracks or labels variant ref is
+refused as `invalid` naming `ref`. The tool's output schema is `PreviewOutput`, the
+`anyOf` of `ArtifactPreview` and `RunSummaryWire`, and an entry-mode result is
+unchanged. A summary above the result budget is refused naming `where`, `columns` and
+`by`, and points at the CLI and Python, which return it whole.
+`ToolBackend.preview_output` returns `ArtifactPreview | RunSummaryWire`, and an
+`ApiBackend` answers `summary` mode or refuses it with a classified error rather than
+raising. `KeyValue` and `SummaryTest` are in `mosaic.core.pipeline.summary_arguments`,
+and `summarize_ref(ds, ref, ...)` in `mosaic.core.pipeline.run_summary` reads a run by
+its address and returns the wire model.
+
 ## Unreleased: `event-response` measures a value around each event
 
 `event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It

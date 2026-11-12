@@ -166,7 +166,7 @@ by that first `create`.
 | `get_request_status`, `list_activity` | How far a request got, and the dataset's requests and attempts, or only those that changed `since` an earlier read. Each step's workers and peak memory. `get_request_status` can wait for a step to end |
 | `cancel_request` | Stops a request's running step and records the rest cancelled |
 | `diagnose_failures` | Why a request or attempt failed, with the entries it lost |
-| `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class |
+| `preview_output` | One entry's table of a feature run, tracks variant or labels variant: its first rows, column statistics and file path, and a labels variant's events per class. With `mode: "summary"`, a feature run's rows counted and described by group across entries (`by`, `where`, `tests`), as `mosaic summarize --json` prints them. A `where` string also matches an integer, float or boolean key where its text reads as one, as `--where` does |
 
 Only `submit_pipeline`, `cancel_request` and `manage_dataset` change a dataset.
 `patch_recipe` saves a recipe file under `.mosaic/pipelines/` and runs nothing. A submission
@@ -281,15 +281,16 @@ needs to choose its next call, and the server refuses a result above a budget.
 | Any read tool | 40,000 characters |
 | `describe_step_types` search | Each step type by category, name to summary. A page of the whole catalog stays under 5,000 characters by shortening every summary |
 | `describe_step_types` with `names` | Up to 8 step types, each a params table of at most about 16,000 characters |
-| `preview_output` | 5 rows and 40 columns by default (`limit`, `max_columns`), the identity and bookkeeping columns first |
+| `preview_output` | 5 rows and 40 columns by default (`limit`, `max_columns`), the identity and bookkeeping columns first. A summary has no default bound: about 265 characters per group and column, so about 150 groups of one column fit, and `mann_whitney` adds about 190 characters per pair and column with one short key, and about 230 with three, more for longer key text (66 pairs at its limit of 12 groups, so 12,700 to 15,000 per column) and `kruskal` a small row per column. `mosaic summarize` and `summarize_run` return a larger one whole |
 | `get_inventory` listing | No params, and 5 missing entries per artifact. A `ref` returns one artifact with its params |
 | `plan_recipe` | 3 missing entries per step. About 900 characters per step, so a plan of about 40 steps or more needs `limit` (and `cursor`) to be read a page of steps at a time |
 
 A read whose result would be larger fails with reason `result_too_large`. Its detail
 names the arguments that narrow the call (`narrow_with`), such as `columns` or
-`max_columns` for a preview and `limit` for a plan. Every page of a plan carries the
-whole plan's fingerprint, and its cautions are on the first page. `submit_pipeline` and `cancel_request` are never refused
-for their size, because their work is done by the time they return.
+`max_columns` for a preview, `where`, `columns` or `by` for a summary, and `limit` for a
+plan. Every page of a plan carries the whole plan's fingerprint, and its cautions are on
+the first page. `submit_pipeline` and `cancel_request` are never refused for their size,
+because their work is done by the time they return.
 
 A preview's `columns` takes names or `fnmatch` patterns (`W_*_f0`), and the columns
 left unread are named in `columns_omitted`. `describe_step_types` returns the params
@@ -680,10 +681,11 @@ Every tool result, and every resource the client reads, goes to your client's mo
 With a hosted model, that is the model's provider. The resources include the manifest
 with its notes and tags, run-logs, recorded params and request files. `preview_output`
 returns up to 50 rows of a table and statistics of its columns, and of a labels
-variant its events and class names, `describe_dataset`
-returns the manifest's notes and tags, and the other tools return entry names, params,
-paths and error messages. Serve only datasets whose values may leave your machine, or
-use a client with a local model.
+variant its events and class names. In summary mode it sends each group's key values,
+such as the strain names in a label column, and the names of the entries that are
+missing or have no rows. `describe_dataset` returns the manifest's notes and tags, and
+the other tools return entry names, params, paths and error messages. Serve only
+datasets whose values may leave your machine, or use a client with a local model.
 
 ### Serving another machine over HTTP
 

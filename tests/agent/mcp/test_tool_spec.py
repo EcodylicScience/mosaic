@@ -24,6 +24,7 @@ from mosaic.agent.mcp.spec import (
     ScopeSelector,
     ListDatasetsInput,
     PlanRecipeInput,
+    PreviewOutputInput,
     SubmitPipelineInput,
     SubmittedDuplicate,
     SubmittedPipeline,
@@ -68,6 +69,27 @@ def test_importing_the_contract_loads_neither_an_sdk_nor_the_analysis_stack() ->
     )
 
     assert modules_loaded_by(statement, BUDGET_MODULES) == []
+
+
+def test_resolving_the_preview_output_loads_neither_the_reader_nor_scipy() -> None:
+    statement = (
+        "from mosaic.agent.mcp.spec import ModelRef\n"
+        "_ = ModelRef('mosaic.core.pipeline.run_summary', 'PreviewOutput').resolve()"
+    )
+
+    assert (
+        modules_loaded_by(
+            statement,
+            (
+                "scipy",
+                "mosaic.core.pipeline.run_matrix",
+                "mosaic.behavior",
+                "mosaic.tracking",
+                "mcp",
+            ),
+        )
+        == []
+    )
 
 
 def test_building_a_local_backend_loads_neither_an_sdk_nor_the_analysis_stack() -> None:
@@ -437,6 +459,91 @@ def test_a_refusal_never_names_a_flag_the_call_already_set() -> None:
     assert after_whole.detail is not None
     assert after_whole.detail["narrow_with"] == ["brief"]
     assert "narrowed by brief" in after_whole.message
+
+
+@pytest.mark.parametrize(
+    ("arguments", "narrowing"),
+    [
+        pytest.param(
+            {"group": "", "sequence": "s"},
+            ["columns", "max_columns", "limit"],
+            id="entry",
+        ),
+        pytest.param({"mode": "summary"}, ["where", "columns", "by"], id="summary"),
+    ],
+)
+def test_a_large_preview_names_the_arguments_that_narrow_its_mode(
+    arguments: dict[str, object], narrowing: list[str]
+) -> None:
+    spec = tool_spec("preview_output")
+    assert spec is not None
+    request = PreviewOutputInput.model_validate(
+        {"dataset": "d", "ref": "feature/f/0.1-0000000000", **arguments}
+    )
+
+    refused = result_too_large(spec, request, MAX_RESULT_CHARS + 1)
+
+    assert refused.detail is not None
+    assert refused.detail["narrow_with"] == narrowing
+    assert f"narrowed by {', '.join(narrowing)}." in refused.message
+    assert ("Python" in refused.message) is (request.mode == "summary")
+
+
+def test_only_a_summary_advises_the_cli_for_a_whole_result() -> None:
+    entry = PreviewOutputInput(dataset="d", ref="r", group="", sequence="s")
+    summary = PreviewOutputInput(dataset="d", ref="r", mode="summary")
+
+    assert ListDatasetsInput().whole_result_advice() == ""
+    assert entry.whole_result_advice() == ""
+    assert "mosaic summarize" in summary.whole_result_advice()
+
+
+def test_the_preview_declares_the_narrowing_of_both_modes() -> None:
+    spec = tool_spec("preview_output")
+
+    assert spec is not None
+    assert set(spec.narrowing) == {"columns", "max_columns", "limit", "where", "by"}
+
+
+SUMMARY_ONLY: dict[str, object] = {
+    "by": ["strain"],
+    "tests": ["kruskal"],
+    "where": {"strain": ["A"]},
+    "groups": ["g"],
+    "allow_partial": True,
+}
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        *(
+            pytest.param({"group": "", "sequence": "s", name: value}, id=name)
+            for name, value in SUMMARY_ONLY.items()
+        ),
+        pytest.param({"sequence": "s"}, id="entry without group"),
+        pytest.param({"group": ""}, id="entry without sequence"),
+        pytest.param({"mode": "summary", "group": ""}, id="summary with group"),
+        pytest.param({"mode": "summary", "sequence": "s"}, id="summary with sequence"),
+    ],
+)
+def test_a_preview_refuses_the_arguments_of_the_other_mode(
+    arguments: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _ = PreviewOutputInput.model_validate(
+            {"dataset": "d", "ref": "feature/f/0.1-0000000000", **arguments}
+        )
+
+
+def test_a_summary_takes_its_arguments() -> None:
+    request = PreviewOutputInput.model_validate(
+        {"dataset": "d", "ref": "feature/f/0.1-0000000000", "mode": "summary"}
+        | SUMMARY_ONLY
+    )
+
+    assert (request.group, request.sequence) == (None, None)
+    assert request.where == {"strain": ["A"]}
 
 
 def test_a_write_tool_result_is_never_replaced_by_the_backstop() -> None:

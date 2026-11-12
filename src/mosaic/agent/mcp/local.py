@@ -112,6 +112,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.inventory import InventoryCache, InventoryWire
     from mosaic.core.pipeline.parallelism import ParallelSettings
     from mosaic.core.pipeline.preview import ArtifactPreview
+    from mosaic.core.pipeline.run_summary import RunSummaryWire
     from mosaic.core.scope import Scope
     from mosaic.runlog import AttemptOutcome, RunLogSnapshot
 
@@ -331,7 +332,10 @@ class LocalBackend:
         return self._catalog_index()
 
     def wait_until_warm(self, timeout: float | None = None) -> None:
-        """Block until the warming thread, if any, has finished."""
+        """Block until the warming thread, if any, has finished.
+
+        A summary-mode ``preview_output`` waits here before it imports scipy.
+        """
         if self._warmer is not None:
             self._warmer.join(timeout)
 
@@ -405,7 +409,9 @@ class LocalBackend:
         """Answer ``diagnose_failures``."""
         return answer(lambda: self._diagnose_failures(args))
 
-    def preview_output(self, args: PreviewOutputInput) -> ToolResult[ArtifactPreview]:
+    def preview_output(
+        self, args: PreviewOutputInput
+    ) -> ToolResult[ArtifactPreview | RunSummaryWire]:
         """Answer ``preview_output``."""
         return answer(lambda: self._preview_output(args))
 
@@ -1272,10 +1278,18 @@ class LocalBackend:
             request_id=status.request_id, verdict=status.verdict, attempts=attempts
         )
 
-    def _preview_output(self, args: PreviewOutputInput) -> ArtifactPreview:
+    def _preview_output(
+        self, args: PreviewOutputInput
+    ) -> ArtifactPreview | RunSummaryWire:
         from mosaic.core.pipeline.preview import preview_artifact, preview_ref
 
         held = self._dataset(args.dataset)
+        if args.mode == "summary":
+            # Importing scipy beside the warming thread can raise _DeadlockError.
+            self.wait_until_warm()
+            return _summary(held.dataset, args)
+        # The input model requires both in entry mode.
+        assert args.group is not None and args.sequence is not None
         return preview_artifact(
             held.dataset,
             preview_ref(args.ref),
@@ -1485,6 +1499,24 @@ class LocalBackend:
                     )
                 )
         return findings
+
+
+def _summary(dataset: Dataset, args: PreviewOutputInput) -> RunSummaryWire:
+    """Summarize the feature run *args* names, over the groups it lists."""
+    from mosaic.core.pipeline.run_summary import summarize_ref
+    from mosaic.core.pipeline.summary_arguments import read_where
+    from mosaic.core.scope import Scope
+
+    return summarize_ref(
+        dataset,
+        args.ref,
+        by=args.by,
+        columns=args.columns,
+        tests=args.tests,
+        where=None if args.where is None else read_where(args.where),
+        scope=None if args.groups is None else Scope(groups=args.groups),
+        allow_partial=args.allow_partial,
+    )
 
 
 def answer[T: BaseModel](compute: Callable[[], T]) -> T | ErrorEnvelope:

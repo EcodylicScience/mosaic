@@ -27,6 +27,7 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 * `describe`: Describe a dataset: its manifest, counts,...
 * `sequences`: List the entries (group:sequence) of the...
 * `preview`: Preview one entry's table: schema, row...
+* `summarize`: Summarize one feature run: rows,...
 * `init`: Create a dataset: write dataset.yaml and...
 * `scan`: Rescan every declared source and rewrite...
 * `reindex`: Drop index rows whose files no longer...
@@ -289,6 +290,33 @@ $ mosaic preview [OPTIONS] {ref}
 * `--max-columns <int range>`: Read at most this many columns, the identity and bookkeeping columns first, and name the rest as omitted.  [x>=1]
 * `--listed <all|read>`: List every column of the table, or only the columns read.  [default: all]
 * `--limit <int>`: How many rows to print, at most 50 (default 20).
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
+## `mosaic summarize`
+
+Summarize one feature run: rows, statistics and tests by group.
+
+**Usage**:
+
+```console
+$ mosaic summarize [OPTIONS] {ref}
+```
+
+**Arguments**:
+
+* `ref`: The feature run's ref, as 'mosaic inventory' prints it: feature/<storage>/<run_id>.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--by <str>`: A group key (repeatable): 'group', 'sequence' or a column the run writes, such as a label kept with keep_columns. Default: one group of every row.
+* `--column <str>`: A value column or pattern (repeatable). A name with *, ? or [ is a pattern, such as 'speed_*'. Default: every numeric column.
+* `--test <str>`: A test between groups (repeatable): kruskal over all groups, or mannwhitney for every pair, adjusted by Holm within a column.
+* `--where <str>`: Keep the rows whose KEY is VALUE (repeatable). Values of one key are alternatives. A value is read as text, and as a number or a boolean where the key holds one: --where n_inds=1.
+* `--entry <str>`: Narrow to a group:sequence entry (repeatable). Default: the whole dataset.
+* `--group <str>`: Narrow to every entry of a group (repeatable). Not with --entry.
+* `--allow-partial`: Read a run that lacks entries of the scope or is not finished.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

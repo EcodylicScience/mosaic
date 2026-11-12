@@ -33,10 +33,19 @@ the MCP server behind `mosaic agent serve`. The user documentation is
 - A failure returns the error envelope (`core/pipeline/error_envelope.py`). Dataset
   content (notes, tags, names, error text) is returned in typed fields only.
 - `call_tool` refuses a read tool's result above `MAX_RESULT_CHARS` with
-  `result_too_large`, naming the `ToolSpec.narrowing` arguments, less a flag the call
-  already set true. A write tool's result is returned whatever its size. A new
-  argument that shrinks a result joins its tool's `narrowing`, and a new `limit` must
+  `result_too_large`, naming `request.narrowing(spec.narrowing)`, less a flag the call
+  already set true. `ToolInput.narrowing` returns the static list unless an input
+  overrides it: `preview_output` names `columns`, `max_columns` and `limit` in `entry`
+  mode and `where`, `columns` and `by` in `summary` mode.
+  `ToolInput.whole_result_advice` adds the route that returns a result whole, which
+  `PreviewOutputInput` overrides in `summary` mode to name the CLI and Python. A write
+  tool's result is returned whatever its size. A new argument that shrinks a result
+  joins its tool's `narrowing`, and a new `limit` must
   (`test_every_tool_with_a_limit_names_it_among_its_narrowing`).
+- A tool has one output model, except `preview_output`, whose `PreviewOutput`
+  (`core/pipeline/run_summary.py`) is the `anyOf` of `ArtifactPreview` and
+  `RunSummaryWire` under `"type": "object"`. The backend returns the member, and the
+  required fields tell them apart.
 - `ToolSpec.always_load` becomes the tool's `anthropic/alwaysLoad` meta in
   `_binding.py`. A success returns the summary, the output as JSON text, and the
   structured content.

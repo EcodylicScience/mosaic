@@ -45,6 +45,7 @@ from mosaic.cli.run import run_command
 from mosaic.cli.runs import runs_app
 from mosaic.cli.sequences import sequences_command
 from mosaic.cli.status import status_command
+from mosaic.cli.summarize import summarize_command
 from mosaic.cli.tracking import tracking_app
 from mosaic.cli.track import track_command
 from mosaic.cli.wait import wait_command
@@ -73,6 +74,7 @@ app.add_typer(media_app, name="media")
 _ = app.command(name="describe")(describe_command)
 _ = app.command(name="sequences")(sequences_command)
 _ = app.command(name="preview")(preview_command)
+_ = app.command(name="summarize")(summarize_command)
 app.add_typer(inventory_app, name="inventory")
 app.add_typer(models_app, name="models")
 _ = pipeline_app.command(name="score")(score_command)
