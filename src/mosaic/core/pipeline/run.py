@@ -5,7 +5,7 @@ import json
 import sys
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar, Final, TYPE_CHECKING
+from typing import ClassVar, Final, TYPE_CHECKING, get_args
 
 import numpy as np
 import pandas as pd
@@ -52,6 +52,7 @@ from .index import (
     recorded_consumption,
     recorded_tracks_reads,
 )
+from .arena_index import entry_compositions
 from .index_lock import index_lock
 from .inventory.params import RunParams, TracksVariantWalk, read_run_params
 from .loading import (
@@ -80,7 +81,7 @@ from .op_identity import parse_op_run_id
 from .fit_scope import derive_fit_scope, write_fit_scope
 from .labels_index import read_labels_index, select_label_variant_rows
 from .resolve import resolution_payload, resolve_references
-from .sequence_index import encode_entry_composition, read_entry_compositions
+from .sequence_index import SourceRoot, encode_entry_composition
 from .track_space import feature_track_spaces, refuse_unsupported_track_space
 from .tracks_index import tracklets_by_entry, tracks_compositions
 from .types.data_config import COLUMNS, META_COLS
@@ -1094,6 +1095,11 @@ def resolve_feature_identity(
         resolved = ResolvedScope(selector=scope)
     else:
         reads_tracks = any(item == "tracks" for item in feature.inputs.root)
+        # Hashed only for a scope-dependent feature (`_scope_term`), so another
+        # feature's identity reads no arenas index.
+        compositions = entry_compositions(
+            ds, wanted, feature.consumed_roots if feature.scope_dependent else ()
+        )
         resolved = ResolvedScope(
             entries=wanted,
             selector=scope,
@@ -1107,9 +1113,9 @@ def resolve_feature_identity(
                 if reads_tracks
                 else ()
             ),
-            # From the source roots, which exist before any of this runs, so the
-            # term is exact rather than predicted.
-            compositions=read_entry_compositions(ds, wanted),
+            # From the source roots and the arena layouts, which exist before any
+            # of this runs, so the term is exact rather than predicted.
+            compositions=compositions,
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
     run_id, _ = compute_run_id(
@@ -1569,6 +1575,7 @@ def _run_feature_impl(
             selector,
             tracks_run_id=tracks_run_id,
             stack=stacks_inputs(feature),
+            consumed_roots=feature.consumed_roots,
         )
 
     # Built once: the property rebuilds the map on each access, and the run asks
@@ -1881,6 +1888,11 @@ def _run_feature_impl(
     # was served in silence.
     roots_blind: set[tuple[str, str]] = set()
     tracks_blind: set[tuple[str, str]] = set()
+    # Only a source root can be blind. An entry without an arena layout is a
+    # known state, and one that gains a layout recomputes once.
+    blind_capable = sorted(
+        {root for root in feature.consumed_roots if root in get_args(SourceRoot)}
+    )
     # An arena-blind feature is refused on an entry spanning arenas, so the
     # layouts are read once when the feature is one. Declaring a layout changes
     # no tracks composition, and only an entry's input shows whether it spans
@@ -1964,7 +1976,7 @@ def _run_feature_impl(
                     file=sys.stderr,
                 )
                 continue
-            if feature.consumed_roots and disposition == "undetectable":
+            if blind_capable and disposition == "undetectable":
                 roots_blind.add(entry)
             if tracks_disposition == "undetectable" and (
                 resolved.tracks_variants or upstreams_over_variants
@@ -1996,9 +2008,8 @@ def _run_feature_impl(
     # No guard beyond emptiness: each set is populated only where its channel
     # exists, so a non-empty one is already the whole condition.
     if roots_blind:
-        declared = sorted({root for root in feature.consumed_roots if root})
         print(
-            _blind_roots_warning(feature.name, declared, len(roots_blind)),
+            _blind_roots_warning(feature.name, blind_capable, len(roots_blind)),
             file=sys.stderr,
         )
     # A run with feature inputs names the upstream runs, whose tracks tables are

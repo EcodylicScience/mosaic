@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, overload
@@ -23,9 +23,9 @@ from ...core.recording import (
 from ...core.schema import LEGACY_SCHEMA, TrackSpace, schema_family, schema_spaces
 from ...core.scope import Scope
 from ...core.entry import Entry
+from .arena_index import entry_compositions
 from .composition import input_root_part, join_input_cells
 from .dataset_indexes import feature_storages
-from .sequence_index import read_entry_compositions
 from .storage_names import feature_slug_of
 from ._utils import ResolvedScope
 from .index import (
@@ -253,6 +253,7 @@ def build_manifest(
     tracks_run_id: str | None = None,
     on_missing_run: MissingRunPolicy = "raise",
     stack: bool = False,
+    consumed_roots: Collection[str] = (),
 ) -> tuple[Manifest, ResolvedScope]:
     """Build unified manifest for all input types.
 
@@ -298,6 +299,10 @@ def build_manifest(
     :class:`UnrunFeatureInput`. Under ``"empty"`` it resolves to no entries.
 
     Both are keyword-only, so a positional argument cannot land in the wrong one.
+
+    *consumed_roots* are the roots the feature declares. When they hold
+    ``arenas``, each entry's layout digest (:func:`arenas_compositions`) joins
+    ``ResolvedScope.compositions``, which otherwise holds the source roots only.
     """
     selector = scope if scope is not None else Scope()
     per_input_entries: list[set[tuple[str, str]]] = []
@@ -366,6 +371,7 @@ def build_manifest(
         for entry, schema in tracks_schemas.items()
         if entry in shared_entries
     }
+    compositions = entry_compositions(ds, shared_entries, consumed_roots)
     resolved = ResolvedScope(
         entries=shared_entries,
         # What was asked for, beside what it resolved to. An empty resolution
@@ -373,7 +379,7 @@ def build_manifest(
         # states, and the entry set alone does not distinguish them.
         selector=selector,
         tracks_variants=variants,
-        compositions=read_entry_compositions(ds, shared_entries),
+        compositions=compositions,
         tracks_schemas=shared_schemas,
         track_spaces=frozenset(result_spaces) | schema_spaces(shared_schemas.values()),
         input_tracks_compositions=(

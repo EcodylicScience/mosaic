@@ -38,6 +38,16 @@ now fails only the entries that read it, and a bad file outside the scope no lon
 refuses the op. An unreadable index or a key declared twice still refuses it.
 `Dataset.arena_layout` no longer takes `declared`.
 
+A feature can declare `arenas` in `consumed_roots`. Its index rows then record each
+entry's layout digest as the `arenas` composition, so a changed layout recomputes its
+recording's entries under the same run id, and an entry that gains a layout recomputes
+once. A scope-dependent feature also hashes the digests into its run id. The inventory
+(`drifted_entries`) and provenance (`reached_by(..., "arenas")`) compare the recorded
+digest with the current one. An entry without a layout, or whose cameras find
+different layouts, has no `arenas` composition. While the arenas index cannot be read,
+no entry has one, so every run that recorded one reads as drifted, and one note on
+stderr names the index. A feature that does not declare `arenas` reads neither index.
+
 ## Unreleased: run summaries across entries
 
 `load_run_matrix` raises classified errors, so `error_envelope` renders each refusal

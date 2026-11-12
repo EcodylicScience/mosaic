@@ -219,7 +219,7 @@ def _feature_rows(
             if root not in declared:
                 continue
             current = encode_entry_composition(
-                _current_compositions(ds, entry), declared
+                _current_compositions(ds, entry, declared), declared
             )
             rows.append(
                 _row(
@@ -238,11 +238,16 @@ def _feature_rows(
     return rows
 
 
-def _current_compositions(ds: Dataset, entry: tuple[str, str]) -> dict[str, str]:
-    """What every source root records for *entry* now."""
-    from .sequence_index import read_entry_compositions
+def _current_compositions(
+    ds: Dataset, entry: tuple[str, str], declared: tuple[str, ...]
+) -> dict[str, str]:
+    """What every source root records for *entry* now.
 
-    return read_entry_compositions(ds, [entry]).get(entry, {})
+    The entry's layout digest joins them when *declared* holds ``arenas``.
+    """
+    from .arena_index import entry_compositions
+
+    return entry_compositions(ds, [entry], declared).get(entry, {})
 
 
 def _consumed_variants(
@@ -344,7 +349,8 @@ def reached_by(
     """Every derived artifact a change to *root* under *changed* reaches.
 
     *changed* is the ``(group, sequence)`` entries whose source moved, and *root*
-    the source root it moved under (``media_raw``, ``tracks_raw`` or ``labels_raw``).
+    the root it moved under: a source root (``media_raw``, ``tracks_raw`` or
+    ``labels_raw``), or ``arenas`` for an entry's layout digest.
     Scoping by root is what keeps invalidation honest across roots: uploading a
     video for visualisation changes only the media composition, so kinematic
     features built from ``tracks_raw`` that never touched a pixel are not reached

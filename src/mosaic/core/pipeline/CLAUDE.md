@@ -204,6 +204,15 @@ are in `graph/CLAUDE.md`.
   file without the key counts any input, so a false drift lasts one run, where every
   input would hide a stacked run's drift. Without params it compares the declared
   roots alone.
+- `arenas` is a composition root outside `SourceRoot`: an entry's layout digest
+  (`arenas_compositions`, `arena_index.py`), read only where a feature declares it in
+  `consumed_roots`. `build_manifest(consumed_roots=...)`, `resolve_feature_identity`
+  (for a scope-dependent feature), `drifted_entries` (`DriftReads.arenas`) and
+  `provenance._current_compositions` merge it. Each reads through
+  `cached_arena_lookup`, one read of the arenas and media indexes per process for
+  each state of the two files. `read_entry_compositions` never reads it, so tracks
+  conversion, frame extraction and preprocessing read no arenas index
+  (`tests/core/pipeline/test_arenas_composition.py`).
 - `consumed_media_composition` on tracks rows, media variant rows and tracker run rows
   is compared through `compositions_disagree` (`composition.py`). There a blank side is
   unknown and not drift (`tests/core/pipeline/test_tracks_media_drift.py`).

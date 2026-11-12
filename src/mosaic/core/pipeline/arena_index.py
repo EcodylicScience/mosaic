@@ -7,12 +7,19 @@ the file and the row under the index lock. :func:`read_arena_index_rows` reads
 the rows, :func:`entry_arena_row` finds the row that one entry and its cameras
 look up, and :func:`read_arena_layout` reads that row's file. None of them takes
 the lock or writes.
+
+:func:`arenas_compositions` gives each entry's layout digest, the composition of
+the root ``arenas``. It is read only for a run whose feature declares the root in
+``consumed_roots``, through :func:`cached_arena_lookup`, which reads the index
+and the media cameras once per process for each state of the two files.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping
+import sys
+import threading
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, fields
 from functools import partial
 from pathlib import Path
@@ -29,6 +36,7 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
+from mosaic.core.pipeline.sequence_index import read_entry_compositions
 from mosaic.core.recording import RecordingKey, recording_storage_name
 from mosaic.core.strict_model import terse
 
@@ -37,16 +45,22 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ARENAS_ROOT",
+    "ARENA_LOOKUP_CACHE",
     "ArenaIndexError",
     "ArenaLayoutRow",
+    "ArenaLookup",
     "DeclaredLayout",
     "IndexedLayout",
     "arena_index",
     "arena_index_path",
     "arena_layout_file_name",
+    "arenas_compositions",
+    "cached_arena_lookup",
     "entry_arena_row",
+    "entry_compositions",
     "media_cameras",
     "read_arena_index_rows",
+    "read_arena_lookup",
     "read_arena_layout",
     "read_arena_layouts",
     "read_declared_layout",
@@ -367,3 +381,150 @@ def read_arena_layouts(ds: Dataset) -> dict[ArenaKey, DeclaredLayout]:
         key: read_declared_layout(ds, row)
         for key, row in read_arena_index_rows(ds).items()
     }
+
+
+@dataclass(frozen=True, slots=True)
+class ArenaLookup:
+    """What an entry's layout lookup reads: the index rows and the media cameras.
+
+    Attributes:
+        rows: The index's row of each key, :func:`read_arena_index_rows`.
+        cameras: The cameras of each entry's media rows, :func:`media_cameras`.
+        refusal: Why the whole index is refused, ``None`` when it reads.
+    """
+
+    rows: Mapping[ArenaKey, IndexedLayout]
+    cameras: Mapping[Entry, Collection[str]]
+    refusal: str | None = None
+
+    def row(self, ds: Dataset, entry: Entry) -> IndexedLayout | None:
+        """Return *entry*'s row, ``None`` without one (:func:`entry_arena_row`).
+
+        Raises:
+            ArenaIndexError: If the whole index is refused.
+            ValueError: If the entry's cameras find rows of different digests.
+        """
+        if self.refusal is not None:
+            raise ArenaIndexError(self.refusal)
+        return entry_arena_row(ds, entry, self.cameras.get(entry, ()), self.rows)
+
+
+def read_arena_lookup(ds: Dataset) -> ArenaLookup:
+    """Read the arenas index and, when it declares a layout, the media cameras.
+
+    A refused index is printed once on stderr and held as the lookup's refusal.
+    Reads without the lock and writes nothing.
+    """
+    try:
+        rows = read_arena_index_rows(ds)
+    except ArenaIndexError as exc:
+        refusal = str(exc)
+        print(
+            f"[arenas] {refusal} Until then no entry reads an arena layout.",
+            file=sys.stderr,
+        )
+        return ArenaLookup(rows={}, cameras={}, refusal=refusal)
+    return ArenaLookup(rows=rows, cameras=media_cameras(ds) if rows else {})
+
+
+type _FileStamp = tuple[int, int, int] | None
+"""A file's ``st_mtime_ns``, ``st_size`` and ``st_ino``, ``None`` when absent."""
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedLookup:
+    stamps: tuple[_FileStamp, _FileStamp]
+    lookup: ArenaLookup
+
+
+ARENA_LOOKUP_CACHE: Final[dict[tuple[Path, Path | None], _CachedLookup]] = {}
+"""This process's lookup of each dataset, keyed by its arenas and media indexes."""
+
+_CACHE_LOCK: Final = threading.Lock()
+
+
+def _stamp(path: Path | None) -> _FileStamp:
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size, stat.st_ino)
+
+
+def cached_arena_lookup(ds: Dataset) -> ArenaLookup:
+    """Return *ds*'s :class:`ArenaLookup`, read again only when an index changed.
+
+    The lookup is held per process, keyed by the arenas index and the media
+    index (:meth:`Dataset.read_media_index`), beside each file's modification
+    time, size and inode. A dataset without an arenas root reads nothing.
+    """
+    if not ds.has_root(ARENAS_ROOT):
+        return ArenaLookup(rows={}, cameras={})
+    media_root = ds.resolve_media_root()
+    media = ds.get_root(media_root) / "index.csv" if ds.has_root(media_root) else None
+    key = (arena_index_path(ds), media)
+    with _CACHE_LOCK:
+        stamps = (_stamp(key[0]), _stamp(media))
+        cached = ARENA_LOOKUP_CACHE.get(key)
+        if cached is not None and cached.stamps == stamps:
+            return cached.lookup
+        lookup = read_arena_lookup(ds)
+        ARENA_LOOKUP_CACHE[key] = _CachedLookup(stamps, lookup)
+        return lookup
+
+
+def arenas_compositions(
+    ds: Dataset, entries: Iterable[Entry], *, lookup: ArenaLookup | None = None
+) -> dict[Entry, str]:
+    """Return the layout digest of each of *entries* that has one.
+
+    An entry without a layout, or whose cameras find different layouts, is
+    absent, as is every entry while the index is refused.
+
+    Args:
+        ds: The dataset.
+        entries: The entries to look up.
+        lookup: The lookup to read, :func:`cached_arena_lookup` when ``None``.
+    """
+    found = cached_arena_lookup(ds) if lookup is None else lookup
+    if found.refusal is not None or not found.rows:
+        return {}
+    digests: dict[Entry, str] = {}
+    for entry in entries:
+        try:
+            row = found.row(ds, entry)
+        except ValueError:
+            continue
+        if row is not None:
+            digests[entry] = row.digest
+    return digests
+
+
+def entry_compositions(
+    ds: Dataset,
+    entries: Iterable[Entry],
+    roots: Collection[str],
+    *,
+    lookup: ArenaLookup | None = None,
+) -> dict[Entry, dict[str, str]]:
+    """Return each entry's compositions, with its layout digest when *roots* asks.
+
+    Every source root's composition is :func:`read_entry_compositions`. When
+    *roots* holds ``arenas``, the digest of :func:`arenas_compositions` joins
+    each entry that has a layout, under ``arenas``.
+
+    Args:
+        ds: The dataset.
+        entries: The entries to read.
+        roots: The roots in play, such as a feature's ``consumed_roots``.
+        lookup: The lookup to read, :func:`cached_arena_lookup` when ``None``.
+    """
+    wanted = list(entries)
+    compositions = read_entry_compositions(ds, wanted)
+    if ARENAS_ROOT not in roots:
+        return compositions
+    for entry, digest in arenas_compositions(ds, wanted, lookup=lookup).items():
+        compositions.setdefault(entry, {})[ARENAS_ROOT] = digest
+    return compositions

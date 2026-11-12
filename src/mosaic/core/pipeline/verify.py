@@ -636,6 +636,7 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
             selector,
             tracks_run_id=spec.tracks_run_id,
             stack=stacks_inputs(feature),
+            consumed_roots=feature.consumed_roots,
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, spec.labels_run_id)
     time_window = TimeWindow(spec.filter_start_time, spec.filter_end_time)

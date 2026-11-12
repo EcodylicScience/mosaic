@@ -18,6 +18,7 @@ from mosaic.core.pipeline.index_csv import IndexCSV, RunIndexRowBase
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.arena_index import ArenaLookup
     from mosaic.core.pipeline.inventory.params import RunParams
 
 
@@ -335,8 +336,9 @@ class DriftReads:
     """The index reads that several :func:`drifted_entries` calls share.
 
     An inventory scan builds one and passes it to the call for every run: each
-    feature storage's index is read once, and the tracks cells of each set of
-    variants are computed once. A call given none builds one for itself.
+    feature storage's index is read once, the tracks cells of each set of
+    variants are computed once, and the arenas lookup is taken once. A call
+    given none builds one for itself.
 
     Args:
         ds: The dataset whose indexes are read.
@@ -355,6 +357,7 @@ class DriftReads:
         self._frames: dict[str, pd.DataFrame] = {}
         self._tracks: dict[tuple[str, ...], dict[Entry, str]] = {}
         self._held: dict[tuple[str, ...], frozenset[Entry]] = {}
+        self._arena_lookup: ArenaLookup | None = None
 
     def _rows(self, storage: str, run_id: str) -> pd.DataFrame:
         frame = self._frames.get(storage)
@@ -387,6 +390,14 @@ class DriftReads:
             cells = tracks_compositions(self._ds, key)
             self._tracks[key] = cells
         return cells
+
+    def arena_lookup(self) -> ArenaLookup:
+        """The :func:`~.arena_index.cached_arena_lookup` of the dataset, taken once."""
+        from .arena_index import cached_arena_lookup
+
+        if self._arena_lookup is None:
+            self._arena_lookup = cached_arena_lookup(self._ds)
+        return self._arena_lookup
 
     def tracks_entries(self, variants: Sequence[str]) -> frozenset[Entry]:
         """The entries the tracks index holds a row for under *variants*.
@@ -426,7 +437,9 @@ def drifted_entries(
     would recompute:
 
     - its declared roots: the row's ``consumed_composition`` against the entry's
-      composition under those roots in ``<root>/sequences.csv``;
+      composition under those roots in ``<root>/sequences.csv``, and its layout
+      digest when a row or the run declares ``arenas``
+      (:func:`~.arena_index.entry_compositions`);
     - its tracks: the row's ``consumed_tracks_composition`` against the tracks
       rows of the run's variants (:func:`~.tracks_index.tracks_compositions`) for
       a run whose only input is ``tracks``, or against its inputs' cells joined
@@ -467,7 +480,8 @@ def drifted_entries(
     Returns:
         The drifted entries, sorted.
     """
-    from .sequence_index import encode_entry_composition, read_entry_compositions
+    from .arena_index import ARENAS_ROOT, entry_compositions
+    from .sequence_index import encode_entry_composition
 
     shared = DriftReads(ds) if reads is None else reads
     recorded_roots = shared.consumption(feature_name, run_id)
@@ -476,7 +490,9 @@ def drifted_entries(
     entries = sorted(set(recorded_roots) | set(recorded_reads))
     if not entries:
         return ()
-    current_roots = read_entry_compositions(ds, entries)
+    in_play = set(declared).union(*(roots for roots, _ in recorded_roots.values()))
+    lookup = shared.arena_lookup() if ARENAS_ROOT in in_play else None
+    current_roots = entry_compositions(ds, entries, in_play, lookup=lookup)
     tracks_now, inputs_now, held = (
         _current_input_cells(shared, run_params)
         if run_params
