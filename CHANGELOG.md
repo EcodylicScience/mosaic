@@ -32,6 +32,27 @@ them. A key named twice is read once, and `group`, `sequence` or an identity col
 run writes, named as a key, is the index's own column and is not read again. The memory
 check counts a key as an identity column, at 8 bytes a cell.
 
+`frame-aggregate`, `sequence-aggregate` and `individual-aggregate` take `keep_columns`,
+columns of the input that the output carries after its reduction keys (after `time` for
+`frame-aggregate`), so a label such as Tracktor's `strain` reaches the summary rows. A
+kept column must take one value over the rows reduced together after `filter_expr`, null
+counting as a value, and the input must hold it. A group that disagrees, or a missing
+column, raises from `apply`. The refusal of a disagreeing group names the column, its key
+and up to five values, and that of a missing column names the column. The run records an
+`entry_error` and lists the entry in `Result.failed_entries`.
+`group`, `sequence`, `frame`, `time`, `id`, `id1`, `id2`, `perspective`, `arena`, a name
+in `columns` and `subgroup_col` are refused. An empty `keep_columns` is left out of the
+run identity, so every existing run id stays, the versions stay, and the runs downstream
+of an aggregate keep theirs.
+
+Pipeline validation reads `keep_columns` as a column the aggregate needs and provides. A
+plan refuses a kept column that the declared columns of a feature input cannot provide,
+and cautions instead when `"tracks"` is among the inputs, since the tracks table's
+columns are not declared. A label of the tracks table, such as Tracktor's `strain`,
+reaches the aggregate of an individual-level feature through
+`"inputs": [{"step": "speed"}, "tracks"]`. The tracks come second, so a payload column
+that both hold is read from the feature, and the tracks' copy is `<column>__1`.
+
 ## Unreleased: `event-response` measures a value around each event
 
 `event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It

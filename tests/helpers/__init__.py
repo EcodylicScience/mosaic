@@ -107,6 +107,8 @@ What lives where:
   one unchanged.
 - ``run_summaries``: a feature whose output for each entry is the table a test
   passes for it, and a run of it.
+- ``aggregates``: a run of an aggregate over two entries of labeled tracks, one
+  whose label varies inside every group, with what it wrote and lost.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -315,6 +317,7 @@ from tests.helpers.runner_programs import (
     write_fake_runner,
 )
 from tests.helpers.run_summaries import LabeledFeature, labeled_run
+from tests.helpers.aggregates import MIXED, STEADY, LabeledRun, run_over_labeled_tracks
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.spies import count_property_reads, observed
 from tests.helpers.pyproject_requirements import (
@@ -545,6 +548,9 @@ __all__ = [
     "LA_WINDOW",
     "LABELS_VARIANT",
     "LabeledFeature",
+    "LabeledRun",
+    "MIXED",
+    "STEADY",
     "LISTED_FRAMES",
     "PREDICTIONS_VARIANT",
     "LightningActionRecorder",
@@ -743,6 +749,7 @@ __all__ = [
     "rule_reaching_op_params",
     "read_line",
     "run_child",
+    "run_over_labeled_tracks",
     "run_fresh",
     "run_id_digest",
     "record_open_attempt",

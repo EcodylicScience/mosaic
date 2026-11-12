@@ -67,6 +67,7 @@ class FrameAggregate:
       - arena (if present in input)
       - <subgroup_col> (when set)
       - time (if present in input)
+      - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
       - group, sequence (if present in input)
 
@@ -105,10 +106,15 @@ class FrameAggregate:
     requires: ClassVar[tuple[Requirement, ...]] = (
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),
+        ParamColumn("keep_columns"),
         ORDER_COLUMN,
     )
     provides: ClassVar[Provides] = Provides(
-        adds=(ParamColumn("subgroup_col"), ParamColumn("columns", suffixes="aggs")),
+        adds=(
+            ParamColumn("subgroup_col"),
+            ParamColumn("keep_columns"),
+            ParamColumn("columns", suffixes="aggs"),
+        ),
         conditional=kept(C.frame_col, C.time_col, C.seq_col, C.group_col, ARENA_COLUMN),
     )
 

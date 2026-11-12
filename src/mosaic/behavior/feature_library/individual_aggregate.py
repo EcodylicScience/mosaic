@@ -60,6 +60,7 @@ class IndividualAggregate:
       - id: the individual, or the focal ``id1`` of pair input
       - arena: when the input has it
       - <subgroup_col>: when set
+      - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
 
     Field documentation is on
@@ -93,6 +94,7 @@ class IndividualAggregate:
     requires: ClassVar[tuple[Requirement, ...]] = (
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),
+        ParamColumn("keep_columns"),
         AnyOf((Column(C.id_col), Column(_FOCAL_ID))),
         Column(C.group_col),
         Column(C.seq_col),
@@ -103,6 +105,7 @@ class IndividualAggregate:
             Column(C.seq_col),
             Column(C.id_col),
             ParamColumn("subgroup_col"),
+            ParamColumn("keep_columns"),
             ParamColumn("columns", suffixes="aggs"),
         ),
         conditional=kept(ARENA_COLUMN),

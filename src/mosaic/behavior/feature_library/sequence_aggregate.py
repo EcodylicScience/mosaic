@@ -58,6 +58,7 @@ class SequenceAggregate:
       - group, sequence: the entry, copied from the frame
       - arena: when the input has it
       - <subgroup_col>: when set
+      - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
 
     Field documentation is on
@@ -101,6 +102,7 @@ class SequenceAggregate:
     requires: ClassVar[tuple[Requirement, ...]] = (
         ParamColumn("columns"),
         ParamColumn("subgroup_col"),
+        ParamColumn("keep_columns"),
         Column(C.group_col),
         Column(C.seq_col),
     )
@@ -109,6 +111,7 @@ class SequenceAggregate:
             Column(C.group_col),
             Column(C.seq_col),
             ParamColumn("subgroup_col"),
+            ParamColumn("keep_columns"),
             ParamColumn("columns", suffixes="aggs"),
         ),
         conditional=kept(ARENA_COLUMN),

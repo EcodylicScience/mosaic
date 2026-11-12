@@ -870,6 +870,97 @@ def test_the_catalog_states_a_payload_requirement() -> None:
     assert (need.columns, need.prefixes) == ((), ())
 
 
+# --- columns an aggregate keeps -------------------------------------------------------
+
+AGGREGATES = ("frame-aggregate", "sequence-aggregate", "individual-aggregate")
+"""The aggregates that take ``keep_columns``."""
+
+
+def _aggregate_step(
+    step_id: str, feature: str, inputs: list[JsonValue], keep: list[str]
+) -> dict[str, JsonValue]:
+    """An aggregate of ``speed`` that keeps the columns *keep*."""
+    return {
+        "id": step_id,
+        "type": "feature",
+        "feature": feature,
+        "inputs": inputs,
+        "params": {"columns": ["speed"], "aggs": ["mean"], "keep_columns": list(keep)},
+    }
+
+
+_SPEED: dict[str, JsonValue] = {
+    "id": "speed",
+    "type": "feature",
+    "feature": "speed-angvel",
+}
+
+
+@pytest.mark.parametrize("feature", AGGREGATES)
+def test_a_kept_column_that_the_feature_input_cannot_provide_is_refused(
+    feature: str,
+) -> None:
+    """``speed-angvel`` declares no ``strain``, and the merged input holds no tracks."""
+    steps = [_SPEED, _aggregate_step("agg", feature, [{"step": "speed"}], ["strain"])]
+    expected = (
+        "needs 'strain', and its merged input from speed lacks it. "
+        "The tracks input may contain it"
+    )
+
+    assert validation_report({"steps": steps}).problems == (
+        Problem("agg", "inputs", expected),
+    )
+
+
+@pytest.mark.parametrize("feature", AGGREGATES)
+def test_a_kept_column_is_a_caution_when_the_tracks_are_among_the_inputs(
+    feature: str,
+) -> None:
+    """The tracks table's columns are not declared, so ``strain`` may be there."""
+    inputs: list[JsonValue] = [{"step": "speed"}, TRACKS_INPUT]
+    steps = [_SPEED, _aggregate_step("agg", feature, inputs, ["strain"])]
+
+    report = validation_report({"steps": steps})
+
+    assert report.valid, report.problems
+    (caution,) = report.cautions
+    assert caution.step == "agg"
+    assert "'strain' may be missing from its merged input" in caution.message
+
+
+@pytest.mark.parametrize("feature", AGGREGATES)
+def test_a_kept_column_that_the_feature_input_declares_is_not_refused(
+    feature: str,
+) -> None:
+    steps = [_SPEED, _aggregate_step("agg", feature, [{"step": "speed"}], ["vx"])]
+
+    report = validation_report({"steps": steps})
+
+    assert report.valid, report.problems
+    assert report.cautions == ()
+
+
+def test_a_frame_aggregate_provides_the_columns_it_keeps() -> None:
+    """``sequence-aggregate`` below it keeps ``strain`` without a caution of its own."""
+    tracks_too: list[JsonValue] = [{"step": "speed"}, TRACKS_INPUT]
+    steps = [
+        _SPEED,
+        _aggregate_step("frame", "frame-aggregate", tracks_too, ["strain"]),
+        {
+            "id": "sequence",
+            "type": "feature",
+            "feature": "sequence-aggregate",
+            "inputs": [{"step": "frame"}],
+            "params": {"columns": ["speed_mean"], "keep_columns": ["strain"]},
+        },
+    ]
+
+    report = validation_report({"steps": steps})
+
+    assert report.valid, report.problems
+    assert [caution.step for caution in report.cautions] == ["frame"]
+
+
 # --- payload families -------------------------------------------------------------------
 
 _FAMILIES = Provides(conditional=META_KEPT, payload_families=True)

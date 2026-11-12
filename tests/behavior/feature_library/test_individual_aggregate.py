@@ -13,7 +13,15 @@ from mosaic.behavior.feature_library.individual_aggregate import IndividualAggre
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline
 from mosaic.core.pipeline.run import OverlapUnsupported, run_feature
-from tests.helpers import add_track_sequences, add_tracks_variant, make_dataset
+from mosaic.core.helpers import make_entry_key
+from tests.helpers import (
+    MIXED,
+    STEADY,
+    add_track_sequences,
+    add_tracks_variant,
+    make_dataset,
+    run_over_labeled_tracks,
+)
 
 
 def _apply(params: dict[str, object], df: pd.DataFrame) -> pd.DataFrame:
@@ -232,3 +240,61 @@ def test_a_recipe_reduces_pair_rows_to_individuals(tmp_path: Path) -> None:
     per_focal = {planned.step_id: planned for planned in plan.steps}["per_focal"]
     assert per_focal.pairs is None
     assert "pairs" not in per_focal.spec.params
+
+
+def _kept(**overrides: object) -> dict[str, object]:
+    return {
+        "columns": ["value"],
+        "aggs": ["mean"],
+        "keep_columns": ["strain"],
+    } | overrides
+
+
+def test_a_kept_label_is_written_after_the_id_with_its_value() -> None:
+    table = _individual_table().assign(strain=["a", "b", "c", "a", "b", "c"])
+
+    out = _apply(_kept(), table)
+
+    assert list(out.columns) == ["group", "sequence", "id", "strain", "value_mean"]
+    assert out["strain"].tolist() == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    ("strain", "values"),
+    [
+        (["a", "a", "a", "b", "a", "a"], "'a', 'b'"),
+        (["a", "a", "a", None, "a", "a"], "'a', null"),
+    ],
+    ids=["two values", "a value and a null"],
+)
+def test_a_kept_label_that_varies_within_an_individual_is_refused(
+    strain: list[str | None], values: str
+) -> None:
+    table = _individual_table().assign(strain=pd.Series(strain, dtype=object))
+
+    with pytest.raises(ValueError) as refused:
+        _ = _apply(_kept(), table)
+
+    message = str(refused.value)
+    assert "'strain'" in message
+    assert "id=0" in message
+    assert values in message
+
+
+def test_a_kept_label_the_input_lacks_is_refused_by_name() -> None:
+    with pytest.raises(ValueError, match="'strain'.*not in the input"):
+        _ = _apply(_kept(), _individual_table())
+
+
+def test_an_entry_whose_label_varies_is_lost_and_the_other_is_written(
+    tmp_path: Path,
+) -> None:
+    run = run_over_labeled_tracks(
+        tmp_path, IndividualAggregate(params=_kept(columns=["feat_a"]))
+    )
+
+    assert run.result.failed_entries == (make_entry_key(*MIXED),)
+    assert run.written == [make_entry_key(*STEADY)]
+    (error,) = run.errors
+    assert error["key"] == make_entry_key(*MIXED)
+    assert "'strain'" in error["message"]

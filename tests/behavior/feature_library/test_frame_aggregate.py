@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.frame_aggregate import FrameAggregate
+from mosaic.core.helpers import make_entry_key
+from tests.helpers import MIXED, STEADY, run_over_labeled_tracks
 
 
 def _make_df(
@@ -294,6 +298,84 @@ def test_filter_eliminates_all_rows():
         {"columns": ["value"], "aggs": ["mean"], "filter_expr": "id > 100"}, df
     )
     assert out.empty
+
+
+# ---------------------------------------------------------------------------
+# keep_columns
+# ---------------------------------------------------------------------------
+
+
+def _kept(**overrides: object) -> dict[str, object]:
+    return {
+        "columns": ["value"],
+        "aggs": ["mean"],
+        "keep_columns": ["strain"],
+    } | overrides
+
+
+def test_a_kept_label_is_written_after_time_with_its_value() -> None:
+    df = _make_df({0: [1.0, 2.0], 1: [3.0, 4.0]}, {"strain": ["wild"] * 4})
+
+    out = _apply(_kept(), df)
+
+    assert list(out.columns) == [
+        "frame",
+        "time",
+        "strain",
+        "value_mean",
+        "sequence",
+        "group",
+    ]
+    assert out["strain"].tolist() == ["wild", "wild"]
+
+
+def test_a_kept_label_may_differ_between_frames() -> None:
+    df = _make_df({0: [1.0, 2.0], 1: [3.0, 4.0]}, {"strain": ["a", "a", "b", "b"]})
+
+    out = _apply(_kept(), df)
+
+    assert out["strain"].tolist() == ["a", "b"]
+
+
+@pytest.mark.parametrize(
+    ("strain", "values"),
+    [
+        (["a", "b", "a", "a"], "'a', 'b'"),
+        (["a", None, "a", "a"], "'a', null"),
+    ],
+    ids=["two values", "a value and a null"],
+)
+def test_a_kept_label_that_varies_within_a_frame_is_refused(
+    strain: list[str | None], values: str
+) -> None:
+    df = _make_df({0: [1.0, 2.0], 1: [3.0, 4.0]}, {"strain": strain})
+
+    with pytest.raises(ValueError) as refused:
+        _ = _apply(_kept(), df)
+
+    message = str(refused.value)
+    assert "'strain'" in message
+    assert "frame=0" in message
+    assert values in message
+
+
+def test_a_kept_label_the_input_lacks_is_refused_by_name() -> None:
+    with pytest.raises(ValueError, match="'strain'.*not in the input"):
+        _ = _apply(_kept(), _make_df({0: [1.0, 2.0]}))
+
+
+def test_an_entry_whose_label_varies_is_lost_and_the_other_is_written(
+    tmp_path: Path,
+) -> None:
+    run = run_over_labeled_tracks(
+        tmp_path, FrameAggregate(params=_kept(columns=["feat_a"]))
+    )
+
+    assert run.result.failed_entries == (make_entry_key(*MIXED),)
+    assert run.written == [make_entry_key(*STEADY)]
+    (error,) = run.errors
+    assert error["key"] == make_entry_key(*MIXED)
+    assert "'strain'" in error["message"]
 
 
 # ---------------------------------------------------------------------------

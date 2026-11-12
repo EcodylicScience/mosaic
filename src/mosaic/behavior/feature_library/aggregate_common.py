@@ -9,23 +9,29 @@ differ only in the keys they group by and in whether they take a ``pairs``
 rule (:class:`PairAggregateParams`). Each feature also groups by the input's
 ``arena`` column when it has one, and by ``subgroup_col`` when it is set
 (:func:`split_keys`).
+
+``keep_columns`` names columns of the input that the output carries beside the
+reduction keys: a label such as a strain, which every row of a reduced group
+shares. :func:`reduce_column` refuses a group whose rows disagree on one.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self, override
 
 import numpy as np
 import pandas as pd
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
-from mosaic.core.params import Declared, Params
+from mosaic.core.params import Declared, Params, has_fields
 from mosaic.core.pipeline.column_contract import (
     PAIR_COUNTING_AGGS,
     PairRead,
     PairRule,
 )
+from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.schema import ARENA_COLUMN
 
 type Aggregation = Literal["mean", "median", "min", "max", "std", "sum", "count"]
@@ -51,6 +57,16 @@ _SUBGROUP_COL_DESCRIPTION = (
     "of ffgroups. Rows whose value is null belong to no subgroup and are "
     "dropped. Unset, the rows are not split."
 )
+_KEEP_COLUMNS_DESCRIPTION = (
+    "Columns of the input to write to the output, after the reduction keys, "
+    "with one value per output row, such as a strain label. Each must take "
+    "one value over the rows reduced together, null counting as a value, and "
+    "the input must have it. A group whose rows disagree, or an input without "
+    "the column, fails the entry. The names the reduction writes itself "
+    "(group, sequence, frame, time, id, id1, id2, perspective and arena), a "
+    "name in columns and subgroup_col are refused."
+)
+
 _FILTER_EXPR_DESCRIPTION = (
     "A pandas DataFrame.query expression applied before aggregation, for "
     "example to drop flagged frames."
@@ -82,6 +98,8 @@ _PAIRS_DESCRIPTION = (
 )
 
 _PERSPECTIVE_COLUMN = "perspective"
+_FOCAL_COLUMNS = ("id1", "id2")
+_MAX_LISTED_VALUES = 5
 
 
 class AggregateParams(Params):
@@ -90,7 +108,8 @@ class AggregateParams(Params):
     Each of ``columns`` is reduced by each of ``aggs``. Before it,
     ``filter_expr`` drops rows, ``transform`` takes the absolute value and
     ``threshold`` turns each column into whether it exceeds a value.
-    ``subgroup_col`` splits the rows reduced together.
+    ``subgroup_col`` splits the rows reduced together. ``keep_columns`` are
+    written to the output beside the keys.
     :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
     whose groups hold both rows of a pair.
     """
@@ -105,8 +124,11 @@ class AggregateParams(Params):
         "none"
     )
     subgroup_col: Annotated[str | None, Declared(_SUBGROUP_COL_DESCRIPTION)] = None
+    keep_columns: Annotated[list[str], Declared(_KEEP_COLUMNS_DESCRIPTION)] = Field(
+        default_factory=list
+    )
 
-    @field_validator("columns", "aggs", check_fields=False)
+    @field_validator("columns", "aggs", "keep_columns", check_fields=False)
     @classmethod
     def _no_repeats(cls, value: list[str]) -> list[str]:
         """Refuse a name listed twice, which would name one result column twice."""
@@ -114,6 +136,39 @@ class AggregateParams(Params):
         if repeated:
             raise ValueError(f"lists {', '.join(repeated)} more than once")
         return value
+
+    @model_validator(mode="after")
+    def _refuse_a_kept_name_the_output_has_already(self) -> Self:
+        """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
+
+        A subclass without the three fields leaves the verdict to the full model.
+        """
+        if not has_fields(self, "keep_columns", "columns", "subgroup_col"):
+            return self
+        owned = _reduction_columns()
+        for name in self.keep_columns:
+            if name in self.columns:
+                raise ValueError(f"keep_columns lists {name}, which is also in columns")
+            if name == self.subgroup_col:
+                raise ValueError(f"keep_columns lists {name}, which is subgroup_col")
+            if name in owned:
+                raise ValueError(
+                    f"keep_columns lists {name}, which the reduction writes itself"
+                )
+        return self
+
+    @override
+    def identity_dump(self) -> dict[str, object]:
+        """The hashed params, less ``keep_columns`` when it is empty.
+
+        A run that keeps no column writes the output it wrote before the field
+        existed, so leaving the field out keeps every such run's identifier. A
+        kept column adds an output column and enters the hash as any field does.
+        """
+        dumped = super().identity_dump()
+        if not self.keep_columns:
+            del dumped["keep_columns"]
+        return dumped
 
 
 class PairAggregateParams(AggregateParams):
@@ -133,6 +188,13 @@ class PairAggregateParams(AggregateParams):
         ``once``.
         """
         return "once" if self.pairs == "once" else "each_perspective"
+
+
+def _reduction_columns() -> frozenset[str]:
+    """The names a reduction writes itself, which a kept column cannot take."""
+    return frozenset(
+        {*C.meta_set(), *_FOCAL_COLUMNS, _PERSPECTIVE_COLUMN, ARENA_COLUMN}
+    )
 
 
 def split_keys(df: pd.DataFrame, params: AggregateParams) -> list[str]:
@@ -163,6 +225,65 @@ def _plain_values(values: pd.Series) -> np.ndarray:
     return values.to_numpy()
 
 
+def _is_null(value: object) -> bool:
+    """Whether a cell is a null: ``None``, ``NaN``, ``NA`` or ``NaT``."""
+    if isinstance(value, float):
+        return math.isnan(value)
+    return value is None or value is pd.NA or value is pd.NaT
+
+
+def _first_varying_group(
+    df: pd.DataFrame, keys: Sequence[str], column: str
+) -> dict[str, object] | None:
+    """The keys of the first group of *keys* whose rows take two values of *column*.
+
+    Null counts as a value. A row whose key is null belongs to no group, as in
+    the reduction. ``None`` when every group holds one value.
+    """
+    counts = df.groupby(list(keys), sort=True)[column].nunique(dropna=False)
+    varying = counts[counts > 1]
+    if varying.empty:
+        return None
+    first = varying.index.to_frame(index=False).astype(object).iloc[0]
+    group: dict[str, object] = {}
+    for key in keys:
+        part: object = first[key]
+        group[key] = part
+    return group
+
+
+def _refuse_a_varying_column(
+    df: pd.DataFrame, keys: Sequence[str], columns: Sequence[str]
+) -> None:
+    """Refuse a column of *columns* that takes two values in one group of *keys*.
+
+    Raises:
+        ValueError: A group's rows hold more than one value of a column. The
+            message names the column, the group's keys and up to five of its
+            values.
+    """
+    for column in columns:
+        group = _first_varying_group(df, keys, column)
+        if group is None:
+            continue
+        in_group = np.logical_and.reduce(
+            [df[key].to_numpy() == part for key, part in group.items()]
+        )
+        texts = sorted(
+            {
+                "null" if _is_null(value) else repr(value)
+                for value in df[column][in_group].tolist()
+            }
+        )
+        listed = ", ".join(texts[:_MAX_LISTED_VALUES])
+        more = ", ..." if len(texts) > _MAX_LISTED_VALUES else ""
+        where = ", ".join(f"{key}={part!r}" for key, part in group.items())
+        raise ValueError(
+            f"keep_columns column {column!r} takes {len(texts)} values within "
+            f"{where}: {listed}{more}"
+        )
+
+
 def reduce_column(
     df: pd.DataFrame,
     params: AggregateParams,
@@ -176,6 +297,7 @@ def reduce_column(
     Applies ``filter_expr``, ``transform`` and ``threshold``, then groups by
     ``keys`` and aggregates each column with each of ``aggs``. The result holds
     ``keys``, then each column of ``first`` (its first value in the group), then
+    each of ``params.keep_columns`` (its one value in the group), then
     ``<column>_<agg>`` for each column and, within it, each aggregation, sorted
     by ``keys``. A row whose key is null belongs to no group. The result is
     empty when no row survives the filter.
@@ -196,13 +318,23 @@ def reduce_column(
 
     Returns:
         The reduced table, empty when no row remains.
+
+    Raises:
+        ValueError: A kept column is not in ``df``, or takes more than one value
+            in a group of the rows left after ``filter_expr``.
     """
+    kept = tuple(params.keep_columns)
+    for column in kept:
+        if column not in df.columns:
+            raise ValueError(f"keep_columns column {column!r} is not in the input")
     if params.filter_expr:
         df = df.query(params.filter_expr)
     if df.empty:
         return pd.DataFrame()
+    _refuse_a_varying_column(df, keys, kept)
 
-    work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *first)})
+    carried = (*first, *kept)
+    work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *carried)})
     for index, column in enumerate(params.columns):
         values = df[column]
         if params.transform == "abs":
@@ -216,8 +348,8 @@ def reduce_column(
     group_keys = list(keys)
     grouped = work.groupby(group_keys, sort=True)
     reduced = (
-        grouped[list(first)].first()
-        if first
+        grouped[list(carried)].first()
+        if carried
         else pd.DataFrame(index=grouped.size().index)
     )
     for index, column in enumerate(params.columns):

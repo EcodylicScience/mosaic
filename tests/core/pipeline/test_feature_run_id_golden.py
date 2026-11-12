@@ -21,7 +21,7 @@ dataset.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import pytest
 
@@ -1019,6 +1019,36 @@ def test_case_ids_are_unique() -> None:
     """A duplicated case id would silently drop coverage from the golden file."""
     ids = [case.case_id for case in CASES]
     assert len(ids) == len(set(ids)), "duplicate case ids in CASES"
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "frame-aggregate/column-speed",
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_an_empty_keep_columns_keeps_each_aggregate_run_id(case_id: str) -> None:
+    """Leaving ``keep_columns`` out and listing none are the run the golden line pins.
+
+    A kept column adds an output column, so a list of them is another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    assert case.params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+
+    absent = _identifier(case)
+    empty = _identifier(replace(case, params={**case.params, "keep_columns": []}))
+    kept = _identifier(
+        replace(case, params={**case.params, "keep_columns": ["strain"]})
+    )
+
+    assert absent == golden
+    assert empty == golden
+    assert kept != golden
 
 
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
