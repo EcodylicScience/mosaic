@@ -48,7 +48,8 @@ from pydantic import (
     ValidationError,
 )
 
-from mosaic.core.helpers import TimeWindow, make_entry_key
+from mosaic.core.filter_bounds import TimeWindow
+from mosaic.core.helpers import make_entry_key
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 

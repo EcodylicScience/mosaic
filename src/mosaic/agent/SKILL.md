@@ -595,6 +595,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   `source_format`. Scan the sources first. A feature reads the converted tracks
   through `"tracks": {"step": <id>}` and the converted labels through
   `"labels": {"step": <id>}`, which may add `"remap": {"2": 0}` and `"mask": [3]`.
+  After a conversion stopped part way (a killed run), `plan_recipe` shows the
+  `convert-tracks` step short by the raw files left, and submitting again converts only
+  those. A request whose driver died reads `orphaned` and does not block the new one.
 - A train/test split is one request: step scopes narrow single steps
   (`--step-scope 'fit={"groups": ["train"]}'`). A step reading another through
   `inputs` or `tracks` must be narrowed to entries the other covers; a params

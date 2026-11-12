@@ -371,7 +371,10 @@ def _output_frames(ds: Dataset, result: Result) -> list[int]:
 
 
 def test_a_time_window_keeps_the_rows_whose_time_is_in_it(tmp_path: Path) -> None:
-    """The window reads ``time`` and needs no frame rate: the dropped frames stay out."""
+    """The window reads ``time`` and needs no frame rate.
+
+    The frames the table dropped stay out of the output.
+    """
     ds = _irregular_ds(tmp_path / "ds")
     assert ds.meta_float("fps_default") is None
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
@@ -21,11 +22,14 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     plan_with_cleanup,
 )
+from mosaic.core.pipeline.graph import read_recipe
 from mosaic.core.pipeline.inventory import InventoryCache
+from mosaic.core.pipeline.tracks_raw_index import TRACKS_RAW_INDEX_COLUMNS
 from tests.helpers import add_tracks_variant_in_bulk, make_dataset, speed_recipe
 
 ENTRIES = 2000
 SMALL_ENTRIES = 500
+UNCONVERTED = 100
 VARIANT = "convert-tracktor_corrected_tsv.0.1-56a0218226"
 COLD_SECONDS = 8.0
 WARM_SECONDS = 4.0
@@ -114,4 +118,59 @@ def test_a_plan_with_cleanup_over_two_thousand_entries_is_not_quadratic(
     seconds = time.perf_counter() - started
 
     assert plan.cleanup is not None
+    assert seconds < COLD_SECONDS
+
+
+def _write_raw_rows(dataset: Dataset, sequences: list[str]) -> None:
+    """Index one raw Tracktor file for each of *sequences*, converting none."""
+    rows = [
+        {
+            "group": "",
+            "sequence": sequence,
+            "abs_path": f"raw/{sequence}.tsv",
+            "src_format": "tracktor_corrected_tsv",
+            "size_bytes": 1,
+            "mtime_iso": "",
+            "md5": "",
+        }
+        for sequence in sequences
+    ]
+    root = dataset.get_root("tracks_raw")
+    root.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(rows, columns=TRACKS_RAW_INDEX_COLUMNS)
+    frame.to_csv(root / "index.csv", index=False)
+
+
+@pytest.mark.slow
+def test_a_conversion_step_over_two_thousand_raw_files_plans_its_remainder(
+    tmp_path: Path,
+) -> None:
+    """The raw rows are measured against the variant's tables in one pass."""
+    large = _dataset(tmp_path, ENTRIES)
+    converted = [f"seq_{index:05d}" for index in range(ENTRIES)]
+    extra = [f"late_{index:05d}" for index in range(UNCONVERTED)]
+    _write_raw_rows(large, converted + extra)
+    recipe = read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "convert",
+                    "type": "op",
+                    "kind": "convert-tracks",
+                    "params": {"source_format": "tracktor_corrected_tsv"},
+                }
+            ]
+        }
+    )
+
+    started = time.perf_counter()
+    plan = plan_pipeline(
+        large, recipe, inventory=InventoryCache(large), catalog=declaration_catalog()
+    )
+    seconds = time.perf_counter() - started
+
+    step = plan.step("convert")
+    assert step.run_id == VARIANT
+    assert len(step.coverage.target) == ENTRIES + UNCONVERTED
+    assert len(step.coverage.missing) == UNCONVERTED
     assert seconds < COLD_SECONDS

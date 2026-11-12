@@ -1540,6 +1540,22 @@ class ConversionFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackConversionSources:
+    """What the raw index says a ``convert-tracks`` of one format will produce.
+
+    Attributes:
+        entries: The ``(group, sequence)`` entries that the raw rows name. A row
+            that names a sequence yields one entry, and a format that merges per
+            sequence yields one entry for the rows of a sequence.
+        files: The raw files that name no sequence, which the converter expands
+            into entries of its own that only reading the file can list.
+    """
+
+    entries: frozenset[tuple[str, str]]
+    files: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class TrackMergeJob:
     """One sequence whose per-individual files merge into one table.
 
@@ -1585,21 +1601,21 @@ def _convert_track_merge_in_worker(
     ref: Dataset | str,
     job: TrackMergeJob,
     params: dict[str, object] | None,
-    group_from: str,
     overwrite: bool,
     facts: ConversionFacts,
 ) -> TrackFileOutcome:
-    return worker_dataset(ref).convert_track_merge(
-        job, params, group_from, overwrite, facts
-    )
+    return worker_dataset(ref).convert_track_merge(job, params, overwrite, facts)
 
 
-def _merge_output_group(group: str, first_row: pd.Series, group_from: str) -> str:
-    """The group a merged sequence is filed under, by the ``group_from`` policy."""
-    raw_group_hint = text_cell(first_row.get("group", ""))
-    if group_from in {"filename", "both"} and raw_group_hint:
-        return raw_group_hint
-    return group
+def raw_row_cells(row: pd.Series) -> tuple[str, str]:
+    """The ``(group, sequence)`` that a raw index row names, a blank cell as ``""``.
+
+    The one reading of those two cells, as text. An entry a conversion writes
+    from the row alone, a file that names one sequence or the files of a merged
+    one, is filed under exactly these. A row with a blank sequence names no entry:
+    its file holds several, which the converter lists.
+    """
+    return text_cell(row.get("group", "")), text_cell(row.get("sequence", ""))
 
 
 @dataclass(frozen=True, slots=True)
@@ -9046,8 +9062,7 @@ class Dataset:
         # row comes off a bare pandas ``Series``, so a blank cell is a float NaN
         # and each ``str()`` of it would mint the word "nan" -- once into a
         # filename, once into an index row, and the two need not even agree.
-        seq_value = text_cell(raw_row.get("sequence", ""))
-        group_value = text_cell(raw_row.get("group", ""))
+        group_value, seq_value = raw_row_cells(raw_row)
         source_md5 = text_cell(raw_row.get("md5", ""))
 
         # If sequence missing/blank and the format can hold several, expand this
@@ -9608,6 +9623,36 @@ class Dataset:
             current=dict(zip(entries, cells, strict=True)),
         )
 
+    def track_conversion_sources(self, source_format: str) -> TrackConversionSources:
+        """Name what converting the raw rows of *source_format* produces.
+
+        Reads ``tracks_raw/index.csv`` alone and no raw file. A row that names a
+        sequence yields its entry (:func:`raw_row_cells`), and a row that names
+        none is listed as a file. A promoted correction converts into a variant
+        of its own and is left out. A dataset with no raw index, or no row of the
+        format, names nothing.
+        """
+        raw_idx = self.get_root("tracks_raw") / "index.csv"
+        if not raw_idx.exists():
+            return TrackConversionSources(frozenset(), ())
+        try:
+            df = load_tracks_raw_index_frame(raw_idx)
+        except pd.errors.EmptyDataError:
+            return TrackConversionSources(frozenset(), ())
+        entries: set[tuple[str, str]] = set()
+        files: list[Path] = []
+        for _, row in df.iterrows():
+            if text_cell(row["src_format"]) != source_format:
+                continue
+            if correction_revision(str(row["abs_path"])):
+                continue
+            group, sequence = raw_row_cells(row)
+            if sequence:
+                entries.add((group, sequence))
+            else:
+                files.append(self.resolve_path(row["abs_path"]))
+        return TrackConversionSources(frozenset(entries), tuple(files))
+
     def _conversion_variant_ids(
         self,
         df: pd.DataFrame,
@@ -9663,10 +9708,7 @@ class Dataset:
         def file_work(row: pd.Series) -> _TrackWork:
             call_params = dict(params) if params else {}
             call_params["group_from"] = group_from
-            group, sequence = (
-                text_cell(row.get("group", "")),
-                text_cell(row.get("sequence", "")),
-            )
+            group, sequence = raw_row_cells(row)
             return _TrackWork(
                 size=1,
                 path=str(row.get("abs_path")),
@@ -9736,13 +9778,12 @@ class Dataset:
                     yield file_work(row)
                 continue
 
-            out_group = _merge_output_group(group, group_df.iloc[0], group_from)
             job = TrackMergeJob(
                 group=group,
                 sequence=sequence,
                 src_format=src_format,
                 correction=int(correction),
-                division=divisions.get((text_cell(out_group), text_cell(sequence))),
+                division=divisions.get((text_cell(group), text_cell(sequence))),
                 rows=group_df,
             )
             yield _TrackWork(
@@ -9753,9 +9794,8 @@ class Dataset:
                     ref,
                     job,
                     params,
-                    group_from,
                     overwrite,
-                    facts.restricted_to([(text_cell(out_group), text_cell(sequence))]),
+                    facts.restricted_to([(text_cell(group), text_cell(sequence))]),
                 ),
             )
 
@@ -9763,7 +9803,6 @@ class Dataset:
         self,
         job: TrackMergeJob,
         params: dict[str, object] | None,
-        group_from: str,
         overwrite: bool,
         facts: ConversionFacts | None = None,
     ) -> TrackFileOutcome:
@@ -9794,15 +9833,14 @@ class Dataset:
         )
         outcome.variant = variant
 
-        out_group = _merge_output_group(group, first_row, group_from)
-        outcome.covered.append((text_cell(out_group), text_cell(sequence)))
+        outcome.covered.append((text_cell(group), text_cell(sequence)))
         variant_root = tracks_variant_root(self.get_root("tracks"), variant)
-        out_path = variant_root / f"{make_entry_key(out_group, sequence)}.parquet"
+        out_path = variant_root / f"{make_entry_key(group, sequence)}.parquet"
         outcome.path = out_path
         if (
             out_path.exists()
             and not overwrite
-            and self._conversion_is_current(variant, out_group, sequence, facts)
+            and self._conversion_is_current(variant, group, sequence, facts)
         ):
             return outcome
 
@@ -9811,7 +9849,7 @@ class Dataset:
                 group=text_cell(group),
                 sequence=text_cell(sequence),
                 fps=self._conversion_fps(
-                    converter, (text_cell(out_group), text_cell(sequence))
+                    converter, (text_cell(group), text_cell(sequence))
                 ),
             ),
             job.division,
@@ -9840,7 +9878,7 @@ class Dataset:
             merged_df = _placed_conversion(
                 merge_on_column_union(dfs),
                 hints,
-                (text_cell(out_group), text_cell(sequence)),
+                (text_cell(group), text_cell(sequence)),
                 f"{group}/{sequence} (merged)",
                 job.division,
             )
@@ -9868,7 +9906,7 @@ class Dataset:
                 staged=staged,
                 row=TracksRowDraft(
                     run_id=variant,
-                    group=out_group,
+                    group=group,
                     sequence=sequence,
                     out_path=out_path,
                     producer=converter_op(src_format),

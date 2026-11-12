@@ -11,10 +11,9 @@ import numpy as np
 import pandas as pd
 
 from mosaic.version import installed_version
+from mosaic.core.filter_bounds import TimeWindow, check_one_filter_per_boundary
 from mosaic.core.helpers import (
     UNLABELED,
-    TimeWindow,
-    check_one_filter_per_boundary,
     filter_time_range,
     make_entry_key,
 )

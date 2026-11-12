@@ -2,8 +2,9 @@
 
 Validation decides from declarations alone. A column that the track schemas allow
 is only a caution. A plan reads the dataset. A required column that every tracks
-table lacks is a problem there, at the place in the recipe that would change. ``plan_pipeline`` raises them together as ``RecipeRefused``, and a step
-that finds one of its own when it re-plans itself is refused and recorded.
+table lacks is a problem there, at the place in the recipe that would change.
+``plan_pipeline`` raises them together as ``RecipeRefused``, and a step that finds one
+of its own when it re-plans itself is refused and recorded.
 """
 
 from __future__ import annotations

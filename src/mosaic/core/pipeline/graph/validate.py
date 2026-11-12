@@ -51,7 +51,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import TypeAdapter, ValidationError
 
-from mosaic.core.helpers import TimeWindow
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_list, is_str_mapping
 

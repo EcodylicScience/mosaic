@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 import pandas as pd
 
-from mosaic.core.helpers import TimeWindow, check_one_filter_per_boundary
+from mosaic.core.filter_bounds import TimeWindow, check_one_filter_per_boundary
 from mosaic.core.scope import Scope
 
 from .storage_names import derive_storage_name

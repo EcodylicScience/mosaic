@@ -52,11 +52,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
-from mosaic.core.helpers import TimeWindow
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
 from ..column_contract import PairRead
+from ..convert_ops import (
+    ConvertLabelsOp,
+    ConvertLabelsParams,
+    ConvertTracksOp,
+    ConvertTracksParams,
+)
 from ..manifest import tracks_table_columns
 from ..tracks_index import AmbiguousTracksVariant, rows_without_tracklets
 from ..inventory.cache import InventoryCache
@@ -89,6 +95,7 @@ from ..track_space import TrackSpaceRefused
 from .digest import recipe_digest
 from .heldout import deferred_scope_problem, held_out_fit_problem
 from .compatibility import Reach
+from .conversion_remainder import conversion_remainder
 from .lanes import lane_for
 from .model import (
     BOUND_STATUS,
@@ -1135,6 +1142,8 @@ def _plan_step(
         base = _as_recorded(base, recorded.get(step.id, ""))
 
     view = coverage_against(inv, base.artifact, target)
+    if isinstance(step, OpStepSpec) and step.kind == ConvertTracksOp.kind:
+        view = _conversion_view(ds, step, base, inv, view)
     pinned = _pinned_view(pinned_inv, base.artifact, target)
     if pinned is not None:
         view = pinned
@@ -1865,7 +1874,7 @@ def _resolve_op_step(
             problems=(problem,),
         )
     except ValueError as exc:
-        if step.kind != "convert-labels":
+        if step.kind != ConvertLabelsOp.kind:
             raise
         # The variant is minted from the converter's own params, which the
         # step's params name and which only build here.
@@ -1955,9 +1964,43 @@ def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef
     return None
 
 
+def _conversion_view(
+    ds: Dataset,
+    step: OpStepSpec,
+    base: PlannedStep,
+    inv: DatasetInventory,
+    view: ArtifactView,
+) -> ArtifactView:
+    """What a ``convert-tracks`` step holds, measured against the raw rows it reads.
+
+    The step takes no scope, so its target is the tables that exist, and a
+    conversion that stopped part way would read complete. Its target is
+    instead the entries of the raw rows of its format
+    (:func:`~.conversion_remainder.conversion_remainder`), joined with the target
+    it was given so that a step reading its variant is never planned over
+    entries outside it. An entry that no raw row names is not this step's work and
+    reads held.
+
+    A step whose identity is unresolved, or whose params do not build, keeps
+    *view*: its problems are reported elsewhere.
+    """
+    if base.run_id is None:
+        return view
+    try:
+        params = ConvertTracksParams.model_validate(step.params)
+    except ValueError:
+        return view
+    remainder = conversion_remainder(ds, params, base.run_id)
+    target = view.coverage.target | remainder.target
+    coverage = Coverage[Entry](target=target, present=target - remainder.missing)
+    record = inv.record(base.artifact) if base.artifact is not None else None
+    status = view.status if record is None else reclassify(record, coverage)
+    return replace(view, coverage=coverage, status=status)
+
+
 _CONVERSION_ROOTS: Final[dict[str, str]] = {
-    "convert-tracks": "tracks_raw",
-    "convert-labels": "labels_raw",
+    ConvertTracksOp.kind: "tracks_raw",
+    ConvertLabelsOp.kind: "labels_raw",
 }
 """The raw root each conversion op reads its format's rows from."""
 
@@ -1987,15 +2030,13 @@ def _conversion_source_problems(
             f"the scan recorded"
         )
         return [Problem(step.id, "params.source_format", message)]
-    if step.kind == "convert-labels" and identified:
+    if step.kind == ConvertLabelsOp.kind and identified:
         return _label_selection_problems(ds, step)
     return []
 
 
 def _label_selection_problems(ds: Dataset, step: OpStepSpec) -> list[Problem]:
     """A problem at a ``convert-labels`` step whose converter selects no raw row."""
-    from ..convert_ops import ConvertLabelsParams
-
     params = ConvertLabelsParams.model_validate(step.params)
     rows = ds.label_rows_to_convert(params.kind, params.source_format, params.params)
     if not rows.empty:

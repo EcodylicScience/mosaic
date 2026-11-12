@@ -36,6 +36,7 @@ from typing import Annotated, ClassVar, Final, Literal, Self
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
+from mosaic.core.filter_bounds import check_one_filter_per_boundary
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.label_controls import LabelMask, LabelRemap
 from mosaic.core.scope import Scope
@@ -204,14 +205,12 @@ class StepRun(GraphModel):
     @model_validator(mode="after")
     def _one_filter_per_boundary(self) -> Self:
         """Each boundary is set as a frame or as a time, as a run reads it."""
-        boundaries = (
-            ("start", self.filter_start_frame, self.filter_start_time),
-            ("end", self.filter_end_frame, self.filter_end_time),
+        check_one_filter_per_boundary(
+            self.filter_start_frame,
+            self.filter_end_frame,
+            self.filter_start_time,
+            self.filter_end_time,
         )
-        for boundary, frame, time in boundaries:
-            if frame is not None and time is not None:
-                msg = f"set one of filter_{boundary}_frame and filter_{boundary}_time"
-                raise ValueError(msg)
         return self
 
 

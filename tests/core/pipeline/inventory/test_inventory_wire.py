@@ -583,6 +583,35 @@ def test_a_ref_returns_one_artifact_in_depth(computed: tuple[Dataset, str]) -> N
     assert detail.identity_scheme
 
 
+def test_a_ref_shows_the_time_window_a_run_read(tmp_path: Path) -> None:
+    """A run over the first 300 s does not look whole beside one over everything."""
+    ds = make_dataset(tmp_path / "windowed")
+    add_tracks_variant(ds, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
+    feature = build_feature("speed-angvel", None, None)
+    run_id = ds.run_feature(feature, filter_end_time=300.0).run_id
+
+    [artifact] = inventory_wire(
+        ds, inventory(ds), ref=f"feature/{STORAGE}/{run_id}"
+    ).artifacts
+
+    assert artifact.detail is not None
+    assert artifact.detail.time_window == (None, 300.0)
+    assert artifact.detail.frame_range == (None, None)
+
+
+def test_a_run_without_a_window_shows_an_open_one(
+    computed: tuple[Dataset, str],
+) -> None:
+    ds, run_id = computed
+
+    [artifact] = inventory_wire(
+        ds, inventory(ds), ref=f"feature/{STORAGE}/{run_id}"
+    ).artifacts
+
+    assert artifact.detail is not None
+    assert artifact.detail.time_window == (None, None)
+
+
 def test_a_ref_reports_the_orphans_behind_an_inconsistent_status(
     computed: tuple[Dataset, str],
 ) -> None:

@@ -60,7 +60,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from mosaic.core.helpers import TimeWindow
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.scope import Scope
 from mosaic.core.strict_model import StrictModel

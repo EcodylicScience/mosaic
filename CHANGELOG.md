@@ -47,6 +47,18 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
+## Unreleased: an interrupted `convert-tracks` plans the files left
+
+A `convert-tracks` step is measured against the raw rows of its `source_format`
+instead of the tables the dataset already holds, so a conversion that stopped part way
+reads pending: the plan reports its coverage as the entries converted of the entries
+the raw rows name (`CoverageShort`), and a resubmit converts only the rest. Before, a
+variant with 6 of 10 files converted read complete and the step read `cached`. A raw
+file that names no sequence, such as a CalMS21 file, stands in that coverage as the
+entry `["", <path relative to the dataset root>]` until a table records it as its
+source, and then leaves it. Only the plan's coverage of the step changes: no run id,
+table or index row does.
+
 ## Unreleased: a time window filters on `time` and needs no frame rate
 
 `filter_start_time` and `filter_end_time` of a feature run, a recipe step's `run` block
@@ -55,13 +67,14 @@ longer convert to frames with `meta.fps_default`, so a plan accepts a time windo
 dataset with no frame rate, and on a table that dropped frames the window keeps exactly
 the rows whose `time` falls in it. A table with no `time` column refuses the window.
 The run id carries the bounds as seconds in a `_time_range` term, and `params.json`
-records `_time_range` beside `_frame_range`. The run ids of runs with a time filter
-change, and a rerun with the same recipe writes them again under the new ids; a run
-without one keeps its id. `resolve_frame_range` and `TIME_FILTER_NEEDS_FPS` are removed
-from `mosaic.core.helpers`, and a plan no longer reports a problem at
-`run.filter_start_time`. A frame filter and the time filter that equals it at the
-dataset's frame rate are now two runs. A time window with `overlap_frames` is still
-refused.
+records `_time_range` beside `_frame_range`. The inventory's artifact detail
+(`ArtifactDetailWire`) gains `time_window` beside `frame_range`. The run ids of runs
+with a time filter change, and a rerun with the same recipe writes them again under the
+new ids; a run without one keeps its id. `resolve_frame_range` and
+`TIME_FILTER_NEEDS_FPS` are removed from `mosaic.core.helpers`, and a plan no longer
+reports a problem at `run.filter_start_time`. A frame filter and the time filter that
+equals it at the dataset's frame rate are now two runs. A time window with
+`overlap_frames` is still refused.
 
 ## Unreleased: short tracks and filtered entries no longer fail or blank a run
 

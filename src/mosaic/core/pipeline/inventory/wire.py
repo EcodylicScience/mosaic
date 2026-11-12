@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 from pydantic import TypeAdapter, ValidationError
 
 from mosaic.core.entry import Entry
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.json_object import JSON_OBJECT
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
@@ -180,7 +181,11 @@ class CoverageWire(StrictModel):
         missing_sample: Up to :data:`MISSING_SAMPLE_WIRE` missing keys, sorted,
             each as its parts. An entry is ``[group, sequence]``, and a frame
             run's or a media variant's key adds its camera. A revision, a
-            ``video_uuid`` or a run id is one string.
+            ``video_uuid`` or a run id is one string. A ``convert-tracks`` step
+            lists a raw file that names no sequence and has no table yet as
+            ``["", <its path relative to the dataset root, or its file name when
+            it lies outside>]``, because the entries it will produce are known
+            only once it is read.
         has_more: Whether more keys are missing than the sample lists.
     """
 
@@ -215,6 +220,8 @@ class ArtifactDetailWire(StrictModel):
         inputs: The run's recorded ``_inputs``.
         resolved: Which upstream each of its references pinned to.
         frame_range: The recorded ``(frame_start, frame_end)``.
+        time_window: The recorded ``(start, end)`` window of ``time`` in seconds,
+            ``(None, None)`` for a run over every row.
         overlap_frames: The recorded overlap width.
         scope_entries: How many entries its latest invocation's scope named.
         mosaic_version: The toolkit version that wrote it, ``""`` when unknown.
@@ -231,6 +238,7 @@ class ArtifactDetailWire(StrictModel):
     inputs: tuple[JsonValue, ...]
     resolved: tuple[ResolvedWire, ...]
     frame_range: tuple[int | None, int | None]
+    time_window: tuple[float | None, float | None] = (None, None)
     overlap_frames: int
     scope_entries: int
     mosaic_version: str
@@ -673,6 +681,12 @@ def _kept(coverage: Coverage[AnyKey], kept: frozenset[Entry]) -> Coverage[AnyKey
     )
 
 
+def _window_of(params: RunParams | None) -> tuple[float | None, float | None]:
+    """Return the recorded time window of *params*, open when it records none."""
+    window = TimeWindow() if params is None else params.time_window()
+    return (window.start, window.end)
+
+
 def _detail(record: ArtifactRecord[AnyKey]) -> ArtifactDetailWire:
     """Return *record* in depth, re-reading a feature run's ``params.json`` for its finding."""
     finding = ""
@@ -690,6 +704,7 @@ def _detail(record: ArtifactRecord[AnyKey]) -> ArtifactDetailWire:
         if params
         else (),
         frame_range=params.frames() if params else (None, None),
+        time_window=_window_of(params),
         overlap_frames=params.overlap_frames if params else 0,
         scope_entries=len(params.entry_scope()) if params else 0,
         mosaic_version=params.mosaic_version if params else "",

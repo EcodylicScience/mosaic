@@ -3,7 +3,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, NamedTuple, Optional, Tuple, cast
+from typing import Final, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -935,41 +935,6 @@ def filter_time_range(
         mask &= df[time_col] < filter_end_time
 
     return df.loc[mask].reset_index(drop=True)
-
-
-class TimeWindow(NamedTuple):
-    """A window of ``time`` in seconds, half-open: ``start <= time < end``.
-
-    A bound left ``None`` is open. The window filters rows on the ``time`` column
-    and is never converted to frames, so it needs no frame rate and keeps exactly
-    the rows whose ``time`` falls in it on a table that dropped frames.
-    """
-
-    start: float | None = None
-    end: float | None = None
-
-    @property
-    def is_set(self) -> bool:
-        """Whether either bound is set."""
-        return self.start is not None or self.end is not None
-
-
-def check_one_filter_per_boundary(
-    start_frame: int | None,
-    end_frame: int | None,
-    start_time: float | None,
-    end_time: float | None,
-) -> None:
-    """Refuse a boundary that is set as a frame and as a time.
-
-    Raises:
-        ValueError: If a frame and a time are both set for the start, or both
-            for the end.
-    """
-    if start_frame is not None and start_time is not None:
-        raise ValueError("Cannot set both start_frame and start_time")
-    if end_frame is not None and end_time is not None:
-        raise ValueError("Cannot set both end_frame and end_time")
 
 
 # =============================================================================

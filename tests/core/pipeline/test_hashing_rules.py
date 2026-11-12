@@ -24,7 +24,7 @@ import pytest
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
-from mosaic.core.helpers import TimeWindow
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.pipeline._utils import (
     ResolvedScope,
     hash_params,

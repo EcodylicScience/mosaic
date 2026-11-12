@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.core.helpers import TimeWindow
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import params as params_module
 from mosaic.core.pipeline.inventory.params import (

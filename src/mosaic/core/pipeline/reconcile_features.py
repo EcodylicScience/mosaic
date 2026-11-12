@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, TypeGuard
 
 from pydantic import ValidationError
 
-from mosaic.core.helpers import TimeWindow
+from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.storage_names import feature_slug_of
 from mosaic.core.pipeline.dataset_indexes import feature_storages
