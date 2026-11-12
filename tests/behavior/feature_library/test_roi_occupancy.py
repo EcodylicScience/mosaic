@@ -11,24 +11,24 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-import mosaic.core.pipeline.arena_index as arena_index_module
 from mosaic.behavior.feature_library.roi_occupancy import RoiOccupancy
 from mosaic.behavior.feature_library.scale_to_cm import ScaleToCm
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
-from mosaic.core.arenas import Arena, ArenaKey, ArenaLayout, Rect
+from mosaic.core.arenas import Arena, ArenaLayout, Rect
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.pipeline.arena_index import IndexedLayout, arena_index_path
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.track_space import TrackSpaceRefused
 from mosaic.core.pipeline.types import Result
 from mosaic.core.regions import CircleShape, PolygonShape, RectShape, RingShape, Roi
 from tests.helpers import (
+    Counted,
     MediaClip,
     add_tracks_table,
     entry_error_lines,
     make_dataset,
+    refuse_index,
     write_media_index,
 )
 
@@ -601,27 +601,6 @@ class TestUnits:
 # --- reading the layout ---------------------------------------------------------
 
 
-class _Counted:
-    """Counts the calls of the two index reads the arena lookup makes."""
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.rows = 0
-        self.cameras = 0
-        read_rows = arena_index_module.read_arena_index_rows
-        read_cameras = arena_index_module.media_cameras
-
-        def rows(ds: Dataset) -> dict[ArenaKey, IndexedLayout]:
-            self.rows += 1
-            return read_rows(ds)
-
-        def cameras(ds: Dataset) -> dict[Entry, set[str]]:
-            self.cameras += 1
-            return read_cameras(ds)
-
-        monkeypatch.setattr(arena_index_module, "read_arena_index_rows", rows)
-        monkeypatch.setattr(arena_index_module, "media_cameras", cameras)
-
-
 FOUR = tuple(("", f"seq_{index}") for index in range(4))
 
 
@@ -648,7 +627,7 @@ class TestLayoutReading:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         ds = _four_arenas(tmp_path)
-        counted = _Counted(monkeypatch)
+        counted = Counted(monkeypatch)
 
         _, outputs = _run(
             ds, PARAMS_READING_ARENAS, parallel_workers=2, parallel_mode="thread"
@@ -901,14 +880,6 @@ def applied(monkeypatch: pytest.MonkeyPatch) -> _Applied:
     return _Applied(monkeypatch)
 
 
-def _refuse_index(ds: Dataset) -> None:
-    """Make the arenas index unreadable, as a hand edit can."""
-    path = arena_index_path(ds)
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    rows["n_arenas"] = "many"
-    rows.to_csv(path, index=False)
-
-
 class TestCompositionAndDrift:
     def test_a_run_serves_its_cache(self, tmp_path: Path, applied: _Applied) -> None:
         ds = _four_arenas(tmp_path)
@@ -960,7 +931,7 @@ class TestCompositionAndDrift:
         self, tmp_path: Path
     ) -> None:
         ds = _four_arenas(tmp_path)
-        _refuse_index(ds)
+        refuse_index(ds)
 
         assert run_feature(ds, SpeedAngvel()).failed_entries == ()
         with pytest.raises(AllEntriesFailed):

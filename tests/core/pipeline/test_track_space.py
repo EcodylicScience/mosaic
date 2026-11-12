@@ -113,11 +113,11 @@ class _PassThrough(_WorldFeature):
         return df
 
 
-def _dataset(tmp_path: Path, *schemas: str, unlabelled: bool = False) -> Dataset:
+def _dataset(tmp_path: Path, *schemas: str, unlabeled: bool = False) -> Dataset:
     """A dataset with one entry per schema, named ``seq_0``, ``seq_1``, ...
 
-    Each table is in its own tracks variant, or in the unlabelled one (``""``)
-    under *unlabelled*.
+    Each table is in its own tracks variant, or in the unlabeled one (``""``)
+    under *unlabeled*.
     """
     manifest = new_dataset_manifest(name="spaces", base_dir=tmp_path / "dataset")
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
@@ -128,7 +128,7 @@ def _dataset(tmp_path: Path, *schemas: str, unlabelled: bool = False) -> Dataset
             if schema == "mosaic_world_v1"
             else track_table("", sequence, n_rows=10)
         )
-        variant = "" if unlabelled else f"convert-x{index}.0.1-{index:010d}"
+        variant = "" if unlabeled else f"convert-x{index}.0.1-{index:010d}"
         add_tracks_table(dataset, variant, table, std_format=schema)
     return dataset
 
@@ -358,7 +358,7 @@ def _smoothed(dataset: Dataset, *, times: int = 1) -> Result:
     return Result(feature=produced.feature, run_id=produced.run_id)
 
 
-def test_the_tracks_edge_keeps_the_unlabelled_variant_and_skips_a_null() -> None:
+def test_the_tracks_edge_keeps_the_unlabeled_variant_and_skips_a_null() -> None:
     params = RunParams.model_validate(
         {
             "_inputs": ["tracks"],
@@ -374,9 +374,9 @@ def test_the_tracks_edge_keeps_the_unlabelled_variant_and_skips_a_null() -> None
     assert params.consumed_tracks_variants() == {"", "v1"}
 
 
-def test_a_run_over_the_unlabelled_tracks_records_no_variant(tmp_path: Path) -> None:
-    """``run_feature`` records labelled variants only, so the walk reads the rest."""
-    dataset = _dataset(tmp_path, "mosaic_cm_v1", unlabelled=True)
+def test_a_run_over_the_unlabeled_tracks_records_no_variant(tmp_path: Path) -> None:
+    """``run_feature`` records labeled variants only, so the walk reads the rest."""
+    dataset = _dataset(tmp_path, "mosaic_cm_v1", unlabeled=True)
     smoothed = _smoothed(dataset)
     assert smoothed.run_id is not None
 
@@ -397,11 +397,11 @@ def test_a_run_reading_no_tracks_read_no_variant() -> None:
     assert params.consumed_tracks_variants() == frozenset()
 
 
-@pytest.mark.parametrize("unlabelled", [False, True], ids=["labelled", "unlabelled"])
+@pytest.mark.parametrize("unlabeled", [False, True], ids=["labeled", "unlabeled"])
 def test_a_pixel_feature_is_refused_a_smoothed_centimeter_table(
-    tmp_path: Path, unlabelled: bool
+    tmp_path: Path, unlabeled: bool
 ) -> None:
-    dataset = _dataset(tmp_path, "mosaic_cm_v1", unlabelled=unlabelled)
+    dataset = _dataset(tmp_path, "mosaic_cm_v1", unlabeled=unlabeled)
     smoothed = _smoothed(dataset)
 
     with pytest.raises(TrackSpaceRefused) as excinfo:
@@ -415,14 +415,14 @@ def test_a_pixel_feature_is_refused_a_smoothed_centimeter_table(
     }
 
 
-def test_unlabelled_entries_beside_a_labelled_variant_are_read_as_unlabelled(
+def test_unlabeled_entries_beside_a_labeled_variant_are_read_as_unlabeled(
     tmp_path: Path,
 ) -> None:
-    """A part-migrated dataset: the run records the labelled variant of other entries.
+    """A part-migrated dataset: the run records the labeled variant of other entries.
 
     The variants a run records are collected before its scope narrows them, so
-    a run over the unlabelled entry ``b`` records the variant of entry ``a``.
-    The entries no recorded variant covers are read from the unlabelled tables.
+    a run over the unlabeled entry ``b`` records the variant of entry ``a``.
+    The entries no recorded variant covers are read from the unlabeled tables.
     """
     dataset = _dataset(tmp_path)
     add_tracks_table(
@@ -444,10 +444,10 @@ def test_unlabelled_entries_beside_a_labelled_variant_are_read_as_unlabelled(
     assert excinfo.value.detail["found"] == ["plane_cm"]
 
 
-def test_a_labelled_variant_covering_every_entry_reads_no_unlabelled_table(
+def test_a_labeled_variant_covering_every_entry_reads_no_unlabeled_table(
     tmp_path: Path,
 ) -> None:
-    """An unlabelled row loses to a labelled one, as the resolver decides."""
+    """An unlabeled row loses to a labeled one, as the resolver decides."""
     dataset = _dataset(tmp_path, "mosaic_v1")
     add_tracks_table(
         dataset, "", track_table("", "seq_0", n_rows=10), std_format="mosaic_cm_v1"

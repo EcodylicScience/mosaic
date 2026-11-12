@@ -283,9 +283,9 @@ class RunParams(BaseModel):
         """The tracks variants on this run's tracks edge.
 
         The rule of :meth:`consumed_run_ids` for the tracks edge: an empty
-        ``run_id`` is kept as the unlabelled variant, and a JSON ``null`` is
-        skipped. ``run_feature`` records labelled variants only, so a run over the
-        unlabelled tables alone records none.
+        ``run_id`` is kept as the unlabeled variant, and a JSON ``null`` is
+        skipped. ``run_feature`` records labeled variants only, so a run over the
+        unlabeled tables alone records none.
         """
         return frozenset(
             ref.run_id

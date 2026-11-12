@@ -193,7 +193,9 @@ class Feature(Protocol):
     came from": a feature consuming ``"tracks"`` declares ``()``, because
     ``tracks/`` is a *derived* root and the manifest already hands it the tables.
     It is the roots the feature reaches past its inputs to read -- today, the two
-    that open video through ``resolve_media`` / ``MultiVideoReader``.
+    that open video through ``resolve_media`` / ``MultiVideoReader``. ``"arenas"``
+    is the one root that is not a source root: it carries an entry's arena layout
+    digest, and no run is ever blind to it.
 
     **Why a tracks-consuming feature declares nothing.** If it carried
     ``tracks_raw``'s composition, a change under ``tracks_raw`` would move its

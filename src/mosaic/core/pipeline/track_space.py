@@ -169,7 +169,7 @@ def _variant_track_schemas(
 
     Args:
         ds: The dataset whose tracks index to read.
-        variant: The tracks variant, ``""`` for the unlabelled tables, or
+        variant: The tracks variant, ``""`` for the unlabeled tables, or
             ``None`` for whichever each entry has.
         entries: The entries to read.
         read: The answers already read, filled in place.
@@ -210,12 +210,12 @@ def upstream_track_spaces(
     embeddings, and a run without a readable ``params.json`` contribute nothing.
 
     A run that read ``tracks`` is read as the resolver chose its tables: each
-    labelled variant on its tracks edge
+    labeled variant on its tracks edge
     (:meth:`RunParams.consumed_tracks_variants`) over *entries*, then the
-    unlabelled tables over the entries no labelled variant holds, since an
-    unlabelled row loses to a labelled one. ``run_feature`` records labelled
+    unlabeled tables over the entries no labeled variant holds, since an
+    unlabeled row loses to a labeled one. ``run_feature`` records labeled
     variants only, and records them before its scope narrows them, so the
-    entries the edge does not cover are read from the unlabelled tables.
+    entries the edge does not cover are read from the unlabeled tables.
 
     Args:
         ds: The dataset holding the run.

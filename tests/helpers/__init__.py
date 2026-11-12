@@ -13,6 +13,8 @@ What lives where:
 - ``datasets`` -- the `Dataset` a test runs against.
 - ``driver_leases``: the lease of a request's driver, live or stale.
 - ``agents``: a stand-in for the detached driver that an MCP submission starts.
+- ``arenas``: a count of the arenas index reads that a run makes, and a damaged
+  arenas index.
 - ``catalogs``: the declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
   output.
@@ -117,6 +119,7 @@ there. Their bodies delegate here, so the logic has one home either way.
 from __future__ import annotations
 
 from tests.helpers.agents import RecordingStarter
+from tests.helpers.arenas import Counted, refuse_index
 from tests.helpers.annotations import (
     KEYPOINTS_PAYLOAD,
     MOUSE,
@@ -517,6 +520,7 @@ __all__ = [
     "with_params",
     "CONSUMER_OWNED",
     "CONVERT_TRACKS_STEP",
+    "Counted",
     "CHILD_TIMEOUT_SECONDS",
     "CI_FERAL_MODULES",
     "CI_LIGHTNING_ACTION_MODULES",
@@ -754,6 +758,7 @@ __all__ = [
     "rewrite_index",
     "rule_reaching_op_params",
     "read_line",
+    "refuse_index",
     "run_child",
     "run_over_labeled_tracks",
     "run_fresh",

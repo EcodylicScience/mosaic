@@ -174,6 +174,10 @@ importing `mosaic.tracking` registers neither.
   `Roi` and the polygon's validity check, and imports pydantic, the standard library,
   `params` and `strict_model` only (`tests/meta/test_core_params_is_a_leaf.py`). It
   holds no numpy.
+- `region_geometry.py` is the numpy half: signed distance, containment, placement
+  against an arena's boundary, the center distance and the boundary estimate. It imports
+  numpy, the standard library and `regions` only, and neither `arenas.py`, `regions.py`
+  nor `agent/mcp/spec.py` imports it (`tests/meta/test_core_params_is_a_leaf.py`).
 - `arenas.py` declares a layout and its lookup order, and imports pydantic,
   `entry`, `recording` and `regions` only (`tests/meta/test_core_params_is_a_leaf.py`).
   An arena's `boundary` (a circle or a polygon, told apart by `kind`) and `rois` leave
@@ -201,6 +205,8 @@ importing `mosaic.tracking` registers neither.
   twice refuses the op. A layout file that is missing, unparsable or edited against its
   row fails the entries whose row names it, and a file no entry of the scope needs is
   not read.
+- A feature that declares `arenas` in `consumed_roots` records the entry's layout digest
+  as its `arenas` composition ([core.pipeline guide](pipeline/CLAUDE.md#compositions)).
 
 ## The `group` column
 

@@ -10,12 +10,11 @@ import pandas as pd
 import pytest
 
 import mosaic.core.pipeline.arena_index as arena_index_module
-from mosaic.core.arenas import Arena, ArenaKey, ArenaLayout, Rect
+from mosaic.core.arenas import Arena, ArenaLayout, Rect
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
 from mosaic.core.pipeline.arena_index import (
     ARENA_LOOKUP_CACHE,
-    IndexedLayout,
     arena_index_path,
     arenas_compositions,
     cached_arena_lookup,
@@ -37,11 +36,13 @@ from mosaic.core.pipeline.types import Result
 from mosaic.core.pipeline.types.feature import EmitsLevel
 from mosaic.core.scope import Scope
 from tests.helpers import (
+    Counted,
     MediaClip,
     PlainFeature,
     add_track_sequences,
     convert_tracks_from_raw,
     make_dataset,
+    refuse_index,
     write_media_index,
 )
 
@@ -98,14 +99,6 @@ def _set(ds: Dataset, entry: Entry, layout: ArenaLayout, camera: str = "") -> st
     return layout.digest()
 
 
-def _refuse_index(ds: Dataset) -> None:
-    """Make the arenas index unreadable, as a hand edit can."""
-    path = arena_index_path(ds)
-    rows = pd.read_csv(path, dtype=str, keep_default_na=False)
-    rows["n_arenas"] = "many"
-    rows.to_csv(path, index=False)
-
-
 @pytest.fixture
 def dataset(tmp_path: Path) -> Dataset:
     """Three undivided recordings, ``seq_a`` and ``seq_b`` with layouts."""
@@ -116,30 +109,9 @@ def dataset(tmp_path: Path) -> Dataset:
     return ds
 
 
-class _Counted:
-    """Counts the calls of the two index reads the lookup makes."""
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.rows = 0
-        self.cameras = 0
-        read_rows = arena_index_module.read_arena_index_rows
-        read_cameras = arena_index_module.media_cameras
-
-        def rows(ds: Dataset) -> dict[ArenaKey, IndexedLayout]:
-            self.rows += 1
-            return read_rows(ds)
-
-        def cameras(ds: Dataset) -> dict[Entry, set[str]]:
-            self.cameras += 1
-            return read_cameras(ds)
-
-        monkeypatch.setattr(arena_index_module, "read_arena_index_rows", rows)
-        monkeypatch.setattr(arena_index_module, "media_cameras", cameras)
-
-
 @pytest.fixture
-def counted(monkeypatch: pytest.MonkeyPatch) -> _Counted:
-    return _Counted(monkeypatch)
+def counted(monkeypatch: pytest.MonkeyPatch) -> Counted:
+    return Counted(monkeypatch)
 
 
 def _cached_keys(ds: Dataset) -> list[object]:
@@ -178,7 +150,7 @@ class TestArenasCompositions:
     def test_a_refused_index_leaves_every_entry_without_one_and_says_so_once(
         self, dataset: Dataset, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        _refuse_index(dataset)
+        refuse_index(dataset)
 
         first = arenas_compositions(dataset, [A, B])
         second = arenas_compositions(dataset, [A, B])
@@ -189,7 +161,7 @@ class TestArenasCompositions:
 
 class TestCachedArenaLookup:
     def test_repeated_calls_read_each_index_once(
-        self, dataset: Dataset, counted: _Counted
+        self, dataset: Dataset, counted: Counted
     ) -> None:
         for _ in range(3):
             _ = cached_arena_lookup(dataset)
@@ -197,7 +169,7 @@ class TestCachedArenaLookup:
         assert (counted.rows, counted.cameras) == (1, 1)
 
     def test_a_layout_write_is_read_again(
-        self, dataset: Dataset, counted: _Counted
+        self, dataset: Dataset, counted: Counted
     ) -> None:
         before = cached_arena_lookup(dataset)
         digest = _set(dataset, C, _layout(400))
@@ -211,7 +183,7 @@ class TestCachedArenaLookup:
         assert len(_cached_keys(dataset)) == 1
 
     def test_a_media_index_write_is_read_again(
-        self, dataset: Dataset, counted: _Counted
+        self, dataset: Dataset, counted: Counted
     ) -> None:
         _ = cached_arena_lookup(dataset)
         write_media_index(dataset, ["seq_a"])
@@ -250,7 +222,7 @@ class TestRunIdentity:
         assert after.run_id != before.run_id
 
     def test_a_scope_free_identity_reads_neither_index(
-        self, dataset: Dataset, counted: _Counted
+        self, dataset: Dataset, counted: Counted
     ) -> None:
         _ = resolve_feature_identity(dataset, ArenaReader(), scope=Scope(entries=[A]))
 
@@ -338,7 +310,7 @@ class TestDrift:
     ) -> None:
         _ = _run(dataset)
         _ = run_feature(dataset, ScopedArenaReader())
-        _refuse_index(dataset)
+        refuse_index(dataset)
         _ = capsys.readouterr()
 
         found = inventory(dataset, kinds=["feature"])
@@ -386,7 +358,7 @@ def test_source_reads_run_as_before_on_a_refused_index(
 ) -> None:
     """Conversion, the source compositions and a run without ``arenas`` read no
     arenas index."""
-    _refuse_index(dataset)
+    refuse_index(dataset)
     for name in ("read_arena_index_rows", "media_cameras", "cached_arena_lookup"):
         monkeypatch.setattr(arena_index_module, name, _refusing(name))
     write_media_index(dataset, ["seq_a"])

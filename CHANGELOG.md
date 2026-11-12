@@ -10,12 +10,11 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: ROI occupancy and arena geometry
 
-The `pydantic` requirement rises from `>=2.12` to `>=2.12.3`. A field that leaves a
-default value out of a dump (`Field(exclude_if=...)`) first works at 2.12.3, and an
-arena's boundary and regions of interest will use it, so that a layout without them
-keeps its digest and its file bytes. `mosaic.core.regions` declares the shapes
-(`circle`, `ring`, `rect` and `polygon`) and the named `Roi` that those regions are
-made of.
+The `pydantic` requirement rises from `>=2.12` to `>=2.12.3`. `Field(exclude_if=...)`,
+checked at 2.12.3, lets an arena's boundary and regions of interest leave a dump while
+unset, so that a layout without them keeps its digest and its file bytes.
+`mosaic.core.regions` declares the shapes (`circle`, `ring`, `rect` and `polygon`) and
+the named `Roi` that those regions are made of.
 
 An arena may carry a `boundary` (a circle or a polygon, with its `kind` written) and a
 list of named `rois`, and `ArenaLayout.single(boundary, ...)` builds a one-arena layout
@@ -36,9 +35,8 @@ input schema no longer lists the layout's fields. The server validates it as an
 `--xs`/`--ys`, and `--rois FILE`, a JSON list of `Roi` that every arena of a grid or
 circle carries and that `--layout` refuses. `ArenaLayout.grid` takes the same list as
 `rois`, and a grid without it keeps its digest. A validation error fails with the
-validator's message. `mosaic
-arenas show` prints each arena's boundary kind and ROI names, and `--json` the whole
-layout.
+validator's message. `mosaic arenas show` prints each arena's boundary kind and ROI
+names, and `--json` the whole layout.
 
 `assign-arenas` reads the assignment digest, so no existing run id, variant id or
 composition moves, and adding a boundary or ROIs to a layout recomputes nothing. A
@@ -84,7 +82,7 @@ track-shaped run between them. A feature declaring fewer spaces is refused with
 tracks is refused by `plan_pipeline` and by `run_feature` with one message. A derived
 `Result`, such as the embeddings of `pose-egocentric`, shows its reader no space, and no
 run id moves. The tables behind a run are its recorded tracks variants, then the
-unlabelled tables for the entries none of them holds, so a part-migrated dataset is
+unlabeled tables for the entries none of them holds, so a part-migrated dataset is
 checked too. `RunParams.consumed_tracks_variants()` names the variants on a run's tracks
 edge, and `run_is_track_shaped` answers whether a stored run's output is track-shaped.
 

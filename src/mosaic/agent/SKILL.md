@@ -227,11 +227,17 @@ A dataset is a directory with `dataset.yaml` and named roots
   pair only within one arena. A run fails `nearest-neighbor`, the group metrics,
   `social-motion-summary`, `attention-target`, `nn-delta-response` and
   `nn-delta-bins` on an entry of several arenas
-  (https://ecodylicscience.github.io/mosaic/concepts/features/#arenas).
+  (https://ecodylicscience.github.io/mosaic/concepts/features/#arenas). One circular
+  arena is `mosaic arenas set --circle CX,CY,R`. An arena may also carry a `boundary` (a
+  circle or polygon) and named `rois`: `--rois FILE`, a JSON list, gives every arena of a
+  grid or circle the same ones, and `mosaic arenas show` lists each arena's boundary and
+  region names.
 - Time in a region of an arena: run `roi-occupancy` with `rois` naming regions
   stored on the arenas or defined inline. Each row gains `in_<roi>`, `dist_<roi>`
   in pixels and `roi`, the first region holding it. Read pixel tracks, not a
-  `scale-to-cm` result: scale the `dist_*` columns afterwards.
+  `scale-to-cm` result: scale the `dist_*` columns afterwards. Without a declared
+  boundary, `boundary="estimate"` fits one to the positions:
+  https://ecodylicscience.github.io/mosaic/guides/analysis/features/#time-in-regions.
 - Classifiers: https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
 

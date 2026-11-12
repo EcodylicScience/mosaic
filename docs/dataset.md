@@ -479,6 +479,89 @@ The layouts are stored in `arenas/`, one JSON file per recording and camera, and
 `arenas/index.csv` records each file's digest. A file edited by hand is refused when it
 is read. Set it again instead.
 
+**The layout's fields.** A layout file holds an `ArenaLayout` as JSON, and
+`manage_dataset`'s `arena_layout` holds the same object, which the server validates:
+
+- `space`: `"image_px"`, the only value, and `width` and `height`, the frame.
+- `arenas`, each with `name`, `region` (`{x0, y0, x1, y1}`, half-open source pixels),
+  `exclude` (rectangles inside the region whose rows are dropped), `capacity`,
+  `boundary` and `rois`. The last two are below.
+
+**A circular arena.** An arena may carry a `boundary`, its wall as drawn: a circle
+`{"kind": "circle", "cx": 320, "cy": 240, "r": 200}` or a polygon
+`{"kind": "polygon", "vertices": [[x, y], ...]}`, in source pixels. `kind` is always
+written. The `region` stays the rectangle that holds the arena, and the boundary must
+lie inside it once clipped to the frame. An arena without a boundary is bounded by its
+region. `--circle CX,CY,R` declares one circular arena, whose region is the circle's
+bounding box, and `--capacity` applies to it. `--circle` clips the box only at
+`x, y >= 0` and takes the frame from the box. `ArenaLayout.single(..., width=, height=)`
+clips to a frame you give, so use it for a circle that reaches past the camera's right or
+bottom edge.
+
+```bash
+mosaic arenas set -m dataset.yaml -r flies01 --circle 320,240,200
+```
+
+```python
+from mosaic.core.arenas import ArenaLayout
+from mosaic.core.regions import CircleShape
+
+layout = ArenaLayout.single(CircleShape(cx=320, cy=240, r=200), width=640, height=480)
+```
+
+**Regions of interest.** An arena may also carry named `rois`: a feeder, a nest, the
+wall's outer ring. Each is a `Roi` of a `name`, a `shape`, a `placement` and an
+`anchor`. A name is lowercase letters, digits and `_`, starts with a letter, and is at
+most 32 characters. `none` is reserved, because `roi-occupancy` writes it for a position
+inside no region. A shape is a `circle` (`cx`, `cy`, `r`), a `ring` (`cx`, `cy`,
+`r_inner`, `r_outer`), a `rect` (`x0`, `y0`, `x1`, `y1`) or a `polygon` (`vertices`),
+with `kind` written and float coordinates.
+
+- `placement: "absolute"` (the default) takes the shape in source pixels, and the
+  `anchor` stays `center`.
+- `placement: "arena"` takes the coordinates as offsets from an `anchor` of the arena's
+  boundary, so one definition fits every arena, wherever it sits in the frame. An `x`
+  offset is a fraction of the boundary's half-width, a `y` offset of its half-height, and
+  a radius of half its shorter side. For a circular boundary every unit is its radius.
+  `center` is the boundary's center (a polygon's area centroid), and `top`, `bottom`,
+  `left`, `right`, `top_left`, `top_right`, `bottom_left` and `bottom_right` are points
+  of its bounding box. The `y` axis grows downward.
+
+Four relative regions:
+
+- `middle`, the disc of half the arena's radius, in a circular arena.
+- `wall`, the outer fifth of a circular arena, where a wall-following animal walks.
+- `nest`, the corner fifth of each side, in a rectangular arena.
+- `inner`, the inscribed circle of a rectangular arena.
+
+```json
+[
+  {"name": "middle", "placement": "arena", "shape": {"kind": "circle", "cx": 0, "cy": 0, "r": 0.5}},
+  {"name": "wall", "placement": "arena", "shape": {"kind": "ring", "cx": 0, "cy": 0, "r_inner": 0.8, "r_outer": 1.0}},
+  {"name": "nest", "placement": "arena", "anchor": "top_left", "shape": {"kind": "rect", "x0": 0, "y0": 0, "x1": 0.4, "y1": 0.4}},
+  {"name": "inner", "placement": "arena", "shape": {"kind": "circle", "cx": 0, "cy": 0, "r": 1.0}}
+]
+```
+
+`--rois FILE`, a JSON list of `Roi`, gives every arena of a grid or a circle those
+regions, and `ArenaLayout.grid` and `ArenaLayout.single` take them as `rois`. A layout
+file names its own, so `--layout` refuses `--rois`. `mosaic arenas show` prints each
+arena's boundary kind and region names, and `--json` the whole layout. A layout that
+fails validation is refused with the validator's message. A layout with a boundary or
+regions is stored under a new digest, and a toolkit without arena boundaries refuses
+the file.
+
+**Time in a region.** The `roi-occupancy` feature reads the regions and writes, per row,
+whether the animal is in each (`in_<name>`), its signed distance to each edge
+(`dist_<name>`) and the first region that holds it (`roi`): see [Time in
+regions](guides/analysis/features.md#time-in-regions). Every coordinate is in source
+pixels, and so is every distance. The feature refuses a table that `scale-to-cm` or
+`scale-to-bl` made. Read the pixel tracks, then scale the distances with `scale-to-cm`
+and `columns=["dist_nest"]`. A chain that passes through `scale-to-cm` or `scale-to-bl`
+further upstream, such as `scale-to-cm`, then `trajectory-smooth`, then `roi-occupancy`,
+is not caught: it reads centimeters as pixels. Keep `scale-to-cm` and `scale-to-bl` out
+of the chain before `roi-occupancy`.
+
 **Assign the arenas.** The `assign-arenas` op reads a tracks variant and writes a new
 one, as `resample-tracks` does. Each row gains `arena`, the tank that contains its body
 center (`X`, `Y`). A row in an excluded rectangle, in no tank or without a position is
@@ -494,9 +577,11 @@ mosaic run -m dataset.yaml --kind assign-arenas --params '{}'
 
 Run the features on the assigned variant. A feature that pairs animals pairs only
 within one arena, and a feature that measures across animals without arenas is refused
-on a recording with several (see [Features](concepts/features.md#arenas)). Changing a
-layout recomputes that recording's assigned tables at the next run, and the features
-that read them.
+on a recording with several (see [Features](concepts/features.md#arenas)). Changing an
+arena's region, exclude, capacity or name, or the frame, recomputes that recording's
+assigned tables at the next run, and the features that read them. Adding or changing a
+boundary or rois recomputes no assigned table, because the op assigns by region. Only a
+feature that reads them, such as `roi-occupancy`, recomputes.
 
 ## Hold groups out of training
 

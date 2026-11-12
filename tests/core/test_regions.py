@@ -140,7 +140,7 @@ def test_a_polygon_whose_vertex_touches_a_non_adjacent_edge_is_refused() -> None
 def test_a_shape_is_frozen() -> None:
     shape = CircleShape(cx=0.0, cy=0.0, r=1.0)
     with pytest.raises(ValidationError, match="frozen"):
-        shape.r = 2.0  # pyright: ignore[reportAttributeAccessIssue]
+        setattr(shape, "r", 2.0)
 
 
 @pytest.mark.parametrize("name", ["center", "a", "nest_2", "a" * 32])

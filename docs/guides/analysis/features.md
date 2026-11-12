@@ -47,7 +47,8 @@ chain of keypoints, or one a tracker measured), `scale-to-cm`, `scale-to-bl` (le
 body lengths, for comparing animals of different sizes), `individual-wavelet` (the log
 power of chosen columns at a band of frequencies), `track-subsample`, and, for 3D tracks
 in the world frame, `pose-egocentric` (each keypoint in the animal's own body frame,
-from a left-right pair or a front-rear pair of keypoints).
+from a left-right pair or a front-rear pair of keypoints), and `roi-occupancy` (which
+regions of an arena each position lies in; see [Time in regions](#time-in-regions)).
 
 **Whatever came in.** `temporal-stack` (gives a frame its context window) and the
 global fitters below key their output the way their input was keyed, so they sit at
@@ -278,6 +279,84 @@ Exclude the marks where per-frame values become per-animal numbers. Put the
 `exclude_cols`, as `social-motion-summary` and `ffgroups-metrics` take them.
 `social-motion-summary` refuses a recipe whose inputs lack a column it names. With
 `exclude_scope="frame"`, one flagged animal excludes its whole frame in its arena.
+
+## Time in regions
+
+`roi-occupancy` says where in its arena each animal is. A region is a named shape:
+a feeder, a nest, the disc around the center. For each region it writes `in_<name>`
+(null where the row has no position) and `dist_<name>`, the signed distance to the
+region's edge in pixels, negative inside. `roi` names the first region that holds the
+row, in `priority` order, and `none` when the animal is seen outside every region. A row
+without a position has a null `roi`, not `none`. Regions are defined inline in `rois`,
+or stored on the arenas of a layout and named there ([Arenas](../../dataset.md#arenas)
+has the shapes, placement and anchors).
+
+**An arena you did not declare.** Flies walking a circular dish, where you want the time
+in the center disc, need no layout. `boundary="estimate"` fits a circle to the extent of
+each arena's positions, and a region placed relative to the arena resolves against that
+fit:
+
+```python
+from mosaic.behavior.feature_library import RoiOccupancy
+from mosaic.core.regions import CircleShape, Roi
+
+center = Roi(name="center", placement="arena", shape=CircleShape(cx=0, cy=0, r=0.5))
+ds.run_feature(RoiOccupancy(params={"rois": [center], "boundary": "estimate"}))
+```
+
+The fit is written beside the occupancy as `boundary_cx`, `boundary_cy` and
+`boundary_r`, constant within an arena, with `boundary_rows`, the positions it read. Check
+it against the video or across entries. It suits animals that reach the wall, as
+wall-following flies do. A sparse track underestimates the arena, and the recorded radius
+shows it. `estimate_quantile` trims outlying positions, and `estimate_shape="rect"` fits a
+rectangle. The fit reads every frame of the arena, so it depends on the frame range.
+
+**A region on each tank.** For a grid of tanks, store the region on the layout, assign the
+arenas, and run the feature on the assigned variant. Each row tests its own tank's
+region:
+
+```python
+from mosaic.core.arenas import ArenaLayout
+from mosaic.core.regions import RectShape, Roi
+
+feeder = Roi(
+    name="feeder",
+    placement="arena",
+    anchor="right",
+    shape=RectShape(x0=-0.3, y0=-0.2, x1=0, y1=0.2),
+)
+layout = ArenaLayout.grid(xs=[0, 506, 1012], ys=[0, 534, 1068], rois=[feeder])
+ds.set_arena_layout(layout, group="tanks01")
+```
+
+The layout is set per recording: `group=` names the recording's group, and `sequence=`
+names an undivided recording's sequence. Set it again for each recording.
+
+```bash
+mosaic run -m dataset.yaml --kind assign-arenas --params '{}'
+mosaic run -m dataset.yaml --feature roi-occupancy \
+    --tracks-run-id assign-arenas.0.1-<digest> --params '{"rois": ["feeder"]}'
+```
+
+`--tracks-run-id` names the assigned tracks variant, not the `run_id` that the first
+command prints. `mosaic inventory -m dataset.yaml` lists the variant as
+`tracks-variant/assign-arenas.0.1-<digest>`, and the part after the slash is the id.
+
+A stored name that an arena lacks fails that entry, naming both. An entry of several
+arenas needs the `arena` column that `assign-arenas` writes.
+
+**Distance from the center.** `center_distance=true` adds `arena_center_dist`, the
+distance in pixels from the boundary's center, and `arena_radius_norm`, that distance as
+a fraction of the way to the wall: 0 at the center, 1 on the wall. On a concave polygon
+the wall is the nearest crossing, so a position beyond a notch reads above 1 although it
+is inside. Use a circle or a rect boundary, or regions, where that matters.
+
+**Pixels only.** Positions, regions and distances are source pixels. The feature refuses
+the output of `scale-to-cm` and `scale-to-bl`. Read the pixel tracks, then scale the
+distances: `scale-to-cm` with `columns=["dist_feeder"]` writes `dist_feeder_cm`. A chain
+that passes through `scale-to-cm` or `scale-to-bl` further upstream is not caught and
+reads scaled units as pixels, so keep `scale-to-cm` and `scale-to-bl` out of the chain
+before `roi-occupancy`.
 
 ## The rule that catches most mistakes
 

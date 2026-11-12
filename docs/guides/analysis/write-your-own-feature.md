@@ -31,7 +31,7 @@ Nine attributes and four methods.
 | `accepts_overlap` | Whether `apply` may be handed rows from neighboring sequences |
 | `emits` | At what entity level the output rows are keyed |
 | `follows_ids` | Whether `apply` follows `id` across frames; `True` unless it reads each row alone. A feature that declares nothing reads `True` |
-| `consumed_roots` | Source roots the feature opens directly, past its inputs |
+| `consumed_roots` | Source roots the feature opens directly, past its inputs, and `arenas`, the one non-source root, which carries an entry's layout digest and is never blind |
 
 ```python
 def load_state(self, run_root, artifact_paths, dependency_lookups) -> bool: ...

@@ -1293,8 +1293,8 @@ class ManageDatasetInput(ToolInput):
             "capacity, boundary (a circle {kind, cx, cy, r} or a polygon {kind, "
             "vertices}, kind always written, inside the region once clipped to "
             "the frame) and rois (named shapes: name, shape, placement, anchor). "
-            "assign-arenas then names each tracks row's arena. See the Arenas "
-            "section of docs/dataset.md."
+            "assign-arenas then names each tracks row's arena. See "
+            "https://ecodylicscience.github.io/mosaic/dataset/#arenas."
         ),
     )
     tags: dict[str, TagValue] | None = Field(

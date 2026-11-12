@@ -207,7 +207,7 @@ are in `graph/CLAUDE.md`.
 - `arenas` is a composition root outside `SourceRoot`: an entry's layout digest
   (`arenas_compositions`, `arena_index.py`), read only where a feature declares it in
   `consumed_roots`. `build_manifest(consumed_roots=...)`, `resolve_feature_identity`
-  (for a scope-dependent feature), `drifted_entries` (`DriftReads.arenas`) and
+  (for a scope-dependent feature), `drifted_entries` (`DriftReads.arena_lookup`) and
   `provenance._current_compositions` merge it. Each reads through
   `cached_arena_lookup`, one read of the arenas and media indexes per process for
   each state of the two files. `read_entry_compositions` never reads it, so tracks
@@ -221,15 +221,15 @@ are in `graph/CLAUDE.md`.
 
 ## Inputs and claims
 
-- **A track-shaped input records the spaces of the tracks behind it.** For a
-  `Result` input of a `_track_input` class, `build_manifest` adds to
-  `ResolvedScope.track_spaces` the schema spaces of the tables the upstream run read,
-  following each track-shaped run upstream (`upstream_track_spaces`,
-  `track_space.py`). The plan makes the same walk. A run's tables are the labelled
-  variants on its tracks edge (`RunParams.consumed_tracks_variants`), then the
-  unlabelled tables for the entries none of them holds, because `run_feature` records
-  labelled variants only. The walk reads footers (`run_is_track_shaped`) and
-  `params.json`, never `FEATURES`, so a derived `Result` adds nothing
+- **A track-shaped input records the spaces of the tracks behind it.** For a `Result`
+  input of a `_track_input` class, `build_manifest` adds to `ResolvedScope.track_spaces`
+  the schema spaces of the tables the upstream run read, following each track-shaped run
+  upstream (`upstream_track_spaces`, `track_space.py`). Step preflight
+  (`graph/step_preflight.py`) makes the same walk. A run's tables are the labeled
+  variants on its tracks edge (`RunParams.consumed_tracks_variants`), then the unlabeled
+  tables for the entries none of them holds, because `run_feature` records labeled
+  variants only. The walk reads footers (`run_is_track_shaped`) and `params.json`, never
+  `FEATURES`, so a derived `Result` adds nothing
   (`tests/core/pipeline/test_track_space.py`).
 - `alignment_verdict` (`loading.py`) decides whether inputs merge, and the merge
   raises `MultiInputAlignmentError` from it. Individual-level against pair-level
