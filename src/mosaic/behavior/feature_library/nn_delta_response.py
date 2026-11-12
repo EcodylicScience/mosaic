@@ -31,10 +31,8 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
-from .helpers import ego_rotate, wrap_angle
+from .helpers import ego_rotate, ensure_columns, wrap_angle
 from .registry import register_feature
-from .types import SamplingConfig
 
 _SPEED_COL_DESCRIPTION = (
     "The focal individual's speed column. Falls back to speed when absent."
@@ -100,8 +98,10 @@ _DIVIDE_DANGLE_BY_FRAMES_DESCRIPTION = (
 )
 
 _SCALE_DANGLE_BY_FPS_DESCRIPTION = (
-    "Multiply the heading change by the sampling frame rate. Together "
-    "with divide_dangle_by_frames this gives radians per second."
+    "Multiply the heading change by the window's own frame rate, its "
+    "frames over the seconds between its two rows (the time column). "
+    "Together with divide_dangle_by_frames this gives radians per "
+    "second, whatever frames the track dropped."
 )
 
 _TAG_COLS_DESCRIPTION = (
@@ -162,6 +162,32 @@ def windowed_delta(
     return delta, ok & (delta[:, frame_idx] == lags)
 
 
+def scaled_dangle(
+    dangle: np.ndarray,
+    lags: np.ndarray,
+    seconds: np.ndarray,
+    *,
+    divide_by_frames: bool,
+    scale_by_rate: bool,
+) -> np.ndarray:
+    """A windowed heading change, per frame and per window rate as asked.
+
+    ``divide_by_frames`` divides by the *lags* the windows span.
+    ``scale_by_rate`` multiplies by each window's own frame rate, its lag over
+    its *seconds*, so both together divide by the seconds a window lasted, and a
+    window across dropped frames is not read as one at the table's mean rate.
+    A window whose seconds are not positive has no rate and gives NaN.
+    """
+    out = dangle
+    if divide_by_frames:
+        out = out / lags
+    if scale_by_rate:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rate = np.where(seconds > 0.0, lags / seconds, np.nan)
+        out = out * rate
+    return out
+
+
 @final
 @register_feature
 class NearestNeighborDelta:
@@ -189,7 +215,7 @@ class NearestNeighborDelta:
 
     category = "per-frame"
     name = "nn-delta-response"
-    version = "0.3"
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-blind"
@@ -205,6 +231,7 @@ class NearestNeighborDelta:
         Column(C.x_col),
         Column(C.y_col),
         Column(C.orientation_col),
+        Column(C.time_col),
         AnyOf((ParamColumn("speed_col"), Column(_SPEED_FALLBACK))),
         AnyOf((ParamColumn("nn_id_col"), Column(_NN_ID_FALLBACK))),
     )
@@ -242,9 +269,6 @@ class NearestNeighborDelta:
         pass
 
     class Params(Params):
-        sampling: Annotated[SamplingConfig, Declared(SAMPLING_FPS_ONLY_DESCRIPTION)] = (
-            Field(default_factory=SamplingConfig)
-        )
         speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "SPEED"
         nn_id_col: Annotated[str, Declared(_NN_ID_COL_DESCRIPTION)] = "nn_id"
         nn_dx_ego_col: Annotated[str, Declared(_NN_DX_EGO_COL_DESCRIPTION)] = (
@@ -311,11 +335,11 @@ class NearestNeighborDelta:
         speed_col = p.speed_col if p.speed_col in df.columns else _SPEED_FALLBACK
         nn_id_col = p.nn_id_col if p.nn_id_col in df.columns else _NN_ID_FALLBACK
 
+        ensure_columns(df, [C.time_col])
         order_col = resolve_order_col(df)
         df = df.sort_values([order_col, C.id_col]).reset_index(drop=True)
 
         diff_n = p.diff_numframes
-        fps = p.sampling.fps_default
 
         # Optional neighbor focal lookup (frame + id -> focal flag)
         focal_lookup = None
@@ -329,8 +353,15 @@ class NearestNeighborDelta:
             if p.diff_numframes_col and p.diff_numframes_col in df.columns
             else None
         )
-        delta_cols = [C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]
-        i_x, i_y, i_ang, i_spd, i_frm = range(5)
+        delta_cols = [
+            C.x_col,
+            C.y_col,
+            C.orientation_col,
+            speed_col,
+            C.frame_col,
+            C.time_col,
+        ]
+        i_x, i_y, i_ang, i_spd, i_frm, i_sec = range(6)
 
         outputs: list[pd.DataFrame] = []
         for focal_id, g in iter_individuals(df, order_col):
@@ -350,11 +381,13 @@ class NearestNeighborDelta:
             dangle = fwd[ok_fwd, i_ang]
             if p.wrap_angle:
                 dangle = wrap_angle(dangle)
-            if p.divide_dangle_by_frames:
-                dangle = dangle / sel_lags
-            if p.scale_dangle_by_fps:
-                dangle = dangle * fps
-            rows["dangle"] = dangle
+            rows["dangle"] = scaled_dangle(
+                dangle,
+                sel_lags,
+                fwd[ok_fwd, i_sec],
+                divide_by_frames=p.divide_dangle_by_frames,
+                scale_by_rate=p.scale_dangle_by_fps,
+            )
             rows["dspeed"] = fwd[ok_fwd, i_spd]
             if lag_col is not None:
                 rows["dt_frames"] = sel_lags

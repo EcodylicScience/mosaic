@@ -73,6 +73,7 @@ Convert one format's raw labels into a labels variant of one kind.
 | `kind` | `string` | `"behavior"` |  | The label kind to convert into, such as 'behavior'. |
 | `source_format` | `string` | _required_ |  | The registered converter's src_format, such as 'calms21_npy'. One step converts one format and names one variant. |
 | `params` | `object` | `{}` |  | The label converter's own params, such as fps or group_from. A key the converter does not declare is refused. |
+| `tracks_run_id` | `string` \| `None` | `null` |  | The tracks variant that a converter of second-based events, such as BORIS, places its labels on. The labels variant names it, so labels on resampled tracks are a variant of their own. Unset uses the one variant the entries resolve to, and refuses entries that resolve to different ones. |
 
 #### `convert-points`
 
@@ -192,7 +193,7 @@ Merge revisions of keypoint annotation sets into one training dataset.
 
 #### `resample-tracks`
 
-Version `0.1` &middot; `mosaic.tracking.ops.resample.ResampleTracksOp`
+Version `0.2` &middot; `mosaic.tracking.ops.resample.ResampleTracksOp`
 
 Place a dataset's tracks tables on one uniform frame rate.
 

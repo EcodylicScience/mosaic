@@ -679,6 +679,7 @@ $ mosaic convert-labels [OPTIONS]
 * `--source-format <str>`: Source format (e.g. 'calms21_npy', 'boris_csv').
 * `--params <str>`: Converter params as JSON, @file.json, or @-.
 * `--overwrite`: Overwrite existing label files.
+* `--tracks-run-id <str>`: The tracks variant that second-based events are placed on. The labels variant names it. Unset uses the one variant every entry has, and refuses entries that have different ones.
 * `--json`: Emit the result as JSON.
 * `--help`: Show this message and exit.
 

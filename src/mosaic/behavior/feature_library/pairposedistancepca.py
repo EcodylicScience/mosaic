@@ -41,6 +41,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from .helpers import (
+    with_source_time,
     clean_tracks_grouped,
     ensure_columns,
     point_distances,
@@ -163,7 +164,7 @@ class PairPoseDistancePCA:
     name = "pair-posedistance-pca"
     # 0.3: `model` applies a basis fitted by another run. Without one the output
     # is that of 0.2, and the digest of the run id is unchanged.
-    version = "0.3"
+    version = "0.4"
     parallelizable = True
     scope_dependent = True
     fits = True  # learns its basis; ``__init__`` clears this for a run given a model
@@ -189,7 +190,7 @@ class PairPoseDistancePCA:
             Column("id2"),
             Column(C.seq_col),
         ),
-        conditional=kept(C.frame_col, C.group_col),
+        conditional=kept(C.frame_col, C.time_col, C.group_col),
     )
 
     ModelArtifact = PairPoseDistancePCAModelArtifact
@@ -331,6 +332,9 @@ class PairPoseDistancePCA:
         }
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return with_source_time(self._rows(df), df)
+
+    def _rows(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self._fitted:
             raise RuntimeError(
                 "pair-posedistance-pca: not fitted yet; run fit/partial_fit first."

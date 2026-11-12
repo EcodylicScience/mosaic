@@ -51,7 +51,15 @@ N_FRAMES = 96
 FPS = 30.0
 PAIRS = ((0, 1), (0, 2))
 PERSPECTIVES = (0, 1)
-IDENTITY_COLUMNS = ["frame", "perspective", "id1", "id2", "sequence", "group"]
+IDENTITY_COLUMNS = [
+    "frame",
+    "time",
+    "perspective",
+    "id1",
+    "id2",
+    "sequence",
+    "group",
+]
 
 
 def _feature(params: dict[str, object] | None = None) -> PairWavelet:
@@ -65,7 +73,7 @@ def _pairs(
     payload: dict[str, FloatArray] | None = None,
     *,
     seed: int = 7,
-    fps: object = None,
+    fps: float = FPS,
 ) -> pd.DataFrame:
     """Two pairs times two perspectives, in a shuffled row order.
 
@@ -79,6 +87,7 @@ def _pairs(
         for perspective in PERSPECTIVES:
             columns: dict[str, object] = {
                 "frame": np.arange(N_FRAMES, dtype=np.int64),
+                "time": np.arange(N_FRAMES) / fps,
                 "perspective": perspective,
                 "id1": id1,
                 "id2": id2,
@@ -88,8 +97,6 @@ def _pairs(
             names = ["PC0", "PC1"] if payload is None else list(payload)
             for name in names:
                 columns[name] = rng.normal(size=N_FRAMES) + rng.normal() * 3.0
-            if fps is not None:
-                columns["fps"] = fps
             blocks.append(pd.DataFrame(columns))
     table = pd.concat(blocks, ignore_index=True)
     order = np.random.default_rng(seed + 1).permutation(len(table))
@@ -204,7 +211,7 @@ def test_columns_order_sort_and_attrs() -> None:
 
 
 def test_time_replaces_frame_as_the_order_column_when_frame_is_absent() -> None:
-    table = _pairs(fps=FPS).rename(columns={"frame": "time"})
+    table = _pairs(fps=FPS).drop(columns="frame")
 
     out = _feature().apply(table)
 
@@ -280,31 +287,31 @@ def test_a_table_with_no_numeric_feature_column_raises() -> None:
         _feature().apply(table)
 
 
-def test_a_constant_fps_column_sets_the_frame_rate() -> None:
+def test_the_frame_rate_is_measured_from_the_time_column() -> None:
     table = _pairs(fps=60.0)
 
-    out = _feature({"sampling": {"fps_default": 15.0}}).apply(table)
+    out = _feature().apply(table)
 
-    assert out.attrs["fps"] == 60.0
+    assert out.attrs["fps"] == pytest.approx(60.0)
     _assert_bit_for_bit(out, _reference(table, ["PC0", "PC1"], fps=60.0))
 
 
-def test_without_a_fps_column_the_default_frame_rate_applies() -> None:
-    table = _pairs()
+def test_a_stated_fps_column_does_not_set_the_frame_rate() -> None:
+    table = _pairs(fps=30.0).assign(fps=60.0)
 
-    out = _feature({"sampling": {"fps_default": 15.0}}).apply(table)
+    out = _feature().apply(table)
 
-    assert out.attrs["fps"] == 15.0
-    _assert_bit_for_bit(out, _reference(table, ["PC0", "PC1"], fps=15.0))
+    assert out.attrs["fps"] == pytest.approx(30.0)
 
 
-def test_a_fps_column_that_varies_falls_back_to_the_default() -> None:
-    varying = _pairs()
-    varying["fps"] = np.where(varying["frame"] % 2 == 0, 30.0, 60.0)
+def test_a_table_without_time_is_refused_by_name() -> None:
+    with pytest.raises(ValueError, match="pair-wavelet.*'time'"):
+        _ = _feature().apply(_pairs().drop(columns="time"))
 
-    out = _feature({"sampling": {"fps_default": 15.0}}).apply(varying)
 
-    assert out.attrs["fps"] == 15.0
+def test_a_sampling_setting_is_refused() -> None:
+    with pytest.raises(ValueError, match="sampling"):
+        _ = _feature({"sampling": {"fps_default": 15.0}})
 
 
 def test_twenty_frequencies_give_twenty_columns_per_input_column() -> None:

@@ -116,6 +116,7 @@ __all__ = [
     "feature_class_for_slug",
     "fields_need_ground_truth",
     "op_class_for_kind",
+    "op_writes_tracks",
     "params_reference_site",
     "resolve_step_spec",
     "run_reference_fields",
@@ -586,6 +587,18 @@ def _pair_rule_column(cls: type) -> str | None:
     return declared if isinstance(declared, str) and declared else None
 
 
+def op_writes_tracks(kind: str, op_cls: type[Op[Params]]) -> bool:
+    """Whether the op *kind* writes a tracks variant.
+
+    The op's own ``writes_tracks`` declaration, falling back to membership of
+    the tracking-roots registry for an op that declares none.
+    """
+    from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
+
+    declared = getattr(op_cls, "writes_tracks", None)
+    return kind in TRACKING_ROOTS if declared is None else bool(declared)
+
+
 def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
     """Read one op as a producer and a consumer.
 
@@ -609,15 +622,12 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
     from mosaic.core.pipeline.tracking_roots import TRACKING_ROOTS
 
     bridges_tracks = kind in TRACKING_ROOTS
-    declared_tracks = getattr(op_cls, "writes_tracks", None)
     return Declaration(
         produces=ProducerDecl(
             name=kind,
             kind="op",
             level="individual",
-            writes_tracks=bridges_tracks
-            if declared_tracks is None
-            else bool(declared_tracks),
+            writes_tracks=op_writes_tracks(kind, op_cls),
             writes_media=str(getattr(op_cls, "domain", "")) == "media",
             writes_labels=bool(getattr(op_cls, "writes_labels", False)),
         ),

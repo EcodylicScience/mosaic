@@ -14,7 +14,7 @@ from mosaic.core.pipeline.types import Inputs
 
 stacked_result = ds.run_feature(TemporalStackingFeature(
     Inputs((scaler_result,)),
-    params={"half": 2, "skip": 1, "use_temporal_stack": True, "sigma_stack": 2, "fps": 30.0},
+    params={"half": 2, "skip": 1, "use_temporal_stack": True, "sigma_stack": 2},
 ))
 ```
 

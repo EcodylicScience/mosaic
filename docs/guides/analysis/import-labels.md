@@ -40,19 +40,27 @@ it wrote and found already present.
 
 ## Convert as a recipe step
 
-The conversion can also be the first step of a recipe, so one request converts the
-labels and computes on them. The scan stays a separate command: a conversion step
+The conversion can also be a step of a recipe, so one request converts the tracks and
+the labels and computes on them. The scan stays a separate command: a conversion step
 whose format has no scanned file is refused when the recipe is planned.
 
 ```json
-{"id": "labels", "type": "op", "kind": "convert-labels",
- "params": {"kind": "behavior", "source_format": "boris_aggregated_csv",
-            "params": {"fps": 30.0}}}
+{"steps": [
+  {"id": "tracks", "type": "op", "kind": "convert-tracks",
+   "params": {"source_format": "tracktor_corrected_tsv"}},
+  {"id": "labels", "type": "op", "kind": "convert-labels",
+   "params": {"kind": "behavior", "source_format": "boris_aggregated_csv",
+              "params": {"fps": 30.0}}}
+]}
 ```
 
 `params` takes the converter's settings below, and refuses one the converter does not
 declare. A feature's `labels` field then takes `{"step": "labels"}`, which reads the
 labels that step writes, even where the dataset holds another conversion of them.
+
+A label conversion runs after every step of the recipe that writes tracks, wherever
+the recipe declares it. A converter of second-based events (the two BORIS formats and a
+custom template) places each event on the entry's tracks, and so needs them first.
 
 ## The formats mosaic reads
 
@@ -85,7 +93,8 @@ mosaic convert-labels -m dataset.yaml --kind behavior \
 
 | Parameter | Does |
 | --- | --- |
-| `fps` | Converts BORIS's second-based start and stop times into frames. Set it when the recording's frame rate is not on the media index |
+| `fps` | Converts BORIS's second-based start and stop times into frames for an entry that has no tracks. An entry with tracks maps each time to the last frame whose track `time` is at or before it, so the labels follow a table that dropped frames. Convert the tracks first |
+| `tracks_run_id` (`--tracks-run-id`) | The tracks variant BORIS's events are placed on. Name the variant the features will read, such as the `resample-tracks` one: the labels are on its frames, and the labels variant names it, so each tracks variant has its own labels. Unset uses the variant the entries the labels name have, and entries on different variants are refused. An entry with no tracks in that variant gets no label file and is reported as a failed entry (`partial`): convert its tracks and run `mosaic convert-labels` again, which writes only the missing files. A resubmitted pipeline reads the labels step complete and does not retry it |
 | `subject_id_map` | Maps BORIS subject names onto the `id` values in your tracks. Get this wrong and the labels attach to the wrong animal |
 | `background_label` | What an unannotated frame is called. `"none"` by default, and always label id 0 |
 | `pair_behaviors` | Behaviors that belong to a pair rather than to one individual |

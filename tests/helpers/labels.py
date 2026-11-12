@@ -13,14 +13,20 @@ import json
 from collections.abc import Mapping, Sequence
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Annotated, ClassVar, override
+from typing import Annotated, ClassVar, Final, override
 
 import numpy as np
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.helpers import make_entry_key
-from mosaic.core.label_converter import LabelConverter, LabelConvertParams, LabelEntry
+from mosaic.core.label_converter import (
+    ClockedLabelConverter,
+    LabelConverter,
+    LabelConvertParams,
+    LabelEntry,
+    TrackClock,
+)
 from mosaic.core.params import Declared
 from mosaic.core.pipeline.labels_index import write_labels_row
 
@@ -334,6 +340,61 @@ class ListedEntries(LabelConverter[ListedEntriesParams]):
             )
             for position, (group, sequence) in enumerate(rows)
         ]
+
+
+class SecondsEntries(ListedEntries, ClockedLabelConverter[ListedEntriesParams]):
+    """:class:`ListedEntries` whose one event is stamped in seconds, mapped by the tracks clock.
+
+    Each entry has one ``individual_pair_v1`` event from :data:`EVENT_SECONDS`, on
+    the frames its tracks put those seconds at, and at :data:`EVENT_RATE` without
+    tracks.
+    """
+
+    src_format: ClassVar[str] = "seconds_entries_test_npy"
+
+    @override
+    def convert(
+        self,
+        src_path: Path,
+        params: ListedEntriesParams,
+        raw_row: Mapping[str, object],
+        clock: TrackClock | None = None,
+    ) -> list[LabelEntry]:
+        from mosaic.behavior.label_library._event_frames import EventFrames
+
+        entries: list[LabelEntry] = []
+        for group, sequence in np.load(src_path).reshape(-1, 2).tolist():
+            span = EventFrames(EVENT_RATE, clock, str(group), str(sequence)).span(
+                *EVENT_SECONDS
+            )
+            frames = (
+                np.empty(0, dtype=np.int64)
+                if span is None
+                else np.arange(span[0], span[1] + 1, dtype=np.int64)
+            )
+            entries.append(
+                LabelEntry(
+                    group=str(group),
+                    sequence=str(sequence),
+                    payload={
+                        "label_format": self.label_format,
+                        "frames": frames,
+                        "labels": np.ones(len(frames), dtype=np.int32),
+                        "individual_ids": np.tile([0, 1], (len(frames), 1)),
+                        "label_ids": np.arange(2, dtype=np.int64),
+                        "background_id": np.int32(0),
+                    },
+                    n_frames=int(frames.max()) + 1 if len(frames) else 0,
+                )
+            )
+        return entries
+
+
+EVENT_SECONDS: Final = (1.0, 1.5)
+"""The start and stop, in seconds, of :class:`SecondsEntries`'s event."""
+
+EVENT_RATE: Final = 4.0
+"""The rate that :class:`SecondsEntries` converts at for an entry without tracks."""
 
 
 class SharedKeyRefusingEntries(ListedEntries):

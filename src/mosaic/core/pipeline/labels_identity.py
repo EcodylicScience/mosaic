@@ -42,6 +42,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "LABELS_IDENTITY_SCHEME",
+    "TRACKS_VARIANT_TERM",
+    "clocked_label_identity_params",
     "label_convert_variant_payload",
     "label_converter_op",
     "labels_run_id",
@@ -103,6 +105,26 @@ def label_convert_variant_payload(
     hand-built payload would stay green through it.
     """
     return {"kind": label_kind, "params": dict(params_identity)}
+
+
+TRACKS_VARIANT_TERM: Final = "tracks_variant"
+"""The key that names the tracks a clocked label conversion was placed on."""
+
+
+def clocked_label_identity_params(
+    params_identity: Mapping[str, object], tracks_variant: str | None
+) -> dict[str, object]:
+    """The hashed params of a conversion that places its events on tracks.
+
+    A converter of events in seconds maps each to a frame of the entry's tracks, so
+    the labels are on that variant's frame axis and are another variant when the
+    tracks are. *tracks_variant* is the tracks variant they were placed on, ``""``
+    for the unlabeled tables, and ``None`` for a conversion over a dataset with no
+    tracks, whose events convert at the converter's own rate. The three are three
+    different identities, and so is a conversion that names no tracks at all (the
+    params of any other converter).
+    """
+    return {**params_identity, TRACKS_VARIANT_TERM: tracks_variant}
 
 
 def label_converter_op(src_format: str) -> str:

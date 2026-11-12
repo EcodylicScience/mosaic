@@ -1,6 +1,6 @@
 """Unit tests for SocialMotionSummary against hand-computed values.
 
-Two scenarios, both fps=1 so a frame is a second and every emitted scalar can be
+Two scenarios, both timed at one frame a second so a frame is a second and every emitted scalar can be
 checked by hand.
 
 ``_make_merged_df`` -- 2 fish, 5 frames, always neighbours (group_size=2, shared
@@ -40,6 +40,7 @@ def _make_merged_df() -> pd.DataFrame:
         rows.append(
             {
                 "frame": f,
+                "time": float(f),
                 "id": 0,
                 "sequence": "seq1",
                 "group": "g",
@@ -56,6 +57,7 @@ def _make_merged_df() -> pd.DataFrame:
         rows.append(
             {
                 "frame": f,
+                "time": float(f),
                 "id": 1,
                 "sequence": "seq1",
                 "group": "g",
@@ -73,7 +75,7 @@ def _make_merged_df() -> pd.DataFrame:
 
 @pytest.fixture
 def result() -> pd.DataFrame:
-    feat = SocialMotionSummary(params={"fps": 1.0})
+    feat = SocialMotionSummary()
     return feat.apply(_make_merged_df()).set_index("id")
 
 
@@ -131,7 +133,7 @@ def test_accel_jerk(result: pd.DataFrame) -> None:
 def test_group_free_operation() -> None:
     """Without group_membership, speed_match_group is NaN but nn metrics still work."""
     df = _make_merged_df().drop(columns=["group_membership"])
-    res = SocialMotionSummary(params={"fps": 1.0}).apply(df).set_index("id")
+    res = SocialMotionSummary().apply(df).set_index("id")
     assert np.isnan(res.loc[0, "speed_match_group"])
     assert res.loc[0, "speed_match_nn"] == pytest.approx(1.4)
     assert res.loc[0, "nn_align"] == pytest.approx(1.0)
@@ -140,9 +142,9 @@ def test_group_free_operation() -> None:
 def test_burst_coast_optional() -> None:
     """Burst-coast columns appear only when the flag is set."""
     df = _make_merged_df()
-    off = SocialMotionSummary(params={"fps": 1.0}).apply(df)
+    off = SocialMotionSummary().apply(df)
     assert "kick_rate" not in off.columns
-    on = SocialMotionSummary(params={"fps": 1.0, "compute_burst_coast": True}).apply(df)
+    on = SocialMotionSummary(params={"compute_burst_coast": True}).apply(df)
     assert "kick_rate" in on.columns
     assert "burst_coast_ratio" in on.columns
 
@@ -178,6 +180,7 @@ def _make_split_df() -> pd.DataFrame:
             rows.append(
                 {
                     "frame": f,
+                    "time": float(f),
                     "id": fish,
                     "sequence": "seq1",
                     "group": "g",
@@ -194,7 +197,7 @@ def _make_split_df() -> pd.DataFrame:
 
 
 def _split(**overrides: object) -> pd.DataFrame:
-    params: dict[str, object] = {"fps": 1.0, "subgroup_col": "group_size"}
+    params: dict[str, object] = {"subgroup_col": "group_size"}
     params.update(overrides)
     return SocialMotionSummary(params=params).apply(_make_split_df())
 
@@ -207,10 +210,8 @@ def test_subgroup_off_matches_a_single_valued_split() -> None:
     split and unsplit paths stay one code path.
     """
     df = _make_merged_df()  # group_size == 2 on every frame
-    off = SocialMotionSummary(params={"fps": 1.0}).apply(df)
-    on = SocialMotionSummary(params={"fps": 1.0, "subgroup_col": "group_size"}).apply(
-        df
-    )
+    off = SocialMotionSummary().apply(df)
+    on = SocialMotionSummary(params={"subgroup_col": "group_size"}).apply(df)
     counts = ["group_size", "n_frames", "n_social_frames", "n_accel", "n_jerk"]
     pd.testing.assert_frame_equal(on.drop(columns=counts), off, check_exact=True)
 
@@ -222,7 +223,7 @@ def test_flag_off_columns_are_unchanged() -> None:
     order, so refactoring the metric computation is exactly what silently
     reorders a parquet's columns.
     """
-    out = SocialMotionSummary(params={"fps": 1.0}).apply(_make_merged_df())
+    out = SocialMotionSummary().apply(_make_merged_df())
     assert out.columns.tolist() == [
         "id",
         "nn_align",
@@ -274,7 +275,7 @@ def test_derivatives_are_not_computed_across_a_subgroup_boundary() -> None:
     assert out.loc[(0, 2), "jerk_mean"] == pytest.approx(3.0)
     assert np.isnan(out.loc[(0, 1), "jerk_mean"])
     # and neither is the pooled number, which averages in the two straddlers
-    pooled = SocialMotionSummary(params={"fps": 1.0}).apply(_make_split_df())
+    pooled = SocialMotionSummary().apply(_make_split_df())
     assert pooled.set_index("id").loc[0, "accel_mean"] == pytest.approx(400.0 / 7.0)
 
 
@@ -306,7 +307,7 @@ def test_counts_report_the_sample_size() -> None:
 def test_counts_appear_only_under_the_split() -> None:
     """Unsplit output keeps its schema; the counts are meaningless there anyway."""
     counts = ["n_frames", "n_social_frames", "n_accel", "n_jerk"]
-    off = SocialMotionSummary(params={"fps": 1.0}).apply(_make_split_df())
+    off = SocialMotionSummary().apply(_make_split_df())
     on = _split()
     assert [c for c in counts if c in off.columns] == []
     assert [c for c in counts if c in on.columns] == counts
@@ -322,19 +323,17 @@ def test_subgroup_col_collision_is_refused_at_construction() -> None:
 def test_missing_subgroup_column_is_refused_before_apply() -> None:
     """The column ``subgroup_col`` names is a declared requirement once it is set."""
     df = _make_split_df().drop(columns=["group_size"])
-    feature = SocialMotionSummary(params={"fps": 1.0, "subgroup_col": "group_size"})
+    feature = SocialMotionSummary(params={"subgroup_col": "group_size"})
     with pytest.raises(MissingInputColumns, match="'group_size'"):
         check_input_columns(feature, df.columns)
-    check_input_columns(SocialMotionSummary(params={"fps": 1.0}), df.columns)
+    check_input_columns(SocialMotionSummary(), df.columns)
 
 
 def test_nan_subgroup_rows_are_dropped() -> None:
     """A NaN key could not be matched by any downstream merge, so it forms no row."""
     df = _make_split_df()
     df.loc[(df["frame"] == 0), "group_size"] = np.nan
-    out = SocialMotionSummary(params={"fps": 1.0, "subgroup_col": "group_size"}).apply(
-        df
-    )
+    out = SocialMotionSummary(params={"subgroup_col": "group_size"}).apply(df)
     assert not out["group_size"].isna().any()
     assert sorted(out["group_size"].unique().tolist()) == [1.0, 2.0]
     # frame 0 is counted in no subgroup: fish 0 keeps 5 of its 6 grouped frames
@@ -348,9 +347,9 @@ def test_burst_coast_under_a_split() -> None:
     # neither subgroup
     assert out.loc[(0, 2), "kick_rate"] == pytest.approx(0.5)
     assert out.loc[(0, 2), "burst_coast_ratio"] == pytest.approx(0.5)
-    pooled = SocialMotionSummary(
-        params={"fps": 1.0, "compute_burst_coast": True}
-    ).apply(_make_split_df())
+    pooled = SocialMotionSummary(params={"compute_burst_coast": True}).apply(
+        _make_split_df()
+    )
     # pooled counts 3 peaks over the full 7 s span
     assert pooled.set_index("id").loc[0, "kick_rate"] == pytest.approx(3.0 / 7.0)
 
@@ -380,7 +379,7 @@ def _spiked(flag_fish: int) -> pd.DataFrame:
 
 
 def _summary(df: pd.DataFrame, **overrides: object) -> pd.DataFrame:
-    params: dict[str, object] = {"fps": 1.0, **overrides}
+    params: dict[str, object] = {**overrides}
     return SocialMotionSummary(params=params).apply(df).set_index("id")
 
 
@@ -425,7 +424,6 @@ def test_a_subgroup_whose_rows_are_all_excluded_emits_no_row() -> None:
     df["long_interp"] = df["group_size"] == 1
     out = SocialMotionSummary(
         params={
-            "fps": 1.0,
             "subgroup_col": "group_size",
             "exclude_cols": ["long_interp"],
         }

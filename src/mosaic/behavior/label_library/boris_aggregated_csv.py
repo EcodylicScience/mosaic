@@ -50,9 +50,11 @@ from mosaic.behavior.label_library._boris_descriptions import (
     SUBJECT_ID_MAP_DESCRIPTION,
 )
 from mosaic.core.helpers import to_safe_name
+from mosaic.behavior.label_library._event_frames import EventFrames
 from mosaic.core.label_converter import (
+    ClockedLabelConverter,
+    TrackClock,
     LabelConvertParams,
-    LabelConverter,
     LabelEntry,
 )
 from mosaic.core.params import Declared
@@ -107,7 +109,7 @@ class BorisAggregatedCSVParams(LabelConvertParams):
     )
 
 
-class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
+class BorisAggregatedCSVConverter(ClockedLabelConverter[BorisAggregatedCSVParams]):
     """
     Convert BORIS Aggregated Events CSV/TSV to behavior dataset format.
 
@@ -152,7 +154,7 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
     label_format = "individual_pair_v1"
     # 0.2: the background is id 0 even when it occurs in the data, and the file
     # records it as ``background_id``, so a frame without an event reads as it.
-    version = "0.2"
+    version = "0.5"
     Params = BorisAggregatedCSVParams
 
     def convert(
@@ -160,6 +162,7 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
         src_path: Path,
         params: BorisAggregatedCSVParams,
         raw_row: Mapping[str, object],
+        clock: TrackClock | None = None,
     ) -> list[LabelEntry]:
         """Read one BORIS file into one :class:`LabelEntry` per (observation, subject)."""
         # Load BORIS CSV/TSV
@@ -236,7 +239,11 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
 
             # Convert events to sparse individual_pair_v1 format
             event_frames, event_labels, individual_ids = self._convert_to_sparse_events(
-                obs_subj_df, label_name_to_id, fps, params, str(subject)
+                obs_subj_df,
+                label_name_to_id,
+                EventFrames(fps, clock, group_val, seq_val),
+                params,
+                str(subject),
             )
 
             # Build npz payload
@@ -305,7 +312,7 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
         self,
         df: pd.DataFrame,
         label_map: dict[str, int],
-        fps: float,
+        frame_map: EventFrames,
         params: BorisAggregatedCSVParams,
         subject: str,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -318,8 +325,8 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
             Events for a single (observation, subject) pair
         label_map : dict
             Behavior name to ID mapping
-        fps : float
-            Frames per second
+        frame_map : EventFrames
+            Where each event second lands on the entry's frames
         params : BorisAggregatedCSVParams
             Converter parameters
         subject : str
@@ -369,8 +376,10 @@ class BorisAggregatedCSVConverter(LabelConverter[BorisAggregatedCSVParams]):
             stop_time = row[stop_col]
 
             # Convert times to frames
-            start_frame = int(start_time * fps)
-            stop_frame = int(stop_time * fps)
+            span = frame_map.span(float(start_time), float(stop_time))
+            if span is None:
+                continue
+            start_frame, stop_frame = span
 
             # Check if this is a point event
             if behavior_type_col in df.columns:

@@ -199,7 +199,7 @@ class KeypointKinematics:
 
     category = "per-frame"
     name = _NAME
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -374,7 +374,7 @@ class KeypointKinematics:
         ensure_columns(df, [C.frame_col, C.id_col])
         plan = self._plan(df)
         axis = frame_axis(df, self.name)
-        fps = frame_rate(df, axis, self.params.fps, self.name)
+        fps = frame_rate(df, self.params.fps, self.name)
         measures = self._measure(df, plan, axis, fps)
         meta = df[meta_columns(df)].iloc[axis.order].reset_index(drop=True)
         return pd.concat([meta, pd.DataFrame(measures)], axis=1)

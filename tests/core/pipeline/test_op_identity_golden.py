@@ -67,6 +67,7 @@ from mosaic.core.pipeline.composition import (
     tracks_raw_composition,
 )
 from mosaic.core.pipeline.labels_identity import (
+    clocked_label_identity_params,
     label_convert_variant_payload,
     label_converter_op,
     labels_run_id,
@@ -928,6 +929,30 @@ def _labels_convert_variant() -> str:
     )
 
 
+def _labels_clocked_variant(tracks_variant: str | None) -> str:
+    # The wrapper that names the tracks a timed label conversion was placed on:
+    # renaming its key would move every such variant on disk.
+    return labels_run_id(
+        label_converter_op("boris_aggregated_csv"),
+        "0.5",
+        label_convert_variant_payload(
+            "behavior", clocked_label_identity_params({"fps": 30.0}, tracks_variant)
+        ),
+    )
+
+
+def _labels_clocked_on_tracks_variant() -> str:
+    return _labels_clocked_variant("convert-tracktor_corrected_tsv.0.1-56a0218226")
+
+
+def _labels_clocked_on_no_tracks_variant() -> str:
+    return _labels_clocked_variant(None)
+
+
+def _labels_clocked_on_unlabeled_tracks_variant() -> str:
+    return _labels_clocked_variant("")
+
+
 def _labels_predictions_table_variant() -> str:
     params = PredictionsTableParams(
         files="labels_raw/predictions/xgb-oof/*", class_ids={"other": 0, "attack": 1}
@@ -1243,6 +1268,9 @@ FUNCTION_CASES: dict[str, Callable[[], str]] = {
     "tracks/resample-variant": _resample_variant,
     "tracks/resample-variant-other-upstream": _resample_variant_other_upstream,
     "tracks/assign-arenas-variant": _assign_arenas_variant,
+    "labels/clocked-on-no-tracks-variant": _labels_clocked_on_no_tracks_variant,
+    "labels/clocked-on-tracks-variant": _labels_clocked_on_tracks_variant,
+    "labels/clocked-on-unlabeled-tracks-variant": _labels_clocked_on_unlabeled_tracks_variant,
     "labels/convert-variant": _labels_convert_variant,
     "labels/predictions-table-variant": _labels_predictions_table_variant,
     "trex/run-id-settings": _trex_run_id_settings,

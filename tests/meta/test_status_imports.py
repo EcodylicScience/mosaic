@@ -60,6 +60,29 @@ def test_a_status_import_loads_no_heavy_module(statement: str) -> None:
     assert modules_loaded_by(statement, HEAVY_MODULES) == []
 
 
+def test_ordering_a_recipe_with_a_label_conversion_loads_no_heavy_module() -> None:
+    """Every walk of a recipe goes through the order a label conversion derives."""
+    statement = (
+        "from mosaic.core.pipeline.graph import (\n"
+        "    Recipe, ancestors_of, children_of, descendants_of, parents_of,\n"
+        "    topological_order,\n"
+        ")\n"
+        "recipe = Recipe.model_validate({'steps': [\n"
+        "    {'id': 'labels', 'type': 'op', 'kind': 'convert-labels',\n"
+        "     'params': {'source_format': 'boris_pandas_pickle'}},\n"
+        "    {'id': 'tracks', 'type': 'op', 'kind': 'convert-tracks',\n"
+        "     'params': {'source_format': 'tracktor_corrected_tsv'}},\n"
+        "]})\n"
+        "assert parents_of(recipe, 'labels') == ('tracks',)\n"
+        "assert children_of(recipe, 'tracks') == ('labels',)\n"
+        "assert descendants_of(recipe, 'tracks') == frozenset({'tracks', 'labels'})\n"
+        "assert ancestors_of(recipe, 'labels') == frozenset({'tracks', 'labels'})\n"
+        "assert [step.id for step in topological_order(recipe)] == ['tracks', 'labels']"
+    )
+
+    assert modules_loaded_by(statement, HEAVY_MODULES) == []
+
+
 def test_the_run_log_module_loads_no_pydantic() -> None:
     assert modules_loaded_by("import mosaic.runlog", ("pydantic",)) == []
 

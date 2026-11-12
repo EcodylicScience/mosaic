@@ -128,7 +128,7 @@ def test_group_constraints() -> None:
     with pytest.raises(ValidationError):
         _ComposedParams(interpolation=InterpolationConfig(max_missing_fraction=1.5))
     with pytest.raises(ValidationError):
-        _ComposedParams(sampling=SamplingConfig(fps_default=-1.0))
+        _ComposedParams(sampling=SamplingConfig(smooth_win=-1))
 
 
 # --- Hashing and serializing a model ---

@@ -44,9 +44,11 @@ from typing import Annotated
 import numpy as np
 import pandas as pd
 
+from mosaic.behavior.label_library._event_frames import EventFrames
 from mosaic.core.label_converter import (
+    ClockedLabelConverter,
+    TrackClock,
     LabelConvertParams,
-    LabelConverter,
     LabelEntry,
 )
 from mosaic.core.params import (
@@ -86,7 +88,7 @@ class CustomLabelParams(LabelConvertParams):
     verbose: Annotated[bool, HASH_EXCLUDE, Declared(_VERBOSE_DESCRIPTION)] = False
 
 
-class CustomLabelConverter(LabelConverter[CustomLabelParams]):
+class CustomLabelConverter(ClockedLabelConverter[CustomLabelParams]):
     """Minimal template for a custom label converter.
 
     REQUIRED: implement ``_load_source_file()``, ``_build_label_map()`` and
@@ -103,7 +105,7 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
     src_format = "my_custom_format"  # Used in convert_all_labels(source_format=...).
     label_kind = "behavior"  # Usually "behavior" or "id_tags".
     label_format = "my_custom_v1"  # Payload format a reader dispatches on.
-    version = "0.1"  # Bump by hand when output semantics change.
+    version = "0.4"  # Bump by hand when output semantics change.
     Params = CustomLabelParams
 
     # ============================================================
@@ -115,6 +117,7 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
         src_path: Path,
         params: CustomLabelParams,
         raw_row: Mapping[str, object],
+        clock: TrackClock | None = None,
     ) -> list[LabelEntry]:
         """Read one source file into one :class:`LabelEntry` per sequence.
 
@@ -129,6 +132,9 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
             params: Typed conversion parameters (the label variant identity).
             raw_row: The ``labels_raw/index.csv`` row (group hint, source md5).
                 Never hashed.
+            clock: Where each entry's tracks put a second. When the entry has
+                tracks, an event at ``t`` seconds is the last frame whose track
+                time is at or before ``t``. Without tracks it is ``int(t * fps)``.
 
         Returns:
             One :class:`LabelEntry` per sequence.
@@ -158,7 +164,10 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
 
             # Convert (start, stop, behavior) spans to per-frame labels.
             labels, frames = self._convert_to_frame_labels(
-                annotations, label_name_to_id, fps, params
+                annotations,
+                label_name_to_id,
+                EventFrames(fps, clock, group_val, seq_name),
+                params,
             )
 
             # Build the .npz payload: the arrays and scalars a reader loads.
@@ -333,7 +342,7 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
         self,
         annotations: list[tuple[float, float, str]],
         label_map: dict[str, int],
-        fps: float,
+        frames: EventFrames,
         params: CustomLabelParams,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Convert time-based annotations to per-frame labels.
@@ -344,7 +353,7 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
         Args:
             annotations: ``[(start_time, stop_time, behavior_name)]``, in seconds.
             label_map: Behavior name to ID mapping.
-            fps: Frames per second.
+            frames: Where each event second lands on the entry's frames.
             params: Converter parameters.
 
         Returns:
@@ -357,11 +366,10 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
         if not annotations:
             # No annotations -- create a minimal array.
             labels = np.array([background_id], dtype=int)
-            frames = np.array([0], dtype=np.int32)
-            return labels, frames
+            return labels, np.array([0], dtype=np.int32)
 
         max_time = max(stop for _start, stop, _behavior in annotations)
-        n_frames = int(np.ceil(max_time * fps)) + 1
+        n_frames = frames.n_frames(max_time)
 
         # Initialize with the background label.
         labels = np.full(n_frames, background_id, dtype=int)
@@ -370,8 +378,10 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
         for start_time, stop_time, behavior_name in annotations:
             behavior_id = label_map.get(behavior_name, background_id)
 
-            start_frame = int(start_time * fps)
-            stop_frame = int(stop_time * fps)
+            span = frames.span(start_time, stop_time)
+            if span is None:
+                continue
+            start_frame, stop_frame = span
 
             # A point event marks a single frame.
             is_point = abs(start_time - stop_time) < 1e-6
@@ -383,8 +393,7 @@ class CustomLabelConverter(LabelConverter[CustomLabelParams]):
                 stop_frame = min(n_frames - 1, stop_frame)
                 labels[start_frame : stop_frame + 1] = behavior_id
 
-        frames = np.arange(n_frames, dtype=np.int32)
-        return labels, frames
+        return labels, np.arange(n_frames, dtype=np.int32)
 
     def get_metadata(self) -> dict[str, object]:
         """Optional format-specific metadata for ``dataset.meta['labels'][kind]``."""
@@ -434,7 +443,7 @@ class ModifiedBorisConverter(CustomLabelConverter):
     src_format = "modified_boris"
     label_kind = "behavior"
     label_format = "modified_boris_v1"
-    version = "0.1"
+    version = "0.2"
     Params = ModifiedBorisParams
 
     def _load_source_file(self, src_path: Path) -> pd.DataFrame:

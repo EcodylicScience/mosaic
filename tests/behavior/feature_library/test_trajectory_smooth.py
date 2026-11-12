@@ -1,7 +1,8 @@
 """trajectory-smooth's bridge check and interpolation marks.
 
-Every track is one individual at one row per frame, with the speed threshold
-given per frame (no ``fps``), so a bridge speed is a distance over a frame count.
+Every track is one individual at one row per second, so the speed threshold in
+units per second reads as units per row, and a bridge speed is a distance over a
+row count.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ def _track(x: list[float], y: list[float] | None = None) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "frame": np.arange(n),
+            "time": np.arange(n, dtype=float),
             "id": np.zeros(n, dtype=np.int64),
             "sequence": "s",
             "group": "g",

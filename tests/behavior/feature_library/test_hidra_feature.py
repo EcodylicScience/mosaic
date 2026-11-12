@@ -34,7 +34,6 @@ from mosaic.behavior.feature_library.hidra_feature import (
     run_hidra_predict,
 )
 from mosaic.core.pipeline.job import CancelToken
-from mosaic.core.pipeline.resample_tracks import AmbiguousFrameRateError
 from mosaic.core.pipeline.run import run_feature
 from tests.helpers import (
     add_tracks_variant,
@@ -426,6 +425,22 @@ def test_the_command_names_the_labs_actions_and_placement(
     )
 
 
+def test_a_run_keeps_the_time_of_each_frame(
+    tmp_path: Path, fake: _FakePredict, placement: dict[str, object]
+) -> None:
+    dataset = make_dataset(tmp_path / "dataset")
+    add_tracks_variant(dataset, _VARIANT, "s1", "s2", n_rows=20, keypoints=3)
+    source = dataset.load_tracks("", "s1").drop_duplicates("frame").set_index("frame")
+
+    result = run_feature(dataset, HidraFeature(params=_params(placement)))
+
+    table = result_outputs(dataset, result)["s1"]
+    assert "time" in table.columns
+    assert table["time"].to_numpy() == pytest.approx(
+        source.loc[table["frame"], "time"].to_numpy()
+    )
+
+
 # --- refusals ----------------------------------------------------------------
 
 
@@ -438,14 +453,26 @@ def test_an_entry_outside_two_to_four_individuals_is_refused(
     assert fake.argv == []
 
 
-def test_an_entry_of_two_frame_rates_is_refused(
+def test_a_stated_frame_rate_does_not_set_the_rate_the_predictor_is_told(
     fake: _FakePredict, placement: dict[str, object]
 ) -> None:
+    """The rate is measured from ``time``, whatever ``frame_rate`` says."""
     entry = _entry(2)
-    entry["frame_rate"] = np.where(entry["frame"] < 106, 30.0, 31.0)
+    entry["frame_rate"] = np.where(entry["frame"] < 106, 60.0, 90.0)
 
-    with pytest.raises(AmbiguousFrameRateError):
+    _ = HidraFeature(params=_params(placement)).apply(entry)
+
+    assert fake.metadata[0]["fps"].tolist() == [pytest.approx(30.0)]
+
+
+def test_an_entry_without_time_is_refused_by_name(
+    fake: _FakePredict, placement: dict[str, object]
+) -> None:
+    entry = _entry(2).drop(columns="time")
+
+    with pytest.raises(ValueError, match="hidra.*'time'"):
         _ = HidraFeature(params=_params(placement)).apply(entry)
+    assert fake.argv == []
 
 
 def test_missing_weights_are_refused_with_the_download_command(

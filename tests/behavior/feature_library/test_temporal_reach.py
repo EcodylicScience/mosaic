@@ -119,6 +119,7 @@ def _track() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "frame": np.arange(N),
+            "time": np.arange(N) / 30.0,
             "group": "g",
             "sequence": "s",
             "id": 0,
@@ -134,7 +135,6 @@ def _track() -> pd.DataFrame:
         {"half": 10, "sigma_stack": 0, "add_pool": False},
         {"half": 10, "sigma_stack": 2, "add_pool": False},
         {"half": 5, "sigma_stack": 0, "sigma_pool": 10, "win_sec": 2, "fps": 30},
-        {},
     ],
 )
 def test_a_stack_declares_the_distance_it_reads(params: dict[str, object]) -> None:
@@ -145,6 +145,16 @@ def test_a_stack_declares_the_distance_it_reads(params: dict[str, object]) -> No
     measured = _farthest_change(feature.apply, _payload(), "f0")
 
     assert measured == feature.temporal_reach(feature.params)
+
+
+def test_a_stack_with_pooled_statistics_declares_no_reach() -> None:
+    """The pooling window is in seconds, so its frames follow the table's rate."""
+    pooled = TemporalStackingFeature.Params(sigma_pool=10, win_sec=2)
+
+    assert TemporalStackingFeature.temporal_reach(pooled) is None
+    assert (
+        TemporalStackingFeature.temporal_reach(TemporalStackingFeature.Params()) is None
+    )
 
 
 def _probabilities() -> pd.DataFrame:
@@ -259,7 +269,9 @@ def test_a_trajectory_smooth_declares_the_distance_it_reads(
     assert measured <= reach
 
 
-def test_a_wavelet_declares_no_reach_because_the_data_may_set_the_frame_rate() -> None:
+def test_a_wavelet_declares_no_reach_because_the_time_column_sets_the_frame_rate() -> (
+    None
+):
     wavelet = PairWavelet(
         PairWavelet.Inputs((Result(feature="pair-posedistance-pca"),)),
         params={"f_min": 2.0, "f_max": 5.0, "n_freq": 4},
@@ -268,6 +280,7 @@ def test_a_wavelet_declares_no_reach_because_the_data_may_set_the_frame_rate() -
     pairs = pd.DataFrame(
         {
             "frame": np.arange(N),
+            "time": np.arange(N) / 30.0,
             "perspective": 0,
             "id1": 0,
             "id2": 1,
@@ -278,13 +291,15 @@ def test_a_wavelet_declares_no_reach_because_the_data_may_set_the_frame_rate() -
         }
     )
 
-    from_default = _farthest_change(wavelet.apply, pairs, "PC0")
-    from_column = _farthest_change(wavelet.apply, pairs.assign(fps=60.0), "PC0")
+    at_30 = _farthest_change(wavelet.apply, pairs, "PC0")
+    at_60 = _farthest_change(
+        wavelet.apply, pairs.assign(time=np.arange(N) / 60.0), "PC0"
+    )
 
-    # The reach follows the frame rate, and a constant ``fps`` column replaces
-    # ``sampling.fps_default``: a declaration from the default alone is too small.
-    assert from_default == 120
-    assert from_column > from_default
+    # The reach follows the frame rate that ``time`` gives, so no declaration from
+    # one rate holds for another.
+    assert at_30 == 120
+    assert at_60 > at_30
     assert wavelet.temporal_reach(wavelet.params) is None
 
 
@@ -297,6 +312,7 @@ def test_an_individual_wavelet_declares_no_reach_as_a_pair_wavelet_does() -> Non
     tracks = pd.DataFrame(
         {
             "frame": np.arange(N),
+            "time": np.arange(N) / 30.0,
             "id": 0,
             "group": "g",
             "sequence": "s",
@@ -304,11 +320,13 @@ def test_an_individual_wavelet_declares_no_reach_as_a_pair_wavelet_does() -> Non
         }
     )
 
-    from_default = _farthest_change(wavelet.apply, tracks, "speed")
-    from_column = _farthest_change(wavelet.apply, tracks.assign(fps=60.0), "speed")
+    at_30 = _farthest_change(wavelet.apply, tracks, "speed")
+    at_60 = _farthest_change(
+        wavelet.apply, tracks.assign(time=np.arange(N) / 60.0), "speed"
+    )
 
-    assert from_default == 120
-    assert from_column > from_default
+    assert at_30 == 120
+    assert at_60 > at_30
     assert wavelet.temporal_reach(wavelet.params) is None
 
 

@@ -35,6 +35,7 @@ from mosaic.runlog import (
     EntryErrorRecord,
     ErrorSummary,
     ProgressEventRecord,
+    TimeIrregularRecord,
     attempt_outcome,
     error_summary,
     parse_instant,
@@ -42,6 +43,7 @@ from mosaic.runlog import (
     read_removal_records,
     read_run,
     read_run_progress,
+    read_time_irregular,
     run_log_dir,
 )
 
@@ -78,6 +80,7 @@ __all__ = [
     "RetirableRecipeWire",
     "RunStatusWire",
     "StepStatusWire",
+    "TimeIrregularWire",
     "cleanup_status_wire",
     "poll_after_seconds",
     "recorded_error",
@@ -147,6 +150,32 @@ class RecordedErrorWire(GraphModel):
     refusal: ErrorEnvelope | None
 
 
+class TimeIrregularWire(GraphModel):
+    """One entry whose method read an uneven time axis as an even one.
+
+    Attributes:
+        key: The entry, as the attempt named it.
+        who: The feature that read the table as evenly spaced.
+        largest_step: The longest step in seconds.
+        first_frame: The frame before that step.
+        last_frame: The frame after it.
+        median_step: The median seconds per frame step.
+        rate: The frames per second the method used.
+        message: The sentence a person reads, naming the gap and ``resample-tracks``.
+        recorded_at: When the attempt recorded the event.
+    """
+
+    key: str
+    who: str
+    largest_step: float
+    first_frame: int
+    last_frame: int
+    median_step: float
+    rate: float
+    message: str
+    recorded_at: str
+
+
 class FailedEntryWire(GraphModel):
     """One entity that an attempt lost while it continued.
 
@@ -179,6 +208,12 @@ class RunStatusWire(GraphModel):
             :data:`FAILED_ENTRY_SAMPLE`, in the order it recorded them.
         failed_entries_has_more: Whether it lost more than ``failed_entries``
             lists. ``entries_failed`` counts them all.
+        time_irregular: The first of its uneven-time events, at most
+            :data:`FAILED_ENTRY_SAMPLE`: entries whose method read an uneven time
+            axis as an even one, which ``resample-tracks`` remedies. The entries
+            published, and ``outcome`` does not move.
+        time_irregular_has_more: Whether it recorded more than ``time_irregular``
+            lists. ``entries_time_irregular`` counts them all.
         progress: Its progress events (:class:`~mosaic.runlog.ProgressEventRecord`),
             ``None`` unless asked for.
         liveness: Whether its process may still be running (:mod:`~.liveness`).
@@ -204,6 +239,7 @@ class RunStatusWire(GraphModel):
     entries_frame_axis_mismatch: int
     entries_frame_tail_short: int
     entries_columns_dropped: int
+    entries_time_irregular: int
     cache_hit: bool
     tracks_variant: str
     boot_id: str
@@ -222,6 +258,8 @@ class RunStatusWire(GraphModel):
     error: RecordedErrorWire | None
     failed_entries: tuple[FailedEntryWire, ...]
     failed_entries_has_more: bool
+    time_irregular: tuple[TimeIrregularWire, ...] = ()
+    time_irregular_has_more: bool = False
     progress: tuple[ProgressEventRecord, ...] | None = None
     liveness: AttemptLiveness | None = None
 
@@ -250,6 +288,10 @@ class StepStatusWire(GraphModel):
         failed_entries: The first of the entities it lost, at most
             :data:`FAILED_ENTRY_SAMPLE`.
         failed_entries_has_more: Whether it lost more than ``failed_entries``
+            lists.
+        entries_time_irregular: How many uneven-time events it recorded.
+        time_irregular: The first of them, at most :data:`FAILED_ENTRY_SAMPLE`.
+        time_irregular_has_more: Whether it recorded more than ``time_irregular``
             lists.
         host: The host its process recorded, ``""`` before it starts.
         started_at: When that process started, ``""`` before.
@@ -286,6 +328,9 @@ class StepStatusWire(GraphModel):
     error: RecordedErrorWire | None
     failed_entries: tuple[FailedEntryWire, ...]
     failed_entries_has_more: bool
+    entries_time_irregular: int = 0
+    time_irregular: tuple[TimeIrregularWire, ...] = ()
+    time_irregular_has_more: bool = False
     host: str = ""
     started_at: str = ""
     heartbeat_at: str = ""
@@ -492,6 +537,9 @@ def run_status_wire(
     if snapshot is None:
         return None
     failed, has_more = _failed_entries(logs, execution_id, snapshot["entries_failed"])
+    irregular, irregular_more = _time_irregular(
+        logs, execution_id, snapshot["entries_time_irregular"]
+    )
     events = tuple(read_run_progress(logs, execution_id)) if progress else None
     return RunStatusWire(
         **snapshot,
@@ -503,6 +551,8 @@ def run_status_wire(
         error=recorded_error(snapshot["error_json"]),
         failed_entries=failed,
         failed_entries_has_more=has_more,
+        time_irregular=irregular,
+        time_irregular_has_more=irregular_more,
         progress=events,
         liveness=snapshot_liveness(snapshot, now=now),
     )
@@ -897,6 +947,9 @@ def _step_status(
     failed, has_more = _failed_entries(
         logs, attempt.execution_id, attempt.entries_failed
     )
+    irregular, irregular_more = _time_irregular(
+        logs, attempt.execution_id, attempt.entries_time_irregular
+    )
     return StepStatusWire(
         step=attempt.step_id,
         execution_id=attempt.execution_id,
@@ -915,6 +968,9 @@ def _step_status(
         error=recorded_error(attempt.error_json),
         failed_entries=failed,
         failed_entries_has_more=has_more,
+        entries_time_irregular=attempt.entries_time_irregular,
+        time_irregular=irregular,
+        time_irregular_has_more=irregular_more,
         host=attempt.host,
         started_at=attempt.started_at,
         heartbeat_at=attempt.heartbeat_at,
@@ -943,6 +999,24 @@ def _failed_entries(
         return (), False
     page = read_entry_errors(logs, execution_id, limit=FAILED_ENTRY_SAMPLE)
     return tuple(failed_entry(record) for record in page["items"]), page["has_more"]
+
+
+def _time_irregular(
+    logs: Path, execution_id: str, count: int
+) -> tuple[tuple[TimeIrregularWire, ...], bool]:
+    """The first uneven-time events of one attempt, and whether it recorded more.
+
+    The run-log is read again only when the attempt counts such an event.
+    """
+    if count <= 0:
+        return (), False
+    page = read_time_irregular(logs, execution_id, limit=FAILED_ENTRY_SAMPLE)
+    return tuple(_irregular_wire(record) for record in page["items"]), page["has_more"]
+
+
+def _irregular_wire(record: TimeIrregularRecord) -> TimeIrregularWire:
+    """Return one ``time_irregular`` record of a run-log as a wire model."""
+    return TimeIrregularWire(**record)
 
 
 def failed_entry(record: EntryErrorRecord) -> FailedEntryWire:

@@ -38,7 +38,6 @@ from mosaic.core.entry import make_entry_key
 from mosaic.core.individuals import id_arenas, individual_pairs
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Keypoints,
     Prefix,
@@ -48,7 +47,7 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.job import CancelToken, cancel_check
-from mosaic.core.pipeline.resample_tracks import native_frame_rate
+from mosaic.core.timebase import uniform_grid_rate
 from mosaic.core.pipeline.subprocess_util import command_summary, run_supervised
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.toolenv import (
@@ -75,6 +74,7 @@ from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.optional_dependency import Prerequisite
 from mosaic.user_paths import user_path
 
+from .helpers import with_source_time
 from .registry import register_feature
 
 logger = logging.getLogger(__name__)
@@ -449,7 +449,7 @@ HIDRA_PROVIDES: Final = Provides(
         Prefix("call_"),
         Column("predicted_label"),
     ),
-    conditional=kept(C.group_col),
+    conditional=kept(C.time_col, C.group_col),
     # Both rows of every pair in every frame. The probabilities and calls are
     # id1's action toward id2.
     mirrored=True,
@@ -482,7 +482,7 @@ class HidraFeature:
 
     category = "per-frame"
     name = "hidra"
-    version = "0.1"
+    version = "0.3"
     parallelizable = False
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -495,7 +495,7 @@ class HidraFeature:
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.seq_col),
-        ORDER_COLUMN,
+        Column(C.time_col),
         Keypoints(),
     )
     provides: ClassVar[Provides] = HIDRA_PROVIDES
@@ -600,7 +600,7 @@ class HidraFeature:
 
         order_col = resolve_order_col(df)
         scenes = _scenes(df)
-        fps = native_frame_rate(df, source="[hidra]")
+        fps = uniform_grid_rate(df, self.name)
         sequence = str(df[C.seq_col].iloc[0])
         first_frame = int(df[order_col].min())
 
@@ -640,7 +640,9 @@ class HidraFeature:
                     )
                 predicted.append(pd.read_parquet(frames_path))
 
-        return self._pair_rows(df, order_col, scenes, first_frame, sequence, predicted)
+        return with_source_time(
+            self._pair_rows(df, order_col, scenes, first_frame, sequence, predicted), df
+        )
 
     def _predict_argv(self) -> list[str]:
         """The argv prefix that launches ``hidra-predict`` where this run placed it."""

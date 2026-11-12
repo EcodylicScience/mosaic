@@ -44,6 +44,7 @@ def _track(
             rows.append(
                 {
                     "frame": frame,
+                    "time": frame / 30.0,
                     "id": fid,
                     "group": "g",
                     "sequence": "s",

@@ -67,6 +67,7 @@ __all__ = [
     "meta_columns",
     "one_row_per_frame_and_id",
     "out_of_fold_choice",
+    "pair_sample_times",
     "pairwise_median_distance",
     "refuse_repeated_series_rows",
     "row_max",
@@ -78,6 +79,8 @@ __all__ = [
     "sort_nan_last",
     "train_labeled_frames_of_templates",
     "unwrap_diff",
+    "with_frame_times",
+    "with_source_time",
     "wrap_angle",
     "write_bundle",
 ]
@@ -658,9 +661,58 @@ def gradient_along(
     return np.full(len(values), np.nan)
 
 
-def unwrap_diff(theta: np.ndarray, fps: float) -> np.ndarray:
-    """Compute angular velocity from angle array, NaN for a single angle."""
-    return gradient_along(np.unwrap(theta)) * float(fps)
+def with_frame_times(
+    out: pd.DataFrame, source: pd.DataFrame, order_col: str
+) -> pd.DataFrame:
+    """*out* with the ``time`` of each of its ``frame`` rows, read off *source*.
+
+    A pair feature writes rows keyed by frame and joined to nothing that could
+    supply their time, and a later step that measures a frame rate (the wavelets,
+    ``temporal-stack``) needs it. The time of a frame is the first *source* time
+    recorded for it. When *order_col* is ``time``, the output's ``frame`` column
+    holds the seconds, which are copied. Left as it is when *source* has no
+    ``time`` or *out* is empty.
+    """
+    if out.empty or COLUMNS.time_col in out.columns:
+        return out
+    frame = out[COLUMNS.frame_col]
+    if order_col == COLUMNS.time_col:
+        return out.assign(**{COLUMNS.time_col: frame.to_numpy(dtype=np.float64)})
+    if COLUMNS.time_col not in source.columns:
+        return out
+    first = source.drop_duplicates(order_col).set_index(order_col)[COLUMNS.time_col]
+    return out.assign(**{COLUMNS.time_col: frame.map(first).to_numpy(dtype=np.float64)})
+
+
+def with_source_time(out: pd.DataFrame, source: pd.DataFrame) -> pd.DataFrame:
+    """*out* with the ``time`` of each of its frames, read off the *source* it came from.
+
+    :func:`with_frame_times` for a feature whose output is keyed by ``frame`` and
+    whose order column is the source's own. Left as it is when *out* is empty or has
+    no ``frame``, or *source* has no order column.
+    """
+    if out.empty or COLUMNS.frame_col not in out.columns:
+        return out
+    try:
+        order_col = resolve_order_col(source)
+    except ValueError:
+        return out
+    return with_frame_times(out, source, order_col)
+
+
+def pair_sample_times(joined: pd.DataFrame, order_col: str) -> np.ndarray:
+    """The seconds of each row of a pair's joined series, from the first partner's ``time``.
+
+    The series is joined on the order column, renamed ``frame``. When that column
+    is the ``time`` itself, its values are the seconds.
+    """
+    column = COLUMNS.frame_col if order_col == COLUMNS.time_col else COLUMNS.time_col
+    return joined[column].to_numpy(dtype=np.float64)
+
+
+def unwrap_diff(theta: np.ndarray, sample_times: np.ndarray) -> np.ndarray:
+    """Angular velocity per second of the angles at *sample_times*, NaN for one angle."""
+    return gradient_along(np.unwrap(theta), sample_times)
 
 
 def wrap_angle(x: np.ndarray) -> np.ndarray:

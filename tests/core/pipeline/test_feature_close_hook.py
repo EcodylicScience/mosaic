@@ -267,7 +267,7 @@ class _WorkerClosingFeature(_ClosingFeature):
 
 
 def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
-    return process_apply_worker(
+    output, _ = process_apply_worker(
         __name__,
         "_WorkerClosingFeature",
         _WorkerClosingFeature.Inputs(("tracks",)).model_dump(),
@@ -277,6 +277,8 @@ def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
         {},
         df,
     )
+    assert output is not None
+    return output
 
 
 def test_process_apply_worker_closes_its_own_instance_once(

@@ -508,7 +508,7 @@ def _provided() -> list[str]:
 def test_the_output_holds_the_declared_columns_sorted_by_pair_and_frame() -> None:
     out = _apply(_chase())
 
-    assert list(out.columns) == [*_provided(), "group"]
+    assert list(out.columns) == [*_provided(), "group", "time"]
     assert _provided() == ["frame", "perspective", "id1", "id2", "sequence", *MEASURES]
     assert all(out[column].dtype == np.float32 for column in MEASURES)
     assert (out["sequence"] == "s").all() and (out["group"] == "g").all()
@@ -523,7 +523,7 @@ def test_the_output_holds_the_declared_columns_sorted_by_pair_and_frame() -> Non
 def test_a_table_without_a_group_writes_none() -> None:
     out = _apply(_chase().drop(columns="group"))
 
-    assert list(out.columns) == _provided()
+    assert list(out.columns) == [*_provided(), "time"]
 
 
 def test_three_fish_give_three_pairs_of_two_rows_a_frame() -> None:

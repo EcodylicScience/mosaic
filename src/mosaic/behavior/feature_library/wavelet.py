@@ -31,14 +31,11 @@ from pydantic import Field
 
 from mosaic.core.params import Declared, Params
 
-from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
 from .helpers import feature_columns
-from .types import SamplingConfig
 
 __all__ = [
     "WaveletBand",
     "WaveletParams",
-    "constant_fps",
     "log_power",
     "wavelet_attrs",
     "wavelet_band",
@@ -75,9 +72,6 @@ type Float32Array = npt.NDArray[np.float32]
 class WaveletParams(Params):
     """The band, wavelet, floor and input-column params of a wavelet feature."""
 
-    sampling: Annotated[SamplingConfig, Declared(SAMPLING_FPS_ONLY_DESCRIPTION)] = (
-        Field(default_factory=SamplingConfig)
-    )
     f_min: Annotated[float, Field(gt=0), Declared(_F_MIN_DESCRIPTION, unit="Hz")] = 0.2
     f_max: Annotated[float, Field(gt=0), Declared(_F_MAX_DESCRIPTION, unit="Hz")] = 5.0
     n_freq: Annotated[int, Field(gt=0), Declared(_N_FREQ_DESCRIPTION)] = 25
@@ -222,15 +216,6 @@ def wavelet_input_columns(
     if not num_cols:
         raise ValueError(f"{who} Could not auto-detect numeric feature columns.")
     return num_cols
-
-
-def constant_fps(df: pd.DataFrame, default: float) -> float:
-    """Return the constant ``fps`` column of *df*, or *default* when there is none."""
-    if "fps" in df.columns:
-        vals = pd.Series(df["fps"]).dropna().unique()
-        if len(vals) == 1:
-            return float(vals[0])
-    return float(default)
 
 
 def _pc_columns(df: pd.DataFrame, prefix: str) -> list[str]:

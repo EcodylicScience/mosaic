@@ -80,6 +80,7 @@ class StepAttempt:
         error_json: What it recorded going wrong, or ``""``.
         entries_failed: How many entities it lost while carrying on.
         entries_written: How many entries it left holding an output row.
+        entries_time_irregular: How many uneven-time events it recorded.
         cache_hit: Whether it found the whole of its work already done.
         progress_done: How many entries or epochs it has completed.
         progress_total: How many it declared it would run, 0 until declared.
@@ -117,6 +118,7 @@ class StepAttempt:
     error_json: str = ""
     entries_failed: int = 0
     entries_written: int = 0
+    entries_time_irregular: int = 0
     cache_hit: bool = False
     progress_done: int = 0
     progress_total: int = 0
@@ -296,6 +298,7 @@ def _attempt(logs: Path, step_id: str, execution_id: str) -> StepAttempt:
         error_json=snapshot["error_json"],
         entries_failed=snapshot["entries_failed"],
         entries_written=snapshot["entries_written"],
+        entries_time_irregular=snapshot["entries_time_irregular"],
         cache_hit=snapshot["cache_hit"],
         progress_done=snapshot["progress_done"],
         progress_total=snapshot["progress_total"],

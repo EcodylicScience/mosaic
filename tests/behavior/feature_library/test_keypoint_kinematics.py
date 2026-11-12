@@ -433,14 +433,16 @@ def test_the_frame_rate_is_read_off_the_time_column() -> None:
 
 def test_without_a_frame_rate_or_a_time_column_it_refuses() -> None:
     table = _table([_walk(30, 2)]).drop(columns="time")
-    with pytest.raises(ValueError, match="keypoint-kinematics needs a frame rate"):
+    with pytest.raises(
+        ValueError, match="keypoint-kinematics reads its rate off the 'time' column"
+    ):
         _ = _apply(table)
 
 
 def test_a_time_column_that_never_advances_refuses() -> None:
     table = _table([_walk(30, 2)])
     table["time"] = 0.0
-    with pytest.raises(ValueError, match="could not read a frame rate"):
+    with pytest.raises(ValueError, match="cannot measure a frame rate"):
         _ = _apply(table)
 
 

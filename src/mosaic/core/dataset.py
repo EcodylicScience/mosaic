@@ -103,7 +103,10 @@ from .track_converter import (
 from .label_converter import (
     LabelConverter,
     LabelConvertParams,
+    ClockedLabelConverter,
     LabelEntry,
+    TrackClock,
+    TracksPlacementRefused,
     get_label_converter,
     validate_label_format,
 )
@@ -225,6 +228,7 @@ from .pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from .pipeline.labels_identity import (
+    clocked_label_identity_params,
     label_convert_variant_payload,
     label_converter_op,
     labels_run_id,
@@ -279,6 +283,7 @@ from .pipeline.tracking_roots import (
 )
 from .pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
+    AmbiguousTracksVariant,
     CellBackfill,
     adopt_legacy_columns,
     backfill_frame_extents,
@@ -288,6 +293,7 @@ from .pipeline.tracks_index import (
     FrameAxisMismatch,
     FrameTailShortfall,
     TracksRowDraft,
+    variant_candidate_rows,
     frame_axis_mismatches,
     frame_tail_shortfalls,
     consumed_composition_for,
@@ -295,6 +301,7 @@ from .pipeline.tracks_index import (
     legacy_view,
     read_frame_extent,
     read_tracks_index,
+    select_variant_rows,
     tracks_index_path,
     variant_entry_rows,
 )
@@ -482,14 +489,192 @@ def _track_variant_id(
     return tracks_run_id(converter_op(cls.src_format), cls.version, payload)
 
 
+class _EntryTracks:
+    """Each entry's tracks clock for one label conversion, read from the index once.
+
+    The first use reads the tracks index, selects the variant and asks for the
+    division facts of its entries, so a conversion over many entries reads each of
+    them once. A division's tracks are timed on its recording's clock, and its
+    labels' seconds count from the division's start, so the times handed out are
+    the tracks' ``time`` less the division's first frame on the recording's time
+    axis: its row's ``time_offset``, or, when the row records none, the time of the
+    track row on that first frame. The offset is 0 for any other entry.
+
+    :attr:`variant` is the one tracks variant the labels are placed on:
+    *tracks_run_id* when given, else the variant the entries the labels name
+    resolve to, and ``None`` when the dataset has no tracks. An index that holds
+    one variant names it without asking which entries the labels name, and one
+    that holds several asks *entries*, which is read only then. An entry with no
+    tracks in the variant has no clock: :meth:`has_tracks` says so, and the
+    conversion reports it as lost instead of placing it at the converter's own
+    rate beside entries on the tracks' frames.
+
+    Args:
+        dataset: The dataset whose tracks index is read.
+        tracks_run_id: The variant to place the labels on, or ``None``.
+        entries: The entries the labels name, read when the variant is chosen
+            among several.
+
+    Raises:
+        TracksPlacementRefused: From :attr:`variant`, when the entries the labels
+            name resolve to different variants or to none of several.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        tracks_run_id: str | None,
+        entries: Callable[[], Collection[Entry]] | None = None,
+    ) -> None:
+        self._dataset = dataset
+        self._tracks_run_id = tracks_run_id
+        self._entries = entries
+        self._paths: dict[Entry, str] | None = None
+        self._variant: str | None = tracks_run_id
+        self._facts: dict[Entry, OrderFacts] = {}
+
+    @property
+    def variant(self) -> str | None:
+        """The tracks variant the labels are placed on, ``None`` without tracks."""
+        if self._tracks_run_id is not None:
+            return self._tracks_run_id
+        self._read()
+        return self._variant
+
+    def has_tracks(self, group: str, sequence: str) -> bool:
+        """Whether the entry has a table in the variant."""
+        return (group, sequence) in self._read()
+
+    def _read(self) -> dict[Entry, str]:
+        if self._paths is not None:
+            return self._paths
+        candidates = variant_candidate_rows(
+            read_tracks_index(self._dataset), self._tracks_run_id
+        )
+        rows = candidates
+        if self._tracks_run_id is None:
+            held = sorted({str(name) for name in candidates["run_id"]})
+            if len(held) > 1:
+                rows = self._rows_of_named_entries(candidates, held)
+            self._variant = str(rows["run_id"].iloc[0]) if len(rows) else None
+        self._paths = {
+            (str(group), str(sequence)): str(path)
+            for group, sequence, path in zip(
+                rows["group"], rows["sequence"], rows["abs_path"], strict=True
+            )
+        }
+        self._facts = self._dataset.division_facts(self._paths)
+        return self._paths
+
+    def _rows_of_named_entries(
+        self, candidates: pd.DataFrame, held: list[str]
+    ) -> pd.DataFrame:
+        """One row of each entry the labels name, all in one variant."""
+        named = set(self._entries()) if self._entries is not None else set()
+        mine = candidates[
+            [
+                (str(group), str(sequence)) in named
+                for group, sequence in zip(
+                    candidates["group"], candidates["sequence"], strict=True
+                )
+            ]
+        ]
+        try:
+            chosen = select_variant_rows(mine, None)
+        except AmbiguousTracksVariant as exc:
+            raise TracksPlacementRefused(str(exc)) from exc
+        used = sorted({str(name) for name in chosen["run_id"]})
+        if len(used) > 1:
+            msg = (
+                "labels are placed on one tracks variant, and the entries they "
+                f"name resolve to {len(used)}: {', '.join(used)}. Pass "
+                "tracks_run_id to name the one to place them on."
+            )
+            raise TracksPlacementRefused(msg)
+        if not used:
+            msg = (
+                "none of the entries the labels name has tracks, and the dataset "
+                f"holds {len(held)} tracks variants ({', '.join(held)}). Convert "
+                "their tracks, or pass tracks_run_id to name the variant."
+            )
+            raise TracksPlacementRefused(msg)
+        return chosen
+
+    def __call__(
+        self, group: str, sequence: str
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        path = self._read().get((group, sequence))
+        if path is None:
+            return None
+        from .pipeline.writers import read_parquet_table_columns
+
+        table = read_parquet_table_columns(
+            self._dataset.resolve_path(path), ["frame", "time"]
+        )
+        frames = table["frame"].to_numpy(dtype=np.float64)
+        times = table["time"].to_numpy(dtype=np.float64)
+        return frames, times - self._offset((group, sequence), frames, times)
+
+    def _offset(self, entry: Entry, frames: np.ndarray, times: np.ndarray) -> float:
+        fact = self._facts.get(entry)
+        if fact is None:
+            return 0.0
+        if fact.time_offset is not None:
+            return float(fact.time_offset)
+        if fact.first_frame is not None:
+            at_start = times[frames == fact.first_frame]
+            if at_start.size:
+                return float(at_start[0])
+        return 0.0
+
+
+def _report_missing_tracks(
+    entry: LabelEntry,
+    variant: str,
+    on_failure: Callable[[str, BaseException], None] | None,
+) -> None:
+    """Hand *on_failure* the loss of an entry that has no tracks in *variant*."""
+    if on_failure is None:
+        return
+    msg = (
+        f"the entry {entry_token(entry.group, entry.sequence)!r} has no tracks in "
+        f"the variant {variant!r}, so its labels are not converted. Convert its "
+        "tracks and convert the labels again."
+    )
+    try:
+        raise TracksPlacementRefused(msg)
+    except TracksPlacementRefused as error:
+        on_failure(make_entry_key(entry.group, entry.sequence), error)
+
+
+def _label_identity_params(
+    converter: LabelConverter[LabelConvertParams],
+    params: LabelConvertParams,
+    tracks_variant: str | None,
+) -> dict[str, object]:
+    """The hashed params of a label conversion.
+
+    A :class:`ClockedLabelConverter` places its labels on the frames of a tracks
+    variant, so *tracks_variant* is part of what it produces
+    (:func:`clocked_label_identity_params`). Any other converter's labels are
+    the params alone, and *tracks_variant* is ignored.
+    """
+    if isinstance(converter, ClockedLabelConverter):
+        return clocked_label_identity_params(params.identity_dump(), tracks_variant)
+    return dict(params.identity_dump())
+
+
 def _label_variant_id(
     converter: LabelConverter[LabelConvertParams],
     params: LabelConvertParams,
     label_kind: str,
+    tracks_variant: str | None,
 ) -> str:
-    """The labels variant one label conversion recipe names, computed without I/O."""
+    """The labels variant one label conversion recipe names."""
     cls = type(converter)
-    payload = label_convert_variant_payload(label_kind, params.identity_dump())
+    payload = label_convert_variant_payload(
+        label_kind, _label_identity_params(converter, params, tracks_variant)
+    )
     return labels_run_id(label_converter_op(cls.src_format), cls.version, payload)
 
 
@@ -1683,11 +1868,27 @@ class LabelConversionOutcome:
         written: Label files written by this call.
         skipped: Label files already present and kept, because the call did not
             overwrite.
+        failed_entries: The entries whose labels were not written, because a
+            converter of second-based events has no tracks for them in the
+            variant it places labels on. A direct conversion writes them once
+            their tracks exist. A pipeline resubmit reads the labels variant
+            complete and does not retry them.
     """
 
     variant: str
     written: int
     skipped: int
+    failed_entries: tuple[Entry, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        """Did every entry the call attempted convert?"""
+        return not self.failed_entries
+
+    @property
+    def lost_everything(self) -> bool:
+        """Did the call attempt entries, and write or keep none of them?"""
+        return bool(self.failed_entries) and self.written + self.skipped == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -10109,9 +10310,8 @@ class Dataset:
         staged = stage_table(merged_df, out_path)
 
         # source_abs_path names only the first of the N per-id files merged
-        # here. Unchanged from before; the full set stays recoverable from
-        # tracks_raw/index.csv by (group, sequence, src_format), and naming
-        # every source is item 5.1's job rather than this column's.
+        # here; the full set stays recoverable from tracks_raw/index.csv by
+        # (group, sequence, src_format).
         outcome.tables.append(
             StagedTrackTable(
                 staged=staged,
@@ -10144,6 +10344,8 @@ class Dataset:
         *,
         progress: Callable[[int, int], None] | None = None,
         cancel_check: Callable[[], None] | None = None,
+        tracks_run_id: str | None = None,
+        on_failure: Callable[[str, BaseException], None] | None = None,
         **kwargs: object,
     ) -> LabelConversionOutcome:
         """
@@ -10167,6 +10369,19 @@ class Dataset:
             Called as ``progress(done, total)`` with the raw files handled so far.
         cancel_check : callable, optional
             Called before each raw file. It stops the conversion by raising.
+        tracks_run_id : str, optional
+            The tracks variant that a converter of second-based events places its
+            labels on, reading each entry's clock from it. The labels variant
+            names it, so labels on the resampled tracks are another variant than
+            labels on the converted ones. Unset uses the variant the entries the
+            labels name resolve to, ``None`` in the identity when the dataset has
+            no tracks, and refuses entries that resolve to different variants.
+            An entry with no tracks in the variant is not converted: it is a
+            failed entry of the outcome. A direct conversion writes it once its
+            tracks exist, and a pipeline resubmit does not retry it.
+        on_failure : callable, optional
+            Called as ``on_failure(entry_key, error)`` for each entry that is not
+            converted for want of tracks, from inside the handler of the error.
         **kwargs : additional keyword arguments
             Passed to converter (e.g., group_from, fps, etc.)
 
@@ -10183,6 +10398,9 @@ class Dataset:
             converter params do not build, no labels_raw row of the format is
             selected, or, for a converter that refuses shared entry keys, two
             converted entries share an entry key.
+        TracksPlacementRefused
+            If a converter of second-based events has no one tracks variant to
+            place its labels on.
         FileNotFoundError
             If labels_raw/index.csv is missing
 
@@ -10230,7 +10448,23 @@ class Dataset:
         # names one recipe across every sequence it covers -- and place its .npz
         # files under labels/<kind>/<run_id>/. A re-conversion with different
         # params mints a new variant beside the old rather than overwriting it.
-        variant = self._labels_variant(converter, conv_params, label_kind=kind)
+        # A converter of timed events places them on one tracks variant, and the
+        # variant names it, so the tracks are resolved before the label variant.
+        tracks = (
+            _EntryTracks(
+                self,
+                tracks_run_id,
+                lambda: self._label_entries(converter, conv_params, df_raw),
+            )
+            if isinstance(converter, ClockedLabelConverter)
+            else None
+        )
+        variant = self._labels_variant(
+            converter,
+            conv_params,
+            label_kind=kind,
+            tracks_variant=None if tracks is None else tracks.variant,
+        )
         kind_root = self.get_root("labels") / kind
         variant_root = labels_variant_root(kind_root, variant)
         variant_root.mkdir(parents=True, exist_ok=True)
@@ -10241,13 +10475,35 @@ class Dataset:
         converted: list[tuple[LabelEntry, Path, Path, str]] = []
         sources: dict[str, Path] = {}
         skipped = 0
+        lost: list[Entry] = []
         total = int(len(df_raw))
+        # A converter of second-based events maps them to the frames of each
+        # entry's tracks, which :class:`_EntryTracks` reads on demand.
+        clock = (
+            TrackClock(
+                tracks,
+                # A kept file's labels are discarded, so its tracks are not read.
+                skip=lambda group, sequence: (
+                    not overwrite
+                    and (
+                        variant_root / f"{make_entry_key(group, sequence)}.npz"
+                    ).exists()
+                ),
+            )
+            if tracks is not None
+            else None
+        )
         for done, (_, raw_row) in enumerate(df_raw.iterrows(), start=1):
             if cancel_check is not None:
                 cancel_check()
             src_path = self.resolve_path(raw_row["abs_path"])
             source_md5 = str(raw_row.get("md5", "") or "")
-            for entry in converter.convert(src_path, conv_params, raw_row):
+            entries = (
+                converter.convert(src_path, conv_params, raw_row, clock=clock)
+                if isinstance(converter, ClockedLabelConverter)
+                else converter.convert(src_path, conv_params, raw_row)
+            )
+            for entry in entries:
                 key = make_entry_key(entry.group, entry.sequence)
                 if converter.refuses_shared_entry_keys:
                     _refuse_shared_entry_key(
@@ -10256,6 +10512,14 @@ class Dataset:
                 out_path = variant_root / f"{key}.npz"
                 if out_path.exists() and not overwrite:
                     skipped += 1
+                    continue
+                if (
+                    tracks is not None
+                    and tracks.variant is not None
+                    and not tracks.has_tracks(entry.group, entry.sequence)
+                ):
+                    lost.append((entry.group, entry.sequence))
+                    _report_missing_tracks(entry, tracks.variant, on_failure)
                     continue
                 converted.append((entry, out_path, src_path, source_md5))
             if progress is not None:
@@ -10278,10 +10542,14 @@ class Dataset:
             # it, unless the converter numbers them on the tracks table's axis.
             # Every other entry's stay where the converter numbered them.
             division = divisions.get((entry.group, entry.sequence))
+            on_tracks = (
+                clock is not None and (entry.group, entry.sequence) in clock.used
+            )
             payload = place_label_payload(
                 entry.payload,
                 first_frame=0
                 if converter.frames_on_tracks_axis
+                or on_tracks
                 or division is None
                 or division.first_frame is None
                 else division.first_frame,
@@ -10306,9 +10574,23 @@ class Dataset:
                 label_names=",".join(str(n) for n in entry.label_names),
                 source=src_path,
                 source_md5=source_md5,
-                consumed_source_roots=("labels_raw",),
+                # Frames read off the entry's tracks are made from them as well.
+                consumed_source_roots=(
+                    ("labels_raw", "tracks_raw")
+                    if clock is not None and (entry.group, entry.sequence) in clock.used
+                    else ("labels_raw",)
+                ),
             )
         written = len(pending)
+        if lost and written + skipped == 0:
+            # Nothing was written, and a manifest entry for a variant with no
+            # file would send every reader to an empty directory.
+            return LabelConversionOutcome(
+                variant=variant,
+                written=0,
+                skipped=0,
+                failed_entries=tuple(lost),
+            )
 
         registration: dict[str, JsonValue] = {
             "run_id": variant,
@@ -10345,7 +10627,33 @@ class Dataset:
             f"[convert_all_labels] kind={kind} wrote {written} sequences as "
             f"variant {variant} using {src_format} (overwrite={overwrite})."
         )
-        return LabelConversionOutcome(variant=variant, written=written, skipped=skipped)
+        return LabelConversionOutcome(
+            variant=variant,
+            written=written,
+            skipped=skipped,
+            failed_entries=tuple(lost),
+        )
+
+    def _label_entries(
+        self,
+        converter: LabelConverter[LabelConvertParams],
+        params: LabelConvertParams,
+        rows: pd.DataFrame,
+    ) -> set[Entry]:
+        """The entries that the label files of *rows* name.
+
+        Each file is converted without a tracks clock, which names its entries and
+        reads nothing of the tracks. Asked when an index holds several tracks
+        variants, to find the one the entries the labels name resolve to.
+        """
+        named: set[Entry] = set()
+        if not isinstance(converter, ClockedLabelConverter):
+            return named
+        for _, raw_row in rows.iterrows():
+            src_path = self.resolve_path(raw_row["abs_path"])
+            for entry in converter.convert(src_path, params, raw_row):
+                named.add((entry.group, entry.sequence))
+        return named
 
     def label_rows_to_convert(
         self,
@@ -10409,6 +10717,7 @@ class Dataset:
         params: LabelConvertParams,
         *,
         label_kind: str,
+        tracks_variant: str | None = None,
         observed: Optional[dict] = None,
     ) -> str:
         """Mint this label conversion's variant identity and record it.
@@ -10419,14 +10728,15 @@ class Dataset:
         payload domain-separates two kinds that share a ``src_format``.
         """
         cls = type(converter)
-        run_id = _label_variant_id(converter, params, label_kind)
+        identity = _label_identity_params(converter, params, tracks_variant)
+        run_id = _label_variant_id(converter, params, label_kind, tracks_variant)
         _ = write_labels_variant(
             self.get_root("labels") / label_kind,
             run_id,
             label_converter_op(cls.src_format),
             cls.version,
             label_kind,
-            params.identity_dump(),
+            identity,
             observed,
         )
         return run_id
@@ -10436,30 +10746,53 @@ class Dataset:
         kind: str,
         source_format: str,
         params: Mapping[str, object] | None = None,
+        *,
+        tracks_run_id: str | None = None,
     ) -> str:
         """Name the labels variant a conversion of *source_format* would write.
 
         The identity :meth:`convert_all_labels` mints, computed without writing
         anything, so a planner can name the variant before the conversion runs.
+        A converter of second-based events names the tracks variant its labels
+        are placed on, which is *tracks_run_id* or else read from the tracks
+        index, as the conversion reads it.
 
         Args:
             kind: The label kind, such as ``"behavior"``.
             source_format: The registered label converter's ``src_format``.
             params: Converter overrides, as :meth:`convert_all_labels` takes
                 them.
+            tracks_run_id: The tracks variant that a converter of second-based
+                events places its labels on.
 
         Returns:
             The labels variant identifier.
 
         Raises:
             ValueError: No converter is registered for the pair.
+            TracksPlacementRefused: The entries' tracks are not one variant.
         """
         label_kind = str(kind or "").lower()
         converter = get_label_converter(source_format, label_kind)
         conv_params = self._label_converter_params(
             converter, dict(params or {}), src_format=source_format
         )
-        return _label_variant_id(converter, conv_params, label_kind)
+        tracks_variant = (
+            _EntryTracks(
+                self,
+                tracks_run_id,
+                lambda: self._label_entries(
+                    converter,
+                    conv_params,
+                    self.label_rows_to_convert(
+                        label_kind, source_format, dict(params or {})
+                    ),
+                ),
+            ).variant
+            if isinstance(converter, ClockedLabelConverter)
+            else None
+        )
+        return _label_variant_id(converter, conv_params, label_kind, tracks_variant)
 
     def _label_converter_params(
         self,

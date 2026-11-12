@@ -51,7 +51,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, with_frame_times
 from .registry import register_feature
 
 
@@ -238,7 +238,7 @@ class PairInteractionFilter:
 
     category = "per-frame"
     name = "pair-interaction-filter"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -281,7 +281,7 @@ class PairInteractionFilter:
             Column("interaction_start"),
             Column("interaction_end"),
         ),
-        conditional=kept(C.group_col, C.seq_col),
+        conditional=kept(C.time_col, C.group_col, C.seq_col),
         # One segment, written on both rows of the pair.
         symmetric=(
             Column("interaction_id"),
@@ -418,7 +418,7 @@ class PairInteractionFilter:
         for col in (C.group_col, C.seq_col):
             if col in df.columns:
                 out[col] = df[col].iloc[0]
-        return out
+        return with_frame_times(out, df, resolve_order_col(df))
 
     def _detect_pair_interactions(
         self,

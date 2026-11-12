@@ -20,15 +20,14 @@ factory rather than being a literal, so there is no value to print.
 
 ### `approach-avoidance`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance`
+Version `0.5` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance`
 
 Approach-avoidance events between every pair of individuals in a sequence.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings applied to position and orientation gaps before computing distances and velocities. |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame-rate configuration. Only fps_default is read, as the fallback frames-per-second used when the table has no fps column, or that column does not resolve to exactly one value. |
-| `velocity_units` | `"per_frame"` \| `"per_second"` | `"per_frame"` |  | The time unit a computed speed is expressed in before comparing it against a velocity threshold. |
+| `velocity_units` | `"per_frame"` \| `"per_second"` | `"per_frame"` |  | The time unit a computed speed is expressed in before comparing it against a velocity threshold. Per second divides each displacement by the seconds between its two rows, read from the time column. |
 | `angle_units` | `"radians"` \| `"degrees"` \| `"auto"` | `"radians"` |  | Unit of the orientation column, read when orientation_gate_cos is set. auto detects radians or degrees from the value range. |
 | `consecutive_frame_delta` | `number` | `1.0` |  | The expected frame step between consecutive rows. A velocity is left unset where the actual step does not match it. [frames] |
 | `distance_threshold` | `number` | `200.0` | > `0` | Maximum inter-animal distance, in position units, for a frame to be AA-eligible. |
@@ -39,7 +38,7 @@ Approach-avoidance events between every pair of individuals in a sequence.
 | `min_event_length` | `integer` | `10` | >= `1` | Length of the trailing window checked for qualifying rows. [frames] |
 | `min_event_count` | `integer` | `5` | >= `1` | Minimum count of qualifying rows within the min_event_length window required for a candidate row to count as part of an event. Values above min_event_length are silently clamped down to it. [frames] |
 | `orientation_gate_cos` | `number` \| `None` | `0.8660254037844386` |  | Unset, the orientation gate does not apply. Set, the approacher's body orientation must align with its velocity to at least this cosine, and a table with no orientation column raises. The default is cos(30 degrees). |
-| `smooth_window_sec` | `number` \| `None` | `null` |  | Unset, thresholds apply framewise. Set, average distance, speed and cosine metrics over this many seconds before thresholding. [s] |
+| `smooth_window_sec` | `number` \| `None` | `null` |  | Unset, thresholds apply framewise. Set, average distance, speed and cosine metrics over this many seconds before thresholding. The window is a whole number of rows at the frame rate measured from the time column, so a table that steps unevenly is warned about. [s] |
 
 ??? note "`InterpolationConfig`"
 
@@ -49,16 +48,9 @@ Approach-avoidance events between every pair of individuals in a sequence.
     | `edge_fill_limit` | `integer` | `3` | >= `0` | Maximum run of consecutive missing values forward-filled, then back-filled, after interpolation leaves them unresolved. [frames] |
     | `max_missing_fraction` | `number` | `0.1` | >= `0.0`, <= `1.0` | Fraction of missing columns above which a row is dropped entirely. |
 
-??? note "`SamplingConfig`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
-    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
-
 ### `attention-target`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget`
+Version `0.3` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget`
 
 Per-frame attention target with group-membership labeling.
 
@@ -81,7 +73,7 @@ Body length of each individual, per frame and as a per-sequence median.
 
 ### `body-scale`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.body_scale.BodyScaleFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.body_scale.BodyScaleFeature`
 
 Per-frame body scale: median intra-animal pose distance.
 
@@ -114,7 +106,7 @@ Per-frame body heading derived from pose keypoints.
 
 ### `hidra`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.hidra_feature.HidraFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.hidra_feature.HidraFeature`
 
 HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
 
@@ -153,13 +145,12 @@ HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
 
 ### `individual-wavelet`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet`
+Version `0.2` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet`
 
 CWT spectrograms of numeric columns of each individual. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. A pair model reads them through a join to its pair rows.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
 | `f_min` | `number` | `0.2` | > `0` | Minimum frequency of the CWT frequency band. [Hz] |
 | `f_max` | `number` | `5.0` | > `0` | Maximum frequency of the CWT frequency band. [Hz] |
 | `n_freq` | `integer` | `25` | > `0` | Number of frequency bins, dyadically spaced between f_min and f_max. |
@@ -168,16 +159,9 @@ CWT spectrograms of numeric columns of each individual. The columns are those ``
 | `pc_prefix` | `string` | `"PC"` |  | Column-name prefix used to auto-detect principal-component input columns, for example PC0 and PC1. |
 | `cols` | list of `string` \| `None` | `null` |  | Explicit input column names for the CWT. Unset, columns are auto-detected via pc_prefix, falling back to every numeric feature column when none match. |
 
-??? note "`SamplingConfig`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
-    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
-
 ### `keypoint-kinematics`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.keypoint_kinematics.KeypointKinematics`
+Version `0.2` &middot; `mosaic.behavior.feature_library.keypoint_kinematics.KeypointKinematics`
 
 Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
 
@@ -185,7 +169,7 @@ Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
 | --- | --- | --- | --- | --- |
 | `keypoint_names` | list of `string` \| `None` | `null` |  | A name for each keypoint, in the table's keypoint order. Used in the output column names, and accepted wherever a parameter refers to a keypoint. Its length must equal the table's keypoint count. Unset, keypoint k is labeled kp{k} and is referred to by its index. |
 | `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The keypoints to report speed and acceleration for, by index or by name. With heading set, they also get the four own-frame columns. An index is a keypoint's position in the table's keypoint order, which is its column number when the keypoints are numbered from 0 without a gap. Unset, every keypoint the table carries. An empty list reports none, for a run that wants only distances. |
-| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is the reciprocal of the median time step per frame read off the time column, and a table whose time column cannot give one is refused. [fps] |
+| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is measured from the time column as the frame span over the time span, a table whose time column cannot give one is refused, and a table whose steps are uneven is warned about, because the fit reads its rows as evenly spaced. [fps] |
 | `window` | `integer` | `7` | >= `3` | The Savitzky-Golay window length: odd, and larger than polyorder. It is also the longest gap in a keypoint's track that is linearly interpolated before filtering. A longer gap ends the stretch the filter runs over. [frames] |
 | `polyorder` | `integer` | `2` | >= `2` | The order of the polynomial fitted in each window. At least 2, because acceleration is the fit's second derivative and a lower order would report it as zero everywhere. |
 | `distances` | list of (tuple of (`integer` \| `string`, `integer` \| `string`)) | _constructed_ |  | Keypoint pairs, by index or by name, whose separation is reported on every row as dist__{a}__{b}. Euclidean over the table's two or three axes, and measured on the unsmoothed positions. |
@@ -284,40 +268,31 @@ No parameters.
 
 ### `neighbor-delta-response`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.neighbor_delta_response.NeighborDeltaResponse`
+Version `0.2` &middot; `mosaic.behavior.feature_library.neighbor_delta_response.NeighborDeltaResponse`
 
 Change in a focal individual's position, heading and speed, by each neighbor.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
 | `speed_col` | `string` | `"SPEED"` |  | The focal individual's speed column. Falls back to speed when absent. |
 | `focal_col` | `string` | `"Focal_fish"` |  | The column flagging a focal individual. Passed through for the focal and looked up for the neighbor as neighbor_focal when present, the category columns nn-delta-bins splits by. |
 | `diff_numframes` | `integer` | `4` | >= `1` | How far ahead the response delta is measured. [frames] |
 | `max_neighbor_rank` | `integer` \| `None` | `null` |  | Keep only the neighbors this close in rank, 1 being the nearest in that frame. 1 reproduces the nearest-neighbor pairing of nn-delta-response. Unset, every neighbor. |
 | `wrap_angle` | `boolean` | `true` |  | Wrap the heading difference to [-pi, pi]. When False, the raw difference is kept. |
 | `divide_dangle_by_frames` | `boolean` | `true` |  | Divide the heading change by the number of frames it spans. When False, the raw windowed difference is kept. |
-| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the sampling frame rate. Together with divide_dangle_by_frames this gives radians per second. |
+| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the window's own frame rate, its frames over the seconds between its two rows (the time column). Together with divide_dangle_by_frames this gives radians per second, whatever frames the track dropped. |
 | `time_shuffle` | `boolean` | `false` |  | Shift each neighbor's trajectory in time, circularly over the sequence and by its own random offset, before placing it in the focal's frame: the chance-level control of a neighbor map. The focal's own movement is not shifted. |
 | `shuffle_seed` | `integer` | `0` |  | Seed of the shuffle offsets, combined with the group and sequence so that each sequence draws its own offsets and every run draws the same. |
 | `shuffle_min_shift` | `integer` | `300` | >= `1` | The smallest time shift of a shuffled neighbor, in either direction. A sequence spanning no more than twice this shift refuses to shuffle. [frames] |
 
-??? note "`SamplingConfig`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
-    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
-
 ### `nn-delta-response`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.nn_delta_response.NearestNeighborDelta`
+Version `0.4` &middot; `mosaic.behavior.feature_library.nn_delta_response.NearestNeighborDelta`
 
 Change in a focal individual's position, heading and speed, by its nearest neighbor.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
 | `speed_col` | `string` | `"SPEED"` |  | The focal individual's speed column. Falls back to speed when absent. |
 | `nn_id_col` | `string` | `"nn_id"` |  | The nearest neighbor's id column. Falls back to nn_fishID when absent. |
 | `nn_dx_ego_col` | `string` | `"nn_delta_x_ego"` |  | The column that records the neighbor's x offset in the focal's ego frame. |
@@ -330,19 +305,12 @@ Change in a focal individual's position, heading and speed, by its nearest neigh
 | `emit_backward` | `boolean` | `false` |  | Also emit the backward window: dx_back and dy_back, computed as the position at t minus the position at t-tau. A row with no valid backward window gets NaN instead of being dropped. |
 | `wrap_angle` | `boolean` | `true` |  | Wrap the heading difference to [-pi, pi]. When False, the raw difference is kept. |
 | `divide_dangle_by_frames` | `boolean` | `true` |  | Divide the heading change by the number of frames it spans. When False, the raw windowed difference is kept. |
-| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the sampling frame rate. Together with divide_dangle_by_frames this gives radians per second. |
+| `scale_dangle_by_fps` | `boolean` | `true` |  | Multiply the heading change by the window's own frame rate, its frames over the seconds between its two rows (the time column). Together with divide_dangle_by_frames this gives radians per second, whatever frames the track dropped. |
 | `tag_cols` | list of `string` | _constructed_ |  | Extra columns passed through unchanged on the focal row, and looked up for the neighbor as neighbor_<tag_col> when the column exists on the full table. |
-
-??? note "`SamplingConfig`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
-    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `orientation-rel`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.orientation_relative.OrientationRelativeFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.orientation_relative.OrientationRelativeFeature`
 
 Orientation-aware relative features between animal pairs, order-agnostic to pose points.
 
@@ -365,14 +333,14 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
 
 ### `pair-egocentric`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures`
 
 Egocentric and kinematic features of every pair, from pose keypoints.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings for missing pose data. |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate and smoothing settings. |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Smoothing settings. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `neck_idx` | `integer` | `3` |  | Index of the neck keypoint in the pose array. Paired with tail_base_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. It must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
 | `tail_base_idx` | `integer` | `6` |  | Index of the tail-base keypoint in the pose array. Paired with neck_idx to compute heading. The direction runs from the tail-base to the neck, the direction the animal faces. It must name a selected keypoint, one listed in pose.pose_indices when that is set and one from 0 to pose.pose_n - 1 otherwise. |
@@ -401,12 +369,11 @@ Egocentric and kinematic features of every pair, from pose keypoints.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `pair-facing`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing`
 
 Per-frame directional facing metric for all ordered pairs of individuals.
 
@@ -423,7 +390,7 @@ Per-frame directional facing metric for all ordered pairs of individuals.
 
 ### `pair-interaction-filter`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter`
 
 Detect pairwise interaction segments from trajectory data.
 
@@ -442,7 +409,7 @@ Detect pairwise interaction segments from trajectory data.
 
 ### `pair-keypoints`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_keypoints.PairKeypoints`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_keypoints.PairKeypoints`
 
 Each partner keypoint's position and velocity in the focal's body frame.
 
@@ -452,13 +419,13 @@ Each partner keypoint's position and velocity in the focal's body frame.
 | `keypoints` | list of (`integer` \| `string`) \| `None` | `null` |  | The partner keypoints to place in the focal's body frame, by index or by name. An index is a keypoint's position in the table's keypoint order, which is its column number when the keypoints are numbered from 0 without a gap. Unset, every keypoint the table carries. An empty list places none, for a run that wants only inter_distances. |
 | `heading` | tuple of (`integer` \| `string`, `integer` \| `string`) | _required_ | min items `2`, max items `2` | The focal's keypoint pair (neck, tail base), by index or by name, that sets each row's body frame: the heading points from tail base to neck, and the body center is their midpoint. Every partner_ column is measured along the heading (x) and along its left-hand normal (y); positive y is 90 degrees counterclockwise from the heading in a y-up frame. A row where either keypoint of the focal's pair is missing, or the two coincide, has no body frame, and its partner_ columns are NaN. |
 | `inter_distances` | list of (tuple of (`integer` \| `string`, `integer` \| `string`)) | _constructed_ |  | Keypoint pairs (a, b), by index or by name, whose separation is reported on every row as inter_dist__{a}__{b}: from the focal's keypoint a to the partner's keypoint b, on the unsmoothed positions. The order matters, so (a, b) and (b, a) are two distances, and (a, a) is the distance between the two animals' keypoint a. |
-| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is the reciprocal of the median time step per frame read off the time column, and a table whose time column cannot give one is refused. [fps] |
+| `fps` | `number` \| `None` | `null` |  | The recording's frame rate, which sets the time step of every derivative. Unset, it is measured from the time column as the frame span over the time span, a table whose time column cannot give one is refused, and a table whose steps are uneven is warned about, because the fit reads its rows as evenly spaced. [fps] |
 | `window` | `integer` | `7` | >= `3` | The Savitzky-Golay window length: odd, and larger than polyorder. It is also the longest gap in a keypoint's track that is linearly interpolated before filtering. A longer gap ends the stretch the filter runs over. [frames] |
 | `polyorder` | `integer` | `2` | >= `1` | The order of the polynomial fitted in each window. At least 1, because only the velocity, the fit's first derivative, is taken. |
 
 ### `pair-posedistance-pca`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
+Version `0.4` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
 
 Principal components of the pose distances between every pair, per frame.
 
@@ -515,14 +482,14 @@ Principal components of the pose distances between every pair, per frame.
 
 ### `pair-position`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_position.PairPositionFeatures`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_position.PairPositionFeatures`
 
 Egocentric and kinematic features of every pair, from position and heading.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `interpolation` | `InterpolationConfig` | _constructed_ |  | Interpolation settings for missing position data. |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate and smoothing settings. |
+| `sampling` | `SamplingConfig` | _constructed_ |  | Smoothing settings. |
 
 ??? note "`InterpolationConfig`"
 
@@ -536,18 +503,16 @@ Egocentric and kinematic features of every pair, from position and heading.
 
     | Parameter | Type | Default | Constraints | Description |
     | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
     | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
 
 ### `pair-wavelet`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet`
 
 CWT spectrograms of numeric columns of pair rows. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. It is the spectral stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `sampling` | `SamplingConfig` | _constructed_ |  | Frame rate settings. Only fps_default is read; smoothing is not applied. |
 | `f_min` | `number` | `0.2` | > `0` | Minimum frequency of the CWT frequency band. [Hz] |
 | `f_max` | `number` | `5.0` | > `0` | Maximum frequency of the CWT frequency band. [Hz] |
 | `n_freq` | `integer` | `25` | > `0` | Number of frequency bins, dyadically spaced between f_min and f_max. |
@@ -556,16 +521,9 @@ CWT spectrograms of numeric columns of pair rows. The columns are those ``cols``
 | `pc_prefix` | `string` | `"PC"` |  | Column-name prefix used to auto-detect principal-component input columns, for example PC0 and PC1. |
 | `cols` | list of `string` \| `None` | `null` |  | Explicit input column names for the CWT. Unset, columns are auto-detected via pc_prefix, falling back to every numeric feature column when none match. |
 
-??? note "`SamplingConfig`"
-
-    | Parameter | Type | Default | Constraints | Description |
-    | --- | --- | --- | --- | --- |
-    | `fps_default` | `number` | `30.0` | > `0` | Frame rate used when the data's fps column is absent or does not resolve to exactly one value. [fps] |
-    | `smooth_win` | `integer` | `0` | >= `0` | Length of the moving-average window applied to smooth position and angle values before feature computation. A value of 1 or less disables smoothing. [frames] |
-
 ### `pair-world`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld`
 
 Per-frame geometry of every pair of individuals, in the world frame.
 
@@ -672,7 +630,7 @@ Smooth a classifier's class probabilities along consecutive frames.
 
 ### `speed-angvel`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.speed_angvel.SpeedAngvel`
+Version `0.3` &middot; `mosaic.behavior.feature_library.speed_angvel.SpeedAngvel`
 
 Per-sequence feature computing translational speed and angular velocity.
 
@@ -680,11 +638,10 @@ Per-sequence feature computing translational speed and angular velocity.
 | --- | --- | --- | --- | --- |
 | `step_size` | `integer` \| `None` | `null` |  | The additional frame step for speed_step and angvel_step, computed beside the one-frame difference. Unset, neither column is emitted. [frames] |
 | `smooth_window` | `integer` \| `None` | `null` |  | The window Savitzky-Golay smoothing (polyorder 1) averages speed over to produce speed_smooth. Unset, speed_smooth is not emitted. Smoothing raises when the window is 0 or 1. An individual with fewer rows than the window is smoothed with the largest odd window that fits, and one with fewer than 3 rows keeps its unsmoothed speed. [frames] |
-| `fps` | `number` \| `None` | `null` |  | Frames per second. When set, dt is derived from the frame column (frame_diff / fps) instead of the time column. This is more robust for constant-fps data where the time column may contain irregular real timestamps. |
 
 ### `temporal-stack`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
+Version `0.6` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
 
 Build temporal context windows over per-sequence feature data.
 
@@ -696,8 +653,8 @@ Build temporal context windows over per-sequence feature data.
 | `sigma_stack` | `number` | `30.0` |  | The Gaussian smoothing sigma applied before stacking. 0 disables smoothing. [frames] |
 | `add_pool` | `boolean` | `true` |  | Append pooled statistics computed over a sliding Gaussian window. |
 | `pool_stats` | list of `string` | `["mean"]` |  | Which pooled statistics to compute over the sliding Gaussian window. Known values are mean, std and variance, matched case-insensitively. Any other value is ignored. |
-| `sigma_pool` | `number` | `30.0` |  | The Gaussian sigma for the pooling window. Non-positive computes it from win_sec and fps. [frames] |
-| `fps` | `number` | `30.0` | > `0` | The frame rate used to convert win_sec into a frame count. [fps] |
+| `sigma_pool` | `number` | `30.0` |  | The Gaussian sigma for the pooling window. Non-positive computes it from win_sec and the frame rate measured from the time column. [frames] |
+| `fps` | `number` \| `None` | `null` |  | The frame rate that converts win_sec into a frame count. Unset, it is measured from the time column as the frame span over the time span, a table without one is refused, and a table whose steps are uneven is warned about, because the window reads its rows as evenly spaced. [fps] |
 | `win_sec` | `number` | `0.5` | > `0` | The width of the pooling window. [s] |
 | `pair_filter` | `NNResult` \| `None` | `null` |  | Unset, every row is read. A nearest-neighbor result narrows the input, while it loads, to rows where one individual in the pair is the other's nearest neighbor. On an input without id1/id2 columns, the filter has no effect. |
 | `columns` | list of `string` \| `None` | `null` |  | The payload columns to read. Unset, every numeric payload column of the input is read. A name of an identity or bookkeeping column, or of a column that the input lacks, raises. The order and repeats of the names do not change the run. |
@@ -741,14 +698,13 @@ Subsample tracks rows for downstream per-row features.
 
 ### `trajectory-smooth`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth`
+Version `0.3` &middot; `mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth`
 
 Per-sequence feature that smooths and interpolates trajectory positions.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `speed_threshold` | `number` \| `None` | `null` |  | Unset, no frame is flagged bad. Set, a frame is flagged when its displacement from the previous frame exceeds this value, per frame or, when fps is set, per second. Uses the same unit as the X and Y position columns. |
-| `fps` | `number` \| `None` | `null` |  | Unset, speed_threshold is read as a per-frame value. Set, converts speed_threshold from a per-second rate to per-frame. [fps] |
+| `speed_threshold` | `number` \| `None` | `null` |  | Unset, no frame is flagged bad. Set, a frame is flagged when its displacement from the previous row exceeds this speed times the seconds between the two rows, read from the time column, so a long gap allows a long move. In the unit of the X and Y position columns per second. [units/s] |
 | `interpolate_centroid` | `boolean` | `true` |  | Replace a bad frame's centroid position with linear interpolation between the nearest good frames, extending from the nearest good value at a sequence edge. Every remaining gap in each column is filled the same way. |
 | `interpolate_pose` | `boolean` | `false` |  | Replace a bad frame's pose keypoint positions with linear interpolation between the nearest good frames, extending from the nearest good value at a sequence edge. Every remaining gap in each column is filled the same way. |
 | `expand_frames` | `integer` | `2` |  | How far on each side of a speed-flagged row the bad flag extends. [frames] |
@@ -758,7 +714,7 @@ Per-sequence feature that smooths and interpolates trajectory positions.
 
 ### `visual-network`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.visual_network.VisualNetwork`
+Version `0.2` &middot; `mosaic.behavior.feature_library.visual_network.VisualNetwork`
 
 Per-frame visibility between individuals, by 2-D ray casting.
 
@@ -783,7 +739,7 @@ Per-frame visibility between individuals, by 2-D ray casting.
 
 ### `collective-motion-metrics`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics`
+Version `0.3` &middot; `mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics`
 
 Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
@@ -794,8 +750,7 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 | `area_method` | `"convex_hull"` \| `"alpha_shape"` \| `"none"` | `"convex_hull"` |  | How area and density are computed. none skips both. |
 | `alpha` | `number` \| `None` | `null` |  | The circumradius cutoff for the alpha shape, in the input's position units. Required when area_method is alpha_shape. |
 | `min_individuals` | `integer` | `3` | >= `1` | Below this count of individuals, the relational metrics are NaN and state is Undefined. The default of 3 rather than 2 accounts for N=2, where the two radial vectors are antiparallel by construction. Rotation contains no information there, yet still feeds the classifier. |
-| `fps` | `number` \| `None` | `null` |  | The frame rate. With a frame order column, this derives dt as frame_diff / fps, immune to the jittery wall-clock timestamps some trackers embed. Unset, dt falls back to the time column, then to one order step. [fps] |
-| `max_frame_gap` | `integer` \| `None` | `null` |  | Frame steps wider than this yield NaN velocity instead of averaging across a gap the shoal reorganized over. Unset, every step is accepted. [frames] |
+| `max_frame_gap` | `integer` \| `None` | `null` |  | Steps wider than this yield NaN velocity instead of averaging across a gap the shoal reorganized over. A velocity divides by the seconds the step lasts, read from the time column, whatever the gap. Unset, every step is accepted. [frames] |
 | `min_group_speed` | `number` | `0.0` | >= `0` | centroid_heading is NaN at or below this speed. A mill's centroid is stationary by definition, and arctan2(0, 0) returns 0 (due east) with no error, which the threshold guards against. |
 | `speed_col` | `string` \| `None` | `null` |  | The per-individual speed column averaged into mean_speed. Worth setting under subgroup_col, where frame-aggregate cannot express a per-subgroup mean. Unset, mean_speed is not emitted. |
 | `filter_expr` | `string` \| `None` | `null` |  | A DataFrame.query expression applied first, before every other computation. The way to drop event == -1, the pooled non-event pseudo-group from ffgroups: that sentinel is an integer, which exclude_cols cannot express. |
@@ -929,7 +884,7 @@ Per-sequence feature reducing the rows of each individual to one row.
 
 ### `label-statistics`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.label_statistics.LabelStatistics`
+Version `0.2` &middot; `mosaic.behavior.feature_library.label_statistics.LabelStatistics`
 
 Per-individual behavioural statistics of a label sequence: a fingerprint.
 
@@ -937,7 +892,7 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
 | --- | --- | --- | --- | --- |
 | `labels` | `ResultColumn` \| `GroundTruthLabelsSource` | `{"kind": "behavior", "remap": null, "mask": null}` |  | Where the label sequence comes from. A GroundTruthLabelsSource reads each entry's converted label file from labels/<kind>/, through its segment sidecar when the file carries one. A ResultColumn reads a categorical column of a feature's output: from that feature's run when it names a feature, from this feature's own input when its feature is left empty. |
 | `states` | list of (`string` \| `integer`) \| `None` | `null` |  | The fixed vocabulary of states, which gives every entry the same columns -- a state an entry never shows reads as zero usage and zero bouts rather than as a missing column. An integer names a label id or a numeric column value, a string a label name or a text column value. Required for a ResultColumn source. Unset for ground truth, it is the label file's label_names in file order, less those in ignore, so it can differ between entries whose files were converted with different vocabularies; a file that declares no label_ids has no vocabulary to default to and is refused. A label or value in neither states nor ignore is refused. |
-| `fps` | `number` \| `None` | `null` |  | The frame rate that converts bout lengths to seconds and bout counts to rates. Unset, it is read from the input's time column as the median time step per frame, and an input without a usable time column is refused. [fps] |
+| `fps` | `number` \| `None` | `null` |  | The frame rate that converts bout lengths to seconds and bout counts to rates, the same for every row. Unset, each row lasts the seconds to the next row, read from the input's time column, so a bout across dropped frames lasts what the clock says, and an input without a usable time column is refused. [fps] |
 | `min_bout_frames` | `integer` | `1` | >= `1` | The shortest bout kept. A shorter run or segment is dropped before any statistic is taken: it adds to no usage and no coverage, is no bout, and takes part in no transition. A bout's length is its rows times the entry's frame step, so on a table holding every k-th frame a bout of r rows has length r*k. [frames] |
 | `ignore` | list of (`string` \| `integer`) | _constructed_ |  | Labels or values excluded from every statistic, such as a background or an unsure class. Their frames count toward n_frames only, so they lower coverage. Matched as states are, and refused when also listed in states. |
 
@@ -1003,13 +958,12 @@ Per-sequence feature reducing the rows of an entry to one row per group.
 
 ### `social-motion-summary`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary`
+Version `0.4` &middot; `mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary`
 
 Per-fish summary of social-interaction and locomotor-style metrics.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `fps` | `number` | `30.0` |  | The frame rate, used to convert frame steps to seconds for the derivative-based metrics and for kick_rate's time base. [fps] |
 | `speed_col` | `string` | `"speed"` |  | The per-frame speed column. speed_smooth is the better input for the derivative-based metrics, but it exists only when speed-angvel ran with smooth_window set. It is not the default for that reason. |
 | `social_min_group_size` | `integer` | `2` |  | The minimum group_size for a frame to count as social, when group_size is available. |
 | `subgroup_col` | `string` \| `None` | `null` |  | The column that splits the output into one row per id per value, typically group_size from ffgroups. Unset, the output has one row per id. |

@@ -255,9 +255,30 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   spatial column (the aggregates) accepts every space.
 - A Tracktor table (`tracktor_corrected_tsv`, `tracktor_raw_csv`) is timed by the file's
   `seconds_total`, because the recording drops frames and no frame rate gives a frame's
-  time. Leave `fps` unset in `speed-angvel` and `collective-motion-metrics`, so they read
-  `time`. The raw format reads that time from the corrected `.tsv` beside it. The table
+  time. The raw format reads that time from the corrected `.tsv` beside it. The table
   is in pixels, so scale it with `scale-to-cm` and an explicit `cm_per_pixel`.
+- A table that dropped frames is read by its `time` column. A feature that differences
+  positions divides by the seconds between rows and takes no `fps`: `speed-angvel`,
+  `collective-motion-metrics`, `trajectory-smooth`, `social-motion-summary` and the pair
+  and response features. A method that reads rows as evenly spaced (the Savitzky-Golay
+  features, the wavelets, `temporal-stack`, `hidra`, `approach-avoidance`'s
+  `smooth_window_sec`) measures one rate from `time` and warns, naming the largest gap
+  and `resample-tracks`. The warning is a `time_irregular` event of the run-log, so
+  `mosaic status` and the status tools of a run or request report
+  `entries_time_irregular` and list the first 20 in `time_irregular`: the entry, the
+  feature, the largest step and the frames it lies between. The run still `finished`.
+  `temporal-stack` takes an explicit `fps` to skip the measure. Run `resample-tracks`
+  first to give it a uniform grid: it interpolates on `time`. A BORIS label event in
+  seconds maps to the last frame of the entry's tracks whose `time` is at or before
+  it, so convert the tracks before the labels (a recipe runs a `convert-labels` step
+  after its steps that write tracks). Name the tracks variant the
+  features will read with `tracks_run_id`, for example the `resample-tracks` one: the
+  labels are placed on that variant's frames, and the labels variant names it, so each
+  tracks variant has its own labels. Without `tracks_run_id` the conversion uses the
+  variant the entries the labels name have, and refuses entries on different ones. An
+  entry with no tracks in that variant gets no label file and is reported as a failed
+  entry (`partial`); convert its tracks and run `mosaic convert-labels` again. A
+  resubmitted pipeline reads the labels step complete and does not retry it.
 - Velocity, speed and heading angle come from features. The `mosaic_v1` schema refuses
   them in a tracks table. Run `speed-angvel`, or `heading` with its method chosen.
 - Keypoints are optional. Features defined on keypoints refuse a table without them.

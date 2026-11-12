@@ -14,8 +14,10 @@ from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
+    ParamIs,
     Provides,
     Requirement,
+    When,
 )
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -27,7 +29,9 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 from mosaic.core.pose_columns import pose_column_pairs
+from mosaic.core.timebase import step_seconds
 
+from .helpers import ensure_columns
 from .registry import register_feature
 
 
@@ -51,17 +55,18 @@ def _fill_runs(fill: npt.NDArray[np.bool_]) -> list[tuple[int, int]]:
 def _fill_marks(
     x: npt.NDArray[np.float64],
     y: npt.NDArray[np.float64],
+    time: npt.NDArray[np.float64],
     bad: npt.NDArray[np.bool_],
-    threshold_per_frame: float | None,
+    speed_threshold: float | None,
 ) -> _FillMarks:
     """Mark the rows that interpolation fills, and the runs it cannot bridge.
 
     A row is filled when its position is missing or *bad*. A run of filled rows
     with an observed row on both sides is unbridgeable when the straight line
-    between those two rows moves faster than *threshold_per_frame*: their
-    distance over the run's length plus one frame. A run at a sequence edge is
-    filled from one side and is never unbridgeable. Rows count as consecutive
-    frames.
+    between those two rows moves faster than *speed_threshold*: their distance
+    over the seconds between their times. A run at a sequence edge is filled
+    from one side and is never unbridgeable. Two rows at one time, or out of time
+    order, have no speed and are not judged.
     """
     n = len(x)
     fill = ~np.isfinite(x) | ~np.isfinite(y) | bad
@@ -69,11 +74,14 @@ def _fill_marks(
     unbridgeable = np.zeros(n, dtype=bool)
     for first, last in _fill_runs(fill):
         run_frames[first : last + 1] = last - first + 1
-        if threshold_per_frame is None or first == 0 or last == n - 1:
+        if speed_threshold is None or first == 0 or last == n - 1:
             continue
         before, after = first - 1, last + 1
+        seconds = float(time[after] - time[before])
+        if not seconds > 0.0:
+            continue
         distance = float(np.hypot(x[after] - x[before], y[after] - y[before]))
-        if distance / (after - before) > threshold_per_frame:
+        if distance / seconds > speed_threshold:
             unbridgeable[first : last + 1] = True
     return _FillMarks(
         interpolated=fill, interp_run_frames=run_frames, unbridgeable=unbridgeable
@@ -92,14 +100,10 @@ def _savgol_with_nan(arr: np.ndarray, window: int, polyorder: int) -> np.ndarray
 
 _SPEED_THRESHOLD_DESCRIPTION = (
     "Unset, no frame is flagged bad. Set, a frame is flagged when its "
-    "displacement from the previous frame exceeds this value, per frame "
-    "or, when fps is set, per second. Uses the same unit as the X and Y "
-    "position columns."
-)
-
-_FPS_DESCRIPTION = (
-    "Unset, speed_threshold is read as a per-frame value. Set, converts "
-    "speed_threshold from a per-second rate to per-frame."
+    "displacement from the previous row exceeds this speed times the "
+    "seconds between the two rows, read from the time column, so a long "
+    "gap allows a long move. In the unit of the X and Y position columns "
+    "per second."
 )
 
 _INTERPOLATE_CENTROID_DESCRIPTION = (
@@ -192,7 +196,7 @@ class TrajectorySmooth:
 
     category = "per-frame"
     name = "trajectory-smooth"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -200,7 +204,11 @@ class TrajectorySmooth:
     consumed_roots: tuple[str, ...] = ()
     emits: EmitsLevel = "individual"
     follows_ids: bool = True
-    requires: ClassVar[tuple[Requirement, ...]] = (Column(COLUMNS.id_col), ORDER_COLUMN)
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Column(COLUMNS.id_col),
+        ORDER_COLUMN,
+        When(Column(COLUMNS.time_col), (ParamIs("speed_threshold"),)),
+    )
     provides: ClassVar[Provides] = Provides(
         passthrough=True,
         adds=(Column("bad_frame"), *(Column(name) for name in _MARK_COLUMNS)),
@@ -211,9 +219,8 @@ class TrajectorySmooth:
 
     class Params(Params):
         speed_threshold: Annotated[
-            float | None, Declared(_SPEED_THRESHOLD_DESCRIPTION)
+            float | None, Declared(_SPEED_THRESHOLD_DESCRIPTION, unit="units/s")
         ] = None
-        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = None
         interpolate_centroid: Annotated[
             bool, Declared(_INTERPOLATE_CENTROID_DESCRIPTION)
         ] = True
@@ -283,6 +290,8 @@ class TrajectorySmooth:
             return pd.DataFrame()
 
         p = self.params
+        if p.speed_threshold is not None:
+            ensure_columns(df, [COLUMNS.time_col])
         order_col = resolve_order_col(df)
         # Sorting first orders the individuals by their first row in time.
         df = df.sort_values(order_col).reset_index(drop=True)
@@ -315,21 +324,22 @@ class TrajectorySmooth:
             sub[col] = sub[col].replace([np.inf, -np.inf], np.nan)
 
         has_centroid = x_col in sub.columns and y_col in sub.columns
-        # The threshold in position units per frame
-        threshold_per_frame: float | None = None
-        if p.speed_threshold is not None:
-            threshold_per_frame = (
-                p.speed_threshold / p.fps if p.fps is not None else p.speed_threshold
-            )
+        # Read only under a threshold, which is what needs seconds.
+        time = (
+            sub[COLUMNS.time_col].to_numpy(dtype=float)
+            if p.speed_threshold is not None
+            else np.zeros(n)
+        )
 
         # --- Step 1: Bad-frame detection ---
-        if threshold_per_frame is not None and has_centroid:
+        if p.speed_threshold is not None and has_centroid:
             x = sub[x_col].to_numpy(dtype=float)
             y = sub[y_col].to_numpy(dtype=float)
             dx = np.diff(x, prepend=np.nan)
             dy = np.diff(y, prepend=np.nan)
-            speed = np.hypot(dx, dy)
-            bad_mask = speed > threshold_per_frame
+            # A step allows the move its seconds allow, so a long gap is not a jump.
+            allowed = p.speed_threshold * step_seconds(time)
+            bad_mask = np.hypot(dx, dy) > allowed
             # Expand bad region
             if p.expand_frames > 0 and np.any(bad_mask):
                 bad_indices = np.where(bad_mask)[0]
@@ -352,8 +362,9 @@ class TrajectorySmooth:
             marks = _fill_marks(
                 sub[x_col].to_numpy(dtype=float),
                 sub[y_col].to_numpy(dtype=float),
+                time,
                 bad,
-                threshold_per_frame,
+                p.speed_threshold,
             )
             sub["interpolated"] = marks.interpolated
             sub["interp_run_frames"] = marks.interp_run_frames

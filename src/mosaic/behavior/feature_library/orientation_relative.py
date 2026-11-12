@@ -18,6 +18,7 @@ from pydantic import Field
 from mosaic.core.individuals import id_arenas, same_arena_mask
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
+    kept,
     POSE_X,
     POSE_Y,
     Column,
@@ -50,6 +51,7 @@ from .helpers import (
     pairwise_median_distance,
     row_max,
     row_median,
+    with_frame_times,
     row_quantile,
     sort_nan_last,
     wrap_angle,
@@ -92,7 +94,7 @@ class OrientationRelativeFeature:
 
     category = "per-frame"
     name = "orientation-rel"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -132,7 +134,10 @@ class OrientationRelativeFeature:
             Column("y_max"),
             Prefix("near_"),
         ),
-        conditional=(Conditional(Prefix("dist_q"), when_param="quantiles"),),
+        conditional=(
+            Conditional(Prefix("dist_q"), when_param="quantiles"),
+            *kept(C.time_col),
+        ),
     )
 
     # ``scale`` names the body-scale run when there is one. Without a run, each
@@ -263,7 +268,7 @@ class OrientationRelativeFeature:
         }
         for name in blocks[0]:
             columns[name] = np.concatenate([block[name] for block in blocks])
-        return pd.DataFrame(columns)
+        return with_frame_times(pd.DataFrame(columns), df, C.frame_col)
 
 
 def _ordered_pairs(frames: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

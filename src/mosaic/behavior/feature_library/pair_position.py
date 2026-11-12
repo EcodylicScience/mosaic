@@ -21,7 +21,6 @@ from pydantic import Field
 from mosaic.core.individuals import id_arenas, individual_pairs
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Provides,
     Requirement,
@@ -45,6 +44,7 @@ from .helpers import (
     clean_tracks_grouped,
     ensure_columns,
     gradient_along,
+    pair_sample_times,
     smooth_1d,
     unwrap_diff,
 )
@@ -68,6 +68,7 @@ class PairPositionFeatures:
 
     Output columns (per row):
       - frame: frame number
+      - time: the seconds of the row, which a velocity divides by
       - perspective: 0 for A->B, 1 for B->A
       - id1, id2: IDs of the two animals in this pair
       - A_speed, A_v_para, A_v_perp, A_ang_speed: focal kinematics
@@ -84,7 +85,7 @@ class PairPositionFeatures:
 
     category = "per-frame"
     name = "pair-position"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -98,7 +99,7 @@ class PairPositionFeatures:
         Column(C.x_col),
         Column(C.y_col),
         Column(C.orientation_col),
-        ORDER_COLUMN,
+        Column(C.time_col),
     )
     provides: ClassVar[Provides] = PAIR_EGOCENTRIC_PROVIDES
 
@@ -141,9 +142,9 @@ class PairPositionFeatures:
         order_col = resolve_order_col(df)
 
         required = [C.id_col, C.seq_col, C.x_col, C.y_col, C.orientation_col]
-        ensure_columns(df, required)
+        ensure_columns(df, [*required, C.time_col])
 
-        df_small = df[[order_col] + required]
+        df_small = df[list(dict.fromkeys([order_col, C.time_col, *required]))]
 
         # Clean per-animal, per-sequence
         group_cols = [C.seq_col, C.id_col]
@@ -194,15 +195,13 @@ class PairPositionFeatures:
         orig_df: pd.DataFrame,
     ) -> pd.DataFrame | None:
         """Compute features for a single pair (A, B) with both perspectives."""
-        p = self.params
-
         # Extract data for each animal
+        kinematic = [C.x_col, C.y_col, C.orientation_col]
+        # The partner's time is the first animal's, so only one side carries it.
         df_a = gseq[gseq[C.id_col] == id_a][
-            [order_col, C.x_col, C.y_col, C.orientation_col]
+            list(dict.fromkeys([order_col, C.time_col, *kinematic]))
         ]
-        df_b = gseq[gseq[C.id_col] == id_b][
-            [order_col, C.x_col, C.y_col, C.orientation_col]
-        ]
+        df_b = gseq[gseq[C.id_col] == id_b][[order_col, *kinematic]]
 
         if df_a.empty or df_b.empty:
             return None
@@ -216,28 +215,21 @@ class PairPositionFeatures:
         if j.empty:
             return None
 
-        # Get fps
-        fps = float(p.sampling.fps_default)
-        if "fps" in orig_df.columns:
-            try:
-                c = orig_df["fps"].dropna().unique()
-                if len(c) == 1:
-                    fps = float(c[0])
-            except Exception:
-                pass
-
         # Build features
-        frames, AtoB, BtoA, names = self._build_features(j, fps)
+        times = pair_sample_times(j, order_col)
+        frames, AtoB, BtoA, names = self._build_features(j, times)
 
         # Create DataFrames for both perspectives
         dfA = pd.DataFrame(AtoB.T, columns=names)
         dfA[C.frame_col] = frames
+        dfA[C.time_col] = times
         dfA["perspective"] = 0
         dfA["id1"] = id_a
         dfA["id2"] = id_b
 
         dfB = pd.DataFrame(BtoA.T, columns=names)
         dfB[C.frame_col] = frames
+        dfB[C.time_col] = times
         dfB["perspective"] = 1
         dfB["id1"] = id_b  # Swap: B is now the focal
         dfB["id2"] = id_a
@@ -252,7 +244,7 @@ class PairPositionFeatures:
         return pd.concat([dfA, dfB], ignore_index=True)
 
     def _build_features(
-        self, j: pd.DataFrame, fps: float
+        self, j: pd.DataFrame, times: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[str]]:
         """Build egocentric features from joined pair data."""
         p = self.params
@@ -284,18 +276,18 @@ class PairPositionFeatures:
         uoxA, uoyA = -uhyA, uhxA
         uoxB, uoyB = -uhyB, uhxB
 
-        # Velocities (per second)
-        vAx = gradient_along(cxA) * fps
-        vAy = gradient_along(cyA) * fps
-        vBx = gradient_along(cxB) * fps
-        vBy = gradient_along(cyB) * fps
+        # Velocities (per second), over the rows' real spacing
+        vAx = gradient_along(cxA, times)
+        vAy = gradient_along(cyA, times)
+        vBx = gradient_along(cxB, times)
+        vBy = gradient_along(cyB, times)
 
         speedA = np.sqrt(vAx * vAx + vAy * vAy)
         speedB = np.sqrt(vBx * vBx + vBy * vBy)
 
         # Angular speed
-        angspeedA = unwrap_diff(thA, fps)
-        angspeedB = unwrap_diff(thB, fps)
+        angspeedA = unwrap_diff(thA, times)
+        angspeedB = unwrap_diff(thB, times)
 
         # Ego projections of velocity
         vA_para = vAx * uhxA + vAy * uhyA

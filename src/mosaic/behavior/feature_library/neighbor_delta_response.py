@@ -51,11 +51,9 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from ._sampling_descriptions import SAMPLING_FPS_ONLY_DESCRIPTION
 from .helpers import ego_rotate, ensure_columns, one_row_per_frame_and_id, wrap_angle
-from .nn_delta_response import windowed_delta
+from .nn_delta_response import scaled_dangle, windowed_delta
 from .registry import register_feature
-from .types import SamplingConfig
 
 _SPEED_COL_DESCRIPTION = (
     "The focal individual's speed column. Falls back to speed when absent."
@@ -85,8 +83,10 @@ _DIVIDE_DANGLE_BY_FRAMES_DESCRIPTION = (
 )
 
 _SCALE_DANGLE_BY_FPS_DESCRIPTION = (
-    "Multiply the heading change by the sampling frame rate. Together "
-    "with divide_dangle_by_frames this gives radians per second."
+    "Multiply the heading change by the window's own frame rate, its "
+    "frames over the seconds between its two rows (the time column). "
+    "Together with divide_dangle_by_frames this gives radians per "
+    "second, whatever frames the track dropped."
 )
 
 _TIME_SHUFFLE_DESCRIPTION = (
@@ -132,7 +132,7 @@ class NeighborDeltaResponse:
 
     category = "per-frame"
     name = _NAME
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -146,6 +146,7 @@ class NeighborDeltaResponse:
         Column(C.x_col),
         Column(C.y_col),
         Column(C.orientation_col),
+        Column(C.time_col),
         AnyOf((ParamColumn("speed_col"), Column(_SPEED_FALLBACK))),
     )
     provides: ClassVar[Provides] = Provides(
@@ -179,9 +180,6 @@ class NeighborDeltaResponse:
         pass
 
     class Params(Params):
-        sampling: Annotated[SamplingConfig, Declared(SAMPLING_FPS_ONLY_DESCRIPTION)] = (
-            Field(default_factory=SamplingConfig)
-        )
         speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "SPEED"
         focal_col: Annotated[str, Declared(_FOCAL_COL_DESCRIPTION)] = "Focal_fish"
         diff_numframes: Annotated[
@@ -232,7 +230,15 @@ class NeighborDeltaResponse:
         speed_col = p.speed_col if p.speed_col in df.columns else _SPEED_FALLBACK
         ensure_columns(
             df,
-            [C.frame_col, C.id_col, C.x_col, C.y_col, C.orientation_col, speed_col],
+            [
+                C.frame_col,
+                C.time_col,
+                C.id_col,
+                C.x_col,
+                C.y_col,
+                C.orientation_col,
+                speed_col,
+            ],
         )
         rows = one_row_per_frame_and_id(df).reset_index(drop=True)
         ids = sorted(rows[C.id_col].unique().tolist())
@@ -264,10 +270,16 @@ class NeighborDeltaResponse:
                 if focal_flags is not None:
                     focal_flags[:, k] = np.roll(focal_flags[:, k], shift)
 
-        fps = p.sampling.fps_default
         lag = p.diff_numframes
-        delta_cols = [C.x_col, C.y_col, C.orientation_col, speed_col, C.frame_col]
-        i_x, i_y, i_ang, i_spd, i_frm = range(5)
+        delta_cols = [
+            C.x_col,
+            C.y_col,
+            C.orientation_col,
+            speed_col,
+            C.frame_col,
+            C.time_col,
+        ]
+        i_x, i_y, i_ang, i_spd, i_frm, i_sec = range(6)
         carried = [c for c in (C.time_col, C.group_col, C.seq_col) if c in rows]
 
         partners = set(individual_pairs(ids, id_arenas(df), ordered=True))
@@ -304,10 +316,13 @@ class NeighborDeltaResponse:
             dangle = fwd[r_idx, i_ang]
             if p.wrap_angle:
                 dangle = wrap_angle(dangle)
-            if p.divide_dangle_by_frames:
-                dangle = dangle / lag
-            if p.scale_dangle_by_fps:
-                dangle = dangle * fps
+            dangle = scaled_dangle(
+                dangle,
+                np.full(dangle.shape, lag, dtype=np.int64),
+                fwd[r_idx, i_sec],
+                divide_by_frames=p.divide_dangle_by_frames,
+                scale_by_rate=p.scale_dangle_by_fps,
+            )
             neighbor_ids = np.asarray(ids, dtype=object)[np.asarray(others)[n_idx]]
 
             out = pd.DataFrame(

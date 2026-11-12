@@ -26,7 +26,7 @@ type FloatArray = npt.NDArray[np.float64]
 FPS = 30.0
 WAVELET = "cmor1.5-1.0"
 IDENTITIES = (0, 1)
-IDENTITY_COLUMNS = ["frame", "id", "sequence", "group"]
+IDENTITY_COLUMNS = ["frame", "time", "id", "sequence", "group"]
 
 # A band whose longest wavelet spans fewer rows than the track holds, so that a NaN
 # blanks a run of rows and the ends of the track stay finite.
@@ -46,7 +46,7 @@ def _tracks(
     names: tuple[str, ...] = ("a", "b"),
     *,
     seed: int = 7,
-    fps: object = None,
+    fps: float = FPS,
 ) -> pd.DataFrame:
     """One row per ``(frame, id)`` of two individuals, in a shuffled row order."""
     rng = np.random.default_rng(seed)
@@ -54,14 +54,13 @@ def _tracks(
     for identity in IDENTITIES:
         columns: dict[str, object] = {
             "frame": np.arange(n_frames, dtype=np.int64),
+            "time": np.arange(n_frames) / fps,
             "id": identity,
             "sequence": "seq",
             "group": "grp",
         }
         for name in names:
             columns[name] = rng.normal(size=n_frames) + rng.normal() * 3.0
-        if fps is not None:
-            columns["fps"] = fps
         blocks.append(pd.DataFrame(columns))
     table = pd.concat(blocks, ignore_index=True)
     order = np.random.default_rng(seed + 1).permutation(len(table))
@@ -242,15 +241,17 @@ def test_each_row_keeps_the_sequence_and_group_of_its_input_row() -> None:
 def test_time_orders_the_rows_when_frame_is_absent_and_consecutive_rows_are_samples() -> (
     None
 ):
-    table = _tracks().rename(columns={"frame": "time"})
-    table["time"] = table["time"] * 0.5
+    table = _tracks().drop(columns="frame")
+    table["time"] = table["time"] * 15.0
 
     out = _feature().apply(table)
 
     assert list(out.columns)[-4:] == ["time", "id", "sequence", "group"]
     assert "frame" not in out.columns
     for identity in IDENTITIES:
-        expected = _expected(table.assign(frame=table["time"]), identity, ["a", "b"])
+        expected = _expected(
+            table.assign(frame=table["time"]), identity, ["a", "b"], fps=2.0
+        )
         mine = _individual(out, identity)
         assert mine["time"].is_monotonic_increasing
         for column in expected.columns:
@@ -325,7 +326,7 @@ def test_without_cols_or_pc_columns_every_numeric_feature_column_is_read() -> No
 
     out = _feature().apply(table)
 
-    # Sorted by name, with the identity columns and the ``fps`` column left out.
+    # Sorted by name, with the identity columns left out.
     assert out.attrs["input_columns"] == ["area", "speed"]
 
 
@@ -336,31 +337,36 @@ def test_a_table_with_no_numeric_feature_column_raises() -> None:
         _feature().apply(_tracks(names=()))
 
 
-def test_a_constant_fps_column_sets_the_frame_rate() -> None:
+def test_the_frame_rate_is_measured_from_the_time_column() -> None:
     table = _tracks(fps=60.0)
 
-    out = _feature({"sampling": {"fps_default": 15.0}}).apply(table)
+    out = _feature().apply(table)
 
-    assert out.attrs["fps"] == 60.0
+    assert out.attrs["fps"] == pytest.approx(60.0)
     expected = _expected(table, 0, ["a", "b"], fps=60.0)
-    np.testing.assert_array_equal(
-        _individual(out, 0)["W_a_f10"].to_numpy(), expected["W_a_f10"].to_numpy()
+    np.testing.assert_allclose(
+        _individual(out, 0)["W_a_f10"].to_numpy(),
+        expected["W_a_f10"].to_numpy(),
+        rtol=1e-5,
     )
 
 
-def test_without_a_fps_column_the_default_frame_rate_applies() -> None:
-    out = _feature({"sampling": {"fps_default": 15.0}}).apply(_tracks())
+def test_a_stated_fps_column_does_not_set_the_frame_rate() -> None:
+    table = _tracks(fps=30.0).assign(fps=60.0)
 
-    assert out.attrs["fps"] == 15.0
+    out = _feature().apply(table)
+
+    assert out.attrs["fps"] == pytest.approx(30.0)
 
 
-def test_a_fps_column_that_varies_falls_back_to_the_default() -> None:
-    varying = _tracks()
-    varying["fps"] = np.where(varying["frame"] % 2 == 0, 30.0, 60.0)
+def test_a_table_without_time_is_refused_by_name() -> None:
+    with pytest.raises(ValueError, match="individual-wavelet.*'time'"):
+        _ = _feature().apply(_tracks().drop(columns="time"))
 
-    out = _feature({"sampling": {"fps_default": 15.0}}).apply(varying)
 
-    assert out.attrs["fps"] == 15.0
+def test_a_sampling_setting_is_refused() -> None:
+    with pytest.raises(ValueError, match="sampling"):
+        _ = _feature({"sampling": {"fps_default": 15.0}})
 
 
 def test_twenty_frequencies_give_twenty_columns_per_input_column() -> None:

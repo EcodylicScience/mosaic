@@ -17,11 +17,15 @@ from scipy.ndimage import gaussian_filter1d
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
+    Column,
+    ParamIs,
     Payload,
     Provides,
     Requirement,
+    When,
 )
 from mosaic.core.pipeline.types import (
+    COLUMNS as C,
     DependencyLookup,
     EmitsLevel,
     Inputs,
@@ -30,6 +34,7 @@ from mosaic.core.pipeline.types import (
     Result,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.core.timebase import uniform_grid_rate
 
 from .helpers import chosen_payload_columns, gaussian_radius, meta_columns
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
@@ -81,7 +86,7 @@ def _temporal_stack(
     add_pool: bool,
     pool_stats: tuple[str, ...],
     sigma_pool: float,
-    fps: float,
+    rate: float | None,
     win_sec: float,
 ) -> tuple[np.ndarray, list[str]]:
     """Compute temporal stacking and pooled stats on a feature matrix.
@@ -137,12 +142,14 @@ def _temporal_stack(
 
     # Pooled statistics
     if add_pool and pool_stats:
+        if rate is None:
+            raise ValueError("pooled statistics need the frame rate of the table")
         pool_parts, pool_names = _pooled_stats(
             base,
             base_names,
             pool_stats,
             sigma_pool,
-            fps,
+            rate,
             win_sec,
         )
         parts.extend(pool_parts)
@@ -150,6 +157,13 @@ def _temporal_stack(
 
     result = np.concatenate(parts, axis=1).astype(np.float32, copy=False)
     return result, names
+
+
+def _pools(params: TemporalStackingFeature.Params) -> bool:
+    """Whether the params ask for a pooled statistic that ``apply`` computes."""
+    return params.add_pool and any(
+        stat in ("mean", "std", "variance") for stat in params.pool_stats
+    )
 
 
 def _pool_window(sigma: float, fps: float, win_sec: float) -> tuple[float, float]:
@@ -234,10 +248,15 @@ _POOL_STATS_DESCRIPTION = (
 
 _SIGMA_POOL_DESCRIPTION = (
     "The Gaussian sigma for the pooling window. Non-positive computes "
-    "it from win_sec and fps."
+    "it from win_sec and the frame rate measured from the time column."
 )
 
-_FPS_DESCRIPTION = "The frame rate used to convert win_sec into a frame count."
+_FPS_DESCRIPTION = (
+    "The frame rate that converts win_sec into a frame count. Unset, it is "
+    "measured from the time column as the frame span over the time span, a "
+    "table without one is refused, and a table whose steps are uneven is "
+    "warned about, because the window reads its rows as evenly spaced."
+)
 
 _WIN_SEC_DESCRIPTION = "The width of the pooling window."
 
@@ -255,7 +274,7 @@ class TemporalStackingFeature:
     name = "temporal-stack"
     # 0.5: ``nn_id`` and ``attention_target_id``, track ids, are neither
     # stacked nor carried (``BOOKKEEPING_COLS``).
-    version = "0.5"
+    version = "0.6"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -268,7 +287,13 @@ class TemporalStackingFeature:
     # ``columns`` is not declared, because a requirement on a list param is met
     # by any one of its names. ``apply`` refuses each named column that the
     # input lacks.
-    requires: ClassVar[tuple[Requirement, ...]] = (Payload(),)
+    requires: ClassVar[tuple[Requirement, ...]] = (
+        Payload(),
+        When(
+            Column(C.time_col),
+            (ParamIs("add_pool"), ParamIs("fps", negated=True)),
+        ),
+    )
     # ``apply`` reads every payload column, or those that ``columns`` names. Each
     # is written as ``<column>__t<offset>`` per offset, or unchanged without the
     # stack, and as ``<column>__pool_mean``, ``__pool_var`` or ``__pool_std``
@@ -304,8 +329,8 @@ class TemporalStackingFeature:
         sigma_pool: Annotated[
             float, Declared(_SIGMA_POOL_DESCRIPTION, unit="frames")
         ] = 30.0
-        fps: Annotated[float, Declared(_FPS_DESCRIPTION, unit="fps")] = Field(
-            default=30.0, gt=0
+        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = Field(
+            default=None, gt=0
         )
         win_sec: Annotated[float, Declared(_WIN_SEC_DESCRIPTION, unit="s")] = Field(
             default=0.5, gt=0
@@ -339,13 +364,16 @@ class TemporalStackingFeature:
     # --- Protocol ---
 
     @staticmethod
-    def temporal_reach(params: TemporalStackingFeature.Params) -> int:
-        """Frames on each side that one row reads.
+    def temporal_reach(params: TemporalStackingFeature.Params) -> int | None:
+        """Frames on each side that one row reads, or ``None`` with pooled statistics.
 
         The stack reaches ``half`` frames, and the Gaussian smoothing of each copy
-        reads ``int(4 * sigma_stack + 0.5)`` more (scipy's default truncation). The
-        pooled statistics read their own Gaussian window. The row reads the larger
-        of the two. Rows are taken to be consecutive frames.
+        reads ``int(4 * sigma_stack + 0.5)`` more (scipy's default truncation).
+        Rows are taken to be consecutive frames. The pooled statistics read a
+        Gaussian window that is ``win_sec`` seconds wide, which is a number of
+        frames only at a frame rate. With ``fps`` set the window is bounded, and
+        without it the rate is the one the input's ``time`` column gives, so no
+        params bound the reach.
         """
         reach = 0
         if params.use_temporal_stack:
@@ -355,9 +383,9 @@ class TemporalStackingFeature:
                 else 0
             )
             reach = params.half + smoothing
-        if params.add_pool and any(
-            stat in ("mean", "std", "variance") for stat in params.pool_stats
-        ):
+        if _pools(params):
+            if params.fps is None:
+                return None
             sigma, truncate = _pool_window(
                 params.sigma_pool, params.fps, params.win_sec
             )
@@ -388,9 +416,14 @@ class TemporalStackingFeature:
             raise ValueError(msg)
 
         has_pairs = "id1" in df.columns and "id2" in df.columns
+        # The window of the pooled statistics is in seconds, so it needs the rate.
+        rate = None
+        if _pools(self.params):
+            fps = self.params.fps
+            rate = fps if fps is not None else uniform_grid_rate(df, self.name)
         if has_pairs:
-            return self._apply_pairs(df, cols)
-        return self._apply_single(df, cols)
+            return self._apply_pairs(df, cols, rate)
+        return self._apply_single(df, cols, rate)
 
     # --- Internals ---
 
@@ -398,10 +431,11 @@ class TemporalStackingFeature:
         self,
         df: pd.DataFrame,
         cols: list[str],
+        rate: float | None,
     ) -> pd.DataFrame:
         meta = meta_columns(df)
         base = df[cols].to_numpy(dtype=np.float32)
-        stacked, stacked_names = self._stack(base, cols)
+        stacked, stacked_names = self._stack(base, cols, rate)
         result = pd.DataFrame(stacked, columns=stacked_names, index=df.index)
         for col in meta:
             result[col] = df[col].values
@@ -411,13 +445,14 @@ class TemporalStackingFeature:
         self,
         df: pd.DataFrame,
         cols: list[str],
+        rate: float | None,
     ) -> pd.DataFrame:
         meta = meta_columns(df)
         parts: list[pd.DataFrame] = []
         for _, sub in df.groupby(self._pair_keys(df), sort=False):
             sub = sub.sort_values("frame").reset_index(drop=True)
             base = sub[cols].to_numpy(dtype=np.float32)
-            stacked, stacked_names = self._stack(base, cols)
+            stacked, stacked_names = self._stack(base, cols, rate)
             part = pd.DataFrame(stacked, columns=stacked_names, index=sub.index)
             for col in meta:
                 part[col] = sub[col].values
@@ -445,6 +480,7 @@ class TemporalStackingFeature:
         self,
         base: np.ndarray,
         base_names: list[str],
+        rate: float | None,
     ) -> tuple[np.ndarray, list[str]]:
         params = self.params
         return _temporal_stack(
@@ -457,6 +493,6 @@ class TemporalStackingFeature:
             add_pool=params.add_pool,
             pool_stats=params.pool_stats,
             sigma_pool=params.sigma_pool,
-            fps=params.fps,
+            rate=rate,
             win_sec=params.win_sec,
         )

@@ -32,6 +32,7 @@ def test_convert_labels_json_reports_variant_and_counts(tmp_path: Path) -> None:
         "variant": planned,
         "written": 2,
         "skipped": 0,
+        "failed": 0,
     }
 
 

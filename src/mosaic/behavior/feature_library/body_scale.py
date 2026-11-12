@@ -16,6 +16,7 @@ import pandas as pd
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
+    kept,
     POSE_X,
     POSE_Y,
     Column,
@@ -32,6 +33,7 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Params
 
 from .helpers import (
+    with_source_time,
     ensure_columns,
     finite_keypoints,
     one_row_per_frame_and_id,
@@ -64,7 +66,7 @@ class BodyScaleFeature:
 
     category = "per-frame"
     name = "body-scale"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # measures the keypoints of one row
@@ -87,7 +89,8 @@ class BodyScaleFeature:
             Column("scale"),
             Column(C.seq_col),
             Column(C.group_col),
-        )
+        ),
+        conditional=kept(C.time_col),
     )
 
     class Inputs(TrackInputs):
@@ -119,6 +122,9 @@ class BodyScaleFeature:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return with_source_time(self._rows(df), df)
+
+    def _rows(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()
         ensure_columns(df, [C.frame_col, C.id_col])

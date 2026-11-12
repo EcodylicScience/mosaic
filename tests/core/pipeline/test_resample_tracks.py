@@ -25,19 +25,22 @@ import pytest
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.ops import IdentityDeferred, run_op
-from mosaic.core.pipeline.resample_tracks import (
-    AmbiguousFrameRateError,
-    MissingFrameRateError,
-    native_frame_rate,
-    resample_entry_table,
-)
+from mosaic.core.pipeline.resample_tracks import resample_entry_table
+from mosaic.core.timebase import measure_time_axis
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope
 from mosaic.tracking.ops.resample import ResampleTracksOp, ResampleTracksParams
 
-from tests.helpers import make_dataset
+from tests.helpers import (
+    ANGULAR_VELOCITY,
+    GAP_SECONDS,
+    VELOCITY,
+    dropped_frame_times,
+    dropped_frame_tracks,
+    make_dataset,
+)
 
 SOURCE_VARIANT = "convert-trex_npz.0.2-aaaaaaaaaa"
 
@@ -76,40 +79,106 @@ def _table(
     return pd.concat(blocks, ignore_index=True)
 
 
-# --- the rate a table is on ------------------------------------------------
+# --- the time a table is on ------------------------------------------------
 
 
-def test_a_stated_rate_is_preferred_over_a_measured_one() -> None:
-    """``frame_rate`` is what the tracker wrote down; the estimator is a fallback."""
-    frame = _table(34.679)
-    assert native_frame_rate(frame) == pytest.approx(34.679)
+def _rate(frame: pd.DataFrame) -> float:
+    return measure_time_axis(frame, "test").rate
 
 
-def test_the_rate_is_measured_from_the_span_when_none_is_stated() -> None:
-    """Endpoints, not consecutive differences.
+def test_positions_are_placed_by_time_across_a_gap() -> None:
+    """The table dropped frames, so ``frame`` over a rate misplaces what follows.
 
-    ``time`` is float32, so ``median(diff(time))`` snaps to a binary fraction and
-    reads 30.117647 for a 30 fps recording -- 0.39 % high, in the same direction
-    for every file. The span of two endpoints does not have that problem, and
-    this asserts the estimator that is actually used is the one that does not.
+    Each individual moves at a constant velocity, so the position at any target
+    time has one right answer, including the targets that fall inside a gap.
     """
-    frame = _table(34.679, carry_rate=False)
-    assert native_frame_rate(frame) == pytest.approx(34.679, rel=1e-4)
+    resampled = resample_entry_table(dropped_frame_tracks(), 30.0)
+
+    seconds = resampled["time"].to_numpy()
+    np.testing.assert_allclose(resampled["frame"], np.rint(seconds * 30.0))
+    np.testing.assert_allclose(
+        resampled["X"], VELOCITY[0] * seconds + 10.0 * resampled["id"], atol=1e-9
+    )
+    np.testing.assert_allclose(resampled["Y"], VELOCITY[1] * seconds, atol=1e-9)
+    # An angle is placed on the circle, so compare it modulo a full turn. Across a
+    # gap the chord of the unit circle is shorter than the arc, so only the targets
+    # outside every gap are exact to the chord's error.
+    native = dropped_frame_times()
+    inside_gap = np.zeros(seconds.size, dtype=bool)
+    for row in GAP_SECONDS:
+        inside_gap |= (seconds > native[row - 1]) & (seconds < native[row])
+    turned = np.angle(np.exp(1j * (resampled["ANGLE"] - ANGULAR_VELOCITY * seconds)))
+    np.testing.assert_allclose(turned[~inside_gap], 0.0, atol=1e-4)
 
 
-def test_two_rates_in_one_table_are_refused() -> None:
-    """One entry is one recording, so two rates for it is a contradiction."""
-    frame = _table(30.0)
-    frame.loc[frame.index[-1], "frame_rate"] = 25.0
-    with pytest.raises(AmbiguousFrameRateError, match="one frame rate"):
-        _ = native_frame_rate(frame)
+def test_a_table_that_dropped_frames_leaves_on_an_even_grid() -> None:
+    resampled = resample_entry_table(dropped_frame_tracks(), 30.0)
+
+    assert _rate(resampled) == pytest.approx(30.0)
+    for _, block in resampled.groupby("id"):
+        assert np.all(np.diff(block["frame"].to_numpy()) == 1)
 
 
-def test_a_table_that_names_no_rate_refuses_rather_than_defaulting() -> None:
-    """A guessed rate is a constant-factor error in every duration downstream."""
+def test_a_stated_rate_that_disagrees_with_time_is_overwritten_not_trusted() -> None:
+    frame = _table(30.0, n=300)
+    frame["frame_rate"] = 60.0
+
+    resampled = resample_entry_table(frame, 25.0)
+
+    assert resampled["frame_rate"].unique().tolist() == [25.0]
+    assert _rate(resampled) == pytest.approx(25.0)
+
+
+def test_a_float32_clock_three_hours_in_resamples_onto_its_own_rate_unchanged() -> None:
+    """At 10,800 s a float32 time is only good to a millisecond, which is 3% of a step.
+
+    The snap tolerance follows that resolution, so a no-op resample stays one and a
+    missing sample does not spread to its neighbors.
+    """
+    rate = 30.0
+    start = int(10_800 * rate) - 600
+    frames = np.arange(start, start + 1200)
+    frame = pd.DataFrame(
+        {
+            "frame": frames,
+            "time": (frames / rate).astype(np.float32),
+            "id": np.zeros(frames.size, dtype=np.int64),
+            "group": [""] * frames.size,
+            "sequence": ["s"] * frames.size,
+            "X": frames * 0.01,
+            "Y": np.ones(frames.size),
+        }
+    )
+    frame.loc[600, "X"] = np.nan
+
+    resampled = resample_entry_table(frame, rate)
+
+    assert int(resampled["X"].isna().sum()) == 1
+    np.testing.assert_array_equal(resampled["frame"], frame["frame"])
+    pd.testing.assert_series_equal(
+        resampled["X"].reset_index(drop=True),
+        frame["X"].reset_index(drop=True),
+        check_exact=False,
+        rtol=1e-9,
+    )
+
+
+def test_the_rate_is_measured_from_the_span_when_time_is_float32() -> None:
+    """Endpoints, not consecutive differences, so float32 ``time`` does not bias it."""
+    assert _rate(_table(34.679, carry_rate=False)) == pytest.approx(34.679, rel=1e-4)
+
+
+def test_a_table_without_time_is_refused_by_name() -> None:
     frame = _table(30.0, carry_rate=False).drop(columns=["time"])
-    with pytest.raises(MissingFrameRateError, match="neither be read nor measured"):
-        _ = native_frame_rate(frame)
+    with pytest.raises(ValueError, match="no 'time' column"):
+        _ = resample_entry_table(frame, 25.0, source="g/s")
+
+
+def test_a_time_that_runs_backwards_is_refused() -> None:
+    frame = _table(30.0, n=100, ids=(0,))
+    frame.loc[frame.index[50], "time"] = frame.loc[frame.index[10], "time"]
+    with pytest.raises(ValueError, match="does not increase"):
+        _ = resample_entry_table(frame, 25.0)
 
 
 # --- the grid ---------------------------------------------------------------
@@ -118,7 +187,7 @@ def test_a_table_that_names_no_rate_refuses_rather_than_defaulting() -> None:
 def test_the_output_is_on_the_target_rate_and_its_frames_are_contiguous() -> None:
     resampled = resample_entry_table(_table(34.679, n=1000), 30.0)
 
-    assert native_frame_rate(resampled) == pytest.approx(30.0)
+    assert _rate(resampled) == pytest.approx(30.0)
     for _, block in resampled.groupby("id"):
         frames = block["frame"].to_numpy()
         assert np.all(np.diff(frames) == 1)
@@ -355,7 +424,7 @@ def test_the_op_writes_a_second_variant_and_leaves_the_first_alone(
     assert len(variants) == 2
     assert SOURCE_VARIANT in variants
     produced = next(name for name in variants if name != SOURCE_VARIANT)
-    assert produced.startswith("resample-tracks.0.1-")
+    assert produced.startswith("resample-tracks.0.2-")
 
     rows = index[index["run_id"] == produced]
     assert sorted(rows["sequence"]) == ["s1", "s2"]
@@ -365,7 +434,7 @@ def test_the_op_writes_a_second_variant_and_leaves_the_first_alone(
     # run into the drift reports on the next re-transcode.
     assert all(not str(value) for value in rows["consumed_media_composition"])
     for path in rows["abs_path"]:
-        assert native_frame_rate(pd.read_parquet(ds.resolve_path(str(path)))) == (
+        assert _rate(pd.read_parquet(ds.resolve_path(str(path)))) == (
             pytest.approx(30.0)
         )
 
@@ -521,7 +590,7 @@ def test_a_second_target_rate_is_a_second_variant_beside_the_first(
     index = read_tracks_index(ds)
     assert len(set(index["run_id"])) == 3
     rates = {
-        float(native_frame_rate(pd.read_parquet(ds.resolve_path(str(path)))))
+        float(_rate(pd.read_parquet(ds.resolve_path(str(path)))))
         for path, producer in zip(index["abs_path"], index["producer"], strict=True)
         if str(producer) == "resample-tracks"
     }

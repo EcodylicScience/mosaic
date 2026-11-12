@@ -98,12 +98,14 @@ table that was converted without `fps` or `fps_default`.
 
 A Tracktor recording drops frames, so `frame` over a rate gives a wrong time, and the
 two Tracktor formats take no frame rate. `time` is the file's `seconds_total`, and the
-entry's media rate and `fps_default` never reach the table. `speed-angvel` and
-`collective-motion-metrics` read the `time` column while their `fps` is unset, so leave
-it unset. A feature that divides by a constant rate (`social-motion-summary`,
-`pair-position`, `pair-egocentric`, `approach-avoidance`, the wavelets, the two
-delta-response features and `temporal-stack`) is wrong on a table with dropped
-frames. Positions are pixels. For millimeters, run `scale-to-cm` with
+entry's media rate and `fps_default` never reach the table. Every feature that turns a
+step into seconds reads `time`: `speed-angvel`, `collective-motion-metrics`,
+`trajectory-smooth`, the pair and response features and `social-motion-summary` divide
+by the seconds between rows, and `label-statistics` sums them over a bout. A method that
+reads its rows as evenly spaced (the Savitzky-Golay features, the wavelets,
+`temporal-stack` and `hidra`) measures one rate from `time` and warns that the steps
+are uneven, naming the largest gap. To give those a uniform grid, run `resample-tracks`
+first. It interpolates on `time`. Positions are pixels. For millimeters, run `scale-to-cm` with
 `cm_per_pixel` set, such as `0.019` for a 30 mm arena that is 160 pixels across.
 
 ```bash

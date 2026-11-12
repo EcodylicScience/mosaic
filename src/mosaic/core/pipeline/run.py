@@ -19,6 +19,7 @@ from mosaic.core.helpers import (
 )
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
+from mosaic.core.timebase import IrregularNotice, collect_irregular_notices
 
 from ._utils import (
     FeatureMeta,
@@ -342,6 +343,25 @@ def _hand_tracklets(feature: object, tracklets: Mapping[Entry, bool | None]) -> 
         feature.set_tracklets(dict(tracklets))
 
 
+type NotedOutput = tuple[FeatureOutput, tuple[IrregularNotice, ...]]
+"""One entry's output with the uneven-time notices its ``apply`` raised."""
+
+
+def apply_noting_irregular_time(
+    apply: Callable[[pd.DataFrame], FeatureOutput], df: pd.DataFrame
+) -> NotedOutput:
+    """Run *apply* on *df* and return its output with the notices it raised.
+
+    A method that reads its rows as evenly spaced warns when a table steps
+    unevenly (:func:`~mosaic.core.timebase.warn_if_irregular`). The notices are
+    collected where the entry runs, a worker process included, and returned beside
+    the output so the calling process records them in the run-log.
+    """
+    with collect_irregular_notices() as notices:
+        output = apply(df)
+    return output, tuple(notices)
+
+
 def process_apply_worker(
     module_name: str,
     class_name: str,
@@ -353,7 +373,7 @@ def process_apply_worker(
     df: pd.DataFrame,
     ds_manifest_path: str | None = None,
     tracklets: Mapping[Entry, bool | None] | None = None,
-) -> pd.DataFrame:
+) -> NotedOutput:
     """Reconstruct a feature in a worker process, run apply, then close it.
 
     If the feature declares ``bind_dataset`` (e.g. InteractionCropPipeline,
@@ -391,7 +411,7 @@ def process_apply_worker(
             {k: Path(v) for k, v in artifact_paths_str.items()},
             dependency_lookups,
         )
-        return feature.apply(df)
+        return apply_noting_irregular_time(feature.apply, df)
     finally:
         _close_feature(feature)
 
@@ -2059,9 +2079,12 @@ def _run_feature_impl(
     collector = PacedCollector()
 
     def _record_result(
-        tag: tuple[FeatureMeta, CoreSelector | None], result_df: FeatureOutput
+        tag: tuple[FeatureMeta, CoreSelector | None], noted: NotedOutput
     ) -> None:
         meta, selector = tag
+        result_df, notices = noted
+        for notice in notices:
+            ctx.time_irregular(make_entry_key(meta.group, meta.sequence), notice)
         if selector is not None:
             result_df = trim_feature_output(result_df, selector)
         n_rows = write_output(meta, result_df)
@@ -2102,7 +2125,7 @@ def _run_feature_impl(
         meta, _ = tag
         _entry_failed(meta.group, meta.sequence, exc)
 
-    pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], FeatureOutput] = EntryPool(
+    pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], NotedOutput] = EntryPool(
         workers=max_workers,
         mode=parallel_mode_str,
         on_result=_record_result,
@@ -2166,7 +2189,9 @@ def _run_feature_impl(
                 tracklets,
             )
         else:
-            pool.submit((meta, selector), feature.apply, df)
+            pool.submit(
+                (meta, selector), apply_noting_irregular_time, feature.apply, df
+            )
 
     # Iterate manifest entries. A cooperative cancel (raised at the top of
     # _process_entry) stops dispatch; completed entries stay recorded in

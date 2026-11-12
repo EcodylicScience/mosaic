@@ -37,7 +37,7 @@ def _square(
     for i, (px, py) in enumerate(CORNERS):
         row: dict[str, object] = {
             "frame": frame,
-            "time": float(frame) * 0.02,
+            "time": float(frame),
             "id": i,
             "X": px + offset[0],
             "Y": py + offset[1],
@@ -51,9 +51,7 @@ def _square(
 
 
 def _apply(df: pd.DataFrame, **params: object) -> pd.DataFrame:
-    base: dict[str, object] = {"fps": 1.0}
-    base.update(params)
-    return CollectiveMotionMetrics(params=base).apply(df)
+    return CollectiveMotionMetrics(params=params).apply(df)
 
 
 def _cell(out: pd.DataFrame, key: int | tuple[int, int], column: str) -> float:
@@ -135,6 +133,7 @@ def test_collinear_group() -> None:
         [
             {
                 "frame": 0,
+                "time": 0.0,
                 "id": i,
                 "X": float(i),
                 "Y": 0.0,
@@ -208,6 +207,7 @@ def test_below_min_individuals_emits_a_row_of_nans() -> None:
         [
             {
                 "frame": 0,
+                "time": 0.0,
                 "id": 0,
                 "X": 0.0,
                 "Y": 0.0,
@@ -238,6 +238,7 @@ def test_single_individual_rotation_is_nan_not_zero() -> None:
         [
             {
                 "frame": 0,
+                "time": 0.0,
                 "id": 0,
                 "X": 0.0,
                 "Y": 0.0,
@@ -331,7 +332,7 @@ def test_centroid_velocity_uses_the_common_id_set() -> None:
                 [
                     {
                         "frame": 1,
-                        "time": 0.02,
+                        "time": 1.0,
                         "id": 4,
                         "X": 100.0,
                         "Y": 100.0,
@@ -363,6 +364,7 @@ def test_group_angular_velocity_of_a_rigid_mill() -> None:
             rows.append(
                 {
                     "frame": frame,
+                    "time": float(frame),
                     "id": i,
                     "X": 1.0 + dx * np.cos(rot) - dy * np.sin(rot),
                     "Y": 1.0 + dx * np.sin(rot) + dy * np.cos(rot),
@@ -477,7 +479,7 @@ def test_a_table_without_frames_is_measured_at_each_time() -> None:
     by_frame = _apply(frames)
     by_time = _apply(frames.drop(columns="frame"))
     assert "frame" not in by_time.columns
-    np.testing.assert_allclose(by_time["time"], [0.0, 0.02])
+    np.testing.assert_allclose(by_time["time"], [0.0, 1.0])
     np.testing.assert_allclose(by_time["polarization"], by_frame["polarization"])
 
 
@@ -542,9 +544,7 @@ def _apply_flagged(
     df: pd.DataFrame, flag: bool | None, **params: object
 ) -> pd.DataFrame:
     """Apply with the tracklets hook answering *flag* for the entry ``(G, S1)``."""
-    base: dict[str, object] = {"fps": 1.0}
-    base.update(params)
-    feature = CollectiveMotionMetrics(params=base)
+    feature = CollectiveMotionMetrics(params=params)
     feature.set_tracklets({("G", "S1"): flag})
     return feature.apply(df)
 
@@ -565,6 +565,7 @@ def _restarting_ids() -> pd.DataFrame:
             rows.append(
                 {
                     "frame": frame,
+                    "time": float(frame),
                     "id": i,
                     "X": px,
                     "Y": py,
@@ -690,7 +691,7 @@ def test_only_the_frames_of_an_entry_without_tracklets_change() -> None:
         ignore_index=True,
     )
     df = pd.concat([before, after], ignore_index=True)
-    feature = CollectiveMotionMetrics(params={"fps": 1.0})
+    feature = CollectiveMotionMetrics()
     feature.set_tracklets({("G", "S0"): True, ("G", "S1"): False})
     out = feature.apply(df).set_index("frame")
     plain = _apply(df).set_index("frame")
@@ -713,7 +714,7 @@ def test_the_count_columns_are_float_whatever_the_tracklets_map_holds() -> None:
         {("G", "S1"): True},
         {("G", "S1"): True, ("G", "other"): False},
     ):
-        feature = CollectiveMotionMetrics(params={"fps": 1.0})
+        feature = CollectiveMotionMetrics()
         feature.set_tracklets(tracklets)
         out = feature.apply(df)
         assert out.dtypes["n_centroid_common"] == np.float64

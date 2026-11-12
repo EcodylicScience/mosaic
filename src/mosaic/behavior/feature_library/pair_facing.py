@@ -58,7 +58,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, with_frame_times
 from .registry import register_feature
 
 
@@ -130,7 +130,7 @@ class PairFacing:
 
     category = "per-frame"
     name = "pair-facing"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # compares two animals within a frame
@@ -159,7 +159,7 @@ class PairFacing:
             Column("distance"),
             Column("is_facing"),
         ),
-        conditional=kept(C.group_col, C.seq_col),
+        conditional=kept(C.time_col, C.group_col, C.seq_col),
         # The head-to-head distance. The angles and is_facing are the focal's.
         symmetric=(Column("distance"),),
     )
@@ -276,6 +276,7 @@ class PairFacing:
         for col in (C.group_col, C.seq_col):
             if col in df.columns:
                 out[col] = df[col].iloc[0]
+        out = with_frame_times(out, df, order_col)
 
         cols = [
             C.frame_col,

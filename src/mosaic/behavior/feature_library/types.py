@@ -28,11 +28,6 @@ _MAX_MISSING_FRACTION_DESCRIPTION = (
     "Fraction of missing columns above which a row is dropped entirely."
 )
 
-_FPS_DEFAULT_DESCRIPTION = (
-    "Frame rate used when the data's fps column is absent or does not "
-    "resolve to exactly one value."
-)
-
 _SMOOTH_WIN_DESCRIPTION = (
     "Length of the moving-average window applied to smooth position and "
     "angle values before feature computation. A value of 1 or less "
@@ -118,11 +113,8 @@ class InterpolationConfig(DeclaredModel):
 
 
 class SamplingConfig(DeclaredModel):
-    """Frame rate and temporal smoothing parameters."""
+    """Temporal smoothing parameters."""
 
-    fps_default: Annotated[float, Declared(_FPS_DEFAULT_DESCRIPTION, unit="fps")] = (
-        Field(default=30.0, gt=0)
-    )
     smooth_win: Annotated[int, Declared(_SMOOTH_WIN_DESCRIPTION, unit="frames")] = (
         Field(default=0, ge=0)
     )

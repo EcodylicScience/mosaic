@@ -132,6 +132,7 @@ from .wire import (
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.label_controls import LABEL_CONTROL_FIELDS
 from mosaic.core.pipeline.types import ArtifactSpec
+from mosaic.core.pipeline.types.data_config import COLUMNS
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 
@@ -695,10 +696,12 @@ def _column_problems(
         read = _pair_read(merged, built, declared.pair_rule_column)
         if read is not None:
             walk.pair_reads[step.id] = read
-    if not checked or declared.requires is None:
+    if not checked:
         return []
 
-    problems: list[Problem] = []
+    problems = _time_filter_problems(step, merged)
+    if declared.requires is None:
+        return problems
     maybe: list[str] = []
     unchecked: list[str] = []
     for need in needs_of(declared.requires, values):
@@ -724,6 +727,34 @@ def _column_problems(
         )
         walk.cautions.append(Problem(step.id, "inputs", message))
     return problems
+
+
+def _time_filter_problems(step: FeatureStepSpec, merged: ColumnSet) -> list[Problem]:
+    """A problem at each time boundary of *step* whose merged input holds no ``time``.
+
+    The run filters the rows it reads by their ``time`` column, so a step whose
+    inputs carry none fails on every entry when it runs.
+    """
+    if merged.admits(COLUMNS.time_col):
+        return []
+    sources = ", ".join(
+        repr(item if isinstance(item, str) else item.step) for item in step.inputs
+    )
+    boundaries = {
+        "filter_start_time": step.run.filter_start_time,
+        "filter_end_time": step.run.filter_end_time,
+    }
+    return [
+        Problem(
+            step.id,
+            f"run.{name}",
+            f"a time filter reads the {COLUMNS.time_col!r} column, and the merged "
+            f"input from {sources} has none. Filter by frame with "
+            "filter_start_frame and filter_end_frame",
+        )
+        for name, value in boundaries.items()
+        if value is not None
+    ]
 
 
 _PAIR_RULE: Final[TypeAdapter[PairRule]] = TypeAdapter(PairRule)

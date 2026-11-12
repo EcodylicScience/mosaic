@@ -32,6 +32,7 @@ from mosaic.core.track_converter import (
     TrackConvertParams,
 )
 from tests.helpers import (
+    SecondsEntries,
     DIVISION_CREATED_UTC,
     LISTED_FRAMES,
     TracksAxisEntries,
@@ -348,6 +349,51 @@ def test_labels_on_the_tracks_axis_keep_their_frames_and_others_move(
     assert label_frames(dataset, TracksAxisEntries.src_format) == list(LISTED_FRAMES)
     assert label_frames(dataset, "calms21_npy") == [10, 11, 12]
     assert label_frames(dataset, "predictions_table", "predictions") == [12, 15]
+
+
+def test_event_seconds_of_a_division_are_read_on_its_own_clock(
+    tmp_path: Path,
+    requires_ffmpeg: None,
+    local_csv: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seconds 1.0 to 1.5 of the second division are 2.5 s later on the recording.
+
+    The tracks of a division are timed on the recording's clock, which a division's
+    events are not, and the frames the clock gives are already on the recording's
+    axis. A comparison against the raw track times would put the whole event on the
+    division's first frame.
+    """
+    monkeypatch.setitem(
+        LABEL_CONVERTERS, (SecondsEntries.src_format, "behavior"), SecondsEntries
+    )
+    dataset = divided_dataset(tmp_path, (5, 5, 5, 5, 2))
+    placed = divisions(dataset)
+    for sequence, _, count in placed:
+        write_local_tracks(dataset, sequence, count)
+    _ = dataset.convert_all_tracks(source_format=local_csv)
+    (first, _, _), (second, second_start, _), _ = placed
+    listed = write_listed_entries(
+        tmp_path / "seconds", {"events": [(RECORDING, first), (RECORDING, second)]}
+    )
+    dataset.index_labels_raw(
+        [listed], patterns=["*.npy"], src_format=SecondsEntries.src_format
+    )
+
+    _ = dataset.convert_all_labels(
+        kind="behavior", source_format=SecondsEntries.src_format
+    )
+
+    rows = read_labels_index(dataset, "behavior")
+    frames: dict[str, list[int]] = {}
+    for sequence, path in zip(rows["sequence"], rows["abs_path"], strict=True):
+        with np.load(dataset.resolve_path(str(path)), allow_pickle=True) as npz:
+            frames[str(sequence)] = np.asarray(npz["frames"], dtype=np.int64).tolist()
+    assert second_start == 10
+    assert frames[first] == [4, 5, 6]
+    assert frames[second] == [14, 15, 16]
+    roots = {str(cell) for cell in rows["consumed_source_roots"]}
+    assert all("tracks_raw" in root for root in roots)
 
 
 def neighbors(dataset: Dataset) -> list[tuple[str, str]]:

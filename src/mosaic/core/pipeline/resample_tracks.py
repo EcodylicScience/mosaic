@@ -23,12 +23,14 @@ join to near-empty against anything reading the same tracks, and the entry would
 then be *skipped without an error*. So this produces a tracks variant, and
 ``write_tracks_row`` records the new ``frame_min``/``frame_max`` it measures.
 
-**Interpolate against ``frame / fps_native``, never against the ``time`` column.**
-Some trackers embed wall-clock timestamps that jitter by milliseconds per frame
--- it is why ``speed-angvel`` offers an ``fps`` parameter that overrides ``time``
-at all -- and resampling against them would write that jitter into positions.
-The recorded rate names the axis; ``time`` is only consulted to *recover* the
-rate when nothing else states it.
+**Interpolate against the ``time`` column.** Every track schema carries ``time`` in
+seconds, and a table that dropped frames is placed correctly only by it: a native
+sample's position on the axis is when it was taken, not its frame number over a
+mean rate. Target frame ``k`` is time ``k / target_fps``, so every individual
+lands on one grid whatever its own coverage. A table whose ``time`` runs on a
+jittery wall clock writes that jitter into positions, as every method that reads
+``time`` does. ``frame_rate`` and ``fps`` columns the source carries are
+rewritten at the target rate and never consulted.
 
 **Nothing here bridges a gap.** A target sample is NaN unless both of the native
 samples bracketing it are finite, so a hole in the source stays a hole of the
@@ -51,20 +53,14 @@ from mosaic.core.pipeline.types import COLUMNS
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-__all__ = [
-    "AmbiguousFrameRateError",
-    "MissingFrameRateError",
-    "native_frame_rate",
-    "resample_entry_table",
-]
+__all__ = ["resample_entry_table"]
 
 RATE_COLUMNS: tuple[str, ...] = ("frame_rate", "fps")
-"""Columns that may state the rate a table was recorded at, in preference order.
+"""Columns that may state the rate a table was recorded at.
 
 ``frame_rate`` is TRex's own name and survives conversion as a full column,
-because the flattener broadcasts an NPZ scalar. ``fps`` is what three features
-already look for (``pair-position``, ``pair-egocentric``, ``approach-avoidance``)
-when they prefer a per-table rate over their parameter.
+because the flattener broadcasts an NPZ scalar. The output states the target rate
+in each that the source has.
 """
 
 _ANGULAR_FIELDS: frozenset[str] = frozenset(
@@ -95,131 +91,46 @@ _IDENTITY_COLUMNS: frozenset[str] = frozenset(
 """Columns that name the entry rather than measure it, carried unchanged."""
 
 
-class MissingFrameRateError(ValueError):
-    """A table does not say what rate it was recorded at, and none is recoverable.
+_SNAP = 1e-3
+"""The fraction of a step within which a target time is the native sample it meets."""
 
-    Fatal rather than defaulted. A resample against a guessed rate is a
-    constant-factor error in every duration downstream, and every number it
-    produces stays plausible -- which is the failure mode this whole module
-    exists to remove, not one to reintroduce at its entrance.
+
+def _time_slack(native_times: NDArray[np.float64], is_float32: bool) -> float:
+    """The seconds that a native time may differ from the clock it was rounded from.
+
+    A ``float32`` time is good to its resolution at its magnitude, about a
+    millisecond three hours into a recording and a few percent of a 30 fps step.
+    Resampling a table onto the rate it already has would otherwise blend each
+    sample with its neighbor and spread a missing sample to both of them. A
+    ``float64`` time has no slack beyond :data:`_SNAP`.
     """
-
-
-class AmbiguousFrameRateError(ValueError):
-    """One table states two different frame rates.
-
-    One entry is one recording on one time axis. Two rates for it is a
-    contradiction, and averaging them or taking the first would silently pick
-    one. A genuinely multi-rate session is several clips joined into one entry,
-    and that is what ``core.media.timeline`` models -- a case this refuses rather
-    than approximates.
-    """
-
-
-def _finite_pairs(
-    frames: NDArray[np.float64], times: NDArray[np.float64]
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """The (frame, time) pairs where both are finite."""
-    keep = np.isfinite(frames) & np.isfinite(times)
-    return frames[keep], times[keep]
-
-
-def _rate_from_column(frame: pd.DataFrame, source: str) -> float | None:
-    """The rate a table states outright, or ``None`` when it states none."""
-    for name in RATE_COLUMNS:
-        if name not in frame.columns:
-            continue
-        values = pd.to_numeric(frame[name], errors="coerce").to_numpy(dtype=float)
-        stated = np.unique(values[np.isfinite(values) & (values > 0.0)])
-        if stated.size == 0:
-            continue
-        if stated.size > 1:
-            raise AmbiguousFrameRateError(
-                f"{source or 'this table'} records {stated.size} different {name} "
-                f"values ({sorted(float(v) for v in stated)}). One entry is one "
-                "recording, so it has one frame rate; a session whose clips "
-                "genuinely differ is several clips joined onto one timeline, "
-                "which this cannot resample as a single rate."
-            )
-        return float(stated[0])
-    return None
-
-
-def native_frame_rate(frame: pd.DataFrame, *, source: str = "") -> float:
-    """The rate *frame* was recorded at.
-
-    A stated rate wins over a measured one. ``frame_rate`` is what the tracker
-    wrote down; the endpoint estimate below only recovers it for a table that
-    carries no such column.
-
-    The estimator is deliberately ``(frame[-1] - frame[0]) / (time[-1] -
-    time[0])`` over the whole span rather than a median of per-row differences.
-    ``time`` is commonly ``float32``: three hours in, its resolution is about a
-    millisecond, so consecutive differences snap to binary fractions and their
-    median reads 30.117647 for a 30 fps recording -- 0.39 % high, and wrong in
-    the same direction for every file, which is exactly the kind of error that
-    survives a sanity check. Two endpoints two hours apart do not have that
-    problem.
-
-    Args:
-        frame: One entry's table.
-        source: What to name in an error message.
-
-    Returns:
-        Frames per second, strictly positive.
-
-    Raises:
-        AmbiguousFrameRateError: The table states two different rates.
-        MissingFrameRateError: The table states none and none is recoverable.
-    """
-    stated = _rate_from_column(frame, source)
-    if stated is not None:
-        return stated
-
-    where = source or "this table"
-    if COLUMNS.frame_col not in frame.columns or COLUMNS.time_col not in frame.columns:
-        raise MissingFrameRateError(
-            f"{where} carries none of {list(RATE_COLUMNS)} and lacks "
-            f"{COLUMNS.frame_col!r}/{COLUMNS.time_col!r}, so its frame rate can "
-            "neither be read nor measured. Resampling against a default would be "
-            "a constant-factor error in every duration derived from it."
-        )
-
-    frames, times = _finite_pairs(
-        frame[COLUMNS.frame_col].to_numpy(dtype=float),
-        frame[COLUMNS.time_col].to_numpy(dtype=float),
-    )
-    if frames.size < 2:
-        raise MissingFrameRateError(
-            f"{where} has fewer than two rows with both a frame and a time, so "
-            "no rate can be measured from its span."
-        )
-    lo, hi = int(np.argmin(frames)), int(np.argmax(frames))
-    span_frames = frames[hi] - frames[lo]
-    span_seconds = times[hi] - times[lo]
-    if span_frames <= 0.0 or span_seconds <= 0.0:
-        raise MissingFrameRateError(
-            f"{where} spans {span_frames} frames in {span_seconds} seconds, which "
-            "names no rate. A table whose time axis does not advance with its "
-            "frame axis cannot be placed on a uniform grid."
-        )
-    return float(span_frames / span_seconds)
+    if not is_float32 or native_times.size == 0:
+        return 0.0
+    return float(np.finfo(np.float32).eps) * float(np.max(np.abs(native_times)))
 
 
 def _bracket(
-    native_times: NDArray[np.float64], target_times: NDArray[np.float64]
+    native_times: NDArray[np.float64],
+    target_times: NDArray[np.float64],
+    slack: float = 0.0,
 ) -> tuple[NDArray[np.intp], NDArray[np.float64]]:
     """Left-bracket index and interpolation weight for each target time.
 
     Every target time is inside the native span by construction (see
     :func:`_target_frames`), so no clipping is needed beyond keeping the right
-    bracket in range for the final sample.
+    bracket in range for the final sample. A target within :data:`_SNAP` of a step,
+    or within *slack* seconds, of a bracket's end is that end's.
     """
     left = np.searchsorted(native_times, target_times, side="right") - 1
     left = np.clip(left, 0, native_times.size - 2)
     step = native_times[left + 1] - native_times[left]
     weight = np.where(step > 0.0, (target_times - native_times[left]) / step, 0.0)
-    return left, np.clip(weight, 0.0, 1.0)
+    weight = np.clip(weight, 0.0, 1.0)
+    tolerance = np.where(
+        step > 0.0, np.maximum(_SNAP, slack / np.where(step > 0.0, step, 1.0)), _SNAP
+    )
+    weight = np.where(weight < tolerance, 0.0, weight)
+    return left, np.where(weight > 1.0 - tolerance, 1.0, weight)
 
 
 def _both_ends_finite(
@@ -275,9 +186,9 @@ def _nearest(
 
 
 def _target_frames(
-    frame_min: float, frame_max: float, ratio: float
+    first_time: float, last_time: float, target_fps: float, slack: float = 0.0
 ) -> NDArray[np.intp]:
-    """The target frame numbers covering one series' own extent.
+    """The target frame numbers covering one series' own span of time.
 
     The mapping is absolute -- target frame ``k`` is always time ``k /
     target_fps`` -- so every individual in a sequence lands on one shared grid
@@ -288,8 +199,8 @@ def _target_frames(
     Rounding inwards on both ends is what guarantees every target time sits
     inside the native span, so nothing is ever extrapolated.
     """
-    low = math.ceil(frame_min * ratio)
-    high = math.floor(frame_max * ratio)
+    low = math.ceil((first_time - slack) * target_fps - _SNAP)
+    high = math.floor((last_time + slack) * target_fps + _SNAP)
     if high < low:
         return np.empty(0, dtype=np.intp)
     return np.arange(low, high + 1, dtype=np.intp)
@@ -359,7 +270,6 @@ def _base_field(name: str) -> str:
 
 def _resample_one_id(
     block: pd.DataFrame,
-    native_fps: float,
     target_fps: float,
     prefilter: float | None,
     plan: tuple[list[str], list[str], list[str]],
@@ -368,18 +278,23 @@ def _resample_one_id(
     """One individual's rows, given in frame order, re-gridded onto the target rate."""
     interpolated, gathered, identity = plan
     refuse_repeated_rows(block, source or "this table")
-    native_frames = block[COLUMNS.frame_col].to_numpy(dtype=float)
-    if native_frames.size < 2:
+    native_times = block[COLUMNS.time_col].to_numpy(dtype=float)
+    if native_times.size < 2:
         return block.iloc[0:0]
-
-    native_times = native_frames / native_fps
+    if not (np.all(np.isfinite(native_times)) and np.all(np.diff(native_times) > 0.0)):
+        raise ValueError(
+            f"{source or 'this table'}: id {block[COLUMNS.id_col].iloc[0]!r} has a "
+            f"{COLUMNS.time_col!r} that does not increase with {COLUMNS.frame_col!r}, "
+            "so its rows have no order in time to interpolate along."
+        )
+    slack = _time_slack(native_times, str(block[COLUMNS.time_col].dtype) == "float32")
     target = _target_frames(
-        float(native_frames[0]), float(native_frames[-1]), target_fps / native_fps
+        float(native_times[0]), float(native_times[-1]), target_fps, slack
     )
     if target.size == 0:
         return block.iloc[0:0]
     target_times = target.astype(float) / target_fps
-    left, weight = _bracket(native_times, target_times)
+    left, weight = _bracket(native_times, target_times, slack)
     nearest = _nearest(native_times, target_times, left, weight)
 
     series = {
@@ -458,27 +373,25 @@ def resample_entry_table(
         order they first appear. Empty in, empty out.
 
     Raises:
-        AmbiguousFrameRateError: The table states two different rates.
-        MissingFrameRateError: The table states no rate and none is recoverable.
-        ValueError: *target_fps* is not positive, a required column is absent, or
-            one individual repeats a frame number.
+        ValueError: *target_fps* is not positive, a required column is absent, one
+            individual repeats a frame number, or an individual's ``time`` does not
+            increase with its frame.
     """
     if not target_fps > 0.0:
         raise ValueError(f"target_fps={target_fps} is not a usable frame rate.")
     if frame.empty:
         return frame.copy()
-    for required in (COLUMNS.frame_col, COLUMNS.id_col):
+    for required in (COLUMNS.frame_col, COLUMNS.time_col, COLUMNS.id_col):
         if required not in frame.columns:
             raise ValueError(
                 f"{source or 'this table'} has no {required!r} column, so it "
                 "cannot be re-gridded: a resample is defined per individual "
-                "along a frame axis."
+                "along a frame axis, placed by its time."
             )
 
-    native_fps = native_frame_rate(frame, source=source)
     plan = _column_plan(frame)
     blocks = [
-        _resample_one_id(block, native_fps, target_fps, prefilter, plan, source)
+        _resample_one_id(block, target_fps, prefilter, plan, source)
         for _, block in iter_individuals(frame)
     ]
     kept = [block for block in blocks if not block.empty]

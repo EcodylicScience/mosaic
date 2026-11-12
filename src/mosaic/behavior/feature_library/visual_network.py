@@ -62,7 +62,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types.feature import RelatesLevel
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, with_frame_times
 from .registry import register_feature
 
 __all__ = ["VisualNetwork"]
@@ -374,7 +374,7 @@ class VisualNetwork:
 
     category = "per-frame"
     name = _NAME
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # each frame is cast on its own
@@ -410,7 +410,7 @@ class VisualNetwork:
         adds=tuple(Column(name) for name in _OUTPUT_COLUMNS),
         conditional=(
             Conditional(Column("visible"), when_param="include_hidden"),
-            *kept(C.group_col, C.seq_col),
+            *kept(C.time_col, C.group_col, C.seq_col),
         ),
     )
 
@@ -592,7 +592,7 @@ class VisualNetwork:
         for col in (C.group_col, C.seq_col):
             if col in table.columns:
                 out[col] = table[col].to_numpy()[observer_rows]
-        return out
+        return with_frame_times(out, table, order_col)
 
     def _links(
         self,

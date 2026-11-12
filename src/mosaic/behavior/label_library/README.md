@@ -179,6 +179,38 @@ sequence. It never writes files. Each `LabelEntry` carries:
 `raw_row` is the `labels_raw/index.csv` row (the group hint and the source
 `md5`). It is never hashed.
 
+### Events in Seconds: `ClockedLabelConverter`
+
+A source that stamps its events in seconds (BORIS, a custom template) subclasses
+`ClockedLabelConverter[MyParams]` instead. Its `convert()` takes one more argument,
+`clock: TrackClock | None`, which the dataset builds from each entry's tracks and
+passes to a converter of this class only:
+
+```python
+def convert(
+    self,
+    src_path: Path,
+    params: MyParams,
+    raw_row: Mapping[str, object],
+    clock: TrackClock | None = None,
+) -> list[LabelEntry]:
+    ...
+    frames = EventFrames(fps, clock, group, sequence)  # behavior/label_library
+    first, last = frames.span(start_seconds, stop_seconds)
+```
+
+`EventFrames` maps a second to the last frame of the entry's tracks whose `time` is
+at or before it, which is `int(seconds * fps)` on an evenly timed table and is not
+after a gap. An entry without tracks, or a `clock` of `None` outside a dataset
+conversion, converts at `fps`. Frames that came from the clock are on the tracks
+table's axis, so the label row records `tracks_raw` beside `labels_raw`, and the
+variant identity includes the tracks variant the labels were placed on
+(`tracks_run_id` of `convert_all_labels`, else the entry's only variant).
+
+`CustomLabelConverter._convert_to_frame_labels(annotations, label_map, frames, params)`
+takes that `EventFrames` where it took a rate before, so an override reads
+`frames.span(...)` and `frames.n_frames(...)` and never multiplies by `fps` itself.
+
 ## Required Methods to Implement
 
 When you subclass `CustomLabelConverter` (from `custom_label_template.py`), the

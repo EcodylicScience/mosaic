@@ -60,25 +60,21 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.core.timebase import step_seconds, uniform_grid_rate
 
-from .helpers import clean_tracks_grouped, ensure_columns
+from .helpers import clean_tracks_grouped, ensure_columns, with_source_time
 from .registry import register_feature
-from .types import InterpolationConfig, SamplingConfig
+from .types import InterpolationConfig
 
 _INTERPOLATION_DESCRIPTION = (
     "Interpolation settings applied to position and orientation gaps "
     "before computing distances and velocities."
 )
 
-_SAMPLING_FPS_FALLBACK_DESCRIPTION = (
-    "Frame-rate configuration. Only fps_default is read, as the fallback "
-    "frames-per-second used when the table has no fps column, or that "
-    "column does not resolve to exactly one value."
-)
-
 _VELOCITY_UNITS_DESCRIPTION = (
     "The time unit a computed speed is expressed in before comparing it "
-    "against a velocity threshold."
+    "against a velocity threshold. Per second divides each displacement "
+    "by the seconds between its two rows, read from the time column."
 )
 
 _ANGLE_UNITS_DESCRIPTION = (
@@ -134,7 +130,9 @@ _ORIENTATION_GATE_COS_DESCRIPTION = (
 
 _SMOOTH_WINDOW_SEC_DESCRIPTION = (
     "Unset, thresholds apply framewise. Set, average distance, speed and "
-    "cosine metrics over this many seconds before thresholding."
+    "cosine metrics over this many seconds before thresholding. The "
+    "window is a whole number of rows at the frame rate measured from the "
+    "time column, so a table that steps unevenly is warned about."
 )
 
 
@@ -161,7 +159,7 @@ class ApproachAvoidance:
 
     category = "per-frame"
     name = "approach-avoidance"
-    version = "0.3"
+    version = "0.5"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -176,6 +174,8 @@ class ApproachAvoidance:
         Column(C.y_col),
         ORDER_COLUMN,
         When(Column(C.orientation_col), (ParamIs("orientation_gate_cos"),)),
+        When(Column(C.time_col), (ParamIs("velocity_units", equals="per_second"),)),
+        When(Column(C.time_col), (ParamIs("smooth_window_sec"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(
@@ -188,7 +188,7 @@ class ApproachAvoidance:
             Column("aa_event_directed"),
             Column(C.seq_col),
         ),
-        conditional=kept(C.group_col),
+        conditional=kept(C.time_col, C.group_col),
         # The union of both directions, written on both rows of the pair.
         symmetric=(Column("aa_event"), Column("label_id")),
     )
@@ -202,9 +202,6 @@ class ApproachAvoidance:
         interpolation: Annotated[
             InterpolationConfig, Declared(_INTERPOLATION_DESCRIPTION)
         ] = Field(default_factory=InterpolationConfig)
-        sampling: Annotated[
-            SamplingConfig, Declared(_SAMPLING_FPS_FALLBACK_DESCRIPTION)
-        ] = Field(default_factory=SamplingConfig)
         velocity_units: Annotated[
             Literal["per_frame", "per_second"], Declared(_VELOCITY_UNITS_DESCRIPTION)
         ] = "per_frame"
@@ -265,6 +262,9 @@ class ApproachAvoidance:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return with_source_time(self._rows(df), df)
+
+    def _rows(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()
 
@@ -273,9 +273,18 @@ class ApproachAvoidance:
         required = [C.id_col, C.seq_col, C.x_col, C.y_col]
         if p.orientation_gate_cos is not None:
             required.append(C.orientation_col)
+        reads_time = p.velocity_units == "per_second" or p.smooth_window_sec is not None
+        if reads_time:
+            required.append(C.time_col)
         ensure_columns(df, required)
+        # One rate for the whole table, measured once. It sets the window's rows.
+        rate = (
+            uniform_grid_rate(df, self.name)
+            if p.smooth_window_sec is not None
+            else None
+        )
 
-        cols = [order_col] + required
+        cols = list(dict.fromkeys([order_col] + required))
         if C.group_col in df.columns:
             cols.append(C.group_col)
         df_small = df[cols].copy()
@@ -298,7 +307,7 @@ class ApproachAvoidance:
             if len(ids) < 2:
                 continue
             for id_a, id_b in individual_pairs(ids, id_arenas(df)):
-                pair_df = self._compute_pair(gseq, id_a, id_b, order_col, df)
+                pair_df = self._compute_pair(gseq, id_a, id_b, order_col, rate)
                 if pair_df is not None and not pair_df.empty:
                     out_frames.append(pair_df)
 
@@ -331,12 +340,14 @@ class ApproachAvoidance:
         id_a: int,
         id_b: int,
         order_col: str,
-        orig_df: pd.DataFrame,
+        rate: float | None,
     ) -> pd.DataFrame | None:
         p = self.params
 
         ori_gate_cos = p.orientation_gate_cos
         cols = [order_col, C.x_col, C.y_col]
+        if p.velocity_units == "per_second" and order_col != C.time_col:
+            cols.append(C.time_col)
         if ori_gate_cos is not None and C.orientation_col in gseq.columns:
             cols.append(C.orientation_col)
         A = gseq[gseq[C.id_col] == id_a][cols].copy()
@@ -351,16 +362,6 @@ class ApproachAvoidance:
         j = A.merge(B, on="frame", suffixes=("_A", "_B"))
         if j.empty or len(j) < 2:
             return None
-
-        # Get fps
-        fps = p.sampling.fps_default
-        if "fps" in orig_df.columns:
-            try:
-                c = orig_df["fps"].dropna().unique()
-                if len(c) == 1:
-                    fps = float(c[0])
-            except Exception:
-                pass
 
         # Extract positions
         x_a = j[f"{C.x_col}_A"].to_numpy(dtype=np.float64)
@@ -387,10 +388,15 @@ class ApproachAvoidance:
             v_by[idx] = y_b[idx] - y_b[idx - 1]
 
         if p.velocity_units == "per_second":
-            v_ax *= fps
-            v_ay *= fps
-            v_bx *= fps
-            v_by *= fps
+            # Each displacement over the seconds between its two rows.
+            times = (
+                j["frame"] if order_col == C.time_col else j[f"{C.time_col}_A"]
+            ).to_numpy(dtype=np.float64)
+            seconds = step_seconds(times)
+            v_ax /= seconds
+            v_ay /= seconds
+            v_bx /= seconds
+            v_by /= seconds
 
         speed_a = np.sqrt(v_ax * v_ax + v_ay * v_ay)
         speed_b = np.sqrt(v_bx * v_bx + v_by * v_by)
@@ -466,8 +472,8 @@ class ApproachAvoidance:
 
         # Optional sliding-window smoothing (window_sec not None enables).
         window_sec = p.smooth_window_sec
-        if window_sec is not None:
-            win_frames = max(1, int(round(window_sec * fps)))
+        if window_sec is not None and rate is not None:
+            win_frames = max(1, int(round(window_sec * rate)))
             dist_eval = self._sliding_nanmean(dist, win_frames)
             speed1_eval = self._sliding_nanmean(speed1, win_frames)
             speed2_eval = self._sliding_nanmean(speed2, win_frames)
@@ -488,8 +494,8 @@ class ApproachAvoidance:
         cos_ori_vel_1_eval: np.ndarray | None = None
         cos_ori_vel_2_eval: np.ndarray | None = None
         if cos_ori_vel_1 is not None and cos_ori_vel_2 is not None:
-            if window_sec is not None:
-                wf = max(1, int(round(window_sec * fps)))
+            if window_sec is not None and rate is not None:
+                wf = max(1, int(round(window_sec * rate)))
                 cos_ori_vel_1_eval = self._sliding_nanmean(cos_ori_vel_1, wf)
                 cos_ori_vel_2_eval = self._sliding_nanmean(cos_ori_vel_2, wf)
             else:

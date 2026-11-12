@@ -70,7 +70,14 @@ from .derivatives import (
     keypoint_positions,
     savgol_derivatives,
 )
-from .helpers import BodyFrame, body_frame, ego_rotate, ensure_columns, point_distances
+from .helpers import (
+    BodyFrame,
+    body_frame,
+    ego_rotate,
+    ensure_columns,
+    point_distances,
+    with_source_time,
+)
 from .registry import register_feature
 
 __all__ = ["PairKeypoints"]
@@ -188,7 +195,7 @@ class PairKeypoints:
 
     category = "per-frame"
     name = _NAME
-    version = "0.1"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -213,7 +220,7 @@ class PairKeypoints:
         conditional=(
             *(Conditional(Prefix(f"{prefix}__")) for prefix in _PARTNER_PREFIXES),
             Conditional(Prefix("inter_dist__"), when_param="inter_distances"),
-            *kept(C.seq_col, C.group_col),
+            *kept(C.time_col, C.seq_col, C.group_col),
         ),
         # Both rows on every frame the two animals share. Only the diagonal
         # inter_dist__a__a is symmetric, which no prefix names.
@@ -337,6 +344,9 @@ class PairKeypoints:
     # --- Apply ---
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return with_source_time(self._rows(df), df)
+
+    def _rows(self, df: pd.DataFrame) -> pd.DataFrame:
         kept_columns = [c for c in (C.group_col, C.seq_col) if c in df.columns]
         empty = pd.DataFrame(
             columns=[C.frame_col, "perspective", "id1", "id2", *kept_columns]
@@ -346,7 +356,7 @@ class PairKeypoints:
         ensure_columns(df, [C.frame_col, C.id_col])
         plan = self._plan(df)
         axis = frame_axis(df, self.name)
-        fps = frame_rate(df, axis, self.params.fps, self.name)
+        fps = frame_rate(df, self.params.fps, self.name)
         order = axis.order
 
         def column(name: str) -> npt.NDArray[np.object_]:

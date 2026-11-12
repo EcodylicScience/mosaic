@@ -1041,7 +1041,7 @@ class TestBundle:
 
         for entry in (world.train[0], world.train[3], ("test", "z")):
             frame = world.frames[entry]
-            worker = process_apply_worker(
+            worker, _ = process_apply_worker(
                 feature.__module__,
                 type(feature).__name__,
                 feature.inputs.model_dump(),
@@ -1051,6 +1051,7 @@ class TestBundle:
                 {},
                 frame,
             )
+            assert worker is not None
             pd.testing.assert_frame_equal(worker, feature.apply(frame))
 
     def test_the_bundle_holds_the_folds_beside_the_full_model(
@@ -1786,7 +1787,7 @@ class TestBlocks:
         for entry in (self.ONLY, ("test", "z")):
             frame = world.frames[entry]
             pd.testing.assert_frame_equal(again.apply(frame), feature.apply(frame))
-            worker = process_apply_worker(
+            worker, _ = process_apply_worker(
                 feature.__module__,
                 type(feature).__name__,
                 feature.inputs.model_dump(),
@@ -1796,6 +1797,7 @@ class TestBlocks:
                 {},
                 frame,
             )
+            assert worker is not None
             pd.testing.assert_frame_equal(worker, feature.apply(frame))
 
     def test_a_cached_model_of_the_other_unit_is_not_taken_for_this_one(

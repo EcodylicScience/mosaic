@@ -130,8 +130,8 @@ def test_a_step_type_reports_its_reach_at_default_params() -> None:
     assert step_type_detail("pair-posedistance-pca").temporal_reach == 0
     assert step_type_detail("xgboost").temporal_reach == 0
     assert step_type_detail("speed-angvel").temporal_reach == 1
-    # The default stack: half 60, sigma_stack 30 read int(4 * 30 + 0.5) = 120 more.
-    assert step_type_detail("temporal-stack").temporal_reach == 180
+    # The default stack pools over a window in seconds, whose frames follow the rate.
+    assert step_type_detail("temporal-stack").temporal_reach == UNKNOWN
     # Its default head is a GRU, which no option bounds.
     assert step_type_detail("sequence-classifier").temporal_reach == UNKNOWN
 
@@ -187,17 +187,18 @@ def test_a_stack_reads_its_window_and_its_smoothing() -> None:
     assert _reach("temporal-stack", half=10, sigma_stack=2, add_pool=False) == 18
     assert _reach("temporal-stack", half=0, sigma_stack=0, add_pool=False) == 0
     assert _reach("temporal-stack", use_temporal_stack=False, add_pool=False) == 0
+    # The pooling window is win_sec seconds, which is no number of frames until
+    # the table's own rate is read, so no params bound it.
     assert (
         _reach(
             "temporal-stack",
             half=5,
             sigma_stack=0,
             sigma_pool=10,
-            fps=30,
             win_sec=2,
             pool_stats=["mean"],
         )
-        == 30
+        is None
     )
 
 

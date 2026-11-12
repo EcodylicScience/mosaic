@@ -101,5 +101,5 @@ def test_boris_writes_its_background_id(kind: str, tmp_path: Path) -> None:
     [entry] = _convert_boris(kind, tmp_path)
 
     assert int(np.asarray(entry.payload["background_id"])) == 0
-    assert BorisAggregatedCSVConverter.version == "0.2"
-    assert BorisPandasPickleConverter.version == "0.2"
+    assert BorisAggregatedCSVConverter.version == "0.5"
+    assert BorisPandasPickleConverter.version == "0.5"

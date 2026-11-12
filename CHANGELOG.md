@@ -47,6 +47,85 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
+## Unreleased: features read `time` and a table that dropped frames keeps its timing
+
+Every track schema carries `time`, and a feature now turns a step into seconds with it
+instead of a constant frame rate. `core/timebase.py` is the one reading: the seconds
+between rows, a rate measured as the frame span over the time span, and a warning
+(logged as `[<feature>] the time column steps unevenly ...`, naming the largest gap
+and `resample-tracks`) from a method that reads its rows as evenly spaced. A run
+records each such warning per entry as a `time_irregular` run-log event, an ordinary
+event that is neither a status nor terminal and that a reader which predates it
+ignores. `entries_time_irregular` of the run-log snapshot counts them, and the run and
+request status (`mosaic status`, the MCP status tools) carry the count and the first 20
+(`time_irregular`, `time_irregular_has_more`). The log line stays.
+
+- **Removed params, so a recipe that sets one fails validation by name:** `fps` of
+  `speed-angvel`, `collective-motion-metrics`, `trajectory-smooth` and
+  `social-motion-summary`, and `sampling` (`fps_default`) of
+  `nn-delta-response`, `neighbor-delta-response`, `approach-avoidance`,
+  `individual-wavelet` and `pair-wavelet`. `pair-position` and `pair-egocentric` keep
+  `sampling.smooth_win` and lose `fps_default`. `keypoint-kinematics`,
+  `pair-keypoints`, `label-statistics` and `temporal-stack` keep an explicit optional
+  `fps` that overrides the measured rate and the warning.
+- **`trajectory-smooth`'s `speed_threshold` is always per second,** and a step allows
+  the move its seconds allow, so a 1.4 s gap allows a 1.4 s move. It was per frame
+  when `fps` was unset.
+- **A turn rate of the two delta-response features** divides by the seconds its window
+  spans. `pair-position`, `pair-egocentric`, `pair-facing`, `orientation-rel`,
+  `pair-interaction-filter`, `visual-network`, `pair-posedistance-pca`, `attention-target`,
+  `pair-keypoints`, `pair-world`, `approach-avoidance`, `body-scale` and `hidra` write the
+  `time` of each frame, which
+  `pair-wavelet` and `temporal-stack` read their rate from. `temporal-stack` pools over
+  `win_sec` seconds at the measured rate, so its pooled statistics declare no temporal
+  reach unless `fps` is set.
+- **`label-statistics`** gives a bout the sum of its rows' seconds, each row lasting
+  the time to the individual's next row.
+- **`resample-tracks` interpolates on `time`** and builds its grid from the time span.
+  A `frame_rate` or `fps` column the source carries is rewritten at the target rate
+  and never read, so a table stating two rates no longer fails. A target time within
+  a thousandth of a step of a native sample, or within the resolution of a float32
+  `time`, is that sample.
+- **BORIS (`boris_aggregated_csv`, `boris_pandas_pickle`) and the custom template map
+  an event second to the last frame of the entry's tracks whose `time` is at or before
+  it,** which is `int(t * fps)` on an evenly timed table. The seconds are the entry's
+  own, so a division's events count from its start and its tracks' recording clock is
+  read back by the division's time offset. An event that starts before the first track
+  time starts on the first frame, one that ends before it or starts after the last is
+  dropped, and an entry without tracks keeps `int(t * fps)`. The label variant id of
+  these converters names the tracks variant the labels were placed on, as a
+  `tracks_variant` term beside the params: the `tracks_run_id` given, else the variant
+  the entries the labels name resolve to, and `null` when the dataset has no tracks. A
+  conversion refuses, by name, entries the labels name that resolve to different tracks
+  variants without a `tracks_run_id`; an unrelated entry with several variants no longer
+  refuses it. An entry that has no tracks in the variant is not converted at
+  `int(t * fps)`: it is a failed entry (an `entry_error` run-log event, listed in
+  `LabelConversionOutcome.failed_entries`, `partial` in `mosaic convert-labels`), and
+  the step raises `AllEntriesFailed` when every entry is lost. A direct conversion
+  (`mosaic convert-labels`) writes it once its tracks exist. A pipeline resubmit reads
+  the labels step complete and does not retry it. Labels placed on the resampled tracks are therefore a label
+  variant of their own, and a conversion against another tracks variant never keeps a
+  file of a different frame axis. A label row made from tracks records the `tracks_raw`
+  source root beside `labels_raw`, and the label payload of such an entry is on the
+  tracks table's axis. `convert_all_labels`, `mosaic convert-labels --tracks-run-id` and
+  the `convert-labels` step take `tracks_run_id`, the tracks variant to place labels on,
+  and `Dataset.label_conversion_variant` takes it too. A `convert-labels` step runs
+  after every step of its recipe that writes tracks, whatever its converter, and its
+  identity is left unresolved in a plan that has several such steps and no
+  `tracks_run_id`. The tracks of an entry whose label file is kept are not read.
+
+Plugin versions: `speed-angvel` 0.3, `collective-motion-metrics` 0.3,
+`trajectory-smooth` 0.3, `pair-position` 0.2, `pair-egocentric` 0.3,
+`approach-avoidance` 0.5, `nn-delta-response` 0.4, `neighbor-delta-response` 0.2,
+`social-motion-summary` 0.4, `individual-wavelet` 0.2, `pair-wavelet` 0.3,
+`label-statistics` 0.2, `keypoint-kinematics` 0.2, `pair-keypoints` 0.3,
+`temporal-stack` 0.6, `hidra` 0.3, `resample-tracks` 0.2, `pair-facing` 0.3,
+`orientation-rel` 0.3, `pair-interaction-filter` 0.3, `visual-network` 0.2,
+`pair-posedistance-pca` 0.4, `attention-target` 0.3, `pair-world` 0.2, `body-scale` 0.2,
+`boris_aggregated_csv` 0.5, `boris_pandas_pickle` 0.5, the custom template 0.4 and
+`modified_boris` 0.2. The feature run ids and the
+`resample-tracks` and label variant identifiers of those move.
+
 ## Unreleased: an interrupted `convert-tracks` plans the files left
 
 A `convert-tracks` step is measured against the raw rows of its `source_format`

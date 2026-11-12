@@ -69,7 +69,7 @@ from .derivatives import (
     keypoint_columns,
     row_norm,
 )
-from .helpers import wrap_angle
+from .helpers import wrap_angle, with_source_time
 from .registry import register_feature
 from .world_frame import KeypointRef, body_axes, world_points
 
@@ -103,7 +103,7 @@ PAIR_WORLD_PROVIDES: Final = Provides(
         Column(C.seq_col),
         *(Column(name) for name in PAIR_WORLD_COLUMNS),
     ),
-    conditional=kept(C.group_col),
+    conditional=kept(C.time_col, C.group_col),
     # One distance, one angle between the headings and cos(-a) = cos(a) on both
     # rows. The others swap roles or flip sign.
     symmetric=(
@@ -303,7 +303,7 @@ class PairWorld:
 
     category = "per-frame"
     name = _NAME
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -383,6 +383,9 @@ class PairWorld:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return with_source_time(self._rows(df), df)
+
+    def _rows(self, df: pd.DataFrame) -> pd.DataFrame:
         needed = (C.frame_col, C.time_col, C.id_col, C.seq_col)
         missing = [c for c in needed if c not in df.columns]
         if missing:

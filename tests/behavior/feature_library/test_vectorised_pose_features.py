@@ -262,9 +262,18 @@ def _unsorted(table: pd.DataFrame, seed: int = 2) -> pd.DataFrame:
 
 
 def _same(new: pd.DataFrame, reference: pd.DataFrame) -> None:
-    """Equal in order, dtype and value; floats to rounding, everything else exactly."""
+    """Equal in order, dtype and value; floats to rounding, everything else exactly.
+
+    The loop references do not write ``time``, which ``orientation-rel`` now keeps,
+    so it is left out of what is compared.
+    """
     pd.testing.assert_frame_equal(
-        new, reference, check_dtype=True, check_exact=False, rtol=1e-12, atol=1e-12
+        new.drop(columns="time", errors="ignore"),
+        reference.drop(columns="time", errors="ignore"),
+        check_dtype=True,
+        check_exact=False,
+        rtol=1e-12,
+        atol=1e-12,
     )
 
 
@@ -410,7 +419,7 @@ def test_body_scale_matches_the_loop_with_gaps_in_the_frames() -> None:
 def test_body_scale_has_the_columns_and_dtypes_it_always_had() -> None:
     new = BodyScaleFeature().apply(_pose_table())
 
-    assert list(new.columns) == ["frame", "id", "scale", "sequence", "group"]
+    assert list(new.columns) == ["frame", "id", "scale", "sequence", "group", "time"]
     assert new["frame"].dtype == np.int64
     assert new["id"].dtype == np.int64
     assert new["scale"].dtype == np.float64
@@ -686,6 +695,7 @@ def test_orientation_rel_has_the_columns_and_dtypes_it_always_had() -> None:
         "near_0",
         "near_1",
         "near_2",
+        "time",
     ]
     for column in ("frame", "id1", "id2", "perspective"):
         assert new[column].dtype == np.int64, column
@@ -978,7 +988,7 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=1, mp_context=multiprocessing.get_context("spawn")
     ) as pool:
-        result = pool.submit(
+        result, _ = pool.submit(
             process_apply_worker,
             feature.__module__,
             type(feature).__name__,
@@ -990,6 +1000,7 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
             table,
         ).result(timeout=120)
 
+    assert result is not None
     in_process = OrientationRelativeFeature(params={"nearest_k": 4})
     assert in_process.load_state(tmp_path, {}, {"scale": lookup})
     _same(result, in_process.apply(table))

@@ -955,7 +955,6 @@ CASES: tuple[Case, ...] = (
         feature="trajectory-smooth",
         params={
             "speed_threshold": 40.0,
-            "fps": 30.0,
             "interpolate_centroid": True,
             "interpolate_pose": False,
             "expand_frames": 8,
@@ -982,7 +981,7 @@ CASES: tuple[Case, ...] = (
                 "run_id": "0.1-990067d93d",
             }
         ],
-        params={"step_size": 4, "smooth_window": 5, "fps": 30.0},
+        params={"step_size": 4, "smooth_window": 5},
     ),
 )
 

@@ -7,9 +7,17 @@ convert a dataset's raw sources and then compute on what it converted.
 **Each op names one variant.** Its identity is the variant
 :meth:`~mosaic.core.dataset.Dataset.track_conversion_variant` or
 :meth:`~mosaic.core.dataset.Dataset.label_conversion_variant` mints from the
-converter and its params, and that minting reads no index, so a plan names the
-variant before the conversion runs. A downstream ``tracks`` or ``labels``
-reference then pins it.
+converter and its params. That minting reads no index for a tracks conversion or
+for a label converter of frames, so a plan names the variant before the conversion
+runs. A downstream ``tracks`` or ``labels`` reference then pins it.
+
+A label converter of second-based events also names the tracks variant its labels
+are placed on, and that variant is the step's ``tracks_run_id``. A plan gives the
+step the variant that the one tracks step above it writes, and the step runs with
+it, so the run places its labels on the variant the plan named. A plan with several
+tracks steps above and no ``tracks_run_id`` leaves the identity unresolved. Without
+a tracks step above it, the variant is read from the tracks index, over the entries
+the label files name when the index holds several variants, which reads those files.
 
 **A conversion reads the raw rows of its format that its converter selects.**
 Neither op takes a scope. What a dataset converts is decided by its scan
@@ -20,7 +28,9 @@ holds no row of, and a label selection of none.
 **A file that fails is reported and then fails the attempt**, as
 ``resample-tracks`` does: each failure is an ``entry_error`` on the run-log, and
 a rerun converts only what is missing. A run in which every file fails raises
-``AllEntriesFailed``.
+``AllEntriesFailed``. A label entry that has no tracks in the variant its labels are
+placed on is an ``entry_error`` too, but the attempt finishes with the entries it
+wrote, and raises ``AllEntriesFailed`` only when none was written or kept.
 
 **``convert-tracks`` converts its files at once** when the run has workers. A
 worker converts and writes one file or one merged sequence, and this process
@@ -82,6 +92,12 @@ _LABEL_KIND = "The label kind to convert into, such as 'behavior'."
 _LABEL_PARAMS = (
     "The label converter's own params, such as fps or group_from. A key the "
     "converter does not declare is refused."
+)
+_LABEL_TRACKS_RUN_ID = (
+    "The tracks variant that a converter of second-based events, such as BORIS, "
+    "places its labels on. The labels variant names it, so labels on resampled "
+    "tracks are a variant of their own. Unset uses the one variant the entries "
+    "resolve to, and refuses entries that resolve to different ones."
 )
 
 
@@ -215,6 +231,7 @@ class ConvertLabelsParams(Params):
     kind: Annotated[str, Declared(_LABEL_KIND)] = "behavior"
     source_format: Annotated[str, Declared(_SOURCE_FORMAT)]
     params: Annotated[dict[str, JsonValue], Declared(_LABEL_PARAMS)] = {}
+    tracks_run_id: Annotated[str | None, Declared(_LABEL_TRACKS_RUN_ID)] = None
 
     @field_validator("kind", check_fields=False)
     @classmethod
@@ -280,7 +297,10 @@ class ConvertLabelsOp(Op[ConvertLabelsParams]):
     ) -> OpIdentity:
         """The labels variant this conversion writes, minted from its params."""
         variant = ds.label_conversion_variant(
-            params.kind, params.source_format, params.params
+            params.kind,
+            params.source_format,
+            params.params,
+            tracks_run_id=params.tracks_run_id,
         )
         return OpIdentity(run_id=variant, labels_variant=variant)
 
@@ -305,8 +325,18 @@ class ConvertLabelsOp(Op[ConvertLabelsParams]):
             overwrite=overwrite,
             params=dict(params.params),
             source_format=params.source_format,
+            tracks_run_id=params.tracks_run_id,
             progress=progress,
             cancel_check=ctx.check_cancel,
+            on_failure=ctx.entry_failed,
         )
         ctx.entries_written(outcome.written + outcome.skipped)
+        if outcome.lost_everything:
+            msg = (
+                f"every entry of the {params.source_format!r} labels has no tracks "
+                f"in the variant they are placed on ({len(outcome.failed_entries)} "
+                "entries), so variant "
+                f"{identity.labels_variant} has none. The run-log names each entry."
+            )
+            raise AllEntriesFailed(msg)
         return identity.run_id

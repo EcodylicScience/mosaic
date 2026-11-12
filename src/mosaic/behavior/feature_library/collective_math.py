@@ -28,6 +28,8 @@ import numpy as np
 import numpy.typing as npt
 from scipy.spatial import ConvexHull, Delaunay, QhullError
 
+from mosaic.core.timebase import step_seconds
+
 __all__ = [
     "STATE_HIGH",
     "STATE_LOW",
@@ -170,34 +172,22 @@ def unit_headings(
 
 
 def backward_dt(
-    order: FloatArray,
-    order_is_frame: bool,
-    time: FloatArray | None,
-    fps: float | None,
+    time: FloatArray,
     same_id: BoolArray,
     dstep: FloatArray,
     max_frame_gap: int | None,
 ) -> FloatArray:
-    """Per-row backward-difference ``dt``, NaN where a difference is not defined.
+    """Per-row backward-difference ``dt`` in seconds, NaN where it is not defined.
 
-    Follows the ``speed-angvel`` ladder: ``frame`` plus ``fps`` first (immune to
-    the jittery wall-clock timestamps some trackers embed), then a ``time``
-    column, then one order step as a last resort. Steps that are absent,
-    non-positive, or larger than *max_frame_gap* become NaN -- a gap wider than
-    the caller's tolerance means the shoal reorganized, and averaging across it
-    is a lower-resolution number dressed as a measurement.
+    The seconds between a row and the row before it come from *time*
+    (:func:`~mosaic.core.timebase.step_seconds`). A step across two individuals,
+    a step that is not positive, and a step of more than *max_frame_gap* order
+    steps become NaN: a gap wider than the caller's tolerance means the shoal
+    reorganized, and averaging across it is a lower-resolution number dressed as
+    a measurement. *max_frame_gap* counts order steps (*dstep*), not seconds.
     """
-    n = order.shape[0]
-    if order_is_frame and fps is not None:
-        dt = dstep / fps
-    elif time is not None:
-        dt = np.full(n, np.nan, dtype=np.float64)
-        if n >= 2:
-            dt[1:] = time[1:] - time[:-1]
-    else:
-        dt = dstep.copy()
-
-    ok = same_id & (dstep > 0) & np.isfinite(dt) & (dt > 0)
+    dt = step_seconds(time, same=same_id)
+    ok = (dstep > 0) & np.isfinite(dt)
     if max_frame_gap is not None:
         ok &= dstep <= float(max_frame_gap)
     return np.where(ok, dt, np.nan)

@@ -979,7 +979,7 @@ def test_the_catalog_states_each_feature_s_columns_under_its_defaults() -> None:
         "'id'",
         "'X'",
         "'Y'",
-        "'frame' or 'time'",
+        "'time'",
     ]
     assert speed.provides is not None
     assert not speed.provides.passthrough
@@ -1396,3 +1396,64 @@ def test_a_family_of_a_symmetric_column_names_only_its_own_members() -> None:
     assert stacked.is_symmetric("distance__pool_mean")
     assert not stacked.is_symmetric("distance_from_centroid__id1__pool_mean")
     assert pair_rules(recipe) == {"total": "each_perspective"}
+
+
+# --- a time filter reads the time column -----------------------------------------
+
+
+def _filtered_aggregate(run: dict[str, JsonValue]) -> Recipe:
+    """``sequence-aggregate`` over ``social-motion-summary``, whose rows hold no time."""
+    return Recipe.model_validate(
+        {
+            "steps": [
+                {"id": "speed", "type": "feature", "feature": "speed-angvel"},
+                {
+                    "id": "summary",
+                    "type": "feature",
+                    "feature": "social-motion-summary",
+                    "inputs": [{"step": "speed"}],
+                },
+                {
+                    "id": "late",
+                    "type": "feature",
+                    "feature": "sequence-aggregate",
+                    "inputs": [{"step": "summary"}],
+                    "params": {"columns": ["speed_cv"]},
+                    "run": run,
+                },
+            ]
+        }
+    )
+
+
+@pytest.mark.parametrize("boundary", ["filter_start_time", "filter_end_time"])
+def test_a_time_filter_over_an_input_without_time_is_a_problem_at_the_filter(
+    boundary: str,
+) -> None:
+    problems = check_recipe(_filtered_aggregate({boundary: 1.0}))
+
+    (problem,) = problems
+    assert (problem.step, problem.where) == ("late", f"run.{boundary}")
+    assert "'time'" in problem.message
+    assert "filter_start_frame" in problem.message
+
+
+def test_a_time_filter_over_the_tracks_is_not_a_problem() -> None:
+    recipe = Recipe.model_validate(
+        {
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "run": {"filter_start_time": 1.0, "filter_end_time": 5.0},
+                }
+            ]
+        }
+    )
+
+    assert check_recipe(recipe) == ()
+
+
+def test_a_frame_filter_over_an_input_without_time_is_not_a_problem() -> None:
+    assert check_recipe(_filtered_aggregate({"filter_start_frame": 3})) == ()

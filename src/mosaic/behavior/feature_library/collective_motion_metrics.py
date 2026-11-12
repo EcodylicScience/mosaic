@@ -25,7 +25,6 @@ from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Conditional,
     ParamColumn,
@@ -100,17 +99,11 @@ _MIN_INDIVIDUALS_DESCRIPTION = (
     "classifier."
 )
 
-_FPS_DESCRIPTION = (
-    "The frame rate. With a frame order column, this derives dt as "
-    "frame_diff / fps, immune to the jittery wall-clock timestamps some "
-    "trackers embed. Unset, dt falls back to the time column, then to one "
-    "order step."
-)
-
 _MAX_FRAME_GAP_DESCRIPTION = (
-    "Frame steps wider than this yield NaN velocity instead of averaging "
-    "across a gap the shoal reorganized over. Unset, every step is "
-    "accepted."
+    "Steps wider than this yield NaN velocity instead of averaging across "
+    "a gap the shoal reorganized over. A velocity divides by the seconds "
+    "the step lasts, read from the time column, whatever the gap. Unset, "
+    "every step is accepted."
 )
 
 _MIN_GROUP_SPEED_DESCRIPTION = (
@@ -211,8 +204,8 @@ class CollectiveMotionMetrics:
         Averaging the signed column over time cancels clockwise against
         counter-clockwise milling towards zero -- average ``rotation`` instead
       - ``group_angvel``: mean angular velocity of individuals about the
-        centroid, rad/s (rad per frame when neither ``fps`` nor ``time`` is
-        available). Unlike ``rotation`` this carries magnitude, not just direction
+        centroid, rad/s. Unlike ``rotation`` this carries magnitude, not just
+        direction
       - ``state``: ``Polarized`` | ``Milling`` | ``Swarm`` | ``Transitional`` |
         ``Undefined``
 
@@ -258,7 +251,7 @@ class CollectiveMotionMetrics:
             ff = ds.run_feature(FFGroups(params={"distance_cutoff": 120.0}))
             ds.run_feature(CollectiveMotionMetrics(
                 Inputs(("tracks", ff)),
-                {"fps": 30.0, "subgroup_col": "event", "filter_expr": "event >= 0"},
+                {"subgroup_col": "event", "filter_expr": "event >= 0"},
             ))
 
         A hand-written reference must carry the *storage* name, not the slug --
@@ -308,7 +301,7 @@ class CollectiveMotionMetrics:
 
     category = "summary"
     name = "collective-motion-metrics"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-blind"
@@ -321,7 +314,7 @@ class CollectiveMotionMetrics:
         Column(C.id_col),
         Column(C.x_col),
         Column(C.y_col),
-        ORDER_COLUMN,
+        Column(C.time_col),
         ParamColumn("subgroup_col"),
         ParamColumn("speed_col"),
         When(
@@ -362,9 +355,6 @@ class CollectiveMotionMetrics:
         )
         min_individuals: Annotated[int, Declared(_MIN_INDIVIDUALS_DESCRIPTION)] = Field(
             default=3, ge=1
-        )
-        fps: Annotated[float | None, Declared(_FPS_DESCRIPTION, unit="fps")] = Field(
-            default=None, gt=0
         )
         max_frame_gap: Annotated[
             int | None, Declared(_MAX_FRAME_GAP_DESCRIPTION, unit="frames")
@@ -495,16 +485,8 @@ class CollectiveMotionMetrics:
         perm = np.lexsort((order, codes))
         sorted_order = order[perm]
         same, dstep = step_masks(codes[perm], sorted_order)
-        time = (
-            agg[C.time_col].to_numpy(dtype=float)[perm]
-            if C.time_col in agg.columns
-            else None
-        )
         dt = backward_dt(
-            sorted_order,
-            order_col == C.frame_col,
-            time,
-            p.fps,
+            agg[C.time_col].to_numpy(dtype=float)[perm],
             same,
             dstep,
             p.max_frame_gap,
@@ -532,7 +514,7 @@ class CollectiveMotionMetrics:
 
         p = self.params
         order_col = resolve_order_col(df)
-        required = [C.id_col, C.x_col, C.y_col]
+        required = [C.id_col, C.x_col, C.y_col, C.time_col]
         if p.subgroup_col is not None:
             required.append(p.subgroup_col)
         if p.speed_col is not None:
@@ -613,17 +595,8 @@ class CollectiveMotionMetrics:
         # the mean of these is the derivative of the common-set centroid;
         # differencing the all-ids centroid instead makes a track that merely
         # appears look like the whole group lurched.
-        time = (
-            df[C.time_col].to_numpy(dtype=float) if C.time_col in df.columns else None
-        )
         dt = backward_dt(
-            order,
-            order_col == C.frame_col,
-            time,
-            p.fps,
-            same_id,
-            dstep,
-            p.max_frame_gap,
+            df[C.time_col].to_numpy(dtype=float), same_id, dstep, p.max_frame_gap
         )
         prev_finite = np.zeros(n, dtype=bool)
         prev_finite[1:] = finite[:-1]

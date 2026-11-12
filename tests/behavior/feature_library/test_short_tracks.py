@@ -121,7 +121,7 @@ def test_the_gradient_without_times_is_per_sample() -> None:
 
 
 def test_the_angular_velocity_of_one_angle_is_nan() -> None:
-    assert np.isnan(unwrap_diff(np.array([0.4]), FPS)).all()
+    assert np.isnan(unwrap_diff(np.array([0.4]), np.array([0.0]))).all()
 
 
 def _pairs() -> pd.DataFrame:
@@ -156,6 +156,7 @@ def _keypoint_pairs() -> pd.DataFrame:
             x, y = float(frame) + identity, 5.0 * identity
             row: dict[str, object] = {
                 "frame": frame,
+                "time": frame / FPS,
                 "id": identity,
                 "group": "g",
                 "sequence": "s",

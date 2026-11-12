@@ -32,6 +32,7 @@ def _tracks() -> pd.DataFrame:
             x, y = 10.0 * individual + frame, 5.0 * individual
             row: dict[str, object] = {
                 "frame": frame,
+                "time": frame / 30.0,
                 "id": individual,
                 "group": "g",
                 "sequence": "s",
@@ -79,6 +80,7 @@ def _pair(
         for individual in (0, 1):
             row: dict[str, object] = {
                 "frame": frame,
+                "time": frame / 30.0,
                 "id": individual,
                 "group": "g",
                 "sequence": "s",

@@ -93,6 +93,15 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `edges` array. `edges()` in `topo.py` derives one, and `after` is the one explicit list,
   for ordering only (`test_edges_are_derived_from_the_bodies_with_their_sites`). No
   rule restricts where an `after` edge goes.
+- A `convert-labels` step is ordered after every op step that writes tracks
+  (`TRACK_WRITING_OPS` in `topo.py`), unless that step references it, whatever its
+  converter. `parents_of` adds those parents, so ordering, `ancestors_of`,
+  `descendants_of` and `blocked_by` see them, and `edges()` does not list them. The
+  list is a constant because a status read walks the graph and loads no registry
+  (`tests/meta/test_status_imports.py`), and a meta test pins it to the registered ops
+  that write tracks (`tests/meta/test_track_writing_ops_listed.py`). Like `after`, the
+  parents carry no term in any identity
+  (`tests/core/pipeline/graph/test_pipeline_label_order.py`).
 - A params field typed as a `LabelsSource` is the `labels` reference site
   (`ReferenceKind`). A `{"step": ...}` there names a step whose declaration
   `writes_labels` (`convert-labels`): the field gets its label kind and

@@ -50,6 +50,7 @@ from .run_log import JsonlRunLog, run_log_path
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.timebase import IrregularNotice
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +299,24 @@ class JobContext:
         """
         if self.run_log is not None:
             self.run_log.rows_dropped(key, counts)
+
+    def time_irregular(self, key: str, notice: IrregularNotice) -> None:
+        """Record that a method read one entry's uneven time steps as even ones.
+
+        A report like :meth:`columns_dropped`: the entry published, nothing is
+        appended to ``failed_keys`` and no status moves. Without a run-log it is a
+        no-op.
+        """
+        if self.run_log is not None:
+            self.run_log.time_irregular(
+                key,
+                who=notice.who,
+                largest_step=notice.largest_step,
+                first_frame=notice.first_frame,
+                last_frame=notice.last_frame,
+                median_step=notice.median_step,
+                rate=notice.rate,
+            )
 
     def entries_written(self, count: int) -> None:
         """Record how many entries this attempt leaves holding an output row.

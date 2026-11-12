@@ -16,7 +16,6 @@ from pydantic import Field
 from mosaic.core.individuals import id_arenas, individual_pairs
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Keypoints,
     Provides,
@@ -42,6 +41,7 @@ from .helpers import (
     clean_tracks_grouped,
     ensure_columns,
     gradient_along,
+    pair_sample_times,
     smooth_1d,
     unwrap_diff,
 )
@@ -102,6 +102,7 @@ step reading the output of one reads the output of the other.
 PAIR_EGOCENTRIC_PROVIDES: Final = Provides(
     adds=(
         Column(C.frame_col),
+        Column(C.time_col),
         Column("perspective"),
         Column("id1"),
         Column("id2"),
@@ -116,7 +117,8 @@ PAIR_EGOCENTRIC_PROVIDES: Final = Provides(
 """The output of ``pair-egocentric`` and ``pair-position``.
 
 Each renames the order column to ``frame``, whether its values are frames or times.
-Each reads ``sequence`` and copies it.
+Each reads ``sequence`` and copies it, and writes ``time``, the seconds of each row,
+which a velocity divides by and a later step reads its frame rate from.
 """
 
 
@@ -127,6 +129,7 @@ class PairEgocentricFeatures:
 
     Produces a row-wise DataFrame with columns:
       - frame: the order column's values, frames or else times
+      - time: the seconds of the row, which a velocity divides by
       - perspective: 0 for A->B, 1 for B->A
       - id1, id2: pair identifiers
       - feature columns (e.g., A_speed, AB_dx_egoA, ...)
@@ -143,7 +146,8 @@ class PairEgocentricFeatures:
     category = "per-frame"
     name = "pair-egocentric"
     # 0.2: an integer center_mode centers each animal on that keypoint.
-    version = "0.2"
+    # 0.3: velocities divide by the seconds between rows, and ``time`` is written.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -154,7 +158,7 @@ class PairEgocentricFeatures:
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
         Column(C.seq_col),
-        ORDER_COLUMN,
+        Column(C.time_col),
         Keypoints(),
     )
     provides: ClassVar[Provides] = PAIR_EGOCENTRIC_PROVIDES
@@ -221,9 +225,9 @@ class PairEgocentricFeatures:
         order_col = resolve_order_col(df)
 
         required = [C.id_col, C.seq_col] + pose_cols
-        ensure_columns(df, required)
+        ensure_columns(df, [*required, C.time_col])
 
-        df_small = df[[order_col] + required]
+        df_small = df[list(dict.fromkeys([order_col, C.time_col, *required]))]
 
         group_cols = [C.seq_col, C.id_col]
 
@@ -247,7 +251,10 @@ class PairEgocentricFeatures:
         out_frames: list[pd.DataFrame] = []
         for seq_key, id_a, id_b in pairs:
             gseq = df_small[df_small[C.seq_col] == seq_key]
-            df_a = gseq[gseq[C.id_col] == id_a][[order_col] + pose_cols]
+            # The partner's time is the first animal's, so only one side carries it.
+            df_a = gseq[gseq[C.id_col] == id_a][
+                list(dict.fromkeys([order_col, C.time_col, *pose_cols]))
+            ]
             df_b = gseq[gseq[C.id_col] == id_b][[order_col] + pose_cols]
             if df_a.empty or df_b.empty:
                 continue
@@ -258,29 +265,22 @@ class PairEgocentricFeatures:
             if j.empty:
                 continue
 
-            # fps heuristic: prefer df['fps'] if present and constant; else default
-            fps = p.sampling.fps_default
-            if "fps" in df.columns:
-                try:
-                    c = df["fps"].dropna().unique()
-                    if len(c) == 1:
-                        fps = float(c[0])
-                except Exception:
-                    pass
-
+            times = pair_sample_times(j, order_col)
             frames, AtoB, BtoA, names = self._build_ego_block_for_joined(
-                j, fps, x_cols, y_cols, neck, tail, center
+                j, times, x_cols, y_cols, neck, tail, center
             )
 
             # produce row-wise DataFrames
             dfA = pd.DataFrame(AtoB.T, columns=names)
             dfA[C.frame_col] = frames
+            dfA[C.time_col] = times
             dfA["perspective"] = 0
             dfA["id1"] = id_a
             dfA["id2"] = id_b
 
             dfB = pd.DataFrame(BtoA.T, columns=names)
             dfB[C.frame_col] = frames
+            dfB[C.time_col] = times
             dfB["perspective"] = 1
             dfB["id1"] = id_b
             dfB["id2"] = id_a
@@ -321,7 +321,7 @@ class PairEgocentricFeatures:
     def _build_ego_block_for_joined(
         self,
         j: pd.DataFrame,
-        fps: float,
+        times: np.ndarray,
         x_cols: list[str],
         y_cols: list[str],
         neck: int,
@@ -364,18 +364,18 @@ class PairEgocentricFeatures:
         uoxB, uoyB = -uhyB, uhxB
 
         # velocities of centers (per second)
-        vAx = gradient_along(cxA) * float(fps)
-        vAy = gradient_along(cyA) * float(fps)
-        vBx = gradient_along(cxB) * float(fps)
-        vBy = gradient_along(cyB) * float(fps)
+        vAx = gradient_along(cxA, times)
+        vAy = gradient_along(cyA, times)
+        vBx = gradient_along(cxB, times)
+        vBy = gradient_along(cyB, times)
         speedA = np.sqrt(vAx * vAx + vAy * vAy)
         speedB = np.sqrt(vBx * vBx + vBy * vBy)
 
         # heading angles + angular speed
         thA = self._angle(uhxA, uhyA)
         thB = self._angle(uhxB, uhyB)
-        angspeedA = unwrap_diff(thA, fps)
-        angspeedB = unwrap_diff(thB, fps)
+        angspeedA = unwrap_diff(thA, times)
+        angspeedB = unwrap_diff(thB, times)
 
         # ego projections of velocity
         vA_para = vAx * uhxA + vAy * uhyA

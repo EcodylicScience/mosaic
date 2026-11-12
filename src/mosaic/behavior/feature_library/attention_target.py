@@ -46,7 +46,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Declared, Params
 
-from .helpers import ensure_columns
+from .helpers import ensure_columns, with_source_time
 from .registry import register_feature
 
 _ID_GROUP_MAP_DESCRIPTION = (
@@ -95,7 +95,7 @@ class AttentionTarget:
 
     category = "per-frame"
     name = "attention-target"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     temporal_reach = 0  # picks a target within a frame
@@ -121,7 +121,7 @@ class AttentionTarget:
             Column("target_group"),
             Column("attention_type"),
         ),
-        conditional=kept(C.group_col, C.seq_col),
+        conditional=kept(C.time_col, C.group_col, C.seq_col),
     )
 
     class Inputs(Inputs[Result]):
@@ -157,6 +157,9 @@ class AttentionTarget:
         pass
 
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        return with_source_time(self._rows(df), df)
+
+    def _rows(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return self._empty_output()
 

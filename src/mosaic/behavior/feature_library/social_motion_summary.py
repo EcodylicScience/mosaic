@@ -10,7 +10,6 @@ from pydantic import Field, model_validator
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Conditional,
     ParamColumn,
@@ -31,14 +30,10 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 from mosaic.core.params import Declared, Params
+from mosaic.core.timebase import step_seconds
 
-from .helpers import ExcludeScope, exclude_mask
+from .helpers import ExcludeScope, ensure_columns, exclude_mask
 from .registry import register_feature
-
-_FPS_DESCRIPTION = (
-    "The frame rate, used to convert frame steps to seconds for the "
-    "derivative-based metrics and for kick_rate's time base."
-)
 
 _SPEED_COL_DESCRIPTION = (
     "The per-frame speed column. speed_smooth is the better input for "
@@ -163,20 +158,16 @@ def _magnitude_stats(prefix: str, mag: np.ndarray) -> dict[str, float]:
     }
 
 
-def _derivative(values: np.ndarray, frames: np.ndarray, fps: float) -> np.ndarray:
-    """Discrete time-derivative ``d(values)/dt`` with ``dt = d(frame) / fps``.
+def _derivative(values: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Discrete time-derivative ``d(values)/dt`` with ``dt`` the seconds between samples.
 
     Returns an array of length ``len(values) - 1`` aligned to the intervals
-    between consecutive samples. Intervals with a non-positive frame gap are
-    set to NaN so gaps in the track do not create spurious spikes.
+    between consecutive samples. An interval whose seconds are not positive is
+    set to NaN, so a repeated time does not create a spurious spike.
     """
     if values.size < 2:
         return np.empty(0, dtype=float)
-    dv = np.diff(values)
-    dframe = np.diff(frames)
-    dt = dframe / fps
-    dt = np.where(dt > 0, dt, np.nan)
-    return dv / dt
+    return np.diff(values) / step_seconds(times)[1:]
 
 
 def _subgroups(g: pd.DataFrame, col: str | None) -> list[tuple[object, np.ndarray]]:
@@ -220,7 +211,7 @@ class _FishSeries:
     """
 
     speed: np.ndarray  # (n,)
-    dframe: np.ndarray  # (n-1,)  frame gaps
+    dt: np.ndarray  # (n-1,)  seconds between samples
     accel: np.ndarray  # (n-1,)  interval k spans samples k, k+1
     jerk: np.ndarray  # (n-2,)  interval j spans samples j, j+1, j+2
     social: np.ndarray  # (n,) bool
@@ -335,7 +326,7 @@ class SocialMotionSummary:
 
     category = "summary"
     name = "social-motion-summary"
-    version = "0.3"
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     # A summary carries no frame axis for the overlap trim to work on, and the
@@ -348,7 +339,7 @@ class SocialMotionSummary:
     follows_ids: bool = True
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
-        ORDER_COLUMN,
+        Column(C.time_col),
         ParamColumn("speed_col"),
         ParamColumn("subgroup_col"),
         ParamColumn("exclude_cols"),
@@ -373,7 +364,6 @@ class SocialMotionSummary:
         pass
 
     class Params(Params):
-        fps: Annotated[float, Declared(_FPS_DESCRIPTION, unit="fps")] = 30.0
         speed_col: Annotated[str, Declared(_SPEED_COL_DESCRIPTION)] = "speed"
         social_min_group_size: Annotated[
             int, Declared(_SOCIAL_MIN_GROUP_SIZE_DESCRIPTION)
@@ -529,7 +519,7 @@ class SocialMotionSummary:
         row.update(_magnitude_stats("jerk", np.abs(s.jerk[m_jerk])))
 
         if p.compute_burst_coast:
-            row.update(self._burst_coast(s.accel, s.dframe, m_acc, m_jerk, p.fps))
+            row.update(self._burst_coast(s.accel, s.dt, m_acc, m_jerk))
 
         if p.subgroup_col is not None:
             row["n_frames"] = int(sample.sum())
@@ -544,6 +534,7 @@ class SocialMotionSummary:
             return pd.DataFrame()
 
         p = self.params
+        ensure_columns(df, [C.time_col])
         order_col = resolve_order_col(df)
         df = df.sort_values([C.id_col, order_col]).reset_index(drop=True)
 
@@ -574,7 +565,7 @@ class SocialMotionSummary:
         for fid, g in df.groupby(C.id_col, sort=True):
             idx = g.index.to_numpy()
             speed = g[p.speed_col].to_numpy(dtype=float)
-            frames = g[order_col].to_numpy(dtype=float)
+            times = g[C.time_col].to_numpy(dtype=float)
 
             # --- social mask: frames with a valid nearest neighbor ---
             if has_nn:
@@ -586,16 +577,16 @@ class SocialMotionSummary:
                     g["group_size"].to_numpy(dtype=float) >= p.social_min_group_size
                 )
 
-            accel = _derivative(speed, frames, p.fps)
+            accel = _derivative(speed, times)
             # jerk = d(accel)/dt over the intervals between accel samples
             jerk = (
-                _derivative(accel, frames[1:], p.fps)
+                _derivative(accel, times[1:])
                 if accel.size >= 2
                 else np.empty(0, dtype=float)
             )
             series = _FishSeries(
                 speed=speed,
-                dframe=np.diff(frames),
+                dt=step_seconds(times)[1:],
                 accel=accel,
                 jerk=jerk,
                 social=social,
@@ -632,10 +623,9 @@ class SocialMotionSummary:
     @staticmethod
     def _burst_coast(
         accel: np.ndarray,
-        dframe: np.ndarray,
+        dt: np.ndarray,
         m_acc: np.ndarray,
         m_jerk: np.ndarray,
-        fps: float,
     ) -> dict[str, float]:
         """Minimal burst-and-coast gait summary, over the masked intervals.
 
@@ -656,7 +646,7 @@ class SocialMotionSummary:
         pos = accel > 0
         # peaks: a positive-accel sample immediately followed by non-positive
         peaks = int(np.sum(pos[:-1] & ~pos[1:] & m_jerk))
-        duration_s = float(np.sum(dframe[m_acc]) / fps)
+        duration_s = float(np.nansum(dt[m_acc]))
         kick_rate = _safe_ratio(float(peaks), duration_s)
         burst_coast_ratio = float(np.mean(pos[m_acc]))
         return {"kick_rate": kick_rate, "burst_coast_ratio": burst_coast_ratio}

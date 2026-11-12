@@ -6,7 +6,9 @@ smoothing window, a minimum event duration, and a threshold stated in cm/s that
 is divided by the rate to get cm/frame. Placing the tables on one grid makes all
 of those correct by construction and leaves each of them a single number again.
 The arithmetic lives in :mod:`mosaic.core.pipeline.resample_tracks`; this is the
-op that addresses a run of it.
+op that addresses a run of it. It interpolates on the ``time`` column, so it is also
+the remedy for a table that dropped frames: a feature that reads its rows as evenly
+spaced warns on such a table and names this op.
 
 **It chains.** Its input is another tracks variant and its output is a new one,
 so the source's identity is an ``upstream`` term in both identifiers -- the term
@@ -137,7 +139,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
     kind = "resample-tracks"
     category = "convert"
     domain = "tracking"
-    version = "0.1"
+    version = "0.2"
     writes_tracks = True
     scope_takes = "any"
     scope_dependent = True

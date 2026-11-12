@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Conditional,
     ParamColumn,
@@ -35,13 +34,13 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.timebase import uniform_grid_rate
 
 from .derivatives import IntArray, frame_axis
 from .helpers import ensure_columns
 from .registry import register_feature
 from .wavelet import (
     WaveletParams,
-    constant_fps,
     log_power,
     wavelet_attrs,
     wavelet_band,
@@ -75,9 +74,10 @@ class IndividualWavelet:
       - W_{col}_f{fi} (log-power, clamped, for each column x frequency)
       and (optionally) the group and sequence of each input row.
 
-    Stateless (no fitting). FPS is inferred from constant df['fps'] if
-    present, otherwise from fps_default. Frequencies are geometrically spaced
-    in [f_min, f_max] (equal steps in log2 frequency). The transform and its
+    Stateless (no fitting). The frame rate is measured from the ``time`` column
+    (frames over the time span), and the feature warns when the steps are uneven,
+    because the transform reads its rows as evenly spaced. Frequencies are
+    geometrically spaced in [f_min, f_max] (equal steps in log2 frequency). The transform and its
     parameters are those of ``pair-wavelet``.
 
     **Gaps.** With a ``frame`` column, each individual's rows are placed on the
@@ -95,7 +95,7 @@ class IndividualWavelet:
 
     category = "per-frame"
     name = _NAME
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -109,7 +109,7 @@ class IndividualWavelet:
     # Unset, it transforms the pc_prefix columns, or else every payload column.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column(C.id_col),
-        ORDER_COLUMN,
+        Column(C.time_col),
         ParamColumn("cols"),
         Payload(),
     )
@@ -139,14 +139,13 @@ class IndividualWavelet:
 
     @staticmethod
     def temporal_reach(params: IndividualWavelet.Params) -> int | None:
-        """Return ``None``: the reach depends on a frame rate the data may set.
+        """Return ``None``: the reach depends on a frame rate the data sets.
 
         One row reads half the longest wavelet, ``scale * (upper_bound -
         lower_bound) / 2`` samples at the scale of ``f_min``, and the scale is the
         frame rate over ``f_min`` times the central frequency. The frame rate is
-        ``sampling.fps_default`` only when the input has no constant ``fps`` column,
-        and a column of 60 against a default of 30 doubles the reach. A declaration
-        from the default alone would understate it, so the reach is unknown.
+        measured from the input's ``time`` column, and a table at 60 frames per
+        second reads twice the samples of one at 30, so no params bound the reach.
         """
         return None
 
@@ -170,7 +169,7 @@ class IndividualWavelet:
         if df.empty:
             return pd.DataFrame(columns=[order_col, C.id_col])
         ensure_columns(df, [C.id_col])
-        fps = constant_fps(df, p.sampling.fps_default)
+        fps = uniform_grid_rate(df, self.name)
         in_cols = wavelet_input_columns(df, p, _WHO)
         band = wavelet_band(p.wavelet, p.f_min, p.f_max, p.n_freq, fps)
 
@@ -203,7 +202,11 @@ class IndividualWavelet:
             values[start:end] = log_power(placed, band, p.wavelet, fps, p.log_floor)[at]
 
         keep = [
-            c for c in (order_col, C.id_col, C.seq_col, C.group_col) if c in df.columns
+            c
+            for c in dict.fromkeys(
+                (order_col, C.time_col, C.id_col, C.seq_col, C.group_col)
+            )
+            if c in df.columns
         ]
         spectra = pd.DataFrame(
             values, columns=wavelet_columns(in_cols, len(band.scales))

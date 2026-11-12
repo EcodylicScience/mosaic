@@ -27,12 +27,13 @@ out is what closes the converter/dataset import cycle, as it did for tracks.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, TypeVar, override
 
+import numpy as np
 from pydantic import Field
 
 from mosaic.core.params import (
@@ -40,12 +41,20 @@ from mosaic.core.params import (
     Declared,
     Params,
 )
+from mosaic.core.timebase import last_frames_at_or_before
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 __all__ = [
+    "ClockedLabelConverter",
     "LABEL_CONVERTERS",
     "LabelConvertParams",
     "LabelConverter",
     "LabelEntry",
+    "TrackBounds",
+    "TrackClock",
+    "TracksPlacementRefused",
     "ensure_label_converters_registered",
     "entry_group",
     "get_label_converter",
@@ -60,6 +69,15 @@ _GROUP_FROM_DESCRIPTION = (
     "file-level hint from the labels index, and both behaves the same as "
     "filename in every converter that reads it."
 )
+
+
+class TracksPlacementRefused(ValueError):
+    """The tracks a conversion of timed events places its labels on are not one variant.
+
+    Raised for entries that resolve to different tracks variants without a
+    ``tracks_run_id``, and for an entry that has no tracks in the variant the
+    labels are placed on.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +101,106 @@ class LabelEntry:
     n_frames: int
     label_ids: tuple[int, ...] = ()
     label_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class TrackBounds:
+    """Where one entry's tracks begin and end on its own clock.
+
+    Attributes:
+        first_frame: The frame of the first track row.
+        last_frame: The frame of the last track row.
+        first_time: The entry's own time of the first row, in seconds.
+        last_time: The entry's own time of the last row, in seconds.
+    """
+
+    first_frame: int
+    last_frame: int
+    first_time: float
+    last_time: float
+
+
+class TrackClock:
+    """The frames and times of each entry's tracks, for a converter of timed events.
+
+    A converter of events stamped in seconds hands a second to
+    :meth:`frames_at_or_before` and gets the frame of the entry's tracks that the
+    clock puts it on: the last frame whose ``time`` is at or before the second,
+    which on a table that dropped frames is not ``seconds * fps``. The times are
+    the entry's own: a division's event seconds count from the division's start,
+    so the lookup subtracts the offset that its tracks' recording clock carries.
+    The dataset builds the clock and passes it to a
+    :class:`ClockedLabelConverter`. An entry without tracks answers ``None``, and
+    the converter converts at its own rate as it did before.
+
+    The tracks variant the frames are read from is part of the labels variant's
+    identity. :attr:`used` names the entries whose frames came from tracks, so the
+    dataset records the tracks source root those rows were made from, and a
+    change under it shows as drift.
+
+    Args:
+        lookup: Reads one entry's tracks, ``(frames, times)`` with the times on the
+            entry's own clock, or ``None`` for an entry that has none.
+        skip: Whether an entry's labels are kept as they are, so its tracks are
+            never read. Such an entry answers ``None`` and its converted labels are
+            discarded.
+    """
+
+    def __init__(
+        self,
+        lookup: Callable[
+            [str, str], tuple[NDArray[np.float64], NDArray[np.float64]] | None
+        ],
+        skip: Callable[[str, str], bool] | None = None,
+    ) -> None:
+        self._lookup = lookup
+        self._skip = skip
+        self._tracks: dict[
+            tuple[str, str], tuple[NDArray[np.float64], NDArray[np.float64]] | None
+        ] = {}
+        self.used: set[tuple[str, str]] = set()
+
+    def _of(
+        self, group: str, sequence: str
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+        entry = (group, sequence)
+        if self._skip is not None and self._skip(group, sequence):
+            return None
+        if entry not in self._tracks:
+            self._tracks[entry] = self._lookup(group, sequence)
+        tracks = self._tracks[entry]
+        if tracks is not None and not np.isfinite(tracks[1]).any():
+            return None
+        return tracks
+
+    def bounds(self, group: str, sequence: str) -> TrackBounds | None:
+        """Where the entry's tracks begin and end, ``None`` when it has none."""
+        tracks = self._of(group, sequence)
+        if tracks is None:
+            return None
+        frames, times = tracks
+        keep = np.isfinite(frames) & np.isfinite(times)
+        return TrackBounds(
+            first_frame=int(frames[keep].min()),
+            last_frame=int(frames[keep].max()),
+            first_time=float(times[keep].min()),
+            last_time=float(times[keep].max()),
+        )
+
+    def frames_at_or_before(
+        self, group: str, sequence: str, seconds: NDArray[np.float64]
+    ) -> NDArray[np.float64] | None:
+        """The last frame at or before each of *seconds*, NaN before the first row.
+
+        Returns:
+            The frames, or ``None`` when the entry has no tracks, which the
+            converter answers with its own rate.
+        """
+        tracks = self._of(group, sequence)
+        if tracks is None:
+            return None
+        self.used.add((group, sequence))
+        return last_frames_at_or_before(tracks[0], tracks[1], seconds)
 
 
 class LabelConvertParams(Params):
@@ -173,6 +291,37 @@ class LabelConverter(Generic[P]):
     def get_metadata(self) -> dict[str, object]:
         """Format-specific metadata for ``dataset.meta['labels'][kind]`` (optional)."""
         return {}
+
+
+class ClockedLabelConverter(LabelConverter[P]):
+    """A converter of events stamped in seconds, which reads each entry's tracks clock.
+
+    Its ``convert`` takes a :class:`TrackClock` and maps each event second to the
+    frame of the entry's tracks (``EventFrames`` in the label library does it), so a
+    table that dropped frames is not timed by ``seconds * fps``. The dataset passes
+    the clock to a converter of this class only. An entry whose frames came from the
+    clock is on the tracks table's axis, and a division's first frame does not move
+    it.
+    """
+
+    @override
+    def convert(
+        self,
+        src_path: Path,
+        params: P,
+        raw_row: Mapping[str, object],
+        clock: TrackClock | None = None,
+    ) -> list[LabelEntry]:
+        """Read *src_path* and return one :class:`LabelEntry` per sequence.
+
+        Args:
+            src_path: The raw label file.
+            params: Typed conversion parameters.
+            raw_row: The ``labels_raw/index.csv`` row. Never hashed.
+            clock: Where each entry's tracks put a second. ``None`` outside a
+                dataset conversion, where every entry converts at its own rate.
+        """
+        raise NotImplementedError
 
 
 def entry_group(group_from: str, raw_row: Mapping[str, object], infile: str) -> str:

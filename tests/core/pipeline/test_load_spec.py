@@ -108,6 +108,7 @@ def test_temporal_stacking_stateless_protocol() -> None:
     df = pd.DataFrame(
         {
             "frame": [0, 1, 2, 3, 4],
+            "time": [0.0, 0.1, 0.2, 0.3, 0.4],
             "feat_a": [1.0, 2.0, 3.0, 4.0, 5.0],
             "feat_b": [5.0, 4.0, 3.0, 2.0, 1.0],
         }

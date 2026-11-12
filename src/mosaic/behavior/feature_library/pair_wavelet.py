@@ -13,7 +13,6 @@ import pandas as pd
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
-    ORDER_COLUMN,
     Column,
     Conditional,
     ParamColumn,
@@ -35,12 +34,12 @@ from mosaic.core.pipeline.types import (
     TrackInput,
     resolve_order_col,
 )
+from mosaic.core.timebase import uniform_grid_rate
 
 from .helpers import ensure_columns
 from .registry import register_feature
 from .wavelet import (
     WaveletParams,
-    constant_fps,
     log_power,
     wavelet_attrs,
     wavelet_band,
@@ -73,9 +72,10 @@ class PairWavelet:
       - W_{col}_f{fi} (log-power, clamped, for each component x frequency)
       and (optionally) passthrough group/sequence if present in df.
 
-    Stateless (no fitting). FPS is inferred from constant df['fps'] if
-    present, otherwise from fps_default. Frequencies are geometrically spaced
-    in [f_min, f_max] (equal steps in log2 frequency).
+    Stateless (no fitting). The frame rate is measured from the ``time`` column
+    (frames over the time span), and the feature warns when the steps are uneven,
+    because the transform reads its rows as evenly spaced. Frequencies are
+    geometrically spaced in [f_min, f_max] (equal steps in log2 frequency).
 
     The transform is a continuous wavelet transform with PyWavelets, by default
     the complex Morlet wavelet ``cmor1.5-1.0`` at 25 frequencies. Each column
@@ -99,7 +99,7 @@ class PairWavelet:
 
     category = "per-frame"
     name = "pair-wavelet"
-    version = "0.2"
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "arena-aware"
@@ -111,7 +111,7 @@ class PairWavelet:
     # Unset, it transforms the pc_prefix columns, or else every payload column.
     requires: ClassVar[tuple[Requirement, ...]] = (
         Column("perspective"),
-        ORDER_COLUMN,
+        Column(C.time_col),
         ParamColumn("cols"),
         Payload(),
     )
@@ -141,14 +141,13 @@ class PairWavelet:
 
     @staticmethod
     def temporal_reach(params: PairWavelet.Params) -> int | None:
-        """Return ``None``: the reach depends on a frame rate the data may set.
+        """Return ``None``: the reach depends on a frame rate the data sets.
 
         One row reads half the longest wavelet, ``scale * (upper_bound -
         lower_bound) / 2`` samples at the scale of ``f_min``, and the scale is the
         frame rate over ``f_min`` times the central frequency. The frame rate is
-        ``sampling.fps_default`` only when the input has no constant ``fps`` column,
-        and a column of 60 against a default of 30 doubles the reach. A declaration
-        from the default alone would understate it, so the reach is unknown.
+        measured from the input's ``time`` column, and a table at 60 frames per
+        second reads twice the samples of one at 30, so no params bound the reach.
         """
         return None
 
@@ -169,7 +168,7 @@ class PairWavelet:
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
         order_col = resolve_order_col(df)
-        fps = constant_fps(df, p.sampling.fps_default)
+        fps = uniform_grid_rate(df, self.name)
         in_cols = wavelet_input_columns(df, p, _WHO)
         ensure_columns(df, ["perspective"])
 
@@ -186,6 +185,8 @@ class PairWavelet:
             flat = log_power(signal, band, p.wavelet, fps, p.log_floor)
             block = pd.DataFrame(flat, columns=colnames)
             block[order_col] = g[order_col].to_numpy()
+            if C.time_col in g.columns:
+                block[C.time_col] = g[C.time_col].to_numpy()
             block["perspective"] = persp
 
             if has_pair_ids:

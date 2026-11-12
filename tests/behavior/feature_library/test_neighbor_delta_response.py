@@ -116,7 +116,7 @@ def test_a_turning_focal_reports_its_turn() -> None:
     df = _school(fps=10.0)
     turning = df["id"] == 0
     df.loc[turning, "ANGLE"] = 0.1 * df.loc[turning, "frame"]
-    out = _respond(df, diff_numframes=2, sampling={"fps_default": 10.0})
+    out = _respond(df, diff_numframes=2)
     # 0.1 rad per frame at 10 fps.
     assert out.loc[out["id1"] == 0, "dangle"].to_numpy() == pytest.approx(1.0)
 

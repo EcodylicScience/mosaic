@@ -16,6 +16,8 @@ What lives where:
 - ``catalogs``: the declaration catalogs a graph test validates or plans against.
 - ``cli`` -- a ``mosaic`` command run for its exit status or its ``--json``
   output.
+- ``dropped_frames`` -- a tracks table that dropped frames, with individuals on an
+  analytic trajectory, for the tests of the features that read ``time``.
 - ``features`` -- the templates and per-sequence frames the global
   fit-then-apply features are tested on.
 - ``latents`` names the frames at the centers of VAME's windows, and checks that
@@ -127,6 +129,16 @@ from tests.helpers.extracted_frames import (
     record_frames_row,
     sole_frames_row_files,
     write_frames_run,
+)
+from tests.helpers.dropped_frames import (
+    ANGULAR_VELOCITY,
+    GAP_SECONDS,
+    SPEED,
+    STEP_SECONDS,
+    VELOCITY,
+    dropped_frame_times,
+    dropped_frame_tracks,
+    mean_rate,
 )
 from tests.helpers.environment import (
     CI_FERAL_MODULES,
@@ -325,6 +337,7 @@ from tests.helpers.labels import (
     Event,
     ListedEntries,
     ListedEntriesParams,
+    SecondsEntries,
     SharedKeyRefusingEntries,
     TracksAxisEntries,
     add_labels,
@@ -468,6 +481,14 @@ from tests.helpers.variants import (
 )
 
 __all__ = [
+    "ANGULAR_VELOCITY",
+    "GAP_SECONDS",
+    "SPEED",
+    "STEP_SECONDS",
+    "VELOCITY",
+    "dropped_frame_times",
+    "dropped_frame_tracks",
+    "mean_rate",
     "CHAIN_RECIPE",
     "CONVERT_LABELS_STEP",
     "GUIDE_CLASSES",
@@ -546,6 +567,7 @@ __all__ = [
     "ScopedFeature",
     "SeparatedEnvironment",
     "SeparatedTool",
+    "SecondsEntries",
     "SharedKeyRefusingEntries",
     "SleapInput",
     "SleapTrackCall",

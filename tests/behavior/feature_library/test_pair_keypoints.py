@@ -343,7 +343,9 @@ def test_without_a_frame_rate_or_a_time_column_it_refuses() -> None:
         _individual([_walk(40, s) for s in (1, 2)], 0),
         _individual([_walk(40, s) for s in (3, 4)], 1),
     ).drop(columns="time")
-    with pytest.raises(ValueError, match="needs a frame rate"):
+    with pytest.raises(
+        ValueError, match="pair-keypoints reads its rate off the 'time' column"
+    ):
         _ = _apply(table, heading=(0, 1))
 
 

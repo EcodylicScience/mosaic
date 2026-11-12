@@ -34,6 +34,17 @@ def convert_labels_command(
     overwrite: Annotated[
         bool, typer.Option("--overwrite", help="Overwrite existing label files.")
     ] = False,
+    tracks_run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--tracks-run-id",
+            help=(
+                "The tracks variant that second-based events are placed on. The "
+                "labels variant names it. Unset uses the one variant every entry "
+                "has, and refuses entries that have different ones."
+            ),
+        ),
+    ] = None,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the result as JSON.")
     ] = False,
@@ -53,20 +64,28 @@ def convert_labels_command(
                 overwrite=overwrite,
                 params=params_dict,
                 source_format=source_format,
+                tracks_run_id=tracks_run_id,
             )
     except Exception as exc:  # noqa: BLE001 - surface conversion errors cleanly
         fail(f"convert-labels failed: {exc}")
+    status = "failed" if outcome.lost_everything else "ok" if outcome.ok else "partial"
     if as_json:
         emit_json(
             {
-                "status": "ok",
+                "status": status,
                 "variant": outcome.variant,
                 "written": outcome.written,
                 "skipped": outcome.skipped,
+                "failed": len(outcome.failed_entries),
             }
         )
     else:
         typer.echo(
             f"Converted labels (kind={kind}) into {outcome.variant}: "
-            f"{outcome.written} written, {outcome.skipped} already present."
+            f"{outcome.written} written, {outcome.skipped} already present, "
+            f"{len(outcome.failed_entries)} without tracks.",
+            err=status == "failed",
         )
+    if status == "failed":
+        # Losing every entry is the AllEntriesFailed rule: the exit status says so.
+        raise typer.Exit(code=1)

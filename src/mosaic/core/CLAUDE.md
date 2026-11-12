@@ -248,8 +248,33 @@ importing `mosaic.tracking` registers neither.
   `convert_all_tracks` hands `hints.fps` only to such a converter, so a TRex import
   keeps TRex's timing.
   A converter of a file that records its own time (`tracktor`) reads it, takes no rate
-  and writes no `fps` or `frame_rate` column, which `resample-tracks` and several
-  features read as a stated rate (`tests/core/track_library/test_tracktor.py`).
+  and writes no `fps` or `frame_rate` column
+  (`tests/core/track_library/test_tracktor.py`).
+- **`core/timebase.py` is the one reading of `time`.** `step_seconds` gives the seconds
+  between rows, `uniform_grid_rate` a rate measured as the frame span over the time span
+  with a warning on uneven steps, and `last_frames_at_or_before` the frame of an event
+  second. A feature takes no frame rate of its own, and `resample-tracks` interpolates
+  on `time`. It imports numpy and the standard-library `mosaic.runlog`, whose
+  `time_irregular_sentence` is the one wording of the uneven-time warning
+  (`tests/core/test_timebase.py`).
+- **A `ClockedLabelConverter` maps event seconds through a `TrackClock`,** which
+  `convert_all_labels` builds from each entry's tracks
+  (`_EntryTracks` in `dataset.py`, which reads the tracks index and selects the
+  variants once per conversion). An entry that used it is on the tracks table's axis
+  and records `tracks_raw` beside `labels_raw`. The label variant id names the tracks
+  variant the labels were placed on (`tracks_variant` in the hashed params,
+  `clocked_label_identity_params`): the pinned `tracks_run_id`, else the variant the
+  entries the labels name resolve to, else `None` for a dataset with no tracks. An
+  index with one variant names it at once, and one with several converts the label
+  files without a clock to find the entries they name. Named entries on different
+  variants, or on none of several, raise `TracksPlacementRefused`. A named entry
+  with no tracks in the variant gets no file: it is a failed entry (`entry_error`,
+  `LabelConversionOutcome.failed_entries`, `partial` in the CLI), and
+  `AllEntriesFailed` when every entry is lost. The planner gives a `convert-labels`
+  step the variant of the one tracks step above it as its `tracks_run_id`, so the run
+  uses it, or leaves the step unresolved
+  (`tests/behavior/label_library/test_event_seconds_on_tracks.py`,
+  `tests/core/pipeline/graph/test_pipeline_label_order.py`).
 
 ## Parameter models
 

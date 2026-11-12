@@ -13,6 +13,13 @@ are in `graph/CLAUDE.md`.
 - **A run reports its coverage in its run-log.** `RunLogSnapshot` (`runlog.py`) folds
   `entries_written`, `cache_hit` and `tracks_variant`. Emit them before the terminal
   event (`tests/core/pipeline/test_job_contract.py`).
+- **An uneven time axis is a run-log event.** A method that reads its rows as evenly
+  spaced warns through `core/timebase.py`, and `run_feature` collects each warning per
+  entry (`apply_noting_irregular_time`, also in a process worker) into a
+  `time_irregular` event. `entries_time_irregular` counts them, `read_time_irregular`
+  lists them, and the request and run status wires carry both. The event is neither a
+  status nor terminal, and a reader that predates it folds the log as before
+  (`tests/core/test_irregular_time_notices.py`).
 - **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
   (`tests/core/pipeline/test_unpinned_result_rule.py`).
 - **A lock the filesystem refuses raises `IndexLockUnsupported`**

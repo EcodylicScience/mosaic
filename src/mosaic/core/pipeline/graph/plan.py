@@ -53,6 +53,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
 from mosaic.core.filter_bounds import TimeWindow
+from mosaic.core.label_converter import TracksPlacementRefused
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
@@ -127,7 +128,12 @@ from .resolve import (
 from .columns import ColumnSet, measured_columns
 from .reach import UNDECLARED, feature_reach, reach_findings, recipe_reach
 from .scope import intended_scope
-from .topo import ancestors_of, parents_of, topological_order
+from .topo import (
+    ancestors_of,
+    parents_of,
+    topological_order,
+    tracks_before_labels,
+)
 from .validate import (
     MEDIA_FIELD,
     RecipeInvalid,
@@ -1834,6 +1840,25 @@ def _resolve_op_step(
         entries=_op_scope(step.kind, target),
     )
     params = build_step_op_params(spec)
+    try:
+        planned_tracks = _planned_tracks_variant(recipe, step, params, resolved)
+    except IdentityDeferred as exc:
+        return _Resolution(
+            step=PlannedStep(
+                step_id=step.id,
+                kind="op",
+                runs=step.kind,
+                spec=spec,
+                run_id=None,
+                parallelizable=op_cls.parallelizable,
+                reason=IdentityUnresolved(step=step.id, because=exc.because),
+            )
+        )
+    if planned_tracks is not None:
+        # The step runs under the params it is planned under, so the variant it
+        # names is the one its labels are placed on.
+        spec = replace(spec, params={**spec.params, "tracks_run_id": planned_tracks})
+        params = build_step_op_params(spec)
     # Refused here as well as in ``run_op``, because a plan that cannot be run is
     # worth saying so before anything is enqueued. The scope is the one the step
     # will run under, and the message comes from the same checker the runner
@@ -1877,8 +1902,15 @@ def _resolve_op_step(
         if step.kind != ConvertLabelsOp.kind:
             raise
         # The variant is minted from the converter's own params, which the
-        # step's params name and which only build here.
-        problem = Problem(step.id, "params.params", str(exc))
+        # step's params name and which only build here, and from the tracks
+        # variant the labels are placed on.
+        problem = Problem(
+            step.id,
+            "params.tracks_run_id"
+            if isinstance(exc, TracksPlacementRefused)
+            else "params.params",
+            str(exc),
+        )
         return _Resolution(
             step=PlannedStep(
                 step_id=step.id,
@@ -1908,6 +1940,64 @@ def _resolve_op_step(
             artifact=_op_artifact(step.kind, identity, params),
         )
     )
+
+
+def _places_labels_on_tracks(params: ConvertLabelsParams) -> bool:
+    """Whether the converter of *params* places its labels on the entry's tracks."""
+    from mosaic.core.label_converter import ClockedLabelConverter, get_label_converter
+
+    return isinstance(
+        get_label_converter(params.source_format, params.kind), ClockedLabelConverter
+    )
+
+
+def _planned_tracks_variant(
+    recipe: Recipe,
+    step: OpStepSpec,
+    params: Params,
+    resolved: Mapping[str, ResolvedStep],
+) -> str | None:
+    """The tracks variant a timed label conversion is planned to place its labels on.
+
+    The labels variant names the tracks variant its labels are placed on, which
+    the tracks steps above the conversion write after the plan is made. With no
+    ``tracks_run_id`` given and one such step, its planned variant is the one the
+    run is to use, and the step is planned and run with it as its
+    ``tracks_run_id``. ``None`` leaves the params as they are: a conversion that
+    names its variant, one whose converter does not read the tracks, and one with
+    no tracks step above it.
+
+    Raises:
+        IdentityDeferred: A tracks step above has no identity yet, or several
+            write different variants and the step names none.
+    """
+    if not isinstance(params, ConvertLabelsParams) or params.tracks_run_id is not None:
+        return None
+    if not _places_labels_on_tracks(params):
+        return None
+    writers = tracks_before_labels(recipe, step.id)
+    if not writers:
+        return None
+    variants = {
+        writer: resolved[writer].tracks_variant if writer in resolved else ""
+        for writer in writers
+    }
+    unknown = [writer for writer, variant in variants.items() if not variant]
+    if unknown:
+        raise IdentityDeferred(
+            step.kind,
+            f"it places its labels on the tracks that {unknown[0]!r} writes, and "
+            "that step has no identity yet. Name the variant with tracks_run_id",
+        )
+    named = sorted(set(variants.values()))
+    if len(named) > 1:
+        raise IdentityDeferred(
+            step.kind,
+            f"the steps above it write {len(named)} tracks variants "
+            f"({', '.join(named)}). Name the one to place its labels on with "
+            "tracks_run_id",
+        )
+    return named[0]
 
 
 def _op_artifact(kind: str, identity: OpIdentity, params: Params) -> ArtifactRef | None:

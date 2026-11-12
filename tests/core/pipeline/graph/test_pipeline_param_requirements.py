@@ -183,7 +183,15 @@ def test_a_column_read_under_the_default_params_is_refused_where_tables_lack_it(
     assert ungated.problems == ()
 
 
-_TRACK_COLUMNS: tuple[str, ...] = ("frame", "id", "group", "sequence", "X", "Y")
+_TRACK_COLUMNS: tuple[str, ...] = (
+    "frame",
+    "time",
+    "id",
+    "group",
+    "sequence",
+    "X",
+    "Y",
+)
 
 
 @pytest.mark.parametrize(

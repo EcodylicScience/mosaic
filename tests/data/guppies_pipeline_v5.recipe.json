@@ -13,7 +13,6 @@
       "tracks": null,
       "params": {
         "speed_threshold": 40.0,
-        "fps": 30,
         "expand_frames": 8,
         "interpolate_centroid": true,
         "interpolate_pose": false,
@@ -92,8 +91,7 @@
       "tracks": null,
       "params": {
         "step_size": 4,
-        "smooth_window": 5,
-        "fps": 30
+        "smooth_window": 5
       },
       "run": {
         "filter_start_frame": null,
@@ -203,7 +201,6 @@
       ],
       "tracks": null,
       "params": {
-        "fps": 30,
         "speed_col": "speed_smooth"
       },
       "run": {
@@ -235,7 +232,6 @@
       ],
       "tracks": null,
       "params": {
-        "fps": 30,
         "speed_col": "speed_smooth",
         "subgroup_col": "group_size"
       },

@@ -39,6 +39,7 @@ from scipy.signal import savgol_coeffs
 
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pose_columns import pose_column_pairs, pose_column_triplets
+from mosaic.core.timebase import uniform_grid_rate
 
 __all__ = [
     "FPS_DESCRIPTION",
@@ -74,8 +75,10 @@ KEYPOINT_NAMES_DESCRIPTION = (
 
 FPS_DESCRIPTION = (
     "The recording's frame rate, which sets the time step of every derivative. "
-    "Unset, it is the reciprocal of the median time step per frame read off the "
-    "time column, and a table whose time column cannot give one is refused."
+    "Unset, it is measured from the time column as the frame span over the time "
+    "span, a table whose time column cannot give one is refused, and a table "
+    "whose steps are uneven is warned about, because the fit reads its rows as "
+    "evenly spaced."
 )
 
 WINDOW_DESCRIPTION = (
@@ -316,45 +319,27 @@ def frame_axis(df: pd.DataFrame, who: str) -> FrameAxis:
     )
 
 
-def frame_rate(df: pd.DataFrame, axis: FrameAxis, fps: float | None, who: str) -> float:
-    """The frame rate: *fps*, or else the time column's median step.
+def frame_rate(df: pd.DataFrame, fps: float | None, who: str) -> float:
+    """The frame rate: *fps*, or else the rate measured from the time column.
+
+    The filter reads each individual's rows as evenly spaced, so a table whose
+    steps are uneven is warned about (:func:`~mosaic.core.timebase.uniform_grid_rate`).
 
     Args:
         df: The tracks table.
-        axis: The table's :func:`frame_axis`.
-        fps: The frame rate the caller asked for, or ``None`` to read it.
-        who: The feature name that opens each error message.
+        fps: The frame rate the caller asked for, or ``None`` to measure it.
+        who: The feature name that opens each message.
 
     Returns:
         Frames per second.
 
     Raises:
-        ValueError: If *fps* is ``None`` and the time column is missing or
-            gives no positive time step per frame.
+        ValueError: If *fps* is ``None`` and the time column is missing or gives
+            no positive time step.
     """
     if fps is not None:
         return fps
-    if C.time_col not in df.columns:
-        raise ValueError(
-            f"{who} needs a frame rate: pass fps, or give the table a "
-            f"'{C.time_col}' column to read it from."
-        )
-    times = df[C.time_col].to_numpy(dtype=np.float64)[axis.order]
-    # A step across two individuals' rows is not a time step.
-    within = np.ones(max(times.size - 1, 0), dtype=bool)
-    within[axis.ends[:-1] - 1] = False
-    frame_steps = np.diff(axis.frames)
-    time_steps = np.diff(times)
-    usable = within & (frame_steps > 0) & np.isfinite(time_steps)
-    if usable.any():
-        period = float(np.median(time_steps[usable] / frame_steps[usable]))
-        if np.isfinite(period) and period > 0:
-            return 1.0 / period
-    raise ValueError(
-        f"{who} could not read a frame rate off the '{C.time_col}' "
-        "column: no two consecutive rows of an individual give a positive "
-        "time step per frame. Pass fps."
-    )
+    return uniform_grid_rate(df, who)
 
 
 @dataclass(frozen=True)

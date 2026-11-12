@@ -78,6 +78,8 @@ __all__ = [
     "RemovalState",
     "RunLogPage",
     "RunLogSnapshot",
+    "TimeIrregularPage",
+    "TimeIrregularRecord",
     "TERMINAL_STATUSES",
     "attempt_outcome",
     "changed_at_or_after",
@@ -91,6 +93,8 @@ __all__ = [
     "read_removal_records",
     "read_run",
     "read_run_progress",
+    "read_time_irregular",
+    "time_irregular_sentence",
     "record_exited_attempt",
     "read_runs",
     "read_runs_by_run_id",
@@ -145,6 +149,15 @@ class RunLogSnapshot(TypedDict):
     ``entries_frame_axis_mismatch`` and, like it, does not bear on the attempt's
     success. The entry published. The ``columns_dropped`` event names the columns
     that it lost.
+
+    ``entries_time_irregular`` counts the ``time_irregular`` events: one for each
+    entry whose method read a table with uneven time steps as evenly spaced, as the
+    wavelets, ``temporal-stack`` and the Savitzky-Golay features do, and so
+    misplaced what follows a gap. It accumulates like ``entries_columns_dropped``
+    and, like it, does not bear on the attempt's success. The event names the
+    feature, the largest step and the frames it lies between, and
+    ``resample-tracks`` as the remedy. A reader that predates the event folds the
+    log as before.
 
     ``tracks_variant`` names the tracks recipes the attempt *read*, comma-joined
     and sorted, empty for a run that reads none. Never what an op *produced* --
@@ -206,6 +219,7 @@ class RunLogSnapshot(TypedDict):
     entries_frame_axis_mismatch: int
     entries_frame_tail_short: int
     entries_columns_dropped: int
+    entries_time_irregular: int
     cache_hit: bool
     tracks_variant: str
     boot_id: str
@@ -291,6 +305,46 @@ class ProgressEventRecord(TypedDict):
     metrics: dict[str, float]
     message: str
     timestamp: str
+
+
+class TimeIrregularRecord(TypedDict):
+    """One uneven time axis that a method read as even, read by ``read_time_irregular``.
+
+    Attributes:
+        key: The entry, as the attempt named it.
+        who: The feature that read the table as evenly spaced.
+        largest_step: The longest step in seconds.
+        first_frame: The frame before that step.
+        last_frame: The frame after it.
+        median_step: The median seconds per frame step.
+        rate: The frames per second the method used.
+        message: The sentence a person reads, naming the gap and ``resample-tracks``.
+        recorded_at: When the attempt recorded the event.
+    """
+
+    key: str
+    who: str
+    largest_step: float
+    first_frame: int
+    last_frame: int
+    median_step: float
+    rate: float
+    message: str
+    recorded_at: str
+
+
+class TimeIrregularPage(TypedDict):
+    """The first uneven-time events of one attempt, read by ``read_time_irregular``.
+
+    Attributes:
+        items: The records, in the order the attempt wrote them.
+        total: How many events the attempt recorded.
+        has_more: Whether *total* exceeds the records listed.
+    """
+
+    items: list[TimeIrregularRecord]
+    total: int
+    has_more: bool
 
 
 class RunLogPage(TypedDict):
@@ -743,6 +797,36 @@ class JsonlRunLog:
         """
         self._emit("rows_dropped", key=key, counts=dict(counts))
 
+    def time_irregular(
+        self,
+        key: str,
+        *,
+        who: str,
+        largest_step: float,
+        first_frame: int,
+        last_frame: int,
+        median_step: float,
+        rate: float,
+    ) -> None:
+        """Record that a method read one entry's uneven time steps as even ones.
+
+        The entry published, and its table is a real one. What is off is the
+        position in time of every sample after a gap, in a method that reads its
+        rows as evenly spaced. The numbers travel with the event because the gap is
+        the whole content of the report. It is an ordinary event kind, for the
+        reason :meth:`entry_failed` gives, and never a status.
+        """
+        self._emit(
+            "time_irregular",
+            key=key,
+            who=who,
+            largest_step=float(largest_step),
+            first_frame=int(first_frame),
+            last_frame=int(last_frame),
+            median_step=float(median_step),
+            rate=float(rate),
+        )
+
     def entries_written(self, count: int) -> None:
         """How many entries this attempt leaves holding a valid output row.
 
@@ -1065,6 +1149,7 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "entries_frame_axis_mismatch": 0,
         "entries_frame_tail_short": 0,
         "entries_columns_dropped": 0,
+        "entries_time_irregular": 0,
         "cache_hit": False,
         "tracks_variant": "",
         "boot_id": "",
@@ -1124,6 +1209,8 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
             snap["entries_frame_tail_short"] += 1
         elif ev == "columns_dropped":
             snap["entries_columns_dropped"] += 1
+        elif ev == "time_irregular":
+            snap["entries_time_irregular"] += 1
         elif ev == "entries_written":
             snap["entries_written"] = rec.get(
                 "entries_written", snap["entries_written"]
@@ -1155,6 +1242,7 @@ def _reset_for_start(snap: RunLogSnapshot) -> None:
     snap["entries_frame_axis_mismatch"] = 0
     snap["entries_frame_tail_short"] = 0
     snap["entries_columns_dropped"] = 0
+    snap["entries_time_irregular"] = 0
     snap["cache_hit"] = False
     snap["tracks_variant"] = ""
     snap["phase"] = ""
@@ -1436,6 +1524,82 @@ def read_entry_errors(
             }
         )
     return {"items": items, "total": total, "has_more": total > len(items)}
+
+
+def read_time_irregular(
+    run_dir: Path | str, execution_id: str, *, limit: int | None = None
+) -> TimeIrregularPage:
+    """Return the uneven-time events that one attempt recorded, in file order.
+
+    Args:
+        run_dir: The run-log directory.
+        execution_id: The attempt.
+        limit: The most records to list, at least 1. ``None`` lists every one.
+
+    Returns:
+        One record per ``time_irregular`` event after the last ``started`` event,
+        up to *limit*, with the count of all of them. An absent run-log lists none.
+
+    Raises:
+        ValueError: *limit* is below 1.
+    """
+    if limit is not None and limit < 1:
+        raise ValueError(f"limit must be at least 1, got {limit}")
+    events: list[dict[str, Any]] = []
+    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
+        if rec.get("ev") == "started":
+            events.clear()
+        elif rec.get("ev") == "time_irregular":
+            events.append(rec)
+    listed = events if limit is None else events[:limit]
+    items: list[TimeIrregularRecord] = [
+        {
+            "key": _record_text(rec, "key"),
+            "who": _record_text(rec, "who"),
+            "largest_step": _record_seconds(rec, "largest_step"),
+            "first_frame": _record_count(rec, "first_frame"),
+            "last_frame": _record_count(rec, "last_frame"),
+            "median_step": _record_seconds(rec, "median_step"),
+            "rate": _record_seconds(rec, "rate"),
+            "message": _irregular_message(rec),
+            "recorded_at": _record_text(rec, "t"),
+        }
+        for rec in listed
+    ]
+    return {"items": items, "total": len(events), "has_more": len(events) > len(items)}
+
+
+def time_irregular_sentence(
+    largest_step: float,
+    first_frame: int,
+    last_frame: int,
+    median_step: float,
+    rate: float,
+) -> str:
+    """The sentence that reports an uneven time axis read as even.
+
+    The one wording of the warning that ``core.timebase`` logs and of the record that
+    :func:`read_time_irregular` lists. It names the largest gap and ``resample-tracks``.
+    """
+    return (
+        f"the time column steps unevenly: the largest step is {largest_step:.4g} s "
+        f"(frame {first_frame} to {last_frame}) against a median of "
+        f"{median_step:.4g} s per frame. The method read the table as evenly sampled "
+        f"at {rate:.4g} frames per second, so it misplaces what follows a gap. Run "
+        "resample-tracks first to place the tracks on one uniform rate."
+    )
+
+
+def _irregular_message(rec: dict[str, Any]) -> str:
+    """The sentence of one ``time_irregular`` record, built from its numbers."""
+    sentence = time_irregular_sentence(
+        _record_seconds(rec, "largest_step"),
+        _record_count(rec, "first_frame"),
+        _record_count(rec, "last_frame"),
+        _record_seconds(rec, "median_step"),
+        _record_seconds(rec, "rate"),
+    )
+    return f"[{_record_text(rec, 'who')}] {sentence}"
 
 
 def read_entry_error_keys(run_dir: Path | str, execution_id: str) -> list[str]:

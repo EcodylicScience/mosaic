@@ -137,34 +137,28 @@ def test_unit_headings_from_velocity_nan_when_stationary() -> None:
 # --- backward_dt ------------------------------------------------------------
 
 
-def test_backward_dt_prefers_frame_and_fps() -> None:
-    order = np.array([0.0, 1.0, 3.0])
+def test_backward_dt_is_the_seconds_between_rows() -> None:
+    time = np.array([0.0, 0.5, 1.5])
     same_id = np.array([False, True, True])
-    _, dstep = step_masks(np.array([0, 0, 0]), order)
-    dt = backward_dt(order, True, None, 2.0, same_id, dstep, None)
+    _, dstep = step_masks(np.array([0, 0, 0]), np.array([0.0, 1.0, 3.0]))
+    dt = backward_dt(time, same_id, dstep, None)
     assert np.isnan(dt[0])
     np.testing.assert_allclose(dt[1:], [0.5, 1.0])
 
 
 def test_backward_dt_honours_max_frame_gap() -> None:
-    order = np.array([0.0, 3.0])
+    time = np.array([0.0, 0.1])
     same_id = np.array([False, True])
-    _, dstep = step_masks(np.array([0, 0]), order)
-    assert np.isfinite(backward_dt(order, True, None, 1.0, same_id, dstep, None)[1])
-    assert np.isnan(backward_dt(order, True, None, 1.0, same_id, dstep, 2)[1])
+    _, dstep = step_masks(np.array([0, 0]), np.array([0.0, 3.0]))
+    assert np.isfinite(backward_dt(time, same_id, dstep, None)[1])
+    assert np.isnan(backward_dt(time, same_id, dstep, 2)[1])
 
 
-def test_backward_dt_falls_back_to_time_then_order() -> None:
-    order = np.array([0.0, 1.0])
+def test_backward_dt_has_no_step_where_time_does_not_advance() -> None:
+    time = np.array([0.0, 0.0])
     same_id = np.array([False, True])
-    _, dstep = step_masks(np.array([0, 0]), order)
-    time = np.array([0.0, 0.25])
-    np.testing.assert_allclose(
-        backward_dt(order, True, time, None, same_id, dstep, None)[1], 0.25
-    )
-    np.testing.assert_allclose(
-        backward_dt(order, True, None, None, same_id, dstep, None)[1], 1.0
-    )
+    _, dstep = step_masks(np.array([0, 0]), np.array([0.0, 1.0]))
+    assert np.isnan(backward_dt(time, same_id, dstep, None)[1])
 
 
 # --- unit_radial and polarization -------------------------------------------

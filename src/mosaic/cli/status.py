@@ -19,7 +19,14 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import RunStatusWire
 
 _STRUCTURED_FIELDS: Final = frozenset(
-    {"error", "failed_entries", "failed_entries_has_more", "progress"}
+    {
+        "error",
+        "failed_entries",
+        "failed_entries_has_more",
+        "time_irregular",
+        "time_irregular_has_more",
+        "progress",
+    }
 )
 """The report fields that the plain output prints on lines of their own."""
 
@@ -73,6 +80,11 @@ def _render_run_status(report: RunStatusWire) -> None:
     if report.failed_entries_has_more:
         hidden = report.entries_failed - len(report.failed_entries)
         typer.echo(f"failed entries not listed: {hidden}")
+    for notice in report.time_irregular:
+        typer.echo(f"uneven time {notice.key}: {notice.message}")
+    if report.time_irregular_has_more:
+        hidden = report.entries_time_irregular - len(report.time_irregular)
+        typer.echo(f"uneven time entries not listed: {hidden}")
     if report.progress is not None:
         typer.echo("progress:")
         render_json_block(payload["progress"])

@@ -33,6 +33,7 @@ from mosaic.core.label_intervals import (
     segments_from_npz,
 )
 from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.timebase import local_periods, measure_time_axis
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     Column,
@@ -88,9 +89,10 @@ _STATES_DESCRIPTION = (
 
 _FPS_DESCRIPTION = (
     "The frame rate that converts bout lengths to seconds and bout counts "
-    "to rates. Unset, it is read from the input's time column as the median "
-    "time step per frame, and an input without a usable time column is "
-    "refused."
+    "to rates, the same for every row. Unset, each row lasts the seconds to "
+    "the next row, read from the input's time column, so a bout across "
+    "dropped frames lasts what the clock says, and an input without a usable "
+    "time column is refused."
 )
 
 _MIN_BOUT_FRAMES_DESCRIPTION = (
@@ -263,6 +265,7 @@ class _Bouts:
 
     state: NDArray[np.int64]
     length: NDArray[np.int64]
+    seconds: NDArray[np.float64]
     covered: NDArray[np.int64]
     covered_any: int
 
@@ -293,8 +296,12 @@ def _runs(
     n_states: int,
     min_rows: int,
     step: int,
+    elapsed: NDArray[np.float64],
 ) -> _Bouts:
     """Bouts as maximal runs of one code over consecutive rows, lengths in rows.
+
+    *elapsed* is the running total of the rows' seconds, one longer than
+    *frames*, so a bout of rows ``a`` up to ``b`` lasts ``elapsed[b] - elapsed[a]``.
 
     Two rows are consecutive when they are less than one and a half steps apart:
     the next sample of a regular axis is one step on, and a missed one two. A
@@ -311,12 +318,15 @@ def _runs(
     length = np.diff(np.append(first, n)).astype(np.int64)
     state = codes[first].astype(np.int64)
     keep = (state != _UNLABELLED) & (length >= min_rows)
+    seconds = elapsed[first + length] - elapsed[first]
     state = state[keep]
     length = length[keep]
+    seconds = seconds[keep]
     covered = np.bincount(state, weights=length, minlength=n_states)
     return _Bouts(
         state=state,
         length=length,
+        seconds=seconds,
         covered=np.rint(covered).astype(np.int64),
         covered_any=int(length.sum()),
     )
@@ -373,6 +383,7 @@ def _segment_bouts(
     mask: NDArray[np.bool_],
     n_states: int,
     min_rows: int,
+    elapsed: NDArray[np.float64],
 ) -> _Bouts:
     """Bouts as the segments themselves, overlaps and nesting preserved.
 
@@ -384,9 +395,13 @@ def _segment_bouts(
     start = intervals.start[mask]
     end = intervals.end[mask]
     code = intervals.code[mask].astype(np.int64)
-    length = np.searchsorted(frames, end) - np.searchsorted(frames, start)
+    first_row = np.searchsorted(frames, start)
+    last_row = np.searchsorted(frames, end)
+    length = last_row - first_row
+    seconds = elapsed[last_row] - elapsed[first_row]
     keep = length >= min_rows
     start, end, code, length = start[keep], end[keep], code[keep], length[keep]
+    seconds = seconds[keep]
     position = np.arange(start.size, dtype=np.int64)
     order = np.lexsort((position, end, start))
     covered = np.array(
@@ -399,6 +414,7 @@ def _segment_bouts(
     return _Bouts(
         state=code[order],
         length=length[order].astype(np.int64),
+        seconds=seconds[order],
         covered=covered,
         covered_any=_union_count(frames, start, end),
     )
@@ -454,7 +470,10 @@ class LabelStatistics:
     frames, over all individuals -- 1 for a row on every frame, ``k`` there --
     and each row stands for one step. A bout's length, the time an individual
     was present and ``min_bout_frames`` are all counted that way, so a bout of
-    ``r`` rows lasts ``r * step / fps`` seconds.
+    ``r`` rows lasts the sum of their rows' seconds: each row lasts the seconds to
+    the individual's next row, read from ``time`` and scaled to one step, so a bout
+    across dropped frames lasts what the clock says. With ``fps`` set, a row lasts
+    ``step / fps`` seconds.
 
     **Bouts.** From a per-frame sequence, a bout is a maximal run of one state
     over consecutive rows of the individual. Rows less than one and a half
@@ -503,7 +522,7 @@ class LabelStatistics:
 
     category = "summary"
     name = "label-statistics"
-    version = "0.1"
+    version = "0.2"
     parallelizable = True
     scope_dependent = False
     # A summary has no frame axis for the overlap trim to work on, and an entry's
@@ -630,7 +649,12 @@ class LabelStatistics:
         ensure_columns(df, [C.frame_col, C.id_col])
         group = self._single_text(df, C.group_col)
         sequence = self._single_text(df, C.seq_col)
-        fps = self._frame_rate(df)
+        fallback_period = self._fallback_period(df)
+        times = (
+            None
+            if self.params.fps is not None
+            else df[C.time_col].to_numpy(dtype=np.float64)
+        )
         frame = self._frame_numbers(df)
         id_code, id_values = self._individuals(df)
 
@@ -648,7 +672,6 @@ class LabelStatistics:
         # step of the frame axis.
         step = _frame_step(frame)
         min_rows = _min_rows(self.params.min_bout_frames, step)
-        seconds_per_row = step / fps
 
         order = np.lexsort((frame, id_code))
         bounds = np.searchsorted(id_code[order], np.arange(len(id_values) + 1))
@@ -658,6 +681,19 @@ class LabelStatistics:
             frames = frame[at]
             first = np.ones(frames.size, dtype=bool)
             first[1:] = frames[1:] != frames[:-1]
+            elapsed = np.concatenate(
+                (
+                    [0.0],
+                    np.cumsum(
+                        self._row_seconds(
+                            frames[first],
+                            None if times is None else times[at][first],
+                            step,
+                            fallback_period,
+                        )
+                    ),
+                )
+            )
             if isinstance(source, _PerFrame):
                 codes = source.codes[at]
                 clash = ~first[1:] & (codes[1:] != codes[:-1])
@@ -666,25 +702,29 @@ class LabelStatistics:
                         f"{self.name}: id {id_value!r} has two rows on frame "
                         f"{int(frames[1:][clash][0])} carrying different labels"
                     )
-                bouts = _runs(frames[first], codes[first], n_states, min_rows, step)
+                bouts = _runs(
+                    frames[first], codes[first], n_states, min_rows, step, elapsed
+                )
             elif isinstance(source, _Events):
                 mask = self._owned_by(
                     source.actor, source.frame.size, id_value, "events"
                 )
                 codes = _event_codes(frames[first], source, mask)
-                bouts = _runs(frames[first], codes, n_states, min_rows, step)
+                bouts = _runs(frames[first], codes, n_states, min_rows, step, elapsed)
             else:
                 mask = self._owned_by(
                     source.individual, source.start.size, id_value, "segments"
                 )
-                bouts = _segment_bouts(frames[first], source, mask, n_states, min_rows)
+                bouts = _segment_bouts(
+                    frames[first], source, mask, n_states, min_rows, elapsed
+                )
             rows.append(
                 {
                     C.group_col: group,
                     C.seq_col: sequence,
                     C.id_col: id_value,
                     **self._statistics(
-                        bouts, int(first.sum()), seconds_per_row, suffixes
+                        bouts, int(first.sum()), float(elapsed[-1]), suffixes
                     ),
                 }
             )
@@ -735,27 +775,37 @@ class LabelStatistics:
             )
         return code_array, cast("list[Any]", np.asarray(uniques, dtype=object).tolist())
 
-    def _frame_rate(self, df: pd.DataFrame) -> float:
-        """``fps`` when set, else the median time step per frame of the input."""
+    def _row_seconds(
+        self,
+        frames: NDArray[np.int64],
+        times: NDArray[np.float64] | None,
+        step: int,
+        fallback_period: float,
+    ) -> NDArray[np.float64]:
+        """The seconds each of one individual's rows stands for.
+
+        With ``fps`` set, every row lasts ``step / fps``. Otherwise a row lasts the
+        seconds to the individual's next row, scaled to one step of the frame axis
+        (:func:`~mosaic.core.timebase.local_periods`), and a row with no usable
+        step takes the table's measured period.
+        """
+        if self.params.fps is not None or times is None:
+            return np.full(frames.size, step * fallback_period)
+        periods = local_periods(frames.astype(np.float64), times, fallback_period)
+        return periods * step
+
+    def _fallback_period(self, df: pd.DataFrame) -> float:
+        """Seconds per frame: ``1 / fps`` when set, else measured from the table."""
         if self.params.fps is not None:
-            return self.params.fps
-        refusal = (
-            f"{self.name} needs a frame rate to turn bout lengths into seconds "
-            "and bout counts into rates. Set fps, or give it an input whose "
-            f"{C.time_col} column advances with {C.frame_col}"
-        )
-        if C.time_col not in df.columns:
-            raise ValueError(f"{refusal}; this input has no {C.time_col} column.")
-        frames = df[C.frame_col].to_numpy(dtype=np.float64)
-        times = df[C.time_col].to_numpy(dtype=np.float64)
-        unique_frames, first = np.unique(frames, return_index=True)
-        frame_step = np.diff(unique_frames)
-        time_step = np.diff(times[first])
-        usable = (frame_step > 0) & np.isfinite(time_step) & (time_step > 0)
-        if not usable.any():
-            raise ValueError(f"{refusal}; its {C.time_col} column never does.")
-        seconds_per_frame = float(np.median(time_step[usable] / frame_step[usable]))
-        return 1.0 / seconds_per_frame
+            return 1.0 / self.params.fps
+        try:
+            return 1.0 / measure_time_axis(df, self.name).rate
+        except ValueError as exc:
+            raise ValueError(
+                f"{exc} It needs a frame rate to turn bout lengths into seconds "
+                "and bout counts into rates: set fps, or give it an input whose "
+                f"{C.time_col} column advances with {C.frame_col}."
+            ) from exc
 
     # --- Label sources ---
 
@@ -996,14 +1046,14 @@ class LabelStatistics:
     def _statistics(
         bouts: _Bouts,
         n_frames: int,
-        seconds_per_row: float,
+        present_seconds: float,
         suffixes: tuple[str, ...],
     ) -> dict[str, object]:
         """One individual's row, from its retained bouts; lengths are in rows."""
         n_states = len(suffixes)
         usage = bouts.covered.astype(np.float64) / n_frames
         bout_count = np.bincount(bouts.state, minlength=n_states)
-        minutes = n_frames * seconds_per_row / 60.0
+        minutes = present_seconds / 60.0
 
         source = bouts.state[:-1]
         target = bouts.state[1:]
@@ -1040,18 +1090,14 @@ class LabelStatistics:
             row[f"bouts__{suffix}"] = int(bout_count[index])
         for index, suffix in enumerate(suffixes):
             row[f"rate_per_min__{suffix}"] = float(bout_count[index]) / minutes
-        per_state = [bouts.length[bouts.state == index] for index in range(n_states)]
-        for lengths, suffix in zip(per_state, suffixes):
+        per_state = [bouts.seconds[bouts.state == index] for index in range(n_states)]
+        for durations, suffix in zip(per_state, suffixes):
             row[f"bout_mean_s__{suffix}"] = (
-                float(lengths.mean()) * seconds_per_row
-                if lengths.size
-                else float("nan")
+                float(durations.mean()) if durations.size else float("nan")
             )
-        for lengths, suffix in zip(per_state, suffixes):
+        for durations, suffix in zip(per_state, suffixes):
             row[f"bout_median_s__{suffix}"] = (
-                float(np.median(lengths)) * seconds_per_row
-                if lengths.size
-                else float("nan")
+                float(np.median(durations)) if durations.size else float("nan")
             )
         for a, from_suffix in enumerate(suffixes):
             for b, to_suffix in enumerate(suffixes):

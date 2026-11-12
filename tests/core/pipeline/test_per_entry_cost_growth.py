@@ -231,3 +231,56 @@ def test_converting_entries_that_are_done_reads_the_indexes_a_fixed_number_of_ti
     assert outcome.converted == RESUBMITTED
     assert len(index_reads) <= READS_PER_RESUBMIT, len(index_reads)
     assert len(composition_reads) <= READS_PER_RESUBMIT, len(composition_reads)
+
+
+TIMED_ENTRIES = 40
+READS_PER_CONVERSION = 3
+"""The most reads of the tracks index or of division facts one conversion may make."""
+
+
+def test_converting_timed_events_reads_the_tracks_index_a_fixed_number_of_times(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = make_dataset(tmp_path / "timed", name="timed")
+    sequences = [f"o{index:03d}__ant" for index in range(TIMED_ENTRIES)]
+    add_tracks_variant_in_bulk(dataset, VARIANT, sequences)
+    events = pd.DataFrame(
+        {
+            "Observation id": [f"o{index:03d}" for index in range(TIMED_ENTRIES)],
+            "Subject": ["ant"] * TIMED_ENTRIES,
+            "Behavior": ["approach"] * TIMED_ENTRIES,
+            "Behavior type": ["STATE"] * TIMED_ENTRIES,
+            "Start (s)": [0.0] * TIMED_ENTRIES,
+            "Stop (s)": [0.05] * TIMED_ENTRIES,
+            "FPS": [30.0] * TIMED_ENTRIES,
+        }
+    )
+    uploads = tmp_path / "uploads"
+    uploads.mkdir()
+    events.to_pickle(uploads / "boris.pkl")
+    dataset.index_labels_raw(
+        [uploads], patterns=["*.pkl"], src_format="boris_pandas_pickle"
+    )
+    index_reads: list[int] = []
+    division_reads: list[int] = []
+    read_index = dataset_module.read_tracks_index
+    division_facts = Dataset.division_facts
+
+    def counting_index(ds: Dataset) -> pd.DataFrame:
+        index_reads.append(1)
+        return read_index(ds)
+
+    def counting_divisions(self: Dataset, entries: Iterable[tuple[str, str]]):
+        division_reads.append(1)
+        return division_facts(self, entries)
+
+    monkeypatch.setattr(dataset_module, "read_tracks_index", counting_index)
+    monkeypatch.setattr(Dataset, "division_facts", counting_divisions)
+
+    outcome = dataset.convert_all_labels(
+        kind="behavior", source_format="boris_pandas_pickle"
+    )
+
+    assert outcome.written == TIMED_ENTRIES
+    assert len(index_reads) <= READS_PER_CONVERSION, len(index_reads)
+    assert len(division_reads) <= READS_PER_CONVERSION, len(division_reads)
