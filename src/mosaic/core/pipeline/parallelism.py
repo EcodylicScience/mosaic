@@ -4,8 +4,8 @@ The setting changes how fast a run finishes and how much memory it uses. It neve
 changes what the run produces, so it is not part of a recipe or a run id. It belongs
 to the machine a step runs on, and the process that starts the step supplies it.
 
-Imports pydantic and the standard library only. The graph, the command line and the
-agent server all import it.
+Imports pydantic, psutil and the standard library only. The graph, the command line
+and the agent server all import it.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
+import psutil
 from pydantic import ConfigDict, Field
 
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
 
 __all__ = [
+    "DEFAULT_MIN_FREE_MEMORY_FRACTION",
     "MAX_WORKERS_CEILING",
     "ParallelLimits",
     "ParallelMode",
@@ -29,10 +31,12 @@ __all__ = [
     "ParallelSettings",
     "MemoryFloorReached",
     "WorkerProcessDied",
+    "default_max_workers",
     "effective_parallel",
     "host_cpus",
     "memory_use_text",
     "parallel_flags",
+    "physical_cpus",
 ]
 
 type ParallelMode = Literal["thread", "process"]
@@ -45,11 +49,16 @@ type ParallelMode = Literal["thread", "process"]
 ``process``
     Each worker is a spawned interpreter that imports the feature stack and receives
     a pickled copy of each entry's table. It uses every core, and memory grows by a
-    whole interpreter and several copies of a table per worker.
+    whole interpreter and several copies of a table per worker. Choose it for a
+    feature whose per-entry work is a Python loop, which holds the interpreter lock
+    in threads.
 """
 
 MAX_WORKERS_CEILING: Final = 32
 """The most workers any setting may name."""
+
+DEFAULT_MIN_FREE_MEMORY_FRACTION: Final = 0.10
+"""The memory floor of an operator who sets none."""
 
 
 class ParallelSettings(StrictModel):
@@ -89,23 +98,34 @@ class ParallelRefused(ClassifiedError, ValueError):
         return {"limit": self.limit}
 
 
+def default_max_workers() -> int:
+    """Return the worker limit of an operator who sets none: the physical cores."""
+    return min(physical_cpus(), MAX_WORKERS_CEILING)
+
+
 class ParallelLimits(StrictModel):
     """What the operator allows a caller to ask for.
 
     Attributes:
         max_workers: The most workers a request may name, and the count a request
-            that names none receives.
+            that names none receives. The default is the host's physical cores,
+            at most :data:`MAX_WORKERS_CEILING`.
         allow_process_mode: Whether a request may name ``process`` mode. A request
             that names no mode receives ``thread`` whatever this is.
         min_free_memory_fraction: Applied to every request, as in
-            :class:`ParallelSettings`.
+            :class:`ParallelSettings`. The default keeps a tenth of the host's
+            memory available.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
-    max_workers: int = Field(default=1, ge=1, le=MAX_WORKERS_CEILING)
-    allow_process_mode: bool = False
-    min_free_memory_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
+    max_workers: int = Field(
+        default_factory=default_max_workers, ge=1, le=MAX_WORKERS_CEILING
+    )
+    allow_process_mode: bool = True
+    min_free_memory_fraction: float = Field(
+        default=DEFAULT_MIN_FREE_MEMORY_FRACTION, ge=0.0, lt=1.0
+    )
 
     def settings_for(
         self, workers: int | None = None, mode: ParallelMode | None = None
@@ -174,6 +194,20 @@ def host_cpus() -> int:
     if affinity is not None:
         return max(1, len(affinity(0)))
     return max(1, os.cpu_count() or 1)
+
+
+def physical_cpus() -> int:
+    """Return how many physical cores this process may use, at least 1.
+
+    The processors of :func:`host_cpus` divided by the host's threads per core, so a
+    host that runs two hardware threads per core counts each core once. Process
+    workers of numeric code gain nothing from a second thread on a core. A host
+    that does not report its physical cores counts every processor.
+    """
+    logical = psutil.cpu_count(logical=True)
+    physical = psutil.cpu_count(logical=False)
+    threads_per_core = 1 if not logical or not physical else max(1, logical // physical)
+    return max(1, host_cpus() // threads_per_core)
 
 
 def effective_parallel(

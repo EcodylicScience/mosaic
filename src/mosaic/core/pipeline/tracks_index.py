@@ -95,6 +95,7 @@ __all__ = [
     "TracksIndexRow",
     "TracksMadeWith",
     "TracksMadeWithEntry",
+    "TracksRowDraft",
     "adopt_legacy_columns",
     "backfill_frames_read",
     "backfill_known_tail_loss",
@@ -956,8 +957,10 @@ def read_tracks_index(ds: Dataset) -> pd.DataFrame:
     The single reader. An absent index reads as an *empty* one -- absence and
     emptiness are two spellings of "this dataset has no standardized tracks", and
     answering them differently is what left six callers with four different
-    policies. Callers that want to tell a human to run a conversion check for
-    zero rows; that check is the same for both spellings.
+    policies. So does a zero-byte file, which ``index_lock`` leaves for the moment
+    between creating an absent index and the first write that fills it. Callers that
+    want to tell a human to run a conversion check for zero rows; that check is the
+    same for both spellings.
 
     Never writes. Adoption on disk happens only when something appends, so
     reading a legacy dataset from a read-only mount works and merely listing its
@@ -968,7 +971,7 @@ def read_tracks_index(ds: Dataset) -> pd.DataFrame:
     ``get_root``: that is a misconfigured dataset, not an absent file.
     """
     path = tracks_index_path(ds)
-    if not path.exists():
+    if not path.exists() or path.stat().st_size == 0:
         return empty_tracks_frame()
     raw = pd.read_csv(path, keep_default_na=False, dtype=str)
     return adopt_legacy_columns(raw)
@@ -1891,6 +1894,40 @@ def backfill_known_tail_loss(ds: Dataset, *, dry_run: bool = False) -> CellBackf
         return rule
 
     return _backfill_cell(ds, _KNOWN_TAIL_LOSS, judge, dry_run=dry_run)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TracksRowDraft:
+    """The arguments of one :func:`write_tracks_row` call, held for a later write.
+
+    A worker that writes a table returns its draft, and the process that owns the
+    index writes it, in an order of its choosing. The fields are those of
+    :func:`write_tracks_row` after ``ds``, which documents each of them.
+    """
+
+    run_id: str
+    group: object
+    sequence: object
+    out_path: Path
+    producer: str
+    std_format: str
+    n_rows: int
+    carries_tracklets: bool | None
+    producer_run_id: str = ""
+    source: Path | str = ""
+    source_md5: str = ""
+    consumed_source_roots: Sequence[str] = ()
+    records_media: bool = False
+    media_frames: int | None = None
+    frames_read: int | None = None
+    known_tail_loss: int | None = None
+    first_frame: int | None = None
+    consumed_composition: str | None = None
+    appearance_path: Path | None = None
+
+    def write(self, ds: Dataset) -> None:
+        """Write the row, as :func:`write_tracks_row` does."""
+        write_tracks_row(ds, **{f.name: getattr(self, f.name) for f in fields(self)})
 
 
 def write_tracks_row(

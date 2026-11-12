@@ -223,7 +223,9 @@ class LocalBackend:
             cleanup_policy: Which superseded runs a cleanup keeps, fixed by the
                 operator. The default policy when ``None``.
             parallel_limits: The parallelism a submission may ask for, fixed by
-                the operator. One worker, in threads, when ``None``.
+                the operator. One worker per physical core, in threads,
+                above a floor of 10% available memory, when ``None``. A submission
+                may name ``process`` workers.
             gpu_cards: The cards a submission's drivers may lease to GPU steps,
                 as ``nvidia-smi`` indexes or UUIDs, fixed by the operator.
                 Every visible card when ``None``.

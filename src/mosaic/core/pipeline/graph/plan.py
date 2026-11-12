@@ -351,8 +351,8 @@ class PlannedStep:
             nothing" both read as ``absent`` and only one of them is a fault a
             consumer must refuse to chain onto.
         reason: Why this step is not simply running, or ``None``.
-        parallelizable: Whether a feature step can compute several entries at once.
-            ``False`` for an op.
+        parallelizable: Whether the step can compute several entries at once, as
+            its feature or its op declares.
         scope_dependent: Whether the step's identity covers its set of entries,
             read off the built feature. ``False`` for an op.
         fits: Whether the step learns from the entries it covers, read off the
@@ -1893,6 +1893,7 @@ def _resolve_op_step(
                 runs=step.kind,
                 spec=spec,
                 run_id=None,
+                parallelizable=op_cls.parallelizable,
                 reason=IdentityUnresolved(step=step.id, because=exc.because),
             )
         )
@@ -1910,6 +1911,7 @@ def _resolve_op_step(
                 runs=step.kind,
                 spec=spec,
                 run_id=None,
+                parallelizable=op_cls.parallelizable,
                 reason=IdentityUnresolved(step=step.id, because=problem.message),
             ),
             problems=(problem,),
@@ -1927,6 +1929,7 @@ def _resolve_op_step(
                 runs=step.kind,
                 spec=spec,
                 run_id=None,
+                parallelizable=op_cls.parallelizable,
                 reason=IdentityUnresolved(step=step.id, because=problem.message),
             ),
             problems=(problem,),
@@ -1938,6 +1941,7 @@ def _resolve_op_step(
             runs=step.kind,
             spec=spec,
             run_id=identity.run_id,
+            parallelizable=op_cls.parallelizable,
             tracks_variant=identity.tracks_variant,
             model_run_id=identity.model_run_id,
             labels_variant=identity.labels_variant,

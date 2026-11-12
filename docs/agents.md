@@ -128,8 +128,9 @@ allow_cleanup: []      # [feature-runs] lets submit_pipeline remove superseded r
 cleanup:               # which superseded runs a cleanup keeps
   keep_newest: 1
   min_age_hours: 24
-max_workers: 1         # the most entries a parallelizable step computes at once
-allow_process_mode: false   # let a submission ask for process workers
+max_workers: 8         # the most entries a parallelizable step computes at once
+                       # unset: the host's physical cores, at most 32
+allow_process_mode: true    # false: refuse process workers
 min_free_memory_fraction: 0.10   # the share of host memory a parallel run keeps free
 gpu_cards: [0, 1]      # the cards GPU steps may lease, by nvidia-smi index or UUID;
                        # unset leases every card the host shows
@@ -548,18 +549,23 @@ being planned, and for a recipe with a request that has not ended.
 A feature step computes its entries one at a time. A feature that computes each entry on
 its own, such as `speed-angvel` or `body-scale`, can compute several at once, and
 `describe_step_types` reports it as `parallelizable`. A fit across every entry, such as
-`global-kmeans`, and every op are not. The worker count belongs to the machine and not
-to the recipe, so it changes neither a run's identity nor its outputs. A run that used
-four workers is a cache hit for a run that uses one.
+`global-kmeans`, and every op but `convert-tracks` and `resample-tracks` are not. The
+worker count belongs to the machine and not to the recipe, so it changes neither a run's
+identity nor its outputs. A run that used four workers is a cache hit for a run that
+uses one.
 
 You set the limits in the configuration. The agent chooses within them and cannot raise
 them:
 
 - `max_workers` is the most entries a step computes at once, from 1 to 32. It is also
   the count a submission receives when it names none, and the effective count never
-  exceeds the machine's processors. The default, 1, computes entries in turn.
-- `allow_process_mode` lets a submission ask for `parallel_mode: process`. A submission
-  that names no mode receives `thread`.
+  exceeds the machine's processors. Unset, it is the host's physical cores, so a host
+  with two hardware threads per core counts each core once, up to 32. Set it to 1 to
+  compute entries in turn.
+- `allow_process_mode` lets a submission ask for `parallel_mode: process`, and is true
+  unless you set it false. A submission that names no mode receives `thread` whatever
+  this is. Set it false on a host whose memory cannot hold an entry's tables for every
+  worker.
 - `min_free_memory_fraction` is the share of the host's memory that a run with several
   workers keeps available. While the share is lower, the run waits for its entries in
   flight, whose tables free memory as they finish. When the share is still lower with
@@ -570,14 +576,19 @@ them:
 A submission over a worker limit is refused with the reason `parallel_limit`, and
 nothing is recorded.
 
-Threads share one copy of the feature and of the imported libraries, so memory grows by
-about one entry's table per worker. A thread gains little for work that holds Python's
-interpreter lock. Process workers use every core, and each is a separate interpreter that
-imports the feature libraries and receives a pickled copy of each entry's table, so
-memory grows by a whole interpreter and several copies of a table per worker. A
-feature that does not fit in memory at four process workers may fit at two, or in
-threads. A feature that defines `set_scope`, such as the interaction crop, runs in
-threads whatever the mode is, because a process worker rebuilds the feature without it.
+A submission that names no count and no mode therefore runs each parallelizable step in
+threads, one worker per physical core unless you set another count, and the memory
+floor, 10% unless you set another, holds a run back before the host runs out. Threads
+share one copy of the feature and of the imported libraries, so memory grows by about
+one entry's table per worker. A thread gains little for work that holds Python's
+interpreter lock, such as a feature whose per-entry work is a Python loop. The agent
+names `parallel_mode: process` for those. Process workers use every core, and each is a
+separate interpreter that imports the feature libraries and receives a pickled copy of
+each entry's table, so memory grows by a whole interpreter and about one entry's tables
+per worker. A feature that does not fit in memory at four process workers may fit at
+two, or in threads. A feature that defines `set_scope`, such as the interaction crop,
+runs in threads whatever the mode is, because a process worker rebuilds the feature
+without it.
 
 The agent sees what it needs to choose:
 

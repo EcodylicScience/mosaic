@@ -905,8 +905,9 @@ class SubmitPipelineInput(ToolInput):
         description=(
             "How many entries a parallelizable feature step computes at once. "
             "Omitted: the server's default, which plan_recipe reports in its "
-            "parallel block. More than the server's max_workers is refused. Memory "
-            "grows with the count, so lower it when a step ends with a dead "
+            "parallel block and which is the host's physical cores unless the "
+            "operator set another. More than the server's max_workers is refused. "
+            "Memory grows with the count, so lower it when a step ends with a dead "
             "worker, a memory floor, or a peak_rss_bytes near the host's memory."
         ),
     )
@@ -914,10 +915,12 @@ class SubmitPipelineInput(ToolInput):
         default=None,
         description=(
             "'thread' (default) shares one copy of the feature and speeds up "
-            "numpy and pandas work. 'process' speeds up only work that holds the "
-            "interpreter lock, such as a Python loop, and uses far more memory, "
-            "since each worker is an interpreter with a copy of every entry's "
-            "table. The server must allow it."
+            "numpy and pandas work. Name 'process' for a feature whose "
+            "per-entry work is a Python loop, which holds the interpreter lock "
+            "in threads. Each process worker holds about one entry's tables of "
+            "its own, so memory grows with the worker count, under the server's "
+            "memory floor. The server must allow it. A feature that needs "
+            "set_scope runs in threads either way."
         ),
     )
     confirm: bool = Field(

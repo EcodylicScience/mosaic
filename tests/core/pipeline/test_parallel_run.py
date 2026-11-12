@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
-from mosaic.core.pipeline import memory_watch
+from mosaic.core.pipeline import entry_pool, memory_watch
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.memory_watch import MemoryWatch
 from mosaic.core.pipeline.parallelism import MemoryFloorReached, WorkerProcessDied
@@ -231,7 +231,7 @@ def test_the_pool_is_shut_down_when_the_run_fails_for_another_reason(
         msg = "No space left on device"
         raise OSError(msg)
 
-    monkeypatch.setattr(run_module, "ThreadPoolExecutor", _Recording)
+    monkeypatch.setattr(entry_pool, "ThreadPoolExecutor", _Recording)
     monkeypatch.setattr(run_module, "write_output", full_disk)
 
     with pytest.raises(OSError, match="No space left"):

@@ -20,6 +20,12 @@ holds no row of, and a label selection of none.
 **A file that fails is reported and then fails the attempt**, as
 ``resample-tracks`` does: each failure is an ``entry_error`` on the run-log, and
 a rerun converts only what is missing.
+
+**``convert-tracks`` converts its files at once** when the run has workers. A
+worker converts and writes one file or one merged sequence, and this process
+writes the index rows, so the tables and the index are those of one worker.
+``convert-labels`` converts in turn: it refuses an entry key two files share
+before it writes any label file.
 """
 
 from __future__ import annotations
@@ -131,6 +137,7 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
     writes_tracks = True
     scope_takes = "none"
     scope_dependent = False
+    parallelizable = True
     Params = ConvertTracksParams
 
     def target(self, params: ConvertTracksParams, scope: ResolvedScope) -> str:
@@ -173,6 +180,8 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
             progress=progress,
             cancel_check=ctx.check_cancel,
             on_failure=ctx.entry_failed,
+            parallel=ctx.parallel,
+            on_resources=ctx.resources,
         )
         # No ``tracks_variant`` event: it records the variants an attempt read,
         # and a conversion reads raw files. The variant it wrote is its run id.

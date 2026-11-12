@@ -127,7 +127,9 @@ is cancelled leaves the request's verdict to its steps. A queue that runs the st
 itself runs no cleanup; `mosaic pipeline run --request` does.
 
 **Compute several entries at once.** A feature that computes each entry on its own
-(`parallelizable` in `mosaic pipeline catalog <name>`) can use `--workers`:
+(`parallelizable` in `mosaic pipeline catalog <name>`) can use `--workers`, and so can
+the `convert-tracks` and `resample-tracks` steps, which convert one file or table at a
+time:
 
 ```bash
 mosaic pipeline run -m dataset.yaml --recipe @recipe.json --workers 4
@@ -136,9 +138,10 @@ mosaic pipeline run -m dataset.yaml --request <request id> --workers 4
 
 The count changes neither a run's identity nor its outputs, so a run with four workers
 is a cache hit for one with one, and a recipe never carries it. `--parallel-mode thread`
-is the default. `process` uses every core, but each worker is a separate interpreter
-that imports the feature libraries and receives a pickled copy of each entry's table,
-so it uses much more memory. A worker that the host stops ends the step with
+is the default. Choose `process` for a feature whose per-entry work is a Python loop,
+which holds the interpreter lock in threads. Each worker is a separate interpreter that
+imports the feature libraries and receives a pickled copy of each entry's table, so it
+uses much more memory. A worker that the host stops ends the step with
 `WorkerProcessDied`. Run the request again with fewer workers or in thread mode. The
 entries already written are kept. `--min-free-memory-fraction 0.1` makes a run wait for
 its entries in flight while less than that share of the host's memory is available, and

@@ -98,14 +98,17 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   protects, so only the operator's `mosaic splits` verbs write them. The tools read
   them (`tests/meta/test_agent_never_writes_splits.py`).
 - Parallelism limits (`max_workers`, `allow_process_mode`, `min_free_memory_fraction`)
-  are the operator's. `submit_pipeline` takes `workers` and `parallel_mode` within them
-  and `ParallelLimits.settings_for` refuses a request over a limit
-  (`parallel_limit`, `test_confirmation_gate.py`). `plan_recipe` takes neither. The
-  settings reach the driver through `DriverStarter` and then argv flags, and are not
-  part of a recipe, a request or a run id. `gpu_cards` is the operator's too, and no
-  tool takes it: `LocalBackend` hands it to `DriverStarter` as its fourth argument, and
-  it reaches the driver as `--gpu-cards`. `mosaic agent serve` refuses to start on a
-  card the host does not show (`test_cli_agent.py`).
+  are the operator's. Unset, `max_workers` is the host's physical cores,
+  `allow_process_mode` is true and the floor is 10% available memory (`ServerConfig` and
+  `ParallelLimits` share one default). A submission naming no mode runs in `thread`
+  workers, and `process` is chosen on purpose. `submit_pipeline` takes `workers` and
+  `parallel_mode` within the limits and `ParallelLimits.settings_for` refuses a request
+  over a limit (`parallel_limit`, `test_confirmation_gate.py`). `plan_recipe` takes
+  neither. The settings reach the driver through `DriverStarter` and then argv flags,
+  and are not part of a recipe, a request or a run id. `gpu_cards` is the operator's
+  too, and no tool takes it: `LocalBackend` hands it to `DriverStarter` as its fourth
+  argument, and it reaches the driver as `--gpu-cards`. `mosaic agent serve` refuses to
+  start on a card the host does not show (`test_cli_agent.py`).
 - An accepted confirmation confirms only the conditions it named. `_binding.py` runs
   the call again without `confirm` first and asks again when it meets another
   (`test_mcp_server.py`).

@@ -51,6 +51,7 @@ from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.parallelism import (
     ParallelLimits,
     ParallelSettings,
+    default_max_workers,
     host_cpus,
 )
 from mosaic.runlog import JsonlRunLog, new_execution_id, run_log_path
@@ -952,6 +953,20 @@ def _parallel(
     )
 
 
+@pytest.mark.parametrize("allow_process_mode", [True, False])
+def test_a_submission_naming_no_mode_receives_threads_even_when_processes_are_allowed(
+    dataset: Dataset, starter: RecordingStarter, allow_process_mode: bool
+) -> None:
+    backend = _parallel(
+        dataset, starter, max_workers=4, allow_process_mode=allow_process_mode
+    )
+
+    submitted = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert (submitted.workers, submitted.parallel_mode) == (4, "thread")
+
+
 def test_a_submission_naming_no_workers_receives_the_servers_default(
     dataset: Dataset, starter: RecordingStarter
 ) -> None:
@@ -969,6 +984,23 @@ def test_a_submission_naming_no_workers_receives_the_servers_default(
     assert (submitted.workers, submitted.parallel_mode) == (4, "thread")
     assert starter.parallel == [
         ParallelSettings(workers=4, mode="thread", min_free_memory_fraction=0.1)
+    ]
+
+
+def test_a_backend_given_no_limits_runs_thread_workers_above_a_memory_floor(
+    dataset: Dataset, starter: RecordingStarter
+) -> None:
+    backend = LocalBackend([dataset.manifest_path], warm=False, start_driver=starter)
+
+    submitted = _submit(backend, dataset, SPEED_RECIPE, entries=ENTRIES)
+
+    assert isinstance(submitted, SubmittedPipeline), submitted
+    assert starter.parallel == [
+        ParallelSettings(
+            workers=default_max_workers(),
+            mode="thread",
+            min_free_memory_fraction=0.10,
+        )
     ]
 
 
@@ -997,10 +1029,14 @@ def test_a_submission_may_ask_for_fewer_workers_and_for_process_mode(
     ("limits", "asked", "limit"),
     [
         ({"max_workers": 4}, {"workers": 5}, "max_workers"),
-        ({"max_workers": 4}, {"parallel_mode": "process"}, "allow_process_mode"),
-        ({}, {"workers": 2}, "max_workers"),
+        (
+            {"max_workers": 4, "allow_process_mode": False},
+            {"parallel_mode": "process"},
+            "allow_process_mode",
+        ),
+        ({"max_workers": 1}, {"workers": 2}, "max_workers"),
     ],
-    ids=["too-many", "process-not-allowed", "default-server"],
+    ids=["too-many", "process-not-allowed", "one-worker-server"],
 )
 def test_a_submission_over_a_limit_is_refused_before_anything_is_recorded(
     dataset: Dataset,
@@ -1057,6 +1093,23 @@ def test_the_plan_reports_the_limits_the_machine_and_the_workers_of_a_step(
     (speed,) = plan.steps
     assert speed.parallelizable
     assert speed.workers == min(4, host_cpus())
+
+
+def test_the_plan_reports_a_default_count_no_larger_than_the_processors(
+    dataset: Dataset, starter: RecordingStarter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("mosaic.core.pipeline.graph.serialize.host_cpus", lambda: 3)
+    monkeypatch.setattr("mosaic.core.pipeline.parallelism.host_cpus", lambda: 3)
+    backend = _parallel(dataset, starter, max_workers=8)
+
+    plan = _call(
+        backend, "plan_recipe", PlanWire, dataset=_uuid(dataset), recipe=SPEED_RECIPE
+    )
+
+    assert plan.parallel is not None
+    assert (plan.parallel.default_workers, plan.parallel.max_workers) == (3, 8)
+    (speed,) = plan.steps
+    assert speed.workers == 3
 
 
 def test_the_plan_fingerprint_does_not_depend_on_the_limits(

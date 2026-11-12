@@ -756,7 +756,7 @@ class ParallelWire(GraphModel):
 
     Attributes:
         default_workers: How many entries a parallelizable step computes at once
-            when the submission names no count.
+            when the submission names no count, at most ``cpus``.
         max_workers: The most a submission may ask for.
         allow_process_mode: Whether a submission may ask for ``process`` mode. A
             submission that names no mode receives ``thread``.

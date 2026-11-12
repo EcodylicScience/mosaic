@@ -661,6 +661,7 @@ def _run(
             owner=owner,
             cancel_token=cancel_token,
             step_id=planned.step_id,
+            parallel=parallel,
         )
         return StepOutcome(
             step_id=planned.step_id,

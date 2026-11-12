@@ -43,6 +43,7 @@ from mosaic import runlog
 from ._utils import new_execution_id
 from .gpu_lease import leased_card
 from .markers import current_boot_id, current_pid_namespace
+from .parallelism import ParallelSettings
 from .progress import NullProgressCallback, ProgressCallback
 from .refusal import Refusal
 from .run_log import JsonlRunLog, run_log_path
@@ -149,6 +150,8 @@ class JobContext:
     cancel_token: CancelToken
     owner: str = ""
     step_id: str = ""
+    parallel: ParallelSettings = field(default_factory=ParallelSettings)
+    """How many entries the attempt may compute at once, and how."""
     run_id: str | None = None
     failed_keys: list[str] = field(default_factory=list)
     _total: int = 0
@@ -388,6 +391,7 @@ def job_context(
     cancel_token: CancelToken | None = None,
     total: int = 0,
     step_id: str = "",
+    parallel: ParallelSettings | None = None,
 ) -> Generator[JobContext]:
     """Run a block as a tracked job attempt.
 
@@ -412,6 +416,9 @@ def job_context(
     step_id:
         The pipeline step this attempt runs, or ``""`` outside a pipeline. A
         refusal recorded for the attempt names it.
+    parallel:
+        How many entries the job may compute at once, read from
+        :attr:`JobContext.parallel`. ``None`` is one at a time.
 
     The ``started`` event records the host's boot, the pid namespace and
     :data:`~mosaic.runlog.LIVENESS_INTERVAL_SECONDS`, and a thread appends
@@ -453,6 +460,7 @@ def job_context(
         cancel_token=token,
         owner=owner,
         step_id=step_id,
+        parallel=parallel or ParallelSettings(),
         _total=total,
     )
 

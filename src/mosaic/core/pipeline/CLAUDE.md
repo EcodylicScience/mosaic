@@ -19,6 +19,19 @@ are in `graph/CLAUDE.md`.
   (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write. The lock
   serializes writers on one mount only
   (`tests/core/pipeline/test_index_lock_capability.py`).
+- **Entries computed at once go through `EntryPool`** (`entry_pool.py`): `run_feature`
+  and each op that sets `parallelizable` (`convert-tracks`, `resample-tracks`), which
+  reads its workers from `ctx.parallel`. A worker stages a tracks table under a hidden
+  `.stage-*.staged` name beside its final one (`staged_tables.py`) and returns it with
+  its index row (`TracksRowDraft`). The calling process, through `OrderedResults`, in
+  submission order, publishes each table with its row (`TableCommitter`), reports the
+  failures and the progress, so the outputs do not depend on the worker count. Of two
+  files naming one entry the first keeps it, or the last when overwriting. The op
+  removes the staged files of an earlier run at its start, and a table with no row is
+  made again, not skipped. A process worker reopens the dataset from its manifest path
+  (`dataset_ref`, `worker_dataset`). An op that ends on an exception settles the pool
+  first and publishes what its workers finished
+  (`tests/core/pipeline/test_op_parallelism.py`).
 
 ## Public types and imports
 

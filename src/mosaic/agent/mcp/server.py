@@ -90,8 +90,9 @@ def serve(
             ``retire`` the runs of retired recipes.
         cleanup_policy: Which superseded runs a cleanup keeps, the default
             policy when ``None``.
-        parallel_limits: The parallelism a submission may ask for. One worker, in
-            threads, when ``None``.
+        parallel_limits: The parallelism a submission may ask for. One worker per
+            physical core, in threads, above a floor of 10% available memory, when
+            ``None``. A submission may name ``process`` workers.
         gpu_cards: The cards a submission's drivers may lease to GPU steps, as
             ``nvidia-smi`` indexes or UUIDs. Every visible card when ``None``.
         dataset_roots: Where ``manage_dataset`` may create a dataset.

@@ -13,7 +13,12 @@ from mosaic.agent.mcp.config import (
     served_manifests,
 )
 from mosaic.core.pipeline.graph import CleanupPolicy
-from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelLimits
+from mosaic.core.pipeline import parallelism
+from mosaic.core.pipeline.parallelism import (
+    MAX_WORKERS_CEILING,
+    ParallelLimits,
+    ParallelRefused,
+)
 from tests.helpers import make_dataset
 
 
@@ -110,12 +115,28 @@ def test_the_parallelism_limits_read_from_the_file(tmp_path: Path) -> None:
     )
 
 
-def test_the_default_limits_are_one_worker_in_threads_with_a_memory_floor() -> None:
+def test_the_default_limits_are_the_physical_cores_in_threads_with_a_memory_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(parallelism, "physical_cpus", lambda: 6)
+
     limits = ServerConfig().parallel_limits
 
-    assert limits.max_workers == 1
-    assert not limits.allow_process_mode
+    assert limits.max_workers == 6
+    assert limits.allow_process_mode
+    assert limits.settings_for().mode == "thread"
+    assert limits.settings_for(mode="process").mode == "process"
     assert limits.min_free_memory_fraction == 0.10
+
+
+def test_an_operator_may_turn_process_mode_off(tmp_path: Path) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text("allow_process_mode: false\n", encoding="utf-8")
+
+    limits = read_server_config(config).parallel_limits
+
+    with pytest.raises(ParallelRefused):
+        _ = limits.settings_for(mode="process")
 
 
 @pytest.mark.parametrize(

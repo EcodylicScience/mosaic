@@ -140,7 +140,7 @@ def _parallel_wire(limits: ParallelLimits) -> ParallelWire:
     """The limits a submission is held to, with the machine's processors and memory."""
     total, available = host_memory_bytes()
     return ParallelWire(
-        default_workers=limits.settings_for().workers,
+        default_workers=min(limits.settings_for().workers, host_cpus()),
         max_workers=limits.max_workers,
         allow_process_mode=limits.allow_process_mode,
         min_free_memory_fraction=limits.min_free_memory_fraction,

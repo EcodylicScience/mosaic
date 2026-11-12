@@ -13,6 +13,7 @@ this file tests the ``tracks/`` index, ``test_tracks_raw_index`` the
 from __future__ import annotations
 
 import dataclasses
+import inspect
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +39,7 @@ from mosaic.core.pipeline.tracks_index import (
     TRACKS_INDEX_PATH_COLUMNS,
     TailAllowance,
     TracksIndexRow,
+    TracksRowDraft,
     adopt_legacy_columns,
     consumed_roots_for,
     encode_source_roots,
@@ -1939,4 +1941,60 @@ def test_rows_without_tracklets_pairs_each_entry_with_its_variant(
     assert rows_without_tracklets(ds, None, None) == (
         (("", "a"), "trex.0.1-bbbbbbbbbb"),
         (("", "b"), "convert-x.0.1-aaaaaaaaaa"),
+    )
+
+
+def test_a_row_draft_holds_the_arguments_of_write_tracks_row() -> None:
+    """A field added to one without the other would be dropped or refused at write."""
+    written = [
+        name for name in inspect.signature(write_tracks_row).parameters if name != "ds"
+    ]
+
+    assert [field.name for field in dataclasses.fields(TracksRowDraft)] == written
+
+
+def test_a_row_draft_writes_the_row_write_tracks_row_writes(tmp_path: Path) -> None:
+    drafted = _dataset(tmp_path / "drafted")
+    direct = _dataset(tmp_path / "direct")
+    row = {
+        "run_id": "convert-x.0.1-aaaaaaaaaa",
+        "group": "g",
+        "sequence": "s",
+        "producer": "convert-x",
+        "std_format": "trex_v1",
+        "n_rows": 40,
+        "carries_tracklets": True,
+        "source_md5": "abc",
+        "consumed_source_roots": ("tracks_raw",),
+    }
+
+    TracksRowDraft(
+        out_path=_track_parquet(drafted, "s"),
+        **row,  # pyright: ignore[reportArgumentType]
+    ).write(drafted)
+    write_tracks_row(
+        direct,
+        out_path=_track_parquet(direct, "s"),
+        **row,  # pyright: ignore[reportArgumentType]
+    )
+
+    def cells(ds: Dataset) -> list[list[object]]:
+        index = read_tracks_index(ds).drop(columns=["started_at", "finished_at"])
+        return index.to_numpy().tolist()
+
+    assert cells(drafted) == cells(direct)
+
+
+def test_an_index_the_lock_just_created_reads_as_an_empty_one(tmp_path: Path) -> None:
+    """``index_lock`` creates an absent index empty before its first write lands."""
+    ds = _dataset(tmp_path)
+    path = tracks_index_path(ds)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_bytes(b"")
+
+    index = read_tracks_index(ds)
+
+    assert index.empty
+    assert list(index.columns) == list(
+        read_tracks_index(_dataset(tmp_path / "x")).columns
     )

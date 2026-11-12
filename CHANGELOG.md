@@ -47,6 +47,54 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
+## Unreleased: `convert-tracks` and `resample-tracks` compute their entries at once
+
+`Op` gains the class attribute `parallelizable`, false unless an op sets it, and
+`convert-tracks` and `resample-tracks` set it. A pipeline step of either kind runs with
+the `workers` and `parallel_mode` of its submission, as a parallelizable feature step does,
+and `plan_recipe` and `describe_step_types` report `parallelizable` true for them.
+`run_op` takes `parallel`, and an op reads what it was given from `ctx.parallel`, which
+holds one worker for an op that is not parallelizable. A worker converts and writes one raw
+file or one merged sequence of `convert-tracks`, or one table of `resample-tracks`, and the
+calling process writes the tracks index rows, the failures, the progress and the cancel
+check in the order of the raw index. The tables, the index rows and the run id are those of
+one worker, which the worker count does not enter. A file that a worker fails to convert is
+an `entry_error` as before, and a cancel waits for the files in flight and indexes them.
+A worker writes each table under a hidden `.stage-*.staged` name in the variant directory,
+and the calling process moves it into place and writes its row together. Of two raw files
+that name one entry the first in the raw index keeps it, or the last when overwriting,
+whatever the worker count. Staged files that a killed run left are removed when the op next
+runs. A table that exists with no row for its variant, group and sequence is made again and
+indexed, by `convert-tracks` and `resample-tracks` and by `Dataset.convert_all_tracks`,
+where it was skipped as current. `read_tracks_index` reads a zero-byte index as an empty one.
+`mosaic run --kind` still takes no `--workers`. `convert-labels` converts in turn.
+`run_feature` computes its entries through the same pool, in `core/pipeline/entry_pool.py`,
+and behaves as before.
+
+## Unreleased: a submission defaults to one worker per physical core, and process mode is allowed
+
+`ParallelLimits` and the MCP server's `ServerConfig` default `max_workers` to the host's
+physical cores, at most 32, where they defaulted to 1, and `allow_process_mode` to true,
+where it was false. A `submit_pipeline` that names no `workers` therefore runs each
+parallelizable feature step with one worker per physical core, and one that names
+`parallel_mode: process` is accepted unless the operator sets `allow_process_mode:
+false`. A submission that names no mode still gets `thread`, so process mode is chosen
+on purpose: choose it for a feature whose per-entry work is a Python loop, which holds
+the interpreter lock in threads, at the cost of about one entry's tables per worker,
+under the memory floor. A step that defines `set_scope` stays in threads and a step that
+is not parallelizable stays at one worker. The physical core count is the processors the
+process may use (the affinity mask where the platform has one) divided by the host's
+threads per core. The memory floor `min_free_memory_fraction` defaults to 0.10 in
+`ParallelLimits` too, where it was 0, so a backend built with no limits has the same
+defaults as the server configuration. `plan_recipe`'s `parallel.default_workers` is
+clamped to `parallel.cpus` like each step's `workers`, and `parallel.allow_process_mode`
+now defaults to true. The `workers` and `parallel_mode` descriptions of
+`submit_pipeline` and the users' agent guide say so. A configuration file that sets
+`max_workers` and `allow_process_mode` keeps its meaning. `mosaic run` and `mosaic
+pipeline run` are unchanged: they compute entries in turn unless `--workers` is given,
+and then in threads unless `--parallel-mode process` is given. Run ids and outputs do
+not change.
+
 ## Unreleased: two Tracktor track converters read the DGRP looming release
 
 Two new track converters, `tracktor_corrected_tsv` and `tracktor_raw_csv` (both version

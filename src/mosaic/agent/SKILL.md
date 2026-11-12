@@ -826,14 +826,19 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   checked. Ask the user whether its process still runs. Once they confirm it has
   exited, propose `mosaic cancel --manifest <manifest> --request <id>
   --assume-exited`, then submit the recipe again.
-- Parallel workers: a `parallelizable` step can compute several entries at once.
+- Parallel workers: a `parallelizable` step can compute several entries at once. The
+  conversion steps `convert-tracks` and `resample-tracks` are, and no other op is.
   `plan_recipe` reports the operator's limits, the host's processors and memory, and
   each step's `workers`. `submit_pipeline` takes `workers` and `parallel_mode`, never
-  above those limits, and a request over one is refused with `parallel_limit`. Start
-  with `thread`, which speeds up numpy and pandas work. Use `process` only for a step
-  that stays slow in threads because it runs Python code that holds the interpreter
-  lock, after checking that the host's available memory holds one interpreter and
-  several copies of an entry's table per worker.
+  above those limits, and a request over one is refused with `parallel_limit`. A
+  submission that names neither gets `workers` from the plan's parallel block, one per
+  physical core unless the operator set another, in `thread` mode. Threads share one
+  copy of the feature and speed up numpy and pandas work. Name `parallel_mode:
+  process` for a step whose per-entry work is a Python loop, which holds the
+  interpreter lock in threads, when the plan's parallel block has `allow_process_mode`
+  true. Each process worker holds about one entry's tables of its own, so check that
+  the host's available memory holds that per worker, and lower `workers` before a step
+  runs out of memory.
 - Watch memory while a step runs: `get_request_status` reports each step's
   `peak_rss_bytes` and `min_available_bytes`. When a step ends with `WorkerProcessDied`
   or a memory-floor failure, or its peak nears the host's memory, halve `workers` or

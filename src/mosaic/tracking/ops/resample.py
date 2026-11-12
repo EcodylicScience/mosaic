@@ -22,12 +22,27 @@ would put this run into the drift reports on the next re-transcode.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
+import pandas as pd
 
 from mosaic.core.helpers import make_entry_key, text_cell
+from mosaic.core.pipeline.entry_pool import (
+    EntryFailure,
+    EntryPool,
+    OrderedResults,
+    dataset_ref,
+    worker_dataset,
+)
 from mosaic.core.pipeline.job import JobContext
+from mosaic.core.pipeline.staged_tables import (
+    StagedTrackTable,
+    TableCommitter,
+    stage_table,
+    sweep_staged,
+)
 from mosaic.core.pipeline.op_identity import op_run_id
 from mosaic.core.pipeline.ops import IdentityDeferred, Op, OpIdentity, register_op
 from mosaic.core.pipeline.tracks_identity import (
@@ -37,8 +52,9 @@ from mosaic.core.pipeline.tracks_identity import (
     write_tracks_variant,
 )
 from mosaic.core.pipeline.tracks_index import (
+    TracksRowDraft,
     read_carries_tracklets,
-    write_tracks_row,
+    read_tracks_index,
 )
 from mosaic.core.params import (
     Declared,
@@ -125,6 +141,7 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
     writes_tracks = True
     scope_takes = "any"
     scope_dependent = True
+    parallelizable = True
     Params = ResampleTracksParams
 
     def target(self, params: ResampleTracksParams, scope: ResolvedScope) -> str:
@@ -172,13 +189,6 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
         overwrite: bool,
         ctx: JobContext,
     ) -> str:
-        from mosaic.core.pipeline.resample_tracks import resample_entry_table
-        from mosaic.core.pipeline.writers import (
-            read_parquet_table,
-            write_parquet_atomic,
-        )
-        from mosaic.core.schema import ensure_track_schema
-
         rows = chained_source_rows(
             ds, params.source_tracks_run_id, scope.op_entries, producer=self.kind
         )
@@ -196,57 +206,170 @@ class ResampleTracksOp(Op[ResampleTracksParams]):
             params.identity_dump(),
         )
         variant_root = tracks_variant_root(tracks_root, variant)
+        # Files that a run killed before this one left staged are no table of any
+        # row, and a worker of this run stages under names of its own.
+        _ = sweep_staged(variant_root)
+        tracks = read_tracks_index(ds)
+        indexed = set(
+            zip(
+                tracks.loc[tracks["run_id"] == variant, "group"],
+                tracks.loc[tracks["run_id"] == variant, "sequence"],
+                strict=True,
+            )
+        )
+        committer = TableCommitter(ds, overwrite=overwrite)
 
         failed: list[str] = []
-        for done, (_, row) in enumerate(rows.iterrows(), start=1):
-            ctx.check_cancel()
-            group = text_cell(row.get("group", ""))
-            sequence = text_cell(row.get("sequence", ""))
-            key = make_entry_key(group, sequence)
-            out_path = variant_root / f"{key}.parquet"
-            if out_path.exists() and not overwrite:
-                ctx.heartbeat(done)
-                continue
-            try:
-                source = Path(ds.resolve_path(str(row.get("abs_path", ""))))
-                table = read_parquet_table(source)
-                resampled = resample_entry_table(
-                    table,
-                    params.target_fps,
-                    prefilter=params.prefilter,
-                    source=f"{group}/{sequence}",
-                )
-                std_format = text_cell(row.get("std_format", "")) or "trex_v1"
-                # Resampling changes no column and no unit, so the source's own
-                # schema is what the output answers to -- read off the row rather
-                # than from the tracking-roots table, which this op is
-                # deliberately not in.
-                _ = ensure_track_schema(
-                    resampled,
-                    std_format,
-                    strict=False,
-                    source=f"{group}/{sequence} (resampled)",
-                )
-                _ = write_parquet_atomic(resampled, out_path)
-                write_tracks_row(
-                    ds,
-                    run_id=variant,
-                    group=group,
-                    sequence=sequence,
-                    out_path=out_path,
-                    producer=self.kind,
-                    std_format=std_format,
-                    n_rows=int(len(resampled)),
-                    producer_run_id=identity.run_id,
-                    source=source,
-                    consumed_source_roots=("tracks",),
-                    records_media=False,
-                    carries_tracklets=read_carries_tracklets(row),
-                )
-            except Exception as exc:  # noqa: BLE001 -- recorded, then re-raised below
-                ctx.entry_failed(key, exc)
-                failed.append(key)
+        done = 0
+
+        def emit(item: ResampledEntry | Exception) -> None:
+            nonlocal done
+            if isinstance(item, Exception):
+                raise item
+            if item.failure is not None:
+                failed.append(item.failure.key)
+                item.failure.record(ctx.entry_failed)
+            if item.table is not None:
+                for lost in committer.commit([item.table]):
+                    failed.append(lost.key)
+                    lost.record(ctx.entry_failed)
+            done += 1
             ctx.heartbeat(done)
+
+        ordered = OrderedResults[ResampledEntry | Exception](emit)
+
+        def on_result(index: int, outcome: ResampledEntry) -> None:
+            ordered.put(index, outcome)
+
+        def on_error(index: int, exc: Exception) -> None:
+            ordered.put(index, exc)
+
+        pool = EntryPool[int, ResampledEntry].for_settings(
+            ctx.parallel,
+            on_result=on_result,
+            on_error=on_error,
+            on_resources=ctx.resources,
+        )
+        ref = dataset_ref(ds, ctx.parallel.mode)
+        try:
+            for index, (_, row) in enumerate(rows.iterrows()):
+                ctx.check_cancel()
+                entry = (
+                    text_cell(row.get("group", "")),
+                    text_cell(row.get("sequence", "")),
+                )
+                pool.submit(
+                    index,
+                    resample_one_entry,
+                    ref,
+                    row,
+                    variant_root,
+                    params,
+                    variant,
+                    identity.run_id,
+                    self.kind,
+                    overwrite,
+                    entry in indexed,
+                )
+            pool.finish()
+        except BaseException:
+            # A table a worker finished is published with its row.
+            pool.settle()
+            for item in ordered.held():
+                if not isinstance(item, Exception) and item.table is not None:
+                    for lost in committer.commit([item.table]):
+                        lost.record(ctx.entry_failed)
+            raise
+        finally:
+            pool.close()
 
         refuse_incomplete_variant(self.kind, variant, failed, len(rows))
         return identity.run_id
+
+
+@dataclass(slots=True)
+class ResampledEntry:
+    """What re-gridding one entry produced, for the process that owns the index.
+
+    Attributes:
+        table: The table written under a staging name and the index row that
+            describes it. ``None`` for an entry that was already written or that
+            failed.
+        failure: Why the entry failed, when it did.
+    """
+
+    table: StagedTrackTable | None = None
+    failure: EntryFailure | None = None
+
+
+def resample_one_entry(
+    ref: Dataset | str,
+    row: pd.Series,
+    variant_root: Path,
+    params: ResampleTracksParams,
+    variant: str,
+    run_id: str,
+    kind: str,
+    overwrite: bool,
+    indexed: bool,
+) -> ResampledEntry:
+    """Re-grid one source table and stage it, leaving its publication to the caller.
+
+    The unit of work of :class:`ResampleTracksOp`, run by a worker. *indexed* says
+    whether the index already has a row for the entry. A table that exists and has a
+    row is kept. A table with no row is made again. A table that cannot be read,
+    re-gridded or validated comes back as the outcome's ``failure``.
+    """
+    from mosaic.core.pipeline.resample_tracks import resample_entry_table
+    from mosaic.core.pipeline.writers import read_parquet_table
+    from mosaic.core.schema import ensure_track_schema
+
+    ds = worker_dataset(ref)
+    group = text_cell(row.get("group", ""))
+    sequence = text_cell(row.get("sequence", ""))
+    key = make_entry_key(group, sequence)
+    out_path = variant_root / f"{key}.parquet"
+    outcome = ResampledEntry()
+    if out_path.exists() and indexed and not overwrite:
+        return outcome
+    try:
+        source = Path(ds.resolve_path(str(row.get("abs_path", ""))))
+        table = read_parquet_table(source)
+        resampled = resample_entry_table(
+            table,
+            params.target_fps,
+            prefilter=params.prefilter,
+            source=f"{group}/{sequence}",
+        )
+        std_format = text_cell(row.get("std_format", "")) or "trex_v1"
+        # Resampling changes no column and no unit, so the source's own
+        # schema is what the output answers to -- read off the row rather
+        # than from the tracking-roots table, which this op is
+        # deliberately not in.
+        _ = ensure_track_schema(
+            resampled,
+            std_format,
+            strict=False,
+            source=f"{group}/{sequence} (resampled)",
+        )
+        staged = stage_table(resampled, out_path)
+        outcome.table = StagedTrackTable(
+            staged=staged,
+            row=TracksRowDraft(
+                run_id=variant,
+                group=group,
+                sequence=sequence,
+                out_path=out_path,
+                producer=kind,
+                std_format=std_format,
+                n_rows=int(len(resampled)),
+                producer_run_id=run_id,
+                source=source,
+                consumed_source_roots=("tracks",),
+                records_media=False,
+                carries_tracklets=read_carries_tracklets(row),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 -- recorded by the caller
+        outcome.failure = EntryFailure.capture(key, exc)
+    return outcome

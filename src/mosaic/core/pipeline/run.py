@@ -3,18 +3,9 @@ from __future__ import annotations
 import gc
 import importlib
 import json
-import multiprocessing as mp
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import (
-    FIRST_COMPLETED,
-    Future,
-    ProcessPoolExecutor,
-    ThreadPoolExecutor,
-    wait,
-)
-from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import ClassVar, Final, TYPE_CHECKING
 
@@ -111,13 +102,8 @@ from .types import (
     TracksColumn,
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
-from .memory_watch import MemoryWatch
-from .parallelism import (
-    MemoryFloorReached,
-    ParallelMode,
-    WorkerProcessDied,
-    memory_use_text,
-)
+from .entry_pool import EntryPool
+from .parallelism import MemoryFloorReached, ParallelMode, WorkerProcessDied
 from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
@@ -1989,45 +1975,6 @@ def _run_feature_impl(
         max_workers = 1
     apply_overlap: int | None = overlap_frames if overlap_frames > 0 else None
 
-    executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
-    if max_workers > 1:
-        if parallel_mode_str == "process":
-            executor = ProcessPoolExecutor(
-                max_workers=max_workers, mp_context=mp.get_context("spawn")
-            )
-        else:
-            executor = ThreadPoolExecutor(max_workers=max_workers)
-
-    pending: dict[Future[pd.DataFrame], tuple[FeatureMeta, CoreSelector | None]] = {}
-
-    watch = MemoryWatch()
-
-    def _report_resources(*, final: bool = False) -> None:
-        """Record the workers and the memory measured so far on the run-log.
-
-        Throttled to the sampler's interval unless *final*. The final report is
-        written on every exit from the apply loop, a failure included, because the
-        reader of a failed step needs the memory it reached.
-        """
-        measured = watch.sample() is not None if final else watch.sample_if_due()
-        if not measured:
-            return
-        ctx.resources(
-            workers=max_workers,
-            parallel_mode=parallel_mode_str if max_workers > 1 else "",
-            peak_rss_bytes=watch.peak_rss_bytes,
-            min_available_bytes=watch.min_available_bytes,
-            total_memory_bytes=watch.total_bytes,
-        )
-
-    def _memory_use() -> str:
-        return memory_use_text(
-            workers=max_workers,
-            mode=parallel_mode_str,
-            peak_rss_bytes=watch.peak_rss_bytes,
-            total_bytes=watch.total_bytes,
-        )
-
     def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
         """Record that one entity's ``apply`` raised, unless the run was cancelled.
 
@@ -2054,80 +2001,56 @@ def _run_feature_impl(
         if isinstance(exc, ToolUnavailable):
             raise exc
 
-    def _drain_completed() -> None:
-        done, _ = wait(pending, return_when=FIRST_COMPLETED)
-        for future in done:
-            meta, selector = pending.pop(future)
-            try:
-                result_df: FeatureOutput = future.result()
-            except BrokenProcessPool as exc:
-                # Every other pending future of a broken pool fails the same way, so
-                # this is the run's failure and not one entity's.
-                _report_resources(final=True)
-                raise WorkerProcessDied(_memory_use()) from exc
-            except Exception as exc:
-                try:
-                    _entry_failed(meta.group, meta.sequence, exc)
-                except ToolUnavailable:
-                    # A future already running cannot be cancelled. The rest
-                    # never start.
-                    for waiting in pending:
-                        _ = waiting.cancel()
-                    raise
-                continue
-            if selector is not None:
-                result_df = trim_feature_output(result_df, selector)
-            n_rows = write_output(meta, result_df)
-            _record_row(
-                FeatureIndexRow(
-                    run_id=run_id,
-                    feature=storage_feature_name,
-                    version=feature.version,
-                    group=meta.group,
-                    sequence=meta.sequence,
-                    abs_path=Path(ds.relative_to_root(meta.out_path)),
-                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                    consumed_composition=entry_composition(
-                        feature, resolved, (meta.group, meta.sequence)
-                    ),
-                    consumed_tracks_composition=tracks_now_by_entry.get(
-                        (meta.group, meta.sequence), ""
-                    ),
-                    consumed_input_composition=inputs_now_by_entry.get(
-                        (meta.group, meta.sequence), ""
-                    ),
-                    consumed_neighbors=neighbors_now_by_entry.get(
-                        (meta.group, meta.sequence), ""
-                    ),
-                    n_rows=n_rows,
-                    params_hash=params_hash,
-                    identity_scheme=FEATURE_IDENTITY_SCHEME,
-                )
+    def _record_result(
+        tag: tuple[FeatureMeta, CoreSelector | None], result_df: FeatureOutput
+    ) -> None:
+        meta, selector = tag
+        if selector is not None:
+            result_df = trim_feature_output(result_df, selector)
+        n_rows = write_output(meta, result_df)
+        _record_row(
+            FeatureIndexRow(
+                run_id=run_id,
+                feature=storage_feature_name,
+                version=feature.version,
+                group=meta.group,
+                sequence=meta.sequence,
+                abs_path=Path(ds.relative_to_root(meta.out_path)),
+                consumed_roots=encode_consumed_roots(feature.consumed_roots),
+                consumed_composition=entry_composition(
+                    feature, resolved, (meta.group, meta.sequence)
+                ),
+                consumed_tracks_composition=tracks_now_by_entry.get(
+                    (meta.group, meta.sequence), ""
+                ),
+                consumed_input_composition=inputs_now_by_entry.get(
+                    (meta.group, meta.sequence), ""
+                ),
+                consumed_neighbors=neighbors_now_by_entry.get(
+                    (meta.group, meta.sequence), ""
+                ),
+                n_rows=n_rows,
+                params_hash=params_hash,
+                identity_scheme=FEATURE_IDENTITY_SCHEME,
             )
-            del result_df
-            gc.collect()
-        _report_resources()
+        )
+        del result_df
+        gc.collect()
 
-    def _wait_for_memory() -> None:
-        """Hold dispatch while the host's available memory is under the floor.
+    def _record_failure(
+        tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
+    ) -> None:
+        meta, _ = tag
+        _entry_failed(meta.group, meta.sequence, exc)
 
-        Waits for in-flight entries, whose tables free memory as they finish, and
-        raises when the host is still under the floor with none in flight.
-        """
-        if min_free_memory_fraction <= 0.0:
-            return
-        while True:
-            free = watch.free_fraction()
-            if free is None or free >= min_free_memory_fraction:
-                return
-            if not pending:
-                _report_resources(final=True)
-                raise MemoryFloorReached(
-                    _memory_use(),
-                    free_fraction=free,
-                    floor=min_free_memory_fraction,
-                )
-            _drain_completed()
+    pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], FeatureOutput] = EntryPool(
+        workers=max_workers,
+        mode=parallel_mode_str,
+        on_result=_record_result,
+        on_error=_record_failure,
+        min_free_memory_fraction=min_free_memory_fraction,
+        on_resources=ctx.resources,
+    )
 
     def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
         """Record an entry with no pair rows to widen onto as lost."""
@@ -2167,72 +2090,24 @@ def _run_feature_impl(
 
         # Cache hits are resolved up-front in the pre-pass; any entry reaching
         # here needs (re)computation.
-        if executor is not None:
-            while len(pending) >= max_workers:
-                _drain_completed()
-            _wait_for_memory()
-            try:
-                if parallel_mode_str == "process":
-                    artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
-                    pending[
-                        executor.submit(
-                            process_apply_worker,
-                            feature.__module__,
-                            type(feature).__name__,
-                            feature.inputs.model_dump(),
-                            feature.params.model_dump(),
-                            str(run_root),
-                            artifact_paths_str,
-                            dependency_lookups,
-                            df,
-                            str(ds.manifest_path),
-                            tracklets,
-                        )
-                    ] = (meta, selector)
-                else:
-                    pending[executor.submit(feature.apply, df)] = (meta, selector)
-            except BrokenProcessPool as exc:
-                _report_resources(final=True)
-                raise WorkerProcessDied(_memory_use()) from exc
-            _report_resources()
-        else:
-            try:
-                result_df: FeatureOutput = feature.apply(df)
-            except Exception as exc:
-                _entry_failed(group, sequence, exc)
-                return
-            if selector is not None:
-                result_df = trim_feature_output(result_df, selector)
-            n_rows = write_output(meta, result_df)
-            _record_row(
-                FeatureIndexRow(
-                    run_id=run_id,
-                    feature=storage_feature_name,
-                    version=feature.version,
-                    group=group,
-                    sequence=sequence,
-                    abs_path=Path(ds.relative_to_root(meta.out_path)),
-                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                    consumed_composition=entry_composition(
-                        feature, resolved, (group, sequence)
-                    ),
-                    consumed_tracks_composition=tracks_now_by_entry.get(
-                        (group, sequence), ""
-                    ),
-                    consumed_input_composition=inputs_now_by_entry.get(
-                        (group, sequence), ""
-                    ),
-                    consumed_neighbors=neighbors_now_by_entry.get(
-                        (group, sequence), ""
-                    ),
-                    n_rows=n_rows,
-                    params_hash=params_hash,
-                    identity_scheme=FEATURE_IDENTITY_SCHEME,
-                )
+        if parallel_mode_str == "process" and pool.workers > 1:
+            artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
+            pool.submit(
+                (meta, selector),
+                process_apply_worker,
+                feature.__module__,
+                type(feature).__name__,
+                feature.inputs.model_dump(),
+                feature.params.model_dump(),
+                str(run_root),
+                artifact_paths_str,
+                dependency_lookups,
+                df,
+                str(ds.manifest_path),
+                tracklets,
             )
-            del result_df
-            gc.collect()
-            _report_resources()
+        else:
+            pool.submit((meta, selector), feature.apply, df)
 
     # Iterate manifest entries. A cooperative cancel (raised at the top of
     # _process_entry) stops dispatch; completed entries stay recorded in
@@ -2261,11 +2136,7 @@ def _run_feature_impl(
             ):
                 _process_entry(entry_key, df, None)
 
-        # Drain remaining futures
-        if executor is not None:
-            while pending:
-                _drain_completed()
-            executor.shutdown(wait=True)
+        pool.finish()
     except (Cancelled, WorkerProcessDied, MemoryFloorReached, ToolUnavailable):
         _flush_idx()
         # A run that stops after writing 40 of 100 entries has 40 durable on disk,
@@ -2275,12 +2146,8 @@ def _run_feature_impl(
         ctx.entries_written(_total_written)
         raise
     finally:
-        # Every exit shuts the pool down: a pool left running holds its workers'
-        # memory, and a broken one is of no further use. Shutting down a pool that
-        # already shut down does nothing.
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
-        _report_resources(final=True)
+        # Every exit shuts the pool down and records the memory it reached.
+        pool.close()
 
     # Global marker (for empty-input features).
     #

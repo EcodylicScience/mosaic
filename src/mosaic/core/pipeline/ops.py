@@ -41,6 +41,7 @@ from typing import (
 
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.job import Cancelled, CancelToken, JobContext, job_context
+from mosaic.core.pipeline.parallelism import ParallelSettings, effective_parallel
 from mosaic.core.params import Params
 from mosaic.core.pipeline.subprocess_util import ProcessCancelled
 
@@ -356,6 +357,14 @@ class Op(Generic[P]):
     ahead of either refuse the same references.
     """
 
+    parallelizable: ClassVar[bool] = False
+    """Whether :meth:`run` computes its entries at once when the run has workers.
+
+    A run reads the workers it was given from ``ctx.parallel``, which holds one
+    worker for an op that leaves this ``False``. The worker count is a property of
+    the machine and is no part of the op's identity.
+    """
+
     Params: ClassVar[type[Params]]
 
     def target(self, params: P, scope: "ResolvedScope") -> str:
@@ -574,6 +583,7 @@ def run_op(
     overwrite: bool = False,
     republish: bool = False,
     step_id: str = "",
+    parallel: ParallelSettings | None = None,
 ) -> str:
     """Run a registered op as a tracked Job-Contract attempt.
 
@@ -600,6 +610,10 @@ def run_op(
             is recorded with the target ``<kind>-republish``.
         step_id: The pipeline step this attempt runs, or ``""`` outside a
             pipeline. A refusal recorded for the attempt names it.
+        parallel: What the caller asks for. The op receives it through
+            ``ctx.parallel``, as :func:`~mosaic.core.pipeline.parallelism.effective_parallel`
+            resolves it for an op that is or is not ``parallelizable``. ``None``
+            runs the op's entries one at a time.
 
     Returns:
         The content ``run_id`` the op produced.
@@ -640,6 +654,7 @@ def run_op(
         progress_callback=progress_callback,
         cancel_token=cancel_token,
         step_id=step_id,
+        parallel=effective_parallel(parallel, parallelizable=op_cls.parallelizable),
     ) as ctx:
         try:
             if republish:

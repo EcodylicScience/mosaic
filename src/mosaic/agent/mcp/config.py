@@ -11,8 +11,8 @@
     cleanup:                # which superseded runs a cleanup keeps
       keep_newest: 1
       min_age_hours: 24
-    max_workers: 1          # most entries a feature step may compute at once
-    allow_process_mode: false   # let a submission ask for process workers
+    max_workers: 8          # most entries at once; unset: physical cores
+    allow_process_mode: true    # false: refuse process workers
     min_free_memory_fraction: 0.10   # share of host memory a parallel run keeps free
     gpu_cards: [0, 1]       # cards GPU steps may lease; unset leases every visible card
     dataset_roots: []       # where manage_dataset may create datasets, served too
@@ -34,7 +34,12 @@ from typing import Annotated, Final, Literal
 from pydantic import BeforeValidator, Field, ValidationError
 
 from mosaic.core.pipeline.graph.model import CleanupPolicy
-from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelLimits
+from mosaic.core.pipeline.parallelism import (
+    DEFAULT_MIN_FREE_MEMORY_FRACTION,
+    MAX_WORKERS_CEILING,
+    ParallelLimits,
+    default_max_workers,
+)
 from mosaic.core.strict_model import StrictModel
 from mosaic.optional_dependency import OptionalModule
 
@@ -99,10 +104,11 @@ class ServerConfig(StrictModel):
         max_workers: The most entries a parallelizable feature step computes at
             once, and the count a submission that names none receives. 1 computes
             them in turn. A submission may ask for fewer and never for more.
+            Unset: the host's physical cores, at most 32.
         allow_process_mode: Whether a submission may ask for ``process`` workers,
-            which are faster for work that does not release the interpreter lock
-            and use much more memory than threads. A submission that names no
-            mode receives ``thread``.
+            which each hold an interpreter and their own copy of an entry's
+            tables. A submission that names no mode receives ``thread``. Set it
+            false on a host whose memory cannot hold that per worker.
         min_free_memory_fraction: The share of the host's memory that a run with
             several workers keeps available. The run waits for its in-flight
             entries while the share is lower, and fails when it is still lower
@@ -132,9 +138,13 @@ class ServerConfig(StrictModel):
     allow_managed_writes: bool = False
     allow_cleanup: list[CleanupClass] = Field(default_factory=list)
     cleanup: CleanupPolicy = Field(default_factory=lambda: CleanupPolicy())
-    max_workers: int = Field(default=1, ge=1, le=MAX_WORKERS_CEILING)
-    allow_process_mode: bool = False
-    min_free_memory_fraction: float = Field(default=0.10, ge=0.0, lt=1.0)
+    max_workers: int = Field(
+        default_factory=default_max_workers, ge=1, le=MAX_WORKERS_CEILING
+    )
+    allow_process_mode: bool = True
+    min_free_memory_fraction: float = Field(
+        default=DEFAULT_MIN_FREE_MEMORY_FRACTION, ge=0.0, lt=1.0
+    )
     gpu_cards: list[CardName] | None = Field(default=None, min_length=1)
     dataset_roots: list[Path] = Field(default_factory=list)
     source_roots: list[Path] = Field(default_factory=list)

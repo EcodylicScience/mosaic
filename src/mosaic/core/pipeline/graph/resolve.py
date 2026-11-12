@@ -190,6 +190,15 @@ def feature_parallelizable(slug: str) -> bool:
     return bool(getattr(cls, "parallelizable", False))
 
 
+def op_parallelizable(kind: str) -> bool:
+    """Whether the registered op *kind* can compute several entries at once.
+
+    Returns ``False`` for a kind that names no op.
+    """
+    cls = op_class_for_kind(kind)
+    return cls is not None and cls.parallelizable
+
+
 def op_class_for_kind(kind: str) -> "type[Op[Params]] | None":
     """The registered op class for *kind*, or ``None``.
 
@@ -929,7 +938,9 @@ def _index_entry(entry: CatalogEntry) -> CatalogIndexEntry:
         payload_families=provides is not None and provides.payload_families,
         unavailable=entry.unavailable,
         license_note=entry.license_note,
-        parallelizable=entry.type == "feature" and feature_parallelizable(entry.name),
+        parallelizable=feature_parallelizable(entry.name)
+        if entry.type == "feature"
+        else op_parallelizable(entry.name),
     )
 
 
