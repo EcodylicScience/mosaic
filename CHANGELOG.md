@@ -20,6 +20,18 @@ catches what it caught before. The messages are the same. Every `ClassifiedError
 now survives the pickle a process worker sends its parent, which `PreviewInvalid` and
 the other errors with their own `__init__` arguments did not.
 
+`load_run_matrix` is two public steps, exported from `mosaic.core.pipeline`:
+`plan_run_read` reads the index and the footers into a `RunRead`, and `read_run` checks
+memory and reads the values. `load_run_matrix` calls both and keeps its signature.
+`plan_run_read` takes `keys`, columns of any type read beside the identity and added to
+`RunMatrix.index` after the identity columns. A numeric key is not a value, so
+`columns=None` leaves it out. `RunRead.key_kinds` records each key's Arrow kind in every
+entry, `null` for an Arrow null column. A key that no entry writes is `RunReadInvalid`
+listing the columns, and a key that some entries lack is `RunColumnsConflict` naming
+them. A key named twice is read once, and `group`, `sequence` or an identity column the
+run writes, named as a key, is the index's own column and is not read again. The memory
+check counts a key as an identity column, at 8 bytes a cell.
+
 ## Unreleased: `event-response` measures a value around each event
 
 `event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It

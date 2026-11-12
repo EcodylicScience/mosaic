@@ -12,6 +12,12 @@ not fit, and then writes each entry into the array in place, a batch of rows at 
 time. A perspective filter applies to each batch, so a pair run holds only the rows
 it returns.
 
+The read has two steps, which a caller may take apart to probe a run before reading
+it. :func:`plan_run_read` reads the index and the footers into a :class:`RunRead`, and
+:func:`read_run` checks memory and reads the values. Key columns of any type, such as
+a kept label, are read beside the identity, and the plan records each key's Arrow kind
+in every entry's footer.
+
 A batch size does not bound what pyarrow holds. It decodes a whole row group of the
 columns it is asked for, and a feature's output is one row group up to a million rows.
 A file whose columns would take more than :data:`BLOCK_BYTES` to decode is therefore
@@ -32,7 +38,7 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Final
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -45,7 +51,7 @@ from .dataset_indexes import feature_storages
 from .error_kind import ClassifiedError, ErrorKind
 from .index import feature_index, feature_index_path, missing_outputs_error
 from .memory_watch import host_memory_bytes
-from .parquet_reader import ParquetFooter, iter_column_batches, read_footer
+from .parquet_reader import ArrowKind, ParquetFooter, iter_column_batches, read_footer
 from .track_universe import AmbiguousTrackLeaf, current_run_id
 from .types import BOOKKEEPING_COLS, META_COLS, Result
 
@@ -57,16 +63,23 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AmbiguousRunLeaf",
+    "KeyKind",
     "RunColumnsConflict",
     "RunIncomplete",
     "RunIndexEmpty",
     "RunMatrix",
     "RunNotFound",
     "RunOutputsGone",
+    "RunRead",
     "RunReadInvalid",
     "RunTooLarge",
     "load_run_matrix",
+    "plan_run_read",
+    "read_run",
 ]
+
+type KeyKind = ArrowKind | Literal["null"]
+"""The Arrow kind of a key column in one footer, ``null`` for an Arrow null column."""
 
 BATCH_ROWS: Final = 65_536
 """The most rows of a file that one batch holds."""
@@ -95,6 +108,9 @@ MEMORY_HEADROOM: Final = 0.20
 
 _IDENTITY_COLUMNS: Final = ("frame", "id", "id1", "id2", "perspective")
 """The columns of a row's identity, after ``group`` and ``sequence``, in index order."""
+
+_ENTRY_COLUMNS: Final = ("group", "sequence")
+"""The columns of a row's entry, which every index holds."""
 
 _NUMERIC_KINDS: Final = frozenset({"integer", "floating", "boolean"})
 
@@ -195,8 +211,8 @@ class RunMatrix:
             :func:`~mosaic.core.pipeline.track_universe.current_run_id` names.
         entries: The ``(group, sequence)`` pairs that were read, sorted.
         index: One row per row of *values*, in the same order: ``group``,
-            ``sequence``, and each of ``frame``, ``id``, ``id1``, ``id2`` and
-            ``perspective`` that the run writes.
+            ``sequence``, each of ``frame``, ``id``, ``id1``, ``id2`` and
+            ``perspective`` that the run writes, and then the keys read.
         values: The cells, shape ``(len(index), len(columns))``, in the dtype
             asked for. A missing value is NaN.
         columns: The name of each column of *values*.
@@ -233,8 +249,35 @@ class _Layout:
 
     columns: tuple[str, ...]
     identity: tuple[str, ...]
+    keys: tuple[str, ...]
     entry_rows: tuple[int, ...]
     file_rows: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RunRead:
+    """A planned read of one run: what it reads, from the index and the footers alone.
+
+    Attributes:
+        feature: The storage name of the feature that wrote the run.
+        run_id: The run to read.
+        outputs: The files the scope reaches, and the entries it lacks.
+        layout: The value columns, the identity and key columns, and the row counts.
+        perspective: The perspective whose rows are read, or ``None`` for all rows.
+        footer_columns: The name and Arrow kind of each column of the first output.
+        keys: The key columns, read beside the identity, in the order asked for.
+        key_kinds: For each entry read, in the order of ``outputs.found``, each
+            key with its kind in that entry's footer.
+    """
+
+    feature: str
+    run_id: str
+    outputs: _Outputs
+    layout: _Layout
+    perspective: int | None
+    footer_columns: tuple[tuple[str, ArrowKind], ...]
+    keys: tuple[str, ...]
+    key_kinds: tuple[tuple[tuple[str, KeyKind], ...], ...]
 
 
 def load_run_matrix(
@@ -301,25 +344,110 @@ def load_run_matrix(
             read with *scope*, *perspective* or *columns*, or choose a smaller
             *dtype* (a ``MemoryError``, kind ``unavailable``).
     """
-    value_dtype = _floating_dtype(dtype, result)
+    _ = _floating_dtype(dtype, result.feature, result.run_id)
+    read = plan_run_read(
+        ds,
+        result,
+        scope=scope,
+        perspective=perspective,
+        columns=columns,
+        allow_partial=allow_partial,
+    )
+    return read_run(read, dtype)
+
+
+def plan_run_read(
+    ds: Dataset,
+    result: Result[str],
+    *,
+    scope: Scope | None = None,
+    perspective: int | None = None,
+    columns: str | Sequence[str] | None = None,
+    keys: Sequence[str] = (),
+    allow_partial: bool = False,
+) -> RunRead:
+    """Plan a read of one run from its index and its footers, reading no value.
+
+    *scope*, *perspective*, *columns* and *allow_partial* mean what they mean for
+    :func:`load_run_matrix`, and raise what it raises for them.
+
+    Args:
+        ds: The dataset holding the run.
+        result: The run to read.
+        scope: The entries to read.
+        perspective: Keep only the rows of this ``perspective``.
+        columns: The value columns to return. A key is never among them.
+        keys: Columns of any type to read beside the identity, such as a kept
+            label, in this order. A key named twice is read once, and a key that
+            the index holds already (``group``, ``sequence`` or an identity
+            column the run writes) is not read again, so a caller passes the
+            names it groups by as they are.
+        allow_partial: Read what the run holds where it is partial.
+
+    Returns:
+        The planned read, for :func:`read_run`.
+
+    Raises:
+        RunReadInvalid: No entry writes a key, an identity column that the run
+            does not write among them, besides what :func:`load_run_matrix` raises
+            it for (a ``ValueError``, kind ``invalid``).
+        RunColumnsConflict: Some entries write a key and others do not, besides two
+            entries writing different value columns (a ``ValueError``, kind
+            ``conflict``).
+    """
     selector = scope if scope is not None else Scope()
     run_id = _resolve_run_id(ds, result)
     outputs = _run_outputs(ds, result.feature, run_id, selector)
     _refuse_a_partial_run(result.feature, run_id, outputs, allow_partial)
     patterns = (columns,) if isinstance(columns, str) else columns
-    layout = _plan(
+    layout, footer_columns, key_kinds = _plan(
         result.feature,
         run_id,
         outputs.found,
         None if patterns is None else tuple(patterns),
         perspective,
+        tuple(dict.fromkeys(keys)),
     )
-    batch_rows = _batch_rows(len(layout.columns) + len(layout.identity))
-    _check_memory(result.feature, run_id, layout, value_dtype)
-    index, values = _read(outputs.found, layout, perspective, value_dtype, batch_rows)
-    return RunMatrix(
+    return RunRead(
         feature=result.feature,
         run_id=run_id,
+        outputs=outputs,
+        layout=layout,
+        perspective=perspective,
+        footer_columns=footer_columns,
+        keys=layout.keys,
+        key_kinds=key_kinds,
+    )
+
+
+def read_run(read: RunRead, dtype: npt.DTypeLike = np.float32) -> RunMatrix:
+    """Read the rows that *read* plans into an identity frame and an array.
+
+    Args:
+        read: The planned read, from :func:`plan_run_read`.
+        dtype: The floating-point dtype of the array.
+
+    Returns:
+        The rows of the run, with each key in the index after the identity.
+
+    Raises:
+        RunReadInvalid: *dtype* is not floating point (a ``ValueError``, kind
+            ``invalid``).
+        RunTooLarge: The array would not fit in the memory available (a
+            ``MemoryError``, kind ``unavailable``).
+    """
+    value_dtype = _floating_dtype(dtype, read.feature, read.run_id)
+    layout, outputs = read.layout, read.outputs
+    batch_rows = _batch_rows(
+        len(layout.columns) + len(layout.identity) + len(layout.keys)
+    )
+    _check_memory(read.feature, read.run_id, layout, value_dtype)
+    index, values = _read(
+        outputs.found, layout, read.perspective, value_dtype, batch_rows
+    )
+    return RunMatrix(
+        feature=read.feature,
+        run_id=read.run_id,
         entries=tuple(entry for entry, _ in outputs.found),
         index=index,
         values=values,
@@ -329,7 +457,9 @@ def load_run_matrix(
     )
 
 
-def _floating_dtype(dtype: npt.DTypeLike, result: Result[str]) -> np.dtype[Any]:
+def _floating_dtype(
+    dtype: npt.DTypeLike, feature: str, run_id: str | None
+) -> np.dtype[Any]:
     """The dtype asked for, which has to hold NaN."""
     resolved = np.dtype(dtype)
     if resolved.kind != "f":
@@ -337,7 +467,7 @@ def _floating_dtype(dtype: npt.DTypeLike, result: Result[str]) -> np.dtype[Any]:
             f"dtype={resolved} cannot hold a missing value. Pass a floating-point "
             f"dtype such as numpy.float32 or numpy.float64."
         )
-        raise RunReadInvalid(msg, feature=result.feature, run_id=result.run_id)
+        raise RunReadInvalid(msg, feature=feature, run_id=run_id)
     return resolved
 
 
@@ -463,23 +593,43 @@ def _plan(
     found: tuple[tuple[Entry, Path], ...],
     patterns: tuple[str, ...] | None,
     perspective: int | None,
-) -> _Layout:
+    keys: tuple[str, ...],
+) -> tuple[
+    _Layout,
+    tuple[tuple[str, ArrowKind], ...],
+    tuple[tuple[tuple[str, KeyKind], ...], ...],
+]:
     """Fix the columns and count the rows of every entry, from footers alone.
 
     A perspective filter costs one more read per entry, of the ``perspective``
     column alone, so that the count is of the rows returned and not of the rows in
-    the files.
+    the files. A key that the index holds already, ``group``, ``sequence`` or an
+    identity column of the first output, is dropped. The other keys an entry writes
+    join the columns that every entry must share, so a key that some entries lack
+    is a conflict.
+
+    Returns:
+        The layout, the name and kind of each column of the first output, and
+        each entry's keys with their kinds.
     """
     first: tuple[tuple[str, ...], tuple[str, ...]] | None = None
-    first_entry = found[0][0]
+    first_entry, first_footer = found[0][0], read_footer(found[0][1])
+    indexed = {
+        *_ENTRY_COLUMNS,
+        *(name for name in _IDENTITY_COLUMNS if _has_column(first_footer, name)),
+    }
+    keys = tuple(name for name in keys if name not in indexed)
     entry_rows: list[int] = []
     file_rows: list[int] = []
+    key_kinds: list[tuple[tuple[str, KeyKind], ...]] = []
     for entry, path in found:
-        footer = read_footer(path)
-        chosen = _select_columns(footer, patterns, feature, run_id, entry)
+        footer = first_footer if entry == first_entry else read_footer(path)
+        chosen = _select_columns(footer, patterns, feature, run_id, entry, keys)
         identity = tuple(
             name for name in _IDENTITY_COLUMNS if _has_column(footer, name)
         )
+        kinds = _key_kinds(footer, keys)
+        identity += tuple(name for name, _ in kinds)
         if first is None:
             first = (chosen, identity)
         elif set(chosen + identity) != set(first[0] + first[1]):
@@ -499,8 +649,37 @@ def _plan(
             )
         entry_rows.append(_rows_returned(path, footer, perspective))
         file_rows.append(footer.n_rows)
+        key_kinds.append(kinds)
+    absent = [name for name in keys if not _has_column(first_footer, name)]
+    if absent:
+        names = [column.name for column in first_footer.columns]
+        msg = (
+            f"{feature} run {run_id}: no entry writes the key "
+            f"{_listed([repr(name) for name in absent])}. The columns of entry "
+            f"{_name(first_entry)} are: {_listed(names)}."
+        )
+        raise RunReadInvalid(
+            msg, feature=feature, run_id=run_id, entries=[first_entry], columns=names
+        )
     assert first is not None
-    return _Layout(first[0], first[1], tuple(entry_rows), tuple(file_rows))
+    identity = tuple(name for name in first[1] if name not in keys)
+    layout = _Layout(first[0], identity, keys, tuple(entry_rows), tuple(file_rows))
+    footer_columns: tuple[tuple[str, ArrowKind], ...] = tuple(
+        (column.name, column.kind) for column in first_footer.columns
+    )
+    return layout, footer_columns, tuple(key_kinds)
+
+
+def _key_kinds(
+    footer: ParquetFooter, keys: tuple[str, ...]
+) -> tuple[tuple[str, KeyKind], ...]:
+    """Each key that *footer* holds, with its kind there, in the order of *keys*."""
+    by_name = {column.name: column for column in footer.columns}
+    return tuple(
+        (name, "null" if by_name[name].arrow_type == "null" else by_name[name].kind)
+        for name in keys
+        if name in by_name
+    )
 
 
 def _has_column(footer: ParquetFooter, name: str) -> bool:
@@ -523,12 +702,13 @@ def _select_columns(
     feature: str,
     run_id: str,
     entry: Entry,
+    keys: tuple[str, ...],
 ) -> tuple[str, ...]:
     """The columns of one entry that *patterns* select, in the order they return.
 
-    Only a numeric column that is not part of a row's identity can be a value. A
-    pattern that is the exact name of such a column takes it literally, so a name
-    holding glob characters still selects itself.
+    Only a numeric column that is not part of a row's identity and is not a key can
+    be a value. A pattern that is the exact name of such a column takes it
+    literally, so a name holding glob characters still selects itself.
     """
     where = f"{feature} run {run_id}"
     candidates = [
@@ -536,6 +716,7 @@ def _select_columns(
         for column in footer.columns
         if column.kind in _NUMERIC_KINDS
         and column.name not in META_COLS
+        and column.name not in keys
         and not column.name.startswith("__index_level_")
     ]
     if patterns is None:
@@ -606,14 +787,16 @@ def _check_memory(
 
     The estimate is the array, the identity frame (counted twice, because the frame
     is built from copies of its pieces), and what pyarrow holds to decode the largest
-    block of columns of one file. Where the host reports no memory, as without
-    ``psutil``, the read goes ahead.
+    block of columns of one file. A key counts as an identity column, at 8 bytes a
+    cell, and a text key's strings are not counted. Where the host reports no
+    memory, as without ``psutil``, the read goes ahead.
     """
     _, available = host_memory_bytes()
     if available <= 0:
         return
     n_rows = sum(layout.entry_rows)
-    n_columns, n_identity = len(layout.columns), len(layout.identity)
+    n_columns = len(layout.columns)
+    n_identity = len(layout.identity) + len(layout.keys)
     identity_bytes = n_rows * 8 * (n_identity + 2)
     decoding = max(
         (
@@ -644,29 +827,31 @@ def _read(
 ) -> tuple[pd.DataFrame, npt.NDArray[np.floating[Any]]]:
     """Write every entry into one array, a batch at a time, and build the identity.
 
-    The first block of an entry's columns is read with its identity columns, and a
-    later block with the ``perspective`` column alone beside it, to choose its rows.
+    The first block of an entry's columns is read with its identity and key columns,
+    and a later block with the ``perspective`` column alone beside it, to choose its
+    rows.
     """
     values = np.empty((sum(layout.entry_rows), len(layout.columns)), dtype=dtype)
     filtering = perspective is not None and "perspective" in layout.identity
     later = ("perspective",) if filtering else ()
+    first = (*layout.identity, *layout.keys)
     column_of = {name: position for position, name in enumerate(layout.columns)}
     groups: list[npt.NDArray[np.object_]] = []
     sequences: list[npt.NDArray[np.object_]] = []
-    parts: dict[str, list[npt.NDArray[Any]]] = {name: [] for name in layout.identity}
+    parts: dict[str, list[npt.NDArray[Any]]] = {name: [] for name in first}
     start = 0
     for ((group, sequence), path), file_rows, expected in zip(
         found, layout.file_rows, layout.entry_rows, strict=True
     ):
         for block, block_columns in enumerate(_blocks(layout.columns, file_rows)):
-            beside = layout.identity if block == 0 else later
+            beside = first if block == 0 else later
             names = [*beside, *block_columns]
             position = start
             for batch in iter_column_batches(path, names, batch_rows):
                 keep = batch["perspective"] == perspective if filtering else None
                 n_batch = len(batch[names[0]]) if keep is None else int(keep.sum())
                 if block == 0:
-                    for name in layout.identity:
+                    for name in first:
                         cells = batch[name]
                         parts[name].append(cells if keep is None else cells[keep])
                 for name in block_columns:

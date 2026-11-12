@@ -32,13 +32,21 @@ import pytest
 
 from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.helpers import make_entry_key
+from mosaic.core import pipeline as pipeline_package
 from mosaic.core.pipeline import load_run_matrix as exported_load_run_matrix
 from mosaic.core.pipeline import run_matrix as run_matrix_module
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.pipeline.index import feature_index_path, feature_run_root
 from mosaic.core.pipeline.parquet_reader import ParquetUnreadable, iter_column_batches
 from mosaic.core.pipeline.run import load_values
-from mosaic.core.pipeline.run_matrix import RunMatrix, load_run_matrix
+from mosaic.core.pipeline.run_matrix import (
+    RunMatrix,
+    RunRead,
+    RunTooLarge,
+    load_run_matrix,
+    plan_run_read,
+    read_run,
+)
 from mosaic.core.pipeline.track_universe import AmbiguousTrackLeaf, current_run_id
 from mosaic.core.pipeline.types import Result, ResultColumn
 from mosaic.core.scope import Scope
@@ -46,6 +54,7 @@ from tests.helpers import (
     PairClusterFeature,
     PlainFeature,
     add_track_sequences,
+    labeled_run,
     make_dataset,
     run_speed,
     tree_snapshot,
@@ -249,6 +258,12 @@ def test_a_pair_run_keeps_the_pair_identity_in_the_index(tmp_path: Path) -> None
 
 def test_the_export_is_the_module_function() -> None:
     assert exported_load_run_matrix is load_run_matrix
+    exported = {
+        name: getattr(pipeline_package, name) for name in pipeline_package.__all__
+    }
+    assert exported["RunRead"] is RunRead
+    assert exported["plan_run_read"] is plan_run_read
+    assert exported["read_run"] is read_run
 
 
 # --- narrowing the read -----------------------------------------------------
@@ -830,6 +845,272 @@ def test_the_refusal_counts_what_pyarrow_decodes_of_the_largest_block(
     blocked = load_run_matrix(ds, result)
 
     np.testing.assert_array_equal(blocked.values, whole.values)
+
+
+# --- the plan and the read -------------------------------------------------
+
+
+def assert_same_matrix(actual: RunMatrix, expected: RunMatrix) -> None:
+    """Every field of *actual* equals that field of *expected*."""
+    assert (actual.feature, actual.run_id) == (expected.feature, expected.run_id)
+    assert actual.entries == expected.entries
+    assert actual.columns == expected.columns
+    assert actual.missing == expected.missing
+    assert actual.finished == expected.finished
+    assert actual.values.dtype == expected.values.dtype
+    np.testing.assert_array_equal(actual.values, expected.values)
+    pd.testing.assert_frame_equal(actual.index, expected.index)
+
+
+@pytest.mark.parametrize("make_run", [wide_run, pair_run], ids=["wide", "pair"])
+def test_reading_the_plan_is_loading_the_run(
+    tmp_path: Path, make_run: Callable[[Path], tuple[Dataset, Result]]
+) -> None:
+    ds, result = make_run(tmp_path)
+
+    read = plan_run_read(ds, result)
+
+    assert isinstance(read, RunRead)
+    assert_same_matrix(read_run(read), load_run_matrix(ds, result))
+    assert_same_matrix(
+        read_run(plan_run_read(ds, result, perspective=0), dtype=np.float64),
+        load_run_matrix(ds, result, perspective=0, dtype=np.float64),
+    )
+
+
+LABELED_ENTRIES = (("g", "a"), ("g", "b"))
+
+
+def labeled_table(
+    entry: tuple[str, str], n_rows: int = 3, **columns: object
+) -> pd.DataFrame:
+    """Rows of one entry: ``frame``, ``id``, a ``value`` and the *columns* given."""
+    offset = 10.0 * LABELED_ENTRIES.index(entry)
+    return pd.DataFrame(
+        {
+            "frame": np.arange(n_rows, dtype=np.int64),
+            "id": np.zeros(n_rows, dtype=np.int64),
+            "value": np.arange(n_rows, dtype=np.float64) + offset,
+            **columns,
+        }
+    )
+
+
+def strain_and_batch_run(tmp_path: Path) -> tuple[Dataset, Result]:
+    """A run whose entries write a text key ``strain`` and an integer key ``batch``."""
+    return labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): labeled_table(
+                ("g", "a"), strain=["A", "A", "A"], batch=np.array([1, 1, 1])
+            ),
+            ("g", "b"): labeled_table(
+                ("g", "b"), strain=["B", "B", "B"], batch=np.array([2, 2, 2])
+            ),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "columns", [None, "*", ["value"]], ids=["default", "glob", "name"]
+)
+def test_keys_follow_the_identity_in_the_index_and_are_not_values(
+    tmp_path: Path, columns: str | list[str] | None
+) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+
+    matrix = read_run(
+        plan_run_read(ds, result, columns=columns, keys=["strain", "batch"])
+    )
+
+    assert list(matrix.index.columns) == [*KEY, "strain", "batch"]
+    assert matrix.columns == ("value",)
+    assert matrix.index["strain"].tolist() == ["A"] * 3 + ["B"] * 3
+    assert matrix.index["batch"].tolist() == [1] * 3 + [2] * 3
+    np.testing.assert_array_equal(
+        matrix.values[:, 0], [0.0, 1.0, 2.0, 10.0, 11.0, 12.0]
+    )
+
+
+def test_a_read_without_keys_takes_an_integer_label_as_a_value(
+    tmp_path: Path,
+) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+
+    matrix = read_run(plan_run_read(ds, result))
+
+    assert matrix.columns == ("value", "batch")
+    assert list(matrix.index.columns) == KEY
+
+
+def test_a_key_is_read_beside_the_perspective_it_is_filtered_by(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, *ENTRIES, n_rows=4, n_ids=2)
+    result = ds.run_feature(PairWideFeature())
+
+    matrix = read_run(plan_run_read(ds, result, perspective=1, keys=["cluster"]))
+
+    assert set(matrix.index["perspective"]) == {1}
+    assert matrix.index["cluster"].tolist() == (matrix.index["frame"] % 2).tolist()
+    assert matrix.columns == tuple(f"w{k}" for k in range(6))
+
+
+def test_each_entry_records_the_kind_of_each_key(tmp_path: Path) -> None:
+    """An all-null label is Arrow ``null``, and an integer label with a null is floating."""
+    ds, result = labeled_run(
+        tmp_path,
+        {
+            ("g", "a"): labeled_table(
+                ("g", "a"),
+                strain=[None, None, None],
+                batch=np.array([1.0, np.nan, 1.0]),
+            ),
+            ("g", "b"): labeled_table(
+                ("g", "b"), strain=["B", "B", "B"], batch=np.array([2, 2, 2])
+            ),
+        },
+    )
+
+    read = plan_run_read(ds, result, keys=["strain", "batch"])
+
+    assert read.keys == ("strain", "batch")
+    assert read.key_kinds == (
+        (("strain", "null"), ("batch", "floating")),
+        (("strain", "string"), ("batch", "integer")),
+    )
+    assert dict(read.footer_columns)["value"] == "floating"
+    matrix = read_run(read)
+    strain = matrix.index["strain"]
+    assert strain.isna().tolist() == [True] * 3 + [False] * 3
+    assert strain.iloc[3:].tolist() == ["B"] * 3
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        ["strain", "strain"],
+        ["group", "strain"],
+        ["sequence", "strain"],
+        ["id", "strain"],
+        ["strain", "group", "sequence", "id", "strain"],
+    ],
+    ids=["twice", "group", "sequence", "id", "all"],
+)
+def test_a_key_already_in_the_index_is_read_once(
+    tmp_path: Path, keys: list[str]
+) -> None:
+    """A key named twice, or naming a column of the identity the run writes."""
+    ds, result = strain_and_batch_run(tmp_path)
+
+    read = plan_run_read(ds, result, keys=keys)
+    matrix = read_run(read)
+
+    assert read.keys == ("strain",)
+    assert read.key_kinds == ((("strain", "string"),),) * 2
+    assert list(matrix.index.columns) == [*KEY, "strain"]
+    assert matrix.index["strain"].tolist() == ["A"] * 3 + ["B"] * 3
+
+
+def test_an_identity_column_the_run_does_not_write_is_a_missing_key(
+    tmp_path: Path,
+) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+
+    with pytest.raises(ValueError, match="'id1'") as raised:
+        _ = plan_run_read(ds, result, keys=["id1"])
+
+    assert isinstance(raised.value, ClassifiedError)
+    assert raised.value.error_kind == "invalid"
+    detail = raised.value.error_detail()
+    assert detail is not None
+    columns = detail["columns"]
+    assert isinstance(columns, list)
+    assert {"id", "strain", "value"} <= set(columns)
+
+
+def test_a_key_missing_from_every_entry_lists_the_columns(tmp_path: Path) -> None:
+    ds, result = strain_and_batch_run(tmp_path)
+
+    with pytest.raises(ClassifiedError) as raised:
+        _ = plan_run_read(ds, result, keys=["sex"])
+
+    assert raised.value.error_kind == "invalid"
+    assert "'sex'" in str(raised.value) and "strain" in str(raised.value)
+    detail = raised.value.error_detail()
+    assert detail is not None
+    columns = detail["columns"]
+    assert isinstance(columns, list)
+    assert {"strain", "batch", "value"} <= set(columns)
+
+
+@pytest.mark.parametrize("lacking", LABELED_ENTRIES, ids=["first", "second"])
+def test_a_key_missing_from_one_entry_names_the_entries(
+    tmp_path: Path, lacking: tuple[str, str]
+) -> None:
+    tables = {
+        entry: labeled_table(entry, strain=["S"] * 3) for entry in LABELED_ENTRIES
+    }
+    tables[lacking] = labeled_table(lacking)
+    ds, result = labeled_run(tmp_path, tables)
+
+    with pytest.raises(ClassifiedError) as raised:
+        _ = plan_run_read(ds, result, keys=["strain"])
+
+    assert raised.value.error_kind == "conflict"
+    detail = raised.value.error_detail()
+    assert detail is not None
+    assert detail["entries"] == ["g/a", "g/b"]
+    assert detail["columns"] == ["strain"]
+
+
+def estimated_bytes(read: RunRead, monkeypatch: pytest.MonkeyPatch) -> int:
+    """The memory that :func:`read_run` counts for *read*, found by where it refuses.
+
+    With no headroom a read goes ahead exactly when its estimate is at most the
+    memory available, so the smallest amount that lets it go ahead is the estimate.
+    The read stops before its first value once the check passes.
+    """
+
+    class Admitted(Exception):
+        pass
+
+    def admitted(*_: object) -> Generator[dict[str, npt.NDArray[Any]]]:
+        raise Admitted
+        yield {}
+
+    monkeypatch.setattr(run_matrix_module, "MEMORY_HEADROOM", 0.0)
+    monkeypatch.setattr(run_matrix_module, "iter_column_batches", admitted)
+    low, high = 0, 2**40
+    while low < high:
+        middle = (low + high) // 2
+        monkeypatch.setattr(
+            run_matrix_module, "host_memory_bytes", lambda: (middle, middle)
+        )
+        try:
+            _ = read_run(read)
+        except RunTooLarge:
+            low = middle + 1
+        except Admitted:
+            high = middle
+    return low
+
+
+def test_each_key_counts_eight_bytes_a_row_as_an_identity_column_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frame holds a copy of each cell, and pyarrow decodes it beside the values."""
+    ds, result = strain_and_batch_run(tmp_path)
+    plain = plan_run_read(ds, result, columns="value")
+    keyed = plan_run_read(ds, result, columns="value", keys=["strain", "batch"])
+    n_rows = sum(plain.layout.entry_rows)
+    longest = max(plain.layout.file_rows)
+
+    grown = estimated_bytes(keyed, monkeypatch) - estimated_bytes(plain, monkeypatch)
+
+    per_key = 2 * 8 * n_rows + run_matrix_module.DECODE_FACTOR * 8 * longest
+    assert grown == 2 * per_key
 
 
 # --- a read writes nothing --------------------------------------------------

@@ -105,6 +105,8 @@ What lives where:
   and whether ``load_state`` finds a state after each publish fails.
 - ``trees``: snapshots of a directory tree, and the assertion that a call left
   one unchanged.
+- ``run_summaries``: a feature whose output for each entry is the table a test
+  passes for it, and a run of it.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -312,6 +314,7 @@ from tests.helpers.runner_programs import (
     journal_source,
     write_fake_runner,
 )
+from tests.helpers.run_summaries import LabeledFeature, labeled_run
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.spies import count_property_reads, observed
 from tests.helpers.pyproject_requirements import (
@@ -541,6 +544,7 @@ __all__ = [
     "LA_PAD",
     "LA_WINDOW",
     "LABELS_VARIANT",
+    "LabeledFeature",
     "LISTED_FRAMES",
     "PREDICTIONS_VARIANT",
     "LightningActionRecorder",
@@ -681,6 +685,7 @@ __all__ = [
     "journal_source",
     "keypoint_rows",
     "kpms_params",
+    "labeled_run",
     "load_results_after_each_failed_write",
     "latest_events",
     "latest_snapshot",
