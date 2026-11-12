@@ -1,8 +1,9 @@
 """``mosaic arenas``: the arena layout of each recording and camera.
 
-A layout names the tanks of a camera's view by rectangles in source pixels. It
-is declared once per recording, and ``assign-arenas`` reads it to name each
-tracks row's arena.
+A layout names the tanks of a camera's view by rectangles in source pixels, each
+optionally bounded by a circle or polygon and carrying named regions of
+interest. It is declared once per recording, and ``assign-arenas`` reads it to
+name each tracks row's arena.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 import typer
+from pydantic import TypeAdapter
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail
@@ -19,6 +21,7 @@ from mosaic.cli.tags import ManifestOption
 
 if TYPE_CHECKING:
     from mosaic.core.arenas import Rect
+    from mosaic.core.regions import CircleShape, Roi
 
 arenas_app = typer.Typer(
     name="arenas",
@@ -49,6 +52,24 @@ def _edges(text: str, flag: str) -> list[int]:
         return [int(part) for part in text.split(",") if part.strip()]
     except ValueError:
         fail(f"{flag} takes comma-separated whole pixels, got {text!r}.")
+
+
+def _circle(text: str) -> CircleShape:
+    """Parse ``CX,CY,R`` into a circle, the radius above zero."""
+    from mosaic.core.regions import CircleShape
+
+    try:
+        center_x, center_y, radius = (float(part) for part in text.split(","))
+    except ValueError:
+        fail(f"--circle takes CX,CY,R as three numbers, got {text!r}.")
+    return CircleShape(cx=center_x, cy=center_y, r=radius)
+
+
+def _read_rois(path: Path) -> list[Roi]:
+    """Read a JSON list of regions of interest."""
+    from mosaic.core.regions import Roi
+
+    return TypeAdapter(list[Roi]).validate_json(path.read_text("utf-8"))
 
 
 def _strip(text: str, flag: str) -> tuple[int, int]:
@@ -118,9 +139,31 @@ def set_arenas(
         str | None,
         typer.Option("--ys", help="Grid row edges in pixels, e.g. 0,170,346."),
     ] = None,
+    circle: Annotated[
+        str | None,
+        typer.Option(
+            "--circle",
+            help=(
+                "One circular arena CX,CY,R in pixels, e.g. 320,240,200. "
+                "It may reach past the frame."
+            ),
+        ),
+    ] = None,
+    rois: Annotated[
+        Path | None,
+        typer.Option(
+            "--rois",
+            help=(
+                "A JSON file holding a list of regions of interest that every "
+                "arena of a grid or circle carries."
+            ),
+        ),
+    ] = None,
     capacity: Annotated[
         int,
-        typer.Option("--capacity", help="Each grid arena's capacity; 0 for no limit."),
+        typer.Option(
+            "--capacity", help="Each grid or circle arena's capacity; 0 for no limit."
+        ),
     ] = 1,
     exclude_x: Annotated[
         list[str] | None,
@@ -144,19 +187,31 @@ def set_arenas(
     ] = None,
     camera: CameraOption = "",
 ) -> None:
-    """Declare a recording's arenas from a layout file or a grid of edges."""
+    """Declare a recording's arenas from a layout file, a circle or a grid of edges."""
     from mosaic.core.arenas import ArenaLayout
     from mosaic.core.strict_model import terse
 
-    if (layout is None) == (xs is None or ys is None):
-        fail("give --layout, or --xs and --ys for a grid.")
+    sources = [layout is not None, circle is not None, xs is not None or ys is not None]
+    if sum(sources) == 0 or (sources[2] and (xs is None or ys is None)):
+        fail("give --layout, --circle, or --xs and --ys for a grid.")
+    if sum(sources) > 1:
+        fail("--layout, --circle and --xs with --ys are exclusive.")
+    if layout is not None and rois is not None:
+        fail("--rois applies to a grid or a circle; a layout file names its own.")
     if layout is not None and (exclude_x or exclude_y):
         fail(
             "--exclude-x and --exclude-y apply to a grid; a layout file names its own."
         )
+    if circle is not None and (exclude_x or exclude_y):
+        fail("--exclude-x and --exclude-y apply to a grid.")
     try:
+        carried = [] if rois is None else _read_rois(rois)
         if layout is not None:
             declared = ArenaLayout.model_validate_json(layout.read_text("utf-8"))
+        elif circle is not None:
+            declared = ArenaLayout.single(
+                _circle(circle), capacity=capacity or None, rois=carried
+            )
         else:
             column_edges = _edges(xs or "", "--xs")
             row_edges = _edges(ys or "", "--ys")
@@ -167,6 +222,7 @@ def set_arenas(
                 exclude=_strip_exclusions(
                     column_edges, row_edges, exclude_x or [], exclude_y or []
                 ),
+                rois=carried,
             )
     except (OSError, ValueError) as exc:
         fail(f"arenas set failed: {terse(exc)}")
@@ -197,6 +253,7 @@ def show_arenas(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """List the declared layouts, or show the one a recording and camera find."""
+    from mosaic.core.arenas import region_boundary
     from mosaic.core.dataset_summary import arena_layout_summaries
     from mosaic.core.strict_model import terse
 
@@ -244,4 +301,9 @@ def show_arenas(
         rect = f"x {region.x0}-{region.x1}, y {region.y0}-{region.y1}"
         limit = "" if arena.capacity is None else f", capacity {arena.capacity}"
         excluded = f", {len(arena.exclude)} excluded" if arena.exclude else ""
-        typer.echo(f"  {ordinal:>3} {arena.name:<12} {rect}{limit}{excluded}")
+        wall = f", boundary {(arena.boundary or region_boundary(region)).kind}"
+        names = ", ".join(roi.name for roi in arena.rois)
+        regions = f", rois {names}" if names else ""
+        typer.echo(
+            f"  {ordinal:>3} {arena.name:<12} {rect}{limit}{excluded}{wall}{regions}"
+        )

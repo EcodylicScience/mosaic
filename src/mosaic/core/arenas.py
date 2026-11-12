@@ -392,6 +392,7 @@ class ArenaLayout(_FrozenModel):
         height: int | None = None,
         capacity: int | None = 1,
         exclude: Mapping[str, Sequence[Rect]] | None = None,
+        rois: Sequence[Roi] = (),
     ) -> ArenaLayout:
         """Return a layout of one arena per grid cell.
 
@@ -406,6 +407,7 @@ class ArenaLayout(_FrozenModel):
             height: The frame's height, the last row edge when ``None``.
             capacity: Every arena's capacity.
             exclude: The rectangles each named arena excludes.
+            rois: The regions of interest every arena carries.
 
         Raises:
             ValueError: If the edges do not make a grid of at most 26 columns,
@@ -425,6 +427,7 @@ class ArenaLayout(_FrozenModel):
                         region=Rect(x0=x0, y0=y0, x1=x1, y1=y1),
                         exclude=tuple(excluded.pop(name, ())),
                         capacity=capacity,
+                        rois=tuple(rois),
                     )
                 )
         if excluded:

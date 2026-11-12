@@ -31,6 +31,15 @@ input schema no longer lists the layout's fields. The server validates it as an
 `ArenaLayout` and answers `invalid_arenas` with a `detail.errors` list of `field` and
 `message` pairs.
 
+`mosaic arenas set` takes `--circle CX,CY,R`, which declares one circular arena through
+`ArenaLayout.single` (`--capacity` applies to it) and is exclusive with `--layout` and
+`--xs`/`--ys`, and `--rois FILE`, a JSON list of `Roi` that every arena of a grid or
+circle carries and that `--layout` refuses. `ArenaLayout.grid` takes the same list as
+`rois`, and a grid without it keeps its digest. A validation error fails with the
+validator's message. `mosaic
+arenas show` prints each arena's boundary kind and ROI names, and `--json` the whole
+layout.
+
 `assign-arenas` reads the assignment digest, so no existing run id, variant id or
 composition moves, and adding a boundary or ROIs to a layout recomputes nothing. A
 layout file that is missing, unparsable or edited against the digest in its index row

@@ -123,6 +123,28 @@ class TestGeometry:
         with pytest.raises(ValueError, match="lacks"):
             _ = ArenaLayout.grid(xs=PRINCETON_XS, ys=PRINCETON_YS, exclude={"C1": []})
 
+    def test_the_grid_gives_every_arena_the_rois_it_is_given(self) -> None:
+        rois = (
+            Roi(name="nest", shape=RectShape(x0=2.0, y0=2.0, x1=8.0, y1=8.0)),
+            Roi(name="drain", shape=CircleShape(cx=5.0, cy=5.0, r=1.0)),
+        )
+
+        layout = ArenaLayout.grid(xs=PRINCETON_XS, ys=PRINCETON_YS, rois=rois)
+
+        assert [arena.rois for arena in layout.arenas] == [rois] * 12
+        assert layout.assignment_digest() == (
+            ArenaLayout.grid(xs=PRINCETON_XS, ys=PRINCETON_YS).digest()
+        )
+
+    def test_a_grid_without_rois_dumps_without_the_field(self) -> None:
+        layout = ArenaLayout.grid(xs=PRINCETON_XS, ys=PRINCETON_YS, rois=())
+
+        assert all("rois" not in arena for arena in layout.model_dump()["arenas"])
+        assert (
+            layout.digest()
+            == ArenaLayout.grid(xs=PRINCETON_XS, ys=PRINCETON_YS).digest()
+        )
+
     def test_overlapping_arenas_are_refused(self) -> None:
         with pytest.raises(ValidationError, match="overlap"):
             _ = ArenaLayout(

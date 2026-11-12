@@ -1987,7 +1987,7 @@ $ mosaic arenas [OPTIONS] COMMAND [ARGS]...
 
 ### `mosaic arenas set`
 
-Declare a recording's arenas from a layout file or a grid of edges.
+Declare a recording's arenas from a layout file, a circle or a grid of edges.
 
 **Usage**:
 
@@ -2002,7 +2002,9 @@ $ mosaic arenas set [OPTIONS]
 * `--layout <path>`: A JSON file holding an ArenaLayout.
 * `--xs <str>`: Grid column edges in pixels, e.g. 0,506,1012.
 * `--ys <str>`: Grid row edges in pixels, e.g. 0,170,346.
-* `--capacity <int>`: Each grid arena's capacity; 0 for no limit.  [default: 1]
+* `--circle <str>`: One circular arena CX,CY,R in pixels, e.g. 320,240,200. It may reach past the frame.
+* `--rois <path>`: A JSON file holding a list of regions of interest that every arena of a grid or circle carries.
+* `--capacity <int>`: Each grid or circle arena's capacity; 0 for no limit.  [default: 1]
 * `--exclude-x <str>`: A vertical strip x0,x1 that every grid arena it crosses excludes, e.g. 95,105. Repeatable.
 * `--exclude-y <str>`: A horizontal strip y0,y1 that every grid arena it crosses excludes. Repeatable.
 * `--camera <str>`: The camera the layout applies to; '' for every one.
