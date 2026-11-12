@@ -70,7 +70,10 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   through `lazy_export` that equals a submodule basename, or that resolves to an
   object other than the one its table names.
 - `test_core_params_is_a_leaf.py`: `core.entry`, `core.individuals` or
-  `core.strict_model` importing mosaic, or `core.params` beyond `strict_model`.
+  `core.strict_model` importing mosaic, `core.params` beyond `strict_model`, or
+  `core.regions` beyond pydantic, the standard library, `params` and
+  `strict_model`, `core.region_geometry` beyond numpy, the standard library and
+  `regions`, or `agent/mcp/spec.py` importing `core.region_geometry`.
 - `test_params_declaration.py`: a parameter field without a description
   declaration, a declared fact missing from the schema, or a ratchet that grew.
 - `test_unwired_fields.py`: a field declared `unwired=` that is now wired.

@@ -8,6 +8,15 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: ROI occupancy and arena geometry
+
+The `pydantic` requirement rises from `>=2.12` to `>=2.12.3`. A field that leaves a
+default value out of a dump (`Field(exclude_if=...)`) first works at 2.12.3, and an
+arena's boundary and regions of interest will use it, so that a layout without them
+keeps its digest and its file bytes. `mosaic.core.regions` declares the shapes
+(`circle`, `ring`, `rect` and `polygon`) and the named `Roi` that those regions are
+made of.
+
 ## Unreleased: run summaries across entries
 
 `load_run_matrix` raises classified errors, so `error_envelope` renders each refusal

@@ -2106,7 +2106,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=10.0" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pyarrow", specifier = ">=11.0" },
-    { name = "pydantic", specifier = ">=2.12" },
+    { name = "pydantic", specifier = ">=2.12.3" },
     { name = "pywavelets", specifier = ">=1.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "scikit-learn", specifier = ">=1.2" },

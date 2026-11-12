@@ -170,6 +170,10 @@ importing `mosaic.tracking` registers neither.
 
 ## Arenas
 
+- `regions.py` declares the shapes (`circle`, `ring`, `rect`, `polygon`), the named
+  `Roi` and the polygon's validity check, and imports pydantic, the standard library,
+  `params` and `strict_model` only (`tests/meta/test_core_params_is_a_leaf.py`). It
+  holds no numpy.
 - `arenas.py` declares a layout and its lookup order, and imports pydantic,
   `entry` and `recording` only. `pipeline/arena_index.py` stores one JSON file per
   `(RecordingKey, camera)` and a row of `arenas/index.csv` with its digest.

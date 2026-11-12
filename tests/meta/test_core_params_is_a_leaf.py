@@ -1,9 +1,11 @@
 """:mod:`mosaic.core.entry`, :mod:`mosaic.core.params` and
 :mod:`mosaic.core.strict_model` declare the vocabulary a mosaic model declares
 its fields with, and each stays importable without dragging in the rest of the
-package. :mod:`mosaic.core.individuals` splits a tracks table into its
-individuals for both ``core.pipeline`` and the feature library, and imports
-neither.
+package. :mod:`mosaic.core.regions` declares shapes and regions of interest on
+that vocabulary and stays as light, and :mod:`mosaic.core.region_geometry`
+adds numpy to it alone. :mod:`mosaic.core.individuals` splits a tracks table
+into its individuals for both ``core.pipeline`` and the feature library, and
+imports neither.
 
 The checks below read each file's own ast rather than measuring an import at
 run time, because an ast walk covers the full tree and so catches an import
@@ -20,6 +22,7 @@ the ast cannot: that importing a leaf loads neither pandas nor h5py.
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -28,10 +31,19 @@ import pytest
 import mosaic.core.entry as entry_module
 import mosaic.core.individuals as individuals_module
 import mosaic.core.params as params_module
+import mosaic.core.region_geometry as region_geometry_module
+import mosaic.core.regions as regions_module
 import mosaic.core.strict_model as strict_model_module
 from tests.helpers import imports_of, source_tree
 
-LEAF_MODULES = (entry_module, individuals_module, params_module, strict_model_module)
+LEAF_MODULES = (
+    entry_module,
+    individuals_module,
+    params_module,
+    region_geometry_module,
+    regions_module,
+    strict_model_module,
+)
 """The modules the leaf rule covers, for the guard that reads all of them the
 same way."""
 
@@ -108,6 +120,61 @@ def test_strict_model_has_no_mosaic_imports() -> None:
 def test_params_imports_only_strict_model() -> None:
     """``Params`` imports exactly one mosaic module: ``mosaic.core.strict_model``."""
     assert _mosaic_imports(Path(params_module.__file__)) == {"mosaic.core.strict_model"}
+
+
+def test_regions_imports_only_pydantic_the_standard_library_and_two_core_leaves() -> (
+    None
+):
+    """``core.regions`` reaches pydantic, the standard library, ``params`` and
+    ``strict_model``.
+
+    ``core.arenas`` and the agent tool contract import it to declare a field over
+    a boundary or a region of interest, so it carries none of the numpy geometry
+    or the rest of ``core``.
+    """
+    allowed_mosaic = {"mosaic.core.params", "mosaic.core.strict_model"}
+    imported = imports_of(
+        Path(regions_module.__file__), scope="anywhere", relative=True
+    )
+    outside = sorted(
+        {
+            name.module
+            for name in imported
+            if name.module.startswith(".")
+            or (
+                name.module.split(".", 1)[0]
+                not in {*sys.stdlib_module_names, "pydantic", "mosaic"}
+            )
+            or (name.in_package("mosaic") and name.module not in allowed_mosaic)
+        }
+    )
+    assert not outside, (
+        f"core/regions.py imports {outside}. It may import pydantic, the standard "
+        f"library, mosaic.core.params and mosaic.core.strict_model only."
+    )
+
+
+def test_region_geometry_imports_only_numpy_the_standard_library_and_regions() -> None:
+    """``core.region_geometry`` reaches numpy, the standard library and ``regions``.
+
+    The feature library imports it for the geometry of a row's arena, so it
+    carries none of pandas or the rest of ``core``.
+    """
+    path = Path(region_geometry_module.__file__)
+    assert _mosaic_imports(path) == {"mosaic.core.regions"}
+    third_party = {
+        name.module.split(".", 1)[0]
+        for name in imports_of(path, scope="anywhere", relative=True)
+        if not name.module.startswith(".")
+        and name.module.split(".", 1)[0] not in {*sys.stdlib_module_names, "mosaic"}
+    }
+    assert third_party == {"numpy"}
+
+
+def test_the_agent_tool_contract_does_not_import_region_geometry() -> None:
+    """The MCP contract declares regions through ``core.regions`` alone."""
+    spec = Path(regions_module.__file__).parents[1] / "agent" / "mcp" / "spec.py"
+    assert "mosaic.core.region_geometry" not in _mosaic_imports(spec)
 
 
 @pytest.mark.parametrize("module", LEAF_MODULES, ids=lambda module: module.__name__)
