@@ -32,9 +32,6 @@ calls, and so a test can build the world it is asserting about.
 each such problem at the place in the recipe that would change, and
 :func:`plan_pipeline` raises them together in :class:`RecipeRefused`:
 
-- A time filter on a dataset that does not record its frame rate, at
-  ``run.filter_start_time`` or ``run.filter_end_time``. The step's identity is
-  then unresolved.
 - A column that a step requires and the tracks tables lack, at ``inputs``. The
   plan reads the column names of the tables that each step reads, from the
   parquet footers, and checks the recipe's columns again with them
@@ -55,7 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
 
-from mosaic.core.helpers import TIME_FILTER_NEEDS_FPS, resolve_frame_range
+from mosaic.core.helpers import TimeWindow
 from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
@@ -852,7 +849,6 @@ def plan_pipeline(
     planned: dict[str, PlannedStep] = {}
     steps: list[PlannedStep] = []
     findings = _Findings()
-    fps = ds.meta_float("fps_default")
     splits = ds.splits
     for step in topological_order(recipe):
         step_entries = _step_target(step.id, target, narrowed)
@@ -874,7 +870,7 @@ def plan_pipeline(
             pair_read=pair_reads.get(step.id),
         )
         if isinstance(step, FeatureStepSpec):
-            findings.problems.extend(_feature_problems(recipe, step, fps, resolved))
+            findings.problems.extend(_shared_run_problems(recipe, step, resolved))
             # A step bound or pinned to a run is not executed, so it fits
             # nothing. The guard does not wait on a step scope: a whole-dataset
             # request with none is the case it exists for.
@@ -1659,23 +1655,6 @@ def _resolve_feature_step(
     fits = bool(getattr(feature, "fits", False))
     reach = feature_reach(feature)
 
-    fps = ds.meta_float("fps_default")
-    unconvertible = _time_filter_problems(step, fps)
-    if unconvertible:
-        return _Resolution(
-            step=_unresolved_feature(step, spec, unconvertible),
-            scope_dependent=scope_dependent,
-            fits=fits,
-            reach=reach,
-        )
-
-    frame_start, frame_end = resolve_frame_range(
-        fps,
-        spec.filter_start_frame,
-        spec.filter_end_frame,
-        spec.filter_start_time,
-        spec.filter_end_time,
-    )
     try:
         run_id, _ = resolve_feature_identity(
             ds,
@@ -1691,9 +1670,10 @@ def _resolve_feature_step(
             # The minted labels variant where a labels reference names a
             # conversion step, for the reason the tracks variant is minted.
             labels_run_id=spec.labels_run_id,
-            frame_start=frame_start,
-            frame_end=frame_end,
+            frame_start=spec.filter_start_frame,
+            frame_end=spec.filter_end_frame,
             overlap_frames=spec.overlap_frames,
+            time_window=TimeWindow(spec.filter_start_time, spec.filter_end_time),
         )
     except AmbiguousTracksVariant as ambiguous:
         if pinned:
@@ -1804,24 +1784,10 @@ def _without_tracklets_problem(
     )
 
 
-def _feature_problems(
-    recipe: Recipe,
-    step: FeatureStepSpec,
-    fps: float | None,
-    resolved: Mapping[str, ResolvedStep],
-) -> list[Problem]:
-    """What this dataset refuses in a feature step, found before its identity."""
-    return [
-        *_time_filter_problems(step, fps),
-        *_shared_run_problems(recipe, step, resolved),
-    ]
-
-
 _RESOLVED_ALIKE: Final = (
     "with params, inputs and run arguments that name one run on this dataset"
 )
-"""Why two steps that validate as two runs resolve to one, as a frame filter and
-the time filter equal to it at the dataset's frame rate do."""
+"""Why two steps that validate as two runs resolve to one."""
 
 
 def _shared_run_problems(
@@ -1833,25 +1799,6 @@ def _shared_run_problems(
         for other in recipe.steps
     }
     return one_run_problems(step, resolved, runs, alike=_RESOLVED_ALIKE)
-
-
-def _time_filter_problems(step: FeatureStepSpec, fps: float | None) -> list[Problem]:
-    """A problem at each time filter of *step*, when the dataset lacks a frame rate.
-
-    The plan converts a time filter to frames with the dataset's ``fps_default``,
-    as a run does.
-    """
-    if fps is not None:
-        return []
-    filters = {
-        "filter_start_time": step.run.filter_start_time,
-        "filter_end_time": step.run.filter_end_time,
-    }
-    return [
-        Problem(step.id, f"run.{name}", TIME_FILTER_NEEDS_FPS)
-        for name, value in filters.items()
-        if value is not None
-    ]
 
 
 def _resolve_op_step(

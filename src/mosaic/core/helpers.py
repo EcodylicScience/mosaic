@@ -3,7 +3,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Optional, Tuple, cast
+from typing import Final, NamedTuple, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -937,54 +937,39 @@ def filter_time_range(
     return df.loc[mask].reset_index(drop=True)
 
 
-TIME_FILTER_NEEDS_FPS: Final = (
-    "a time filter needs the dataset's frame rate, and this dataset does not "
-    "record one. Set meta.fps_default in its dataset.yaml, or filter by frame "
-    "with filter_start_frame and filter_end_frame"
-)
-"""Why a time filter cannot be converted to frames on a dataset with no frame rate."""
+class TimeWindow(NamedTuple):
+    """A window of ``time`` in seconds, half-open: ``start <= time < end``.
+
+    A bound left ``None`` is open. The window filters rows on the ``time`` column
+    and is never converted to frames, so it needs no frame rate and keeps exactly
+    the rows whose ``time`` falls in it on a table that dropped frames.
+    """
+
+    start: float | None = None
+    end: float | None = None
+
+    @property
+    def is_set(self) -> bool:
+        """Whether either bound is set."""
+        return self.start is not None or self.end is not None
 
 
-def resolve_frame_range(
-    fps: float | None,
-    start_frame: int | None = None,
-    end_frame: int | None = None,
-    start_time: float | None = None,
-    end_time: float | None = None,
-) -> tuple[int | None, int | None]:
-    """Validate mutual exclusivity and convert to frame range.
-
-    Args:
-        fps: The dataset's frame rate, or None when it records none.
-        start_frame: First frame to keep, or None.
-        end_frame: Frame at which to stop, or None.
-        start_time: First second to keep, or None.
-        end_time: Second at which to stop, or None.
-
-    Returns:
-        The start and end frames, each None where no boundary was given.
+def check_one_filter_per_boundary(
+    start_frame: int | None,
+    end_frame: int | None,
+    start_time: float | None,
+    end_time: float | None,
+) -> None:
+    """Refuse a boundary that is set as a frame and as a time.
 
     Raises:
-        ValueError: If both a frame and a time are set for the same boundary,
-            or if a time is set and ``fps`` is None
-            (``TIME_FILTER_NEEDS_FPS``).
+        ValueError: If a frame and a time are both set for the start, or both
+            for the end.
     """
     if start_frame is not None and start_time is not None:
         raise ValueError("Cannot set both start_frame and start_time")
     if end_frame is not None and end_time is not None:
         raise ValueError("Cannot set both end_frame and end_time")
-    if (start_time is not None or end_time is not None) and fps is None:
-        raise ValueError(TIME_FILTER_NEEDS_FPS)
-
-    start = start_frame
-    if start_time is not None:
-        start = int(start_time * fps)
-
-    end = end_frame
-    if end_time is not None:
-        end = int(end_time * fps)
-
-    return (start, end)
 
 
 # =============================================================================

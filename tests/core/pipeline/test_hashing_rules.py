@@ -24,6 +24,7 @@ import pytest
 from mosaic.behavior.feature_library import FEATURES
 from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
+from mosaic.core.helpers import TimeWindow
 from mosaic.core.pipeline._utils import (
     ResolvedScope,
     hash_params,
@@ -268,6 +269,41 @@ def test_missing_scope_declaration_names_the_feature(
 
     with pytest.raises(MissingScopeDeclaration, match="speed-angvel"):
         _ = compute_run_id(feature, None, None, ResolvedScope())
+
+
+# --- a time window enters identity as seconds ---------------------------------
+
+
+def test_an_open_time_window_leaves_identity_alone() -> None:
+    feature = build_feature("speed-angvel", None, None)
+    plain, _ = compute_run_id(feature, None, None, ResolvedScope())
+    open_window, _ = compute_run_id(
+        feature, None, None, ResolvedScope(), time_window=TimeWindow()
+    )
+    assert open_window == plain
+
+
+def test_a_time_window_changes_identity_by_its_seconds() -> None:
+    feature = build_feature("speed-angvel", None, None)
+
+    def run_id(window: TimeWindow) -> str:
+        return compute_run_id(feature, None, None, ResolvedScope(), time_window=window)[
+            0
+        ]
+
+    assert run_id(TimeWindow(start=300.0)) != run_id(TimeWindow())
+    assert run_id(TimeWindow(start=300.0)) != run_id(TimeWindow(end=300.0))
+    assert run_id(TimeWindow(start=300.0)) != run_id(TimeWindow(start=301.0))
+    assert run_id(TimeWindow(start=300)) == run_id(TimeWindow(start=300.0))
+
+
+def test_a_time_window_is_not_a_frame_range() -> None:
+    feature = build_feature("speed-angvel", None, None)
+    by_time, _ = compute_run_id(
+        feature, None, None, ResolvedScope(), time_window=TimeWindow(start=1.0)
+    )
+    by_frame, _ = compute_run_id(feature, 30, None, ResolvedScope())
+    assert by_time != by_frame
 
 
 # --- P2d: scope enters identity only for global features ----------------------

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, TypeGuard
 
 from pydantic import ValidationError
 
+from mosaic.core.helpers import TimeWindow
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
 from mosaic.core.pipeline.storage_names import feature_slug_of
 from mosaic.core.pipeline.dataset_indexes import feature_storages
@@ -139,6 +140,7 @@ class _RunRead:
     build_error: str
     frame_start: int | None
     frame_end: int | None
+    time_window: TimeWindow
     overlap_frames: int
     entries: set[tuple[str, str]]
     # Written back by the restamp. The inventory measures the run against the
@@ -193,6 +195,7 @@ class FeatureReconciler:
         read = read_run_params(run_root)
         params = read.params
         frame_start, frame_end = params.frames() if params else (None, None)
+        time_window = params.time_window() if params else TimeWindow()
         overlap_frames = _overlap_frames(params)
         entries = params.entry_scope() if params else set()
         compositions = params.entry_compositions(entries) if params else {}
@@ -211,6 +214,7 @@ class FeatureReconciler:
             build_error=build_error,
             frame_start=frame_start,
             frame_end=frame_end,
+            time_window=time_window,
             overlap_frames=overlap_frames,
             entries=entries,
             asked=params.asked_scope() if params else set(),
@@ -356,6 +360,7 @@ class FeatureReconciler:
                 read.frame_end,
                 scope,
                 overlap_frames=read.overlap_frames,
+                time_window=read.time_window,
             )
         except Exception as exc:  # noqa: BLE001 - a raising feature is unresolvable, not fatal
             return (
@@ -552,6 +557,7 @@ class FeatureReconciler:
             read.scope,
             resolutions,
             overlap_frames=read.overlap_frames,
+            time_window=read.time_window,
             # Carried from the document being replaced, not minted here. This
             # pass re-addresses an artifact it did not produce, so restamping it
             # with the running toolkit's version would make every re-addressed

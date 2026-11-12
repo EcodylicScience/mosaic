@@ -13,9 +13,10 @@ import pandas as pd
 from mosaic.version import installed_version
 from mosaic.core.helpers import (
     UNLABELED,
+    TimeWindow,
+    check_one_filter_per_boundary,
     filter_time_range,
     make_entry_key,
-    resolve_frame_range,
 )
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
@@ -82,7 +83,7 @@ from .resolve import resolution_payload, resolve_references
 from .sequence_index import encode_entry_composition, read_entry_compositions
 from .track_space import feature_track_spaces, refuse_unsupported_track_space
 from .tracks_index import tracklets_by_entry, tracks_compositions
-from .types.data_config import META_COLS
+from .types.data_config import COLUMNS, META_COLS
 from .types.feature import SetsTracklets
 from mosaic.core.entry import Entry
 from .types import (
@@ -405,13 +406,15 @@ def _make_filter_factory(
     pair_filter_spec: NNResult | None,
     frame_start: int | None,
     frame_end: int | None,
+    time_window: TimeWindow = TimeWindow(),
 ) -> FilterFactory | None:
     """Build a filter factory for iter_manifest.
 
-    Returns None when no filtering is needed (no pair filter, no frame range).
+    Returns None when no filtering is needed (no pair filter, no frame range, no
+    time window).
     """
     has_frame_filter = frame_start is not None or frame_end is not None
-    if pair_filter_spec is None and not has_frame_filter:
+    if pair_filter_spec is None and not has_frame_filter and not time_window.is_set:
         return None
 
     entry_map = scope.entry_map if pair_filter_spec is not None else {}
@@ -431,6 +434,23 @@ def _make_filter_factory(
                 )
 
             filters.append(frame_filter)
+        if time_window.is_set:
+
+            def window_filter(df: pd.DataFrame) -> pd.DataFrame:
+                if COLUMNS.time_col not in df.columns:
+                    raise ValueError(
+                        f"a time filter reads the {COLUMNS.time_col!r} column, and "
+                        f"the rows of {entry_key!r} have none. Filter by frame "
+                        "with filter_start_frame and filter_end_frame"
+                    )
+                return filter_time_range(
+                    df,
+                    filter_start_time=time_window.start,
+                    filter_end_time=time_window.end,
+                    time_col=COLUMNS.time_col,
+                )
+
+            filters.append(window_filter)
         return filters
 
     return factory
@@ -886,6 +906,7 @@ def compute_run_id(
     scope: ResolvedScope,
     *,
     overlap_frames: int = 0,
+    time_window: TimeWindow = TimeWindow(),
 ) -> tuple[str, str]:
     """Compute the content-addressed ``(run_id, params_hash)`` for a run.
 
@@ -930,6 +951,11 @@ def compute_run_id(
     reproduces every identifier on every dataset in existence, byte for byte, and
     the golden corpus proves that rather than this docstring asserting it.
 
+    ``_time_range`` is the window of ``time`` a run read, in seconds. It is a term
+    of its own and not a conversion to frames, because a time window filters rows
+    on the ``time`` column and never reads a frame rate. It follows the
+    omit-when-absent rule: a run with no window digests as it always has.
+
     Raises:
         MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
     """
@@ -971,6 +997,10 @@ def compute_run_id(
         hashable["_labels"] = sorted(scope.labels_variants)
     if overlap_frames:
         hashable["_overlap_frames"] = int(overlap_frames)
+    if time_window.is_set:
+        hashable["_time_range"] = [
+            None if bound is None else float(bound) for bound in time_window
+        ]
     params_hash = hash_params(hashable)
     return f"{feature.version}-{params_hash}", params_hash
 
@@ -985,6 +1015,7 @@ def resolve_feature_identity(
     frame_start: int | None = None,
     frame_end: int | None = None,
     overlap_frames: int = 0,
+    time_window: TimeWindow = TimeWindow(),
 ) -> tuple[str, ResolvedScope]:
     """What a run of *feature* over *scope* will be called, without running it.
 
@@ -1018,6 +1049,8 @@ def resolve_feature_identity(
         frame_end: The resolved last frame, or ``None``.
         overlap_frames: The neighbour context width, which changes the output
             near a sequence boundary and so enters the identity.
+        time_window: The window of ``time`` in seconds, which enters the identity
+            as written.
 
     Returns:
         The ``run_id`` and the ``ResolvedScope`` it was computed from, so a
@@ -1061,7 +1094,12 @@ def resolve_feature_identity(
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, labels_run_id)
     run_id, _ = compute_run_id(
-        feature, frame_start, frame_end, resolved, overlap_frames=overlap_frames
+        feature,
+        frame_start,
+        frame_end,
+        resolved,
+        overlap_frames=overlap_frames,
+        time_window=time_window,
     )
     return run_id, resolved
 
@@ -1112,6 +1150,7 @@ def build_run_params_payload(
     feature_resolutions: list[dict[str, str | None]],
     *,
     overlap_frames: int = 0,
+    time_window: TimeWindow = TimeWindow(),
     execution_id: str = "",
     mosaic_version: str = "",
     asked: Iterable[tuple[str, str]] | None = None,
@@ -1162,6 +1201,11 @@ def build_run_params_payload(
     directory name, be classified unresolvable, and block everything downstream of
     it.
 
+    ``_time_range`` is the window of ``time`` in seconds, written unconditionally
+    for the reason ``_overlap_frames`` is: ``mosaic reconcile`` replays a run's
+    identity from this document alone. A document without it reads as an open
+    window.
+
     ``_execution_id`` and ``_mosaic_version`` are what make an artifact on disk
     joinable back to the attempt that produced it. Without them this document is
     strictly present-tense -- it says what a run *is*, never when, by whom, or
@@ -1185,6 +1229,7 @@ def build_run_params_payload(
         "_inputs": feature.inputs.model_dump(),
         "_frame_range": [frame_start, frame_end],
         "_overlap_frames": int(overlap_frames),
+        "_time_range": list(time_window),
         "_execution_id": execution_id,
         "_mosaic_version": mosaic_version,
         "_scope": {
@@ -1334,9 +1379,9 @@ def run_feature(
     filter_end_frame : int | None
         If set, only include frames < this value.
     filter_start_time : float | None
-        If set, converted to start frame via fps_default from dataset metadata.
+        If set, only include rows whose ``time`` is >= this many seconds.
     filter_end_time : float | None
-        If set, converted to end frame via fps_default from dataset metadata.
+        If set, only include rows whose ``time`` is < this many seconds.
     check_output : bool, default False
         When False, a cache hit only requires the output parquet to exist
         (footer metadata is read for n_rows). When True, each candidate cache
@@ -1447,15 +1492,15 @@ def _run_feature_impl(
     cross_join = feature.name in CROSS_JOIN_FEATURES
     # Individual inputs widened onto the pair rows of input 0.
     widens_individuals = expands_individuals(feature)
-    # Frame range + mutual exclusivity with overlap
-    frame_start, frame_end = resolve_frame_range(
-        ds.meta_float("fps_default"),
-        filter_start_frame,
-        filter_end_frame,
-        filter_start_time,
-        filter_end_time,
+    # Frame range and time window, which exclude overlap
+    check_one_filter_per_boundary(
+        filter_start_frame, filter_end_frame, filter_start_time, filter_end_time
     )
-    has_frame_filter = frame_start is not None or frame_end is not None
+    frame_start, frame_end = filter_start_frame, filter_end_frame
+    time_window = TimeWindow(filter_start_time, filter_end_time)
+    has_frame_filter = (
+        frame_start is not None or frame_end is not None or time_window.is_set
+    )
     if has_frame_filter and overlap_frames > 0:
         raise ValueError("Frame/time filters and overlap_frames are mutually exclusive")
     if not 0.0 <= min_free_memory_fraction < 1.0:
@@ -1544,7 +1589,12 @@ def _run_feature_impl(
     # Run ID: content hash of params+inputs+frames (+scope). Attempt-level
     # identity (execution_id, progress, cancel) is deliberately NOT part of it.
     run_id, params_hash = compute_run_id(
-        feature, frame_start, frame_end, resolved, overlap_frames=overlap_frames
+        feature,
+        frame_start,
+        frame_end,
+        resolved,
+        overlap_frames=overlap_frames,
+        time_window=time_window,
     )
     ctx.set_run_id(run_id)
     ctx.set_total(len(manifest))
@@ -1585,6 +1635,7 @@ def _run_feature_impl(
                 resolved,
                 resolution_payload(resolutions),
                 overlap_frames=overlap_frames,
+                time_window=time_window,
                 execution_id=ctx.execution_id,
                 mosaic_version=installed_version(),
                 asked=asked,
@@ -1653,7 +1704,7 @@ def _run_feature_impl(
 
     # Build filter factory (shared by fit and apply phases)
     filter_factory = _make_filter_factory(
-        ds, resolved, pair_filter_spec, frame_start, frame_end
+        ds, resolved, pair_filter_spec, frame_start, frame_end, time_window
     )
 
     # Wire the Job Contract into the feature: trainers (FERAL/kpms/...) that
@@ -2423,17 +2474,16 @@ def load_values(
         ds, synthetic_inputs, selector, tracks_run_id=tracks_run_id
     )
 
-    # Frame range
-    frame_start, frame_end = resolve_frame_range(
-        ds.meta_float("fps_default"),
+    check_one_filter_per_boundary(
+        filter_start_frame, filter_end_frame, filter_start_time, filter_end_time
+    )
+    filter_factory = _make_filter_factory(
+        ds,
+        resolved_scope,
+        pair_filter,
         filter_start_frame,
         filter_end_frame,
-        filter_start_time,
-        filter_end_time,
-    )
-
-    filter_factory = _make_filter_factory(
-        ds, resolved_scope, pair_filter, frame_start, frame_end
+        TimeWindow(filter_start_time, filter_end_time),
     )
 
     # Pre-load labels lookups

@@ -47,6 +47,22 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
+## Unreleased: a time window filters on `time` and needs no frame rate
+
+`filter_start_time` and `filter_end_time` of a feature run, a recipe step's `run` block
+and `Pipeline` keep the rows whose `time` is in `[start, end)`, in seconds. They no
+longer convert to frames with `meta.fps_default`, so a plan accepts a time window on a
+dataset with no frame rate, and on a table that dropped frames the window keeps exactly
+the rows whose `time` falls in it. A table with no `time` column refuses the window.
+The run id carries the bounds as seconds in a `_time_range` term, and `params.json`
+records `_time_range` beside `_frame_range`. The run ids of runs with a time filter
+change, and a rerun with the same recipe writes them again under the new ids; a run
+without one keeps its id. `resolve_frame_range` and `TIME_FILTER_NEEDS_FPS` are removed
+from `mosaic.core.helpers`, and a plan no longer reports a problem at
+`run.filter_start_time`. A frame filter and the time filter that equals it at the
+dataset's frame rate are now two runs. A time window with `overlap_frames` is still
+refused.
+
 ## Unreleased: short tracks and filtered entries no longer fail or blank a run
 
 `speed-angvel` smooths an id shorter than `smooth_window` with the largest odd window

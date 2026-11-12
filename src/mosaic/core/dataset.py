@@ -11118,10 +11118,10 @@ class Dataset:
                 See :func:`~mosaic.core.pipeline.run.run_feature`.
             filter_start_frame: Only include frames >= this value.
             filter_end_frame: Only include frames < this value.
-            filter_start_time: Converted to start frame via *fps_default*
-                from dataset metadata.
-            filter_end_time: Converted to end frame via *fps_default*
-                from dataset metadata.
+            filter_start_time: Only include rows whose ``time`` is >= this
+                many seconds.
+            filter_end_time: Only include rows whose ``time`` is < this many
+                seconds.
             check_output: When True, deeply validate cached outputs before
                 skipping them (default validator fully reads the parquet; a
                 feature may override via ``check_output``). When False

@@ -540,6 +540,13 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   (https://ecodylicscience.github.io/mosaic/guides/pipelines/chain-steps/). Run
   `mosaic pipeline validate`, then `plan`, then `run`. From Python,
   `run_pipeline(ds, load_recipe("recipe.json"))`.
+- To run a step over part of a recording, give the feature step a time window in
+  seconds, `{"id": "nn", "type": "feature", "feature": "nearest-neighbor",
+  "run": {"filter_start_time": 0, "filter_end_time": 300}}` for the first 300 s. The
+  window keeps the rows whose `time` is in `[start, end)` and needs no frame rate, so
+  it works on a table that dropped frames or on a dataset with no `fps_default`. The
+  run id carries the bounds as seconds. `filter_start_frame` and `filter_end_frame`
+  filter on `frame` instead, and one boundary takes one of the two.
 - Exit code 65 is a refusal, with a named reason (`"reason"` under `--json`). Python
   raises `Refusal`, or `StepRefused` for a pipeline step. Fix the cause. Only
   `coverage_shortfall` is answered with `--allow-partial` (`allow_partial=True`), and

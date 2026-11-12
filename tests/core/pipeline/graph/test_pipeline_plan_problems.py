@@ -1,10 +1,8 @@
 """The problems a dataset finds with a recipe that validates.
 
-Validation decides from declarations alone. A time filter is valid on any
-dataset there, and a column that the track schemas allow is only a caution. A plan reads
-the dataset. A time filter without a frame rate, and a required column that every
-tracks table lacks, are problems there, each at the place in the recipe that would
-change. ``plan_pipeline`` raises them together as ``RecipeRefused``, and a step
+Validation decides from declarations alone. A column that the track schemas allow
+is only a caution. A plan reads the dataset. A required column that every tracks
+table lacks is a problem there, at the place in the recipe that would change. ``plan_pipeline`` raises them together as ``RecipeRefused``, and a step
 that finds one of its own when it re-plans itself is refused and recorded.
 """
 
@@ -22,7 +20,6 @@ import mosaic.core.pipeline.graph.step as step_module
 from mosaic.behavior.feature_library.pairposedistancepca import PairPoseDistancePCA
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
-from mosaic.core.helpers import TIME_FILTER_NEEDS_FPS
 from mosaic.core.json_value import JsonValue
 from mosaic.core.label_converter import LABEL_CONVERTERS
 from mosaic.core.pipeline.graph import (
@@ -61,8 +58,6 @@ from tests.helpers import (
 runner = CliRunner()
 
 VARIANT = "convert-trex.0.2-1111111111"
-
-FILTER_PROBLEM = "a time filter needs the dataset's frame rate"
 
 
 @pytest.fixture
@@ -124,29 +119,47 @@ def _refused(dataset: Dataset, recipe: Recipe) -> RecipeRefused:
     return caught.value
 
 
-# --- a time filter without a frame rate --------------------------------------------
+# --- a time filter needs no frame rate ---------------------------------------------
 
 
-def test_a_time_filter_without_a_frame_rate_is_a_problem_at_the_filter(
-    tracked: Dataset,
-) -> None:
+def test_a_time_filter_plans_on_a_dataset_with_no_frame_rate(tracked: Dataset) -> None:
+    assert tracked.meta_float("fps_default") is None
     recipe = guppies_recipe()
     filtered = {
         step.id
         for step in recipe.steps
         if isinstance(step, FeatureStepSpec) and step.run.filter_start_time is not None
     }
+    assert filtered
 
     refusal = _refused(tracked, recipe)
 
-    at_filter = [p for p in refusal.problems if p.where == "run.filter_start_time"]
-    assert {problem.step for problem in at_filter} == filtered
-    assert all(FILTER_PROBLEM in problem.message for problem in at_filter)
-    assert all(problem.message == TIME_FILTER_NEEDS_FPS for problem in at_filter)
-    # Each filtered step is reported, and none of them has an identity.
-    assert {
-        step for step, run_id in refusal.plan.run_ids.items() if run_id is None
-    } >= (filtered)
+    assert {problem.where for problem in refusal.problems} == {"inputs"}
+    assert all(refusal.plan.run_ids[step] is not None for step in filtered)
+
+
+def test_the_time_window_names_the_run_whatever_the_frame_rate(
+    tracked: Dataset,
+) -> None:
+    recipe = read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "late",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "run": {"filter_start_time": 300.0},
+                },
+            ]
+        }
+    )
+
+    without_rate = plan_pipeline(tracked, recipe).run_ids["late"]
+    tracked.meta["fps_default"] = 30.0
+    with_rate = plan_pipeline(tracked, recipe).run_ids["late"]
+
+    assert without_rate is not None
+    assert without_rate == with_rate
 
 
 def test_a_refusal_is_a_recipe_refusal_and_lists_every_problem(
@@ -157,14 +170,6 @@ def test_a_refusal_is_a_recipe_refusal_and_lists_every_problem(
     assert isinstance(refusal, RecipeInvalid)
     assert str(refusal).startswith("this recipe cannot be run on this dataset: ")
     assert f"{len(refusal.problems)} problems" in str(refusal)
-
-
-def test_a_frame_rate_clears_the_filter_problems(tracked: Dataset) -> None:
-    tracked.meta["fps_default"] = 30.0
-
-    refusal = _refused(tracked, guppies_recipe())
-
-    assert {problem.where for problem in refusal.problems} == {"inputs"}
 
 
 def test_a_frame_and_a_time_on_one_boundary_are_refused_at_parse() -> None:
@@ -276,49 +281,61 @@ def test_the_cli_plan_prints_the_refused_plan_and_exits_one(
 # --- a step that runs ----------------------------------------------------------------
 
 
-def _losing_its_frame_rate(dataset: Dataset) -> Request:
-    """A request submitted with a frame rate, on a dataset that then loses it.
+def _losing_its_tracklets(dataset: Dataset) -> Request:
+    """A request submitted over tracks with tracklets, which then lose them.
 
-    ``speed`` has no time filter and ``late`` has one.
+    ``heading`` reads each row alone and ``late`` follows ids.
     """
-    dataset.meta["fps_default"] = 30.0
+    add_tracks_variant(
+        dataset,
+        VARIANT,
+        "seq_a",
+        "seq_b",
+        std_format="mosaic_v1",
+        carries_tracklets=True,
+    )
     recipe = read_recipe(
         {
             "steps": [
-                {"id": "speed", "type": "feature", "feature": "speed-angvel"},
                 {
-                    "id": "late",
+                    "id": "heading",
                     "type": "feature",
-                    "feature": "speed-angvel",
-                    "run": {"filter_start_time": 0.5},
+                    "feature": "heading",
+                    "params": {"method": "two_point", "front_idx": 0, "rear_idx": 3},
                 },
+                {"id": "late", "type": "feature", "feature": "speed-angvel"},
             ]
         }
     )
     request = submit_request(dataset, recipe).request
-    del dataset.meta["fps_default"]
+    add_tracks_variant(
+        dataset,
+        VARIANT,
+        "seq_a",
+        "seq_b",
+        std_format="mosaic_v1",
+        carries_tracklets=False,
+    )
     return request
 
 
 def test_a_running_step_refuses_only_its_own_problem(tracked: Dataset) -> None:
     """The dataset can change between a submission and a step's attempt."""
-    request = _losing_its_frame_rate(tracked)
+    request = _losing_its_tracklets(tracked)
 
-    ran = execute_step(tracked, request, "speed")
+    ran = execute_step(tracked, request, "heading")
     with pytest.raises(RecipeRefusedAtStep) as caught:
         _ = execute_step(tracked, request, "late")
 
     assert ran.run_id is not None
     assert caught.value.reason == "recipe_refused"
-    assert [(p.step, p.where) for p in caught.value.problems] == [
-        ("late", "run.filter_start_time")
-    ]
+    assert [(p.step, p.where) for p in caught.value.problems] == [("late", "inputs")]
 
 
 def test_a_refused_running_step_records_its_attempt(tracked: Dataset) -> None:
     """A refusal with no run-log is a step, and a request, that reads as running."""
-    request = _losing_its_frame_rate(tracked)
-    _ = execute_step(tracked, request, "speed")
+    request = _losing_its_tracklets(tracked)
+    _ = execute_step(tracked, request, "heading")
 
     with pytest.raises(RecipeRefusedAtStep):
         _ = execute_step(tracked, request, "late")
@@ -330,7 +347,7 @@ def test_a_refused_running_step_records_its_attempt(tracked: Dataset) -> None:
     assert recorded["reason"] == "recipe_refused"
     assert recorded["step"] == "late"
     assert [(p["step"], p["where"]) for p in recorded["problems"]] == [
-        ("late", "run.filter_start_time")
+        ("late", "inputs")
     ]
     assert request_rollup(tracked.base_dir, request).status == "failed"
 
@@ -338,7 +355,7 @@ def test_a_refused_running_step_records_its_attempt(tracked: Dataset) -> None:
 def test_the_cli_exits_with_the_refused_code_for_a_refused_step(
     tracked: Dataset,
 ) -> None:
-    request = _losing_its_frame_rate(tracked)
+    request = _losing_its_tracklets(tracked)
 
     result = runner.invoke(
         app,

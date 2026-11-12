@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.core.helpers import TimeWindow
 from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.inventory import params as params_module
 from mosaic.core.pipeline.inventory.params import (
@@ -148,6 +149,23 @@ def test_a_garbage_block_costs_that_block_and_not_the_document(
     assert read.params.frames() == (None, None)
     assert read.params.overlap_frames == 0
     assert read.params.entry_scope() == set()
+
+
+def test_the_time_window_is_read_back_and_an_absent_one_is_open(
+    tmp_path: Path,
+) -> None:
+    recorded = read_run_params(
+        _write(tmp_path / "timed", {"_time_range": [0.5, None]})
+    ).params
+    older = read_run_params(_write(tmp_path / "older", {"_frame_range": [1, 2]})).params
+    garbage = read_run_params(
+        _write(tmp_path / "garbage", {"_time_range": "not a range"})
+    ).params
+
+    assert recorded is not None and older is not None and garbage is not None
+    assert recorded.time_window() == TimeWindow(start=0.5, end=None)
+    assert older.time_window() == TimeWindow()
+    assert garbage.time_window() == TimeWindow()
 
 
 def test_a_malformed_resolved_entry_costs_that_entry(tmp_path: Path) -> None:

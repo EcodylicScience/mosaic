@@ -59,12 +59,11 @@ install or set, and `mosaic pipeline catalog --json` gives each such feature the
 sentence as `unavailable`.
 `plan` says what each step will be called and what is already done, without
 submitting anything. It refuses a recipe that the dataset cannot run, naming each
-problem at the step and the field that would change: a time filter on a dataset
-without `meta.fps_default`, a column that a step requires and every tracks table
-lacks, and a tracker or inference step reading video that needs an analysis
-transcode, with no `transcode` step of `"target": "analysis"` above it. That problem
-is reported at the step's `after`, and its message names the entries and the
-transcode step to add. `submit` and `run` refuse the same recipe. Below its table,
+problem at the step and the field that would change: a column that a step
+requires and every tracks table lacks, and a tracker or inference step reading
+video that needs an analysis transcode, with no `transcode` step of
+`"target": "analysis"` above it. That problem is reported at the step's `after`, and
+its message names the entries and the transcode step to add. `submit` and `run` refuse the same recipe. Below its table,
 `plan` notes a caution for a plan over the whole dataset and for a step asked for
 more than 100 entries. A caution refuses nothing. On first use the
 recipe is copied to `<dataset>/.mosaic/pipelines/<digest>.json`. The dataset then
@@ -154,6 +153,23 @@ This recipe has seven steps: `speed`, `templates_s1` to `templates_s3` and
 The recipe is expanded when it is read. Its digest, its saved copy and every run id are
 those of the steps written out in full, so writing a step out by hand later changes
 nothing. A problem is reported at the expanded step's id, such as `templates_s2`.
+
+### Run one step over part of a recording
+
+A feature step's `run` block reads only some rows of its inputs. A time window keeps
+the rows whose `time` is in `[start, end)`, in seconds:
+
+```json
+{"id": "nn", "type": "feature", "feature": "nearest-neighbor",
+ "inputs": [{"step": "smooth"}],
+ "run": {"filter_start_time": 0, "filter_end_time": 300}}
+```
+
+The window reads the `time` column and never a frame rate, so it works on a table
+that dropped frames and on a dataset with no `meta.fps_default`. The run id carries
+the bounds as seconds. `filter_start_frame` and `filter_end_frame` filter on `frame`
+instead, and one boundary takes one of the two. A window and `overlap_frames` are
+mutually exclusive.
 
 ### Narrow one step: step scopes
 

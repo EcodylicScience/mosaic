@@ -173,6 +173,24 @@ def test_fresh_run_reconciles_ok(
     assert report.findings[0].old_address == report.findings[0].new_address
 
 
+def test_a_run_over_a_time_window_reconciles_ok(
+    scenario_dataset: Dataset, registered_feature: type[Feature]
+) -> None:
+    """The window is replayed from params.json, so the digest does not move."""
+    del registered_feature
+    _ = run_feature(
+        scenario_dataset,
+        _ReconcileFeature(),
+        filter_start_time=0.1,
+        filter_end_time=0.5,
+    )
+
+    report = scenario_dataset.reconcile(only=("features",))
+
+    assert not report.changed
+    _only_finding(report, "ok")
+
+
 def test_stale_scheme_marker_is_refreshed(
     scenario_dataset: Dataset, registered_feature: type[Feature]
 ) -> None:

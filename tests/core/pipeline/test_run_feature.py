@@ -351,6 +351,121 @@ def test_frame_filter(tmp_path: Path) -> None:
     assert list(out_df["frame"]) == list(range(5, 15))
 
 
+def _irregular_ds(root: Path) -> Dataset:
+    """A dataset with no frame rate, and a table that dropped frames 4 to 6.
+
+    ``time`` is ``frame / 10``, which is not ``frame / 30`` and not what any
+    frame rate recorded for the dataset would give.
+    """
+    ds = make_dataset(root)
+    table = track_table("g", "s1", n_rows=20)
+    table = table[~table["frame"].isin([4, 5, 6])].reset_index(drop=True)
+    table["time"] = table["frame"] / 10.0
+    add_tracks_table(ds, "convert-x.0.1-aaaaaaaaaa", table)
+    return ds
+
+
+def _output_frames(ds: Dataset, result: Result) -> list[int]:
+    (parquet,) = sorted(result_run_root(ds, result).glob("*.parquet"))
+    return [int(frame) for frame in pd.read_parquet(parquet)["frame"]]
+
+
+def test_a_time_window_keeps_the_rows_whose_time_is_in_it(tmp_path: Path) -> None:
+    """The window reads ``time`` and needs no frame rate: the dropped frames stay out."""
+    ds = _irregular_ds(tmp_path / "ds")
+    assert ds.meta_float("fps_default") is None
+
+    result = run_feature(ds, _FrameEcho(), filter_start_time=0.5, filter_end_time=1.5)
+
+    assert _output_frames(ds, result) == [7, 8, 9, 10, 11, 12, 13, 14]
+
+
+def test_a_time_window_is_half_open_on_the_time_column(tmp_path: Path) -> None:
+    ds = _irregular_ds(tmp_path / "ds")
+
+    result = run_feature(ds, _FrameEcho(), filter_end_time=0.4)
+
+    assert _output_frames(ds, result) == [0, 1, 2, 3]
+
+
+def test_a_time_window_does_not_read_the_frame_rate(tmp_path: Path) -> None:
+    """The run id and the rows are the same whatever rate the dataset records."""
+    without = _irregular_ds(tmp_path / "without")
+    with_rate = _irregular_ds(tmp_path / "with")
+    with_rate.meta["fps_default"] = 30.0
+
+    first = run_feature(without, _FrameEcho(), filter_start_time=0.5)
+    second = run_feature(with_rate, _FrameEcho(), filter_start_time=0.5)
+
+    assert first.run_id == second.run_id
+    assert _output_frames(without, first) == _output_frames(with_rate, second)
+
+
+def test_a_time_window_and_the_frame_filter_it_resembles_are_two_runs(
+    tmp_path: Path,
+) -> None:
+    ds = _irregular_ds(tmp_path / "ds")
+    ds.meta["fps_default"] = 10.0
+
+    by_time = run_feature(ds, _FrameEcho(), filter_start_time=0.5)
+    by_frame = run_feature(ds, _FrameEcho(), filter_start_frame=5)
+
+    assert by_time.run_id != by_frame.run_id
+
+
+def test_a_time_window_enters_the_run_id_as_seconds(tmp_path: Path) -> None:
+    ds = _irregular_ds(tmp_path / "ds")
+
+    early = run_feature(ds, _FrameEcho(), filter_start_time=0.5)
+    late = run_feature(ds, _FrameEcho(), filter_start_time=0.6)
+    again = run_feature(ds, _FrameEcho(), filter_start_time=0.5)
+
+    assert early.run_id != late.run_id
+    assert again.run_id == early.run_id
+
+
+def test_a_time_window_is_recorded_beside_the_frame_range(tmp_path: Path) -> None:
+    ds = _irregular_ds(tmp_path / "ds")
+
+    result = run_feature(ds, _FrameEcho(), filter_start_time=0.5, filter_end_time=1.5)
+
+    recorded = json.loads((result_run_root(ds, result) / "params.json").read_text())
+    assert recorded["_frame_range"] == [None, None]
+    assert recorded["_time_range"] == [0.5, 1.5]
+
+
+def test_a_time_window_over_rows_without_time_is_refused(tmp_path: Path) -> None:
+    """A window that filtered nothing would report success over unfiltered rows."""
+    ds = make_dataset(tmp_path / "ds")
+    table = track_table("g", "s1", n_rows=20).drop(columns=["time"])
+    add_tracks_table(ds, "convert-x.0.1-aaaaaaaaaa", table)
+
+    with pytest.raises(ValueError, match="'time' column"):
+        run_feature(ds, _FrameEcho(), filter_start_time=0.5)
+
+
+def test_a_time_window_reads_the_time_a_feature_passes_on(tmp_path: Path) -> None:
+    """A step over another feature's output windows on the ``time`` it carries."""
+    ds = _irregular_ds(tmp_path / "ds")
+    upstream = run_feature(ds, _FrameEcho())
+
+    result = run_feature(
+        ds,
+        _FrameEcho(_FrameEcho.Inputs((upstream,))),
+        filter_start_time=0.5,
+        filter_end_time=1.5,
+    )
+
+    assert _output_frames(ds, result) == [7, 8, 9, 10, 11, 12, 13, 14]
+
+
+def test_a_time_window_and_overlap_are_mutually_exclusive(tmp_path: Path) -> None:
+    ds = _irregular_ds(tmp_path / "ds")
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        run_feature(ds, _FrameEcho(), overlap_frames=5, filter_start_time=0.5)
+
+
 def test_scope_dependent_hashing(tmp_path: Path) -> None:
     ds = MockDataset(tmp_path)
     add_track_sequences(ds, ("g", "s1"), ("g", "s2"), ("g", "s3"))

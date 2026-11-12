@@ -60,7 +60,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.helpers import TimeWindow
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.scope import Scope
 from mosaic.core.strict_model import StrictModel
@@ -638,15 +638,14 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
             stack=stacks_inputs(feature),
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, spec.labels_run_id)
-    frame_start, frame_end = resolve_frame_range(
-        ds.meta_float("fps_default"),
+    time_window = TimeWindow(spec.filter_start_time, spec.filter_end_time)
+    run_id, _ = compute_run_id(
+        feature,
         spec.filter_start_frame,
         spec.filter_end_frame,
-        spec.filter_start_time,
-        spec.filter_end_time,
-    )
-    run_id, _ = compute_run_id(
-        feature, frame_start, frame_end, resolved, overlap_frames=spec.overlap_frames
+        resolved,
+        overlap_frames=spec.overlap_frames,
+        time_window=time_window,
     )
     if planned.run_id is not None and run_id != planned.run_id:
         raise RuntimeError(
@@ -659,7 +658,12 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
         ds, feature, spec.labels_run_id
     )
     filter_factory = _make_filter_factory(
-        ds, resolved, _resolve_pair_filter(feature.params), frame_start, frame_end
+        ds,
+        resolved,
+        _resolve_pair_filter(feature.params),
+        spec.filter_start_frame,
+        spec.filter_end_frame,
+        time_window,
     )
     cross_join = feature.name in CROSS_JOIN_FEATURES
     widens_individuals = expands_individuals(feature)

@@ -193,6 +193,9 @@ def test_runs_the_plan_expects_are_kept_including_shared_storage_siblings(
 
 def test_a_step_without_a_run_id_keeps_its_storage(dataset: Dataset) -> None:
     old = run_speed(dataset, 1)
+    add_tracks_variant(
+        dataset, "convert-trex.0.2-2222222222", "seq_a", "seq_b", std_format="mosaic_v1"
+    )
     recipe = Recipe.model_validate(
         {
             "schema_version": 1,
@@ -202,7 +205,6 @@ def test_a_step_without_a_run_id_keeps_its_storage(dataset: Dataset) -> None:
                     "type": "feature",
                     "feature": "speed-angvel",
                     "params": {"step_size": 2},
-                    "run": {"filter_start_time": 1.0},
                 }
             ],
         }

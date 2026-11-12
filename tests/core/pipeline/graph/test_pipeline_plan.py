@@ -1311,13 +1311,13 @@ def test_two_inputs_resolving_to_one_run_are_refused_before_planning(
     assert "They resolve to one run" in problem.message
 
 
-def test_inputs_that_resolve_to_one_run_only_here_are_a_dataset_problem(
+def test_a_frame_filter_and_the_time_filter_equal_to_it_are_two_runs(
     tracked: Dataset,
 ) -> None:
-    """A frame filter and the time filter equal to it validate as two runs.
+    """At 30 frames per second, frame 30 and one second name the same frames.
 
-    At 30 frames per second, frame 30 and one second name the same frames, so
-    the plan resolves both steps to one run id and refuses the step reading both.
+    A time filter reads the ``time`` column rather than a frame, so the two steps
+    are two runs and a step may read both.
     """
     tracked.meta["fps_default"] = 30.0
     recipe = Recipe.model_validate(
@@ -1346,14 +1346,10 @@ def test_inputs_that_resolve_to_one_run_only_here_are_a_dataset_problem(
         }
     )
 
-    with pytest.raises(RecipeRefused) as raised:
-        _ = plan_pipeline(tracked, recipe)
+    plan = plan_pipeline(tracked, recipe)
 
-    (problem,) = raised.value.problems
-    assert (problem.step, problem.where) == ("aggregate", "inputs")
-    assert "'by_frame' and 'by_time' run speed-angvel" in problem.message
-    assert "name one run on this dataset" in problem.message
-    assert raised.value.plan.run_ids["aggregate"] is None
+    assert plan.run_ids["by_frame"] != plan.run_ids["by_time"]
+    assert plan.run_ids["aggregate"] is not None
 
 
 # --- the pairs rule of a sum over pair rows --------------------------------------------

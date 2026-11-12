@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 from pydantic import TypeAdapter, ValidationError
 
+from mosaic.core.helpers import TimeWindow
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_list, is_str_mapping
 
@@ -201,10 +202,8 @@ def _feature_stand_in(spec: StepSpec, feature: Feature) -> str:
     """The stand-in for a feature step: its ``run_id`` as far as the recipe decides it.
 
     :func:`~mosaic.core.pipeline.run.compute_run_id` hashes the step over a probe
-    scope and the tracks variant that the step names. A time filter is hashed as
-    written beside it, because converting it to frames takes the dataset's frame
-    rate. A frame filter and the time filter equal to it therefore have different
-    stand-ins, and a plan refuses the two inputs that resolve to one run.
+    scope and the tracks variant that the step names, with its frame range and its
+    time window as written.
     """
     variant = spec.tracks_run_id if feature.inputs.has_tracks else None
     probe = ResolvedScope(
@@ -220,14 +219,9 @@ def _feature_stand_in(spec: StepSpec, feature: Feature) -> str:
         spec.filter_end_frame,
         probe,
         overlap_frames=spec.overlap_frames,
+        time_window=TimeWindow(spec.filter_start_time, spec.filter_end_time),
     )
-    return _stand_in(
-        {
-            "feature": spec.feature,
-            "run_id": run_id,
-            "time": [spec.filter_start_time, spec.filter_end_time],
-        }
-    )
+    return _stand_in({"feature": spec.feature, "run_id": run_id})
 
 
 def _op_stand_in(spec: StepSpec) -> str:

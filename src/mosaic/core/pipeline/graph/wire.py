@@ -789,11 +789,9 @@ class PlanWire(GraphModel):
         complete: Whether every step is already computed over its scope.
         steps: Every step, in topological order.
         problems: Why this dataset refuses the recipe, in topological order of
-            their steps: a time filter without a frame rate, at
-            ``run.filter_start_time`` or ``run.filter_end_time``, a column
-            that the tracks tables lack, and a step that follows ids over
-            tracks without tracklets, each at ``inputs``. Empty when the plan
-            may run.
+            their steps: a column that the tracks tables lack, and a step that
+            follows ids over tracks without tracklets, each at ``inputs``.
+            Empty when the plan may run.
         cautions: What the person submitting should know first: a plan over
             the whole dataset, or a step asked for more than
             ``LARGE_SCOPE_ENTRIES`` entries. A caution never refuses.

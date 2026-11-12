@@ -48,7 +48,7 @@ from pydantic import (
     ValidationError,
 )
 
-from mosaic.core.helpers import make_entry_key
+from mosaic.core.helpers import TimeWindow, make_entry_key
 from mosaic.core.narrowing import is_str_mapping
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 
@@ -152,6 +152,7 @@ class RunParams(BaseModel):
     inputs: list[object] = Field(default_factory=list, alias="_inputs")
     frame_range: list[object] = Field(default_factory=list, alias="_frame_range")
     overlap_frames: int = Field(0, alias="_overlap_frames")
+    time_range: list[object] = Field(default_factory=list, alias="_time_range")
     scope: ScopeBlock = Field(default_factory=ScopeBlock, alias="_scope")
     resolved: list[ResolvedRef] = Field(default_factory=list, alias="_resolved")
     execution_id: str = Field("", alias="_execution_id")
@@ -180,6 +181,20 @@ class RunParams(BaseModel):
         return (
             start if isinstance(start, int) else None,
             end if isinstance(end, int) else None,
+        )
+
+    def time_window(self) -> TimeWindow:
+        """The recorded window of ``time`` in seconds, open when none is recorded.
+
+        A document written before time windows were hashed as seconds records
+        none, and its ``_frame_range`` already holds what its time filter became.
+        """
+        if len(self.time_range) != 2:
+            return TimeWindow()
+        start, end = self.time_range
+        return TimeWindow(
+            float(start) if isinstance(start, (int, float)) else None,
+            float(end) if isinstance(end, (int, float)) else None,
         )
 
     def entry_scope(self) -> set[tuple[str, str]]:

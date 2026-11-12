@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Final, cast
 
 import pandas as pd
 
-from mosaic.core.helpers import resolve_frame_range
+from mosaic.core.helpers import TimeWindow, check_one_filter_per_boundary
 from mosaic.core.scope import Scope
 
 from .storage_names import derive_storage_name
@@ -191,6 +191,24 @@ def _drifted(
     return drifted_entries(dataset, storage, run_id, params)
 
 
+def _frame_bound(x: object) -> int | None:
+    """Narrow a ``filter_*_frame`` run_kwarg to ``int | None``."""
+    if x is None:
+        return None
+    if isinstance(x, int):
+        return x
+    raise TypeError(f"a frame filter is a whole number of frames, not {x!r}")
+
+
+def _time_bound(x: object) -> float | None:
+    """Narrow a ``filter_*_time`` run_kwarg to ``float | None``."""
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    raise TypeError(f"a time filter is a number of seconds, not {x!r}")
+
+
 def _as_run_id(x: object) -> str | None:
     """Coerce a ``tracks_run_id`` run_kwarg to ``str | None``.
 
@@ -354,14 +372,16 @@ class Pipeline:
                     stale_steps.add(child_name)
                 continue
 
-            # Resolve frame range from merged kwargs
+            # Frame range and time window from merged kwargs
             kwargs = {**self.default_run_kwargs, **step.run_kwargs}
-            frame_start, frame_end = resolve_frame_range(
-                dataset.meta_float("fps_default"),
-                kwargs.get("filter_start_frame"),
-                kwargs.get("filter_end_frame"),
-                kwargs.get("filter_start_time"),
-                kwargs.get("filter_end_time"),
+            frame_start = _frame_bound(kwargs.get("filter_start_frame"))
+            frame_end = _frame_bound(kwargs.get("filter_end_frame"))
+            time_window = TimeWindow(
+                _time_bound(kwargs.get("filter_start_time")),
+                _time_bound(kwargs.get("filter_end_time")),
+            )
+            check_one_filter_per_boundary(
+                frame_start, frame_end, time_window.start, time_window.end
             )
             # Read here for the same reason the frame range is: every argument
             # the digest covers has to be recovered from the merged kwargs, or
@@ -407,6 +427,7 @@ class Pipeline:
                 frame_start=frame_start,
                 frame_end=frame_end,
                 overlap_frames=step_overlap,
+                time_window=time_window,
             )
 
             # Check cache on disk: cached only when the run is *complete*
