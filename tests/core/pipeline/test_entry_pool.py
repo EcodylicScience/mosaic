@@ -29,6 +29,7 @@ from mosaic.core.pipeline.parallelism import (
     ParallelMode,
     WorkerProcessDied,
 )
+from mosaic.runlog import ResourceReport
 
 
 def double(value: int) -> int:
@@ -52,7 +53,7 @@ class _Heard:
     def __init__(self) -> None:
         self.results: list[tuple[int, int]] = []
         self.errors: list[tuple[int, str]] = []
-        self.resources: list[dict[str, object]] = []
+        self.resources: list[ResourceReport] = []
 
     def on_result(self, tag: int, result: int) -> None:
         self.results.append((tag, result))
@@ -60,8 +61,8 @@ class _Heard:
     def on_error(self, tag: int, exc: Exception) -> None:
         self.errors.append((tag, str(exc)))
 
-    def on_resources(self, **measured: object) -> None:
-        self.resources.append(measured)
+    def on_resources(self, report: ResourceReport) -> None:
+        self.resources.append(report)
 
 
 def _pool(
@@ -156,7 +157,7 @@ def test_a_dead_worker_ends_the_pool_with_the_memory_it_used() -> None:
         pool.finish()
 
     pool.close()
-    assert heard.resources[-1]["workers"] == 2
+    assert heard.resources[-1].workers == 2
 
 
 def test_the_floor_holds_dispatch_until_the_calls_in_flight_finish(
@@ -204,6 +205,70 @@ def test_the_floor_is_not_checked_with_one_worker(
     assert heard.results == [(1, 2)]
 
 
+def test_a_caller_that_holds_its_own_entries_back_is_not_held_by_the_floor_at_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heard = _Heard()
+    monkeypatch.setattr(
+        memory_watch.MemoryWatch, "free_fraction", _free_fractions([0.01])
+    )
+    pool: EntryPool[int, int] = EntryPool(
+        workers=2,
+        mode="thread",
+        min_free_memory_fraction=0.5,
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        floor_at_submit=False,
+    )
+
+    pool.submit(1, double, 1)
+    pool.finish()
+    assert heard.results == [(1, 2)]
+
+    with pytest.raises(MemoryFloorReached, match="fewer workers"):
+        pool.wait_for_memory()
+    pool.close()
+
+
+@pytest.mark.parametrize("workers", [1, 3], ids=["inline", "threads"])
+def test_a_call_is_dispatched_before_it_computes_and_computed_before_its_outcome(
+    workers: int,
+) -> None:
+    heard = _Heard()
+    events: list[tuple[str, int]] = []
+    pool: EntryPool[int, int] = EntryPool(
+        workers=workers,
+        mode="thread",
+        on_result=lambda tag, result: events.append(("result", tag)),
+        on_error=heard.on_error,
+        on_dispatch=lambda tag: events.append(("dispatched", tag)),
+        on_computed=lambda tag: events.append(("computed", tag)),
+    )
+
+    pool.submit(7, double, 7)
+    pool.finish()
+
+    kinds = [kind for kind, tag in events if tag == 7]
+    assert kinds[0] == "dispatched"
+    assert kinds.index("computed") < kinds.index("result")
+    assert kinds.count("result") == 1
+
+
+def test_a_pool_measures_with_the_watch_it_is_given() -> None:
+    watch = MemoryWatch()
+    heard = _Heard()
+    pool: EntryPool[int, int] = EntryPool(
+        workers=1,
+        mode="thread",
+        on_result=heard.on_result,
+        on_error=heard.on_error,
+        watch=watch,
+    )
+
+    assert pool.watch is watch
+    assert pool.in_flight == 0
+
+
 def test_an_error_callback_that_raises_cancels_the_calls_not_yet_started() -> None:
     heard = _Heard()
     started: list[int] = []
@@ -248,13 +313,13 @@ def test_the_resources_name_the_workers_and_the_mode_only_when_there_are_several
         pool.finish()
         pool.close()
 
-    assert (inline.resources[-1]["workers"], inline.resources[-1]["parallel_mode"]) == (
+    assert (inline.resources[-1].workers, inline.resources[-1].parallel_mode) == (
         1,
         "",
     )
     assert (
-        several.resources[-1]["workers"],
-        several.resources[-1]["parallel_mode"],
+        several.resources[-1].workers,
+        several.resources[-1].parallel_mode,
     ) == (2, "thread")
 
 

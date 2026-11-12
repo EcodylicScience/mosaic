@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
 import datetime
 import errno
 import os
@@ -16,7 +17,9 @@ import pytest
 
 import mosaic.runlog as runlog
 from mosaic.runlog import (
+    EntryMeasure,
     JsonlRunLog,
+    ResourceReport,
     RunLogSnapshot,
     attempt_outcome,
     error_summary,
@@ -758,3 +761,250 @@ def test_a_log_whose_mtime_reads_just_before_the_instant_is_still_read(
     changed = list_runs(run_log_dir(tmp_path), changed_since=since)
 
     assert [snap["execution_id"] for snap in changed["items"]] == ["E1"]
+
+
+def _events_of(base: Path, execution_id: str, kind: str) -> list[dict[str, Any]]:
+    path = run_log_path(base, execution_id)
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    return [record for record in records if record["ev"] == kind]
+
+
+def _full_report() -> ResourceReport:
+    return ResourceReport(
+        workers=4,
+        parallel_mode="thread",
+        peak_rss_bytes=300,
+        min_available_bytes=500,
+        total_memory_bytes=1000,
+        feature="speed",
+        feature_version="0.3",
+        process_capable=True,
+        cpu_seconds=12.5,
+        wall_seconds=4.25,
+        memory_limit_bytes=800,
+        memory_limit_source="cgroup_v2",
+        limit_peak_bytes=250,
+        base_rss_bytes=40,
+        fit_seconds=1.5,
+        fit_peak_rss_bytes=120,
+        peak_bytes_per_row=7,
+        admission_margin=1.5,
+        admission_waits=2,
+        fit_entries=3,
+        fit_input_rows=900,
+        worker_base_rss_bytes=60,
+        apply_wall_seconds=2.75,
+    )
+
+
+def test_a_resources_event_carries_every_field_of_its_report(tmp_path: Path) -> None:
+    report = _full_report()
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.resources(report)
+
+    (event,) = _events_of(tmp_path, "E1", "resources")
+
+    assert {k: v for k, v in event.items() if k not in ("t", "ev")} == (
+        dataclasses.asdict(report)
+    )
+
+
+def test_a_report_of_only_its_required_fields_reads_every_other_as_empty() -> None:
+    report = ResourceReport(
+        workers=1,
+        parallel_mode="",
+        peak_rss_bytes=1,
+        min_available_bytes=2,
+        total_memory_bytes=3,
+    )
+
+    assert (report.feature, report.feature_version, report.process_capable) == (
+        "",
+        "",
+        False,
+    )
+    assert (report.cpu_seconds, report.wall_seconds, report.apply_wall_seconds) == (
+        0.0,
+        0.0,
+        0.0,
+    )
+    assert (report.memory_limit_bytes, report.memory_limit_source) == (0, "")
+    assert (report.admission_margin, report.admission_waits) == (0.0, 0)
+
+
+def test_an_entry_end_carries_its_measure_only_when_given(tmp_path: Path) -> None:
+    measure = EntryMeasure(
+        wall_seconds=2.5, apply_seconds=1.5, input_rows=40, in_flight=2, cpu_seconds=3.0
+    )
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.on_entry_end(1, 2, "a__1", measure=measure)
+        log.on_entry_end(2, 2, "a__2")
+
+    measured, bare = _events_of(tmp_path, "E1", "entry_end")
+
+    assert {k: v for k, v in measured.items() if k not in ("t", "ev")} == {
+        "index": 1,
+        "total": 2,
+        "key": "a__1",
+        "wall_seconds": 2.5,
+        "apply_seconds": 1.5,
+        "input_rows": 40,
+        "in_flight": 2,
+        "cpu_seconds": 3.0,
+    }
+    assert {k: v for k, v in bare.items() if k not in ("t", "ev")} == {
+        "index": 2,
+        "total": 2,
+        "key": "a__2",
+    }
+
+
+def test_a_probe_event_names_its_request_step_entries_and_kind(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.probe(request_id="R1", step="speed", entries=["g__a", "g__b"], kind="named")
+
+    (event,) = _events_of(tmp_path, "E1", "probe")
+
+    assert (event["request_id"], event["step"]) == ("R1", "speed")
+    assert (event["entries"], event["kind"]) == (["g__a", "g__b"], "named")
+
+
+def _comparable(snapshot: RunLogSnapshot | None) -> dict[str, Any]:
+    assert snapshot is not None
+    return {
+        k: v
+        for k, v in snapshot.items()
+        if k
+        not in (
+            "execution_id",
+            "created_at",
+            "started_at",
+            "heartbeat_at",
+            "finished_at",
+        )
+    }
+
+
+def test_a_log_with_the_new_fields_reduces_to_the_snapshot_of_one_without(
+    tmp_path: Path,
+) -> None:
+    measure = EntryMeasure(
+        wall_seconds=2.5, apply_seconds=1.5, input_rows=40, in_flight=2, cpu_seconds=3.0
+    )
+    report = _full_report()
+    with _log(tmp_path, "NEW") as log:
+        log.started(kind="feature", target="t")
+        log.set_total(2)
+        log.resources(report)
+        log.on_entry_end(1, 2, "a__1", measure=measure)
+        log.on_entry_end(2, 2, "a__2", measure=measure)
+        log.finished()
+    old_lines: list[dict[str, object]] = [
+        {"ev": "started", "kind": "feature", "target": "t"},
+        {"ev": "total", "total": 2},
+        {
+            "ev": "resources",
+            "workers": 4,
+            "parallel_mode": "thread",
+            "peak_rss_bytes": 300,
+            "min_available_bytes": 500,
+            "total_memory_bytes": 1000,
+        },
+        {"ev": "entry_end", "index": 1, "total": 2, "key": "a__1"},
+        {"ev": "entry_end", "index": 2, "total": 2, "key": "a__2"},
+        {"ev": "finished"},
+    ]
+    old = _write_lines(tmp_path, "OLD", *old_lines)
+
+    new_snapshot = _comparable(runlog.reduce_run_log(run_log_path(tmp_path, "NEW")))
+    old_snapshot = _comparable(runlog.reduce_run_log(old))
+
+    assert new_snapshot == old_snapshot
+    assert old_snapshot["probe"] is False
+    assert (old_snapshot["workers"], old_snapshot["peak_rss_bytes"]) == (4, 300)
+    assert (old_snapshot["progress_done"], old_snapshot["progress_total"]) == (2, 2)
+
+
+def test_a_probe_event_of_the_probe_kind_marks_the_attempt(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.probe(request_id="R1", step="speed", entries=["g__a"], kind="probe")
+
+    snap = runlog.reduce_run_log(run_log_path(tmp_path, "E1"))
+
+    assert snap is not None
+    assert snap["probe"] is True
+
+
+def test_a_named_subset_does_not_mark_the_attempt_a_probe(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.probe(request_id="R1", step="speed", entries=["g__a"], kind="named")
+
+    snap = runlog.reduce_run_log(run_log_path(tmp_path, "E1"))
+
+    assert snap is not None
+    assert snap["probe"] is False
+
+
+def test_a_later_started_clears_the_probe_mark(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.probe(request_id="R1", step="speed", entries=["g__a"], kind="probe")
+        log.started(kind="feature", target="t")
+
+    snap = runlog.reduce_run_log(run_log_path(tmp_path, "E1"))
+
+    assert snap is not None
+    assert snap["probe"] is False
+
+
+def test_folding_the_records_of_a_log_gives_the_snapshot_read_run_reads(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.set_total(2)
+        log.on_entry_end(1, 2, "a__1")
+    path = run_log_path(tmp_path, "E1")
+    path.write_text(path.read_text() + '{"ev": "entry_en')
+
+    records = runlog.read_run_records(run_log_dir(tmp_path), "E1")
+
+    assert [record["ev"] for record in records] == ["started", "total", "entry_end"]
+    assert runlog.fold_run_records("E1", records) == runlog.read_run(
+        run_log_dir(tmp_path), "E1"
+    )
+    assert runlog.fold_run_records("E1", []) is None
+    assert runlog.read_run_records(run_log_dir(tmp_path), "ABSENT") == []
+
+
+def test_a_record_field_of_the_wrong_type_reads_as_empty() -> None:
+    record = {"n": True, "s": 3, "x": "1.5", "f": 1, "g": "yes"}
+
+    assert runlog.record_count(record, "n") == 0
+    assert runlog.record_text(record, "s") == ""
+    assert runlog.record_seconds(record, "x") == 0.0
+    assert runlog.record_flag(record, "f") is False
+    assert runlog.record_flag(record, "g") is False
+    assert runlog.record_flag({"f": True}, "f") is True
+
+
+def test_error_fields_reads_a_json_object_and_nothing_else() -> None:
+    assert runlog.error_fields('{"type": "ValueError"}') == {"type": "ValueError"}
+    assert runlog.error_fields("[1]") is None
+    assert runlog.error_fields("not json") is None
+    assert runlog.error_fields("") is None
+
+
+def test_the_last_attempt_is_the_records_from_the_last_started_on() -> None:
+    first: dict[str, object] = {"ev": "started", "n": 1}
+    second: dict[str, object] = {"ev": "started", "n": 2}
+    tail: dict[str, object] = {"ev": "entry_end"}
+
+    assert runlog.last_attempt_records([first, tail, second, tail]) == [second, tail]
+    assert runlog.last_attempt_records([tail, tail]) == [tail, tail]
+    assert runlog.last_attempt_records([]) == []

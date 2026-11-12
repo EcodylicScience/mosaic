@@ -44,13 +44,18 @@ from ._utils import new_execution_id
 from .gpu_lease import leased_card
 from .markers import current_boot_id, current_pid_namespace
 from .parallelism import ParallelSettings
-from .progress import NullProgressCallback, ProgressCallback
+from .progress import (
+    CompositeProgressCallback,
+    NullProgressCallback,
+    ProgressCallback,
+)
 from .refusal import Refusal
 from .run_log import JsonlRunLog, run_log_path
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.timebase import IrregularNotice
+    from mosaic.runlog import EntryMeasure, ResourceReport
 
 
 # ---------------------------------------------------------------------------
@@ -348,38 +353,57 @@ class JobContext:
         if variants and self.run_log is not None:
             self.run_log.tracks_variant(variants)
 
-    def resources(
-        self,
-        *,
-        workers: int,
-        parallel_mode: str,
-        peak_rss_bytes: int,
-        min_available_bytes: int,
-        total_memory_bytes: int,
-    ) -> None:
-        """Record how many entries the attempt computes at once and the memory it uses.
+    def resources(self, report: ResourceReport) -> None:
+        """Record how many entries the attempt computes at once, its memory and its cost.
 
         Without a run-log it is a no-op.
         """
         if self.run_log is not None:
-            self.run_log.resources(
-                workers=workers,
-                parallel_mode=parallel_mode,
-                peak_rss_bytes=peak_rss_bytes,
-                min_available_bytes=min_available_bytes,
-                total_memory_bytes=total_memory_bytes,
-            )
+            self.run_log.resources(report)
+
+    def _injected_progress(self) -> ProgressCallback | None:
+        """The progress callback with the run-log left out, ``None`` when nothing is left.
+
+        The run-log records its own events, so a callback that is the run-log, or a
+        composite holding it, would write each event twice.
+        """
+        progress = self.progress
+        if self.run_log is None:
+            return progress
+        if progress is self.run_log:
+            return None
+        if isinstance(progress, CompositeProgressCallback):
+            return progress.without(self.run_log)
+        return progress
+
+    def entry_ended(
+        self, done: int, total: int, key: str, measure: EntryMeasure | None
+    ) -> None:
+        """Record that one entry ended, with its cost, and tell the progress callback.
+
+        The run-log writes ``entry_end`` once, with *measure* when given. An
+        injected callback then receives ``on_entry_end`` with three arguments. When
+        that callback is the run-log, or a composite that holds it, the run-log is
+        left out of the call, so the event is never written twice.
+        """
+        if self.run_log is not None:
+            self.run_log.on_entry_end(done, total, key, measure=measure)
+        progress = self._injected_progress()
+        if progress is not None:
+            progress.on_entry_end(done, total, key)
 
     def phase(self, name: str, message: str = "") -> None:
         """Declare the phase the attempt has entered, such as ``fit`` or ``apply``.
 
         The run-log folds the last one into the snapshot's ``phase``, and a status
-        report shows it. An injected progress callback receives it too.
+        report shows it. An injected progress callback receives it too, and the
+        run-log writes it once, as :meth:`entry_ended` does.
         """
         if self.run_log is not None:
             self.run_log.on_phase(name, message)
-        if self.progress is not self.run_log:
-            self.progress.on_phase(name, message)
+        progress = self._injected_progress()
+        if progress is not None:
+            progress.on_phase(name, message)
 
     def check_cancel(self) -> None:
         """Raise :class:`Cancelled` if a cancel has been requested."""
@@ -430,8 +454,9 @@ def job_context(
         recorded -- the "bare run leaves no trace" behaviour.
     progress_callback, cancel_token:
         Optional injected backends; sensible defaults are provided. When a
-        progress callback is injected, per-entry/per-epoch events go to it and
-        only coarse progress (via :meth:`JobContext.heartbeat`) lands in the log.
+        progress callback is injected, per-entry/per-epoch events go to it, and
+        per-entry events and their costs land in the log too
+        (:meth:`JobContext.entry_ended`).
     step_id:
         The pipeline step this attempt runs, or ``""`` outside a pipeline. A
         refusal recorded for the attempt names it.

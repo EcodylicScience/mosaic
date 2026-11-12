@@ -215,6 +215,12 @@ class CompositeProgressCallback:
     def __init__(self, *backends: TrainingProgressCallback) -> None:
         self._backends = backends
 
+    def without(self, backend: object) -> CompositeProgressCallback:
+        """Return a composite of every backend but *backend*, compared by identity."""
+        return CompositeProgressCallback(
+            *(b for b in self._backends if b is not backend)
+        )
+
     def on_epoch_end(
         self, epoch: int, total_epochs: int, metrics: dict[str, float]
     ) -> None:

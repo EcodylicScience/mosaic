@@ -25,7 +25,12 @@ from mosaic.core.pipeline.graph import (
     run_status_wire,
 )
 from mosaic.core.pipeline.refusal import Refusal
-from mosaic.runlog import JsonlRunLog, RunLogSnapshot, run_log_path
+from mosaic.runlog import (
+    JsonlRunLog,
+    ResourceReport,
+    RunLogSnapshot,
+    run_log_path,
+)
 from tests.helpers import exited_pid, write_driver_lease
 
 OTHER_HOST = "another-host.invalid"
@@ -167,18 +172,22 @@ def test_a_step_reports_its_workers_and_the_memory_it_has_used(tmp_path: Path) -
     with _log(tmp_path, "E1") as log:
         log.started(kind="feature", target="speed")
         log.resources(
-            workers=4,
-            parallel_mode="process",
-            peak_rss_bytes=10 * gib,
-            min_available_bytes=20 * gib,
-            total_memory_bytes=64 * gib,
+            ResourceReport(
+                workers=4,
+                parallel_mode="process",
+                peak_rss_bytes=10 * gib,
+                min_available_bytes=20 * gib,
+                total_memory_bytes=64 * gib,
+            )
         )
         log.resources(
-            workers=4,
-            parallel_mode="process",
-            peak_rss_bytes=12 * gib,
-            min_available_bytes=18 * gib,
-            total_memory_bytes=64 * gib,
+            ResourceReport(
+                workers=4,
+                parallel_mode="process",
+                peak_rss_bytes=12 * gib,
+                min_available_bytes=18 * gib,
+                total_memory_bytes=64 * gib,
+            )
         )
 
     report = request_status_wire(tmp_path, _request(speed="E1", templates="E2"))
@@ -483,3 +492,18 @@ def test_a_brief_report_lists_the_step_waiting_for_a_gpu_and_counts_one_fewer_pe
     assert waiting.omitted_pending == 2
     assert idle.steps == ()
     assert idle.omitted_pending == 3
+
+
+def test_an_attempt_reports_whether_it_was_a_probe(tmp_path: Path) -> None:
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="speed")
+        log.probe(request_id="R1", step="speed", entries=["g__s1"], kind="probe")
+    with _log(tmp_path, "E2") as log:
+        log.started(kind="feature", target="speed")
+
+    probe = run_status_wire(tmp_path, "E1")
+    plain = run_status_wire(tmp_path, "E2")
+
+    assert probe is not None
+    assert plain is not None
+    assert (probe.probe, plain.probe) == (True, False)

@@ -574,8 +574,9 @@ them:
   unless you set it false. A submission that names no mode receives `thread` whatever
   this is. Set it false on a host whose memory cannot hold an entry's tables for every
   worker.
-- `min_free_memory_fraction` is the share of the host's memory that a run with several
-  workers keeps available. While the share is lower, the run waits for its entries in
+- `min_free_memory_fraction` is the share of the memory limit that applies, a
+  container's cgroup limit else the host's, that a run with several workers keeps
+  available. While the share is lower, the run waits for its entries in
   flight, whose tables free memory as they finish. When the share is still lower with
   none in flight, the run fails in a state that a later run resumes.
 

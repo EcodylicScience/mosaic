@@ -1,6 +1,6 @@
 """``mosaic pipeline``: read a graph, say what it would do, and do it.
 
-Ten verbs, and the split between them is the split the library makes.
+Eleven verbs, and the split between them is the split the library makes.
 ``catalog`` lists the step types a recipe may run. ``validate`` asks only about
 the document and opens no dataset.
 ``plan`` and ``show`` resolve it against a dataset and write nothing. ``run``
@@ -15,6 +15,8 @@ prints the command each step is run by, so a graph can be driven by anything tha
 starts processes in order -- a shell loop, a job array, a scheduler. ``status``
 then says how far that submission got, reading only the attempts' own logs.
 ``list`` reports a page of the dataset's submissions the same way.
+``input-size`` reports how much one step of a submission reads and which of its
+entries a plain attempt would compute, largest first, and writes nothing.
 
 ``verify`` fits the fitting steps of a finished recipe again in a scratch directory
 and compares them with the stored runs (``core/pipeline/verify.py``). It writes
@@ -41,6 +43,7 @@ from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
     EntriesOption,
     GroupOption,
+    AdmissionMarginOption,
     MinFreeMemoryOption,
     ParallelModeOption,
     StepScopeOption,
@@ -82,6 +85,7 @@ if TYPE_CHECKING:
         RequestSummaryWire,
         RetirableRecipeWire,
     )
+    from mosaic.core.pipeline.graph.input_size import StepInputSizeWire
     from mosaic.core.pipeline.verify import VerifyReport
 
 pipeline_app = typer.Typer(
@@ -845,6 +849,7 @@ def run_command(
     workers: WorkersOption = None,
     parallel_mode: ParallelModeOption = None,
     min_free_memory_fraction: MinFreeMemoryOption = 0.0,
+    admission_margin: AdmissionMarginOption = 0.0,
     gpu_cards: Annotated[
         str | None,
         typer.Option(
@@ -893,7 +898,9 @@ def run_command(
     )
     from mosaic.core.pipeline.job import Cancelled, CancelToken, install_signal_handler
 
-    parallel = parallel_settings(workers, parallel_mode, min_free_memory_fraction)
+    parallel = parallel_settings(
+        workers, parallel_mode, min_free_memory_fraction, admission_margin
+    )
     if request_id is not None:
         if recipe is not None:
             fail("Provide exactly one of --recipe or --request.")
@@ -1387,6 +1394,72 @@ def status_command(
     _render_request_status(report)
 
 
+def input_size_command(
+    manifest: ManifestOption,
+    request_id: Annotated[
+        str, typer.Option("--request", help="Which submission the step belongs to.")
+    ],
+    step: Annotated[str, typer.Option("--step", help="Which step of its recipe.")],
+    as_json: JsonOption = False,
+) -> None:
+    """Say how much one step of a submission reads, and which entries it would compute.
+
+    Plans the step as it plans itself when it starts and reads each input file's
+    footer, so no table is read and nothing is written. The report gives the
+    step's entries and rows, those a plain attempt would compute, and every entry
+    to compute with its rows, largest first. Each entry's token is the
+    ``group:sequence`` form that names an entry on a command line. A complete,
+    bound or pinned step computes nothing. An entry held back after repeated
+    failures is left out, and the step reports ``inputs_ready`` false unless the
+    request proceeds without such entries. A step that cannot be measured yet (an
+    op, or a step whose inputs are not written) also reports ``inputs_ready``
+    false, and why. ``run_id`` is the run the plan names, null where an op of the
+    recipe has not written what the step reads, and the step plans it again when
+    it starts.
+    """
+    from mosaic.core.pipeline.graph import load_recipe_for_request, load_request
+    from mosaic.core.pipeline.graph.input_size import step_input_size
+
+    ds = load_dataset(manifest, read_only=True)
+    try:
+        request = load_request(ds.base_dir, request_id)
+    except FileNotFoundError as exc:
+        fail(str(exc))
+    if step not in load_recipe_for_request(ds.base_dir, request).ids:
+        fail(f"request {request_id!r} has no step {step!r}")
+    try:
+        with stdout_to_stderr():
+            report = step_input_size(ds, request, step)
+    except Refusal as refusal:
+        exit_refused("", refusal, step_id=step, as_json=as_json)
+    if as_json:
+        emit_json(report.model_dump(mode="json"))
+        return
+    _render_input_size(report)
+
+
+def _render_input_size(report: "StepInputSizeWire") -> None:
+    """Print a step's sizes and its entries to compute, largest first."""
+    typer.echo(f"step {report.step} ({report.kind}) of request {report.request_id}")
+    if not report.inputs_ready:
+        typer.echo(f"inputs not ready: {report.reason}")
+    typer.echo(
+        f"entries {report.entries}, to compute {report.entries_to_compute}; "
+        f"rows {report.rows}, to compute {report.rows_to_compute}; "
+        f"largest entry {report.largest_entry_rows} rows; "
+        f"at most {report.columns_max} columns"
+    )
+    typer.echo(f"run {report.run_id or '(not yet resolved)'}")
+    if report.entries_to_compute_by_rows:
+        render_table(
+            [
+                {"entry": row.token, "rows": row.rows}
+                for row in report.entries_to_compute_by_rows
+            ],
+            ["entry", "rows"],
+        )
+
+
 def _render_request_status(report: RequestStatusWire) -> None:
     """Print a request's verdict and a table of its steps."""
     typer.echo(f"request {report.request_id}: {report.verdict}")
@@ -1683,3 +1756,4 @@ _ = pipeline_app.command(name="submit")(submit_command)
 _ = pipeline_app.command(name="run")(run_command)
 _ = pipeline_app.command(name="status")(status_command)
 _ = pipeline_app.command(name="list")(list_command)
+_ = pipeline_app.command(name="input-size")(input_size_command)

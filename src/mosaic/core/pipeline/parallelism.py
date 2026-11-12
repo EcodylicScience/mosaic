@@ -14,17 +14,21 @@ import os
 from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
 import psutil
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, field_validator
 
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
+    from mosaic.core.pipeline.memory_limit import LimitSource
 
 __all__ = [
+    "DEFAULT_ADMISSION_MARGIN",
     "DEFAULT_MIN_FREE_MEMORY_FRACTION",
+    "MAX_ADMISSION_MARGIN",
     "MAX_WORKERS_CEILING",
+    "EntryOverMemoryLimit",
     "ParallelLimits",
     "ParallelMode",
     "ParallelRefused",
@@ -37,6 +41,8 @@ __all__ = [
     "memory_use_text",
     "parallel_flags",
     "physical_cpus",
+    "process_capable",
+    "valid_admission_margin",
 ]
 
 type ParallelMode = Literal["thread", "process"]
@@ -57,6 +63,18 @@ type ParallelMode = Literal["thread", "process"]
 MAX_WORKERS_CEILING: Final = 32
 """The most workers any setting may name."""
 
+MAX_ADMISSION_MARGIN: Final = 4.0
+"""The largest admission margin. A larger factor means an estimate too wrong to admit by."""
+
+DEFAULT_ADMISSION_MARGIN: Final = 1.5
+"""The admission margin a caller that turns the gate on without a figure of its own uses."""
+
+
+def valid_admission_margin(margin: float) -> bool:
+    """Whether *margin* is an admission margin: 0 (off), or from 1 to 4."""
+    return margin == 0.0 or 1.0 <= margin <= MAX_ADMISSION_MARGIN
+
+
 DEFAULT_MIN_FREE_MEMORY_FRACTION: Final = 0.10
 """The memory floor of an operator who sets none."""
 
@@ -67,10 +85,15 @@ class ParallelSettings(StrictModel):
     Attributes:
         workers: How many entries are computed at once. 1 computes them in turn.
         mode: How the entries are computed once ``workers`` is above 1.
-        min_free_memory_fraction: The share of the host's memory that must stay
-            available. A run with several workers waits for its in-flight entries
-            before it starts another while the share is lower, and fails when it
-            is still lower with none in flight. 0 turns the check off.
+        min_free_memory_fraction: The share of the memory limit that applies, a
+            container's or else the host's, that must stay available. A run with
+            several workers waits for its in-flight entries before it starts
+            another while the share is lower, and fails when it is still lower
+            with none in flight. 0 turns the check off.
+        admission_margin: The factor on an entry's predicted memory before the
+            gate admits it beside the entries in flight. With a margin the first
+            entry runs alone and entries start largest first. 0 turns the gate
+            off; otherwise from 1 to 4.
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
@@ -78,6 +101,15 @@ class ParallelSettings(StrictModel):
     workers: int = Field(default=1, ge=1, le=MAX_WORKERS_CEILING)
     mode: ParallelMode = "thread"
     min_free_memory_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
+    admission_margin: float = Field(default=0.0, ge=0.0, le=MAX_ADMISSION_MARGIN)
+
+    @field_validator("admission_margin")
+    @classmethod
+    def _off_or_from_one(cls, margin: float) -> float:
+        if not valid_admission_margin(margin):
+            msg = f"admission_margin is 0 (off) or from 1 to 4, not {margin}"
+            raise ValueError(msg)
+        return margin
 
 
 class ParallelRefused(ClassifiedError, ValueError):
@@ -173,12 +205,13 @@ def parallel_flags(settings: ParallelSettings | None) -> list[str]:
 
     Returns:
         The flags of ``mosaic run`` and ``mosaic pipeline run``, empty unless the
-        settings name more than one worker. The memory floor matters to a run with
-        several workers only, so it travels with them.
+        settings name more than one worker. The memory floor and the admission
+        margin matter to a run with several workers only, so they travel with them.
+        The margin is added only when it turns the gate on.
     """
     if settings is None or settings.workers <= 1:
         return []
-    return [
+    flags = [
         "--workers",
         str(settings.workers),
         "--parallel-mode",
@@ -186,6 +219,9 @@ def parallel_flags(settings: ParallelSettings | None) -> list[str]:
         "--min-free-memory-fraction",
         str(settings.min_free_memory_fraction),
     ]
+    if settings.admission_margin > 0.0:
+        flags += ["--admission-margin", str(settings.admission_margin)]
+    return flags
 
 
 def host_cpus() -> int:
@@ -194,6 +230,17 @@ def host_cpus() -> int:
     if affinity is not None:
         return max(1, len(affinity(0)))
     return max(1, os.cpu_count() or 1)
+
+
+def process_capable(feature: object) -> bool:
+    """Whether *feature* may compute its entries in worker processes.
+
+    It must be ``parallelizable`` and define no ``set_scope``: a process worker
+    rebuilds the feature without calling it.
+    """
+    return bool(getattr(feature, "parallelizable", False)) and not hasattr(
+        feature, "set_scope"
+    )
 
 
 def physical_cpus() -> int:
@@ -214,7 +261,7 @@ def effective_parallel(
     settings: ParallelSettings | None,
     *,
     parallelizable: bool,
-    needs_scope: bool = False,
+    process_capable: bool = True,
     cpus: int | None = None,
 ) -> ParallelSettings:
     """Return the settings a feature actually runs with.
@@ -223,9 +270,8 @@ def effective_parallel(
         settings: What the caller asked for. ``None`` asks for no parallelism.
         parallelizable: The feature's ``parallelizable`` attribute. A feature that
             is not parallelizable runs one entry at a time.
-        needs_scope: Whether the feature defines ``set_scope``. A process worker
-            rebuilds the feature without calling it, so such a feature runs in
-            threads.
+        process_capable: :func:`process_capable` of the feature. A feature that is
+            not runs in threads.
         cpus: How many processors there are, :func:`host_cpus` when ``None``.
 
     Returns:
@@ -234,11 +280,12 @@ def effective_parallel(
     if settings is None or not parallelizable:
         return ParallelSettings()
     available = host_cpus() if cpus is None else max(1, cpus)
-    mode: ParallelMode = "thread" if needs_scope else settings.mode
+    mode: ParallelMode = settings.mode if process_capable else "thread"
     return ParallelSettings(
         workers=min(settings.workers, available),
         mode=mode,
         min_free_memory_fraction=settings.min_free_memory_fraction,
+        admission_margin=settings.admission_margin,
     )
 
 
@@ -250,7 +297,7 @@ def memory_use_text(
     workers: int,
     mode: ParallelMode,
     peak_rss_bytes: int,
-    total_bytes: int,
+    limit_bytes: int,
 ) -> str:
     """Describe a run's workers and the memory it used, for a failure message.
 
@@ -258,22 +305,23 @@ def memory_use_text(
         workers: How many entries the run computed at once.
         mode: How it computed them.
         peak_rss_bytes: The largest resident memory measured, 0 when none was.
-        total_bytes: The host's physical memory, 0 when it was not measured.
+        limit_bytes: The memory limit that applied, a container's or the host's, 0
+            when it was not measured.
 
     Returns:
         A clause such as ``workers=4, mode=process, peak memory 38.2 GB of 64.0 GB``.
     """
     clause = f"workers={workers}, mode={mode}"
-    if peak_rss_bytes > 0 and total_bytes > 0:
+    if peak_rss_bytes > 0 and limit_bytes > 0:
         used = peak_rss_bytes / _GIGABYTE
-        total = total_bytes / _GIGABYTE
-        clause += f", peak memory {used:.1f} GB of {total:.1f} GB"
+        limit = limit_bytes / _GIGABYTE
+        clause += f", peak memory {used:.1f} GB of {limit:.1f} GB"
     return clause
 
 
-_REMEDY: Final = (
-    "Run again with fewer workers, or in thread mode. Entries already written are kept."
-)
+_KEPT: Final = "Entries already written are kept."
+
+_REMEDY: Final = f"Run again with fewer workers, or in thread mode. {_KEPT}"
 
 
 class WorkerProcessDied(RuntimeError):
@@ -288,11 +336,65 @@ class WorkerProcessDied(RuntimeError):
 
 
 class MemoryFloorReached(RuntimeError):
-    """The host's available memory is under the floor and no entry is in flight to free it."""
+    """The available memory is under the floor and no entry is in flight to free it."""
 
-    def __init__(self, use: str, *, free_fraction: float, floor: float) -> None:
+    def __init__(
+        self,
+        use: str,
+        *,
+        free_fraction: float,
+        floor: float,
+        limit_bytes: int,
+        source: LimitSource,
+    ) -> None:
+        size = f"{limit_bytes / _GIGABYTE:.1f} GB"
+        if source == "host":
+            held = f"the host has {free_fraction:.0%} of its {size} memory available"
+        else:
+            held = (
+                f"the container has {free_fraction:.0%} of its {size} limit available"
+            )
         msg = (
-            f"the host has {free_fraction:.0%} of its memory available, under the "
-            f"floor of {floor:.0%}, with no entry in flight ({use}). {_REMEDY}"
+            f"{held}, under the floor of {floor:.0%}, with no entry in flight "
+            f"({use}). {_REMEDY}"
         )
         super().__init__(msg)
+
+
+class EntryOverMemoryLimit(RuntimeError):
+    """One entry is predicted to need more memory than the limit leaves, even alone.
+
+    The prediction has no margin, and is compared with the limit less the memory
+    floor, never with the memory available at the moment, so it is a property of
+    the entry and the limit. In process mode the prediction includes the live
+    workers' own memory, so the message offers thread mode as well.
+    """
+
+    def __init__(
+        self,
+        entry: str,
+        *,
+        predicted_bytes: int,
+        limit_bytes: int,
+        source: LimitSource,
+        parallel_mode: ParallelMode = "thread",
+    ) -> None:
+        size = f"{limit_bytes / _GIGABYTE:.1f} GB"
+        if source == "host":
+            held = f"the host's {size} memory"
+        else:
+            held = f"the container's {size} limit"
+        remedy = (
+            "a larger memory limit, or in thread mode"
+            if parallel_mode == "process"
+            else "a larger memory limit"
+        )
+        msg = (
+            f"entry {entry} is predicted to need "
+            f"{predicted_bytes / _GIGABYTE:.1f} GB alone, more than {held} leaves "
+            f"above the memory floor. Run again with {remedy}. {_KEPT}"
+        )
+        super().__init__(msg)
+        self.entry: str = entry
+        self.predicted_bytes: int = predicted_bytes
+        self.limit_bytes: int = limit_bytes

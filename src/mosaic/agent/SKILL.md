@@ -596,6 +596,9 @@ https://ecodylicscience.github.io/mosaic/guides/tracking/train-a-pose-model/.
   for the holder that `detail` names to end (`mosaic runs` lists it), then rerun, which
   reuses its result. Run `mosaic release` only for a holder that is dead, and never
   delete the claim marker by hand.
+- Reason `subset_refused`: a step refused a probe or a named subset of its entries,
+  with a `cause` of `scope_dependent`, `op_step`, `stand_in` or `outside_target`.
+  Run the step whole instead.
 - Reason `gpu_card_not_leased`: a GPU step of a local request is given one card, and its
   `device` names another (`1`, `cuda:1`) or several (`0,1`). Set `device` to `0` or
   `cuda`, or leave it unset. `0` names the card the step was given. `--allow-partial`
@@ -893,22 +896,35 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   --assume-exited`, then submit the recipe again.
 - Parallel workers: a `parallelizable` step can compute several entries at once. The
   conversion steps `convert-tracks` and `resample-tracks` are, and no other op is.
-  `plan_recipe` reports the operator's limits, the host's processors and memory, and
-  each step's `workers`. `submit_pipeline` takes `workers` and `parallel_mode`, never
-  above those limits, and a request over one is refused with `parallel_limit`. A
-  submission that names neither gets `workers` from the plan's parallel block, one per
-  physical core unless the operator set another, in `thread` mode. Threads share one
-  copy of the feature and speed up numpy and pandas work. Name `parallel_mode:
-  process` for a step whose per-entry work is a Python loop, which holds the
-  interpreter lock in threads, when the plan's parallel block has `allow_process_mode`
-  true. Each process worker holds about one entry's tables of its own, so check that
-  the host's available memory holds that per worker, and lower `workers` before a step
-  runs out of memory.
+  `plan_recipe` reports the operator's limits, the host's processors, the memory limit
+  that applies, and each step's `workers`. `submit_pipeline` takes `workers` and
+  `parallel_mode`, never above those limits, and a request over one is refused with
+  `parallel_limit`. A submission that names neither gets `workers` from the plan's
+  parallel block, one per physical core unless the operator set another, in `thread`
+  mode. Threads share one copy of the feature and speed up numpy and pandas work. Name
+  `parallel_mode: process` for a step whose per-entry work is a Python loop, which holds
+  the interpreter lock in threads, when the plan's parallel block has
+  `allow_process_mode` true. Each process worker holds about one entry's tables of its
+  own, so check that the memory available under the limit holds that per worker, and
+  lower `workers` before a step runs out of memory.
 - Watch memory while a step runs: `get_request_status` reports each step's
   `peak_rss_bytes` and `min_available_bytes`. When a step ends with `WorkerProcessDied`
-  or a memory-floor failure, or its peak nears the host's memory, halve `workers` or
-  use `thread`, then submit the recipe again. Written entries are kept, because the
-  worker count is not part of a run's identity. Do not retry at the same setting.
+  or a memory-floor failure, or its peak nears the memory limit, halve `workers` or use
+  `thread`, then submit the recipe again. Written entries are kept, because the worker
+  count is not part of a run's identity. Do not retry at the same setting.
+- `EntryOverMemoryLimit` depends on the entry and the memory limit, not on the worker
+  count, so fewer workers fail the same way. Run the step again with a larger memory
+  limit, or in thread mode when it ran in process mode, and tell the user which.
+- Memory means the limit that applies: inside a container or a SLURM job, its cgroup's
+  limit, otherwise the host's. The floor and `plan_recipe`'s memory figures follow it.
+  For a run that must not be killed, the user can start it with `--admission-margin`
+  (from 1 to 4, say 1.5) on the CLI: an entry then starts beside others only when its
+  predicted memory times the margin fits under the limit, and one predicted over the
+  limit even alone ends the step with `EntryOverMemoryLimit`. It applies to feature
+  steps only, not to `convert-tracks` or `resample-tracks`. It is off by default and
+  is not a `submit_pipeline` argument. `mosaic run --probe` and `--step-entries`, and
+  `read_run_cost`, are mosaic-queue's tools for sizing a job. Do not use them to tune a
+  run.
 - GPU cards: on a host with several cards, one user's requests that run at the same time
   take separate cards, one to each step on a GPU lane, the steps that raise the
   `gpu_lane` confirmation, unless its run and the runs of all its upstream steps were

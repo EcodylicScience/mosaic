@@ -21,7 +21,7 @@ break precisely where it is hardest to see.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from pydantic import ValidationError
@@ -30,6 +30,7 @@ from mosaic.cli._context import attempt_facts, load_dataset
 from mosaic.cli._features import build_feature
 from mosaic.cli._io import (
     RUN_SCOPE_FLAGS_REMEDY,
+    AdmissionMarginOption,
     MinFreeMemoryOption,
     ParallelModeOption,
     RunEntriesOption,
@@ -55,6 +56,9 @@ from mosaic.cli._io import (
 from mosaic.cli._render import render_kv
 from mosaic.core.strict_model import terse
 from mosaic.runlog import attempt_outcome
+
+if TYPE_CHECKING:
+    from mosaic.core.pipeline.graph.subset import StepSubset
 
 
 def run_command(
@@ -82,6 +86,28 @@ def run_command(
     step: Annotated[
         str | None,
         typer.Option("--step", help="Which step of --graph-request to run."),
+    ] = None,
+    probe: Annotated[
+        int | None,
+        typer.Option(
+            "--probe",
+            help=(
+                "With --graph-request: compute only the N largest entries of the "
+                "step (1 to 3), the first alone and then two at once in threads, "
+                "to measure what the step costs. Three give one entry alone and "
+                "one pair. Needs --execution-id."
+            ),
+        ),
+    ] = None,
+    step_entries: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--step-entries",
+            help=(
+                "With --graph-request: compute only this group:sequence entry of "
+                "the step (repeatable). Needs --execution-id."
+            ),
+        ),
     ] = None,
     params: RunParamsOption = None,
     inputs: Annotated[
@@ -137,12 +163,17 @@ def run_command(
         str | None,
         typer.Option(
             "--execution-id",
-            help="Reuse an externally minted ULID (executor unit-of-work).",
+            help=(
+                "Reuse an externally minted ULID (executor unit-of-work). With "
+                "--probe or --step-entries, an id other than the one the request "
+                "assigned the step."
+            ),
         ),
     ] = None,
     workers: WorkersOption = None,
     parallel_mode: ParallelModeOption = None,
     min_free_memory_fraction: MinFreeMemoryOption = 0.0,
+    admission_margin: AdmissionMarginOption = 0.0,
     as_json: Annotated[
         bool,
         typer.Option(
@@ -157,7 +188,22 @@ def run_command(
     refuse_scope_named_twice(entries, groups, sequences, scope_json)
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
-    parallel = parallel_settings(workers, parallel_mode, min_free_memory_fraction)
+    subset = _step_subset(
+        probe,
+        step_entries,
+        graph_request=graph_request,
+        execution_id=execution_id,
+        parallel_named=(
+            workers is not None
+            or parallel_mode is not None
+            or min_free_memory_fraction > 0.0
+            or admission_margin > 0.0
+        ),
+        overwrite=overwrite,
+    )
+    parallel = parallel_settings(
+        workers, parallel_mode, min_free_memory_fraction, admission_margin
+    )
     if parallel is not None and kind is not None:
         fail("--workers is used with --feature or --graph-request, not --kind.")
     if republish and kind is None:
@@ -180,7 +226,8 @@ def run_command(
             "--entries / --groups / --sequences / --scope are not supported "
             "with --graph-request. A step covers the entries its plan resolved. "
             "Narrow the submission instead, with "
-            "'mosaic pipeline submit --entry group:sequence'."
+            "'mosaic pipeline submit --entry group:sequence', or compute some of "
+            "the step's entries under an attempt of their own with --step-entries."
         )
     if graph_request is not None and tracks_run_id is not None:
         fail(
@@ -213,6 +260,7 @@ def run_command(
     payload: dict[str, object]
     try:
         if graph_request is not None:
+            from mosaic.core.entry import entry_token
             from mosaic.core.pipeline.graph import (
                 execute_step,
                 load_request,
@@ -223,6 +271,13 @@ def run_command(
             # a substrate that mounts the dataset somewhere else.
             request = load_request(ds.base_dir, graph_request)
             step_id = cast("str", step)
+            if subset is not None and exec_id == request.execution_of(step_id):
+                fail(
+                    f"--execution-id {exec_id} is the attempt the request assigned "
+                    f"step {step_id!r}, whose run-log is the step's status. Run "
+                    f"--probe or --step-entries under an id of its own.",
+                    code=2,
+                )
             log(f"[mosaic] execution_id={exec_id} running step {step_id}")
             with stdout_to_stderr():
                 outcome = execute_step(
@@ -234,6 +289,7 @@ def run_command(
                     owner=owner,
                     cancel_token=token,
                     parallel=parallel,
+                    subset=subset,
                 )
             payload = {
                 "execution_id": exec_id,
@@ -246,6 +302,11 @@ def run_command(
                 "covered": outcome.covered,
                 "target": outcome.target,
                 "failed_entries": list(outcome.failed_entries),
+                "subset": outcome.subset,
+                "entries_asked": [
+                    entry_token(group, sequence)
+                    for group, sequence in outcome.entries_asked
+                ],
             }
         elif feature is not None:
             feat = build_feature(
@@ -269,6 +330,9 @@ def run_command(
                     parallel_mode="thread" if parallel is None else parallel.mode,
                     min_free_memory_fraction=(
                         0.0 if parallel is None else parallel.min_free_memory_fraction
+                    ),
+                    admission_margin=(
+                        0.0 if parallel is None else parallel.admission_margin
                     ),
                 )
             # "partial" rather than "finished" when entities were lost. It is
@@ -367,3 +431,62 @@ def run_command(
         emit_json(payload)
     else:
         render_kv(payload)
+
+
+def _step_subset(
+    probe: int | None,
+    step_entries: list[str] | None,
+    *,
+    graph_request: str | None,
+    execution_id: str | None,
+    parallel_named: bool,
+    overwrite: bool,
+) -> StepSubset | None:
+    """Return the subset that ``--probe`` or ``--step-entries`` names, or fail.
+
+    Args:
+        probe: The ``--probe`` value.
+        step_entries: The ``--step-entries`` values.
+        graph_request: The ``--graph-request`` value.
+        execution_id: The ``--execution-id`` value.
+        parallel_named: Whether any parallel flag was given.
+        overwrite: The ``--overwrite`` value.
+
+    Returns:
+        The subset, ``None`` when neither flag is given.
+    """
+    if probe is None and step_entries is None:
+        return None
+    if probe is not None and step_entries is not None:
+        fail("--probe and --step-entries name two subsets; give one.", code=2)
+    flag = "--probe" if probe is not None else "--step-entries"
+    if graph_request is None:
+        fail(
+            f"{flag} runs some entries of a step, with --graph-request and --step.",
+            code=2,
+        )
+    if execution_id is None:
+        fail(
+            f"{flag} runs under an attempt of its own. Name it with --execution-id, "
+            f"an id other than the one the request assigned the step.",
+            code=2,
+        )
+    from mosaic.core.entry import parse_entry_tokens
+    from mosaic.core.pipeline.graph.subset import (
+        MAX_PROBE_ENTRIES,
+        NamedSubset,
+        ProbeSubset,
+    )
+
+    if probe is None:
+        return NamedSubset(entries=tuple(parse_entry_tokens(step_entries)))
+    if parallel_named or overwrite:
+        fail(
+            "--probe sets its own workers and keeps the outputs it computes, so "
+            "--workers, --parallel-mode, --min-free-memory-fraction, "
+            "--admission-margin and --overwrite are not used with it.",
+            code=2,
+        )
+    if not 1 <= probe <= MAX_PROBE_ENTRIES:
+        fail(f"--probe takes 1 to {MAX_PROBE_ENTRIES} entries, not {probe}.", code=2)
+    return ProbeSubset(count=probe)

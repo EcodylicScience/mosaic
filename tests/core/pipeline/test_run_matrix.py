@@ -592,14 +592,14 @@ def test_a_file_that_shrinks_between_the_count_and_the_read_is_refused(
     """The array was sized from the footers, so a different file cannot fill it."""
     ds, result = wide_run(tmp_path)
     path = output_of(ds, result, "g1", "s1")
-    real = run_matrix_module.host_memory_bytes
+    real = run_matrix_module.usable_memory_bytes
 
     def shrinking() -> tuple[int, int]:
         frame = pd.read_parquet(path)
         frame.iloc[: len(frame) // 2].to_parquet(path, index=False)
         return real()
 
-    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", shrinking)
+    monkeypatch.setattr(run_matrix_module, "usable_memory_bytes", shrinking)
 
     with pytest.raises(
         RuntimeError, match=r"g1/s1 changed while it was being read"
@@ -660,7 +660,7 @@ def test_a_read_that_would_not_fit_is_refused_before_any_value_is_read(
         return real(path, names, batch_size)
 
     monkeypatch.setattr(run_matrix_module, "iter_column_batches", recording)
-    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", lambda: (4096, 1024))
+    monkeypatch.setattr(run_matrix_module, "usable_memory_bytes", lambda: (4096, 1024))
 
     with pytest.raises(MemoryError) as refusal:
         _ = load_run_matrix(ds, result)
@@ -676,7 +676,7 @@ def test_the_refusal_counts_the_rows_that_survive_the_perspective(
 ) -> None:
     """The estimate is of the matrix returned, not of the files read."""
     ds, result = pair_run(tmp_path)
-    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", lambda: (4096, 16))
+    monkeypatch.setattr(run_matrix_module, "usable_memory_bytes", lambda: (4096, 16))
 
     with pytest.raises(MemoryError, match=r"\b32 rows"):
         _ = load_run_matrix(ds, result)
@@ -688,7 +688,9 @@ def test_a_read_that_fits_is_not_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ds, result = wide_run(tmp_path)
-    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", lambda: (2**40, 2**40))
+    monkeypatch.setattr(
+        run_matrix_module, "usable_memory_bytes", lambda: (2**40, 2**40)
+    )
 
     assert len(load_run_matrix(ds, result).values) > 0
 
@@ -698,7 +700,7 @@ def test_a_host_that_reports_no_memory_is_not_refused(
 ) -> None:
     """Without ``psutil`` the host reports ``(0, 0)``, which is unknown and not empty."""
     ds, result = wide_run(tmp_path)
-    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", lambda: (0, 0))
+    monkeypatch.setattr(run_matrix_module, "usable_memory_bytes", lambda: (0, 0))
 
     assert len(load_run_matrix(ds, result).values) > 0
 
@@ -827,7 +829,7 @@ def test_the_refusal_counts_what_pyarrow_decodes_of_the_largest_block(
     array_bytes = n_rows * n_columns * whole.values.itemsize
     available = int(1.5 * array_bytes / (1.0 - run_matrix_module.MEMORY_HEADROOM))
     monkeypatch.setattr(
-        run_matrix_module, "host_memory_bytes", lambda: (2 * available, available)
+        run_matrix_module, "usable_memory_bytes", lambda: (2 * available, available)
     )
 
     with pytest.raises(MemoryError):
@@ -1078,7 +1080,7 @@ def estimated_bytes(read: RunRead, monkeypatch: pytest.MonkeyPatch) -> int:
     while low < high:
         middle = (low + high) // 2
         monkeypatch.setattr(
-            run_matrix_module, "host_memory_bytes", lambda: (middle, middle)
+            run_matrix_module, "usable_memory_bytes", lambda: (middle, middle)
         )
         try:
             _ = read_run(read)
@@ -1256,7 +1258,7 @@ def _dtype_cannot_hold_nan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> o
 
 def _read_too_large(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> object:
     ds, result = wide_run(tmp_path)
-    monkeypatch.setattr(run_matrix_module, "host_memory_bytes", lambda: (4096, 1024))
+    monkeypatch.setattr(run_matrix_module, "usable_memory_bytes", lambda: (4096, 1024))
     return load_run_matrix(ds, result)
 
 

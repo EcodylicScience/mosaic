@@ -29,10 +29,12 @@ from typer.testing import CliRunner, Result
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.graph import Recipe, Request, submit_request
 from mosaic.core.pipeline.tracks_identity import tracks_variant_root
 from mosaic.core.pipeline.tracks_index import read_tracks_index, write_tracks_row
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.scope import Scope, camera_grain_refusal
+from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import MediaClip, make_dataset, write_media_index
 
 runner = CliRunner()
@@ -452,6 +454,7 @@ def test_scope_beside_graph_request_is_refused_by_name(scoped: Dataset) -> None:
     assert result.exit_code == 1
     assert "--scope" in result.output
     assert "--graph-request" in result.output
+    assert "--step-entries" in result.output
     assert "must be a JSON object" not in result.output
 
 
@@ -621,3 +624,203 @@ def test_a_pipeline_refusal_under_json_is_an_invalid_envelope(
     payload = json.loads(result.stdout)
     assert payload["kind"] == "invalid"
     assert "--entry group:sequence" in payload["message"]
+
+
+# --- a probe or a named subset of a step ---------------------------------------
+
+
+def _speed_request(dataset: Dataset) -> Request:
+    """A submitted one-step request that computes ``speed-angvel`` over the entries."""
+    recipe = Recipe.model_validate(
+        {
+            "schema_version": 1,
+            "name": "speed",
+            "steps": [
+                {
+                    "id": "speed",
+                    "type": "feature",
+                    "feature": "speed-angvel",
+                    "inputs": ["tracks"],
+                }
+            ],
+        }
+    )
+    return submit_request(dataset, recipe).request
+
+
+def _step(dataset: Dataset, request_id: str, *flags: str) -> Result:
+    return runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--graph-request",
+            request_id,
+            "--step",
+            "speed",
+            *flags,
+        ],
+    )
+
+
+SUBSET_ID = "01SUBSET000000000000000000"
+
+
+@pytest.mark.parametrize(
+    ("flags", "named"),
+    [
+        (["--probe", "2"], "--graph-request"),
+        (["--step-entries", "A:one"], "--graph-request"),
+    ],
+)
+def test_a_subset_flag_needs_graph_request(
+    scoped: Dataset, flags: list[str], named: str
+) -> None:
+    result = _regrid(scoped, *flags, "--execution-id", SUBSET_ID)
+
+    assert result.exit_code == 2
+    assert named in result.output
+
+
+def test_probe_beside_step_entries_is_refused(scoped: Dataset) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(
+        scoped,
+        request.request_id,
+        "--probe",
+        "2",
+        "--step-entries",
+        "A:one",
+        "--execution-id",
+        SUBSET_ID,
+    )
+
+    assert result.exit_code == 2
+    assert "--probe" in result.output
+    assert "--step-entries" in result.output
+
+
+@pytest.mark.parametrize("flags", [["--probe", "2"], ["--step-entries", "A:one"]])
+def test_a_subset_needs_an_execution_id(scoped: Dataset, flags: list[str]) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(scoped, request.request_id, *flags)
+
+    assert result.exit_code == 2
+    assert "--execution-id" in result.output
+
+
+@pytest.mark.parametrize("flags", [["--probe", "2"], ["--step-entries", "A:one"]])
+def test_the_steps_own_execution_id_is_a_usage_error(
+    scoped: Dataset, flags: list[str]
+) -> None:
+    request = _speed_request(scoped)
+    own = request.execution_of("speed")
+
+    result = _step(scoped, request.request_id, *flags, "--execution-id", own)
+
+    assert result.exit_code == 2
+    assert "--execution-id" in result.output
+    assert read_run(run_log_dir(scoped.base_dir), own) is None
+
+
+@pytest.mark.parametrize(
+    ("flags", "named"),
+    [
+        (["--workers", "2"], "--workers"),
+        (["--workers", "2", "--parallel-mode", "thread"], "--parallel-mode"),
+        (
+            ["--workers", "2", "--min-free-memory-fraction", "0.1"],
+            "--min-free-memory-fraction",
+        ),
+        (["--workers", "2", "--admission-margin", "1.5"], "--admission-margin"),
+        (["--overwrite"], "--overwrite"),
+    ],
+)
+def test_a_probe_refuses_the_flags_it_sets_itself(
+    scoped: Dataset, flags: list[str], named: str
+) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(
+        scoped, request.request_id, "--probe", "2", "--execution-id", SUBSET_ID, *flags
+    )
+
+    assert result.exit_code == 2
+    assert named in result.output
+    assert read_run(run_log_dir(scoped.base_dir), SUBSET_ID) is None
+
+
+@pytest.mark.parametrize("count", ["0", "4"])
+def test_a_probe_count_out_of_range_is_a_usage_error(
+    scoped: Dataset, count: str
+) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(
+        scoped, request.request_id, "--probe", count, "--execution-id", SUBSET_ID
+    )
+
+    assert result.exit_code == 2
+    assert "--probe" in result.output
+
+
+def test_a_probe_reports_its_subset_and_entries(scoped: Dataset) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(
+        scoped,
+        request.request_id,
+        "--probe",
+        "2",
+        "--execution-id",
+        SUBSET_ID,
+        "--json",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["execution_id"] == SUBSET_ID
+    assert payload["subset"] == "probe"
+    assert payload["entries_asked"] == ["A:one", "A:two"]
+
+
+def test_step_entries_run_those_entries_with_the_workers_given(
+    scoped: Dataset,
+) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(
+        scoped,
+        request.request_id,
+        "--step-entries",
+        "B:one",
+        "--step-entries",
+        "A:two",
+        "--workers",
+        "2",
+        "--execution-id",
+        SUBSET_ID,
+        "--json",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["subset"] == "named"
+    assert payload["entries_asked"] == ["A:two", "B:one"]
+    storage = scoped.get_root("features") / "speed-angvel__from__tracks"
+    written = sorted(path.name for path in storage.rglob("*.parquet"))
+    assert written == ["A__two.parquet", "B__one.parquet"]
+
+
+def test_the_steps_own_attempt_reports_no_subset(scoped: Dataset) -> None:
+    request = _speed_request(scoped)
+
+    result = _step(scoped, request.request_id, "--json")
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["subset"] == ""
+    assert payload["entries_asked"] == ["A:one", "A:two", "B:one"]

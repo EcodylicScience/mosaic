@@ -13,7 +13,7 @@
       min_age_hours: 24
     max_workers: 8          # most entries at once; unset: physical cores
     allow_process_mode: true    # false: refuse process workers
-    min_free_memory_fraction: 0.10   # share of host memory a parallel run keeps free
+    min_free_memory_fraction: 0.10   # share of the memory limit a parallel run keeps free
     gpu_cards: [0, 1]       # cards GPU steps may lease; unset leases every visible card
     dataset_roots: []       # where manage_dataset may create datasets, served too
     source_roots: []        # where manage_dataset may declare sources
@@ -109,11 +109,11 @@ class ServerConfig(StrictModel):
             which each hold an interpreter and their own copy of an entry's
             tables. A submission that names no mode receives ``thread``. Set it
             false on a host whose memory cannot hold that per worker.
-        min_free_memory_fraction: The share of the host's memory that a run with
-            several workers keeps available. The run waits for its in-flight
-            entries while the share is lower, and fails when it is still lower
-            with none in flight, ending in a state a later run resumes. 0 turns
-            the check off.
+        min_free_memory_fraction: The share of the memory limit that applies, a
+            container's or else the host's, that a run with several workers keeps
+            available. The run waits for its in-flight entries while the share is
+            lower, and fails when it is still lower with none in flight, ending in
+            a state a later run resumes. 0 turns the check off.
         gpu_cards: The cards the server's drivers may lease to GPU steps, as
             ``nvidia-smi`` indexes (PCI bus order, which ``CUDA_VISIBLE_DEVICES``
             integers follow under ``CUDA_DEVICE_ORDER=PCI_BUS_ID``) or UUIDs, among the

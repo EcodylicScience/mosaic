@@ -29,6 +29,19 @@ Design properties:
   silence, and it stops growing at a terminal event. The durable truth lives elsewhere
   (``index.csv`` + parquet for results); the JSONL is scratch.
 
+**Events.** ``started`` opens an attempt and ``run_id``, ``total``, ``tracks_variant``,
+``phase``, ``heartbeat``, ``entry_start``, ``entry_end``, ``epoch`` and ``class_start``
+report its progress. ``entry_end`` carries an entry's cost (:class:`EntryMeasure`) when
+the writer measured it. ``resources`` carries a :class:`ResourceReport`: the workers,
+the memory and the cost the attempt has measured so far. ``probe`` marks an attempt
+that runs a probe or a named subset of a step. ``entry_error``, ``entries_written``,
+``cache_hit``, ``frame_axis_mismatch``, ``frame_tail_short``, ``columns_dropped`` and
+``rows_dropped`` report what it lost and left, ``alive`` its liveness, and
+``finished``, ``failed`` and ``cancelled`` end it. The removal of a superseded run adds
+``run_removing``, ``run_removed`` and ``run_kept``. A reader ignores an event it does
+not know, and a field that a log lacks reads as empty, so an old log reduces as it
+did.
+
 Two event shapes ride the same sink: **per-entry** (features / tracking -- a count, since
 several entries can be in flight) and **per-epoch** (training -- a monotonic cursor). Bracketing
 lifecycle events (``started`` / ``run_id`` / ``total`` / ``heartbeat`` / ``alive`` /
@@ -51,12 +64,14 @@ so the ``mosaic status`` / ``runs`` / ``cancel`` CLI contract is unchanged.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 import os
 import threading
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal, TypedDict, cast
 
@@ -68,11 +83,14 @@ __all__ = [
     "MTIME_TOLERANCE_SECONDS",
     "AttemptLiveness",
     "AttemptOutcome",
+    "EntryMeasure",
     "EntryErrorPage",
     "EntryErrorRecord",
     "ErrorSummary",
     "JsonlRunLog",
+    "ProbeRecord",
     "ProgressEventRecord",
+    "ResourceReport",
     "REMOVAL_EVENTS",
     "RemovalRecord",
     "RemovalState",
@@ -83,7 +101,10 @@ __all__ = [
     "TERMINAL_STATUSES",
     "attempt_outcome",
     "changed_at_or_after",
+    "error_fields",
     "error_summary",
+    "fold_run_records",
+    "last_attempt_records",
     "list_runs",
     "new_execution_id",
     "now_iso",
@@ -92,10 +113,15 @@ __all__ = [
     "read_entry_errors",
     "read_removal_records",
     "read_run",
+    "read_run_records",
     "read_run_progress",
     "read_time_irregular",
+    "record_count",
     "time_irregular_sentence",
     "record_exited_attempt",
+    "record_flag",
+    "record_seconds",
+    "record_text",
     "read_runs",
     "read_runs_by_run_id",
     "reduce_run_log",
@@ -177,6 +203,13 @@ class RunLogSnapshot(TypedDict):
     convention as the tracks index's blank ``n_keypoints`` cell meaning *unknown*
     rather than zero.
 
+    ``probe`` is whether the attempt wrote a ``probe`` event of kind ``probe`` since
+    its last ``started``: it runs a few of a step's entries to measure them, and
+    its status view can mark it. A ``probe`` of kind ``named`` (a chosen subset of
+    a step) leaves it ``False``. The rest of a ``resources`` event and of an
+    ``entry_end`` event (:class:`ResourceReport`, :class:`EntryMeasure`) stays out
+    of the snapshot. :func:`mosaic.run_cost.read_run_cost` reads it.
+
     A process that resumes an attempt whose process died appends a second
     ``started`` event to its run-log. The counters, the progress, ``cache_hit``
     and ``tracks_variant`` then report the events after the last ``started``, and
@@ -232,6 +265,127 @@ class RunLogSnapshot(TypedDict):
     peak_rss_bytes: int
     min_available_bytes: int
     total_memory_bytes: int
+    probe: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceReport:
+    """What an attempt has measured of its workers, memory and cost so far.
+
+    One ``resources`` event carries every field. The five without a default are the
+    ones a snapshot folds. The rest are read by :func:`mosaic.run_cost.read_run_cost`
+    and are empty (0, ``0.0``, ``False`` or ``""``) until the writer measures them,
+    so a log written without them reads as empty.
+
+    Attributes:
+        workers: How many entries the attempt computes at once.
+        parallel_mode: How, ``""`` for one at a time.
+        peak_rss_bytes: The largest resident memory of its process tree.
+        min_available_bytes: The least memory the host had available.
+        total_memory_bytes: The host's physical memory.
+        feature: The feature's registered name.
+        feature_version: The feature's version.
+        process_capable: Whether the feature may run in worker processes: it is
+            parallelizable and sets no scope.
+        cpu_seconds: The CPU time, user and system, of the process tree since
+            measuring began.
+        wall_seconds: The wall time since measuring began.
+        memory_limit_bytes: The memory limit of the container, or of the host
+            where there is none.
+        memory_limit_source: Where that limit came from (``cgroup_v2``,
+            ``cgroup_v1`` or ``host``).
+        limit_peak_bytes: The most memory the limit's accounting reported in use.
+        base_rss_bytes: The tree's resident memory before the first entry loads.
+        fit_seconds: The wall time of the fit.
+        fit_peak_rss_bytes: The largest resident memory of the tree during the fit.
+        peak_bytes_per_row: The run's estimate of an entry's peak memory per input
+            row, 0 before it has one.
+        admission_margin: The factor the admission gate multiplies a prediction by,
+            0 when the gate is off.
+        admission_waits: How many times the gate held an entry back.
+        fit_entries: The entries of the stream that the fit was offered.
+        fit_input_rows: Their input rows, counted as the footer rows of each
+            entry's input files. A fitter that fits from pinned artifacts, such
+            as a params-level fitter, ignores that stream, so for it both figures
+            describe the stream it was offered and not what it read.
+        worker_base_rss_bytes: One process worker's own memory, 0 when not
+            measured.
+        apply_wall_seconds: The wall time from the first entry's load start to the
+            last output written.
+    """
+
+    workers: int
+    parallel_mode: str
+    peak_rss_bytes: int
+    min_available_bytes: int
+    total_memory_bytes: int
+    feature: str = ""
+    feature_version: str = ""
+    process_capable: bool = False
+    cpu_seconds: float = 0.0
+    wall_seconds: float = 0.0
+    memory_limit_bytes: int = 0
+    memory_limit_source: str = ""
+    limit_peak_bytes: int = 0
+    base_rss_bytes: int = 0
+    fit_seconds: float = 0.0
+    fit_peak_rss_bytes: int = 0
+    peak_bytes_per_row: int = 0
+    admission_margin: float = 0.0
+    admission_waits: int = 0
+    fit_entries: int = 0
+    fit_input_rows: int = 0
+    worker_base_rss_bytes: int = 0
+    apply_wall_seconds: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class EntryMeasure:
+    """What one computed entry cost, written with its ``entry_end`` event.
+
+    Attributes:
+        wall_seconds: From the start of its input load to its output written.
+        apply_seconds: From its dispatch to the end of its apply.
+        input_rows: The rows of its input files.
+        in_flight: The most entries loaded or computing at once during its span,
+            itself included. One means it ran alone, so its ``cpu_seconds`` are its
+            own.
+        cpu_seconds: The CPU time of the process tree between its load start and
+            its output written.
+    """
+
+    wall_seconds: float
+    apply_seconds: float
+    input_rows: int
+    in_flight: int
+    cpu_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProbeRecord:
+    """An attempt that runs only some entries of a step, written as its ``probe`` event.
+
+    Attributes:
+        request_id: The request the step belongs to.
+        step: The step.
+        entries: The entries the attempt computes, as ``group:sequence`` tokens.
+        kind: ``probe`` for the largest entries of the step's attempt, ``named``
+            for entries a caller chose.
+    """
+
+    request_id: str
+    step: str
+    entries: tuple[str, ...]
+    kind: Literal["probe", "named"]
+
+    def write(self, log: JsonlRunLog) -> None:
+        """Append this record to *log* as its ``probe`` event."""
+        log.probe(
+            request_id=self.request_id,
+            step=self.step,
+            entries=self.entries,
+            kind=self.kind,
+        )
 
 
 ERROR_MESSAGE_LIMIT: Final = 2000
@@ -882,16 +1036,8 @@ class JsonlRunLog:
             tracks_variant=",".join(sorted({v for v in variants if v})),
         )
 
-    def resources(
-        self,
-        *,
-        workers: int,
-        parallel_mode: str,
-        peak_rss_bytes: int,
-        min_available_bytes: int,
-        total_memory_bytes: int,
-    ) -> None:
-        """Record how many entries the attempt computes at once and the memory it uses.
+    def resources(self, report: ResourceReport) -> None:
+        """Record how many entries the attempt computes at once, its memory and its cost.
 
         Each event carries the extremes measured so far, so the last one before the
         terminal event is the attempt's peak. A writer emits it repeatedly while the
@@ -899,13 +1045,35 @@ class JsonlRunLog:
         a figure written only at the end is one that an attempt the host killed
         never records.
         """
+        self._emit("resources", **dataclasses.asdict(report))
+
+    def probe(
+        self,
+        *,
+        request_id: str,
+        step: str,
+        entries: Sequence[str],
+        kind: Literal["probe", "named"],
+    ) -> None:
+        """Record that this attempt runs only some entries of a step.
+
+        Written right after ``started``. A ``probe`` measures the largest entries
+        of a step to size the rest, and a ``named`` attempt computes the entries a
+        caller chose. Neither is the step's own attempt, and status reads only that
+        one. An ordinary event kind, for the reason :meth:`entry_failed` gives.
+
+        Args:
+            request_id: The request the step belongs to.
+            step: The step.
+            entries: The entries the attempt computes, as ``group:sequence`` tokens.
+            kind: ``probe`` or ``named``.
+        """
         self._emit(
-            "resources",
-            workers=workers,
-            parallel_mode=parallel_mode,
-            peak_rss_bytes=peak_rss_bytes,
-            min_available_bytes=min_available_bytes,
-            total_memory_bytes=total_memory_bytes,
+            "probe",
+            request_id=request_id,
+            step=step,
+            entries=list(entries),
+            kind=kind,
         )
 
     # -- removal of a superseded run -----------------------------------------
@@ -992,12 +1160,19 @@ class JsonlRunLog:
     def on_entry_start(self, index: int, total: int, key: str) -> None:
         self._emit("entry_start", index=index, total=total, key=key)
 
-    def on_entry_end(self, index: int, total: int, key: str) -> None:
-        _ = self._write(
-            "entry_end",
-            {"index": index, "total": total, "key": key},
-            progress=(index, total),
-        )
+    def on_entry_end(
+        self,
+        index: int,
+        total: int,
+        key: str,
+        *,
+        measure: EntryMeasure | None = None,
+    ) -> None:
+        """Record an entry that ended, with its cost when the writer measured it."""
+        fields: dict[str, Any] = {"index": index, "total": total, "key": key}
+        if measure is not None:
+            fields.update(dataclasses.asdict(measure))
+        _ = self._write("entry_end", fields, progress=(index, total))
 
     def on_epoch_end(
         self, epoch: int, total_epochs: int, metrics: dict[str, float]
@@ -1099,19 +1274,29 @@ TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
 _PROGRESS_EVENTS = {"entry_start", "entry_end", "epoch", "class_start", "phase"}
 
 
-def _iter_records(path: Path) -> list[dict[str, Any]]:
-    """Parse a run-log's JSON lines, tolerating a torn/partial line.
+def read_run_records(
+    run_dir: Path | str, execution_id: str
+) -> list[Mapping[str, object]]:
+    """Parse one attempt's run-log JSON lines, tolerating a torn or partial line.
 
-    Returns records in file order. An un-parseable line (a partial append caught
-    mid-write on NFS, or the remains of a write that failed) is skipped rather
-    than raising. The writer begins the line after a failed write on a fresh
-    line, so only the torn line itself is lost.
+    Returns records in file order, empty when the log is absent. An unparseable
+    line (a partial append caught mid-write on NFS, or the remains of a write that
+    failed) is skipped rather than raising. The writer begins the line after a
+    failed write on a fresh line, so only the torn line itself is lost.
+
+    Args:
+        run_dir: The run-log directory.
+        execution_id: The attempt.
+
+    Returns:
+        The records of the log, one per line that parses as a JSON object.
     """
+    path = Path(run_dir) / f"{execution_id}.jsonl"
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except (OSError, FileNotFoundError):
         return []
-    out: list[dict[str, Any]] = []
+    out: list[Mapping[str, object]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -1128,8 +1313,24 @@ def _iter_records(path: Path) -> list[dict[str, Any]]:
 def reduce_run_log(path: Path) -> RunLogSnapshot | None:
     """Fold a run-log JSONL into a :class:`RunLogSnapshot` (``None`` if empty/unreadable)."""
     path = Path(path)
+    return fold_run_records(path.stem, read_run_records(path.parent, path.stem))
+
+
+def fold_run_records(
+    execution_id: str, records: Sequence[Mapping[str, object]]
+) -> RunLogSnapshot | None:
+    """Fold an attempt's records into a :class:`RunLogSnapshot`.
+
+    Args:
+        execution_id: The attempt the records belong to.
+        records: Its records in file order, as :func:`read_run_records` returns
+            them.
+
+    Returns:
+        The snapshot, ``None`` for no records.
+    """
     snap: RunLogSnapshot = {
-        "execution_id": path.stem,
+        "execution_id": execution_id,
         "kind": "",
         "target": "",
         "run_id": "",
@@ -1162,45 +1363,47 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         "peak_rss_bytes": 0,
         "min_available_bytes": 0,
         "total_memory_bytes": 0,
+        "probe": False,
     }
-    records = _iter_records(path)
     if not records:
         return None
     for rec in records:
-        ev = rec.get("ev", "")
-        ts = rec.get("t", "")
+        ev = record_text(rec, "ev")
+        ts = record_text(rec, "t")
         if ts:
             snap["heartbeat_at"] = ts  # last-seen event time == liveness
         if ev == "started":
             _reset_for_start(snap)
-            snap["kind"] = rec.get("kind", "")
-            snap["target"] = rec.get("target", "")
-            snap["owner"] = rec.get("owner", "")
-            snap["host"] = rec.get("host", "")
-            snap["pid"] = rec.get("pid", 0)
-            snap["created_at"] = rec.get("created_at", ts)
-            snap["started_at"] = rec.get("created_at", ts)
+            snap["kind"] = record_text(rec, "kind")
+            snap["target"] = record_text(rec, "target")
+            snap["owner"] = record_text(rec, "owner")
+            snap["host"] = record_text(rec, "host")
+            snap["pid"] = record_count(rec, "pid")
+            snap["created_at"] = _text_or(rec, "created_at", ts)
+            snap["started_at"] = _text_or(rec, "created_at", ts)
             # Set from every ``started``, so a later one written without them
             # (a resume by an older mosaic) clears what an earlier one declared.
-            snap["boot_id"] = _record_text(rec, "boot_id")
-            snap["pid_ns"] = _record_text(rec, "pid_ns")
-            snap["liveness_interval"] = _record_seconds(rec, "liveness_interval")
-            snap["gpu_card"] = _record_text(rec, "gpu_card")
+            snap["boot_id"] = record_text(rec, "boot_id")
+            snap["pid_ns"] = record_text(rec, "pid_ns")
+            snap["liveness_interval"] = record_seconds(rec, "liveness_interval")
+            snap["gpu_card"] = record_text(rec, "gpu_card")
         elif ev == "phase":
-            snap["phase"] = _record_text(rec, "phase")
+            snap["phase"] = record_text(rec, "phase")
         elif ev == "run_id":
-            snap["run_id"] = rec.get("run_id", "")
+            snap["run_id"] = record_text(rec, "run_id")
         elif ev == "total":
-            snap["progress_total"] = rec.get("total", snap["progress_total"])
+            snap["progress_total"] = _count_or(rec, "total", snap["progress_total"])
         elif ev == "heartbeat":
-            snap["progress_done"] = rec.get("done", snap["progress_done"])
-            snap["progress_total"] = rec.get("total", snap["progress_total"])
+            snap["progress_done"] = _count_or(rec, "done", snap["progress_done"])
+            snap["progress_total"] = _count_or(rec, "total", snap["progress_total"])
         elif ev == "entry_end":
-            snap["progress_done"] = rec.get("index", snap["progress_done"])
-            snap["progress_total"] = rec.get("total", snap["progress_total"])
+            snap["progress_done"] = _count_or(rec, "index", snap["progress_done"])
+            snap["progress_total"] = _count_or(rec, "total", snap["progress_total"])
         elif ev == "epoch":
-            snap["progress_done"] = rec.get("epoch", -1) + 1
-            snap["progress_total"] = rec.get("total_epochs", snap["progress_total"])
+            snap["progress_done"] = _count_or(rec, "epoch", -1) + 1
+            snap["progress_total"] = _count_or(
+                rec, "total_epochs", snap["progress_total"]
+            )
         elif ev == "entry_error":
             snap["entries_failed"] += 1
         elif ev == "frame_axis_mismatch":
@@ -1212,25 +1415,41 @@ def reduce_run_log(path: Path) -> RunLogSnapshot | None:
         elif ev == "time_irregular":
             snap["entries_time_irregular"] += 1
         elif ev == "entries_written":
-            snap["entries_written"] = rec.get(
-                "entries_written", snap["entries_written"]
+            snap["entries_written"] = _count_or(
+                rec, "entries_written", snap["entries_written"]
             )
         elif ev == "cache_hit":
             snap["cache_hit"] = True
         elif ev == "tracks_variant":
-            snap["tracks_variant"] = rec.get("tracks_variant", snap["tracks_variant"])
+            snap["tracks_variant"] = _text_or(
+                rec, "tracks_variant", snap["tracks_variant"]
+            )
         elif ev == "resources":
-            snap["workers"] = _record_count(rec, "workers")
-            snap["parallel_mode"] = _record_text(rec, "parallel_mode")
-            snap["peak_rss_bytes"] = _record_count(rec, "peak_rss_bytes")
-            snap["min_available_bytes"] = _record_count(rec, "min_available_bytes")
-            snap["total_memory_bytes"] = _record_count(rec, "total_memory_bytes")
+            snap["workers"] = record_count(rec, "workers")
+            snap["parallel_mode"] = record_text(rec, "parallel_mode")
+            snap["peak_rss_bytes"] = record_count(rec, "peak_rss_bytes")
+            snap["min_available_bytes"] = record_count(rec, "min_available_bytes")
+            snap["total_memory_bytes"] = record_count(rec, "total_memory_bytes")
+        elif ev == "probe":
+            snap["probe"] = rec.get("kind") == "probe"
         elif ev in TERMINAL_STATUSES:
             snap["status"] = ev
             snap["finished_at"] = ts
             if ev == "failed":
-                snap["error_json"] = rec.get("error", "")
+                snap["error_json"] = record_text(rec, "error")
     return snap
+
+
+def _count_or(rec: Mapping[str, object], key: str, default: int) -> int:
+    """An integer field of a run-log record, *default* when absent or not an integer."""
+    value = rec.get(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _text_or(rec: Mapping[str, object], key: str, default: str) -> str:
+    """A string field of a run-log record, *default* when absent or not a string."""
+    value = rec.get(key)
+    return value if isinstance(value, str) else default
 
 
 def _reset_for_start(snap: RunLogSnapshot) -> None:
@@ -1251,6 +1470,7 @@ def _reset_for_start(snap: RunLogSnapshot) -> None:
     snap["peak_rss_bytes"] = 0
     snap["min_available_bytes"] = 0
     snap["total_memory_bytes"] = 0
+    snap["probe"] = False
 
 
 def read_run(run_dir: Path | str, execution_id: str) -> RunLogSnapshot | None:
@@ -1440,17 +1660,17 @@ def read_removal_records(run_dir: Path | str, execution_id: str) -> list[Removal
         The records, empty when the log is absent or names no run.
     """
     records: dict[tuple[str, str], RemovalRecord] = {}
-    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
-        ev = rec.get("ev", "")
+    for rec in read_run_records(run_dir, execution_id):
+        ev = record_text(rec, "ev")
         if ev == "entry_error":
-            feature, _, run_id = _record_text(rec, "key").partition("/")
+            feature, _, run_id = record_text(rec, "key").partition("/")
             found = records.get((feature, run_id))
             if found is not None and found["state"] == "interrupted":
                 found["state"] = "failed"
             continue
         if ev not in REMOVAL_EVENTS:
             continue
-        key = (_record_text(rec, "feature"), _record_text(rec, "run_id"))
+        key = (record_text(rec, "feature"), record_text(rec, "run_id"))
         found = records.get(key)
         if found is None:
             found = records[key] = {
@@ -1468,19 +1688,19 @@ def read_removal_records(run_dir: Path | str, execution_id: str) -> list[Removal
             continue
         if ev == "run_removing":
             found["state"] = "interrupted"
-            found["reason"] = _record_text(rec, "reason")
-            found["superseded_by"] = _record_text(rec, "superseded_by")
-            found["retired"] = _record_text(rec, "retired")
+            found["reason"] = record_text(rec, "reason")
+            found["superseded_by"] = record_text(rec, "superseded_by")
+            found["retired"] = record_text(rec, "retired")
             params = rec.get("params")
             if isinstance(params, dict):
                 found["params"] = cast("dict[str, Any]", params)
         elif ev == "run_removed":
             found["state"] = "removed"
-            found["bytes"] = _record_count(rec, "bytes")
+            found["bytes"] = record_count(rec, "bytes")
         else:
             found["state"] = "kept"
-            found["reason"] = _record_text(rec, "reason")
-            found["detail"] = _record_text(rec, "detail")
+            found["reason"] = record_text(rec, "reason")
+            found["detail"] = record_text(rec, "detail")
     return list(records.values())
 
 
@@ -1512,15 +1732,15 @@ def read_entry_errors(
         total += 1
         if limit is not None and len(items) >= limit:
             continue
-        error_json = _record_text(rec, "error")
+        error_json = record_text(rec, "error")
         summary = error_summary(error_json)
         items.append(
             {
-                "key": _record_text(rec, "key"),
+                "key": record_text(rec, "key"),
                 "error_json": error_json,
                 "error_type": summary["type"],
                 "message": summary["message"],
-                "recorded_at": _record_text(rec, "t"),
+                "recorded_at": record_text(rec, "t"),
             }
         )
     return {"items": items, "total": total, "has_more": total > len(items)}
@@ -1545,24 +1765,23 @@ def read_time_irregular(
     """
     if limit is not None and limit < 1:
         raise ValueError(f"limit must be at least 1, got {limit}")
-    events: list[dict[str, Any]] = []
-    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
-        if rec.get("ev") == "started":
-            events.clear()
-        elif rec.get("ev") == "time_irregular":
-            events.append(rec)
+    events = [
+        rec
+        for rec in last_attempt_records(read_run_records(run_dir, execution_id))
+        if rec.get("ev") == "time_irregular"
+    ]
     listed = events if limit is None else events[:limit]
     items: list[TimeIrregularRecord] = [
         {
-            "key": _record_text(rec, "key"),
-            "who": _record_text(rec, "who"),
-            "largest_step": _record_seconds(rec, "largest_step"),
-            "first_frame": _record_count(rec, "first_frame"),
-            "last_frame": _record_count(rec, "last_frame"),
-            "median_step": _record_seconds(rec, "median_step"),
-            "rate": _record_seconds(rec, "rate"),
+            "key": record_text(rec, "key"),
+            "who": record_text(rec, "who"),
+            "largest_step": record_seconds(rec, "largest_step"),
+            "first_frame": record_count(rec, "first_frame"),
+            "last_frame": record_count(rec, "last_frame"),
+            "median_step": record_seconds(rec, "median_step"),
+            "rate": record_seconds(rec, "rate"),
             "message": _irregular_message(rec),
-            "recorded_at": _record_text(rec, "t"),
+            "recorded_at": record_text(rec, "t"),
         }
         for rec in listed
     ]
@@ -1590,16 +1809,16 @@ def time_irregular_sentence(
     )
 
 
-def _irregular_message(rec: dict[str, Any]) -> str:
+def _irregular_message(rec: Mapping[str, object]) -> str:
     """The sentence of one ``time_irregular`` record, built from its numbers."""
     sentence = time_irregular_sentence(
-        _record_seconds(rec, "largest_step"),
-        _record_count(rec, "first_frame"),
-        _record_count(rec, "last_frame"),
-        _record_seconds(rec, "median_step"),
-        _record_seconds(rec, "rate"),
+        record_seconds(rec, "largest_step"),
+        record_count(rec, "first_frame"),
+        record_count(rec, "last_frame"),
+        record_seconds(rec, "median_step"),
+        record_seconds(rec, "rate"),
     )
-    return f"[{_record_text(rec, 'who')}] {sentence}"
+    return f"[{record_text(rec, 'who')}] {sentence}"
 
 
 def read_entry_error_keys(run_dir: Path | str, execution_id: str) -> list[str]:
@@ -1615,23 +1834,52 @@ def read_entry_error_keys(run_dir: Path | str, execution_id: str) -> list[str]:
         One key per ``entry_error`` event, empty for an absent run-log.
     """
     return [
-        _record_text(rec, "key") for rec in _entry_error_events(run_dir, execution_id)
+        record_text(rec, "key") for rec in _entry_error_events(run_dir, execution_id)
     ]
 
 
-def _entry_error_events(run_dir: Path | str, execution_id: str) -> list[dict[str, Any]]:
+def last_attempt_records(
+    records: Sequence[Mapping[str, object]],
+) -> Sequence[Mapping[str, object]]:
+    """The records from the last ``started`` event on, all of them when there is none.
+
+    A process that resumes an attempt appends a second ``started``, and what
+    follows it is the latest process's own.
+    """
+    for index in range(len(records) - 1, -1, -1):
+        if records[index].get("ev") == "started":
+            return records[index:]
+    return records
+
+
+def _entry_error_events(
+    run_dir: Path | str, execution_id: str
+) -> list[Mapping[str, object]]:
     """The ``entry_error`` records after the last ``started`` event, in file order.
 
     A resumed attempt lists the entities that its latest process lost, as
     :func:`reduce_run_log` counts them.
     """
-    events: list[dict[str, Any]] = []
-    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
-        if rec.get("ev") == "started":
-            events.clear()
-        elif rec.get("ev") == "entry_error":
-            events.append(rec)
-    return events
+    return [
+        rec
+        for rec in last_attempt_records(read_run_records(run_dir, execution_id))
+        if rec.get("ev") == "entry_error"
+    ]
+
+
+def error_fields(error_json: str) -> Mapping[str, object] | None:
+    """Return the fields of an ``error_json`` blob, ``None`` when it is not a JSON object.
+
+    A crash's blob holds ``type``, ``message`` and ``traceback``. A refusal's holds
+    ``reason``, ``step`` and ``message`` with its detail beside them.
+    """
+    try:
+        blob: object = json.loads(error_json)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(blob, dict):
+        return None
+    return cast("dict[str, object]", blob)
 
 
 def error_summary(error_json: str) -> ErrorSummary:
@@ -1646,16 +1894,12 @@ def error_summary(error_json: str) -> ErrorSummary:
     Returns:
         The type and the message, each ``""`` for an empty blob.
     """
-    try:
-        blob: object = json.loads(error_json)
-    except json.JSONDecodeError:
+    fields = error_fields(error_json)
+    if fields is None:
         return {"type": "", "message": error_json[:ERROR_MESSAGE_LIMIT]}
-    if not isinstance(blob, dict):
-        return {"type": "", "message": error_json[:ERROR_MESSAGE_LIMIT]}
-    fields = cast("dict[str, Any]", blob)
     return {
-        "type": _record_text(fields, "type")[:ERROR_MESSAGE_LIMIT],
-        "message": _record_text(fields, "message")[:ERROR_MESSAGE_LIMIT],
+        "type": record_text(fields, "type")[:ERROR_MESSAGE_LIMIT],
+        "message": record_text(fields, "message")[:ERROR_MESSAGE_LIMIT],
     }
 
 
@@ -1669,19 +1913,19 @@ def read_run_progress(
     event reads as 0, ``""`` or ``{}``.
     """
     out: list[ProgressEventRecord] = []
-    for rec in _iter_records(Path(run_dir) / f"{execution_id}.jsonl"):
-        ev = rec.get("ev", "")
+    for rec in read_run_records(run_dir, execution_id):
+        ev = record_text(rec, "ev")
         if ev not in _PROGRESS_EVENTS:
             continue
-        ts = _record_text(rec, "t")
+        ts = record_text(rec, "t")
         if ev in ("entry_end", "entry_start"):
             out.append(
                 {
                     "step_type": "entry" if ev == "entry_end" else "entry_start",
-                    "step_index": _record_count(rec, "index"),
-                    "step_total": _record_count(rec, "total"),
+                    "step_index": record_count(rec, "index"),
+                    "step_total": record_count(rec, "total"),
                     "metrics": {},
-                    "message": _record_text(rec, "key"),
+                    "message": record_text(rec, "key"),
                     "timestamp": ts,
                 }
             )
@@ -1689,8 +1933,8 @@ def read_run_progress(
             out.append(
                 {
                     "step_type": "epoch",
-                    "step_index": _record_count(rec, "epoch"),
-                    "step_total": _record_count(rec, "total_epochs"),
+                    "step_index": record_count(rec, "epoch"),
+                    "step_total": record_count(rec, "total_epochs"),
                     "metrics": _record_metrics(rec),
                     "message": "",
                     "timestamp": ts,
@@ -1700,16 +1944,16 @@ def read_run_progress(
             out.append(
                 {
                     "step_type": "class",
-                    "step_index": _record_count(rec, "class_idx"),
-                    "step_total": _record_count(rec, "total_classes"),
+                    "step_index": record_count(rec, "class_idx"),
+                    "step_total": record_count(rec, "total_classes"),
                     "metrics": {},
-                    "message": _record_text(rec, "class_name"),
+                    "message": record_text(rec, "class_name"),
                     "timestamp": ts,
                 }
             )
         elif ev == "phase":
-            phase = _record_text(rec, "phase")
-            message = _record_text(rec, "message")
+            phase = record_text(rec, "phase")
+            message = record_text(rec, "message")
             out.append(
                 {
                     "step_type": "phase",
@@ -1723,13 +1967,13 @@ def read_run_progress(
     return out
 
 
-def _record_count(rec: dict[str, Any], key: str) -> int:
+def record_count(rec: Mapping[str, object], key: str) -> int:
     """An integer field of a run-log record, 0 when absent or not an integer."""
     value = rec.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _record_seconds(rec: dict[str, Any], key: str) -> float:
+def record_seconds(rec: Mapping[str, object], key: str) -> float:
     """A non-negative number field of a run-log record, 0.0 when absent or not one."""
     value = rec.get(key)
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -1737,13 +1981,18 @@ def _record_seconds(rec: dict[str, Any], key: str) -> float:
     return max(float(value), 0.0)
 
 
-def _record_text(rec: dict[str, Any], key: str) -> str:
+def record_text(rec: Mapping[str, object], key: str) -> str:
     """A string field of a run-log record, ``""`` when absent or not a string."""
     value = rec.get(key)
     return value if isinstance(value, str) else ""
 
 
-def _record_metrics(rec: dict[str, Any]) -> dict[str, float]:
+def record_flag(rec: Mapping[str, object], key: str) -> bool:
+    """A boolean field of a run-log record, ``False`` when absent or not a boolean."""
+    return rec.get(key) is True
+
+
+def _record_metrics(rec: Mapping[str, object]) -> dict[str, float]:
     """An epoch's numeric metrics, leaving out every entry that is not a number."""
     metrics = rec.get("metrics")
     if not isinstance(metrics, dict):

@@ -1270,6 +1270,7 @@ def iter_manifest(
     cross_join: bool = False,
     expands_individuals: bool = False,
     on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
+    before_load: Callable[[str], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame]]: ...
 
 
@@ -1284,6 +1285,7 @@ def iter_manifest(
     cross_join: bool = False,
     expands_individuals: bool = False,
     on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
+    before_load: Callable[[str], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame, CoreSelector]]: ...
 
 
@@ -1297,6 +1299,7 @@ def iter_manifest(
     cross_join: bool = False,
     expands_individuals: bool = False,
     on_pairs_missing: Callable[[str, PairRowsMissing], None] | None = None,
+    before_load: Callable[[str], None] | None = None,
 ) -> Iterator[tuple[str, pd.DataFrame] | tuple[str, pd.DataFrame, CoreSelector]]:
     """Iterate manifest entries, yielding data per sequence.
 
@@ -1316,6 +1319,7 @@ def iter_manifest(
     rows down to the loader, for both the entry and its neighbors
     (``loading.expands_individuals``). An entry whose input 0 then holds no pair
     rows is handed to *on_pairs_missing* and skipped, and raises without it.
+    *before_load* is called with each entry's key before its table is read.
     """
     n_entries = len(manifest)
     collector = PacedCollector()
@@ -1326,6 +1330,8 @@ def iter_manifest(
             filters = filter_factory(entry_key)
 
         # Load current segment
+        if before_load is not None:
+            before_load(entry_key)
         try:
             df = load_entry_data(
                 entry.file_specs,

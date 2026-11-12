@@ -267,7 +267,7 @@ class _WorkerClosingFeature(_ClosingFeature):
 
 
 def _call_worker(tmp_path: Path, df: pd.DataFrame) -> pd.DataFrame:
-    output, _ = process_apply_worker(
+    output, _, _ = process_apply_worker(
         __name__,
         "_WorkerClosingFeature",
         _WorkerClosingFeature.Inputs(("tracks",)).model_dump(),

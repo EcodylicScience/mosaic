@@ -19,7 +19,7 @@ import pandas as pd
 from mosaic.core.entry import Entry
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline._utils import atomic_write
-from mosaic.core.pipeline.memory_watch import host_memory_bytes
+from mosaic.core.pipeline.memory_limit import usable_memory_bytes
 from mosaic.core.pipeline.types import (
     COLUMNS,
     META_COLS,
@@ -911,8 +911,9 @@ def check_memory_headroom(
     """Raise when *estimated_bytes* would leave less than a fifth of the available memory.
 
     A fit that holds its whole training set, and copies of it, fails late and
-    takes the host with it. This asks first. Where the host reports no memory,
-    as without ``psutil``, it passes.
+    takes the host with it. This asks first, against the memory left under a
+    container's limit or else the host's available memory. Where no memory is
+    reported, as without ``psutil``, it passes.
 
     Args:
         estimated_bytes: The peak the work adds to what the process holds.
@@ -924,7 +925,7 @@ def check_memory_headroom(
     Raises:
         MemoryError: The estimate exceeds 80% of the available memory.
     """
-    _, available = host_memory_bytes()
+    _, available = usable_memory_bytes()
     if available <= 0 or estimated_bytes <= available * 0.8:
         return
     msg = (

@@ -988,7 +988,7 @@ def test_orientation_rel_applies_in_a_worker_process_with_its_scale_loaded_there
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=1, mp_context=multiprocessing.get_context("spawn")
     ) as pool:
-        result, _ = pool.submit(
+        result, _, _ = pool.submit(
             process_apply_worker,
             feature.__module__,
             type(feature).__name__,

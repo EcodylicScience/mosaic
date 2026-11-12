@@ -17,6 +17,7 @@ import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import (
+    AdmissionMarginOption,
     MinFreeMemoryOption,
     ParallelModeOption,
     StepScopeOption,
@@ -243,6 +244,7 @@ def score_command(
     workers: WorkersOption = None,
     parallel_mode: ParallelModeOption = None,
     min_free_memory_fraction: MinFreeMemoryOption = 0.0,
+    admission_margin: AdmissionMarginOption = 0.0,
     as_json: JsonOption = False,
 ) -> None:
     """Score a finished recipe on held-out data that was added afterwards.
@@ -331,7 +333,7 @@ def score_command(
                 dry_run=dry_run,
                 expect_plan=expect_plan,
                 parallel=parallel_settings(
-                    workers, parallel_mode, min_free_memory_fraction
+                    workers, parallel_mode, min_free_memory_fraction, admission_margin
                 ),
                 cancel_token=token,
                 notify=lambda line: log(f"[score] {line}"),

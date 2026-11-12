@@ -18,8 +18,10 @@ import typer
 
 from mosaic.core.entry import parse_entry_tokens
 from mosaic.core.pipeline.parallelism import (
+    MAX_ADMISSION_MARGIN,
     MAX_WORKERS_CEILING,
     ParallelSettings,
+    valid_admission_margin,
 )
 from mosaic.user_paths import user_path
 
@@ -142,17 +144,37 @@ MinFreeMemoryOption = Annotated[
         min=0.0,
         max=0.99,
         help=(
-            "With --workers above 1, the share of the host's memory that must stay "
-            "available. The run waits for its in-flight entries while the share is "
-            "lower, and fails when it is still lower with none in flight. 0 turns "
-            "the check off."
+            "With --workers above 1, the share of the memory limit that applies, a "
+            "container's or else the host's, that must stay available. The run "
+            "waits for its in-flight entries while the share is lower, and fails "
+            "when it is still lower with none in flight. 0 turns the check off."
+        ),
+    ),
+]
+
+
+AdmissionMarginOption = Annotated[
+    float,
+    typer.Option(
+        "--admission-margin",
+        min=0.0,
+        max=MAX_ADMISSION_MARGIN,
+        help=(
+            "With --workers above 1, start an entry beside the ones in flight only "
+            "when its predicted memory times this factor fits the memory limit, "
+            "learned from the run's own entries. The first entry runs alone and "
+            "entries start largest first. 0 (the default) turns the gate off; "
+            "otherwise from 1 to 4, such as 1.5."
         ),
     ),
 ]
 
 
 def parallel_settings(
-    workers: int | None, mode: ParallelChoice | None, min_free_memory_fraction: float
+    workers: int | None,
+    mode: ParallelChoice | None,
+    min_free_memory_fraction: float,
+    admission_margin: float,
 ) -> ParallelSettings | None:
     """Return the settings that the parallel flags name, or fail when they conflict.
 
@@ -160,21 +182,25 @@ def parallel_settings(
         workers: The ``--workers`` value.
         mode: The ``--parallel-mode`` value.
         min_free_memory_fraction: The ``--min-free-memory-fraction`` value.
+        admission_margin: The ``--admission-margin`` value.
 
     Returns:
         The settings, or ``None`` when no flag asks for more than one worker.
     """
     if workers is None or workers <= 1:
-        if mode is not None or min_free_memory_fraction > 0.0:
+        if mode is not None or min_free_memory_fraction > 0.0 or admission_margin > 0.0:
             fail(
-                "--parallel-mode and --min-free-memory-fraction apply to a run "
-                "with --workers above 1."
+                "--parallel-mode, --min-free-memory-fraction and --admission-margin "
+                "apply to a run with --workers above 1."
             )
         return None
+    if not valid_admission_margin(admission_margin):
+        fail(f"--admission-margin is 0 (off) or from 1 to 4, not {admission_margin}.")
     return ParallelSettings(
         workers=workers,
         mode="thread" if mode is None else mode,
         min_free_memory_fraction=min_free_memory_fraction,
+        admission_margin=admission_margin,
     )
 
 

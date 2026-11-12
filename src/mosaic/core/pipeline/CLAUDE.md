@@ -266,6 +266,29 @@ are in `graph/CLAUDE.md`.
   `run_root_held`, which `execute_step` does not count as a step failure. Apply is
   unclaimed (`tests/core/pipeline/test_fit_claim.py`).
 
+## Parallel runs
+
+- The memory limit comes from `read_memory_limit` (`memory_limit.py`): a container's
+  cgroup limit, else the host's memory. The floor, the gate and the run-log's limit
+  figures read it, never `psutil.virtual_memory()` alone.
+- The per-row estimate is `RowCostEstimate` (`admission.py`). `bytes_per_row` is `None`
+  until an observation exceeds the fixed part, and the gate reads `None` as no
+  estimate.
+- Every exit of an entry lowers `EntriesInFlight`: an output written, a failure, a
+  skip without a table, and missing pair rows. An exit that does not would stall the
+  gate (`tests/core/pipeline/test_run_measures.py`).
+- With several workers the gate (`admission_margin` above 0) and then the floor run in
+  `before_load`, before the table is read, through `EntryPool.drain_one` and
+  `wait_for_memory`, and `run_feature` builds its pool with `floor_at_submit=False` and its
+  own `MemoryWatch`. The slot wait stays after the load. Until
+  an entry with input rows is written the gate runs each entry alone. Its budget
+  (`admission_budget`) is the limit's available memory plus the run's tree, capped at
+  the limit, less the floor. `EntryOverMemoryLimit` compares the unmargined prediction
+  with the limit less the floor, never with what is available now
+  (`tests/core/pipeline/test_parallel_run.py`).
+- Entries go largest first (`by_rows`) only with the gate, and only the apply order
+  moves. The fit reads `manifest` in its own order.
+
 ## Reading a run
 
 - `load_run_matrix` (`run_matrix.py`) reads one run's parquet files into an array and

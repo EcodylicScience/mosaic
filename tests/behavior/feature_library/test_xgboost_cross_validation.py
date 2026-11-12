@@ -17,13 +17,14 @@ import io
 import logging
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import joblib
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pytest
 from sklearn.metrics import f1_score  # pyright: ignore[reportUnknownVariableType]
@@ -909,7 +910,7 @@ class TestRefusals:
     ) -> None:
         world = make_world(tmp_path / "templates", sequences(6, {0: 10, 1: 10}))
         feature = make_feature(world, tmp_path / "run", cv_folds=3)
-        monkeypatch.setattr(helpers, "host_memory_bytes", lambda: (2000, 1000))
+        monkeypatch.setattr(helpers, "usable_memory_bytes", lambda: (2000, 1000))
 
         with pytest.raises(MemoryError, match=r"^\[xgboost\] .*n_per_class"):
             feature.fit(NO_INPUT)
@@ -961,7 +962,10 @@ class TestAgainstAnOracle:
         )
 
         oracle = np.zeros((len(y), 3))
-        splits = LeaveOneGroupOut().split(x, y, groups)  # pyright: ignore[reportUnknownMemberType]
+        splits = cast(
+            "Iterator[tuple[npt.NDArray[np.intp], npt.NDArray[np.intp]]]",
+            LeaveOneGroupOut().split(x, y, groups),  # pyright: ignore[reportUnknownMemberType]
+        )
         for train, held in splits:
             classes = sorted(set(y[train].tolist()))
             model = XGBClassifier(
@@ -1041,7 +1045,7 @@ class TestBundle:
 
         for entry in (world.train[0], world.train[3], ("test", "z")):
             frame = world.frames[entry]
-            worker, _ = process_apply_worker(
+            worker, _, _ = process_apply_worker(
                 feature.__module__,
                 type(feature).__name__,
                 feature.inputs.model_dump(),
@@ -1787,7 +1791,7 @@ class TestBlocks:
         for entry in (self.ONLY, ("test", "z")):
             frame = world.frames[entry]
             pd.testing.assert_frame_equal(again.apply(frame), feature.apply(frame))
-            worker, _ = process_apply_worker(
+            worker, _, _ = process_apply_worker(
                 feature.__module__,
                 type(feature).__name__,
                 feature.inputs.model_dump(),

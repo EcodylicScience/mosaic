@@ -2,14 +2,27 @@ from __future__ import annotations
 
 import importlib
 import json
+import multiprocessing as mp
 import sys
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import ClassVar, Final, TYPE_CHECKING, get_args
 
 import numpy as np
 import pandas as pd
 
+from mosaic.runlog import EntryMeasure, ProbeRecord, ResourceReport
 from mosaic.version import installed_version
 from mosaic.core.filter_bounds import TimeWindow, check_one_filter_per_boundary
 from mosaic.core.helpers import (
@@ -27,6 +40,12 @@ from ._utils import (
     atomic_write,
     hash_params,
     json_ready,
+)
+from .admission import (
+    EntriesInFlight,
+    RowCostEstimate,
+    WorkerMeasure,
+    admission_budget,
 )
 from .arena_guard import (
     ArenaBlindFeature,
@@ -59,6 +78,7 @@ from .index import (
 )
 from .arena_index import entry_compositions
 from .index_lock import index_lock
+from .input_size import by_rows, entry_input_size, manifest_input_sizes
 from .inventory.params import RunParams, TracksVariantWalk, read_run_params
 from .loading import (
     CROSS_JOIN_FEATURES,
@@ -108,8 +128,16 @@ from .types import (
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .entry_pool import EntryPool
+from .memory_watch import MemorySample, MemoryWatch, max_rss_bytes, process_rss_bytes
 from .pacing import PacedCollector, Pacer
-from .parallelism import MemoryFloorReached, ParallelMode, WorkerProcessDied
+from .parallelism import (
+    EntryOverMemoryLimit,
+    MemoryFloorReached,
+    ParallelMode,
+    WorkerProcessDied,
+    process_capable,
+    valid_admission_margin,
+)
 from .parquet_reader import output_n_rows
 from .progress import ProgressCallback
 from .refusal import ToolUnavailable
@@ -368,7 +396,8 @@ def apply_noting_irregular_time(
     return output, tuple(notices)
 
 
-def process_apply_worker(
+@contextmanager
+def _rebuilt_feature(
     module_name: str,
     class_name: str,
     inputs_dump: dict[str, object],
@@ -376,11 +405,10 @@ def process_apply_worker(
     run_root_str: str,
     artifact_paths_str: dict[str, str],
     dependency_lookups: dict[str, DependencyLookup],
-    df: pd.DataFrame,
-    ds_manifest_path: str | None = None,
-    tracklets: Mapping[Entry, bool | None] | None = None,
-) -> NotedOutput:
-    """Reconstruct a feature in a worker process, run apply, then close it.
+    ds_manifest_path: str | None,
+    tracklets: Mapping[Entry, bool | None] | None,
+) -> Generator[Feature]:
+    """Rebuild a feature in a worker process with its state loaded, and close it after.
 
     If the feature declares ``bind_dataset`` (e.g. InteractionCropPipeline,
     EgocentricCropPipeline, FeralFeature), reconstruct the Dataset from its
@@ -394,10 +422,10 @@ def process_apply_worker(
     ``run_feature`` built once for the run, before ``load_state``. ``None``
     hands it an empty map.
 
-    The worker builds its instance for this one call, and only this call refers
-    to it. The worker therefore closes the instance itself. ``run_feature``
-    closes the main-process instance, on which ``apply`` does not run in this
-    mode. ``bind_dataset``, ``load_state`` and ``apply`` all run inside the
+    The worker builds its instance for this one use, and only this use refers to
+    it. The worker therefore closes the instance itself. ``run_feature`` closes
+    the main-process instance, on which ``apply`` does not run in this mode.
+    ``bind_dataset``, ``load_state`` and the caller's work all run inside the
     ``try``, because each of them may acquire the resource that ``close()``
     releases.
     """
@@ -417,9 +445,99 @@ def process_apply_worker(
             {k: Path(v) for k, v in artifact_paths_str.items()},
             dependency_lookups,
         )
-        return apply_noting_irregular_time(feature.apply, df)
+        yield feature
     finally:
         _close_feature(feature)
+
+
+type ApplyOutcome = tuple[
+    FeatureOutput, tuple[IrregularNotice, ...], WorkerMeasure | None
+]
+"""The output of one entry's ``apply``, the notices it raised, and the worker's memory.
+
+The measure is ``None`` where the entry was applied in the run's own process.
+"""
+
+
+def process_apply_worker(
+    module_name: str,
+    class_name: str,
+    inputs_dump: dict[str, object],
+    params_dump: dict[str, object],
+    run_root_str: str,
+    artifact_paths_str: dict[str, str],
+    dependency_lookups: dict[str, DependencyLookup],
+    df: pd.DataFrame,
+    ds_manifest_path: str | None = None,
+    tracklets: Mapping[Entry, bool | None] | None = None,
+) -> ApplyOutcome:
+    """Reconstruct a feature in a worker process, run apply, then close it.
+
+    The feature is rebuilt as :func:`_rebuilt_feature` describes.
+
+    Returns:
+        The output of ``apply``, and the worker's own memory: its resident memory
+        after ``load_state`` and before ``apply`` less the table it was handed, its
+        high-water mark at that moment, and its high-water mark after ``apply``.
+    """
+    with _rebuilt_feature(
+        module_name,
+        class_name,
+        inputs_dump,
+        params_dump,
+        run_root_str,
+        artifact_paths_str,
+        dependency_lookups,
+        ds_manifest_path,
+        tracklets,
+    ) as feature:
+        # The table arrives as an argument, so it is resident before ``apply`` and
+        # stays referenced by the pool's call item. It is the entry's memory, not
+        # the worker's, and a worker handed no table measures without it
+        # (``process_worker_base``).
+        handed = int(df.memory_usage(deep=True).sum())
+        base = max(0, process_rss_bytes() - handed)
+        peak_before = max_rss_bytes()
+        output, notices = apply_noting_irregular_time(feature.apply, df)
+        measure = WorkerMeasure(
+            base_rss_bytes=base,
+            peak_before_rss_bytes=peak_before,
+            peak_rss_bytes=max_rss_bytes(),
+        )
+    return output, notices, measure
+
+
+def process_worker_base(
+    module_name: str,
+    class_name: str,
+    inputs_dump: dict[str, object],
+    params_dump: dict[str, object],
+    run_root_str: str,
+    artifact_paths_str: dict[str, str],
+    dependency_lookups: dict[str, DependencyLookup],
+    ds_manifest_path: str | None = None,
+    tracklets: Mapping[Entry, bool | None] | None = None,
+) -> int:
+    """Rebuild a feature in a worker process as for apply, and return the worker's memory.
+
+    Nothing is applied. The figure is what one process worker holds before it is
+    handed a table: an interpreter, the feature's imports and its loaded state.
+
+    Returns:
+        The worker's resident memory in bytes, 0 where it cannot be measured.
+    """
+    with _rebuilt_feature(
+        module_name,
+        class_name,
+        inputs_dump,
+        params_dump,
+        run_root_str,
+        artifact_paths_str,
+        dependency_lookups,
+        ds_manifest_path,
+        tracklets,
+    ):
+        return process_rss_bytes()
 
 
 # --- Filter factory ---
@@ -1318,6 +1436,94 @@ def _asked_by_now(
     return asked, asked_all and not feature.scope_dependent
 
 
+@dataclass
+class _RunCost:
+    """What a feature run has measured of its fit and its entries, beside the watch.
+
+    The sampling thread reads it to write a report, and the run's thread and its
+    apply threads update it, one assignment at a time.
+    """
+
+    fitting: bool = False
+    fit_seconds: float = 0.0
+    fit_peak_rss_bytes: int = 0
+    fit_entries: int = 0
+    fit_input_rows: int = 0
+    high_water_after_fit: int | None = None
+    base_rss_bytes: int = 0
+    worker_base_rss_bytes: int = 0
+    apply_started: float | None = None
+    apply_ended: float | None = None
+    admission_waits: int = 0
+    entries_with_rows_written: int = 0
+    last_report: ResourceReport | None = None
+
+    def end_fit(self, watch: MemoryWatch, seconds: float) -> None:
+        """Freeze the fit's figures, its high-water mark counted once it has risen."""
+        self.fit_seconds = seconds
+        self.fit_peak_rss_bytes = max(
+            watch.peak_rss_bytes, watch.high_water_mark_since()
+        )
+        self.high_water_after_fit = watch.high_water_mark()
+        self.fitting = False
+
+    def apply_wall_seconds(self) -> float:
+        """From the first entry's load start to the last output written, 0 before both."""
+        if self.apply_started is None or self.apply_ended is None:
+            return 0.0
+        return max(0.0, self.apply_ended - self.apply_started)
+
+
+def _report_worker_base(
+    ctx: JobContext,
+    watch: MemoryWatch,
+    cost: _RunCost,
+    feature: Feature,
+    *,
+    run_root: Path,
+    artifact_paths: Mapping[str, Path],
+    dependency_lookups: dict[str, DependencyLookup],
+    manifest_path: Path,
+    tracklets: Mapping[Entry, bool | None],
+) -> None:
+    """Measure one process worker's own memory, and report it beside the frozen figures.
+
+    One worker is spawned as process mode spawns them, and runs
+    :func:`process_worker_base`. Its CPU, time and memory enter no other figure,
+    because the report repeats the last one written. Nothing is spawned when the
+    limit has less available than the run's own base, which a worker at least
+    matches, and a worker that fails to start reports nothing.
+    """
+    frozen = cost.last_report
+    limit = watch.limit
+    if frozen is None or limit is None or limit.available_bytes < frozen.base_rss_bytes:
+        return
+    try:
+        with ProcessPoolExecutor(
+            max_workers=1, mp_context=mp.get_context("spawn")
+        ) as pool:
+            measured = pool.submit(
+                process_worker_base,
+                feature.__module__,
+                type(feature).__name__,
+                feature.inputs.model_dump(),
+                feature.params.model_dump(),
+                str(run_root),
+                {k: str(v) for k, v in artifact_paths.items()},
+                dependency_lookups,
+                str(manifest_path),
+                tracklets,
+            ).result()
+    except Exception as exc:
+        print(
+            f"[feature:{feature.name}] could not measure a process worker: {exc}",
+            file=sys.stderr,
+        )
+        return
+    if measured > 0:
+        ctx.resources(replace(frozen, worker_base_rss_bytes=measured))
+
+
 def run_feature(
     ds: Dataset,
     feature: Feature,
@@ -1341,6 +1547,9 @@ def run_feature(
     cancel_token: CancelToken | None = None,
     asks_every_entry: bool | None = None,
     min_free_memory_fraction: float = 0.0,
+    measure_worker_base: bool = False,
+    admission_margin: float = 0.0,
+    probe: ProbeRecord | None = None,
 ) -> Result:
     """Apply a Feature over a chosen scope (default: whole dataset).
 
@@ -1381,11 +1590,37 @@ def run_feature(
         :class:`~mosaic.core.pipeline.parallelism.WorkerProcessDied`, and the
         entries already written are kept.
     min_free_memory_fraction : float, default 0.0
-        With several workers, the share of the host's memory that must stay
-        available. While it is lower the run waits for its in-flight entries before
-        it starts another, and raises
+        With several workers, the share of the memory limit that applies, a
+        container's or else the host's, that must stay available. While it is lower
+        the run waits for its in-flight entries before it starts another, and raises
         :class:`~mosaic.core.pipeline.parallelism.MemoryFloorReached` when it is
-        still lower with none in flight. 0 turns the check off.
+        still lower with none in flight. 0 turns the check off. The check runs
+        before each entry's table is loaded.
+    admission_margin : float, default 0.0
+        With several workers, the factor on an entry's predicted memory before
+        it is admitted beside the entries in flight; 0 turns the gate off,
+        otherwise from 1 to 4. The prediction comes from what the run's own
+        entries cost per input row, so the first entry runs alone, and entries
+        start largest first. An entry starts beside others only when its
+        prediction fits what the run may grow to: the memory available under the
+        limit plus the run's own, less the floor. Otherwise it waits for the
+        entries in flight and starts alone. An entry whose prediction without the
+        margin exceeds the limit less the floor raises
+        :class:`~mosaic.core.pipeline.parallelism.EntryOverMemoryLimit`, and the
+        entries already written are kept. The margin changes neither the run id
+        nor the outputs.
+    measure_worker_base : bool, default False
+        After the last entry, start one process worker that rebuilds the feature
+        and loads its state without applying anything, and record its resident
+        memory as ``worker_base_rss_bytes`` in one more ``resources`` event, which
+        repeats the run's other figures. Only for a feature that may run in
+        process workers, and skipped when the memory limit has less available
+        than the run's own base. A process-mode run records the figure from its
+        workers instead.
+    probe : ProbeRecord | None
+        Marks the attempt as a probe or a named subset of a pipeline step: the
+        record is written as the run-log's ``probe`` event right after
+        ``started``. ``None``, the default, writes none.
     overlap_frames : int, default 0
         Load this many frames of context from the sequences on either side, so a
         feature computing across frames -- a rolling window, a backward
@@ -1467,6 +1702,8 @@ def run_feature(
         cancel_token=cancel_token,
     ) as ctx:
         try:
+            if probe is not None and ctx.run_log is not None:
+                probe.write(ctx.run_log)
             return _run_feature_impl(
                 ds,
                 feature,
@@ -1486,6 +1723,8 @@ def run_feature(
                 check_output=check_output,
                 asks_every_entry=asks_every_entry,
                 min_free_memory_fraction=min_free_memory_fraction,
+                measure_worker_base=measure_worker_base,
+                admission_margin=admission_margin,
             )
         finally:
             _close_feature(feature)
@@ -1511,6 +1750,8 @@ def _run_feature_impl(
     check_output: bool = False,
     asks_every_entry: bool | None = None,
     min_free_memory_fraction: float = 0.0,
+    measure_worker_base: bool = False,
+    admission_margin: float = 0.0,
 ) -> Result:
     """Body of :func:`run_feature`, executed inside a :func:`job_context`.
 
@@ -1535,6 +1776,9 @@ def _run_feature_impl(
         raise ValueError("Frame/time filters and overlap_frames are mutually exclusive")
     if not 0.0 <= min_free_memory_fraction < 1.0:
         msg = f"min_free_memory_fraction must be in [0, 1), not {min_free_memory_fraction}"
+        raise ValueError(msg)
+    if not valid_admission_margin(admission_margin):
+        msg = f"admission_margin must be 0 (off) or from 1 to 4, not {admission_margin}"
         raise ValueError(msg)
 
     # The selector as the caller named it. An unset one covers every entry the
@@ -1746,312 +1990,6 @@ def _run_feature_impl(
     if hasattr(feature, "cancel_token"):
         setattr(feature, "cancel_token", ctx.cancel_token)
 
-    # Fit phase (if not state_ready). Two executions of one identity share this
-    # run root, so the fit holds it: a second execution arriving mid-fit is
-    # refused, and the state is loaded again under the claim, so a save a peer
-    # finished since the first load is used rather than fitted again. The claim
-    # is released before apply, which runs concurrently across scopes.
-    if not state_ready:
-        ctx.check_cancel()
-        kind = f"feature:{feature.name}"
-        fitted = False
-        with held_run_root(
-            ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
-        ) as marker:
-            state_ready = feature.load_state(
-                run_root, artifact_paths, dependency_lookups
-            )
-            if not state_ready:
-                ctx.phase("fit", f"{len(manifest)} entries")
-                feature.fit(
-                    fit_input_stream(
-                        feature,
-                        manifest,
-                        filter_factory,
-                        cross_join,
-                        widens_individuals,
-                    )
-                )
-                _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
-                feature.save_state(run_root)
-                # Written here rather than beside params.json because only this
-                # branch means a fit actually ran: params.json is written on every
-                # invocation, before load_state, so its `_scope` is the scope of
-                # whichever run came last. A params-level fitter -- scope-free, so
-                # every apply scope shares one run root -- fits from its pinned
-                # artifacts, not from this invocation's scope, so its record is
-                # derived from theirs.
-                write_fit_scope(
-                    run_root,
-                    derive_fit_scope(
-                        ds, feature, resolved, resolutions, artifact_paths
-                    ),
-                )
-                fitted = True
-        if fitted:
-            ctx.phase("apply")
-
-    # Apply phase — index rows are flushed periodically for interrupt recovery
-    _pending_idx_rows: list[FeatureIndexRow] = []
-    _total_written = 0
-    index_pacer = Pacer(interval=IDX_FLUSH_SECONDS, cost_factor=IDX_FLUSH_COST_FACTOR)
-
-    def _flush_idx() -> None:
-        nonlocal _total_written
-        if _pending_idx_rows:
-            rows = list(_pending_idx_rows)
-            index_pacer.timed(lambda: idx.append(rows))
-            _total_written += len(rows)
-            _pending_idx_rows.clear()
-
-    def _record_row(row: FeatureIndexRow) -> None:
-        _pending_idx_rows.append(row)
-        # Single per-entry choke point (fires on cache-hit, inline, and
-        # parallel-drain paths): report progress + refresh the liveness heartbeat.
-        done = _total_written + len(_pending_idx_rows)
-        ctx.progress.on_entry_end(
-            done, ctx.total, make_entry_key(row.group, row.sequence)
-        )
-        ctx.heartbeat(done)
-        if index_pacer.due():
-            _flush_idx()
-
-    # --- Cache-hit pre-pass --------------------------------------------------
-    # When state is cached and we are not overwriting, resolve which entries
-    # already have valid outputs WITHOUT loading their input parquet (the apply
-    # loop would otherwise deserialize each input only to discard it). Validated
-    # hits are recorded immediately; their keys are excluded from the compute
-    # manifest so iter_manifest never loads them.
-    # NOTE: ``check_output`` here is the run_feature *parameter* (a bool); the
-    # feature's optional validator is the *attribute* feature.check_output.
-    # Resolved once and reused by the cache-hit pre-pass.
-    custom_check = getattr(feature, "check_output", None) if check_output else None
-    if custom_check is not None and not callable(custom_check):
-        custom_check = None  # not a validator method; use the default
-
-    # What each entry recorded consuming, before this run touches the index. A
-    # skipped entry carries its own value forward; re-deriving it here would
-    # assert that an output not recomputed was built from whatever is true now,
-    # and `drifted_entries` compares exactly this cell -- so the evidence of a
-    # source having moved would erase itself on the first ordinary re-run.
-    prior_compositions: dict[tuple[str, str], str] = (
-        {
-            entry: digest
-            for entry, (_roots, digest) in recorded_consumption(
-                ds, storage_feature_name, run_id
-            ).items()
-        }
-        if feature.consumed_roots
-        else {}
-    )
-    # The same question for tracks, which no feature declares as a root: the tracks
-    # row records what its table was converted from, so the comparison is two index
-    # reads rather than a new digest. A run with a feature input reads, beside it,
-    # what each upstream row recorded, joined in input order by the manifest.
-    prior_tracks = recorded_tracks_reads(ds, storage_feature_name, run_id)
-    tracks_now_by_entry = (
-        resolved.input_tracks_compositions
-        if resolved.input_tracks_compositions is not None
-        else tracks_compositions(ds, resolved.tracks_variants)
-    )
-    # An overlapped entry also read its neighbors, and their keys and tracks
-    # compositions are compared the same way. The run id leaves them out.
-    # Declaring a group, adding a sequence to it or converting a neighbor again
-    # recomputes the entries whose neighbors changed.
-    neighbors_now_by_entry = (
-        neighbor_compositions(manifest, tracks_now_by_entry)
-        if overlap_frames > 0
-        else {}
-    )
-    # What each feature input's upstream recorded of its declared roots, its own
-    # and those it inherited, so an entry recomputes after its upstream entry
-    # recomputes for a moved root. An upstream declaring no root records nothing,
-    # which is absence and not blindness, so this channel never warns.
-    inputs_now_by_entry: Mapping[Entry, str] = (
-        resolved.input_root_compositions
-        if resolved.input_root_compositions is not None
-        else {}
-    )
-    # A run reading tracks only through feature inputs is blind where an
-    # upstream run read a named variant whose tables record no composition.
-    upstreams_over_variants = _upstreams_over_variants(ds, resolved.feature_inputs)
-
-    skip_keys: set[str] = set()
-    # Entries whose provenance neither side can establish. Collected rather than
-    # reported per entry: on a dataset with no projection this is every entry,
-    # and one line naming the repair is worth more than two hundred naming the
-    # symptom.
-    #
-    # One set per channel, because the two are blind independently and their
-    # repairs differ. A channel the run does not read is not blind, it is absent,
-    # and counting it as blind is how one set reported the wrong thing twice over:
-    # `disposition` is unconditionally `undetectable` for a feature declaring no
-    # source root -- forty-four of forty-seven, and the declaration `consumed_roots`
-    # documents as correct -- so every such run announced an unverifiable source
-    # while the tracks channel it actually reads was recorded and compared; and a
-    # genuinely unrecorded tracks channel under a declared root that *was* recorded
-    # was served in silence.
-    roots_blind: set[tuple[str, str]] = set()
-    tracks_blind: set[tuple[str, str]] = set()
-    # Only a source root can be blind. An entry without an arena layout is a
-    # known state, and one that gains a layout recomputes once.
-    blind_capable = sorted(
-        {root for root in feature.consumed_roots if root in get_args(SourceRoot)}
-    )
-    # An arena-blind feature is refused on an entry spanning arenas, so the
-    # index rows, which hold each layout's arena count, are read once when the
-    # feature is one. Declaring a layout changes no tracks composition, and only
-    # an entry's input shows whether it spans the arenas of its layout, so an
-    # entry whose layout names several is never served from the cache.
-    relates: object = getattr(feature, "relates", "none")
-    blind_arena_rows = indexed_arena_rows(ds) if relates == "arena-blind" else None
-    if state_ready and not overwrite:
-        for entry_key in manifest:
-            group, sequence = resolve_sequence_identity(entry_key, entry_map)
-            meta = build_feature_meta(group, sequence, run_root)
-            if not meta.out_path.exists():
-                continue
-            if check_output:
-                # A buggy/edge-case validator must not abort the whole run; treat
-                # any failure as "invalid output" so the entry is recomputed.
-                try:
-                    ok = (
-                        custom_check(meta, run_root)
-                        if custom_check is not None
-                        else default_check_output(meta, run_root)
-                    )
-                except Exception as exc:
-                    print(
-                        f"[feature:{feature.name}] check_output raised for "
-                        f"({group},{sequence}): {exc}; recomputing.",
-                        file=sys.stderr,
-                    )
-                    ok = False
-                if not ok:
-                    continue  # corrupt/incomplete -> fall through to recompute
-            # Reading the footer can fail on a truncated/half-written parquet
-            # (e.g. an OOM-killed prior run). Recompute rather than crash.
-            try:
-                n_rows = output_n_rows(meta.out_path)
-            except Exception as exc:
-                print(
-                    f"[feature:{feature.name}] unreadable cached output for "
-                    f"({group},{sequence}): {exc}; recomputing.",
-                    file=sys.stderr,
-                )
-                continue
-            entry = (meta.group, meta.sequence)
-            recorded = prior_compositions.get(entry)
-            was_made_from = recorded if recorded is not None else ""
-            now_made_of = entry_composition(feature, resolved, entry)
-            recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
-            tracks_was = recorded_reads.composition
-            tracks_now = tracks_now_by_entry.get(entry, "")
-            neighbors_was = recorded_reads.neighbors
-            neighbors_now = neighbors_now_by_entry.get(entry, "")
-            inputs_was = recorded_reads.inputs
-            inputs_now = inputs_now_by_entry.get(entry, "")
-            disposition = cached_entry_disposition(was_made_from, now_made_of)
-            tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
-            refusal: str | None = None
-            if disposition == "recompute":
-                refusal = _disposition_reason(was_made_from, now_made_of)
-            elif tracks_disposition == "recompute":
-                refusal = _disposition_reason(tracks_was, tracks_now)
-            elif cached_entry_disposition(inputs_was, inputs_now) == "recompute":
-                refusal = _disposition_reason(
-                    inputs_was, inputs_now, moved="its upstream's source moved"
-                )
-            elif cached_entry_disposition(neighbors_was, neighbors_now) == "recompute":
-                refusal = _neighbors_reason(neighbors_was)
-            if refusal is None and blind_arena_rows is not None:
-                arena_count = entry_arena_count(ds, group, sequence, blind_arena_rows)
-                if arena_count >= 2:
-                    refusal = (
-                        f"its recording has a layout of {arena_count} arenas, "
-                        "and only its input shows whether it spans them"
-                    )
-            if refusal is not None:
-                # Serving this would be the wrong answer this milestone exists to
-                # prevent, and recording it would restamp the only cell that says
-                # so. Costly, loud, and never destructive.
-                print(
-                    f"[feature:{feature.name}] cannot serve cached output for "
-                    f"({group},{sequence}): {refusal}; recomputing.",
-                    file=sys.stderr,
-                )
-                continue
-            if blind_capable and disposition == "undetectable":
-                roots_blind.add(entry)
-            if tracks_disposition == "undetectable" and (
-                resolved.tracks_variants or upstreams_over_variants
-            ):
-                tracks_blind.add(entry)
-            _record_row(
-                FeatureIndexRow(
-                    run_id=run_id,
-                    feature=storage_feature_name,
-                    version=feature.version,
-                    group=meta.group,
-                    sequence=meta.sequence,
-                    abs_path=Path(ds.relative_to_root(meta.out_path)),
-                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                    # Carried, never re-derived. An entry with no prior row is an
-                    # output nothing describes, so its provenance is unknown and
-                    # says so, rather than claiming the present.
-                    consumed_composition=was_made_from,
-                    consumed_tracks_composition=tracks_was,
-                    consumed_input_composition=inputs_was,
-                    consumed_neighbors=neighbors_was,
-                    n_rows=n_rows,
-                    params_hash=params_hash,
-                    identity_scheme=FEATURE_IDENTITY_SCHEME,
-                )
-            )
-            skip_keys.add(entry_key)
-
-    # No guard beyond emptiness: each set is populated only where its channel
-    # exists, so a non-empty one is already the whole condition.
-    if roots_blind:
-        print(
-            _blind_roots_warning(feature.name, blind_capable, len(roots_blind)),
-            file=sys.stderr,
-        )
-    # A run with feature inputs names the upstream runs, whose tracks tables are
-    # the ones to repair; a variant it reads directly is named beside them.
-    if tracks_blind and resolved.tracks_variants:
-        print(
-            _blind_tracks_warning(
-                feature.name, resolved.tracks_variants, len(tracks_blind)
-            ),
-            file=sys.stderr,
-        )
-    if tracks_blind and upstreams_over_variants:
-        print(
-            _blind_upstream_tracks_warning(
-                feature.name, upstreams_over_variants, len(tracks_blind)
-            ),
-            file=sys.stderr,
-        )
-
-    compute_manifest = (
-        {k: v for k, v in manifest.items() if k not in skip_keys}
-        if skip_keys
-        else manifest
-    )
-
-    # A full cache hit: state needed no fit and every manifest entry was already
-    # valid on disk. Surfaced on Result (does not alter the run's flow).
-    cache_hit = (
-        state_ready
-        and not overwrite
-        and len(manifest) > 0
-        and len(skip_keys) == len(manifest)
-    )
-    if cache_hit:
-        # Emitted where it is decided, so the claim and its record cannot drift.
-        ctx.cache_hit()
-
     max_workers = (
         parallel_workers if parallel_workers is not None and parallel_workers > 1 else 1
     )
@@ -2064,190 +2002,803 @@ def _run_feature_impl(
             file=sys.stderr,
         )
         max_workers = 1
-    apply_overlap: int | None = overlap_frames if overlap_frames > 0 else None
+    capable = process_capable(feature)
+    # The gate admits entries by predicted memory, for a run with several workers.
+    margin = admission_margin if max_workers > 1 else 0.0
 
-    def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
-        """Record that one entity's ``apply`` raised, unless the run was cancelled.
+    # Measuring. One watch, one estimate and one sampling thread span the fit and
+    # the apply, so a fit is measured and an attempt killed mid-fit leaves its memory
+    # in the run-log. Every exit of this span stops the sampler and writes the
+    # final report.
+    watch = MemoryWatch()
+    estimate = RowCostEstimate()
+    in_flight = EntriesInFlight()
+    cost = _RunCost()
+    pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] | None = None
 
-        Shared by the inline and parallel-drain paths deliberately. They used to
-        hold two copies of a bare ``print``, which is how one of them could be
-        repaired and the other left reporting success.
+    def _resource_report() -> ResourceReport:
+        limit = watch.limit
+        fit_peak = watch.peak_rss_bytes if cost.fitting else cost.fit_peak_rss_bytes
+        peak = max(watch.peak_rss_bytes, fit_peak)
+        if parallel_mode_str == "thread" or max_workers == 1:
+            # One process: its high-water mark counts once it rises past the fit.
+            peak = max(peak, watch.high_water_mark_since(cost.high_water_after_fit))
+        per_row = estimate.bytes_per_row
+        return ResourceReport(
+            workers=max_workers,
+            parallel_mode=parallel_mode_str if max_workers > 1 else "",
+            peak_rss_bytes=peak,
+            min_available_bytes=watch.min_available_bytes,
+            total_memory_bytes=watch.total_bytes,
+            feature=feature.name,
+            feature_version=feature.version,
+            process_capable=capable,
+            cpu_seconds=watch.cpu_seconds(),
+            wall_seconds=watch.wall_seconds(),
+            memory_limit_bytes=0 if limit is None else limit.limit_bytes,
+            memory_limit_source="" if limit is None else limit.source,
+            limit_peak_bytes=watch.limit_peak_bytes,
+            base_rss_bytes=cost.base_rss_bytes,
+            fit_seconds=cost.fit_seconds,
+            fit_peak_rss_bytes=fit_peak,
+            peak_bytes_per_row=0 if per_row is None else per_row,
+            fit_entries=cost.fit_entries,
+            fit_input_rows=cost.fit_input_rows,
+            worker_base_rss_bytes=cost.worker_base_rss_bytes,
+            apply_wall_seconds=cost.apply_wall_seconds(),
+            admission_margin=margin,
+            admission_waits=cost.admission_waits,
+        )
 
-        ``ctx.entry_failed_unless_cancelled`` decides between a lost entity and
-        a cancel. A cancel can kill a tool that an entry's ``apply`` drives, and
-        ``apply`` then raises the tool's error. While the attempt's cancel token
-        is set, that call raises :class:`~mosaic.core.pipeline.job.Cancelled`
-        instead of recording a failure. The line on standard error is printed
-        only after that call records the entity as lost, for a human who runs
-        the CLI directly. A queued run keeps the run-log record alone, because
-        the queue discards the child's standard error.
+    def _publish_resources() -> None:
+        report = _resource_report()
+        cost.last_report = report
+        ctx.resources(report)
+
+    def _pool_report(_measured: ResourceReport) -> None:
+        """Replace the pool's own report with the run's, which adds the cost."""
+        _publish_resources()
+
+    def _report_resources(*, final: bool = False) -> None:
+        """Record the workers, the memory and the cost measured so far on the run-log.
+
+        Throttled to the sampler's interval unless *final*. The final report is
+        written on every exit from the measured span, a failure included, because
+        the reader of a failed step needs the memory it reached.
         """
-        ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
-        print(
-            f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
-            file=sys.stderr,
-        )
-        # A tool this machine lacks fails every entry the same way, so it is the
-        # run's refusal and not one entity's loss.
-        if isinstance(exc, ToolUnavailable):
-            raise exc
+        measured = watch.sample() is not None if final else watch.sample_if_due()
+        if measured:
+            _publish_resources()
 
-    collector = PacedCollector()
+    def _observe(sample: MemorySample | None) -> None:
+        """Feed one measurement of the tree to the estimate, beside the rows in flight.
 
-    def _record_result(
-        tag: tuple[FeatureMeta, CoreSelector | None], noted: NotedOutput
-    ) -> None:
-        meta, selector = tag
-        result_df, notices = noted
-        for notice in notices:
-            ctx.time_irregular(make_entry_key(meta.group, meta.sequence), notice)
-        if selector is not None:
-            result_df = trim_feature_output(result_df, selector)
-        n_rows = write_output(meta, result_df)
-        _record_row(
-            FeatureIndexRow(
-                run_id=run_id,
-                feature=storage_feature_name,
-                version=feature.version,
-                group=meta.group,
-                sequence=meta.sequence,
-                abs_path=Path(ds.relative_to_root(meta.out_path)),
-                consumed_roots=encode_consumed_roots(feature.consumed_roots),
-                consumed_composition=entry_composition(
-                    feature, resolved, (meta.group, meta.sequence)
-                ),
-                consumed_tracks_composition=tracks_now_by_entry.get(
-                    (meta.group, meta.sequence), ""
-                ),
-                consumed_input_composition=inputs_now_by_entry.get(
-                    (meta.group, meta.sequence), ""
-                ),
-                consumed_neighbors=neighbors_now_by_entry.get(
-                    (meta.group, meta.sequence), ""
-                ),
-                n_rows=n_rows,
-                params_hash=params_hash,
-                identity_scheme=FEATURE_IDENTITY_SCHEME,
-            )
-        )
-        collector.finished(
-            0 if result_df is None else int(result_df.memory_usage(index=True).sum())
-        )
-        del result_df
-
-    def _record_failure(
-        tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
-    ) -> None:
-        meta, _ = tag
-        _entry_failed(meta.group, meta.sequence, exc)
-
-    pool: EntryPool[tuple[FeatureMeta, CoreSelector | None], NotedOutput] = EntryPool(
-        workers=max_workers,
-        mode=parallel_mode_str,
-        on_result=_record_result,
-        on_error=_record_failure,
-        min_free_memory_fraction=min_free_memory_fraction,
-        on_resources=ctx.resources,
-    )
-
-    def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
-        """Record an entry with no pair rows to widen onto as lost."""
-        group, sequence = resolve_sequence_identity(entry_key, entry_map)
-        _entry_failed(group, sequence, exc)
-
-    def _process_entry(
-        entry_key: str,
-        df: pd.DataFrame,
-        selector: CoreSelector | None,
-    ) -> None:
-        # Cooperative cancel checkpoint: covers both apply loops and both the
-        # executor and inline branches. Completed entries are already durable.
-        ctx.check_cancel()
-        group, sequence = resolve_sequence_identity(entry_key, entry_map)
-        meta = build_feature_meta(group, sequence, run_root)
-
-        # Pipeline validation checks the recipe against this declaration, and
-        # the entry's merged frame is checked against it too. A missing column
-        # fails the entry with one message, before apply reads anything.
-        try:
-            check_input_columns(
-                feature,
-                df.columns,
-                numeric=df.select_dtypes(include="number").columns,
-            )
-        except MissingInputColumns as exc:
-            _entry_failed(group, sequence, exc)
+        In process mode the fixed part counts the worker processes alive in the
+        sample, because the pool starts one only when no worker is idle.
+        """
+        if sample is None:
             return
-        if blind_arena_rows is not None:
-            count = entry_arena_count(ds, group, sequence, blind_arena_rows)
+        workers = sample.spawned_workers if parallel_mode_str == "process" else 0
+        estimate.observe(sample.tree_rss_bytes, in_flight.rows(), workers)
+
+    def _on_sample(sample: MemorySample) -> None:
+        _observe(sample)
+        _report_resources()
+
+    watch.begin()
+    watch.start_sampling(_on_sample)
+    try:
+        # Fit phase (if not state_ready). Two executions of one identity share this
+        # run root, so the fit holds it: a second execution arriving mid-fit is
+        # refused, and the state is loaded again under the claim, so a save a peer
+        # finished since the first load is used rather than fitted again. The claim
+        # is released before apply, which runs concurrently across scopes.
+        if not state_ready:
+            ctx.check_cancel()
+            kind = f"feature:{feature.name}"
+            fitted = False
+            with held_run_root(
+                ds, ctx.execution_id, run_root, kind, _FIT_IDLE_SECONDS, doing="fitting"
+            ) as marker:
+                state_ready = feature.load_state(
+                    run_root, artifact_paths, dependency_lookups
+                )
+                if not state_ready:
+                    ctx.phase("fit", f"{len(manifest)} entries")
+                    # The stream the fit is offered. A fitter that fits from pinned
+                    # artifacts ignores it, and these figures still describe it.
+                    cost.fit_entries = len(manifest)
+                    cost.fit_input_rows = sum(
+                        size.rows for size in manifest_input_sizes(manifest).values()
+                    )
+                    _observe(watch.sample())
+                    cost.fitting = True
+                    fit_started = time.monotonic()
+                    try:
+                        feature.fit(
+                            fit_input_stream(
+                                feature,
+                                manifest,
+                                filter_factory,
+                                cross_join,
+                                widens_individuals,
+                            )
+                        )
+                    finally:
+                        _observe(watch.sample())
+                        cost.end_fit(watch, time.monotonic() - fit_started)
+                    _ = renew_run_root_claim(run_root, marker, kind, _FIT_IDLE_SECONDS)
+                    feature.save_state(run_root)
+                    # Written here rather than beside params.json because only this
+                    # branch means a fit actually ran: params.json is written on every
+                    # invocation, before load_state, so its `_scope` is the scope of
+                    # whichever run came last. A params-level fitter -- scope-free, so
+                    # every apply scope shares one run root -- fits from its pinned
+                    # artifacts, not from this invocation's scope, so its record is
+                    # derived from theirs.
+                    write_fit_scope(
+                        run_root,
+                        derive_fit_scope(
+                            ds, feature, resolved, resolutions, artifact_paths
+                        ),
+                    )
+                    fitted = True
+            if fitted:
+                ctx.phase("apply")
+
+        # The run's own memory before the first entry loads: the interpreter, the
+        # imports and the feature's state.
+        base = watch.sample()
+        if base is not None:
+            cost.base_rss_bytes = base.tree_rss_bytes
+            estimate.parent_base(base.tree_rss_bytes)
+
+        # Apply phase — index rows are flushed periodically for interrupt recovery
+        _pending_idx_rows: list[FeatureIndexRow] = []
+        _total_written = 0
+        index_pacer = Pacer(
+            interval=IDX_FLUSH_SECONDS, cost_factor=IDX_FLUSH_COST_FACTOR
+        )
+
+        def _flush_idx() -> None:
+            nonlocal _total_written
+            if _pending_idx_rows:
+                rows = list(_pending_idx_rows)
+                index_pacer.timed(lambda: idx.append(rows))
+                _total_written += len(rows)
+                _pending_idx_rows.clear()
+
+        def _record_row(row: FeatureIndexRow) -> None:
+            _pending_idx_rows.append(row)
+            # Single per-entry choke point (fires on cache-hit, inline, and
+            # parallel-drain paths): report progress + refresh the liveness heartbeat.
+            # A computed entry leaves the in-flight record here with its cost. A cache
+            # hit was never in it and carries no cost.
+            done = _total_written + len(_pending_idx_rows)
+            key = make_entry_key(row.group, row.sequence)
+            span = in_flight.leave(key)
+            measure: EntryMeasure | None = None
+            if span is not None:
+                written = time.monotonic()
+                cost.apply_ended = written
+                if span.rows > 0:
+                    cost.entries_with_rows_written += 1
+                measure = EntryMeasure(
+                    wall_seconds=written - span.load_started,
+                    apply_seconds=span.apply_seconds,
+                    input_rows=span.rows,
+                    in_flight=span.most_in_flight,
+                    cpu_seconds=max(0.0, watch.cpu_seconds() - span.cpu_at_load),
+                )
+            ctx.entry_ended(done, ctx.total, key, measure)
+            ctx.heartbeat(done)
+            if index_pacer.due():
+                _flush_idx()
+
+        # --- Cache-hit pre-pass --------------------------------------------------
+        # When state is cached and we are not overwriting, resolve which entries
+        # already have valid outputs WITHOUT loading their input parquet (the apply
+        # loop would otherwise deserialize each input only to discard it). Validated
+        # hits are recorded immediately; their keys are excluded from the compute
+        # manifest so iter_manifest never loads them.
+        # NOTE: ``check_output`` here is the run_feature *parameter* (a bool); the
+        # feature's optional validator is the *attribute* feature.check_output.
+        # Resolved once and reused by the cache-hit pre-pass.
+        custom_check = getattr(feature, "check_output", None) if check_output else None
+        if custom_check is not None and not callable(custom_check):
+            custom_check = None  # not a validator method; use the default
+
+        # What each entry recorded consuming, before this run touches the index. A
+        # skipped entry carries its own value forward; re-deriving it here would
+        # assert that an output not recomputed was built from whatever is true now,
+        # and `drifted_entries` compares exactly this cell -- so the evidence of a
+        # source having moved would erase itself on the first ordinary re-run.
+        prior_compositions: dict[tuple[str, str], str] = (
+            {
+                entry: digest
+                for entry, (_roots, digest) in recorded_consumption(
+                    ds, storage_feature_name, run_id
+                ).items()
+            }
+            if feature.consumed_roots
+            else {}
+        )
+        # The same question for tracks, which no feature declares as a root: the tracks
+        # row records what its table was converted from, so the comparison is two index
+        # reads rather than a new digest. A run with a feature input reads, beside it,
+        # what each upstream row recorded, joined in input order by the manifest.
+        prior_tracks = recorded_tracks_reads(ds, storage_feature_name, run_id)
+        tracks_now_by_entry = (
+            resolved.input_tracks_compositions
+            if resolved.input_tracks_compositions is not None
+            else tracks_compositions(ds, resolved.tracks_variants)
+        )
+        # An overlapped entry also read its neighbors, and their keys and tracks
+        # compositions are compared the same way. The run id leaves them out.
+        # Declaring a group, adding a sequence to it or converting a neighbor again
+        # recomputes the entries whose neighbors changed.
+        neighbors_now_by_entry = (
+            neighbor_compositions(manifest, tracks_now_by_entry)
+            if overlap_frames > 0
+            else {}
+        )
+        # What each feature input's upstream recorded of its declared roots, its own
+        # and those it inherited, so an entry recomputes after its upstream entry
+        # recomputes for a moved root. An upstream declaring no root records nothing,
+        # which is absence and not blindness, so this channel never warns.
+        inputs_now_by_entry: Mapping[Entry, str] = (
+            resolved.input_root_compositions
+            if resolved.input_root_compositions is not None
+            else {}
+        )
+        # A run reading tracks only through feature inputs is blind where an
+        # upstream run read a named variant whose tables record no composition.
+        upstreams_over_variants = _upstreams_over_variants(ds, resolved.feature_inputs)
+
+        skip_keys: set[str] = set()
+        # Entries whose provenance neither side can establish. Collected rather than
+        # reported per entry: on a dataset with no projection this is every entry,
+        # and one line naming the repair is worth more than two hundred naming the
+        # symptom.
+        #
+        # One set per channel, because the two are blind independently and their
+        # repairs differ. A channel the run does not read is not blind, it is absent,
+        # and counting it as blind is how one set reported the wrong thing twice over:
+        # `disposition` is unconditionally `undetectable` for a feature declaring no
+        # source root -- forty-four of forty-seven, and the declaration `consumed_roots`
+        # documents as correct -- so every such run announced an unverifiable source
+        # while the tracks channel it actually reads was recorded and compared; and a
+        # genuinely unrecorded tracks channel under a declared root that *was* recorded
+        # was served in silence.
+        roots_blind: set[tuple[str, str]] = set()
+        tracks_blind: set[tuple[str, str]] = set()
+        # Only a source root can be blind. An entry without an arena layout is a
+        # known state, and one that gains a layout recomputes once.
+        blind_capable = sorted(
+            {root for root in feature.consumed_roots if root in get_args(SourceRoot)}
+        )
+        # An arena-blind feature is refused on an entry spanning arenas, so the
+        # index rows, which hold each layout's arena count, are read once when the
+        # feature is one. Declaring a layout changes no tracks composition, and only
+        # an entry's input shows whether it spans the arenas of its layout, so an
+        # entry whose layout names several is never served from the cache.
+        relates: object = getattr(feature, "relates", "none")
+        blind_arena_rows = indexed_arena_rows(ds) if relates == "arena-blind" else None
+        if state_ready and not overwrite:
+            for entry_key in manifest:
+                group, sequence = resolve_sequence_identity(entry_key, entry_map)
+                meta = build_feature_meta(group, sequence, run_root)
+                if not meta.out_path.exists():
+                    continue
+                if check_output:
+                    # A buggy/edge-case validator must not abort the whole run; treat
+                    # any failure as "invalid output" so the entry is recomputed.
+                    try:
+                        ok = (
+                            custom_check(meta, run_root)
+                            if custom_check is not None
+                            else default_check_output(meta, run_root)
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[feature:{feature.name}] check_output raised for "
+                            f"({group},{sequence}): {exc}; recomputing.",
+                            file=sys.stderr,
+                        )
+                        ok = False
+                    if not ok:
+                        continue  # corrupt/incomplete -> fall through to recompute
+                # Reading the footer can fail on a truncated/half-written parquet
+                # (e.g. an OOM-killed prior run). Recompute rather than crash.
+                try:
+                    n_rows = output_n_rows(meta.out_path)
+                except Exception as exc:
+                    print(
+                        f"[feature:{feature.name}] unreadable cached output for "
+                        f"({group},{sequence}): {exc}; recomputing.",
+                        file=sys.stderr,
+                    )
+                    continue
+                entry = (meta.group, meta.sequence)
+                recorded = prior_compositions.get(entry)
+                was_made_from = recorded if recorded is not None else ""
+                now_made_of = entry_composition(feature, resolved, entry)
+                recorded_reads = prior_tracks.get(entry, RecordedTracksReads())
+                tracks_was = recorded_reads.composition
+                tracks_now = tracks_now_by_entry.get(entry, "")
+                neighbors_was = recorded_reads.neighbors
+                neighbors_now = neighbors_now_by_entry.get(entry, "")
+                inputs_was = recorded_reads.inputs
+                inputs_now = inputs_now_by_entry.get(entry, "")
+                disposition = cached_entry_disposition(was_made_from, now_made_of)
+                tracks_disposition = cached_entry_disposition(tracks_was, tracks_now)
+                refusal: str | None = None
+                if disposition == "recompute":
+                    refusal = _disposition_reason(was_made_from, now_made_of)
+                elif tracks_disposition == "recompute":
+                    refusal = _disposition_reason(tracks_was, tracks_now)
+                elif cached_entry_disposition(inputs_was, inputs_now) == "recompute":
+                    refusal = _disposition_reason(
+                        inputs_was, inputs_now, moved="its upstream's source moved"
+                    )
+                elif (
+                    cached_entry_disposition(neighbors_was, neighbors_now)
+                    == "recompute"
+                ):
+                    refusal = _neighbors_reason(neighbors_was)
+                if refusal is None and blind_arena_rows is not None:
+                    arena_count = entry_arena_count(
+                        ds, group, sequence, blind_arena_rows
+                    )
+                    if arena_count >= 2:
+                        refusal = (
+                            f"its recording has a layout of {arena_count} arenas, "
+                            "and only its input shows whether it spans them"
+                        )
+                if refusal is not None:
+                    # Serving this would be the wrong answer this milestone exists to
+                    # prevent, and recording it would restamp the only cell that says
+                    # so. Costly, loud, and never destructive.
+                    print(
+                        f"[feature:{feature.name}] cannot serve cached output for "
+                        f"({group},{sequence}): {refusal}; recomputing.",
+                        file=sys.stderr,
+                    )
+                    continue
+                if blind_capable and disposition == "undetectable":
+                    roots_blind.add(entry)
+                if tracks_disposition == "undetectable" and (
+                    resolved.tracks_variants or upstreams_over_variants
+                ):
+                    tracks_blind.add(entry)
+                _record_row(
+                    FeatureIndexRow(
+                        run_id=run_id,
+                        feature=storage_feature_name,
+                        version=feature.version,
+                        group=meta.group,
+                        sequence=meta.sequence,
+                        abs_path=Path(ds.relative_to_root(meta.out_path)),
+                        consumed_roots=encode_consumed_roots(feature.consumed_roots),
+                        # Carried, never re-derived. An entry with no prior row is an
+                        # output nothing describes, so its provenance is unknown and
+                        # says so, rather than claiming the present.
+                        consumed_composition=was_made_from,
+                        consumed_tracks_composition=tracks_was,
+                        consumed_input_composition=inputs_was,
+                        consumed_neighbors=neighbors_was,
+                        n_rows=n_rows,
+                        params_hash=params_hash,
+                        identity_scheme=FEATURE_IDENTITY_SCHEME,
+                    )
+                )
+                skip_keys.add(entry_key)
+
+        # No guard beyond emptiness: each set is populated only where its channel
+        # exists, so a non-empty one is already the whole condition.
+        if roots_blind:
+            print(
+                _blind_roots_warning(feature.name, blind_capable, len(roots_blind)),
+                file=sys.stderr,
+            )
+        # A run with feature inputs names the upstream runs, whose tracks tables are
+        # the ones to repair; a variant it reads directly is named beside them.
+        if tracks_blind and resolved.tracks_variants:
+            print(
+                _blind_tracks_warning(
+                    feature.name, resolved.tracks_variants, len(tracks_blind)
+                ),
+                file=sys.stderr,
+            )
+        if tracks_blind and upstreams_over_variants:
+            print(
+                _blind_upstream_tracks_warning(
+                    feature.name, upstreams_over_variants, len(tracks_blind)
+                ),
+                file=sys.stderr,
+            )
+
+        compute_manifest = (
+            {k: v for k, v in manifest.items() if k not in skip_keys}
+            if skip_keys
+            else manifest
+        )
+        # Each entry's input rows, read from its footers once.
+        input_rows: dict[str, int] = {}
+
+        def _rows_of(entry_key: str) -> int:
+            if entry_key not in input_rows:
+                input_rows[entry_key] = entry_input_size(
+                    compute_manifest[entry_key]
+                ).rows
+            return input_rows[entry_key]
+
+        if margin > 0.0:
+            # Largest first: the entry that runs alone and teaches the estimate is
+            # the largest, and the entries paired last are the smallest. Only the
+            # apply order changes: each entry writes its own file, and the fit
+            # reads ``manifest``.
+            key_of = {
+                resolve_sequence_identity(key, resolved.entry_map): key
+                for key in compute_manifest
+            }
+            ordered = by_rows({entry: _rows_of(key) for entry, key in key_of.items()})
+            compute_manifest = {
+                key_of[entry]: compute_manifest[key_of[entry]] for entry in ordered
+            }
+
+        # A full cache hit: state needed no fit and every manifest entry was already
+        # valid on disk. Surfaced on Result (does not alter the run's flow).
+        cache_hit = (
+            state_ready
+            and not overwrite
+            and len(manifest) > 0
+            and len(skip_keys) == len(manifest)
+        )
+        if cache_hit:
+            # Emitted where it is decided, so the claim and its record cannot drift.
+            ctx.cache_hit()
+
+        apply_overlap: int | None = overlap_frames if overlap_frames > 0 else None
+
+        def _entry_failed(group: str, sequence: str, exc: Exception) -> None:
+            """Record that one entity's ``apply`` raised, unless the run was cancelled.
+
+            Shared by the inline and parallel-drain paths deliberately. They used to
+            hold two copies of a bare ``print``, which is how one of them could be
+            repaired and the other left reporting success.
+
+            ``ctx.entry_failed_unless_cancelled`` decides between a lost entity and
+            a cancel. A cancel can kill a tool that an entry's ``apply`` drives, and
+            ``apply`` then raises the tool's error. While the attempt's cancel token
+            is set, that call raises :class:`~mosaic.core.pipeline.job.Cancelled`
+            instead of recording a failure. The line on standard error is printed
+            only after that call records the entity as lost, for a human who runs
+            the CLI directly. A queued run keeps the run-log record alone, because
+            the queue discards the child's standard error.
+
+            The entry leaves the in-flight record first, whatever follows.
+            """
+            _ = in_flight.leave(make_entry_key(group, sequence))
+            ctx.entry_failed_unless_cancelled(make_entry_key(group, sequence), exc)
+            print(
+                f"[feature:{feature.name}] apply failed for ({group},{sequence}): {exc}",
+                file=sys.stderr,
+            )
+            # A tool this machine lacks fails every entry the same way, so it is the
+            # run's refusal and not one entity's loss.
+            if isinstance(exc, ToolUnavailable):
+                raise exc
+
+        collector = PacedCollector()
+
+        def _record_result(
+            tag: tuple[FeatureMeta, CoreSelector | None], outcome: ApplyOutcome
+        ) -> None:
+            meta, selector = tag
+            key = make_entry_key(meta.group, meta.sequence)
+            result_df, notices, worker = outcome
+            # A future's done callbacks may run after the wait wakes, so the
+            # apply's end is stamped here too. The earlier stamp wins.
+            in_flight.applied(key, time.monotonic())
+            if worker is not None:
+                cost.worker_base_rss_bytes = max(
+                    cost.worker_base_rss_bytes, worker.base_rss_bytes
+                )
+                estimate.worker_base(cost.worker_base_rss_bytes)
+                # The worker's peak sees what no sample between two of its
+                # entries did.
+                estimate.observe_worker(worker, in_flight.rows_of(key))
+                # A process worker's apply ends here as far as the run sees it.
+                _observe(watch.sample())
+            for notice in notices:
+                ctx.time_irregular(key, notice)
+            if selector is not None:
+                result_df = trim_feature_output(result_df, selector)
+            n_rows = write_output(meta, result_df)
+            _record_row(
+                FeatureIndexRow(
+                    run_id=run_id,
+                    feature=storage_feature_name,
+                    version=feature.version,
+                    group=meta.group,
+                    sequence=meta.sequence,
+                    abs_path=Path(ds.relative_to_root(meta.out_path)),
+                    consumed_roots=encode_consumed_roots(feature.consumed_roots),
+                    consumed_composition=entry_composition(
+                        feature, resolved, (meta.group, meta.sequence)
+                    ),
+                    consumed_tracks_composition=tracks_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
+                    ),
+                    consumed_input_composition=inputs_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
+                    ),
+                    consumed_neighbors=neighbors_now_by_entry.get(
+                        (meta.group, meta.sequence), ""
+                    ),
+                    n_rows=n_rows,
+                    params_hash=params_hash,
+                    identity_scheme=FEATURE_IDENTITY_SCHEME,
+                )
+            )
+            collector.finished(
+                0
+                if result_df is None
+                else int(result_df.memory_usage(index=True).sum())
+            )
+            del result_df
+
+        def _record_failure(
+            tag: tuple[FeatureMeta, CoreSelector | None], exc: Exception
+        ) -> None:
+            meta, _ = tag
+            _entry_failed(meta.group, meta.sequence, exc)
+
+        def _entry_key_of(tag: tuple[FeatureMeta, CoreSelector | None]) -> str:
+            return make_entry_key(tag[0].group, tag[0].sequence)
+
+        def _dispatched(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
+            in_flight.dispatched(_entry_key_of(tag), time.monotonic())
+
+        def _computed(tag: tuple[FeatureMeta, CoreSelector | None]) -> None:
+            in_flight.applied(_entry_key_of(tag), time.monotonic())
+
+        # The pool holds an entry back for a free worker after its table is loaded.
+        # The memory floor and the admission gate hold it back before the load
+        # (``_before_load``), so a table is never loaded while memory is under the
+        # floor, and the floor does not end a run on the memory a loaded table takes.
+        active: EntryPool[tuple[FeatureMeta, CoreSelector | None], ApplyOutcome] = (
+            EntryPool(
+                workers=max_workers,
+                mode=parallel_mode_str,
+                on_result=_record_result,
+                on_error=_record_failure,
+                min_free_memory_fraction=min_free_memory_fraction,
+                on_resources=_pool_report,
+                watch=watch,
+                floor_at_submit=False,
+                on_dispatch=_dispatched,
+                on_computed=_computed,
+            )
+        )
+        pool = active
+
+        # The key that the last load started and that has not reached _process_entry.
+        # An entry iter_manifest skips without a table never does, so the next load,
+        # or the end of the loop, lowers it.
+        unhanded: list[str] = []
+
+        def _lower_unhanded() -> None:
+            while unhanded:
+                _ = in_flight.leave(unhanded.pop())
+
+        def _hold_back() -> None:
+            """Wait for one entry in flight, counted as a wait of the gate."""
+            active.drain_one()
+            cost.admission_waits += 1
+
+        def _workers_after(sample: MemorySample) -> int:
+            """The process workers alive once one more entry is dispatched, 0 in threads.
+
+            The pool keeps a worker it started, and starts one when none is idle.
+            """
+            if parallel_mode_str != "process":
+                return 0
+            return min(max_workers, max(sample.spawned_workers, active.in_flight + 1))
+
+        def _admit(key: str, rows: int) -> None:
+            """Hold the entry *key* back until its predicted memory fits beside the rest.
+
+            Until an entry with input rows has been written and the estimate has
+            formed, the entry starts alone, so the first entry ends before another
+            starts and a sample taken partway through it admits nothing. Then the
+            entry starts beside the entries in flight while the prediction fits the
+            budget, and alone otherwise. Alone, an entry whose prediction without
+            the margin exceeds the limit less the floor raises, whatever is
+            available now, which the floor answers next.
+            """
+            if estimate.bytes_per_row is None or cost.entries_with_rows_written == 0:
+                while active.in_flight:
+                    _hold_back()
+            else:
+                while active.in_flight:
+                    sample = watch.sample()
+                    if sample is None:
+                        _hold_back()
+                        continue
+                    budget = admission_budget(
+                        available_bytes=sample.limit.available_bytes,
+                        tree_rss_bytes=sample.tree_rss_bytes,
+                        limit_bytes=sample.limit.limit_bytes,
+                        floor=min_free_memory_fraction,
+                    )
+                    predicted = estimate.predicted_peak(
+                        in_flight.rows(), rows, _workers_after(sample), margin
+                    )
+                    if predicted <= budget:
+                        return
+                    _hold_back()
+            if estimate.bytes_per_row is None:
+                return
+            sample = watch.sample()
+            if sample is None:
+                return
+            alone = estimate.predicted_peak(0, rows, _workers_after(sample), 1.0)
+            usable = sample.limit.limit_bytes * (1.0 - min_free_memory_fraction)
+            if alone > usable:
+                _report_resources(final=True)
+                raise EntryOverMemoryLimit(
+                    key,
+                    predicted_bytes=alone,
+                    limit_bytes=sample.limit.limit_bytes,
+                    source=sample.limit.source,
+                    parallel_mode=parallel_mode_str,
+                )
+
+        def _before_load(entry_key: str) -> None:
+            """Admit the entry, then count it in flight from the start of its load.
+
+            With several workers the gate and then the floor run here, before the
+            table is loaded, so a table is never loaded while memory is under the
+            floor. The wait for a free slot stays after the load, so loading the
+            next table overlaps the entries computing.
+            """
+            _lower_unhanded()
+            group, sequence = resolve_sequence_identity(entry_key, entry_map)
+            key = make_entry_key(group, sequence)
+            rows = _rows_of(entry_key)
+            if active.workers > 1:
+                if margin > 0.0:
+                    _admit(key, rows)
+                active.wait_for_memory()
+            started = time.monotonic()
+            if cost.apply_started is None:
+                cost.apply_started = started
+            in_flight.enter(key, rows, started=started, cpu=watch.cpu_seconds())
+            unhanded.append(key)
+
+        def _apply_here(key: str, df: pd.DataFrame) -> ApplyOutcome:
+            """Apply in this process, and measure the tree before the result is handed back."""
+            output, notices = apply_noting_irregular_time(feature.apply, df)
+            in_flight.applied(key, time.monotonic())
+            _observe(watch.sample())
+            return output, notices, None
+
+        def _pairs_missing(entry_key: str, exc: PairRowsMissing) -> None:
+            """Record an entry with no pair rows to widen onto as lost."""
+            group, sequence = resolve_sequence_identity(entry_key, entry_map)
+            _entry_failed(group, sequence, exc)
+
+        def _process_entry(
+            entry_key: str,
+            df: pd.DataFrame,
+            selector: CoreSelector | None,
+        ) -> None:
+            unhanded.clear()
+            # Cooperative cancel checkpoint: covers both apply loops and both the
+            # executor and inline branches. Completed entries are already durable.
+            ctx.check_cancel()
+            group, sequence = resolve_sequence_identity(entry_key, entry_map)
+            meta = build_feature_meta(group, sequence, run_root)
+            key = make_entry_key(group, sequence)
+
+            # Pipeline validation checks the recipe against this declaration, and
+            # the entry's merged frame is checked against it too. A missing column
+            # fails the entry with one message, before apply reads anything.
             try:
-                refuse_arena_blind(feature.name, df, count)
-            except ArenaBlindFeature as exc:
+                check_input_columns(
+                    feature,
+                    df.columns,
+                    numeric=df.select_dtypes(include="number").columns,
+                )
+            except MissingInputColumns as exc:
                 _entry_failed(group, sequence, exc)
                 return
+            if blind_arena_rows is not None:
+                count = entry_arena_count(ds, group, sequence, blind_arena_rows)
+                try:
+                    refuse_arena_blind(feature.name, df, count)
+                except ArenaBlindFeature as exc:
+                    _entry_failed(group, sequence, exc)
+                    return
 
-        # Cache hits are resolved up-front in the pre-pass; any entry reaching
-        # here needs (re)computation.
-        if parallel_mode_str == "process" and pool.workers > 1:
-            artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
-            pool.submit(
-                (meta, selector),
-                process_apply_worker,
-                feature.__module__,
-                type(feature).__name__,
-                feature.inputs.model_dump(),
-                feature.params.model_dump(),
-                str(run_root),
-                artifact_paths_str,
-                dependency_lookups,
-                df,
-                str(ds.manifest_path),
-                tracklets,
-            )
-        else:
-            pool.submit(
-                (meta, selector), apply_noting_irregular_time, feature.apply, df
-            )
+            # Cache hits are resolved up-front in the pre-pass; any entry reaching
+            # here needs (re)computation.
+            if parallel_mode_str == "process" and active.workers > 1:
+                artifact_paths_str = {k: str(v) for k, v in artifact_paths.items()}
+                active.submit(
+                    (meta, selector),
+                    process_apply_worker,
+                    feature.__module__,
+                    type(feature).__name__,
+                    feature.inputs.model_dump(),
+                    feature.params.model_dump(),
+                    str(run_root),
+                    artifact_paths_str,
+                    dependency_lookups,
+                    df,
+                    str(ds.manifest_path),
+                    tracklets,
+                )
+            else:
+                active.submit((meta, selector), _apply_here, key, df)
 
-    # Iterate manifest entries. A cooperative cancel (raised at the top of
-    # _process_entry) stops dispatch; completed entries stay recorded in
-    # index.csv + on disk, so a later identical run resumes from the entries whose
-    # output parquet is already present (the cache-hit pre-pass above).
-    try:
-        if apply_overlap is not None:
-            for entry_key, df, selector in iter_manifest(
-                compute_manifest,
-                filter_factory=filter_factory,
-                overlap_frames=apply_overlap,
-                progress_label=storage_feature_name,
-                cross_join=cross_join,
-                expands_individuals=widens_individuals,
-                on_pairs_missing=_pairs_missing,
-            ):
-                _process_entry(entry_key, df, selector)
-        else:
-            for entry_key, df in iter_manifest(
-                compute_manifest,
-                filter_factory=filter_factory,
-                progress_label=storage_feature_name,
-                cross_join=cross_join,
-                expands_individuals=widens_individuals,
-                on_pairs_missing=_pairs_missing,
-            ):
-                _process_entry(entry_key, df, None)
+        # Iterate manifest entries. A cooperative cancel (raised at the top of
+        # _process_entry) stops dispatch; completed entries stay recorded in
+        # index.csv + on disk, so a later identical run resumes from the entries whose
+        # output parquet is already present (the cache-hit pre-pass above).
+        try:
+            if apply_overlap is not None:
+                for entry_key, df, selector in iter_manifest(
+                    compute_manifest,
+                    filter_factory=filter_factory,
+                    overlap_frames=apply_overlap,
+                    progress_label=storage_feature_name,
+                    cross_join=cross_join,
+                    expands_individuals=widens_individuals,
+                    on_pairs_missing=_pairs_missing,
+                    before_load=_before_load,
+                ):
+                    _process_entry(entry_key, df, selector)
+            else:
+                for entry_key, df in iter_manifest(
+                    compute_manifest,
+                    filter_factory=filter_factory,
+                    progress_label=storage_feature_name,
+                    cross_join=cross_join,
+                    expands_individuals=widens_individuals,
+                    on_pairs_missing=_pairs_missing,
+                    before_load=_before_load,
+                ):
+                    _process_entry(entry_key, df, None)
+            _lower_unhanded()
 
-        pool.finish()
-    except (Cancelled, WorkerProcessDied, MemoryFloorReached, ToolUnavailable):
-        _flush_idx()
-        # A run that stops after writing 40 of 100 entries has 40 durable on disk,
-        # and "how far did it get" is the question an operator resubmits on.
-        # Recorded here because the flush above is the last moment the count is
-        # true.
-        ctx.entries_written(_total_written)
-        raise
+            active.finish()
+        except (
+            Cancelled,
+            WorkerProcessDied,
+            MemoryFloorReached,
+            EntryOverMemoryLimit,
+            ToolUnavailable,
+        ):
+            _flush_idx()
+            # A run that stops after writing 40 of 100 entries has 40 durable on disk,
+            # and "how far did it get" is the question an operator resubmits on.
+            # Recorded here because the flush above is the last moment the count is
+            # true.
+            ctx.entries_written(_total_written)
+            raise
     finally:
-        # Every exit shuts the pool down and records the memory it reached.
-        pool.close()
+        # Every exit stops the sampler and shuts the pool down: a pool left running
+        # holds its workers' memory, and a broken one is of no further use. Closing
+        # records the memory the run reached, and a run that ended before it had a
+        # pool records it here.
+        watch.stop_sampling()
+        if pool is None:
+            _report_resources(final=True)
+        else:
+            pool.close()
 
     # Global marker (for empty-input features).
     #
@@ -2288,6 +2839,28 @@ def _run_feature_impl(
     # below, so a run that lost every entity it attempted still records the entries
     # an earlier attempt had already left on disk.
     ctx.entries_written(_total_written)
+    # After the outputs are recorded, so a worker that takes the pod down leaves
+    # them counted. A run that lost every entry it computed has nothing to size.
+    every_entry_failed = bool(compute_manifest) and len(ctx.failed_keys) == len(
+        compute_manifest
+    )
+    if (
+        measure_worker_base
+        and capable
+        and cost.worker_base_rss_bytes == 0
+        and not every_entry_failed
+    ):
+        _report_worker_base(
+            ctx,
+            watch,
+            cost,
+            feature,
+            run_root=run_root,
+            artifact_paths=artifact_paths,
+            dependency_lookups=dependency_lookups,
+            manifest_path=ds.manifest_path,
+            tracklets=tracklets,
+        )
     # Mark the run finished only when every manifest entry's output parquet is on
     # disk. The filesystem is the source of truth (same disk check the Pipeline
     # cache gate uses): under concurrency the last finisher sees all files and
@@ -2307,7 +2880,7 @@ def _run_feature_impl(
     if complete:
         idx.mark_finished(run_id)
     failed_entries = tuple(ctx.failed_keys)
-    if compute_manifest and len(failed_entries) == len(compute_manifest):
+    if every_entry_failed:
         msg = (
             f"[feature:{storage_feature_name}] every one of "
             f"{len(failed_entries)} attempted entries failed, so run_id={run_id} "

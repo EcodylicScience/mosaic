@@ -50,7 +50,7 @@ from mosaic.core.scope import Scope
 from .dataset_indexes import feature_storages
 from .error_kind import ClassifiedError, ErrorKind
 from .index import feature_index, feature_index_path, missing_outputs_error
-from .memory_watch import host_memory_bytes
+from .memory_limit import usable_memory_bytes
 from .parquet_reader import ArrowKind, ParquetFooter, iter_column_batches, read_footer
 from .run_errors import RunError, entry_label
 from .track_universe import AmbiguousTrackLeaf, current_run_id
@@ -754,9 +754,10 @@ def _check_memory(
     is built from copies of its pieces), and what pyarrow holds to decode the largest
     block of columns of one file. A key counts as an identity column, at 8 bytes a
     cell, and a text key's strings are not counted. Where the host reports no
-    memory, as without ``psutil``, the read goes ahead.
+    memory, as without ``psutil``, the read goes ahead. In a container the memory is
+    what is left under its cgroup limit.
     """
-    _, available = host_memory_bytes()
+    _, available = usable_memory_bytes()
     if available <= 0:
         return
     n_rows = sum(layout.entry_rows)

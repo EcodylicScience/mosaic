@@ -8,6 +8,116 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: runs record their cost, and a step can be probed
+
+Inside a pod or a SLURM job, `psutil` reports the node's memory, so
+`--min-free-memory-fraction` protected nothing. `run_feature`'s floor, the check before
+`load_run_matrix` fills its array, the fit headroom of the feature library and the
+plan's memory figure now read the limit that applies: the smallest cgroup `memory.max`
+(version 2) or `memory.limit_in_bytes` (version 1) from the process's cgroup up to the
+root, less the inactive file cache. A limit at or above the host's memory, macOS and a
+host without cgroup files read as the host's memory, as before. `MemoryFloorReached`
+names the container or the host.
+
+`ParallelWire.memory_total_bytes` and `memory_available_bytes`, which `plan_recipe`
+returns to mosaic-api and the MCP, now hold that limit and what is left under it. In a
+container this is a change of meaning, and on a host the figures are the same. The
+run-log's `min_available_bytes` and `total_memory_bytes` keep their host meaning. No run
+id, version, golden or output moves.
+
+Every feature run now records its cost on its run-log. Each computed entry's `entry_end`
+carries `wall_seconds`, `apply_seconds`, `input_rows`, `in_flight` and `cpu_seconds`, and
+the `resources` event carries the run's CPU and wall time, the memory limit and its
+source, the run's base memory, the fit's time, peak and input, and a per-row memory
+estimate. Measuring begins before the fit, so `resources` is written every 2 s during a
+fit as during apply. `run_feature(measure_worker_base=True)` measures one process
+worker's own memory after the last entry. `process_apply_worker` returns the output, the
+uneven-time notices and the worker's memory, whose base leaves out the table it was handed,
+and `effective_parallel` takes `process_capable` in place of `needs_scope`. `EntryPool`
+measures with a `MemoryWatch` the caller passes, reports a `ResourceReport` to
+`on_resources` where it reported keyword fields, and takes `on_dispatch`, `on_computed` and
+`floor_at_submit` beside the public `drain_one` and `wait_for_memory`, which `run_feature`
+uses to hold an entry back before its table loads.
+
+`--admission-margin F` on `mosaic run`, `mosaic pipeline run` and
+`mosaic pipeline score` (`ParallelSettings.admission_margin`,
+`run_feature(admission_margin=...)`) turns on an admission gate for a run with several
+workers: the first entry runs alone, entries start largest first, and an entry starts
+beside others only when its predicted peak, times the margin, fits the memory available
+under the limit plus the run's own, less the floor. An entry predicted over the limit
+less the floor even alone raises `EntryOverMemoryLimit`, and the entries written are
+kept. The gate is off by default. For every run with several workers the memory floor
+now waits before an entry's table is loaded rather than after.
+In process mode `EntryOverMemoryLimit` also offers thread mode, since its prediction
+counts the live workers' own memory.
+
+`mosaic.run_cost.read_run_cost(run_dir, execution_id)` reads what an attempt cost from
+its run-log as a `RunCost`: the memory limit and peaks, the fit, one worker's CPU, the
+seconds and memory per input row, how two threads compare with one, and how the attempt
+ended. It imports the standard library only, as `mosaic.runlog` does.
+`mosaic.runlog.read_run_records`, `fold_run_records` and `last_attempt_records` are the
+log's parse, fold and the records after its last `started`, which `read_run` and the
+entry-error readers use, and `record_count`, `record_seconds`, `record_text` and
+`record_flag` read one field of a record, empty when it is absent or of another type.
+
+`mosaic pipeline input-size --manifest M --request R --step S [--json]` reports how much
+one step of a submission reads before it runs: its entries and the footer rows of their
+input files, the entries a plain attempt would compute, and every one of those entries
+with its rows, largest first. It plans the step as the step plans itself, writes nothing
+and takes no lock. A step that cannot be measured yet (an op, or a step below one that
+has not written what it reads) reports `inputs_ready` false and why, and `run_id` is
+null where the plan cannot name the run yet. `step_input_size` returns the same
+`StepInputSizeWire`: `request_id`, `step`, `kind`, `inputs_ready`, `reason`,
+`scope_dependent`, `fits`, `entries`, `entries_to_compute`, `rows`, `rows_to_compute`,
+`largest_entry_rows`, `columns_max`, `entries_to_compute_by_rows` and `run_id`. Each item
+of `entries_to_compute_by_rows` is an `EntryRowsWire` with `group`, `sequence`, `rows` and
+`token`, the `group:sequence` form `--step-entries` takes.
+
+**A step can be probed, or run over some of its entries.** `mosaic run --graph-request R
+--step S --probe N --execution-id ID` computes the N largest entries (1 to 3) of one
+step, the first alone and then two at once in threads behind the admission gate (three
+give one entry alone and one pair), and measures one worker's own memory when the feature
+can run in processes. `--step-entries group:sequence` (repeatable) computes the entries
+named, with the caller's workers. Each needs `--graph-request` and an `--execution-id` of
+its own, and the two exclude each other. An id equal to the step's own, which is the
+step's status, is a usage error and writes nothing. `--probe` refuses `--workers`,
+`--parallel-mode`, `--min-free-memory-fraction`, `--admission-margin` and `--overwrite`,
+and `--entries` and `--scope` beside `--graph-request` stay refused, the message now
+naming `--step-entries`. The JSON payload gains `subset` (`""`, `probe` or `named`) and
+`entries_asked`. `execute_step(subset=...)` takes a `ProbeSubset` or a `NamedSubset`
+(`mosaic.core.pipeline.graph.subset`) and returns `StepOutcome.subset` and
+`StepOutcome.entries_asked`. The subset, the margin and the flags enter no recipe,
+request, run id or `params.json`. The step's own attempt afterwards computes the rest and
+serves the subset's entries from the cache, and the request's status reads only that
+attempt, so a finished probe never reads as a finished step. A probe's failures count
+toward backoff and quarantine like any attempt's, and a probe leaves out an entry inside
+its backoff.
+
+A step that will not run a subset is refused with the new reason `subset_refused` (exit
+65, status `failed`, `RefusalReason` and `StepRefused`), and `detail["cause"]` is
+`scope_dependent` (the step's run id is its set of entries, so a subset would be
+another run), `op_step`, `stand_in` (the request binds or pins the step) or
+`outside_target` (a named entry the step does not hold). It is refused before a bound or
+cached answer is recorded, so the log of a refusal holds no `probe` event.
+`RunCost.refusal_reason` and `refusal_cause` tell it apart.
+
+Wire additions of the run-log: a new `probe` event, written right after `started`, with
+`request_id`, `step`, `entries` and `kind` (`probe` or `named`); a reader that does not
+know it ignores it. `RunLogSnapshot.probe` and `RunStatusWire.probe` are true for an
+attempt whose last `probe` event has kind `probe`, and false for a log without one,
+which every old log is. `run_status_wire` and `list_runs` show such an attempt with its
+step's storage as `target`. `JsonlRunLog.resources` takes a `ResourceReport` in place of
+keyword fields, and an entry's end takes an `EntryMeasure`.
+The `resources` event's keys, all optional to a reader and empty when absent, are
+`workers`, `parallel_mode`, `peak_rss_bytes`, `min_available_bytes`, `total_memory_bytes`,
+`feature`, `feature_version`, `process_capable`, `cpu_seconds`, `wall_seconds`,
+`memory_limit_bytes`, `memory_limit_source` (`cgroup_v2`, `cgroup_v1` or `host`),
+`limit_peak_bytes`, `base_rss_bytes`, `fit_seconds`, `fit_peak_rss_bytes`,
+`peak_bytes_per_row`, `admission_margin`, `admission_waits`, `fit_entries`,
+`fit_input_rows`, `worker_base_rss_bytes` and `apply_wall_seconds`. An entry's `entry_end`
+adds `wall_seconds`, `apply_seconds`, `input_rows`, `in_flight` and `cpu_seconds`.
+`runlog.TERMINAL_STATUSES` and every run id, version, golden and output are unchanged.
+
 ## Unreleased: ROI occupancy and arena geometry
 
 The `pydantic` requirement rises from `>=2.12` to `>=2.12.3`. `Field(exclude_if=...)`,

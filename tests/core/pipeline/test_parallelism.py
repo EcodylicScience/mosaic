@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from mosaic.core.pipeline import parallelism
 from mosaic.core.pipeline.parallelism import (
     MAX_WORKERS_CEILING,
+    EntryOverMemoryLimit,
+    MemoryFloorReached,
     ParallelLimits,
     ParallelRefused,
     ParallelSettings,
@@ -15,6 +17,7 @@ from mosaic.core.pipeline.parallelism import (
     memory_use_text,
     parallel_flags,
     physical_cpus,
+    process_capable,
 )
 
 GIB = 1024**3
@@ -29,8 +32,21 @@ def test_a_setting_beyond_the_ceiling_is_invalid() -> None:
 
 def test_a_setting_is_one_worker_in_threads_with_no_floor() -> None:
     assert ParallelSettings() == ParallelSettings(
-        workers=1, mode="thread", min_free_memory_fraction=0.0
+        workers=1, mode="thread", min_free_memory_fraction=0.0, admission_margin=0.0
     )
+
+
+@pytest.mark.parametrize("margin", [0.0, 1.0, 1.5, 4.0])
+def test_an_admission_margin_is_off_or_from_one_to_four(margin: float) -> None:
+    assert ParallelSettings(workers=2, admission_margin=margin).admission_margin == (
+        margin
+    )
+
+
+@pytest.mark.parametrize("margin", [-0.5, 0.5, 0.99, 4.01])
+def test_an_admission_margin_outside_that_is_invalid(margin: float) -> None:
+    with pytest.raises(ValidationError, match="admission_margin"):
+        _ = ParallelSettings(workers=2, admission_margin=margin)
 
 
 def _host(
@@ -110,17 +126,19 @@ class TestEffectiveParallel:
         assert effective_parallel(asked, parallelizable=True, cpus=3).workers == 3
 
     def test_the_count_is_kept_when_there_are_processors_to_spare(self) -> None:
-        asked = ParallelSettings(workers=4, min_free_memory_fraction=0.2)
+        asked = ParallelSettings(
+            workers=4, min_free_memory_fraction=0.2, admission_margin=1.5
+        )
 
         found = effective_parallel(asked, parallelizable=True, cpus=16)
 
         assert found == asked
 
-    def test_a_feature_that_needs_its_scope_runs_in_threads(self) -> None:
+    def test_a_feature_that_cannot_run_in_processes_runs_in_threads(self) -> None:
         asked = ParallelSettings(workers=4, mode="process")
 
         found = effective_parallel(
-            asked, parallelizable=True, needs_scope=True, cpus=16
+            asked, parallelizable=True, process_capable=False, cpus=16
         )
 
         assert (found.workers, found.mode) == (4, "thread")
@@ -131,7 +149,7 @@ class TestEffectiveParallel:
         asked = ParallelLimits(max_workers=4).settings_for(mode="process")
 
         found = effective_parallel(
-            asked, parallelizable=True, needs_scope=True, cpus=16
+            asked, parallelizable=True, process_capable=False, cpus=16
         )
 
         assert (asked.mode, found.mode, found.workers) == ("process", "thread", 4)
@@ -144,6 +162,32 @@ class TestEffectiveParallel:
         found = effective_parallel(asked, parallelizable=False, cpus=16)
 
         assert found == ParallelSettings()
+
+
+class _Parallel:
+    parallelizable = True
+
+
+class _Scoped(_Parallel):
+    def set_scope(self, scope: object) -> None:
+        _ = scope
+
+
+class _Sequential:
+    parallelizable = False
+
+
+class TestProcessCapable:
+    def test_a_parallelizable_feature_without_a_scope_may_run_in_processes(
+        self,
+    ) -> None:
+        assert process_capable(_Parallel()) is True
+
+    def test_a_feature_that_needs_its_scope_may_not(self) -> None:
+        assert process_capable(_Scoped()) is False
+
+    def test_a_feature_that_is_not_parallelizable_may_not(self) -> None:
+        assert process_capable(_Sequential()) is False
 
 
 class TestParallelFlags:
@@ -164,6 +208,14 @@ class TestParallelFlags:
             "--min-free-memory-fraction",
             "0.1",
         ]
+
+    def test_an_admission_margin_travels_with_the_workers(self) -> None:
+        flags = parallel_flags(ParallelSettings(workers=2, admission_margin=1.5))
+
+        assert flags[-2:] == ["--admission-margin", "1.5"]
+
+    def test_no_margin_adds_no_flag(self) -> None:
+        assert "--admission-margin" not in parallel_flags(ParallelSettings(workers=2))
 
 
 class TestParallelLimits:
@@ -234,15 +286,74 @@ class TestParallelLimits:
         assert limits.settings_for(workers=1).min_free_memory_fraction == 0.15
 
 
-def test_the_memory_use_names_the_workers_the_peak_and_the_host() -> None:
+def test_the_memory_use_names_the_workers_the_peak_and_the_limit() -> None:
     text = memory_use_text(
-        workers=4, mode="process", peak_rss_bytes=38 * GIB, total_bytes=64 * GIB
+        workers=4, mode="process", peak_rss_bytes=38 * GIB, limit_bytes=64 * GIB
     )
 
     assert text == "workers=4, mode=process, peak memory 38.0 GB of 64.0 GB"
 
 
 def test_the_memory_use_omits_a_peak_that_was_not_measured() -> None:
-    text = memory_use_text(workers=2, mode="thread", peak_rss_bytes=0, total_bytes=0)
+    text = memory_use_text(workers=2, mode="thread", peak_rss_bytes=0, limit_bytes=0)
 
     assert text == "workers=2, mode=thread"
+
+
+def test_the_memory_use_of_a_small_limit_is_stated_against_that_limit() -> None:
+    text = memory_use_text(
+        workers=2, mode="thread", peak_rss_bytes=6 * GIB, limit_bytes=8 * GIB
+    )
+
+    assert text == "workers=2, mode=thread, peak memory 6.0 GB of 8.0 GB"
+
+
+def test_the_floor_names_the_container_when_a_cgroup_limit_applies() -> None:
+    error = MemoryFloorReached(
+        "workers=2, mode=thread",
+        free_fraction=0.04,
+        floor=0.1,
+        limit_bytes=8 * GIB,
+        source="cgroup_v2",
+    )
+
+    assert "the container has 4% of its 8.0 GB limit available" in str(error)
+    assert "fewer workers" in str(error)
+
+
+def test_the_floor_names_the_host_when_no_limit_applies() -> None:
+    error = MemoryFloorReached(
+        "workers=2, mode=thread",
+        free_fraction=0.04,
+        floor=0.1,
+        limit_bytes=64 * GIB,
+        source="host",
+    )
+
+    assert "the host has 4% of its 64.0 GB memory available" in str(error)
+
+
+def test_an_entry_over_the_limit_names_itself_its_prediction_and_the_limit() -> None:
+    error = EntryOverMemoryLimit(
+        "g__s", predicted_bytes=12 * GIB, limit_bytes=8 * GIB, source="cgroup_v2"
+    )
+
+    text = str(error)
+    assert "g__s" in text
+    assert "12.0 GB" in text
+    assert "container's 8.0 GB limit" in text
+    assert "Run again with a larger memory limit." in text
+    assert "thread mode" not in text
+    assert "already written are kept" in text
+
+
+def test_an_entry_over_the_limit_in_process_mode_also_offers_thread_mode() -> None:
+    error = EntryOverMemoryLimit(
+        "g__s",
+        predicted_bytes=12 * GIB,
+        limit_bytes=8 * GIB,
+        source="cgroup_v2",
+        parallel_mode="process",
+    )
+
+    assert "Run again with a larger memory limit, or in thread mode." in str(error)

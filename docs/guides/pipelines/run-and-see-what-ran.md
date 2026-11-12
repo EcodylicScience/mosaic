@@ -143,10 +143,67 @@ which holds the interpreter lock in threads. Each worker is a separate interpret
 imports the feature libraries and receives a pickled copy of each entry's table, so it
 uses much more memory. A worker that the host stops ends the step with
 `WorkerProcessDied`. Run the request again with fewer workers or in thread mode. The
-entries already written are kept. `--min-free-memory-fraction 0.1` makes a run wait for
-its entries in flight while less than that share of the host's memory is available, and
-fail in a resumable state when it stays lower. The commands that take the options are
-`mosaic run --feature`, `mosaic run --graph-request` and `mosaic pipeline run`.
+entries already written are kept.
+
+Inside a container, memory means the container's limit, not the host's.
+`--min-free-memory-fraction 0.1` makes a run wait for its entries in flight before it
+loads another while less than that share of the limit is available, and fail in a
+resumable state when it stays lower.
+
+`--admission-margin 1.5` starts an entry beside the ones in flight only when its
+predicted memory, times 1.5, fits what the run may still grow to under the limit. The
+run learns what an input row costs from its own entries, so the first entry runs alone,
+and entries start largest first. An entry that does not fit beside the others waits and
+then runs alone. One predicted over the limit even alone fails the step with
+`EntryOverMemoryLimit`. Run it again with a larger limit; the entries already written
+are kept. The margin is 0 (off) by default, or from 1 to 4, and like `--workers` it
+changes neither a run's identity nor its outputs. It applies to feature steps. The
+`convert-tracks` and `resample-tracks` steps compute their entries in parallel without it
+and keep the memory floor alone.
+
+The commands that take these options are `mosaic run --feature`,
+`mosaic run --graph-request`, `mosaic pipeline run` and `mosaic pipeline score`.
+
+### What a step will cost, and a probe of it
+
+```bash
+mosaic pipeline input-size -m dataset.yaml --request <request id> --step <step> --json
+mosaic run -m dataset.yaml --graph-request <request id> --step <step> \
+    --probe 3 --execution-id <new ULID> --json
+```
+
+`input-size` reports how many entries a step would compute and the input rows of each,
+largest first, without running anything. `--probe N` computes the N largest of those
+entries (1 to 3) under an `--execution-id` of its own, the first alone and then two at
+once in threads, and keeps what it writes. Three give one entry alone and one pair, which
+is what the cost compares. `--step-entries group:sequence`, repeated, computes the
+entries named instead. Neither flag may carry the step's own execution id, which is the
+step's status. `--probe` sets its own workers, so it refuses `--workers`,
+`--parallel-mode`, `--min-free-memory-fraction`, `--admission-margin` and `--overwrite`.
+A probe needs at least 2 usable CPUs: on one, its entries run in turn and the cost has no
+`thread_scaling`.
+
+The step is run as usual afterwards. It computes the entries the probe did not and reads
+the probe's from its cache, and `mosaic pipeline status` reads only the step's own
+attempt, so a probe never marks the step finished. A step whose result covers all its
+entries at once (its run id is its set of entries, as for a template or a global fit), an
+op, and a step the request binds or pins to a run refuse a subset with the reason
+`subset_refused`, and its `cause` says which.
+
+Every feature attempt records what it cost. `mosaic.run_cost.read_run_cost` reads it:
+
+```python
+from mosaic.run_cost import read_run_cost
+from mosaic.runlog import run_log_dir
+
+cost = read_run_cost(run_log_dir(dataset.base_dir), "<execution_id>")
+cost.memory_limit_bytes, cost.memory_limit_source   # "cgroup_v2", "cgroup_v1" or "host"
+cost.peak_rss_bytes, cost.seconds_per_row, cost.thread_scaling
+```
+
+An attempt that ran in a container reports the container's limit and where it was read
+from. A refused subset leaves a run-log with no `probe` event and no measurements, and
+`cost.refusal_reason` and `cost.refusal_cause` name the refusal.
 
 **A run reports what it lost.** A failure on one entry is recorded and surfaced as a
 `partial` status with the failed entries named. It is not silently dropped, and it is

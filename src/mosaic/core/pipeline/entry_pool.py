@@ -27,7 +27,9 @@ from concurrent.futures import (
 )
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
+
+from mosaic.runlog import ResourceReport
 
 from .memory_watch import MemoryWatch
 from .parallelism import (
@@ -51,21 +53,11 @@ __all__ = [
 ]
 
 
-class ResourceReporter(Protocol):
-    """Where a pool records its workers and the memory measured so far.
+type ResourceReporter = Callable[[ResourceReport], None]
+"""Where a pool records its workers and the memory measured so far.
 
-    :meth:`mosaic.core.pipeline.job.JobContext.resources` is one.
-    """
-
-    def __call__(
-        self,
-        *,
-        workers: int,
-        parallel_mode: str,
-        peak_rss_bytes: int,
-        min_available_bytes: int,
-        total_memory_bytes: int,
-    ) -> None: ...
+:meth:`mosaic.core.pipeline.job.JobContext.resources` is one.
+"""
 
 
 class EntryPool[Tag, Result]:
@@ -85,6 +77,18 @@ class EntryPool[Tag, Result]:
             may raise to end the run, and the calls not yet started are then
             cancelled.
         on_resources: Where the workers and the memory measured are recorded.
+        watch: The memory watch to measure with, for a caller that began measuring
+            before the pool exists. The pool makes its own when there is none.
+        floor_at_submit: Whether :meth:`submit` holds a call back for the memory
+            floor. A caller that holds its own entries back before it loads them
+            with :meth:`wait_for_memory` sets it false, so that the memory a loaded
+            table takes does not end the run.
+        on_dispatch: Called as ``on_dispatch(tag)`` when a call is about to start,
+            after it has a worker and the floor allows it.
+        on_computed: Called as ``on_computed(tag)`` when a call has finished
+            computing. With several workers it is called from the executor's thread
+            as the call ends and again where its outcome is handed back, and a
+            caller keeps the earlier of the two.
     """
 
     def __init__(
@@ -96,6 +100,10 @@ class EntryPool[Tag, Result]:
         on_error: Callable[[Tag, Exception], None],
         min_free_memory_fraction: float = 0.0,
         on_resources: ResourceReporter | None = None,
+        watch: MemoryWatch | None = None,
+        floor_at_submit: bool = True,
+        on_dispatch: Callable[[Tag], None] | None = None,
+        on_computed: Callable[[Tag], None] | None = None,
     ) -> None:
         self.workers: int = max(1, workers)
         self.mode: ParallelMode = mode
@@ -103,7 +111,10 @@ class EntryPool[Tag, Result]:
         self._on_result: Callable[[Tag, Result], None] = on_result
         self._on_error: Callable[[Tag, Exception], None] = on_error
         self._on_resources: ResourceReporter | None = on_resources
-        self._watch: MemoryWatch = MemoryWatch()
+        self._floor_at_submit: bool = floor_at_submit
+        self._on_dispatch: Callable[[Tag], None] | None = on_dispatch
+        self._on_computed: Callable[[Tag], None] | None = on_computed
+        self.watch: MemoryWatch = MemoryWatch() if watch is None else watch
         self._pending: dict[Future[Result], Tag] = {}
         self._executor: ProcessPoolExecutor | ThreadPoolExecutor | None = None
         if self.workers > 1:
@@ -138,9 +149,9 @@ class EntryPool[Tag, Result]:
     ) -> None:
         """Compute ``fn(*args)`` and report its outcome under *tag*.
 
-        With several workers the call waits for a free worker and for the memory
-        floor, and the outcome of this or an earlier call arrives here or in a later
-        call of this pool. With one worker the outcome has arrived on return.
+        With several workers the call waits for a free worker and, unless the pool
+        was built with ``floor_at_submit=False``, for the memory floor. The outcome
+        of this or an earlier call arrives here or in a later call of this pool. With one worker the outcome has arrived on return.
 
         Raises:
             WorkerProcessDied: A process worker ended without returning.
@@ -148,28 +159,43 @@ class EntryPool[Tag, Result]:
         """
         executor = self._executor
         if executor is None:
+            if self._on_dispatch is not None:
+                self._on_dispatch(tag)
             try:
                 result = fn(*args)
             except Exception as exc:
                 self._on_error(tag, exc)
                 return
+            if self._on_computed is not None:
+                self._on_computed(tag)
             self._on_result(tag, result)
             self.report()
             return
         while len(self._pending) >= self.workers:
-            self._drain()
-        self._wait_for_memory()
+            self.drain_one()
+        if self._floor_at_submit:
+            self.wait_for_memory()
+        if self._on_dispatch is not None:
+            self._on_dispatch(tag)
         try:
-            self._pending[executor.submit(fn, *args)] = tag
+            future = executor.submit(fn, *args)
+            self._pending[future] = tag
+            if self._on_computed is not None:
+                future.add_done_callback(self._stamp(tag))
         except BrokenProcessPool as exc:
             self.report(final=True)
             raise WorkerProcessDied(self._memory_use()) from exc
         self.report()
 
+    @property
+    def in_flight(self) -> int:
+        """How many calls were handed to a worker and have not been handed back."""
+        return len(self._pending)
+
     def finish(self) -> None:
         """Wait for every call in flight, then shut the executor down."""
         while self._pending:
-            self._drain()
+            self.drain_one()
         if self._executor is not None:
             self._executor.shutdown(wait=True)
 
@@ -216,31 +242,47 @@ class EntryPool[Tag, Result]:
         run needs the memory it reached.
         """
         measured = (
-            self._watch.sample() is not None if final else self._watch.sample_if_due()
+            self.watch.sample() is not None if final else self.watch.sample_if_due()
         )
         if not measured or self._on_resources is None:
             return
+        limit = self.watch.limit
         self._on_resources(
-            workers=self.workers,
-            parallel_mode=self.mode if self.workers > 1 else "",
-            peak_rss_bytes=self._watch.peak_rss_bytes,
-            min_available_bytes=self._watch.min_available_bytes,
-            total_memory_bytes=self._watch.total_bytes,
+            ResourceReport(
+                workers=self.workers,
+                parallel_mode=self.mode if self.workers > 1 else "",
+                peak_rss_bytes=self.watch.peak_rss_bytes,
+                min_available_bytes=self.watch.min_available_bytes,
+                total_memory_bytes=self.watch.total_bytes,
+                memory_limit_bytes=0 if limit is None else limit.limit_bytes,
+                memory_limit_source="" if limit is None else limit.source,
+                limit_peak_bytes=self.watch.limit_peak_bytes,
+            )
         )
 
     def _memory_use(self) -> str:
+        limit = self.watch.limit
         return memory_use_text(
             workers=self.workers,
             mode=self.mode,
-            peak_rss_bytes=self._watch.peak_rss_bytes,
-            total_bytes=self._watch.total_bytes,
+            peak_rss_bytes=self.watch.peak_rss_bytes,
+            limit_bytes=0 if limit is None else limit.limit_bytes,
         )
 
-    def _drain(self) -> None:
+    def _stamp(self, tag: Tag) -> Callable[[object], None]:
+        def stamp(_future: object) -> None:
+            if self._on_computed is not None:
+                self._on_computed(tag)
+
+        return stamp
+
+    def drain_one(self) -> None:
         """Wait for one call to finish and hand back every call that has."""
         done, _ = wait(self._pending, return_when=FIRST_COMPLETED)
         for future in done:
             tag = self._pending.pop(future)
+            if self._on_computed is not None:
+                self._on_computed(tag)
             try:
                 result = future.result()
             except BrokenProcessPool as exc:
@@ -261,17 +303,19 @@ class EntryPool[Tag, Result]:
             self._on_result(tag, result)
         self.report()
 
-    def _wait_for_memory(self) -> None:
-        """Hold dispatch while the host's available memory is under the floor.
+    def wait_for_memory(self) -> None:
+        """Hold dispatch while the available memory is under the floor.
 
-        Waits for in-flight calls, whose tables free memory as they finish. With
-        none in flight it collects garbage once, and raises when the host is still under the floor.
+        The memory is the limit that applies, a container's or else the host's. Waits
+        for in-flight calls, whose tables free memory as they finish. With none in
+        flight it collects garbage once, and raises when the memory is still under
+        the floor. A pool of one worker never checks.
         """
-        if self._floor <= 0.0:
+        if self._executor is None or self._floor <= 0.0:
             return
         collected = False
         while True:
-            free = self._watch.free_fraction()
+            free = self.watch.free_fraction()
             if free is None or free >= self._floor:
                 return
             if not self._pending:
@@ -280,10 +324,15 @@ class EntryPool[Tag, Result]:
                     collected = True
                     continue
                 self.report(final=True)
+                limit = self.watch.limit
                 raise MemoryFloorReached(
-                    self._memory_use(), free_fraction=free, floor=self._floor
+                    self._memory_use(),
+                    free_fraction=free,
+                    floor=self._floor,
+                    limit_bytes=0 if limit is None else limit.limit_bytes,
+                    source="host" if limit is None else limit.source,
                 )
-            self._drain()
+            self.drain_one()
 
 
 class OrderedResults[Item]:

@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 
 import mosaic.runlog as runlog
+from mosaic.runlog import EntryMeasure, ResourceReport
 from mosaic.core.pipeline._utils import hash_params, new_execution_id
 from mosaic.core.pipeline.gpu_lease import GPU_CARD_VAR
 from mosaic.core.pipeline.index import feature_index, feature_index_path
@@ -28,6 +29,7 @@ from mosaic.core.pipeline.job import (
     job_context,
 )
 from mosaic.core.pipeline.markers import current_boot_id, current_pid_namespace
+from mosaic.core.pipeline.progress import CompositeProgressCallback
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.run_log import (
@@ -457,18 +459,22 @@ def test_the_last_resources_event_is_the_attempts_workers_and_memory(
     log = JsonlRunLog(path, eid)
     log.started(kind="feature", target="t", owner="", host="h")
     log.resources(
-        workers=4,
-        parallel_mode="process",
-        peak_rss_bytes=100,
-        min_available_bytes=900,
-        total_memory_bytes=1000,
+        ResourceReport(
+            workers=4,
+            parallel_mode="process",
+            peak_rss_bytes=100,
+            min_available_bytes=900,
+            total_memory_bytes=1000,
+        )
     )
     log.resources(
-        workers=4,
-        parallel_mode="process",
-        peak_rss_bytes=300,
-        min_available_bytes=500,
-        total_memory_bytes=1000,
+        ResourceReport(
+            workers=4,
+            parallel_mode="process",
+            peak_rss_bytes=300,
+            min_available_bytes=500,
+            total_memory_bytes=1000,
+        )
     )
     log.close()
 
@@ -488,11 +494,13 @@ def test_a_resumed_attempt_reports_the_resources_of_its_last_process(
     log = JsonlRunLog(path, eid)
     log.started(kind="feature", target="t", owner="", host="h")
     log.resources(
-        workers=4,
-        parallel_mode="process",
-        peak_rss_bytes=300,
-        min_available_bytes=500,
-        total_memory_bytes=1000,
+        ResourceReport(
+            workers=4,
+            parallel_mode="process",
+            peak_rss_bytes=300,
+            min_available_bytes=500,
+            total_memory_bytes=1000,
+        )
     )
     log.started(kind="feature", target="t", owner="", host="h")
     log.close()
@@ -990,3 +998,164 @@ def test_a_failed_flush_leaves_the_terminal_record(
     assert snap["status"] == "failed"
     assert json.loads(snap["error_json"])["type"] == "RuntimeError"
     assert snap["progress_done"] == 1
+
+
+# --- entry_ended: the entry's cost reaches the run-log once ---
+
+
+_MEASURE = EntryMeasure(
+    wall_seconds=2.5, apply_seconds=1.5, input_rows=40, in_flight=2, cpu_seconds=3.0
+)
+
+
+class _Recorder:
+    """A progress backend that records the arguments of each ``on_entry_end`` and ``on_phase``."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[int, int, str]] = []
+        self.phases: list[tuple[str, str]] = []
+
+    def on_epoch_end(
+        self, epoch: int, total_epochs: int, metrics: dict[str, float]
+    ) -> None:
+        pass
+
+    def on_class_start(
+        self, class_idx: int, total_classes: int, class_name: str
+    ) -> None:
+        pass
+
+    def on_phase(self, phase: str, message: str) -> None:
+        self.phases.append((phase, message))
+
+    def on_entry_start(self, index: int, total: int, key: str) -> None:
+        pass
+
+    def on_entry_end(self, index: int, total: int, key: str) -> None:
+        self.calls.append((index, total, key))
+
+
+def _entry_ends(base: Path, execution_id: str) -> list[dict[str, object]]:
+    lines = run_log_path(base, execution_id).read_text().splitlines()
+    return [r for r in map(json.loads, lines) if r["ev"] == "entry_end"]
+
+
+def test_entry_ended_writes_the_measure_once_with_no_callback(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    with job_context(ds, kind="feature", target="t") as ctx:
+        ctx.set_total(1)
+        ctx.entry_ended(1, 1, "g__a", _MEASURE)
+
+    (event,) = _entry_ends(ds.base_dir, ctx.execution_id)
+    assert (event["index"], event["total"], event["key"]) == (1, 1, "g__a")
+    assert (event["wall_seconds"], event["in_flight"]) == (2.5, 2)
+    assert _progress(ds.base_dir, ctx.execution_id) == ("finished", 1, 1)
+
+
+def test_entry_ended_writes_the_measure_once_beside_an_injected_callback(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    recorder = _Recorder()
+    with job_context(ds, kind="feature", target="t", progress_callback=recorder) as ctx:
+        ctx.set_total(1)
+        ctx.entry_ended(1, 1, "g__a", _MEASURE)
+
+    (event,) = _entry_ends(ds.base_dir, ctx.execution_id)
+    assert event["cpu_seconds"] == 3.0
+    assert recorder.calls == [(1, 1, "g__a")]
+
+
+def test_entry_ended_writes_the_measure_once_beside_a_composite_with_the_run_log(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    execution_id = new_execution_id()
+    recorder = _Recorder()
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        ctx = JobContext(
+            execution_id=execution_id,
+            kind="feature",
+            target="t",
+            run_log=log,
+            progress=CompositeProgressCallback(log, recorder),
+            cancel_token=CancelToken(),
+        )
+        ctx.entry_ended(1, 1, "g__a", _MEASURE)
+
+    (event,) = _entry_ends(ds.base_dir, execution_id)
+    assert event["input_rows"] == 40
+    assert recorder.calls == [(1, 1, "g__a")]
+
+
+def test_entry_ended_writes_the_run_log_entry_once_when_the_run_log_is_the_callback(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    execution_id = new_execution_id()
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        ctx = JobContext(
+            execution_id=execution_id,
+            kind="feature",
+            target="t",
+            run_log=log,
+            progress=log,
+            cancel_token=CancelToken(),
+        )
+        ctx.entry_ended(1, 1, "g__a", None)
+
+    (event,) = _entry_ends(ds.base_dir, execution_id)
+    assert "wall_seconds" not in event
+
+
+def test_entry_ended_without_a_run_log_reaches_the_callback(tmp_path: Path) -> None:
+    recorder = _Recorder()
+    ctx = JobContext(
+        execution_id="E1",
+        kind="feature",
+        target="t",
+        run_log=None,
+        progress=CompositeProgressCallback(recorder),
+        cancel_token=CancelToken(),
+    )
+
+    ctx.entry_ended(1, 1, "g__a", _MEASURE)
+
+    assert recorder.calls == [(1, 1, "g__a")]
+
+
+def test_a_composite_without_a_backend_fans_out_to_the_others() -> None:
+    kept, dropped = _Recorder(), _Recorder()
+    composite = CompositeProgressCallback(kept, dropped)
+
+    composite.without(dropped).on_entry_end(1, 2, "k")
+
+    assert kept.calls == [(1, 2, "k")]
+    assert dropped.calls == []
+    composite.on_entry_end(2, 2, "j")
+    assert dropped.calls == [(2, 2, "j")]
+
+
+def test_a_phase_is_written_once_beside_a_composite_with_the_run_log(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path)
+    execution_id = new_execution_id()
+    recorder = _Recorder()
+    with JsonlRunLog(run_log_path(ds.base_dir, execution_id), execution_id) as log:
+        ctx = JobContext(
+            execution_id=execution_id,
+            kind="feature",
+            target="t",
+            run_log=log,
+            progress=CompositeProgressCallback(log, recorder),
+            cancel_token=CancelToken(),
+        )
+        ctx.phase("fit", "3 entries")
+
+    lines = run_log_path(ds.base_dir, execution_id).read_text().splitlines()
+    phases = [r for r in map(json.loads, lines) if r["ev"] == "phase"]
+    assert [(r["phase"], r["message"]) for r in phases] == [("fit", "3 entries")]
+    assert recorder.phases == [("fit", "3 entries")]

@@ -11,7 +11,7 @@ GIB = 1024**3
 
 
 def _host(monkeypatch: pytest.MonkeyPatch, available: int) -> None:
-    monkeypatch.setattr(helpers, "host_memory_bytes", lambda: (16 * GIB, available))
+    monkeypatch.setattr(helpers, "usable_memory_bytes", lambda: (16 * GIB, available))
 
 
 def test_an_estimate_inside_the_available_memory_passes(
@@ -42,6 +42,6 @@ def test_an_estimate_that_would_leave_no_headroom_is_refused(
 def test_a_host_that_reports_no_memory_is_not_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(helpers, "host_memory_bytes", lambda: (0, 0))
+    monkeypatch.setattr(helpers, "usable_memory_bytes", lambda: (0, 0))
 
     check_memory_headroom(1000 * GIB, "xgboost", "fitting", "Lower n_per_class.")

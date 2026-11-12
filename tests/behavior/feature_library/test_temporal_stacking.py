@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library import helpers
 from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
 from mosaic.behavior.feature_library.temporal_stacking import TemporalStackingFeature
 from mosaic.core.pipeline.types import Result
@@ -175,3 +176,25 @@ def test_a_frame_with_no_measurements_refuses() -> None:
 
     with pytest.raises(ValueError, match="No feature columns"):
         _ = _feature().apply(df)
+
+
+def test_a_stack_that_will_not_fit_the_memory_limit_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check reads the limit that applies, as every fit's headroom check does."""
+    df = make_pair_df(6, 2)
+    monkeypatch.setattr(helpers, "usable_memory_bytes", lambda: (2000, 100))
+
+    with pytest.raises(
+        MemoryError, match=r"^\[temporal-stack\] stacking \d+ columns over \d+ rows"
+    ):
+        _ = _feature().apply(df)
+
+
+def test_a_stack_that_fits_the_memory_limit_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    df = make_pair_df(6, 2)
+    monkeypatch.setattr(helpers, "usable_memory_bytes", lambda: (2**40, 2**40))
+
+    assert len(_feature().apply(df)) == len(df)

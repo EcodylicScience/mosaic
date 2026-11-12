@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from collections.abc import Callable
 
 import pytest
 from typer.testing import CliRunner
 
 from mosaic.cli import app
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.graph import step as step_module
 from mosaic.core.pipeline.graph import (
     BoundRef,
     CleanupNeedsPlan,
@@ -265,19 +267,40 @@ def test_the_argv_of_a_step_carries_workers_only_above_one(tracked: Dataset) -> 
     assert argv[argv.index("--min-free-memory-fraction") + 1] == "0.1"
 
 
-def test_the_argv_with_workers_is_what_mosaic_run_accepts(tracked: Dataset) -> None:
+def _keeping_margins[**P, R](
+    real: Callable[P, R], margins: list[object]
+) -> Callable[P, R]:
+    """Call *real*, keeping the ``admission_margin`` of each call."""
+
+    def call(*args: P.args, **kwargs: P.kwargs) -> R:
+        margins.append(kwargs.get("admission_margin"))
+        return real(*args, **kwargs)
+
+    return call
+
+
+def test_the_argv_with_workers_is_what_mosaic_run_accepts(
+    tracked: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
     submitted = submit_request(tracked, Recipe.model_validate(CHAIN))
     argv = step_argv(
         tracked.manifest_path,
         submitted.request,
         "speed",
-        parallel=ParallelSettings(workers=2, min_free_memory_fraction=0.05),
+        parallel=ParallelSettings(
+            workers=2, min_free_memory_fraction=0.05, admission_margin=1.5
+        ),
+    )
+    margins: list[object] = []
+    monkeypatch.setattr(
+        step_module, "run_feature", _keeping_margins(step_module.run_feature, margins)
     )
 
     result = runner.invoke(app, argv[1:])
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["step"] == "speed"
+    assert margins == [1.5]
 
 
 # --- the CLI ---------------------------------------------------------------------

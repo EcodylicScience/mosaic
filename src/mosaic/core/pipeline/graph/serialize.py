@@ -24,7 +24,7 @@ from .plan import (
     asked_of,
 )
 from ..inventory.wire import MISSING_SAMPLE_WIRE, coverage_wire
-from ..memory_watch import host_memory_bytes
+from ..memory_limit import usable_memory_bytes
 from ..parallelism import (
     ParallelLimits,
     ParallelSettings,
@@ -100,8 +100,8 @@ def plan_wire(
         retirable_omitted: How many more recipes there were than *retirable*.
         parallel: What a submission may ask for in parallelism. Each parallelizable
             step then reports the workers a submission that names no count
-            receives, and the plan reports the limits and the host's memory. The
-            fingerprint depends on neither.
+            receives, and the plan reports the limits and the memory limit that
+            applies. The fingerprint depends on neither.
         extra_cautions: Cautions a caller worked out beyond the plan's own, such
             as what ``assume_added`` found. They follow the plan's cautions and
             join no field of the wire.
@@ -137,15 +137,15 @@ def plan_wire(
 
 
 def _parallel_wire(limits: ParallelLimits) -> ParallelWire:
-    """The limits a submission is held to, with the machine's processors and memory."""
-    total, available = host_memory_bytes()
+    """The limits a submission is held to, with the processors and memory limit that apply."""
+    limit, available = usable_memory_bytes()
     return ParallelWire(
         default_workers=min(limits.settings_for().workers, host_cpus()),
         max_workers=limits.max_workers,
         allow_process_mode=limits.allow_process_mode,
         min_free_memory_fraction=limits.min_free_memory_fraction,
         cpus=host_cpus(),
-        memory_total_bytes=total,
+        memory_total_bytes=limit,
         memory_available_bytes=available,
     )
 

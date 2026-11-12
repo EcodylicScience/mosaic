@@ -36,7 +36,7 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   that a request submitted before it holds, and otherwise records a cache hit of the
   pinned run (outcome `bound`). Both drivers call it in their own process and start no
   step process for one. `ancestors_of` and `descendants_of` take
-  `cut=request.stand_ins`, the bound and pinned steps, so `_pinned_parents`,
+  `cut=request.stand_ins`, the bound and pinned steps, so `pinned_parents`,
   `blocked_by` and the driver's GPU lease neither enter such a step nor walk past it,
   and it pins nothing: a failure above it does not reach the steps below.
   `request_rollup` reads it through `bound_attempt` unless its run-log records a
@@ -295,7 +295,7 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
 - A step re-plans its identity at its start. A `run_id` resolved at plan or submit
   time drives the preview, the estimate and the decision to enqueue. Execution and a
   downstream job's payload do not read it.
-- `_pinned_parents` pins every feature ancestor, immediate or not, to the `run_id` that
+- `pinned_parents` pins every feature ancestor, immediate or not, to the `run_id` that
   its attempt's run-log recorded. Preflight checks an op parent by the tracks variant it
   produced (`variant_for_producer_run`). An ancestor with no run-log is a cache hit
   (`test_two_requests_on_one_dataset_each_bind_to_their_own_upstream`).
@@ -313,6 +313,18 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   (`test_pipeline_partial_failure.py`).
 - Failure attempts per `(storage_name, run_id, group, sequence)` accumulate across
   resubmits, and exclusions belong to one request (`test_pipeline_failure_record.py`).
+- A subset run (`execute_step(subset=...)`, `subset.py`; `mosaic run --probe N` or
+  `--step-entries`) computes some of a step's entries under an execution id other than
+  the step's own. That id is a `ValueError`, and a usage error in the CLI, before
+  anything is recorded. After `_plan` and before the bound and cached answers it refuses
+  `subset_refused` with the `cause` `op_step`, `stand_in` (bound or pinned),
+  `scope_dependent` or `outside_target`. A probe takes this attempt's entries after
+  quarantine and backoff, the largest `count` (at most `MAX_PROBE_ENTRIES`, 3: one alone
+  and one pair) by `by_rows`, and runs them in `PROBE_WORKERS` threads behind the gate,
+  measuring one worker's base. A named subset takes the caller's settings. Both write a
+  `probe` event and count failures as any attempt does. Status reads only the step's own
+  attempt (`rollup._attempt`), whose run computes the remainder and serves the subset's
+  entries from the cache (`test_pipeline_step_subset.py`).
 - A request is one-shot, and a driver does not drive one whose rollup has ended. A
   failed branch is not terminal while a sibling runs: `request_rollup` (`rollup.py`)
   reads a failed request with an unstarted step `running` while its driver lease file

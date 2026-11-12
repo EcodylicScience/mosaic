@@ -691,7 +691,7 @@ def test_a_draw_that_will_not_fit_in_memory_is_refused(
             "pool": {"allocation": allocation},
         },
     )
-    monkeypatch.setattr(helpers, "host_memory_bytes", lambda: (2000, 1000))
+    monkeypatch.setattr(helpers, "usable_memory_bytes", lambda: (2000, 1000))
 
     with pytest.raises(
         MemoryError, match=r"\[extract-labeled-templates\] .*n_per_class"

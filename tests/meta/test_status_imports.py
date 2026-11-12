@@ -33,6 +33,7 @@ HEAVY_MODULES = ("pandas", "cv2", "av", "mosaic.behavior.feature_library")
 
 STATUS_IMPORTS = (
     "import mosaic.runlog",
+    "import mosaic.run_cost",
     "import mosaic.core.pipeline.graph.rollup",
     "import mosaic.core.pipeline.graph.status",
     "from mosaic.core.pipeline.graph import request_status_wire, run_status_wire",
@@ -85,6 +86,11 @@ def test_ordering_a_recipe_with_a_label_conversion_loads_no_heavy_module() -> No
 
 def test_the_run_log_module_loads_no_pydantic() -> None:
     assert modules_loaded_by("import mosaic.runlog", ("pydantic",)) == []
+
+
+def test_the_run_cost_reader_loads_no_pydantic() -> None:
+    statement = "import mosaic.run_cost"
+    assert modules_loaded_by(statement, ("pydantic",)) == []
 
 
 def test_the_status_reads_load_no_heavy_module(tmp_path: Path) -> None:

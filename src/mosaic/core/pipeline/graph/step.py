@@ -35,10 +35,12 @@ import socket
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Final, Literal
 
+from mosaic.core.entry import entry_token
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.scope import Scope
 from mosaic.runlog import (
     JsonlRunLog,
+    ProbeRecord,
     read_run,
     record_exited_attempt,
     run_log_dir,
@@ -46,18 +48,24 @@ from mosaic.runlog import (
 )
 
 from ..entry_claim import RunRootHeld
+from ..input_size import by_rows
 from ..inventory.cache import InventoryCache
 from ..inventory.model import ArtifactRef, FeatureRunRef
 from ..job import Cancelled
 from ..ops import run_op
-from ..parallelism import ParallelSettings, effective_parallel
+from ..parallelism import (
+    DEFAULT_ADMISSION_MARGIN,
+    ParallelSettings,
+    effective_parallel,
+    process_capable,
+)
 from ..refusal import Refusal
 from ..run import run_feature
 from .claims import FileFailureStore
 from ..gpu_lease import leased_card
+from .input_size import step_entry_sizes
 from .model import COMPLETE_STATUSES, FeatureStepSpec
 from .plan import (
-    MISSING_SAMPLE,
     Plan,
     PlannedStep,
     asked_of,
@@ -67,12 +75,13 @@ from .plan import (
     plan_pipeline,
 )
 from .step_preflight import (
-    CoverageShortfall,
     RecipeRefusedAtStep,
     StepRefused,
     preflight,
     refuse_mixed_schemas,
 )
+from .parents import pinned_parents
+from .quarantine import narrow_by_quarantine
 from .request import load_recipe_for_request
 from .resolve import (
     build_step_feature,
@@ -81,18 +90,20 @@ from .resolve import (
     declared_version,
     unavailable_tool,
 )
-from .topo import ancestors_of
+from .subset import PROBE_WORKERS, NamedSubset, ProbeSubset
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
 
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
+    from mosaic.core.json_value import JsonValue
 
     from ..job import CancelToken
     from .compatibility import DeclarationCatalog
     from .failures import FailureStore
     from .model import Recipe, Request, Step
+    from .subset import StepSubset
 
 __all__ = ["STEP_RUN_KIND", "StepOutcome", "execute_step", "record_step_ended"]
 
@@ -127,6 +138,12 @@ class StepOutcome:
         failed_entries: The entities this attempt lost, by entry key.
         covered: How much of the target this step's artifact answers for, after.
         target: How much was wanted.
+        subset: ``probe`` or ``named`` for an attempt that ran some entries of
+            the step under an execution id of its own, ``""`` for the step's own
+            attempt.
+        entries_asked: The entries the attempt asked its run for, a probe's
+            largest first, otherwise in ``(group, sequence)`` order. Empty for an
+            attempt that ran nothing, and for an op step that takes no entries.
     """
 
     step_id: str
@@ -138,6 +155,8 @@ class StepOutcome:
     failed_entries: tuple[str, ...] = ()
     covered: int = 0
     target: int = 0
+    subset: Literal["", "probe", "named"] = ""
+    entries_asked: tuple[Entry, ...] = ()
 
     @property
     def diverged(self) -> bool:
@@ -158,6 +177,7 @@ def execute_step(
     owner: str = "",
     cancel_token: CancelToken | None = None,
     parallel: ParallelSettings | None = None,
+    subset: StepSubset | None = None,
 ) -> StepOutcome:
     """Run one step of *request* against *ds*, and say what it did.
 
@@ -179,6 +199,14 @@ def execute_step(
             computes them in turn. The setting belongs to the machine and not to
             the recipe, so it changes neither a step's identity nor its outputs.
             A feature or an op that is not parallelizable ignores it.
+        subset: Run only some of the step's entries, under *execution_id*, which
+            must not be the attempt the request assigned the step. A probe
+            computes the largest ``count`` entries of this attempt, by input
+            rows, in :data:`~.subset.PROBE_WORKERS` threads behind the admission
+            gate, and measures one process worker; *parallel* does not apply to
+            it. A named subset computes its entries with *parallel*. The step's
+            status reads only its own attempt, which afterward computes the rest
+            and serves the subset's entries from the cache.
 
     A step that *request* binds to a run is never executed: it is planned, so
     that a bind it could not have written is refused as at submission, and is
@@ -189,14 +217,25 @@ def execute_step(
         What this step did, and what it recorded doing it under.
 
     Raises:
+        ValueError: *subset* is given and the attempt is the one the request
+            assigned the step. Nothing is recorded.
         StepRefused: The step declined to run, naming why. Its ``error_json`` has
-            already been written to this attempt's run-log. A
+            already been written to this attempt's run-log. A subset of a
+            ``scope_dependent``, op, bound or pinned step, or one naming an entry
+            outside the step's target, is refused as ``subset_refused``. A
             :class:`~.step_preflight.RecipeRefusedAtStep` is this dataset refusing the
             step as a plan of the recipe reports it; a problem at another step
             does not refuse this one.
         RecipeInvalid: The recipe this request names is malformed.
     """
     attempt = execution_id or request.execution_of(step_id)
+    if subset is not None and attempt == request.execution_of(step_id):
+        # Refused before anything is written: that run-log is the step's status,
+        # and a subset recorded there would read as the step having ended.
+        raise ValueError(
+            f"a {subset.kind} of step {step_id!r} runs under an execution id of "
+            f"its own, not {attempt!r}, the attempt the request assigned the step"
+        )
     failures = FileFailureStore(ds.base_dir) if store is None else store
     try:
         return _execute(
@@ -211,6 +250,7 @@ def execute_step(
             owner=owner,
             cancel_token=cancel_token,
             parallel=parallel,
+            subset=subset,
         )
     except StepRefused as refusal:
         # Written here because nothing else will: a refusal happens before
@@ -242,6 +282,7 @@ def _execute(
     owner: str,
     cancel_token: CancelToken | None,
     parallel: ParallelSettings | None,
+    subset: StepSubset | None,
 ) -> StepOutcome:
     """The body, with every refusal free to propagate to its recorder.
 
@@ -261,6 +302,7 @@ def _execute(
             inventory=inventory,
             catalog=catalog,
             owner=owner,
+            subset=subset,
         )
     except StepRefused:
         # Recorded by execute_step.
@@ -277,19 +319,39 @@ def _execute(
         raise
     if isinstance(ready, StepOutcome):
         return ready
+    is_probe = isinstance(subset, ProbeSubset)
     outcome = _run(
         ds,
         ready.planned,
         ready.asked,
-        asks_every_entry=_asks_every_entry(ready.planned, ready.plan),
+        # A subset asks for some entries, whatever the plan narrowed.
+        asks_every_entry=(
+            subset is None and _asks_every_entry(ready.planned, ready.plan)
+        ),
         attempt=attempt,
         overwrite=overwrite,
         store=store,
         owner=owner,
         cancel_token=cancel_token,
-        parallel=parallel,
+        parallel=_PROBE_PARALLEL if is_probe else parallel,
+        measure_worker_base=is_probe,
+        probe=ready.probe,
+    )
+    outcome = replace(
+        outcome,
+        subset="" if ready.probe is None else ready.probe.kind,
+        entries_asked=ready.asked,
     )
     return _measured(ds, ready.held, ready.plan, ready.planned, outcome)
+
+
+_PROBE_PARALLEL: Final = ParallelSettings(
+    workers=PROBE_WORKERS, mode="thread", admission_margin=DEFAULT_ADMISSION_MARGIN
+)
+"""How a probe computes its entries: the first alone, then two at once in threads.
+
+Behind the admission gate, which has no estimate before the first entry ends.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -301,12 +363,14 @@ class _Ready:
         planned: The step in *plan*.
         asked: The entries this attempt computes.
         held: The inventory the plan was resolved against.
+        probe: The record of a subset attempt, ``None`` for the step's own.
     """
 
     plan: Plan
     planned: PlannedStep
     asked: tuple[Entry, ...]
     held: InventoryCache
+    probe: ProbeRecord | None = None
 
 
 def _before_run(
@@ -320,8 +384,13 @@ def _before_run(
     inventory: InventoryCache | None,
     catalog: DeclarationCatalog | None,
     owner: str,
+    subset: StepSubset | None,
 ) -> StepOutcome | _Ready:
     """Check the step and plan it, or answer it from what is on disk.
+
+    A subset is checked right after the plan and before a bound or complete step
+    is answered, so a refused subset is never recorded as a bound or cached
+    attempt under its own execution id.
 
     Returns:
         The outcome of a step that needs no run, else what its run needs.
@@ -347,9 +416,14 @@ def _before_run(
     excluded = set(store.exclusions(request.request_id).entries)
     # A pin is the run its step serves, this step's own included, and it
     # governs over what an attempt's run-log recorded.
-    recorded = {**_pinned_parents(ds, recipe, request, step_id), **request.pins}
+    recorded = {**pinned_parents(ds, recipe, request, step_id), **request.pins}
     plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
     planned = plan.step(step_id)
+    marker: ProbeRecord | None = None
+    if subset is not None:
+        _refuse_subset(subset, request, plan, planned)
+        named = subset.entries if isinstance(subset, NamedSubset) else ()
+        marker = _probe_record(request, step_id, subset, sorted(set(named)))
 
     if step_id in request.bind:
         # After the plan, which refuses at this step a bind the step could not
@@ -360,35 +434,39 @@ def _before_run(
     # A feature step with drift work runs, and ``run_feature`` recomputes its
     # drifted entries and serves the rest.
     if planned.is_complete and (not overwrite or step_id in request.pins):
-        return _cached(ds, planned, attempt=attempt, owner=owner)
+        return _cached(ds, planned, attempt=attempt, owner=owner, probe=marker)
 
     preflight(ds, plan, step_id, allow_partial=request.allow_partial)
 
-    asked = asked_of(planned, plan)
-    storage, run_id = planned.storage_name, planned.run_id or ""
-    quarantined = store.quarantined_entries(storage, run_id, asked)
-    if quarantined:
-        if not request.allow_partial:
-            raise CoverageShortfall(
-                step_id,
-                len(asked) - len(quarantined),
-                len(asked),
-                "held back after repeated failures: "
-                + ", ".join(
-                    sorted(str(entry) for entry in quarantined)[:MISSING_SAMPLE]
-                ),
-            )
+    def exclude_and_plan(quarantined: frozenset[Entry]) -> Plan:
         # Recorded before re-planning, because an exclusion narrows the scope and
         # a ``scope_dependent`` step's identity *is* its scope: a fit over what is
         # left has to be named for what is left.
         store.exclude(request.request_id, step_id, quarantined)
-        excluded |= set(quarantined)
-        plan = _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
-        planned = plan.step(step_id)
+        excluded.update(quarantined)
+        return _plan(ds, recipe, request, step_id, recorded, excluded, held, catalog)
+
+    narrowed = narrow_by_quarantine(
+        store,
+        plan,
+        step_id,
+        allow_partial=request.allow_partial,
+        replan=exclude_and_plan,
+    )
+    if narrowed.quarantined:
+        if not request.allow_partial:
+            raise narrowed.shortfall()
+        plan, planned = narrowed.plan, narrowed.planned
         if planned.is_complete:
-            return _cached(ds, planned, attempt=attempt, owner=owner)
-        asked = asked_of(planned, plan)
-        storage, run_id = planned.storage_name, planned.run_id or ""
+            return _cached(ds, planned, attempt=attempt, owner=owner, probe=marker)
+    asked = asked_of(planned, plan)
+    if isinstance(subset, NamedSubset):
+        # Every named entry, computed or not: ``run_feature`` serves the computed
+        # ones from the cache. One quarantined since the subset was checked has
+        # left the target.
+        target = step_target(planned, plan)
+        asked = tuple(entry for entry in sorted(set(subset.entries)) if entry in target)
+    storage, run_id = planned.storage_name, planned.run_id or ""
 
     # A wait is not a verdict, so it narrows this attempt and decides nothing.
     # An entry that has failed once and is not due yet needs a few more seconds,
@@ -400,9 +478,97 @@ def _before_run(
             # Nothing to attempt *yet*, which is not the same as nothing to do:
             # an empty ``asked`` otherwise means "the whole scope", and a step
             # over an empty scope is a legitimate no-op rather than a stall.
-            return _stalled(ds, planned, attempt=attempt, owner=owner)
+            return _stalled(ds, planned, attempt=attempt, owner=owner, probe=marker)
 
-    return _Ready(plan, planned, asked, held)
+    if subset is None:
+        return _Ready(plan, planned, asked, held)
+    if isinstance(subset, ProbeSubset):
+        asked = _largest(ds, planned, asked, subset.count)
+    if not asked:
+        # An empty ``asked`` runs the whole scope, which a subset never asks for.
+        return _stalled(ds, planned, attempt=attempt, owner=owner, probe=marker)
+    return _Ready(
+        plan,
+        planned,
+        asked,
+        held,
+        _probe_record(request, step_id, subset, asked),
+    )
+
+
+def _refuse_subset(
+    subset: StepSubset, request: Request, plan: Plan, planned: PlannedStep
+) -> None:
+    """Refuse a subset of a step that cannot be run over some of its entries.
+
+    Raises:
+        StepRefused: ``subset_refused``, with the ``cause``: ``op_step``,
+            ``stand_in`` for a bound or pinned step, ``scope_dependent``, or
+            ``outside_target`` for a named entry the step's target lacks.
+    """
+    step_id = planned.step_id
+    kind = subset.kind
+    detail: dict[str, JsonValue] = {}
+    if planned.kind == "op":
+        cause = "op_step"
+        message = f"Step {step_id!r} is an op, which computes its scope whole"
+    elif step_id in request.stand_ins:
+        cause = "stand_in"
+        message = (
+            f"Step {step_id!r} serves the run that request {request.request_id!r} "
+            f"binds or pins it to, and computes nothing"
+        )
+    elif planned.scope_dependent:
+        cause = "scope_dependent"
+        message = (
+            f"Step {step_id!r} is named for its whole set of entries, so a run over "
+            f"some of them would be another run. Run the step's own attempt"
+        )
+    else:
+        named = subset.entries if isinstance(subset, NamedSubset) else ()
+        outside = sorted(set(named) - step_target(planned, plan))
+        if not outside:
+            return
+        cause = "outside_target"
+        tokens = [entry_token(group, sequence) for group, sequence in outside]
+        message = f"Step {step_id!r} does not cover {', '.join(tokens)}"
+        listed: list[JsonValue] = [*tokens]
+        detail["entries"] = listed
+    raise StepRefused(
+        "subset_refused",
+        step_id,
+        f"{message}, so it runs no {kind} subset.",
+        {"cause": cause, **detail},
+    )
+
+
+def _largest(
+    ds: Dataset, planned: PlannedStep, asked: tuple[Entry, ...], count: int
+) -> tuple[Entry, ...]:
+    """The *count* entries of *asked* with the most input rows, largest first.
+
+    Ordered by :func:`~mosaic.core.pipeline.input_size.by_rows`, the rule the
+    step's input-size report and the admission gate order by. An entry whose
+    input files cannot be read counts no rows.
+    """
+    sizes, _ = step_entry_sizes(ds, planned, asked)
+    rows = {entry: sizes[entry].rows if entry in sizes else 0 for entry in asked}
+    return tuple(by_rows(rows)[:count])
+
+
+def _probe_record(
+    request: Request,
+    step_id: str,
+    subset: StepSubset,
+    entries: Iterable[Entry],
+) -> ProbeRecord:
+    """The ``probe`` event of a subset attempt over *entries*."""
+    return ProbeRecord(
+        request_id=request.request_id,
+        step=step_id,
+        entries=tuple(entry_token(group, sequence) for group, sequence in entries),
+        kind=subset.kind,
+    )
 
 
 def _refuse_unavailable_tool(step: Step, catalog: DeclarationCatalog | None) -> None:
@@ -501,6 +667,10 @@ def _measured(
         target,
     )
     measured = replace(outcome, covered=view.held, target=len(target))
+    if outcome.subset:
+        # A subset leaves the rest of the target to the step's own attempt, and
+        # one whose entries were already computed has not stalled.
+        return measured
     # An artifact that reads complete after the attempt did not stall, whatever
     # the count: a conversion planned before its entries exist is measured
     # against an empty target, where nothing can move.
@@ -569,53 +739,6 @@ def _refuse_moved_versions(recipe: Recipe, request: Request, step_id: str) -> No
             )
 
 
-def _pinned_parents(
-    ds: Dataset, recipe: Recipe, request: Request, step_id: str
-) -> dict[str, str]:
-    """What each feature ancestor's attempt recorded producing.
-
-    **Every ancestor, not only the immediate parents.** Identity chains: this
-    step's identifier is a function of its parents', theirs of their parents',
-    and so on. Planning an ancestor from a prediction while pinning a parent from
-    a fact would give this step an identifier neither of them agrees with.
-
-    A step the request binds or pins to a run is that run and stands for
-    nothing above it, so neither it nor what is only above it is read
-    (``cut``), and such a step pins nothing.
-
-    An ancestor with no run-log contributes nothing and is resolved normally --
-    that is a step served from an earlier request's cache, which is the ordinary
-    state of a partly built graph, not a fault.
-    """
-    if step_id in request.stand_ins:
-        return {}
-    logs = run_log_dir(ds.base_dir)
-    pinned: dict[str, str] = {}
-    above = ancestors_of(recipe, step_id, cut=request.stand_ins) - {step_id}
-    for ancestor in sorted(above):
-        step = recipe.step(ancestor)
-        if not isinstance(step, FeatureStepSpec):
-            continue
-        attempt = request.step_executions.get(ancestor, "")
-        if not attempt:
-            continue
-        snapshot = read_run(logs, attempt)
-        if snapshot is None:
-            continue
-        if snapshot["run_id"]:
-            pinned[ancestor] = snapshot["run_id"]
-            continue
-        raise StepRefused(
-            "parent_unrecorded",
-            step_id,
-            f"step {ancestor!r} ran as attempt {attempt!r} and recorded no "
-            f"identifier, so nothing below it can name what it produced. Its "
-            f"run-log says {snapshot['status']!r}.",
-            {"parent": ancestor, "parent_execution_id": attempt},
-        )
-    return pinned
-
-
 def _asks_every_entry(planned: PlannedStep, plan: Plan) -> bool:
     """Whether *planned* is asked for every entry of the dataset.
 
@@ -638,6 +761,8 @@ def _run(
     owner: str,
     cancel_token: CancelToken | None,
     parallel: ParallelSettings | None,
+    measure_worker_base: bool = False,
+    probe: ProbeRecord | None = None,
 ) -> StepOutcome:
     """Do the work, and record what it lost.
 
@@ -680,7 +805,7 @@ def _run(
         chosen = effective_parallel(
             parallel,
             parallelizable=feature.parallelizable,
-            needs_scope=hasattr(feature, "set_scope"),
+            process_capable=process_capable(feature),
         )
         several = chosen.workers > 1
         result = run_feature(
@@ -691,6 +816,9 @@ def _run(
             min_free_memory_fraction=(
                 chosen.min_free_memory_fraction if several else 0.0
             ),
+            admission_margin=chosen.admission_margin if several else 0.0,
+            measure_worker_base=measure_worker_base,
+            probe=probe,
             scope=Scope(entries=sorted(asked)) if asked else None,
             asks_every_entry=asks_every_entry,
             overwrite=overwrite,
@@ -794,7 +922,12 @@ def _record_entry_outcomes(
 
 
 def _cached(
-    ds: Dataset, planned: PlannedStep, *, attempt: str, owner: str
+    ds: Dataset,
+    planned: PlannedStep,
+    *,
+    attempt: str,
+    owner: str,
+    probe: ProbeRecord | None = None,
 ) -> StepOutcome:
     """The record for a step whose artifact already answered for its whole scope.
 
@@ -807,6 +940,8 @@ def _cached(
     disagree about one step. Deliberately not zero: the field counts what the scope
     holds at the end of the attempt, cache hits included, and a cached step holds
     all of it. Zero would read as a step that lost everything.
+
+    A subset attempt answered from the cache records its *probe* event too.
     """
     covered = len(planned.coverage.target)
     _record_terminal(
@@ -819,6 +954,7 @@ def _cached(
         cache_hit=True,
         entries_written=covered,
         gpu_card=leased_card(),
+        probe=probe,
     )
     return StepOutcome(
         step_id=planned.step_id,
@@ -829,6 +965,7 @@ def _cached(
         execution_id=attempt,
         covered=covered,
         target=covered,
+        subset="" if probe is None else probe.kind,
     )
 
 
@@ -863,7 +1000,12 @@ def _bound(
 
 
 def _stalled(
-    ds: Dataset, planned: PlannedStep, *, attempt: str, owner: str
+    ds: Dataset,
+    planned: PlannedStep,
+    *,
+    attempt: str,
+    owner: str,
+    probe: ProbeRecord | None = None,
 ) -> StepOutcome:
     """The record for a step with nothing left it is allowed to attempt.
 
@@ -884,6 +1026,7 @@ def _stalled(
         run_id=planned.run_id or "",
         entries_written=len(planned.coverage.covered),
         gpu_card=leased_card(),
+        probe=probe,
     )
     return StepOutcome(
         step_id=planned.step_id,
@@ -894,6 +1037,7 @@ def _stalled(
         execution_id=attempt,
         covered=len(planned.coverage.covered),
         target=len(planned.coverage.target),
+        subset="" if probe is None else probe.kind,
     )
 
 
@@ -910,6 +1054,7 @@ def _record_terminal(
     entries_written: int = 0,
     cancelled: bool = False,
     gpu_card: str = "",
+    probe: ProbeRecord | None = None,
 ) -> None:
     """Write a whole attempt record for a step that runs nothing itself.
 
@@ -919,6 +1064,8 @@ def _record_terminal(
     pins. Written directly rather than through ``job_context`` because that context
     brackets an attempt that *does* work, and a second writer on one file is what
     the run-log format rules out.
+
+    *probe* marks a subset attempt, and is written right after ``started``.
 
     *gpu_card* is the card of the process that makes the record
     (:func:`~mosaic.core.pipeline.gpu_lease.leased_card`). A driver recording a step
@@ -937,6 +1084,8 @@ def _record_terminal(
             host=socket.gethostname(),
             gpu_card=gpu_card,
         )
+        if probe is not None:
+            probe.write(log)
         if run_id:
             log.set_run_id(run_id)
         if cache_hit:

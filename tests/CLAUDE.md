@@ -46,8 +46,8 @@ CONTRIBUTING.md gives the conditions of `test_suite_layout.py` and
   than `resolve` importing `FEATURES`.
 - `test_status_imports.py`: the import or a call of a status reader, a request
   lister or the entry-error report, or the import of the cancel module, loading
-  pandas, cv2, av or the feature library, or `import mosaic.runlog` loading
-  pydantic.
+  pandas, cv2, av or the feature library, or `import mosaic.runlog` or
+  `import mosaic.run_cost` loading pydantic.
 - `test_external_tool_separation.py`: an import across a separated tool's
   boundary, a declaration of the tool in mosaic's dependencies, Ultralytics runner
   subcommands that differ from `RunnerSubcommand`, or a subcommand's request or

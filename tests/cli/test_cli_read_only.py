@@ -387,6 +387,14 @@ CLI_READS: dict[str, CliArguments] = {
         "--retire",
         load_request(f.root, f.request_id).recipe_digest,
     ],
+    "pipeline input-size": lambda f: [
+        "pipeline",
+        "input-size",
+        "--request",
+        f.request_id,
+        "--step",
+        "speed",
+    ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "prerequisites": lambda _: ["prerequisites", "--kind", "trex"],
     "pipeline verify": lambda f: [

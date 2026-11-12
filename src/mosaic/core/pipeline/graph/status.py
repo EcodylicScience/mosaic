@@ -193,7 +193,7 @@ class FailedEntryWire(GraphModel):
 class RunStatusWire(GraphModel):
     """One attempt, as its run-log reports it.
 
-    The fields from ``execution_id`` to ``phase`` are those of
+    The fields from ``execution_id`` to ``probe`` are those of
     :class:`~mosaic.runlog.RunLogSnapshot`, which documents them. The rest are
     derived from the same run-log.
 
@@ -252,6 +252,7 @@ class RunStatusWire(GraphModel):
     peak_rss_bytes: int
     min_available_bytes: int
     total_memory_bytes: int
+    probe: bool
     outcome: AttemptOutcome
     terminal: bool
     progress_fraction: float | None

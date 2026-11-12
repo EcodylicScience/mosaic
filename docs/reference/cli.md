@@ -72,6 +72,8 @@ $ mosaic run [OPTIONS]
 * `--kind <str>`: The op kind, e.g. 'infer-pose'.
 * `--graph-request <str>`: Run one step of this submitted pipeline request. The request is read from the dataset that --manifest names.
 * `--step <str>`: Which step of --graph-request to run.
+* `--probe <int>`: With --graph-request: compute only the N largest entries of the step (1 to 3), the first alone and then two at once in threads, to measure what the step costs. Three give one entry alone and one pair. Needs --execution-id.
+* `--step-entries <str>`: With --graph-request: compute only this group:sequence entry of the step (repeatable). Needs --execution-id.
 * `--params <str>`: Params as inline JSON, @file.json, or @- (stdin).
 * `--inputs <str>`: Feature inputs as JSON (default ["tracks"]). Feature runs only.
 * `--groups <str>`: Scope to these groups.
@@ -83,10 +85,11 @@ $ mosaic run [OPTIONS]
 * `--overwrite`: Recompute even if a cached run exists.
 * `--republish`: With --kind: rebuild the op's published outputs from its finished work without redoing it. Ops without a republish path refuse it.
 * `--owner <str>`: Free-form attribution recorded on the attempt.
-* `--execution-id <str>`: Reuse an externally minted ULID (executor unit-of-work).
+* `--execution-id <str>`: Reuse an externally minted ULID (executor unit-of-work). With --probe or --step-entries, an id other than the one the request assigned the step.
 * `--workers <int range>`: Compute this many entries of a parallelizable step at once: a feature, convert-tracks or resample-tracks. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
-* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the memory limit that applies, a container's or else the host's, that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--admission-margin <float range>`: With --workers above 1, start an entry beside the ones in flight only when its predicted memory times this factor fits the memory limit, learned from the run's own entries. The first entry runs alone and entries start largest first. 0 (the default) turns the gate off; otherwise from 1 to 4, such as 1.5.  [default: 0.0; 0.0<=x<=4.0]
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
 * `--help`: Show this message and exit.
 
@@ -1089,6 +1092,7 @@ $ mosaic pipeline [OPTIONS] COMMAND [ARGS]...
 * `run`: Run every step of a recipe here, in order,...
 * `status`: Say how far one submission got, from its...
 * `list`: List the dataset's pipeline requests...
+* `input-size`: Say how much one step of a submission...
 * `score`: Score a finished recipe on held-out data...
 
 ### `mosaic pipeline catalog`
@@ -1352,7 +1356,8 @@ $ mosaic pipeline run [OPTIONS]
 * `--expect-plan <str>`: With --recipe, the fingerprint that 'mosaic pipeline plan' printed. Refuses the run, writing nothing, when the plan has changed since. Required with --cleanup.
 * `--workers <int range>`: Compute this many entries of a parallelizable step at once: a feature, convert-tracks or resample-tracks. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
-* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the memory limit that applies, a container's or else the host's, that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--admission-margin <float range>`: With --workers above 1, start an entry beside the ones in flight only when its predicted memory times this factor fits the memory limit, learned from the run's own entries. The first entry runs alone and entries start largest first. 0 (the default) turns the gate off; otherwise from 1 to 4, such as 1.5.  [default: 0.0; 0.0<=x<=4.0]
 * `--gpu-cards <str>`: With --request, the cards its GPU steps may lease, as one comma-separated value of nvidia-smi indexes (PCI bus order) or UUIDs among the visible cards, such as 0,1. Without it every visible card is leased.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
@@ -1415,6 +1420,37 @@ $ mosaic pipeline list [OPTIONS]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
+### `mosaic pipeline input-size`
+
+Say how much one step of a submission reads, and which entries it would compute.
+
+Plans the step as it plans itself when it starts and reads each input file's
+footer, so no table is read and nothing is written. The report gives the
+step's entries and rows, those a plain attempt would compute, and every entry
+to compute with its rows, largest first. Each entry's token is the
+``group:sequence`` form that names an entry on a command line. A complete,
+bound or pinned step computes nothing. An entry held back after repeated
+failures is left out, and the step reports ``inputs_ready`` false unless the
+request proceeds without such entries. A step that cannot be measured yet (an
+op, or a step whose inputs are not written) also reports ``inputs_ready``
+false, and why. ``run_id`` is the run the plan names, null where an op of the
+recipe has not written what the step reads, and the step plans it again when
+it starts.
+
+**Usage**:
+
+```console
+$ mosaic pipeline input-size [OPTIONS]
+```
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--request <str>`: Which submission the step belongs to.  [required]
+* `--step <str>`: Which step of its recipe.  [required]
+* `--json`: Emit as a JSON object.
+* `--help`: Show this message and exit.
+
 ### `mosaic pipeline score`
 
 Score a finished recipe on held-out data that was added afterwards.
@@ -1462,7 +1498,8 @@ $ mosaic pipeline score [OPTIONS]
 * `--dry-run`: Stop after the comparison of run ids: nothing is run or scored. The study is never written. A held-out group already in the dataset is planned in place and writes nothing at all. Held-out files are added to the copy in --out, which is what the comparison needs.
 * `--workers <int range>`: Compute this many entries of a parallelizable step at once: a feature, convert-tracks or resample-tracks. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
-* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the memory limit that applies, a container's or else the host's, that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
+* `--admission-margin <float range>`: With --workers above 1, start an entry beside the ones in flight only when its predicted memory times this factor fits the memory limit, learned from the run's own entries. The first entry runs alone and entries start largest first. 0 (the default) turns the gate off; otherwise from 1 to 4, such as 1.5.  [default: 0.0; 0.0<=x<=4.0]
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 

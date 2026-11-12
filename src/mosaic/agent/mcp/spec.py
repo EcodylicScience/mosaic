@@ -929,7 +929,7 @@ class SubmitPipelineInput(ToolInput):
             "parallel block and which is the host's physical cores unless the "
             "operator set another. More than the server's max_workers is refused. "
             "Memory grows with the count, so lower it when a step ends with a dead "
-            "worker, a memory floor, or a peak_rss_bytes near the host's memory."
+            "worker, a memory floor, or a peak_rss_bytes near the memory limit."
         ),
     )
     parallel_mode: ParallelMode | None = Field(

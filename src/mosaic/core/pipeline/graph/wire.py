@@ -761,12 +761,15 @@ class ParallelWire(GraphModel):
         max_workers: The most a submission may ask for.
         allow_process_mode: Whether a submission may ask for ``process`` mode. A
             submission that names no mode receives ``thread``.
-        min_free_memory_fraction: The share of the host's memory that a run with
-            several workers keeps available, 0 for no check.
+        min_free_memory_fraction: The share of the memory limit that applies that a
+            run with several workers keeps available, 0 for no check.
         cpus: How many processors the server's process may use.
-        memory_total_bytes: The host's physical memory, 0 when unmeasured.
-        memory_available_bytes: The memory the host has available now, 0 when
-            unmeasured.
+        memory_total_bytes: The memory limit that applies, 0 when unmeasured. In a
+            container it is the cgroup's limit, and on a host with no limit it is the
+            host's physical memory.
+        memory_available_bytes: The memory left under that limit now, 0 when
+            unmeasured. On a host with no limit it is the memory the host has
+            available.
     """
 
     default_workers: int

@@ -217,6 +217,7 @@ src/mosaic/
   cli/                          every `mosaic` verb (Typer)
   agent/                        the guide for users' agents; `agent/mcp/` the MCP tools
   runlog.py                     append-only JSONL run-log; stdlib-only leaf
+  run_cost.py                   what a run-log says an attempt cost; stdlib-only
   lazy_exports.py               the body of a package `__getattr__`; stdlib-only leaf
   core/                         Dataset, manifest, schema, Params, Scope, converters
   core/pipeline/                run_feature, indexes, locks, inventory, ops, placement

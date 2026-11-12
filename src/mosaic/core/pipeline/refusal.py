@@ -73,6 +73,7 @@ type RefusalReason = Literal[
     "apply_tracks_changed",
     "tool_unavailable",
     "run_root_held",
+    "subset_refused",
 ]
 """The reasons a :class:`Refusal` can name. A closed set on purpose.
 
@@ -107,6 +108,12 @@ tool that the step runs: its ``tool`` detail names the tool, and its ``cause`` i
 when the tool is not installed or cannot be started. ``run_root_held`` is an op
 whose run root another execution's live claim holds; the ``holder_`` detail
 names that execution, its host and pid, and when its claim expires.
+``subset_refused`` is a step that will not run a probe or a named subset of its
+entries under an attempt of its own; its ``cause`` is ``scope_dependent`` for a
+step whose run id covers its set of entries, so a subset would be another run,
+``op_step`` for an op step, ``stand_in`` for a step the request binds or pins to a
+run, which it serves rather than computes, and ``outside_target`` for a named
+entry that is not among the step's entries.
 
 Not every error that declines work is a :class:`Refusal`. The rest exit 1 and
 name no reason: among them a tracker's refusal of an entry's media before its

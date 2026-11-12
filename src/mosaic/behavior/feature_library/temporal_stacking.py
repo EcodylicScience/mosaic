@@ -36,7 +36,12 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 from mosaic.core.timebase import uniform_grid_rate
 
-from .helpers import chosen_payload_columns, gaussian_radius, meta_columns
+from .helpers import (
+    check_memory_headroom,
+    chosen_payload_columns,
+    gaussian_radius,
+    meta_columns,
+)
 from ._pair_filter_descriptions import PAIR_FILTER_DESCRIPTION
 from .registry import register_feature
 from .types import PAYLOAD_COLUMNS_DESCRIPTION, PayloadColumnNames
@@ -54,26 +59,6 @@ def _estimate_output_bytes(
     stacked_cols = num_input_cols * num_offsets
     pool_cols = num_input_cols * num_pool_stats
     return num_rows * (stacked_cols + pool_cols) * 4
-
-
-def _check_memory(estimated_bytes: int) -> None:
-    """Raise if estimated allocation would leave less than 20% free memory."""
-    try:
-        import psutil
-
-        mem = psutil.virtual_memory()
-        available = mem.available
-    except (ImportError, AttributeError):
-        return
-    headroom = 0.20
-    if estimated_bytes > available * (1.0 - headroom):
-        est_gb = estimated_bytes / (1024**3)
-        avail_gb = available / (1024**3)
-        msg = (
-            f"[temporal-stack] Output would require ~{est_gb:.1f} GB "
-            f"but only {avail_gb:.1f} GB available"
-        )
-        raise MemoryError(msg)
 
 
 def _temporal_stack(
@@ -115,7 +100,12 @@ def _temporal_stack(
     estimated = _estimate_output_bytes(
         num_rows, num_cols, len(offsets) if use_stack else 1, num_pool
     )
-    _check_memory(estimated)
+    check_memory_headroom(
+        estimated,
+        "temporal-stack",
+        f"stacking {num_cols} columns over {num_rows:,} rows",
+        "Narrow the input, or lower half or pool_stats.",
+    )
 
     parts: list[np.ndarray] = []
     names: list[str] = []
