@@ -233,6 +233,18 @@ def _track_result_is_world(
     return carries_z(next(iter(path_map_all.values()))[0])
 
 
+def _upstream_spaces(
+    ds: Dataset, storage: str, input_result: ResolvedInput
+) -> frozenset[TrackSpace]:
+    """The spaces of the tracks behind a track-shaped ``Result`` input."""
+    # Imported here, because track_space imports this module.
+    from .track_space import upstream_track_spaces
+
+    return upstream_track_spaces(
+        ds, storage, input_result.run_id, frozenset(input_result.entries), {}
+    )
+
+
 def _leaf_run_of(ds: Dataset, feature_name: str) -> str:
     """Which run of *feature_name* an unpinned reference reads.
 
@@ -340,6 +352,7 @@ def build_manifest(
                 _ensure_track_shaped(item.feature, input_result.path_map_all)
                 if _track_result_is_world(input_result.path_map_all):
                     result_spaces.add("world_m")
+                result_spaces |= _upstream_spaces(ds, item.feature, input_result)
             upstream_runs.append((item.feature, item.run_id))
             feature_inputs.append((item.feature, input_result.run_id))
             per_input_tracks.append(input_result.tracks_compositions)

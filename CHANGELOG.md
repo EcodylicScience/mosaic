@@ -68,6 +68,17 @@ the fit, and no layout is read unless a region is named from the arena. The fit 
 every frame of the arena, so `temporal_reach` is unknown under `estimate` and `0`
 otherwise.
 
+A feature reading a track-shaped `Result`, such as the output of `trajectory-smooth`, is
+now shown the spaces of the tracks behind it, at plan and at run, through each
+track-shaped run between them. A feature declaring fewer spaces is refused with
+`schema_family_mismatch`: `roi-occupancy` over `trajectory-smooth` over `mosaic_cm_v1`
+tracks is refused by `plan_pipeline` and by `run_feature` with one message. A derived
+`Result`, such as the embeddings of `pose-egocentric`, shows its reader no space, and no
+run id moves. The tables behind a run are its recorded tracks variants, then the
+unlabelled tables for the entries none of them holds, so a part-migrated dataset is
+checked too. `RunParams.consumed_tracks_variants()` names the variants on a run's tracks
+edge, and `run_is_track_shaped` answers whether a stored run's output is track-shaped.
+
 ## Unreleased: run summaries across entries
 
 `load_run_matrix` raises classified errors, so `error_envelope` renders each refusal

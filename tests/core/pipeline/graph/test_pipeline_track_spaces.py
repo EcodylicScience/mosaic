@@ -19,7 +19,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from mosaic.behavior.feature_library.roi_occupancy import RoiOccupancy
+from mosaic.behavior.feature_library.trajectory_smooth import TrajectorySmooth
+import mosaic.core.pipeline.track_space as track_space_module
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.graph import (
     Plan,
@@ -31,12 +35,16 @@ from mosaic.core.pipeline.graph import (
     plan_pipeline,
     plan_wire,
     read_recipe,
+    run_pipeline,
     submit_request,
 )
 from mosaic.core.pipeline.graph.step_preflight import track_space_refusals
 from mosaic.core.pipeline.graph.store import request_ids
 from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.track_space import TrackSpaceRefused
+from mosaic.core.pipeline.types import Result
+from mosaic.core.scope import Scope
 from mosaic.runlog import read_run, run_log_dir
 from tests.helpers import (
     WORLD_POINTS_FORMAT,
@@ -51,6 +59,7 @@ from tests.helpers import (
 WORLD_VARIANT = "convert-world.0.1-aaaaaaaaaa"
 OTHER_WORLD_VARIANT = "convert-world.0.1-bbbbbbbbbb"
 PIXEL_VARIANT = "convert-pixel.0.1-cccccccccc"
+CM_VARIANT = "convert-cm.0.1-dddddddddd"
 
 PLANAR_DETAIL: dict[str, JsonValue] = {
     "feature": "pair-egocentric",
@@ -302,3 +311,136 @@ def test_a_step_reading_tracks_its_graph_converts_is_refused_when_it_starts(
     recorded = json.loads(logged["error_json"])
     assert recorded["reason"] == "schema_family_mismatch"
     assert {key: recorded[key] for key in PLANAR_DETAIL} == PLANAR_DETAIL
+
+
+# --- the tracks behind a stored track-shaped run ---------------------------------
+
+ZONE_SHAPE: dict[str, JsonValue] = {"kind": "circle", "cx": 5.0, "cy": 5.0, "r": 3.0}
+ZONE: dict[str, JsonValue] = {"name": "zone", "shape": ZONE_SHAPE}
+"""An absolute disc, so ``roi-occupancy`` reads no arena layout."""
+
+
+def _smoothed_occupancy(*radii: float) -> Recipe:
+    """``trajectory-smooth`` over the tracks, then one ``roi-occupancy`` per radius."""
+    readers: list[JsonValue] = [
+        {
+            "id": f"roi_{index}",
+            "type": "feature",
+            "feature": "roi-occupancy",
+            "inputs": [{"step": "smooth"}],
+            "params": {
+                "rois": [{"name": "zone", "shape": {**ZONE_SHAPE, "r": radius}}]
+            },
+        }
+        for index, radius in enumerate(radii)
+    ]
+    return read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "smooth",
+                    "type": "feature",
+                    "feature": "trajectory-smooth",
+                    "inputs": ["tracks"],
+                },
+                *readers,
+            ]
+        }
+    )
+
+
+def _with_stored_smoothing(dataset: Dataset, recipe: Recipe) -> Result:
+    """Run ``trajectory-smooth`` as the recipe plans it, and return its result."""
+    produced = run_feature(dataset, TrajectorySmooth())
+    assert plan_pipeline(dataset, recipe, refuse=False).step("smooth").run_id == (
+        produced.run_id
+    )
+    return Result(feature=produced.feature, run_id=produced.run_id)
+
+
+def test_a_plan_refuses_a_pixel_reader_of_smoothed_centimeters_as_a_run_does(
+    tmp_path: Path,
+) -> None:
+    dataset = _dataset(tmp_path / "ds", "mosaic_cm_v1", CM_VARIANT)
+    recipe = _smoothed_occupancy(3.0)
+    smoothed = _with_stored_smoothing(dataset, recipe)
+
+    plan = plan_pipeline(dataset, recipe, refuse=False)
+    with pytest.raises(TrackSpaceRefused) as raised:
+        _ = run_feature(
+            dataset,
+            RoiOccupancy(
+                inputs=RoiOccupancy.Inputs((smoothed,)), params={"rois": [ZONE]}
+            ),
+        )
+
+    assert list(plan.track_space_refusals) == ["roi_0"]
+    refusal = plan.track_space_refusals["roi_0"]
+    assert refusal.reason == "schema_family_mismatch"
+    assert str(refusal) == str(raised.value)
+
+
+def test_a_plan_reads_the_tracks_once_per_variant_and_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _dataset(tmp_path / "ds", "mosaic_cm_v1", CM_VARIANT)
+    recipe = _smoothed_occupancy(3.0, 4.0)
+    _ = _with_stored_smoothing(dataset, recipe)
+    calls: list[tuple[str | None, frozenset[Entry]]] = []
+    read = track_space_module.tracks_table_schemas
+
+    def counted(
+        ds: Dataset, tracks_run_id: str | None, scope: Scope
+    ) -> dict[tuple[str, str], str]:
+        calls.append((tracks_run_id, frozenset(scope.entry_pairs or ())))
+        return read(ds, tracks_run_id, scope)
+
+    monkeypatch.setattr(track_space_module, "tracks_table_schemas", counted)
+
+    plan = plan_pipeline(dataset, recipe, refuse=False)
+
+    assert sorted(plan.track_space_refusals) == ["roi_0", "roi_1"]
+    assert len(calls) == len(set(calls))
+    assert [call for call in calls if call[0] == CM_VARIANT] == [
+        (CM_VARIANT, frozenset({("", "seq")}))
+    ]
+
+
+POSE_CLUSTERS = read_recipe(
+    {
+        "steps": [
+            {
+                "id": "pose",
+                "type": "feature",
+                "feature": "pose-egocentric",
+                "inputs": ["tracks"],
+                "params": {"origin": [0], "heading": [1, 2]},
+            },
+            {
+                "id": "templates",
+                "type": "feature",
+                "feature": "extract-templates",
+                "inputs": [{"step": "pose"}],
+                "params": {"n_templates": 4},
+            },
+            {
+                "id": "kmeans",
+                "type": "feature",
+                "feature": "global-kmeans",
+                "inputs": [{"step": "pose"}],
+                "params": {"templates": {"step": "templates"}, "k": 2},
+            },
+        ]
+    }
+)
+
+
+def test_a_derived_result_shows_its_reader_no_space(world: Dataset) -> None:
+    """``global-kmeans`` reads embeddings, not tracks, and is not shown ``world_m``."""
+    plan = plan_pipeline(world, POSE_CLUSTERS)
+
+    assert plan.track_space_refusals == {}
+    _ = run_pipeline(world, POSE_CLUSTERS)
+    after = plan_pipeline(world, POSE_CLUSTERS)
+    assert after.is_complete
+    assert after.track_space_refusals == {}

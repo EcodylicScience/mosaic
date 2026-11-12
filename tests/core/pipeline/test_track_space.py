@@ -18,7 +18,12 @@ import pandas as pd
 import pytest
 
 from mosaic.behavior.feature_library.frame_aggregate import FrameAggregate
+from mosaic.behavior.feature_library.roi_occupancy import RoiOccupancy
+from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
+from mosaic.behavior.feature_library.trajectory_smooth import TrajectorySmooth
 from mosaic.core.dataset import Dataset, new_dataset_manifest
+from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.inventory.params import RunParams, read_run_params
 from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.run import run_feature
@@ -28,7 +33,7 @@ from mosaic.core.pipeline.track_space import (
     feature_track_spaces,
     refuse_unsupported_track_space,
 )
-from mosaic.core.pipeline.track_universe import carries_z
+from mosaic.core.pipeline.track_universe import carries_z, run_is_track_shaped
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.types import (
     EmitsLevel,
@@ -39,6 +44,7 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.params import Params
 from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.scope import Scope
 
 from tests.helpers import add_tracks_table, track_table, world_track_table
 
@@ -107,8 +113,12 @@ class _PassThrough(_WorldFeature):
         return df
 
 
-def _dataset(tmp_path: Path, *schemas: str) -> Dataset:
-    """A dataset with one entry per schema, named ``seq_0``, ``seq_1``, ..."""
+def _dataset(tmp_path: Path, *schemas: str, unlabelled: bool = False) -> Dataset:
+    """A dataset with one entry per schema, named ``seq_0``, ``seq_1``, ...
+
+    Each table is in its own tracks variant, or in the unlabelled one (``""``)
+    under *unlabelled*.
+    """
     manifest = new_dataset_manifest(name="spaces", base_dir=tmp_path / "dataset")
     dataset = Dataset(manifest_path=manifest).load(ensure_roots=True)
     for index, schema in enumerate(schemas):
@@ -118,9 +128,8 @@ def _dataset(tmp_path: Path, *schemas: str) -> Dataset:
             if schema == "mosaic_world_v1"
             else track_table("", sequence, n_rows=10)
         )
-        add_tracks_table(
-            dataset, f"convert-x{index}.0.1-{index:010d}", table, std_format=schema
-        )
+        variant = "" if unlabelled else f"convert-x{index}.0.1-{index:010d}"
+        add_tracks_table(dataset, variant, table, std_format=schema)
     return dataset
 
 
@@ -198,14 +207,16 @@ def test_a_track_shaped_result_carrying_z_reads_as_a_world_table(
     assert scope.track_spaces == {"world_m"}
 
 
-def test_a_track_shaped_result_without_z_reads_no_space(tmp_path: Path) -> None:
+def test_a_track_shaped_result_reads_the_space_of_the_tracks_behind_it(
+    tmp_path: Path,
+) -> None:
     dataset = _dataset(tmp_path, "mosaic_v1")
     produced = run_feature(dataset, _PassThrough())
     reference = Result(feature=produced.feature, run_id=produced.run_id)
 
     _, scope = build_manifest(dataset, TrackInputs((reference,)))
 
-    assert scope.track_spaces == frozenset()
+    assert scope.track_spaces == {"image_px"}
 
 
 def test_a_planar_feature_is_refused_a_track_result_carrying_z(tmp_path: Path) -> None:
@@ -321,3 +332,167 @@ def test_the_refusal_of_a_world_feature_names_the_world_frame_table() -> None:
 
 def test_a_feature_accepting_every_space_refuses_none() -> None:
     refuse_unsupported_track_space(frozenset(TRACK_SPACES), "test", set(TRACK_SPACES))
+
+
+# --- the tracks behind a track-shaped input -------------------------------------
+
+ZONE: dict[str, object] = {
+    "name": "zone",
+    "shape": {"kind": "circle", "cx": 5.0, "cy": 5.0, "r": 3.0},
+}
+"""An absolute disc, so ``roi-occupancy`` reads no arena layout."""
+
+
+def _roi_over(result: Result) -> RoiOccupancy:
+    return RoiOccupancy(inputs=RoiOccupancy.Inputs((result,)), params={"rois": [ZONE]})
+
+
+def _smoothed(dataset: Dataset, *, times: int = 1) -> Result:
+    """``trajectory-smooth`` with default params over the tracks, *times* deep."""
+    produced = run_feature(dataset, TrajectorySmooth())
+    for _ in range(times - 1):
+        reference = Result(feature=produced.feature, run_id=produced.run_id)
+        produced = run_feature(
+            dataset, TrajectorySmooth(inputs=TrajectorySmooth.Inputs((reference,)))
+        )
+    return Result(feature=produced.feature, run_id=produced.run_id)
+
+
+def test_the_tracks_edge_keeps_the_unlabelled_variant_and_skips_a_null() -> None:
+    params = RunParams.model_validate(
+        {
+            "_inputs": ["tracks"],
+            "_resolved": [
+                {"where": "inputs[tracks]", "feature": "tracks", "run_id": ""},
+                {"where": "inputs[tracks]", "feature": "tracks", "run_id": "v1"},
+                {"where": "inputs[tracks]", "feature": "tracks", "run_id": None},
+                {"where": "inputs[0]", "feature": "up", "run_id": "r1"},
+            ],
+        }
+    )
+
+    assert params.consumed_tracks_variants() == {"", "v1"}
+
+
+def test_a_run_over_the_unlabelled_tracks_records_no_variant(tmp_path: Path) -> None:
+    """``run_feature`` records labelled variants only, so the walk reads the rest."""
+    dataset = _dataset(tmp_path, "mosaic_cm_v1", unlabelled=True)
+    smoothed = _smoothed(dataset)
+    assert smoothed.run_id is not None
+
+    read = read_run_params(feature_run_root(dataset, smoothed.feature, smoothed.run_id))
+
+    assert read.params is not None
+    assert read.params.consumed_tracks_variants() == frozenset()
+
+
+def test_a_run_reading_no_tracks_read_no_variant() -> None:
+    params = RunParams.model_validate(
+        {
+            "_inputs": [{"feature": "up", "run_id": "r1"}],
+            "_resolved": [{"where": "inputs[0]", "feature": "up", "run_id": "r1"}],
+        }
+    )
+
+    assert params.consumed_tracks_variants() == frozenset()
+
+
+@pytest.mark.parametrize("unlabelled", [False, True], ids=["labelled", "unlabelled"])
+def test_a_pixel_feature_is_refused_a_smoothed_centimeter_table(
+    tmp_path: Path, unlabelled: bool
+) -> None:
+    dataset = _dataset(tmp_path, "mosaic_cm_v1", unlabelled=unlabelled)
+    smoothed = _smoothed(dataset)
+
+    with pytest.raises(TrackSpaceRefused) as excinfo:
+        _ = run_feature(dataset, _roi_over(smoothed))
+
+    assert excinfo.value.reason == "schema_family_mismatch"
+    assert excinfo.value.detail == {
+        "feature": "roi-occupancy",
+        "accepts": ["image_px"],
+        "found": ["plane_cm"],
+    }
+
+
+def test_unlabelled_entries_beside_a_labelled_variant_are_read_as_unlabelled(
+    tmp_path: Path,
+) -> None:
+    """A part-migrated dataset: the run records the labelled variant of other entries.
+
+    The variants a run records are collected before its scope narrows them, so
+    a run over the unlabelled entry ``b`` records the variant of entry ``a``.
+    The entries no recorded variant covers are read from the unlabelled tables.
+    """
+    dataset = _dataset(tmp_path)
+    add_tracks_table(
+        dataset,
+        "convert-px.0.1-aaaaaaaaaa",
+        track_table("", "a", n_rows=10),
+        std_format="mosaic_v1",
+    )
+    add_tracks_table(
+        dataset, "", track_table("", "b", n_rows=10), std_format="mosaic_cm_v1"
+    )
+    scope = Scope(entries=[("", "b")])
+    produced = run_feature(dataset, TrajectorySmooth(), scope=scope)
+    smoothed = Result(feature=produced.feature, run_id=produced.run_id)
+
+    with pytest.raises(TrackSpaceRefused) as excinfo:
+        _ = run_feature(dataset, _roi_over(smoothed), scope=scope)
+
+    assert excinfo.value.detail["found"] == ["plane_cm"]
+
+
+def test_a_labelled_variant_covering_every_entry_reads_no_unlabelled_table(
+    tmp_path: Path,
+) -> None:
+    """An unlabelled row loses to a labelled one, as the resolver decides."""
+    dataset = _dataset(tmp_path, "mosaic_v1")
+    add_tracks_table(
+        dataset, "", track_table("", "seq_0", n_rows=10), std_format="mosaic_cm_v1"
+    )
+
+    result = run_feature(dataset, _roi_over(_smoothed(dataset)))
+
+    assert result.run_id
+
+
+def test_a_pixel_feature_runs_on_a_smoothed_pixel_table(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path, "mosaic_v1")
+
+    result = run_feature(dataset, _roi_over(_smoothed(dataset)))
+
+    assert result.run_id
+
+
+def test_a_chain_of_smoothings_is_followed_to_its_tracks(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path, "mosaic_cm_v1")
+    smoothed = _smoothed(dataset, times=2)
+
+    _, scope = build_manifest(dataset, TrackInputs((smoothed,)))
+
+    assert scope.track_spaces == {"plane_cm"}
+
+
+def test_a_smoothed_run_is_track_shaped(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path, "mosaic_v1")
+    smoothed = _smoothed(dataset)
+    assert smoothed.run_id is not None
+
+    assert run_is_track_shaped(dataset, smoothed.feature, smoothed.run_id)
+
+
+def test_a_derived_run_is_not_track_shaped(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path, "mosaic_v1")
+    speed = run_feature(dataset, SpeedAngvel())
+    assert speed.run_id is not None
+
+    assert not run_is_track_shaped(dataset, speed.feature, speed.run_id)
+
+
+def test_a_run_without_output_is_not_track_shaped(tmp_path: Path) -> None:
+    dataset = _dataset(tmp_path, "mosaic_v1")
+    feature_run_root(dataset, "trajectory-smooth", "empty-run").mkdir(parents=True)
+
+    assert not run_is_track_shaped(dataset, "trajectory-smooth", "empty-run")

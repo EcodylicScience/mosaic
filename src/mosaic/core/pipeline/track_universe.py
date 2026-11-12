@@ -55,6 +55,7 @@ __all__ = [
     "carries_z",
     "is_track_shaped",
     "run_carries_z",
+    "run_is_track_shaped",
     "track_leaf",
     "track_universe",
 ]
@@ -124,6 +125,21 @@ def _sample_output(ds: Dataset, storage: str, run_id: str) -> Path | None:
     return None
 
 
+def run_is_track_shaped(ds: Dataset, storage: str, run_id: str) -> bool:
+    """Whether a stored feature run's output is track-shaped, read off one parquet.
+
+    One run of one producer wrote every file, so one footer answers for all of
+    them. A run that wrote nothing is not track-shaped.
+
+    Args:
+        ds: The dataset holding the run.
+        storage: The feature's storage name.
+        run_id: The run.
+    """
+    sample = _sample_output(ds, storage, run_id)
+    return sample is not None and is_track_shaped(sample)
+
+
 def run_carries_z(ds: Dataset, storage: str, run_id: str) -> bool:
     """Whether a stored feature run's output carries ``Z``, read off one parquet.
 
@@ -187,8 +203,7 @@ def track_universe(ds: Dataset) -> list[TrackSource]:
         if runs.empty or "run_id" not in runs.columns:
             continue
         for run_id in sorted({str(value) for value in runs["run_id"]}):
-            sample = _sample_output(ds, storage, run_id)
-            if sample is None or not is_track_shaped(sample):
+            if not run_is_track_shaped(ds, storage, run_id):
                 continue
             found.append(
                 TrackSource(

@@ -12,6 +12,11 @@ direction for a default: every feature written before 3D tables existed is
 planar, and the default refuses a world table to all of them without editing one.
 A feature that handles 3D, or that reads no spatial column, declares
 ``track_spaces`` as a class attribute.
+
+A track-shaped ``Result`` records no schema, so a feature reading one is shown
+the spaces of the tracks behind it (:func:`upstream_track_spaces`), at plan and at
+run. The walk reads output footers and ``params.json``, never the producer's
+class, so it needs no feature registry.
 """
 
 from __future__ import annotations
@@ -19,18 +24,34 @@ from __future__ import annotations
 from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING, Final, TypeIs
 
+from mosaic.core.pipeline.index import feature_run_root
+from mosaic.core.pipeline.inventory.params import read_run_params
+from mosaic.core.pipeline.manifest import tracks_table_schemas
 from mosaic.core.pipeline.refusal import Refusal
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.pipeline.track_universe import run_is_track_shaped
+from mosaic.core.pipeline.tracks_index import AmbiguousTracksVariant
+from mosaic.core.schema import TRACK_SPACES, TrackSpace, schema_spaces
+from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from mosaic.core.dataset import Dataset
+    from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
 
 __all__ = [
     "DEFAULT_TRACK_SPACES",
+    "TablesRead",
     "TrackSpaceRefused",
     "feature_track_spaces",
     "refuse_unsupported_track_space",
+    "upstream_track_spaces",
+    "variant_track_spaces",
 ]
+
+type TablesRead = dict[tuple[str | None, frozenset[Entry]], Mapping[Entry, str]]
+"""The schema of each table already read for a tracks variant over a set of entries."""
 
 DEFAULT_TRACK_SPACES: Final[frozenset[TrackSpace]] = frozenset({"image_px", "plane_cm"})
 """What a feature that declares no ``track_spaces`` computes in: both 2D spaces."""
@@ -134,3 +155,114 @@ def refuse_unsupported_track_space(
     """
     if spaces_read - accepts:
         raise TrackSpaceRefused(feature_name, accepts, spaces_read)
+
+
+def _variant_track_schemas(
+    ds: Dataset, variant: str | None, entries: frozenset[Entry], read: TablesRead
+) -> Mapping[Entry, str]:
+    """The schema of each tracks table of *variant* over *entries*, by entry.
+
+    An entry without a table of *variant* is left out. *read* holds the answers
+    already read, so callers sharing it read the tracks index once per variant
+    and set of entries. An entry holding two variants under ``None`` makes the
+    answer empty, because the reader's identity reports it.
+
+    Args:
+        ds: The dataset whose tracks index to read.
+        variant: The tracks variant, ``""`` for the unlabelled tables, or
+            ``None`` for whichever each entry has.
+        entries: The entries to read.
+        read: The answers already read, filled in place.
+    """
+    key = (variant, entries)
+    if key not in read:
+        try:
+            read[key] = tracks_table_schemas(
+                ds, variant, Scope(entries=sorted(entries))
+            )
+        except AmbiguousTracksVariant:
+            read[key] = {}
+    return read[key]
+
+
+def variant_track_spaces(
+    ds: Dataset, variant: str | None, entries: frozenset[Entry], read: TablesRead
+) -> frozenset[TrackSpace]:
+    """The spaces of the tracks tables of *variant* over *entries*.
+
+    The schemas come from the tables, or from *read* where already answered.
+    """
+    return schema_spaces(_variant_track_schemas(ds, variant, entries, read).values())
+
+
+def upstream_track_spaces(
+    ds: Dataset,
+    storage: str,
+    run_id: str,
+    entries: frozenset[Entry],
+    read: TablesRead,
+) -> frozenset[TrackSpace]:
+    """The spaces of the tracks behind a stored track-shaped run, over *entries*.
+
+    A run whose output is track-shaped (:func:`run_is_track_shaped`) is in the
+    space of the tracks it was made from, and each of its feature inputs is
+    followed by the same rule. A run that is not track-shaped, such as a run of
+    embeddings, and a run without a readable ``params.json`` contribute nothing.
+
+    A run that read ``tracks`` is read as the resolver chose its tables: each
+    labelled variant on its tracks edge
+    (:meth:`RunParams.consumed_tracks_variants`) over *entries*, then the
+    unlabelled tables over the entries no labelled variant holds, since an
+    unlabelled row loses to a labelled one. ``run_feature`` records labelled
+    variants only, and records them before its scope narrows them, so the
+    entries the edge does not cover are read from the unlabelled tables.
+
+    Args:
+        ds: The dataset holding the run.
+        storage: The run's feature storage directory.
+        run_id: The run.
+        entries: The entries whose tables to read.
+        read: The answers already read, as :func:`variant_track_spaces` takes.
+
+    Returns:
+        The spaces found, empty when nothing is known.
+    """
+    spaces: set[TrackSpace] = set()
+    seen: set[tuple[str, str]] = set()
+    pending: list[tuple[str, str]] = [(storage, run_id)]
+    while pending:
+        run = pending.pop()
+        if run in seen or not run[1]:
+            continue
+        seen.add(run)
+        if not run_is_track_shaped(ds, *run):
+            continue
+        params = read_run_params(feature_run_root(ds, *run)).params
+        if params is None:
+            continue
+        sources = params.input_sources()
+        if "tracks" in sources:
+            spaces |= _tracks_read_spaces(
+                ds, params.consumed_tracks_variants(), entries, read
+            )
+        pending.extend(source for source in sources if isinstance(source, tuple))
+    return frozenset(spaces)
+
+
+def _tracks_read_spaces(
+    ds: Dataset,
+    variants: frozenset[str],
+    entries: frozenset[Entry],
+    read: TablesRead,
+) -> frozenset[TrackSpace]:
+    """The spaces of the tables a run over *variants* read for *entries*."""
+    schemas: list[str] = []
+    covered: set[Entry] = set()
+    for variant in sorted(variant for variant in variants if variant):
+        tables = _variant_track_schemas(ds, variant, entries, read)
+        schemas.extend(tables.values())
+        covered.update(tables)
+    remainder = entries - covered
+    if remainder:
+        schemas.extend(_variant_track_schemas(ds, "", remainder, read).values())
+    return schema_spaces(schemas)

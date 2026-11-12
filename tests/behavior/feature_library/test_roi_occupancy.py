@@ -21,6 +21,7 @@ from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.arena_index import IndexedLayout, arena_index_path
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
+from mosaic.core.pipeline.track_space import TrackSpaceRefused
 from mosaic.core.pipeline.types import Result
 from mosaic.core.regions import CircleShape, PolygonShape, RectShape, RingShape, Roi
 from tests.helpers import (
@@ -556,6 +557,21 @@ class TestUnits:
             _ = RoiOccupancy(inputs=inputs, params={"rois": ["feeder"]})
 
         assert "pixel" in str(refused.value)
+
+    def test_a_centimeter_tracks_table_is_refused(self, tmp_path: Path) -> None:
+        ds = make_dataset(tmp_path / "ds")
+        add_tracks_table(
+            ds,
+            VARIANT,
+            _table(("", "seq_a"), [(50.0, 50.0)]),
+            std_format="mosaic_cm_v1",
+        )
+
+        with pytest.raises(TrackSpaceRefused) as refused:
+            _ = _run(ds, {"rois": [DISC.model_dump(mode="json")]})
+
+        assert refused.value.reason == "schema_family_mismatch"
+        assert refused.value.detail["found"] == ["plane_cm"]
 
     def test_a_distance_scaled_by_scale_to_cm_is_the_pixel_value_times_the_scale(
         self, tmp_path: Path

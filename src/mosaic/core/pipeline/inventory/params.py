@@ -279,6 +279,20 @@ class RunParams(BaseModel):
             if ref.run_id is not None and (ref.run_id or ref.where == TRACKS_EDGE)
         )
 
+    def consumed_tracks_variants(self) -> frozenset[str]:
+        """The tracks variants on this run's tracks edge.
+
+        The rule of :meth:`consumed_run_ids` for the tracks edge: an empty
+        ``run_id`` is kept as the unlabelled variant, and a JSON ``null`` is
+        skipped. ``run_feature`` records labelled variants only, so a run over the
+        unlabelled tables alone records none.
+        """
+        return frozenset(
+            ref.run_id
+            for ref in self.resolved
+            if ref.where == TRACKS_EDGE and ref.run_id is not None
+        )
+
     def input_sources(self) -> tuple[InputSource, ...]:
         """The run's inputs in input order, each ``"tracks"`` or the feature run it read.
 
@@ -586,11 +600,7 @@ class TracksVariantWalk:
         for _, params in upstream_runs(self._ds, [start], self._params):
             if params is None or not params.records_resolutions:
                 return None
-            variants.update(
-                ref.run_id
-                for ref in params.resolved
-                if ref.where == TRACKS_EDGE and ref.run_id is not None
-            )
+            variants.update(params.consumed_tracks_variants())
         return frozenset(variants)
 
 

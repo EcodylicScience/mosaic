@@ -27,13 +27,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from mosaic.core.schema import schema_spaces
 from mosaic.core.scope import Scope
 
-from ..manifest import refuse_mixed_track_schemas, tracks_table_schemas
+from ..manifest import refuse_mixed_track_schemas
 from ..refusal import Refusal, RefusalReason
 from ..gpu_lease import leased_card, names_another_card
-from ..track_space import TrackSpaceRefused, refuse_unsupported_track_space
+from ..track_space import (
+    TablesRead,
+    TrackSpaceRefused,
+    refuse_unsupported_track_space,
+    upstream_track_spaces,
+    variant_track_spaces,
+)
 from ..track_universe import run_carries_z
 from ..tracks_index import AmbiguousTracksVariant
 from .model import (
@@ -243,8 +248,10 @@ def track_space_refusals(
 
     The plan-time half of the check ``run_feature`` makes: one refusal and one
     message for both. A step's spaces are those of the tracks tables it selects,
-    through each recorded schema's space, and ``world_m`` for each step it reads
-    through ``inputs`` as tracks whose stored run carries ``Z``.
+    through each recorded schema's space, and for each step it reads through
+    ``inputs`` as tracks, ``world_m`` when its stored run carries ``Z`` and the
+    spaces of the tracks behind that run. Each variant is read once per target,
+    however many steps reach it.
 
     **What is not on disk yet is skipped**, and the step's own plan at its start
     checks it: a variant an op of the same recipe mints has no rows, and a parent
@@ -265,16 +272,17 @@ def track_space_refusals(
         The refusal of each refused step, keyed by step id, in topological order.
     """
     refusals: dict[str, TrackSpaceRefused] = {}
-    read: dict[tuple[str | None, frozenset[Entry]], frozenset[TrackSpace]] = {}
+    read: TablesRead = {}
     for step in topological_order(recipe):
         if not isinstance(step, FeatureStepSpec) or step.id in exempt:
             continue
         declared = catalog.entries[step.feature]
         if not declared.track_spaces:
             continue
-        spaces = _tracks_spaces(ds, step, planned[step.id], targets[step.id], read)
+        target = targets[step.id]
+        spaces = _tracks_spaces(ds, step, planned[step.id], target, read)
         if declared.consumes.requires_track_shape:
-            spaces |= _stored_input_spaces(ds, step, planned)
+            spaces |= _stored_input_spaces(ds, step, planned, target, read)
         try:
             refuse_unsupported_track_space(
                 frozenset(declared.track_spaces), step.feature, spaces
@@ -289,7 +297,7 @@ def _tracks_spaces(
     step: FeatureStepSpec,
     planned: PlannedStep,
     target: frozenset[Entry],
-    read: dict[tuple[str | None, frozenset[Entry]], frozenset[TrackSpace]],
+    read: TablesRead,
 ) -> frozenset[TrackSpace]:
     """The spaces of the tracks tables *step* selects, empty when it reads none.
 
@@ -301,28 +309,35 @@ def _tracks_spaces(
         # A tracks reference to a producer whose identity is unresolved names no
         # variant, and its tables cannot be read.
         return frozenset()
-    key = (variant, target)
-    if key not in read:
-        try:
-            schemas = tracks_table_schemas(ds, variant, Scope(entries=sorted(target)))
-        except AmbiguousTracksVariant:
-            read[key] = frozenset()
-        else:
-            read[key] = schema_spaces(schemas.values())
-    return read[key]
+    return variant_track_spaces(ds, variant, target, read)
 
 
 def _stored_input_spaces(
-    ds: Dataset, step: FeatureStepSpec, planned: Mapping[str, PlannedStep]
+    ds: Dataset,
+    step: FeatureStepSpec,
+    planned: Mapping[str, PlannedStep],
+    target: frozenset[Entry],
+    read: TablesRead,
 ) -> frozenset[TrackSpace]:
-    """``world_m`` when a stored run that *step* reads through ``inputs`` carries ``Z``."""
+    """The spaces of the stored runs that *step* reads through ``inputs`` as tracks.
+
+    ``world_m`` for a run whose output carries ``Z``, and the spaces of the tracks
+    behind each run (:func:`~..track_space.upstream_track_spaces`). A parent
+    without a run is skipped.
+    """
+    spaces: set[TrackSpace] = set()
     for item in step.inputs:
         if item == TRACKS_INPUT:
             continue
         parent = planned[item.step]
-        if parent.run_id and run_carries_z(ds, parent.storage_name, parent.run_id):
-            return frozenset({"world_m"})
-    return frozenset()
+        if not parent.run_id:
+            continue
+        if run_carries_z(ds, parent.storage_name, parent.run_id):
+            spaces.add("world_m")
+        spaces |= upstream_track_spaces(
+            ds, parent.storage_name, parent.run_id, target, read
+        )
+    return frozenset(spaces)
 
 
 def _unpinned_readers(
