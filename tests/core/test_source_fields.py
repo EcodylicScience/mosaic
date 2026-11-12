@@ -162,3 +162,41 @@ def test_tags_take_the_type_of_their_first_value_and_keep_it(tmp_path: Path) -> 
 
     types = {tag.name: tag.type for tag in open_dataset(ds.manifest_path).manifest.tags}
     assert types == {"n": "int", "rate": "float", "pilot": "label", "ok": "bool"}
+
+
+def test_a_path_pattern_reaches_the_source_and_is_refused_beside_a_stem_pattern() -> (
+    None
+):
+    source = scan_source_from_fields(
+        SourceFields(
+            kind="tracks", path="/d", group_path_pattern=r"Behavior_data/([^/]+)/"
+        )
+    )
+    assert isinstance(source, TracksScanSource)
+    assert source.group_path_pattern == r"Behavior_data/([^/]+)/"
+
+    with pytest.raises(SourceFieldsInvalid, match="group_pattern"):
+        _ = scan_source_from_fields(
+            SourceFields(
+                kind="tracks",
+                path="/d",
+                group_pattern="(a)",
+                group_path_pattern="(b)/",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        SourceFields(kind="media", path="/v", group_path_pattern="(a)/"),
+        SourceFields(
+            kind="labels", path="/l", series="keypoints", group_path_pattern="(a)/"
+        ),
+    ],
+)
+def test_a_path_pattern_does_not_apply_to_media_or_a_series(
+    fields: SourceFields,
+) -> None:
+    with pytest.raises(SourceFieldsInvalid, match="group_path_pattern"):
+        _ = scan_source_from_fields(fields)

@@ -57,7 +57,7 @@ import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import pandas as pd
 
@@ -193,12 +193,31 @@ def frame_from_rows(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=TRACKS_RAW_INDEX_COLUMNS)
 
 
+def _skip_reason(
+    path: Path, exclude_patterns: Sequence[str]
+) -> Literal["fork", "excluded", "tracking", "series"] | None:
+    """Why a scan leaves *path* out, or ``None`` to keep it.
+
+    Checked in order of cost: the label-series marker is three ``stat`` calls.
+    """
+    if path.name.startswith("._"):
+        return "fork"
+    if any(fnmatch.fnmatch(path.name, ex) for ex in exclude_patterns):
+        return "excluded"
+    if is_under_tracking_root(path.parts):
+        return "tracking"
+    if is_under_label_series(path):
+        return "series"
+    return None
+
+
 def iter_track_files(
     search_dirs: Iterable[Path],
     patterns: Sequence[str],
     *,
     recursive: bool = True,
     exclude_patterns: Sequence[str] = (),
+    listed_skipped: list[Path] | None = None,
 ) -> list[tuple[Path, os.stat_result]]:
     """Scan *search_dirs* for raw-track files, deterministically.
 
@@ -209,6 +228,12 @@ def iter_track_files(
     written index is order-stable regardless of filesystem iteration order. The
     identity-free scan shared by :meth:`Dataset.index_tracks_raw` (scan-and-
     derive) and :meth:`Dataset.write_tracks_raw_index` (assignment-driven).
+
+    An entry of *search_dirs* that is a file is a listed file, which a file
+    source hands over in place of a directory. A listed file is claimed whatever
+    a glob says, so *patterns* do not apply to it. It is kept unless a rule
+    below skips it, and a skipped one is appended to *listed_skipped*, so the caller can
+    say that a listed file was not indexed.
 
     **``_tracking`` is never descended into** -- item 8.1's exclusion clause, and
     half of M5's gate. A tracker writes per-individual ``data/*.npz`` and
@@ -241,20 +266,27 @@ def iter_track_files(
     skipped = 0
     series_skipped = 0
     for directory in search_dirs:
-        for pattern in patterns:
-            matches = directory.rglob(pattern) if recursive else directory.glob(pattern)
+        listed = directory.is_file()
+        if listed:
+            matches_by_pattern = [[directory]]
+        else:
+            matches_by_pattern = [
+                directory.rglob(pattern) if recursive else directory.glob(pattern)
+                for pattern in patterns
+            ]
+        for matches in matches_by_pattern:
             for path in matches:
                 if not path.is_file():
                     continue
-                if path.name.startswith("._"):
-                    continue
-                if any(fnmatch.fnmatch(path.name, ex) for ex in exclude_patterns):
-                    continue
-                if is_under_tracking_root(path.parts):
-                    skipped += 1
-                    continue
-                if is_under_label_series(path):
-                    series_skipped += 1
+                skip = _skip_reason(path, exclude_patterns)
+                if skip is not None:
+                    if listed:
+                        if listed_skipped is not None:
+                            listed_skipped.append(path)
+                    elif skip == "tracking":
+                        skipped += 1
+                    elif skip == "series":
+                        series_skipped += 1
                     continue
                 resolved = path.resolve()
                 if resolved in by_resolved:

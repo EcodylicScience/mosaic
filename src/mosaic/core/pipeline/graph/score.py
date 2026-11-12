@@ -45,7 +45,6 @@ and :class:`~mosaic.core.evaluation.EvaluationReport`.
 
 from __future__ import annotations
 
-import glob
 import hashlib
 import json
 import math
@@ -571,12 +570,9 @@ def _declare_sources(
             "multi_sequences_per_file": files.multi_sequences_per_file,
         }
         if where.is_file():
-            # A file source (``files=``) is not walked by the raw scans, which look
-            # for globs under a directory, so one file is a directory source
-            # that matches its exact name and descends nowhere.
+            # One file is a file source, which claims exactly that file.
             found["path"] = str(where.parent)
-            found["patterns"] = (glob.escape(where.name),)
-            found["recursive"] = False
+            found["files"] = (where.name,)
         else:
             found["path"] = str(where)
             if files.patterns is not None:

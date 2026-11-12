@@ -147,7 +147,7 @@ from .manifest import (
     DatasetTag,
     LabelsScanSource,
     LibraryLink,
-    MANIFEST_VERSION,
+    DIVISION_MANIFEST_VERSION,
     MediaDivision,
     MediaLayout,
     MediaScanSource,
@@ -178,6 +178,12 @@ from .pipeline._utils import (
 from .pipeline.placement import place_converted
 from .pipeline.appearance import recorded_appearance_path
 from .pipeline.scan_claim import ScanClaim
+from .scan_findings import (
+    FindingLog,
+    ScanFinding,
+    merged as merged_findings,
+    missing_path_finding,
+)
 from .pipeline.artifact_kinds import ArtifactKind
 from .pipeline.index_stamp import IndexStamp
 from .pipeline.entry_pool import (
@@ -416,6 +422,14 @@ _INDEX_PATH_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
 # imported the registry to dispatch was the cycle. The typed ``labels/<kind>/``
 # schema lives on ``LabelsIndexRow`` in ``labels_index`` -- there is no
 # ``LABEL_INDEX_COLUMNS`` list to keep in step with it any more.
+
+
+def _path_below(root: Path, path: Path) -> str:
+    """*path* relative to *root* with ``/`` separators, or its name if elsewhere."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.name
 
 
 def _md5(path: Path, chunk=1 << 20) -> str:
@@ -1364,16 +1378,34 @@ class MediaIndexResult:
 
 
 @dataclass(frozen=True)
+class RawScanResult:
+    """The raw index a tracks or labels scan wrote, and what it dropped.
+
+    Attributes:
+        path: The index written.
+        findings: What the scan dropped or could not place, such as a source
+            whose path is missing, a listed file that a rule skips, or a group
+            pattern that matches no file.
+    """
+
+    path: Path
+    findings: tuple[ScanFinding, ...] = ()
+
+
+@dataclass(frozen=True)
 class MediaScanResult:
     """The media index a scan wrote, and the recordings it divided.
 
     Attributes:
         path: The index written.
         divisions: The plan of each recording that a dividing source divided.
+        findings: What the scan dropped or could not place, such as a source
+            whose path is missing.
     """
 
     path: Path
     divisions: tuple[DivisionPlan, ...] = ()
+    findings: tuple[ScanFinding, ...] = ()
 
     @property
     def held_back(self) -> tuple[HeldBack, ...]:
@@ -1447,7 +1479,10 @@ class ConversionOutcome:
     """
 
     converted: int
+    """The entries whose tables the call wrote or found current. An entry that
+    failed is not among them."""
     failed: int
+    """The raw files, or merged sequences, that failed."""
     variants: tuple[str, ...] = ()
     """The tracks variants this call minted, sorted. One per converter and
     correction revision it reached, whether its tables were written or skipped
@@ -1457,6 +1492,15 @@ class ConversionOutcome:
     def ok(self) -> bool:
         """Did every sequence the run attempted convert?"""
         return self.failed == 0
+
+    @property
+    def lost_everything(self) -> bool:
+        """Did the run attempt work, and convert none of it?
+
+        The case the ``AllEntriesFailed`` rule names. A run with nothing to
+        convert is not one.
+        """
+        return self.failed > 0 and self.converted == 0
 
 
 @dataclass(slots=True)
@@ -1484,6 +1528,18 @@ class TrackFileOutcome:
     tables: list[StagedTrackTable] = field(default_factory=list)
     failure: EntryFailure | None = None
     warning: str = ""
+
+    @property
+    def failed_entry(self) -> tuple[str, str] | None:
+        """The entry that *failure* belongs to, when the file had reached one.
+
+        A conversion adds an entry to *covered* before it converts it, so the last
+        entry is the one that failed. A file that fails before it names an entry
+        has none.
+        """
+        if self.failure is None or not self.covered:
+            return None
+        return self.covered[-1]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1825,7 +1881,7 @@ def _prepare_divided_manifest(manifest: DatasetManifest, names: Sequence[str]) -
         ValueError: If the manifest refuses the groups.
     """
     _ = _continuous_groups_with(manifest, names)
-    manifest.manifest_version = MANIFEST_VERSION
+    manifest.manifest_version = DIVISION_MANIFEST_VERSION
 
 
 def _declare_divided_groups(manifest: DatasetManifest, names: Sequence[str]) -> None:
@@ -1835,7 +1891,7 @@ def _declare_divided_groups(manifest: DatasetManifest, names: Sequence[str]) -> 
         ValueError: If the manifest refuses the groups.
     """
     manifest.continuous_groups = _continuous_groups_with(manifest, names)
-    manifest.manifest_version = MANIFEST_VERSION
+    manifest.manifest_version = DIVISION_MANIFEST_VERSION
 
 
 def _withdraw_continuous_groups(
@@ -3146,12 +3202,21 @@ class Dataset:
         committed = _read_media_index(
             self.get_root(self.resolve_media_root()) / index_filename
         )
+        logs: list[FindingLog] = []
         for source in selected:
             if not isinstance(source, MediaScanSource):
                 continue
-            claim = claim | self.source_claim(source)
+            claim = claim | self.scan_claim(source)
+            log = FindingLog("media", source.id)
+            logs.append(log)
+            missing = missing_path_finding(
+                "media", source.id, self.resolve_source_path(source)
+            )
+            if missing is not None:
+                log.add(missing)
+                continue
             scanned = self._scan_media_dirs(
-                self._search_paths(source),
+                self._search_paths(source, log),
                 source,
                 committed=committed,
                 include_partial=include_partial,
@@ -3179,7 +3244,9 @@ class Dataset:
             divided=divided,
         )
         self._declare_divided_recordings(divided)
-        return MediaScanResult(path=path, divisions=divided.plans)
+        return MediaScanResult(
+            path=path, divisions=divided.plans, findings=merged_findings(logs)
+        )
 
     def scan_tracks(
         self,
@@ -3187,7 +3254,7 @@ class Dataset:
         only: Sequence[str] = (),
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
-    ) -> Path:
+    ) -> RawScanResult:
         """Rescan every declared tracks source and rewrite ``tracks_raw/index.csv``.
 
         Each source carries its own ``src_format``, patterns and grouping rule,
@@ -3203,6 +3270,11 @@ class Dataset:
         why the readers carry it (:meth:`read_tracks_raw_index` beside
         ``read_tracks_index``) and the scanners do not. Nothing scans the
         converted tables under ``tracks/``; they are computed, not found.
+
+        Returns:
+            The index written, and what the scan dropped: a source whose path is
+            missing, a listed file that a rule skips, and a group pattern that
+            matched no file. A source whose path is missing keeps its rows.
         """
         return self._scan_raw_sources(
             "tracks",
@@ -3217,7 +3289,7 @@ class Dataset:
         only: Sequence[str] = (),
         prune_unsourced: bool = False,
         index_filename: str = "index.csv",
-    ) -> Path:
+    ) -> RawScanResult:
         """Rescan every declared labels source and rewrite ``labels_raw/index.csv``.
 
         Named for the ``labels`` source kind rather than the ``labels_raw`` root,
@@ -3237,7 +3309,7 @@ class Dataset:
         only: Sequence[str],
         prune_unsourced: bool,
         index_filename: str,
-    ) -> Path:
+    ) -> RawScanResult:
         """Drive the raw scan for *kind*, one declared source at a time.
 
         Each source is a separate ``_index_raw`` pass carrying that source's own
@@ -3259,19 +3331,27 @@ class Dataset:
         scan = self.index_tracks_raw if kind == "tracks" else self.index_labels_raw
         written = self.get_root(_RAW_ROOT_FOR_KIND[kind]) / index_filename
         position = 0
+        logs: list[FindingLog] = []
         for source in selected:
             if not isinstance(source, RawScanSource):
                 continue
+            log = FindingLog(kind, source.id)
+            logs.append(log)
+            missing = missing_path_finding(
+                kind, source.id, self.resolve_source_path(source)
+            )
+            if missing is not None:
+                log.add(missing)
             if isinstance(source, LabelsScanSource) and source.series is not None:
                 # A versioned series has its own index and its own rule: one row
                 # per revision, never a per-sequence composition. It is also
                 # never pruned as unsourced, because the rows a dataset wrote
                 # for its own saves sit under no source at all.
-                written = self.index_label_series(source)
+                written = self.index_label_series(source, findings=log)
                 continue
             position += 1
             written = scan(
-                self._search_paths(source),
+                self._search_paths(source, log),
                 patterns=list(source.patterns),
                 src_format=source.src_format,
                 index_filename=index_filename,
@@ -3279,46 +3359,55 @@ class Dataset:
                 multi_sequences_per_file=source.multi_sequences_per_file,
                 group_from=source.group_from,
                 group_pattern=source.group_pattern,
+                group_path_pattern=source.group_path_pattern,
+                group_path_root=self.resolve_source_path(source),
                 exclude_patterns=list(source.exclude_patterns),
                 compute_md5=source.md5,
-                claim=self.source_claim(source),
+                claim=self.scan_claim(source),
+                findings=log,
                 # Only the first pass may prune: a later one would see the
                 # earlier sources' rows as unclaimed and delete what this same
                 # scan had just written. Counted over the per-sequence sources
                 # alone, so a series source declared first does not use it up.
                 prune_unsourced=prune_unsourced and position == 1,
             )
-        return written
+        return RawScanResult(path=written, findings=merged_findings(logs))
 
-    def _search_paths(self, source: ScanSource) -> list[str | Path]:
+    def _search_paths(self, source: ScanSource, log: FindingLog) -> list[str | Path]:
         """What to walk for *source*: its directory, or each listed file.
 
-        A file-mode source hands the walker its individual files. The prober
-        accepts a file as readily as a directory, which is what lets one scan
-        path serve both modes rather than branching all the way down.
+        A file-mode source hands the walker its individual files. The media
+        prober and the raw-track walk both accept a file in place of a
+        directory, which is what lets one scan path serve both modes rather than
+        branching all the way down. A listed file that has gone is reported to
+        *log*.
         """
         if source.mode == "files":
-            return list(self._source_files(source))
+            return list(self._source_files(source, log))
         return [self.resolve_source_path(source)]
 
-    def _source_files(self, source: ScanSource) -> list[Path]:
+    def _source_files(self, source: ScanSource, log: FindingLog) -> list[Path]:
         """The listed files of a file-mode source that are actually on disk.
 
-        A listed file that has gone is reported and skipped: its row leaves the
-        index because the file did, while the declaration stays, because a share
-        being unmounted is not a decision to un-import.
+        A listed file that has gone is reported to *log* and skipped: its row
+        leaves the index because the file did, while the declaration stays,
+        because a share being unmounted is not a decision to un-import. A source
+        whose own path is missing lists nothing present, and the scan reports
+        that path once rather than each file.
         """
         base = self.resolve_source_path(source)
+        if not base.exists():
+            return []
         present: list[Path] = []
         for entry in source.files:
             candidate = base / entry
             if candidate.exists():
                 present.append(candidate)
             else:
-                print(
-                    f"[scan] source {source.id!r}: {candidate} is listed but "
-                    "missing; its row will leave the index",
-                    file=sys.stderr,
+                log.report(
+                    "listed_file_missing",
+                    f"{candidate} is listed but missing; its row will leave the index",
+                    path=candidate,
                 )
         return present
 
@@ -7170,11 +7259,25 @@ class Dataset:
         return self._resolve_declared_path(source.path)
 
     def source_claim(self, source: ScanSource) -> ScanClaim:
-        """What *source* is responsible for, and so what a scan of it replaces."""
+        """What *source* is responsible for, whether or not its path is there."""
         base = self.resolve_source_path(source)
         if source.mode == "files":
             return ScanClaim.over_files(base / entry for entry in source.files)
         return ScanClaim.over_directories([base])
+
+    def scan_claim(self, source: ScanSource) -> ScanClaim:
+        """What a scan of *source* may replace: nothing while its path is missing.
+
+        A source whose path does not exist, or is a link to one that does not,
+        may name a share that is not mounted. A scan of it finds no file, and
+        replacing what it claims would then delete every row it indexed. A claim
+        over nothing leaves those rows, and the scan reports the path
+        (:func:`~mosaic.core.scan_findings.missing_path_finding`). Removing the
+        source's rows is :meth:`source_claim`'s, which a person asks for.
+        """
+        if not self.resolve_source_path(source).exists():
+            return ScanClaim()
+        return self.source_claim(source)
 
     def _carry_forward_derivative_links(
         self, rows: list[dict[str, object]], index_path: Path
@@ -8455,6 +8558,9 @@ class Dataset:
         *,
         claim: ScanClaim | None = None,
         prune_unsourced: bool = False,
+        group_path_pattern: Optional[str] = None,
+        group_path_root: Optional[Path] = None,
+        findings: FindingLog | None = None,
     ) -> Path:
         """
         Scan for original tracking files and write tracks_raw/index.csv
@@ -8486,6 +8592,21 @@ class Dataset:
                 r'^(hex|OCI|OLE)_' -> extracts 'hex', 'OCI', or 'OLE' as group
                 r'^([A-Za-z]+)_'   -> extracts letters before first underscore as group
             Applied AFTER sequence is determined (e.g., after stripping a TREx ID suffix like _id0).
+            It searches the file stem, never the folders; a pattern that matches
+            no file is reported.
+        group_path_pattern : str | None
+            Regex searched in each file's path relative to *group_path_root*,
+            with ``/`` separators. Its first capture group is the group. It
+            reaches a folder, which ``group_pattern`` does not, and applies in
+            both ``multi_sequences_per_file`` modes. A pattern that matches no
+            file is reported. Mutually exclusive with ``group_pattern``,
+            ``group_from`` and ``group_from_path``.
+        group_path_root : Path | None
+            The directory the path pattern's paths are relative to. Required with
+            ``group_path_pattern``; a scan of a source passes the source's path.
+        findings : FindingLog | None
+            Where to report what the scan drops or cannot place. Without one the
+            findings are printed on stderr and not kept.
         group_from_path : Callable[[Path], str] | None
             Derive the group from the raw file's path, for a grouping that is a
             *rule* rather than a substring -- "day 1 is baseline, anything else
@@ -8541,6 +8662,9 @@ class Dataset:
             compute_md5=compute_md5,
             claim=claim,
             prune_unsourced=prune_unsourced,
+            group_path_pattern=group_path_pattern,
+            group_path_root=group_path_root,
+            findings=findings,
         )
 
     def _index_raw(
@@ -8562,6 +8686,9 @@ class Dataset:
         compute_md5: bool = True,
         claim: ScanClaim | None = None,
         prune_unsourced: bool = False,
+        group_path_pattern: Optional[str] = None,
+        group_path_root: Optional[Path] = None,
+        findings: FindingLog | None = None,
     ) -> Path:
         """Scan a source root and write its ``<root>/index.csv`` + composition.
 
@@ -8607,14 +8734,47 @@ class Dataset:
                 "spellings of one answer, and silently preferring one is how the "
                 "two drift apart. A rule that needs the regex can call it itself."
             )
+        if group_path_pattern and (group_pattern or group_from_path is not None):
+            raise ValueError(
+                "pass group_path_pattern or one of group_pattern and "
+                "group_from_path, not both: they are spellings of one answer"
+            )
+        if group_path_pattern and group_from:
+            raise ValueError(
+                "pass group_path_pattern or group_from, not both: they are "
+                "spellings of one answer"
+            )
+        if group_path_pattern and group_path_root is None:
+            raise ValueError("group_path_pattern needs group_path_root")
         group_re = re.compile(group_pattern) if group_pattern else None
+        path_re = re.compile(group_path_pattern) if group_path_pattern else None
+        path_root = None if group_path_root is None else user_path(group_path_root)
+        log = (
+            findings
+            if findings is not None
+            else FindingLog("tracks" if target_root == "tracks_raw" else "labels", "")
+        )
+        stem_matched = False
+        path_matched = False
 
-        for p, st in iter_track_files(
+        skipped_listed: list[Path] = []
+        files = iter_track_files(
             search,
             pat_list,
             recursive=recursive,
             exclude_patterns=exc_list,
-        ):
+            listed_skipped=skipped_listed,
+        )
+        for listed in skipped_listed:
+            log.report(
+                "listed_file_skipped",
+                f"{listed} is listed but skipped (a resource fork, an excluded name, "
+                "a tracker's generated file or a label series file), so it is not "
+                "indexed",
+                path=listed,
+            )
+
+        for p, st in files:
             if multi_sequences_per_file:
                 # put file-level grouping into 'group', leave sequence blank
                 if group_from == "filename":
@@ -8630,9 +8790,15 @@ class Dataset:
                 # Extract group from sequence using pattern
                 if group_re:
                     m = group_re.search(seq)
+                    stem_matched = stem_matched or m is not None
                     grp = m.group(1) if m else ""
                 else:
                     grp = ""
+
+            if path_re is not None and path_root is not None:
+                found = path_re.search(_path_below(path_root, p))
+                path_matched = path_matched or found is not None
+                grp = (found.group(1) or "") if found else ""
 
             # Last, so it supersedes both branches above: a caller that supplies a
             # rule has said the derivations here do not express their grouping.
@@ -8649,6 +8815,25 @@ class Dataset:
                     src_format=src_format,
                     md5=_digest(p),
                 )
+            )
+
+        if files and group_re is not None and not multi_sequences_per_file:
+            if not stem_matched:
+                log.report(
+                    "group_pattern_unmatched",
+                    f"group_pattern {group_pattern!r} matched none of the "
+                    f"{len(files)} file stems, so each entry has an empty group. "
+                    "It searches the file stem, not the folders; "
+                    "group_path_pattern searches the path below the source",
+                    pattern=group_pattern,
+                )
+        if files and path_re is not None and not path_matched:
+            log.report(
+                "group_path_pattern_unmatched",
+                f"group_path_pattern {group_path_pattern!r} matched none of the "
+                f"{len(files)} file paths below {path_root}, so each entry has an "
+                "empty group",
+                pattern=group_path_pattern,
             )
 
         # iter_track_files already deduped by resolved path and sorted. The scan
@@ -8692,7 +8877,9 @@ class Dataset:
         print(f"[index_{target_root}] {len(df)} -> {out_csv}")
         return out_csv
 
-    def index_label_series(self, source: LabelsScanSource) -> Path:
+    def index_label_series(
+        self, source: LabelsScanSource, findings: FindingLog | None = None
+    ) -> Path:
         """Index the revisions *source* claims into ``labels_raw/<series>/index.csv``.
 
         The series sibling of :meth:`index_labels_raw`, and deliberately not built
@@ -8711,6 +8898,9 @@ class Dataset:
         keeps the digest it had, so a rescan of many unchanged revisions reads
         none of them.
 
+        A listed file that has gone is reported to *findings*, or on stderr when
+        none is given.
+
         Raises:
             ValueError: *source* declares no series.
             LabelSeriesTamperedError: A claimed revision's bytes have changed.
@@ -8723,7 +8913,14 @@ class Dataset:
         ensure_series_root(index_path.parent, spec)
 
         if source.mode == "files":
-            payloads = sorted(self._source_files(source))
+            payloads = sorted(
+                self._source_files(
+                    source,
+                    findings
+                    if findings is not None
+                    else FindingLog("labels", source.id),
+                )
+            )
         else:
             base = self.resolve_source_path(source)
             found = (
@@ -8749,7 +8946,7 @@ class Dataset:
             for path in payloads
         ]
 
-        claim = self.source_claim(source)
+        claim = self.scan_claim(source)
         with index_lock(index_path):
             committed = index_records(read_label_series(self, spec.name))
             preserved = [row for row in committed if not self._row_claimed(row, claim)]
@@ -8777,6 +8974,9 @@ class Dataset:
         *,
         claim: ScanClaim | None = None,
         prune_unsourced: bool = False,
+        group_path_pattern: Optional[str] = None,
+        group_path_root: Optional[Path] = None,
+        findings: FindingLog | None = None,
     ) -> Path:
         """Scan for raw label files and write ``labels_raw/index.csv``.
 
@@ -8827,6 +9027,9 @@ class Dataset:
             compute_md5=compute_md5,
             claim=claim,
             prune_unsourced=prune_unsourced,
+            group_path_pattern=group_path_pattern,
+            group_path_root=group_path_root,
+            findings=findings,
         )
 
     def write_tracks_raw_index(
@@ -9501,6 +9704,9 @@ class Dataset:
         # ``_warn_superseded_entries``.
         covered: set[tuple[str, str]] = set()
         minted: set[str] = set()
+        # The keys of the covered entries that did not convert, so that the count
+        # of converted entries leaves them out while ``covered`` keeps naming them.
+        unconverted: set[str] = set()
 
         settings = parallel or ParallelSettings()
         works: dict[int, _TrackWork] = {}
@@ -9516,6 +9722,7 @@ class Dataset:
             """Report a table that was gone when it was published, as a failure."""
             print(f"[WARN] {lost.error}", file=sys.stderr)
             failures.append(lost.key)
+            unconverted.add(lost.key)
             if on_failure is not None:
                 lost.record(on_failure)
 
@@ -9530,6 +9737,8 @@ class Dataset:
             if result.failure is not None:
                 print(result.warning, file=sys.stderr)
                 failures.append(result.failure.key)
+                if result.failed_entry is not None:
+                    unconverted.add(make_entry_key(*result.failed_entry))
                 if on_failure is not None:
                     result.failure.record(on_failure)
             advance(work.size)
@@ -9579,7 +9788,9 @@ class Dataset:
 
         self._warn_superseded_entries(covered)
         outcome = ConversionOutcome(
-            converted=len(covered),
+            converted=sum(
+                1 for entry in covered if make_entry_key(*entry) not in unconverted
+            ),
             failed=len(failures),
             variants=tuple(sorted(minted)),
         )

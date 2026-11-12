@@ -25,6 +25,10 @@ ds.convert_all_tracks()
 `--source-format` converts the raw files of one format only, and `--json` reports the
 tracks variants the conversion wrote into.
 
+A run in which some entries fail reports `partial` and exits 0. A run in which every
+entry fails reports `failed` and exits 1; `converted` counts only the entries written
+or already current.
+
 ## Convert as a recipe step
 
 The conversion can be the first step of a recipe, so one request converts the tracks

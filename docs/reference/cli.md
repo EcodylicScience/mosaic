@@ -327,6 +327,11 @@ division. A sequence still recording is held back, and a division that
 cannot be written is refused. Both are listed on stderr, or under
 ``held_back`` and ``refused`` with ``--json``.
 
+A source whose path is missing, a listed file that a rule skips and a group
+pattern that matches no file are warned of on stderr, and listed under
+``findings`` with ``--json``, each naming its source. The rows of a source
+whose path is missing stay in the index.
+
 **Usage**:
 
 ```console
@@ -1500,7 +1505,8 @@ Serve mosaic's MCP tools, resources and prompts to one client over stdio.
 An MCP client starts this command and speaks JSON-RPC on its standard input
 and output, so the command writes its own messages to standard error. It
 needs the `mcp` extra. `mosaic agent install --mcp` registers it for Claude
-Code.
+Code. It starts with no dataset when its configuration sets `dataset_roots`,
+where `manage_dataset` creates one.
 
 With --http it serves one user over streamable HTTP instead, behind a bearer
 token, for a client on another machine of a trusted network. It does not
@@ -1615,7 +1621,8 @@ $ mosaic sources add [OPTIONS]
 * `--exclude-patterns <str>`: Tracks/labels only: basename globs to skip.
 * `--multi-sequences-per-file`: One file holds several sequences.
 * `--group-from <str>`: 'filename' or 'parent'. Multi-sequence files only.
-* `--group-pattern <str>`: Regex extracting the group from a path.
+* `--group-pattern <str>`: Tracks/labels only: regex searched in the file stem, as the converter names the sequence (not the folders); its first capture group is the group. For a folder, use --group-path-pattern.
+* `--group-path-pattern <str>`: Tracks/labels only: regex searched in the file's path relative to the source, with '/' separators; its first capture group is the group. Excludes --group-pattern and --group-from.
 * `--md5 / --no-md5`: Checksum each file. On by default: the composition hash is over these.  [default: md5]
 * `--series <str>`: Labels only: claim revisions of this versioned label series (e.g. 'keypoints') instead of uploaded label files. Usually with --file, naming exactly the revisions wanted.
 * `--divide-frames <int>`: Media only: divide each imgstore recording into sequences of this many frames, a whole multiple of the store's chunksize.

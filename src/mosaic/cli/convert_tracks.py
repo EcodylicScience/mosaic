@@ -95,20 +95,25 @@ def convert_tracks_command(
             )
     except Exception as exc:  # noqa: BLE001 - surface conversion errors cleanly
         fail(f"convert-tracks failed: {exc}")
+    status = "failed" if outcome.lost_everything else "ok" if outcome.ok else "partial"
     if as_json:
         # "ok" was emitted unconditionally, so a run in which every sequence
         # failed to convert exited 0 reporting success.
         emit_json(
             {
-                "status": "ok" if outcome.ok else "partial",
+                "status": status,
                 "converted": outcome.converted,
                 "failed": outcome.failed,
                 "variants": list(outcome.variants),
             }
         )
-    elif outcome.ok:
+    elif status == "ok":
         typer.echo(f"Converted {outcome.converted} sequence(s).")
     else:
         typer.echo(
-            f"Converted {outcome.converted} sequence(s); {outcome.failed} failed."
+            f"Converted {outcome.converted} sequence(s); {outcome.failed} failed.",
+            err=status == "failed",
         )
+    if status == "failed":
+        # Losing every entry is the AllEntriesFailed rule: the exit status says so.
+        raise typer.Exit(code=1)

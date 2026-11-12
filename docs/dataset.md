@@ -265,6 +265,28 @@ scan replaces only what its own sources claim.
 A source path may also be relative to the dataset, so `--path media_raw` declares the
 files you placed there as a source and brings them under `mosaic scan` too.
 
+A scan warns on stderr, and lists under `findings` with `--json`, what it drops: a
+source whose path does not exist or is a link to one that does not (`sources add`
+warns of this too, and still declares the source), a listed file that a rule skips,
+such as a resource fork, and a group pattern that matches no file. A scan of a source
+whose path is missing leaves the rows that source indexed, so an unmounted share loses
+none; scan again once it is back. A files source indexes every file it lists that
+exists, whatever its suffix.
+
+A tracks or labels source can name each entry's group from its path. `--group-pattern`
+is a regex searched in the file stem, as the converter names the sequence, and its
+first capture group is the group. `--group-path-pattern` is searched in the file's
+path relative to the source, with `/` separators, so it reaches a folder:
+
+```bash
+mosaic sources add -m ~/dataset/dataset.yaml --kind tracks \
+    --path /data/release --patterns '*.csv' --src-format deeplabcut \
+    --group-path-pattern 'Behavior_data/([^/]+)/'
+```
+
+A source takes one of the two patterns. A manifest with a `--group-path-pattern` source
+is written at version 5, which an older mosaic refuses to open.
+
 ## Entry names
 
 Each sequence is an **entry**, named by a `group` and a `sequence`, and `group` may be

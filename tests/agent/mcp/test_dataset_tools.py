@@ -532,3 +532,72 @@ def test_two_creates_of_one_path_make_one_dataset(
         open_dataset(roots[0] / "same" / "dataset.yaml").manifest.uuid
         == made[0].dataset
     )
+
+
+def test_a_scan_of_a_missing_source_path_returns_the_finding(
+    backend: LocalBackend,
+) -> None:
+    """An agent reads the result, not stderr."""
+    uuid = _created(backend).dataset
+    _ = _call(
+        backend,
+        DatasetChange,
+        action="add_source",
+        dataset=uuid,
+        path="ghost",
+        source_id="ghost",
+        confirm=True,
+        **CALMS21,
+    )
+
+    scanned = _call(backend, DatasetChange, action="scan", dataset=uuid)
+
+    (finding,) = scanned.findings
+    assert (finding.kind, finding.source, finding.problem) == (
+        "tracks",
+        "ghost",
+        "path_missing",
+    )
+    assert finding.path is not None
+    assert finding.path.endswith("ghost")
+
+
+def test_a_path_pattern_groups_a_source_declared_through_the_tool(
+    backend: LocalBackend,
+) -> None:
+    created = _created(backend)
+    uuid = created.dataset
+    _ = _sourced(
+        backend,
+        uuid,
+        multi_sequences_per_file=False,
+        group_from=None,
+        group_path_pattern=r"^([^.]+)\.",
+    )
+
+    scanned = _call(backend, DatasetChange, action="scan", dataset=uuid)
+
+    assert scanned.scanned == {"tracks": 2}
+    assert scanned.findings == ()
+    held = open_dataset(Path(created.manifest))
+    assert sorted(row["group"] for row in held.read_tracks_raw_index()) == [
+        "test",
+        "train",
+    ]
+
+
+def test_a_dataset_root_that_does_not_exist_yet_holds_none_and_takes_the_first(
+    tmp_path: Path,
+) -> None:
+    later = tmp_path / "later"
+    backend = LocalBackend(
+        [], warm=False, start_driver=RecordingStarter(), dataset_roots=[later]
+    )
+
+    before = _tool(backend, DatasetList, "list_datasets")
+    created = _created(backend)
+    after = _tool(backend, DatasetList, "list_datasets")
+
+    assert before.items == ()
+    assert [item.uuid for item in after.items] == [created.dataset]
+    assert (later / "study" / "dataset.yaml").is_file()

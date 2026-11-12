@@ -207,7 +207,9 @@ def served_manifests(datasets: Iterable[Path], config: ServerConfig) -> list[Pat
     """Return the manifests to serve: *datasets*, the file's, then those discovered.
 
     The datasets below ``dataset_roots`` are discovered as those below
-    ``discover`` are.
+    ``discover`` are. A dataset root that does not exist yet holds none, and
+    ``manage_dataset`` makes it when it creates a dataset there. A ``discover``
+    directory that does not exist raises.
 
     A dataset named twice is served once, which ``LocalBackend`` decides by uuid.
 
@@ -218,6 +220,9 @@ def served_manifests(datasets: Iterable[Path], config: ServerConfig) -> list[Pat
     from .local import discovered_manifests
 
     manifests = [*datasets, *config.datasets]
-    for root in [*config.discover, *config.dataset_roots]:
+    for root in config.discover:
         manifests.extend(discovered_manifests(root))
+    for root in config.dataset_roots:
+        if root.is_dir():
+            manifests.extend(discovered_manifests(root))
     return manifests

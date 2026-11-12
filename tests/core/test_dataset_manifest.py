@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from mosaic.core.dataset import open_dataset
 from mosaic.core.manifest import (
     MANAGED_BY_KEY,
+    DIVISION_MANIFEST_VERSION,
     MANIFEST_VERSION,
     NOTES_MAX_CHARS,
     TAGS_MAX_COUNT,
@@ -792,7 +793,7 @@ class TestDivision:
         manifest = DatasetManifest(sources=ScanSources(media=(source,)))
         write_manifest(path, manifest)
         written = yaml.safe_load(path.read_text())
-        assert written["manifest_version"] == MANIFEST_VERSION == 4
+        assert written["manifest_version"] == DIVISION_MANIFEST_VERSION == 4
         assert written["sources"]["media"][0]["division"] == {
             "frames": 60000,
             "identity": "camera",
@@ -813,9 +814,61 @@ class TestDivision:
     def test_a_raised_version_survives_a_round_trip(self, tmp_path: Path) -> None:
         """A dataset whose media index holds division rows stays at 4."""
         path = tmp_path / "dataset.yaml"
-        manifest = DatasetManifest(manifest_version=MANIFEST_VERSION)
+        manifest = DatasetManifest(manifest_version=DIVISION_MANIFEST_VERSION)
         write_manifest(path, manifest)
         assert read_manifest(path).manifest_version == 4
+
+    def test_a_source_grouping_by_path_writes_version_5_and_round_trips(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "dataset.yaml"
+        source = TracksScanSource(
+            id="d", path="/data/d", group_path_pattern=r"Behavior_data/([^/]+)/"
+        )
+        write_manifest(path, DatasetManifest(sources=ScanSources(tracks=(source,))))
+        written = yaml.safe_load(path.read_text())
+        assert written["manifest_version"] == MANIFEST_VERSION == 5
+        assert (
+            written["sources"]["tracks"][0]["group_path_pattern"]
+            == r"Behavior_data/([^/]+)/"
+        )
+        back = read_manifest(path)
+        assert back.sources.tracks == (source,)
+        assert back.manifest_version == 5
+
+    def test_a_source_without_a_path_pattern_stays_below_version_5(self) -> None:
+        source = TracksScanSource(id="d", path="/data/d", group_pattern="^(a)_")
+        payload = manifest_payload(
+            DatasetManifest(sources=ScanSources(tracks=(source,)))
+        )
+        assert payload["manifest_version"] == 3
+        assert "group_path_pattern" not in yaml.safe_dump(payload)
+
+    def test_a_dividing_dataset_with_a_path_pattern_writes_version_5(self) -> None:
+        manifest = DatasetManifest(
+            sources=ScanSources(
+                media=(
+                    MediaScanSource(
+                        id="m", path="/m", division=MediaDivision(frames=600)
+                    ),
+                ),
+                tracks=(
+                    TracksScanSource(id="t", path="/t", group_path_pattern="([^/]+)/"),
+                ),
+            )
+        )
+        assert manifest_payload(manifest)["manifest_version"] == 5
+
+    def test_version_5_under_version_4_code_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import mosaic.core.manifest as manifest_module
+
+        path = tmp_path / "dataset.yaml"
+        _ = path.write_text("manifest_version: 5\nname: d\n", encoding="utf-8")
+        monkeypatch.setattr(manifest_module, "MANIFEST_VERSION", 4)
+        with pytest.raises(ManifestVersionError, match="declares version 5"):
+            _ = read_manifest(path)
 
     def test_version_4_under_version_3_code_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

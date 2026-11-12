@@ -265,6 +265,84 @@ class TestSources:
         assert indexed(manifest) == set()
 
 
+class TestGroupPathPattern:
+    def test_a_path_pattern_groups_by_folder_and_is_declared_in_the_manifest(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        root = tmp_path / "release"
+        for strain in ("strainA", "strainB"):
+            folder = root / "Behavior_data" / strain
+            folder.mkdir(parents=True)
+            _ = (folder / "x.npy").write_bytes(b"\x00")
+        added = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(root), "--id", "d", "--patterns", "*.npy",
+             "--src-format", "calms21_npy",
+             "--group-path-pattern", "Behavior_data/([^/]+)/"],
+        )  # fmt: skip
+        assert added.exit_code == 0, added.output
+        assert "manifest_version: 5" in manifest.read_text()
+
+        scanned = runner.invoke(app, ["scan", "-m", str(manifest)])
+        assert scanned.exit_code == 0, scanned.output
+
+        rows = Dataset(manifest_path=manifest).load().read_tracks_raw_index()
+        assert sorted(row["group"] for row in rows) == ["strainA", "strainB"]
+
+    def test_the_two_group_options_are_refused_together_by_flag(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        result = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(tmp_path), "--group-pattern", "(a)",
+             "--group-path-pattern", "(b)/"],
+        )  # fmt: skip
+        assert result.exit_code != 0
+        assert "--group-pattern" in result.output
+        assert "--group-path-pattern" in result.output
+
+    def test_the_help_says_where_each_pattern_looks(self) -> None:
+        result = runner.invoke(app, ["sources", "add", "--help"])
+        flat = " ".join(result.output.replace("│", " ").split())
+        assert "file stem" in flat
+        assert "relative to the source" in flat
+
+
+class TestDeclaringAMissingPath:
+    def test_it_warns_and_still_declares(self, tmp_path: Path) -> None:
+        manifest = make_dataset(tmp_path)
+        gone = tmp_path / "unmounted"
+        result = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(gone), "--id", "s", "--patterns", "*.npy",
+             "--src-format", "calms21_npy", "--json"],
+        )  # fmt: skip
+        assert result.exit_code == 0, result.output
+        assert str(gone) in result.stderr
+        payload = json.loads(result.stdout)
+        assert payload["id"] == "s"
+        (finding,) = payload["findings"]
+        assert (finding["problem"], finding["path"]) == ("path_missing", str(gone))
+        sources = Dataset(manifest_path=manifest).load().scan_sources("tracks")
+        assert [source.id for source in sources] == ["s"]
+
+    def test_a_present_path_warns_of_nothing(self, tmp_path: Path) -> None:
+        manifest = make_dataset(tmp_path)
+        result = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(tmp_path), "--id", "s", "--json"],
+        )  # fmt: skip
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["findings"] == []
+        assert result.stderr == ""
+
+
 class TestScan:
     def test_a_bare_scan_rescans_everything_declared(
         self, tmp_path: Path, write_cfr_mp4: VideoWriter
@@ -403,6 +481,63 @@ class TestScan:
         )
         _ = runner.invoke(app, ["scan", "-m", str(manifest)])
         assert indexed(manifest) == {"a.mp4", "b.mp4", "c.mp4"}
+
+    def test_json_lists_what_the_scan_dropped(self, tmp_path: Path) -> None:
+        manifest = make_dataset(tmp_path)
+        gone = tmp_path / "unmounted"
+        added = runner.invoke(
+            app,
+            [
+                "sources", "add", "-m", str(manifest),
+                "--kind", "tracks", "--path", str(gone), "--id", "s",
+                "--patterns", "*.npy", "--src-format", "calms21_npy",
+            ],
+        )  # fmt: skip
+        assert added.exit_code == 0, added.output
+
+        result = runner.invoke(app, ["scan", "-m", str(manifest), "--json"])
+
+        assert result.exit_code == 0, result.output
+        (finding,) = json.loads(result.stdout)["findings"]
+        assert finding["kind"] == "tracks"
+        assert finding["source"] == "s"
+        assert finding["problem"] == "path_missing"
+        assert finding["path"] == str(gone)
+        assert str(gone) in result.stderr
+
+    def test_json_lists_no_findings_for_a_clean_scan(
+        self, tmp_path: Path, write_cfr_mp4: VideoWriter
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        folder = tmp_path / "nas"
+        write_cfr_mp4(folder / "one.mp4")
+        _ = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "media",
+             "--path", str(folder), "--id", "nas"],
+        )  # fmt: skip
+        result = runner.invoke(app, ["scan", "-m", str(manifest), "--json"])
+        assert json.loads(result.stdout)["findings"] == []
+
+    def test_a_tracks_file_source_is_indexed_through_the_cli(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = make_dataset(tmp_path)
+        folder = tmp_path / "raw"
+        folder.mkdir()
+        for name in ("a.npy", "b.npy"):
+            _ = (folder / name).write_bytes(b"\x00")
+        added = runner.invoke(
+            app,
+            ["sources", "add", "-m", str(manifest), "--kind", "tracks",
+             "--path", str(folder), "--file", "a.npy", "--id", "s",
+             "--src-format", "calms21_npy"],
+        )  # fmt: skip
+        assert added.exit_code == 0, added.output
+        scanned = runner.invoke(app, ["scan", "-m", str(manifest)])
+        assert scanned.exit_code == 0, scanned.output
+        rows = Dataset(manifest_path=manifest).load().read_tracks_raw_index()
+        assert [Path(row["abs_path"]).name for row in rows] == ["a.npy"]
 
     def test_the_retired_commands_are_gone(self, tmp_path: Path) -> None:
         """``mosaic scan`` replaced them; two ways to scan was one too many."""

@@ -70,6 +70,7 @@ class SourceFields:
     multi_sequences_per_file: bool = False
     group_from: str | None = None
     group_pattern: str | None = None
+    group_path_pattern: str | None = None
     md5: bool = True
     series: str | None = None
     divide_frames: int | None = None
@@ -107,6 +108,7 @@ def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
                 "exclude_patterns": fields.exclude_patterns,
                 "group_from": fields.group_from,
                 "group_pattern": fields.group_pattern,
+                "group_path_pattern": fields.group_path_pattern,
                 "series": fields.series,
                 "multi_sequences_per_file": fields.multi_sequences_per_file or None,
             },
@@ -163,6 +165,7 @@ def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
                 "exclude_patterns": fields.exclude_patterns,
                 "group_from": fields.group_from,
                 "group_pattern": fields.group_pattern,
+                "group_path_pattern": fields.group_path_pattern,
                 "multi_sequences_per_file": fields.multi_sequences_per_file or None,
             }
             given = [name for name, value in per_sequence.items() if value is not None]
@@ -182,6 +185,7 @@ def scan_source_from_fields(fields: SourceFields) -> AnyScanSource:
                 exclude_patterns=fields.exclude_patterns,
                 group_from=fields.group_from,
                 group_pattern=fields.group_pattern,
+                group_path_pattern=fields.group_path_pattern,
             ),
         }
         if fields.multi_sequences_per_file:

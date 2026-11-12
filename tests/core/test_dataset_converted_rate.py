@@ -3,23 +3,26 @@
 A SLEAP analysis file records no frame rate. ``convert_all_tracks`` times each entry
 at the explicit ``fps`` parameter, else the rate that the entry's indexed media
 measured, else ``meta.fps_default``. An entry with none of the three fails alone and
-the run reports ``partial``, instead of writing a ``time`` column at an assumed rate.
+the run reports ``partial``, or ``failed`` when every entry does, instead of writing
+a ``time`` column at an assumed rate.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+from typer.testing import CliRunner
 
+from mosaic.cli import app
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.track_converter import FrameRateUnknownError
 from tests.helpers import (
     MediaClip,
-    invoke_json,
     make_dataset,
     write_media_index,
     write_sleap_analysis_h5,
@@ -120,10 +123,11 @@ def test_a_run_whose_every_entry_has_no_rate_converts_nothing(
     assert read_tracks_index(dataset).empty
 
 
-def test_the_cli_reports_a_refused_entry_as_partial(tmp_path: Path) -> None:
+def test_the_cli_fails_when_the_only_entry_is_refused(tmp_path: Path) -> None:
     dataset = _dataset(tmp_path)
 
-    payload = invoke_json(
+    result = CliRunner().invoke(
+        app,
         [
             "convert-tracks",
             "-m",
@@ -131,11 +135,13 @@ def test_the_cli_reports_a_refused_entry_as_partial(tmp_path: Path) -> None:
             "--source-format",
             "sleap_analysis_h5",
             "--json",
-        ]
+        ],
     )
 
-    assert payload["status"] == "partial"
-    assert payload["failed"] == 1
+    assert result.exit_code != 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "failed"
+    assert (payload["converted"], payload["failed"]) == (0, 1)
 
 
 def test_the_default_times_an_entry_without_media(tmp_path: Path) -> None:

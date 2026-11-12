@@ -81,8 +81,9 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   `source_roots`, each path resolved through links and `..`. It writes the manifest
   only through `Dataset.declare_scan_source`, `undeclare_scan_source` and
   `update_tags`, which take the manifest's lock, and never `splits`. A dataset below a
-  dataset root is served without a restart (`_serve_new_datasets`), and a change
-  reopens the served dataset (`_reopened`) (`tests/agent/mcp/test_dataset_tools.py`).
+  dataset root is served without a restart (`_serve_new_datasets`), and `mosaic agent
+  serve` starts with none when it has a root. A change reopens the served dataset
+  (`_reopened`) (`tests/agent/mcp/test_dataset_tools.py`).
 - `docs/agents.md` lists the operations the server leaves to the user, such as
   deletion, `--apply` on a sweep or prune verb, and the other manifest writes. Do not
   add a tool for one. The one deletion the tools make is removing superseded feature runs: the

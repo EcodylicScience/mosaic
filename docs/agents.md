@@ -141,8 +141,14 @@ recipe_roots: []       # where a recipe named {"path": ...} is read from
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
 The agent cannot open a dataset outside this list, except one it creates, or that
-appears, below a `dataset_roots` directory: those are served without a restart. A manifest without a `uuid`, or one
-that does not read, is left out and reported on the server's standard error.
+appears, below a `dataset_roots` directory: those are served without a restart. A
+manifest without a `uuid`, or one that does not read, is left out and reported on the
+server's standard error.
+
+The server starts with no dataset when `dataset_roots` is set and `--dataset`,
+`datasets` and `discover` name none: `list_datasets` returns an empty list until the
+agent creates one with `manage_dataset`. A dataset root that does not exist yet is made
+by that first `create`.
 
 ### The tools
 

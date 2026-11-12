@@ -295,7 +295,8 @@ def serve_command(
     An MCP client starts this command and speaks JSON-RPC on its standard input
     and output, so the command writes its own messages to standard error. It
     needs the `mcp` extra. `mosaic agent install --mcp` registers it for Claude
-    Code.
+    Code. It starts with no dataset when its configuration sets `dataset_roots`,
+    where `manage_dataset` creates one.
 
     With --http it serves one user over streamable HTTP instead, behind a bearer
     token, for a client on another machine of a trusted network. It does not
@@ -323,8 +324,11 @@ def serve_command(
     if unknown:
         fail(f"--allow-cleanup takes {CLEANUP_FEATURE_RUNS}, not {', '.join(unknown)}.")
     manifests = served_manifests([user_path(path) for path in datasets or []], settings)
-    if not manifests:
-        fail("No dataset to serve. Name one with --dataset or in a --config file.")
+    if not manifests and not settings.dataset_roots:
+        fail(
+            "No dataset to serve. Name one with --dataset or in a --config file, "
+            "or set dataset_roots there so manage_dataset can create one."
+        )
     granted: frozenset[CleanupClass] = frozenset(
         [
             *([CLEANUP_FEATURE_RUNS] if allow_cleanup else []),

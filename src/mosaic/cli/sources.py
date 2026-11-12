@@ -47,9 +47,9 @@ SourceKindArg = Literal["media", "tracks", "labels"]
 
 
 _FIELD_FLAGS = re.compile(
-    r"(?<![\w-])(?<!a )(multi_sequences_per_file|exclude_patterns|group_pattern|group_from"
-    r"|match_mode|src_format|extensions|patterns|layout|series|divide_frames"
-    r"|recording_name)(?![\w-])"
+    r"(?<![\w-])(?<!a )(multi_sequences_per_file|exclude_patterns|group_path_pattern"
+    r"|group_pattern|group_from|match_mode|src_format|extensions|patterns|layout"
+    r"|series|divide_frames|recording_name)(?![\w-])"
 )
 """A source field named in a refusal, to spell as the flag that sets it.
 
@@ -203,7 +203,26 @@ def add_source(
     ] = None,
     group_pattern: Annotated[
         str | None,
-        typer.Option("--group-pattern", help="Regex extracting the group from a path."),
+        typer.Option(
+            "--group-pattern",
+            help=(
+                "Tracks/labels only: regex searched in the file stem, as the "
+                "converter names the sequence (not the folders); its first "
+                "capture group is the group. For a folder, use "
+                "--group-path-pattern."
+            ),
+        ),
+    ] = None,
+    group_path_pattern: Annotated[
+        str | None,
+        typer.Option(
+            "--group-path-pattern",
+            help=(
+                "Tracks/labels only: regex searched in the file's path relative "
+                "to the source, with '/' separators; its first capture group is "
+                "the group. Excludes --group-pattern and --group-from."
+            ),
+        ),
     ] = None,
     md5: Annotated[
         bool,
@@ -256,6 +275,7 @@ def add_source(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
 ) -> None:
     """Declare a source. A source may point outside the dataset, unlike a root."""
+    from mosaic.core.scan_findings import missing_path_finding
     from mosaic.core.source_fields import (
         SourceFields,
         SourceFieldsInvalid,
@@ -291,6 +311,7 @@ def add_source(
         multi_sequences_per_file=multi_sequences_per_file,
         group_from=group_from,
         group_pattern=group_pattern,
+        group_path_pattern=group_path_pattern,
         md5=md5,
         series=series,
         divide_frames=divide_frames,
@@ -305,9 +326,23 @@ def add_source(
     except ValueError as exc:
         fail(f"sources add failed: {terse(exc)}")
     identifier = source.id
+    # Declared anyway: the path may name storage that is mounted later.
+    finding = missing_path_finding(
+        kind, identifier, dataset.resolve_source_path(source)
+    )
+    findings = [] if finding is None else [finding]
 
+    if finding is not None:
+        typer.echo(f"[WARN] {finding.message}", err=True)
     if as_json:
-        emit_json({"kind": kind, "id": identifier, "mode": source.mode})
+        emit_json(
+            {
+                "kind": kind,
+                "id": identifier,
+                "mode": source.mode,
+                "findings": [one.model_dump(mode="json") for one in findings],
+            }
+        )
     else:
         typer.echo(f"Declared {kind} source {identifier!r} ({source.mode}) -> {path}")
 

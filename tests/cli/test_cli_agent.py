@@ -270,6 +270,79 @@ class TestServe:
         assert result.exit_code != 0
         assert "No dataset to serve" in result.output
 
+    def test_with_dataset_roots_and_no_dataset_it_starts_empty_and_serves_a_new_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from mosaic.agent.mcp.local import LocalBackend
+        from mosaic.agent.mcp.spec import DatasetChange, DatasetList, call_tool
+
+        started: dict[str, list[Path]] = {}
+
+        def record(
+            manifests: list[Path], *, dataset_roots: list[Path], **options: object
+        ) -> None:
+            started["manifests"] = manifests
+            started["dataset_roots"] = dataset_roots
+
+        monkeypatch.setattr("mosaic.agent.mcp.server.serve", record)
+        roots = tmp_path / "datasets"
+        roots.mkdir()
+        config = tmp_path / "server.yaml"
+        _ = config.write_text("dataset_roots: [datasets]\n", encoding="utf-8")
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+
+        assert result.exit_code == 0, result.output
+        assert started["manifests"] == []
+        assert started["dataset_roots"] == [roots.resolve()]
+        backend = LocalBackend([], warm=False, dataset_roots=started["dataset_roots"])
+        before = call_tool(backend, "list_datasets", {})
+        assert isinstance(before, DatasetList)
+        assert (before.items, before.total) == ((), 0)
+
+        created = call_tool(
+            backend,
+            "manage_dataset",
+            {"action": "create", "path": "study", "name": "study", "confirm": True},
+        )
+        assert isinstance(created, DatasetChange)
+        after = call_tool(backend, "list_datasets", {})
+        assert isinstance(after, DatasetList)
+        assert [item.uuid for item in after.items] == [created.dataset]
+
+    def test_a_dataset_root_that_is_not_made_yet_does_not_stop_the_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        started: dict[str, object] = {}
+
+        def record(manifests: list[Path], **options: object) -> None:
+            started["manifests"] = manifests
+
+        monkeypatch.setattr("mosaic.agent.mcp.server.serve", record)
+        config = tmp_path / "server.yaml"
+        _ = config.write_text("dataset_roots: [later]\n", encoding="utf-8")
+
+        result = runner.invoke(app, ["agent", "serve", "--config", str(config)])
+
+        assert result.exit_code == 0, result.output
+        assert started["manifests"] == []
+
+    def test_dataset_roots_alone_do_not_accept_a_flag_that_needs_http(
+        self, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "server.yaml"
+        _ = config.write_text("dataset_roots: [datasets]\n", encoding="utf-8")
+        result = runner.invoke(
+            app, ["agent", "serve", "--config", str(config), "--token-file", "t"]
+        )
+        assert result.exit_code != 0
+        assert "applies with --http only" in result.output
+
+    def test_the_refusal_names_the_roots_that_would_let_it_start(self) -> None:
+        result = runner.invoke(app, ["agent", "serve"])
+        assert result.exit_code != 0
+        assert "dataset_roots" in result.output
+
     def test_an_invalid_config_is_refused(self, tmp_path: Path) -> None:
         config = tmp_path / "server.yaml"
         _ = config.write_text("datasets: 3\n", encoding="utf-8")

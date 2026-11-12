@@ -17,6 +17,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.convert_ops import ConvertLabelsParams, ConvertTracksParams
 from mosaic.core.pipeline.labels_index import read_labels_index
 from mosaic.core.pipeline.ops import OPS, ScopeRefused, run_op
+from mosaic.core.pipeline.run import AllEntriesFailed
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.scope import Scope
 from tests.helpers import (
@@ -129,6 +130,41 @@ def test_a_crafted_trex_file_is_refused_unread_and_its_neighbor_converts(
         (row["group"], row["sequence"]) for _, row in read_tracks_index(ds).iterrows()
     ] == [("", "good")]
     assert not marker.exists(), "the converter unpickled the crafted member"
+
+
+def test_an_op_over_files_that_all_fail_raises_all_entries_failed(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    raw = ds.base_dir / "raw"
+    raw.mkdir(parents=True)
+    for name in ("a", "b"):
+        _ = (raw / f"{name}_fish0.npz").write_bytes(b"not an npz")
+    _ = ds.index_tracks_raw([raw], patterns=["*.npz"], src_format="trex_npz")
+
+    with pytest.raises(AllEntriesFailed, match="every raw file"):
+        _ = run_op(ds, "convert-tracks", {"source_format": "trex_npz"})
+
+    snapshot = latest_snapshot(ds)
+    assert snapshot["status"] == "failed"
+    assert snapshot["entries_written"] == 0
+    assert snapshot["entries_failed"] == 2
+
+
+def test_an_op_that_converts_some_files_does_not_raise_all_entries_failed(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    raw = ds.base_dir / "raw"
+    write_trex_npz(raw / "good_fish0.npz")
+    _ = (raw / "bad_fish0.npz").write_bytes(b"not an npz")
+    _ = ds.index_tracks_raw([raw], patterns=["*.npz"], src_format="trex_npz")
+
+    with pytest.raises(RuntimeError, match="failed on 1 raw file") as raised:
+        _ = run_op(ds, "convert-tracks", {"source_format": "trex_npz"})
+
+    assert not isinstance(raised.value, AllEntriesFailed)
+    assert latest_snapshot(ds)["entries_written"] == 1
 
 
 def test_convert_labels_plan_identity_names_the_labels_variant(tmp_path: Path) -> None:

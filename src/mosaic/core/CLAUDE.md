@@ -73,8 +73,9 @@ importing `mosaic.tracking` registers neither.
 
 - `manifest.py` defines the format as pydantic models. A read migrates an older version
   in memory and writes nothing, and a newer version raises `ManifestVersionError`. The
-  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 4 only
-  when a media source declares a `division` or a write raised it for division rows
+  `MANIFEST_VERSION` docstring says when to bump it. A manifest is written at 5 only
+  when a tracks or labels source declares a `group_path_pattern`, and at 4 only when a
+  media source declares a `division` or a write raised it for division rows
   (`written_manifest_version`), and every other at `UNDIVIDED_MANIFEST_VERSION`.
   `DatasetManifest` keeps unknown top-level keys in `preserved`, while sources and tags
   refuse unknown keys (`tests/core/test_dataset_manifest.py`).
@@ -124,8 +125,11 @@ importing `mosaic.tracking` registers neither.
   beside `read_tracks_index`).
 - A scan replaces the rows its sources claim (`ScanClaim` in
   `core/pipeline/scan_claim.py`) and keeps every other row unless
-  `prune_unsourced=True`. `overlapping_sources` refuses, at declaration, two sources of
-  one kind that could claim one file (`tests/core/test_scan_sources.py`).
+  `prune_unsourced=True`. A scan claims through `Dataset.scan_claim`, which claims
+  nothing for a source whose path is missing, so an unmounted share keeps its rows
+  (`source_claim` is the claim a removal uses). `overlapping_sources` refuses, at
+  declaration, two sources of one kind that could claim one file
+  (`tests/core/test_scan_sources.py`).
 - A media scan re-measures every row but keeps the identity cells a caller assigned
   through `MediaIndexScope` (`Dataset._keep_assigned_identity`) unless `reassign=True`,
   and keeps a store's assigned division rows (`_keep_assigned_divisions`).
@@ -150,6 +154,10 @@ importing `mosaic.tracking` registers neither.
   when every row of those agrees (`Dataset._keep_calibration`). `media_calibration`
   refuses two scales in one camera, and cameras that differ without `camera=`
   (`tests/core/media/test_media_calibration.py`).
+- A scan reports what it drops as `ScanFinding`s (`scan_findings.py`): `scan_media`,
+  `scan_tracks` and `scan_labels` return them, and `mosaic scan --json` and the MCP's
+  `manage_dataset` print them (`tests/core/test_scan_findings.py`). A new place where a
+  scan drops a file reports through a `FindingLog`, never a bare `print`.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for

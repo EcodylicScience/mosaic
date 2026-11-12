@@ -76,6 +76,41 @@ reports a problem at `run.filter_start_time`. A frame filter and the time filter
 equals it at the dataset's frame rate are now two runs. A time window with
 `overlap_frames` is still refused.
 
+## Unreleased: `mosaic agent serve` starts with no dataset when it has a dataset root
+
+`mosaic agent serve` refused to start unless a dataset was named, though
+`manage_dataset` creates one inside a `dataset_roots` directory and serves it at once.
+It now refuses only when it has no dataset and no `dataset_roots`. With roots it starts
+empty, `list_datasets` returns an empty list, and a dataset root that does not exist yet
+holds none instead of raising `NotADirectoryError`. No run id or table moves.
+
+## Unreleased: `convert-tracks` fails when every entry fails
+
+`mosaic convert-tracks` prints `"status": "failed"` and exits 1 when no entry converted,
+and `partial` with exit 0 when some did. The `convert-tracks` op raises
+`AllEntriesFailed` in the same case, where it raised a `RuntimeError`, as it still does
+for a partial run. `ConversionOutcome.converted` counts the entries written or current,
+where it also counted the entries that failed, so `converted` in the JSON result and
+`entries_written` in the run-log no longer include them. No run id and no table moves.
+
+## Unreleased: a scan reports the files it drops, and a source can group by path
+
+`mosaic scan --json` and `manage_dataset` `scan` return `findings`, each naming its
+source: a tracks, labels or media source whose path is missing or a dangling link, a
+listed file that a rule skips (a resource fork, a tracker's generated file), and a group
+pattern that matches no file. Each is also warned of on stderr, and `sources add` warns
+of a missing path and still declares the source. A scan of a source whose path is
+missing leaves the rows that source indexed, where it deleted them, and a scan of a
+present path still drops what the path no longer holds. A tracks or labels files source
+indexes every listed file that exists, whatever its suffix, where it indexed none.
+`--group-pattern` searches the file stem, as it always did, and its help now says so.
+The new `--group-path-pattern` (a source field, and a `manage_dataset` argument)
+searches the path relative to the source and takes its first capture group, and excludes
+`group_pattern` and `group_from`. A manifest with a source declaring it is written at
+version 5, which mosaic 0.21 and earlier refuse with `ManifestVersionError`. A manifest
+without one keeps its version, and no run id moves. `Dataset.scan_tracks` and
+`scan_labels` return a `RawScanResult` (`path`, `findings`) in place of the index path.
+
 ## Unreleased: short tracks and filtered entries no longer fail or blank a run
 
 `speed-angvel` smooths an id shorter than `smooth_window` with the largest odd window

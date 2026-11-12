@@ -64,6 +64,7 @@ from mosaic.core.typed_attribute import (
 )
 
 __all__ = [
+    "DIVISION_MANIFEST_VERSION",
     "MANAGED_BY_KEY",
     "MANIFEST_FILENAMES",
     "MANIFEST_MARKER_KEYS",
@@ -113,7 +114,7 @@ __all__ = [
 ]
 
 
-MANIFEST_VERSION: Final = 4
+MANIFEST_VERSION: Final = 5
 """The newest manifest format this code reads and writes.
 
 Bumped only for a change that older code would misread. Reading tolerates any
@@ -131,7 +132,15 @@ enforcing it.
 Older code would read a division row as its whole store. Only a dataset that
 divides a store writes 4 (:func:`written_manifest_version`). Every other
 dataset writes :data:`UNDIVIDED_MANIFEST_VERSION`, which older code still opens.
+
+5 added ``group_path_pattern`` to a tracks or labels source. Sources forbid
+unknown keys, so older code would meet one as a schema error naming a field.
+Only a dataset with a source that declares it writes 5
+(:func:`written_manifest_version`).
 """
+
+DIVISION_MANIFEST_VERSION: Final = 4
+"""The version that a dataset dividing a media store writes."""
 
 UNDIVIDED_MANIFEST_VERSION: Final = 3
 """The version that a manifest of a dataset without a divided store writes."""
@@ -585,7 +594,12 @@ class RawScanSource(ScanSource):
         exclude_patterns: Basename globs to skip. Directory mode only.
         multi_sequences_per_file: One file holds several sequences.
         group_from: Where the group comes from, under multi-sequence files only.
-        group_pattern: Regex extracting the group from a path, outside them only.
+        group_pattern: Regex searched in the file stem, as the converter names
+            the sequence, whose first capture group is the group. Outside
+            multi-sequence files only.
+        group_path_pattern: Regex searched in the file's path relative to
+            *path*, with ``/`` separators, whose first capture group is the
+            group. It reaches a folder, which the stem does not.
         md5: Checksum each file. On by default because the composition hash is
             over these checksums, and a re-index re-hashes only what changed.
     """
@@ -596,7 +610,26 @@ class RawScanSource(ScanSource):
     multi_sequences_per_file: bool = False
     group_from: GroupFrom | None = None
     group_pattern: str | None = None
+    group_path_pattern: str | None = None
     md5: bool = True
+
+    @field_validator("group_path_pattern")
+    @classmethod
+    def _path_pattern_is_a_regex_with_a_group(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            compiled = re.compile(value)
+        except re.error as error:
+            msg = f"group_path_pattern {value!r} is not a regular expression: {error}"
+            raise ValueError(msg) from error
+        if compiled.groups < 1:
+            msg = (
+                f"group_path_pattern {value!r} has no capture group; "
+                "the group is its first parenthesized part"
+            )
+            raise ValueError(msg)
+        return value
 
     @field_validator("src_format")
     @classmethod
@@ -613,7 +646,21 @@ class RawScanSource(ScanSource):
         They apply on opposite sides of ``multi_sequences_per_file``, so
         declaring both means one of them is dead and which one depends on a flag
         elsewhere in the source. The indexer refuses the same combination.
+        ``group_path_pattern`` is a third spelling of the same answer.
         """
+        if self.group_pattern is not None and self.group_path_pattern is not None:
+            msg = (
+                f"source {self.id!r} declares both group_pattern and "
+                "group_path_pattern; one reads the file stem and the other the "
+                "path, so exactly one can name the group"
+            )
+            raise ValueError(msg)
+        if self.group_from is not None and self.group_path_pattern is not None:
+            msg = (
+                f"source {self.id!r} declares both group_from and "
+                "group_path_pattern; exactly one can name the group"
+            )
+            raise ValueError(msg)
         if self.group_from is not None and self.group_pattern is not None:
             msg = (
                 f"source {self.id!r} declares both group_from and group_pattern; "
@@ -647,6 +694,7 @@ _PER_SEQUENCE_FIELDS: Final = frozenset(
         "multi_sequences_per_file",
         "group_from",
         "group_pattern",
+        "group_path_pattern",
         "md5",
     }
 )
@@ -1442,6 +1490,8 @@ def _source_payload(source: AnyScanSource) -> dict[str, JsonValue]:
             payload["group_from"] = source.group_from
         if source.group_pattern is not None:
             payload["group_pattern"] = source.group_pattern
+        if source.group_path_pattern is not None:
+            payload["group_path_pattern"] = source.group_path_pattern
         payload["md5"] = source.md5
     if source.added_at:
         payload["added_at"] = source.added_at
@@ -1486,16 +1536,29 @@ def _library_payload(link: LibraryLink) -> dict[str, JsonValue]:
 def written_manifest_version(manifest: DatasetManifest) -> int:
     """Return the version that *manifest* is written at.
 
-    It is :data:`MANIFEST_VERSION` when a media source declares a division, and
-    otherwise the manifest's own version: :data:`UNDIVIDED_MANIFEST_VERSION`, or
-    the newer version it was read at or raised to. A write of division rows
-    raises it (``Dataset.write_media_index``).
+    It is :data:`MANIFEST_VERSION` when a tracks or labels source declares a
+    ``group_path_pattern``, :data:`DIVISION_MANIFEST_VERSION` when a media source
+    declares a division, and otherwise the manifest's own version:
+    :data:`UNDIVIDED_MANIFEST_VERSION`, or the newer version it was read at or
+    raised to. A write of division rows raises it (``Dataset.write_media_index``).
     """
     divides = any(
         isinstance(source, MediaScanSource) and source.division is not None
         for source in manifest.sources.of_kind("media")
     )
-    return MANIFEST_VERSION if divides else manifest.manifest_version
+    path_grouped = any(
+        isinstance(source, RawScanSource) and source.group_path_pattern is not None
+        for kind in ("tracks", "labels")
+        for source in manifest.sources.of_kind(kind)
+    )
+    needed = (
+        MANIFEST_VERSION
+        if path_grouped
+        else DIVISION_MANIFEST_VERSION
+        if divides
+        else manifest.manifest_version
+    )
+    return max(needed, manifest.manifest_version)
 
 
 def manifest_payload(manifest: DatasetManifest) -> dict[str, JsonValue]:

@@ -36,6 +36,7 @@ from mosaic.core.media.division_wire import DivisionReportWire
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope, error_envelope
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.parallelism import ParallelLimits, ParallelRefused
+from mosaic.core.scan_findings import ScanFinding, missing_path_finding
 
 from .dataset_tools import missing_field
 from .spec import (
@@ -1059,6 +1060,7 @@ class LocalBackend:
                 "divisions": len(scanned.divisions.divisions),
                 "held_back": scanned.divisions.held_back,
                 "refused": scanned.divisions.refused,
+                "findings": scanned.findings,
                 "orphaned_rows": orphaned,
                 "next_steps": dataset_next_steps(held.dataset),
             }
@@ -1141,7 +1143,16 @@ class LocalBackend:
             dataset.declare_scan_source(source)
         except ValueError as invalid:
             raise ToolFailure(_invalid_source(str(invalid))) from invalid
-        return f"declared the {args.kind} source {source.id!r} ({source.mode}) at {str(path)!r}"
+        declared = (
+            f"declared the {args.kind} source {source.id!r} ({source.mode}) "
+            f"at {str(path)!r}"
+        )
+        missing = missing_path_finding(
+            args.kind, source.id, dataset.resolve_source_path(source)
+        )
+        if missing is None:
+            return declared
+        return f"{declared}; warning: {missing.message}"
 
     def _remove_source(self, dataset: Dataset, args: ManageDatasetInput) -> int:
         from .dataset_tools import source_findings
@@ -1317,6 +1328,8 @@ class LocalBackend:
             return
         served = {held.manifest.resolve() for held in self._datasets().values()}
         for root in self._dataset_roots:
+            if not root.is_dir():
+                continue
             for found in discover_datasets(root, max_depth=DEFAULT_DISCOVERY_DEPTH):
                 manifest = Path(found.manifest).resolve()
                 if (
@@ -1720,10 +1733,12 @@ class _Scanned:
         rows: The raw index rows of each kind scanned.
         divisions: What the dividing media sources divided, held back and
             refused.
+        findings: What the scan dropped or could not place.
     """
 
     rows: dict[str, int] = field(default_factory=dict)
     divisions: DivisionReportWire = field(default_factory=DivisionReportWire)
+    findings: tuple[ScanFinding, ...] = ()
 
 
 def _scan(dataset: Dataset, args: ManageDatasetInput) -> _Scanned:
@@ -1761,6 +1776,7 @@ def _scan(dataset: Dataset, args: ManageDatasetInput) -> _Scanned:
     only = () if args.source_id is None else (args.source_id,)
     scanned: dict[str, int] = {}
     divisions = DivisionReportWire()
+    findings: list[ScanFinding] = []
     register_ops()
     for kind in kinds:
         try:
@@ -1769,18 +1785,21 @@ def _scan(dataset: Dataset, args: ManageDatasetInput) -> _Scanned:
                     only=only, include_partial=args.include_partial
                 )
                 divisions = division_report_wire(media.divisions)
+                findings.extend(media.findings)
                 scanned[kind] = len(dataset.read_media_index())
             elif kind == "tracks":
-                index = dataset.scan_tracks(only=only)
-                scanned[kind] = len(read_tracks_raw_index(index))
+                tracks = dataset.scan_tracks(only=only)
+                findings.extend(tracks.findings)
+                scanned[kind] = len(read_tracks_raw_index(tracks.path))
             else:
-                _ = dataset.scan_labels(only=only)
+                labels = dataset.scan_labels(only=only)
+                findings.extend(labels.findings)
                 scanned[kind] = raw_label_rows(dataset)
         except DivisionRefused as refused:
             raise ToolFailure(_division_refused(refused)) from refused
         except (KeyError, ValueError, NotImplementedError) as invalid:
             raise ToolFailure(_invalid_source(str(invalid))) from invalid
-    return _Scanned(rows=scanned, divisions=divisions)
+    return _Scanned(rows=scanned, divisions=divisions, findings=tuple(findings))
 
 
 def _division_refused(refused: DivisionRefused) -> ErrorEnvelope:

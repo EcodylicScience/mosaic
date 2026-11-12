@@ -65,6 +65,7 @@ from mosaic.core.pipeline.graph.store import (
     open_requests_sentence,
 )
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
+from mosaic.core.scan_findings import ScanFinding
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
 
@@ -1114,7 +1115,21 @@ class ManageDatasetInput(ToolInput):
     recursive: bool = True
     multi_sequences_per_file: bool = False
     group_from: Literal["filename", "parent"] | None = None
-    group_pattern: str | None = None
+    group_pattern: str | None = Field(
+        default=None,
+        description=(
+            "add_source, tracks or labels: regex whose first group, searched in "
+            "the file stem, is the group."
+        ),
+    )
+    group_path_pattern: str | None = Field(
+        default=None,
+        description=(
+            "add_source, tracks or labels: regex whose first group, searched in "
+            "the file path below the source, is the group. Excludes "
+            "group_pattern and group_from."
+        ),
+    )
     divide_frames: int | None = Field(
         default=None,
         description=(
@@ -1175,6 +1190,9 @@ class DatasetChange(StrictModel):
             recording, each with its reason.
         refused: Under ``scan``, the divisions and stores not written, each
             with its reason.
+        findings: Under ``scan``, what it dropped or could not place, each naming
+            its source: a missing path, a listed file that a rule skips, a group
+            pattern that matches no file.
         orphaned_rows: Under ``remove_source``, the index rows the source
             claimed, which stay.
         next_steps: What the dataset needs before a pipeline runs on it.
@@ -1189,6 +1207,7 @@ class DatasetChange(StrictModel):
     divisions: int = 0
     held_back: tuple[DivisionSpanWire, ...] = ()
     refused: tuple[DivisionSpanWire, ...] = ()
+    findings: tuple[ScanFinding, ...] = ()
     orphaned_rows: int | None = None
     next_steps: tuple[str, ...] = ()
 

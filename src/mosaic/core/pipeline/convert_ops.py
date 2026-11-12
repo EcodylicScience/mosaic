@@ -19,7 +19,8 @@ holds no row of, and a label selection of none.
 
 **A file that fails is reported and then fails the attempt**, as
 ``resample-tracks`` does: each failure is an ``entry_error`` on the run-log, and
-a rerun converts only what is missing.
+a rerun converts only what is missing. A run in which every file fails raises
+``AllEntriesFailed``.
 
 **``convert-tracks`` converts its files at once** when the run has workers. A
 worker converts and writes one file or one merged sequence, and this process
@@ -37,6 +38,7 @@ from pydantic import JsonValue, field_validator, model_validator
 from mosaic.core.params import Declared, Params, has_fields
 from mosaic.core.pipeline.job import JobContext
 from mosaic.core.pipeline.ops import Op, OpIdentity, register_op
+from mosaic.core.pipeline.run import AllEntriesFailed
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -187,6 +189,13 @@ class ConvertTracksOp(Op[ConvertTracksParams]):
         # and a conversion reads raw files. The variant it wrote is its run id.
         # ``converted`` counts the entries written; ``failed`` counts raw files.
         ctx.entries_written(outcome.converted)
+        if outcome.lost_everything:
+            msg = (
+                f"every raw file of format {params.source_format!r} failed to "
+                f"convert ({outcome.failed}), so variant {identity.tracks_variant} "
+                "has no entry. The run-log names each file."
+            )
+            raise AllEntriesFailed(msg)
         if outcome.failed:
             # A missing entry here is missing from everything downstream, and a
             # rerun skips what was written, so the attempt fails and resumes.

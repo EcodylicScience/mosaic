@@ -99,8 +99,14 @@ def scan_command(
     division. A sequence still recording is held back, and a division that
     cannot be written is refused. Both are listed on stderr, or under
     ``held_back`` and ``refused`` with ``--json``.
+
+    A source whose path is missing, a listed file that a rule skips and a group
+    pattern that matches no file are warned of on stderr, and listed under
+    ``findings`` with ``--json``, each naming its source. The rows of a source
+    whose path is missing stay in the index.
     """
     from mosaic.core.media.division_wire import DivisionReportWire, division_report_wire
+    from mosaic.core.scan_findings import ScanFinding
     from mosaic.tracking import register_ops
 
     dataset = load_dataset(manifest)
@@ -121,6 +127,7 @@ def scan_command(
             fail(f"no declared source matches --only {restrict}")
 
     written: dict[str, str] = {}
+    findings: list[ScanFinding] = []
     report = DivisionReportWire()
     for one in kinds:
         if not dataset.scan_sources(one):
@@ -136,14 +143,19 @@ def scan_command(
                     )
                     path = scanned.path
                     report = division_report_wire(scanned.divisions)
-                elif one == "tracks":
-                    path = dataset.scan_tracks(
-                        only=restrict, prune_unsourced=prune_unsourced
-                    )
+                    findings.extend(scanned.findings)
                 else:
-                    path = dataset.scan_labels(
-                        only=restrict, prune_unsourced=prune_unsourced
+                    raw = (
+                        dataset.scan_tracks(
+                            only=restrict, prune_unsourced=prune_unsourced
+                        )
+                        if one == "tracks"
+                        else dataset.scan_labels(
+                            only=restrict, prune_unsourced=prune_unsourced
+                        )
                     )
+                    path = raw.path
+                    findings.extend(raw.findings)
         except KeyError as exc:
             fail(f"scan failed: {exc}")
         except Exception as exc:  # noqa: BLE001 - surface scan failures cleanly
@@ -157,7 +169,13 @@ def scan_command(
         )
 
     if as_json:
-        emit_json({"indexes": written, **report.model_dump(mode="json")})
+        emit_json(
+            {
+                "indexes": written,
+                "findings": [finding.model_dump(mode="json") for finding in findings],
+                **report.model_dump(mode="json"),
+            }
+        )
         return
     for one, path in written.items():
         typer.echo(f"{one:<7} {path}")

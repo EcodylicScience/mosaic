@@ -189,7 +189,15 @@ A dataset is a directory with `dataset.yaml` and named roots
   run over an arbitrary set, pass `Scope(entries=[(group, sequence), ...])` or
   `--entries group:sequence`. `groups` and `sequences` combine as a cross product.
 - A scan replaces the rows its sources claim and keeps every other row. A files source
-  (`mosaic sources add --file ...`) claims only the paths it lists.
+  (`mosaic sources add --file ...`) claims only the paths it lists, and indexes each
+  that exists, whatever its suffix. A source whose path is missing keeps its rows
+  through a scan.
+- Read a scan's `findings` (`mosaic scan --json`, or `manage_dataset` `scan`): a source
+  whose path is missing or a dangling link, a listed file that a rule skips and a group
+  pattern that matches no file each name their source. An empty index after a
+  scan is a finding to read, not a result. `--group-pattern` searches the file stem;
+  `--group-path-pattern` searches the path below the source, for a group that is a
+  folder.
 - A recording split into clips is one entry, with frames numbered across its clips.
   Divide a recording into the sequences of a continuous group only for parts kept as
   separate sequences, following
@@ -266,8 +274,9 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   https://ecodylicscience.github.io/mosaic/guides/tracking/import/#files-mosaic-will-not-unpickle.
 - A SLEAP, DeepLabCut, Ultralytics or zebrafish 3D workflow CSV file records no frame
   rate. `convert-tracks` times each entry at `--params '{"fps": ...}'`, else the rate its
-  indexed media measured, else `meta.fps_default`. An entry with none fails and the run
-  reports `partial`: scan the media, set `fps_default`, or pass `fps`. A dataset of the
+  indexed media measured, else `meta.fps_default`. An entry with none fails. The run
+  reports `partial` and exits 0, or `failed` and exits non-zero when every entry fails:
+  scan the media, set `fps_default`, or pass `fps`. A dataset of the
   published zebrafish 3D tracks (Zenodo 18569873) ships no media, so it sets
   `fps_default: 140`. An older mosaic never read the media's rate for SLEAP, DeepLabCut or
   Ultralytics. It timed a table at `fps`, else `fps_default`, else 30 fps. Convert again

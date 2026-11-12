@@ -154,6 +154,7 @@ def source_fields_of(args: ManageDatasetInput, path: Path) -> SourceFields:
         multi_sequences_per_file=args.multi_sequences_per_file,
         group_from=args.group_from,
         group_pattern=args.group_pattern,
+        group_path_pattern=args.group_path_pattern,
         divide_frames=args.divide_frames,
         recording_identity=args.recording_by,
         recording_name=args.recording_name,
