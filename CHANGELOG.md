@@ -53,7 +53,10 @@ once. A scope-dependent feature also hashes the digests into its run id. The inv
 digest with the current one. An entry without a layout, or whose cameras find
 different layouts, has no `arenas` composition. While the arenas index cannot be read,
 no entry has one, so every run that recorded one reads as drifted, and one note on
-stderr names the index. A feature that does not declare `arenas` reads neither index.
+stderr names the index. A feature that does not declare `arenas` reads neither index,
+except an `arena-blind` one: its guard counts an entry's arenas from the `n_arenas` of
+the index rows and opens no layout file, so a layout file that cannot be read no longer
+refuses a run of such a feature. An index that cannot be read still does.
 
 `roi-occupancy` (version 0.1) is a new feature, so the registry grows from 67 to 68. It
 writes one row per input row (`emits` `individual`): the metadata columns, `arena` when

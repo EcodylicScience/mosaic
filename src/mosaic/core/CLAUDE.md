@@ -198,6 +198,9 @@ importing `mosaic.tracking` registers neither.
   parses only the files it needs, where `read_arena_layouts` parses every layout. The
   rows read as `IndexedLayout`, which checks no path, so a row's absolute path from
   another machine is resolved through `path_map` when its file is read.
+  `arena_guard.entry_arena_count` counts an entry's arenas from the rows' `n_arenas`
+  (`indexed_arena_rows`, through `cached_arena_lookup`), so a run of an `arena-blind`
+  feature opens no layout file (`tests/core/pipeline/test_arena_guard.py`).
 - `assign-arenas` (`tracking/ops/assign_arenas.py`) writes `arena` and per-arena ids.
   A layout's assignment digest is recorded in each row's composition and its run id,
   not in its variant id, so a boundary or a region of interest moves none of them

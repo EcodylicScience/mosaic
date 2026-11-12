@@ -7,6 +7,10 @@ so on a camera of several tanks it relates animals that never met.
 ``run_feature`` asks :func:`refuse_arena_blind` of each entry before ``apply``,
 and serves no cached output of an entry whose layout names several arenas,
 because declaring a layout changes no tracks composition.
+
+The count of an entry's arenas is the ``n_arenas`` of the arenas index rows that
+:func:`indexed_arena_rows` reads, so the guard opens no layout file and a layout
+file that cannot be read does not refuse a run.
 """
 
 from __future__ import annotations
@@ -17,37 +21,56 @@ from typing import TYPE_CHECKING
 import pandas as pd
 
 from mosaic.core.arenas import ArenaKey
+from mosaic.core.pipeline.arena_index import ArenaIndexError, cached_arena_lookup
 from mosaic.core.recording import RecordingKey
 from mosaic.core.schema import ARENA_COLUMN
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
-    from mosaic.core.pipeline.arena_index import DeclaredLayout
+    from mosaic.core.pipeline.arena_index import IndexedLayout
 
-__all__ = ["ArenaBlindFeature", "entry_arena_count", "refuse_arena_blind"]
+__all__ = [
+    "ArenaBlindFeature",
+    "entry_arena_count",
+    "indexed_arena_rows",
+    "refuse_arena_blind",
+]
 
 
 class ArenaBlindFeature(ValueError):
     """An arena-blind feature was asked to relate the individuals of several arenas."""
 
 
+def indexed_arena_rows(ds: Dataset) -> Mapping[ArenaKey, IndexedLayout]:
+    """Return the arenas index's row of each key, without opening a layout file.
+
+    Raises:
+        ArenaIndexError: If the arenas index cannot be read.
+    """
+    lookup = cached_arena_lookup(ds)
+    if lookup.refusal is not None:
+        raise ArenaIndexError(lookup.refusal)
+    return lookup.rows
+
+
 def entry_arena_count(
     ds: Dataset,
     group: str,
     sequence: str,
-    declared: Mapping[ArenaKey, DeclaredLayout],
+    rows: Mapping[ArenaKey, IndexedLayout],
 ) -> int:
     """Return the most arenas that a layout of the entry's recording names.
 
     Every camera's layout counts, and a ``(G, "")`` layout counts only for a
-    sequence of the continuous group ``G``. ``0`` when no layout applies.
+    sequence of the continuous group ``G``. ``0`` when no layout applies. The
+    count is each row's ``n_arenas``.
     """
     own = RecordingKey(group, sequence)
     recording = ds.recording_of(group, sequence)
     return max(
         (
-            len(layout.layout.arenas)
-            for key, layout in declared.items()
+            row.n_arenas
+            for key, row in rows.items()
             if key.recording == own or (not key.sequence and key.recording == recording)
         ),
         default=0,

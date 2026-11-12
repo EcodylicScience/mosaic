@@ -9,16 +9,23 @@ import pytest
 
 from mosaic.core.arenas import ArenaLayout
 from mosaic.core.dataset import Dataset
+import mosaic.core.pipeline.arena_index as arena_index_module
 from mosaic.core.pipeline.arena_guard import (
     ArenaBlindFeature,
     entry_arena_count,
     refuse_arena_blind,
+)
+from mosaic.core.pipeline.arena_index import (
+    ArenaIndexError,
+    cached_arena_lookup,
+    read_arena_index_rows,
 )
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from tests.helpers import (
     add_track_sequences,
     add_tracks_table,
     make_dataset,
+    refuse_index,
     track_table,
 )
 
@@ -50,11 +57,28 @@ def test_the_count_reads_the_layouts_of_the_entry_s_recording(tmp_path: Path) ->
     _ = ds.set_arena_layout(ONE, group="rec")
     _ = ds.set_arena_layout(TWO, group="rec", camera="side")
     _ = ds.set_arena_layout(ONE, group="ns", sequence="a")
-    declared = ds.arena_layouts()
+    rows = read_arena_index_rows(ds)
 
-    assert entry_arena_count(ds, "rec", "s1", declared) == 2
-    assert entry_arena_count(ds, "ns", "a", declared) == 1
-    assert entry_arena_count(ds, "", "solo", declared) == 0
+    assert entry_arena_count(ds, "rec", "s1", rows) == 2
+    assert entry_arena_count(ds, "ns", "a", rows) == 1
+    assert entry_arena_count(ds, "", "solo", rows) == 0
+
+
+def test_the_count_opens_no_layout_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    add_track_sequences(ds, ("", "solo"))
+    _ = ds.set_arena_layout(TWO, group="", sequence="solo")
+    rows = cached_arena_lookup(ds).rows
+
+    def unreadable(*_: object) -> None:
+        message = "a layout file was opened"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(arena_index_module, "read_arena_layout", unreadable)
+
+    assert entry_arena_count(ds, "", "solo", rows) == 2
 
 
 def _two_tanks(ds: Dataset, *, arenas: bool) -> None:
@@ -129,3 +153,52 @@ def test_an_output_cached_on_one_arena_is_served(tmp_path: Path) -> None:
     _ = run_feature(ds, NearestNeighbor())
 
     assert run_feature(ds, NearestNeighbor()).cache_hit
+
+
+def test_an_arena_blind_feature_opens_no_layout_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
+
+    ds = make_dataset(tmp_path / "ds")
+    _two_tanks(ds, arenas=True)
+    _ = ds.set_arena_layout(TWO, group="", sequence="solo")
+
+    def unreadable(*_: object) -> None:
+        message = "a layout file was opened"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(arena_index_module, "read_arena_layout", unreadable)
+
+    with pytest.raises(AllEntriesFailed):
+        _ = run_feature(ds, NearestNeighbor())
+
+
+def test_an_arena_blind_feature_runs_beside_a_corrupt_layout_file(
+    tmp_path: Path,
+) -> None:
+    """A layout of one arena that cannot be parsed does not refuse the run."""
+    from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
+
+    ds = make_dataset(tmp_path / "ds")
+    _two_tanks(ds, arenas=False)
+    layout_file = ds.set_arena_layout(ONE, group="", sequence="solo")
+    _ = layout_file.write_text("not a layout", "utf-8")
+
+    result = run_feature(ds, NearestNeighbor())
+
+    assert result.failed_entries == ()
+
+
+def test_an_arena_blind_feature_is_refused_while_the_arenas_index_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    from mosaic.behavior.feature_library.nearestneighbor import NearestNeighbor
+
+    ds = make_dataset(tmp_path / "ds")
+    _two_tanks(ds, arenas=False)
+    _ = ds.set_arena_layout(TWO, group="", sequence="solo")
+    refuse_index(ds)
+
+    with pytest.raises(ArenaIndexError):
+        _ = run_feature(ds, NearestNeighbor())

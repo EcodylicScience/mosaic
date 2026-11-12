@@ -28,7 +28,12 @@ from ._utils import (
     hash_params,
     json_ready,
 )
-from .arena_guard import ArenaBlindFeature, entry_arena_count, refuse_arena_blind
+from .arena_guard import (
+    ArenaBlindFeature,
+    entry_arena_count,
+    indexed_arena_rows,
+    refuse_arena_blind,
+)
 from .storage_names import derive_storage_name, feature_slug_of
 from .composition import cached_entry_disposition
 from .column_contract import (
@@ -1894,12 +1899,12 @@ def _run_feature_impl(
         {root for root in feature.consumed_roots if root in get_args(SourceRoot)}
     )
     # An arena-blind feature is refused on an entry spanning arenas, so the
-    # layouts are read once when the feature is one. Declaring a layout changes
-    # no tracks composition, and only an entry's input shows whether it spans
-    # the arenas of its layout, so an entry whose layout names several is never
-    # served from the cache.
+    # index rows, which hold each layout's arena count, are read once when the
+    # feature is one. Declaring a layout changes no tracks composition, and only
+    # an entry's input shows whether it spans the arenas of its layout, so an
+    # entry whose layout names several is never served from the cache.
     relates: object = getattr(feature, "relates", "none")
-    blind_layouts = ds.arena_layouts() if relates == "arena-blind" else None
+    blind_arena_rows = indexed_arena_rows(ds) if relates == "arena-blind" else None
     if state_ready and not overwrite:
         for entry_key in manifest:
             group, sequence = resolve_sequence_identity(entry_key, entry_map)
@@ -1959,8 +1964,8 @@ def _run_feature_impl(
                 )
             elif cached_entry_disposition(neighbors_was, neighbors_now) == "recompute":
                 refusal = _neighbors_reason(neighbors_was)
-            if refusal is None and blind_layouts is not None:
-                arena_count = entry_arena_count(ds, group, sequence, blind_layouts)
+            if refusal is None and blind_arena_rows is not None:
+                arena_count = entry_arena_count(ds, group, sequence, blind_arena_rows)
                 if arena_count >= 2:
                     refusal = (
                         f"its recording has a layout of {arena_count} arenas, "
@@ -2173,8 +2178,8 @@ def _run_feature_impl(
         except MissingInputColumns as exc:
             _entry_failed(group, sequence, exc)
             return
-        if blind_layouts is not None:
-            count = entry_arena_count(ds, group, sequence, blind_layouts)
+        if blind_arena_rows is not None:
+            count = entry_arena_count(ds, group, sequence, blind_arena_rows)
             try:
                 refuse_arena_blind(feature.name, df, count)
             except ArenaBlindFeature as exc:
