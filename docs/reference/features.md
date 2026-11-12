@@ -679,7 +679,7 @@ Per-sequence feature computing translational speed and angular velocity.
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
 | `step_size` | `integer` \| `None` | `null` |  | The additional frame step for speed_step and angvel_step, computed beside the one-frame difference. Unset, neither column is emitted. [frames] |
-| `smooth_window` | `integer` \| `None` | `null` |  | The window Savitzky-Golay smoothing (polyorder 1) averages speed over to produce speed_smooth. Unset, speed_smooth is not emitted. Smoothing raises when the window is 0 or 1, or when it exceeds the individual's row count. [frames] |
+| `smooth_window` | `integer` \| `None` | `null` |  | The window Savitzky-Golay smoothing (polyorder 1) averages speed over to produce speed_smooth. Unset, speed_smooth is not emitted. Smoothing raises when the window is 0 or 1. An individual with fewer rows than the window is smoothed with the largest odd window that fits, and one with fewer than 3 rows keeps its unsmoothed speed. [frames] |
 | `fps` | `number` \| `None` | `null` |  | Frames per second. When set, dt is derived from the frame column (frame_diff / fps) instead of the time column. This is more robust for constant-fps data where the time column may contain irregular real timestamps. |
 
 ### `temporal-stack`
@@ -715,18 +715,18 @@ Build temporal context windows over per-sequence feature data.
 
 ### `track-subsample`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSubsample`
+Version `0.4` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSubsample`
 
 Subsample tracks rows for downstream per-row features.
 
 | Parameter | Type | Default | Constraints | Description |
 | --- | --- | --- | --- | --- |
-| `method` | `"kmeans"` \| `"uniform"` \| `"clips"` | `"kmeans"` |  | How rows are chosen. kmeans clusters frames in body-canonical pose space and keeps the frame closest to each cluster centroid. uniform picks frames at constant stride. clips picks seeds via kmeans and takes clip_len consecutive frames from each. |
-| `target_frames` | `integer` | `300` | >= `1` | The target output row count per sequence. For method=clips this is n_clips * clip_len. The number of clips is target_frames // clip_len. [frames] |
+| `method` | `"kmeans"` \| `"uniform"` \| `"clips"` | `"kmeans"` |  | How rows are chosen. kmeans clusters frames in body-canonical pose space and keeps the frame closest to each cluster centroid. uniform picks frames at constant stride and keeps every row of each. clips picks seeds via kmeans and takes clip_len consecutive frames from each. |
+| `target_frames` | `integer` | `300` | >= `1` | The target output row count per sequence. For method=clips this is n_clips * clip_len. The number of clips is target_frames // clip_len. For method=uniform it counts distinct values of the frame column, not rows: a table with no more of them is returned whole, and every row of a kept value is kept. [frames] |
 | `clip_len` | `integer` | `8` | >= `2` | The clip length, for method=clips. Ignored otherwise. [frames] |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `seed` | `integer` | `42` |  | The random seed for k-means. |
-| `drop_nan` | `boolean` | `true` |  | Keep rows with a non-finite required column out of the output. The required columns are X, Y, ANGLE and the pose keypoints below pose.pose_n, each where the table has it. kmeans and uniform drop those rows before choosing, and so before returning an input of at most target_frames rows whole. clips returns whole, less those rows, only an input shorter than clip_len. Otherwise it keeps the frame axis whole and starts a clip only where its clip_len rows are all finite, so each clip stays on consecutive frames, and a table with no such start emits no clip. |
+| `drop_nan` | `boolean` | `true` |  | Keep rows with a non-finite required column out of the output. The required columns are X, Y, ANGLE and the pose keypoints below pose.pose_n, each where the table has it. kmeans and uniform drop those rows before choosing, and so before returning an input of at most target_frames rows (uniform: frames) whole. clips returns whole, less those rows, only an input shorter than clip_len. Otherwise it keeps the frame axis whole and starts a clip only where its clip_len rows are all finite, so each clip stays on consecutive frames, and a table with no such start emits no clip. |
 
 ??? note "`PoseConfig`"
 
@@ -987,7 +987,7 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
 ### `sequence-aggregate`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate`
+Version `0.3` &middot; `mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate`
 
 Per-sequence feature reducing the rows of an entry to one row per group.
 

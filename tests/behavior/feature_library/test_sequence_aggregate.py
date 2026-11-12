@@ -13,7 +13,8 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.graph import Recipe, plan_pipeline, run_pipeline
 from mosaic.core.pipeline.inventory import FeatureRunRef
 from mosaic.core.pipeline.preview import preview_artifact
-from tests.helpers import add_tracks_variant, make_dataset
+from mosaic.core.pipeline.run_matrix import load_run_matrix
+from tests.helpers import add_track_sequences, add_tracks_variant, make_dataset
 
 VARIANT = "convert-trex.0.2-1111111111"
 type Document = dict[str, object]
@@ -164,13 +165,43 @@ def test_mean_over_pair_input_reads_every_row() -> None:
     assert out["AB_dist_mean"].iloc[0] == pytest.approx(4.5)
 
 
-def test_a_filter_that_removes_every_row_gives_no_output() -> None:
+def test_a_filter_that_keeps_nothing_gives_zero_counts_and_nan() -> None:
     out = _apply(
-        {"columns": ["value"], "aggs": ["mean"], "filter_expr": "id > 100"},
+        {
+            "columns": ["value"],
+            "aggs": ["count", "sum", "mean"],
+            "filter_expr": "id > 100",
+        },
         _individual_table(),
     )
 
-    assert out.empty
+    assert list(out.columns) == [
+        "group",
+        "sequence",
+        "value_count",
+        "value_sum",
+        "value_mean",
+    ]
+    assert out["group"].tolist() == ["G"]
+    assert out["sequence"].tolist() == ["S1"]
+    assert out["value_count"].tolist() == [0]
+    assert out["value_sum"].tolist() == [0]
+    assert np.isnan(out["value_mean"].iloc[0])
+
+
+def test_a_blank_entry_has_the_columns_of_an_entry_that_keeps_rows() -> None:
+    params: dict[str, object] = {
+        "columns": ["value"],
+        "aggs": ["count", "mean"],
+        "subgroup_col": "id",
+    }
+    kept = _apply(params, _individual_table())
+
+    blank = _apply({**params, "filter_expr": "id > 100"}, _individual_table())
+
+    assert list(blank.columns) == list(kept.columns)
+    assert blank["id"].tolist() == [0, 1, 2]
+    assert blank["value_count"].tolist() == [0, 0, 0]
 
 
 def test_empty_input_gives_no_output() -> None:
@@ -270,3 +301,25 @@ def test_a_recipe_of_speed_then_sequence_aggregate_runs(tracked: Dataset) -> Non
         assert list(table.columns) == ["group", "sequence", "speed_mean"]
         assert table["sequence"].tolist() == [sequence]
         assert table["speed_mean"].notna().all()
+
+
+def test_an_entry_the_filter_empties_loads_beside_one_it_keeps(tmp_path: Path) -> None:
+    dataset = make_dataset(tmp_path / "filtered")
+    add_track_sequences(dataset, ("", "seq_a"), ("", "seq_b"), n_rows=10, n_ids=2)
+    aggregate = SequenceAggregate(
+        params={
+            "columns": ["X"],
+            "aggs": ["count", "mean"],
+            "filter_expr": "sequence == 'seq_a'",
+        }
+    )
+
+    result = dataset.run_feature(aggregate)
+    matrix = load_run_matrix(dataset, result)
+
+    assert list(matrix.columns) == ["X_count", "X_mean"]
+    counts = dict(zip(matrix.index["sequence"], matrix.values[:, 0], strict=True))
+    assert counts == {"seq_a": 20.0, "seq_b": 0.0}
+    means = dict(zip(matrix.index["sequence"], matrix.values[:, 1], strict=True))
+    assert np.isfinite(means["seq_a"])
+    assert np.isnan(means["seq_b"])

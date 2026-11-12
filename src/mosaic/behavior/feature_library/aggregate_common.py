@@ -234,3 +234,30 @@ def reduce_column(
     if reduced.empty:
         return pd.DataFrame()
     return reduced.reset_index()
+
+
+def blank_reduction(
+    df: pd.DataFrame, params: AggregateParams, keys: Sequence[str]
+) -> pd.DataFrame:
+    """One row per distinct ``keys`` of ``df`` that reduces no values.
+
+    For an entry whose ``filter_expr`` keeps no row. It has the columns that
+    :func:`reduce_column` gives an entry that keeps rows: each of the ``sum``
+    and ``count`` aggregations is 0, as for a group none of whose rows it reads,
+    and every other aggregation is NaN. A row whose key is null belongs to no
+    group.
+
+    Args:
+        df: The rows before the filter, which hold the keys.
+        params: The columns and aggregations of the result.
+        keys: The columns to group by.
+
+    Returns:
+        The blank rows, sorted by ``keys``.
+    """
+    groups = df[list(keys)].dropna().drop_duplicates().sort_values(list(keys))
+    blank = groups.reset_index(drop=True)
+    for column in params.columns:
+        for agg in params.aggs:
+            blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
+    return blank

@@ -39,7 +39,12 @@ from mosaic.core.pipeline.types.feature import RelatesLevel
 
 from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
 
-from .aggregate_common import PairAggregateParams, reduce_column, split_keys
+from .aggregate_common import (
+    PairAggregateParams,
+    blank_reduction,
+    reduce_column,
+    split_keys,
+)
 from .registry import register_feature
 
 
@@ -71,6 +76,10 @@ class SequenceAggregate:
     ``filter_expr="perspective == 0"``, to count each pair once there. For
     mean/median/min/max/std every row is read under any rule.
 
+    An entry whose ``filter_expr`` keeps no row still writes its row, with 0 for
+    ``sum`` and ``count`` and NaN for every other aggregation, so that every
+    entry of a run has the same columns.
+
     This feature does not filter ``bad_frame`` automatically. Either consume
     upstream output that has already filtered them, or pass
     ``filter_expr="~bad_frame"`` (when the column is present).
@@ -78,7 +87,8 @@ class SequenceAggregate:
 
     category = "summary"
     name = "sequence-aggregate"
-    version = "0.2"
+    # 0.3: an entry whose filter keeps no row writes a row of zero counts and NaN.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -141,9 +151,10 @@ class SequenceAggregate:
     def apply(self, df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
             return pd.DataFrame()
-        return reduce_column(
-            df,
-            self.params,
-            keys=[C.group_col, C.seq_col, *split_keys(df, self.params)],
-            pairs=self.params.pair_read(),
+        keys = [C.group_col, C.seq_col, *split_keys(df, self.params)]
+        reduced = reduce_column(
+            df, self.params, keys=keys, pairs=self.params.pair_read()
         )
+        if reduced.empty:
+            return blank_reduction(df, self.params, keys)
+        return reduced

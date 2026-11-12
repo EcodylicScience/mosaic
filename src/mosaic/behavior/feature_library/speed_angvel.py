@@ -40,9 +40,13 @@ _STEP_SIZE_DESCRIPTION = (
 _SMOOTH_WINDOW_DESCRIPTION = (
     "The window Savitzky-Golay smoothing (polyorder 1) averages speed "
     "over to produce speed_smooth. Unset, speed_smooth is not emitted. "
-    "Smoothing raises when the window is 0 or 1, or when it exceeds the "
-    "individual's row count."
+    "Smoothing raises when the window is 0 or 1. An individual with fewer "
+    "rows than the window is smoothed with the largest odd window that "
+    "fits, and one with fewer than 3 rows keeps its unsmoothed speed."
 )
+
+_MIN_SMOOTH_WINDOW = 3
+"""The shortest window that a first-order Savitzky-Golay filter smooths over."""
 
 _FPS_DESCRIPTION = (
     "Frames per second. When set, dt is derived from the "
@@ -263,6 +267,11 @@ class SpeedAngvel:
     @staticmethod
     def _smooth_speed(speed: np.ndarray, window: int) -> np.ndarray:
         """Apply Savitzky-Golay filter (polyorder=1) to speed, handling NaN/inf."""
+        rows = len(speed)
+        if window > rows:
+            window = rows - (rows + 1) % 2
+            if window < _MIN_SMOOTH_WINDOW:
+                return speed.copy()
         bad = ~np.isfinite(speed)
         filled = speed.copy()
         filled[bad] = 0.0

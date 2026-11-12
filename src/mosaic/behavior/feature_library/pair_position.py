@@ -41,7 +41,13 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from ._sampling_descriptions import SAMPLING_WITH_SMOOTHING_DESCRIPTION
-from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
+from .helpers import (
+    clean_tracks_grouped,
+    ensure_columns,
+    gradient_along,
+    smooth_1d,
+    unwrap_diff,
+)
 from .pair_egocentric import EGOCENTRIC_PAIR_COLUMNS, PAIR_EGOCENTRIC_PROVIDES
 from .registry import register_feature
 from .types import InterpolationConfig, SamplingConfig
@@ -279,10 +285,10 @@ class PairPositionFeatures:
         uoxB, uoyB = -uhyB, uhxB
 
         # Velocities (per second)
-        vAx = np.gradient(cxA) * fps
-        vAy = np.gradient(cyA) * fps
-        vBx = np.gradient(cxB) * fps
-        vBy = np.gradient(cyB) * fps
+        vAx = gradient_along(cxA) * fps
+        vAy = gradient_along(cyA) * fps
+        vBx = gradient_along(cxB) * fps
+        vBy = gradient_along(cyB) * fps
 
         speedA = np.sqrt(vAx * vAx + vAy * vAy)
         speedB = np.sqrt(vBx * vBx + vBy * vBy)

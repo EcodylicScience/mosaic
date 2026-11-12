@@ -51,13 +51,16 @@ from .registry import register_feature
 _METHOD_DESCRIPTION = (
     "How rows are chosen. kmeans clusters frames in body-canonical pose "
     "space and keeps the frame closest to each cluster centroid. uniform "
-    "picks frames at constant stride. clips picks seeds via kmeans and "
-    "takes clip_len consecutive frames from each."
+    "picks frames at constant stride and keeps every row of each. clips "
+    "picks seeds via kmeans and takes clip_len consecutive frames from each."
 )
 
 _TARGET_FRAMES_DESCRIPTION = (
     "The target output row count per sequence. For method=clips this is "
-    "n_clips * clip_len. The number of clips is target_frames // clip_len."
+    "n_clips * clip_len. The number of clips is target_frames // clip_len. "
+    "For method=uniform it counts distinct values of the frame column, not "
+    "rows: a table with no more of them is returned whole, and every row of "
+    "a kept value is kept."
 )
 
 _CLIP_LEN_DESCRIPTION = "The clip length, for method=clips. Ignored otherwise."
@@ -69,10 +72,10 @@ _DROP_NAN_DESCRIPTION = (
     "required columns are X, Y, ANGLE and the pose keypoints below pose.pose_n, "
     "each where the table has it. kmeans and uniform drop those rows before "
     "choosing, and so before returning an input of at most target_frames rows "
-    "whole. clips returns whole, less those rows, only an input shorter than "
-    "clip_len. Otherwise it keeps the frame axis whole and starts a clip only "
-    "where its clip_len rows are all finite, so each clip stays on consecutive "
-    "frames, and a table with no such start emits no clip."
+    "(uniform: frames) whole. clips returns whole, less those rows, only an "
+    "input shorter than clip_len. Otherwise it keeps the frame axis whole and "
+    "starts a clip only where its clip_len rows are all finite, so each clip "
+    "stays on consecutive frames, and a table with no such start emits no clip."
 )
 
 
@@ -88,7 +91,8 @@ class TrackSubsample:
       then keep the frame closest to each cluster centroid. Maximizes
       postural diversity for downstream identity/visual training, where
       adjacent frames in dense recordings are highly redundant.
-    - ``"uniform"``: pick frames at constant stride. Simple and
+    - ``"uniform"``: pick frames at constant stride and keep every row of
+      each, so every individual of a kept frame stays. Simple and
       predictable; faster but redundant on slow-moving subjects.
     - ``"clips"``: pick K seeds via k-means on canonical pose, then
       take ``clip_len`` consecutive frames starting at each seed. Output
@@ -126,7 +130,8 @@ class TrackSubsample:
     category = "per-frame"
     name = "track-subsample"
     # 0.3: drop_nan keeps rows with a non-finite required column out of the output.
-    version = "0.3"
+    # 0.4: uniform strides over frames and keeps every row of a kept frame.
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -194,10 +199,10 @@ class TrackSubsample:
         if p.method != "clips":
             if p.drop_nan:
                 df = df[finite]
-            if len(df) <= p.target_frames:
-                return df.reset_index(drop=True)
             if p.method == "uniform":
                 return self._uniform(df, p.target_frames)
+            if len(df) <= p.target_frames:
+                return df.reset_index(drop=True)
             seeds = self._kmeans_seeds(df, p.target_frames)
             if seeds is None:
                 return self._uniform(df, p.target_frames)
@@ -282,8 +287,21 @@ class TrackSubsample:
 
     @staticmethod
     def _uniform(df: pd.DataFrame, target_frames: int) -> pd.DataFrame:
-        stride = max(1, len(df) // target_frames)
-        return df.iloc[::stride].head(target_frames).reset_index(drop=True)
+        """Every row of *target_frames* frames at constant stride.
+
+        A table of at most *target_frames* frames is returned whole. Without a
+        ``frame`` column each row stands for a frame.
+        """
+        if COLUMNS.frame_col in df.columns:
+            frame_of_row = df[COLUMNS.frame_col].to_numpy()
+        else:
+            frame_of_row = np.arange(len(df))
+        frames = np.unique(frame_of_row)
+        if len(frames) <= target_frames:
+            return df.reset_index(drop=True)
+        stride = max(1, len(frames) // target_frames)
+        kept = frames[::stride][:target_frames]
+        return df[np.isin(frame_of_row, kept)].reset_index(drop=True)
 
     def _kmeans_seeds(self, df: pd.DataFrame, n_clusters: int) -> list[int] | None:
         """Pick `n_clusters` seed row indices via k-means on canonical pose.

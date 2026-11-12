@@ -59,6 +59,7 @@ __all__ = [
     "gaussian_radius",
     "finite_keypoints",
     "finite_rows",
+    "gradient_along",
     "iter_series",
     "iter_series_positions",
     "label_individuals",
@@ -639,10 +640,27 @@ def smooth_1d(x: np.ndarray, win: int) -> np.ndarray:
     return np.convolve(xp, ker, mode="valid")
 
 
+def gradient_along(
+    values: np.ndarray, sample_times: np.ndarray | None = None
+) -> np.ndarray:
+    """Central-difference derivative of *values*, NaN for a series under 2 samples.
+
+    ``np.gradient`` raises on one sample, which would fail a whole recording
+    for one short fragment. Without *sample_times* the derivative is per
+    sample, and a caller scales it by the frame rate. With them it is per unit
+    of their time, so unevenly spaced samples are differenced over their real
+    spacing.
+    """
+    if len(values) >= 2:
+        if sample_times is None:
+            return np.gradient(values)
+        return np.gradient(values, sample_times)
+    return np.full(len(values), np.nan)
+
+
 def unwrap_diff(theta: np.ndarray, fps: float) -> np.ndarray:
-    """Compute angular velocity from angle array."""
-    d = np.gradient(np.unwrap(theta), edge_order=1)
-    return d * float(fps)
+    """Compute angular velocity from angle array, NaN for a single angle."""
+    return gradient_along(np.unwrap(theta)) * float(fps)
 
 
 def wrap_angle(x: np.ndarray) -> np.ndarray:

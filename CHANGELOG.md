@@ -47,6 +47,20 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
+## Unreleased: short tracks and filtered entries no longer fail or blank a run
+
+`speed-angvel` smooths an id shorter than `smooth_window` with the largest odd window
+that fits, and leaves an id under 3 rows unsmoothed, where it raised and failed the
+recording. `pair-position` and `pair-egocentric` write NaN velocity for a pair that
+shares a single frame, where `np.gradient` raised. Neither changes the output of a valid
+input, so their run ids stay. `track-subsample` moves to 0.4: `uniform` strides over
+frames and keeps every row of a kept frame, where it strode over rows and kept some
+animals of a frame and not others, so `target_frames` counts frames for `uniform` and
+its run ids change. `sequence-aggregate` moves to 0.3: an entry whose `filter_expr` keeps
+no row writes one row per group with 0 for `sum` and `count` and NaN for the other
+aggregations, where it wrote no row, so `load_run_matrix` read the run instead of
+refusing it for entries that differ in columns. Its run ids change.
+
 ## Unreleased: `convert-tracks` and a feature run cost the same per entry at any size
 
 `convert-tracks` and `resample-tracks` write the tracks index once for each batch of

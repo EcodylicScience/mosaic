@@ -38,7 +38,13 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.params import Declared, Params
 
 from ._sampling_descriptions import SAMPLING_WITH_SMOOTHING_DESCRIPTION
-from .helpers import clean_tracks_grouped, ensure_columns, smooth_1d, unwrap_diff
+from .helpers import (
+    clean_tracks_grouped,
+    ensure_columns,
+    gradient_along,
+    smooth_1d,
+    unwrap_diff,
+)
 from .registry import register_feature
 from .types import (
     INTERPOLATION_CONFIG_DESCRIPTION,
@@ -358,10 +364,10 @@ class PairEgocentricFeatures:
         uoxB, uoyB = -uhyB, uhxB
 
         # velocities of centers (per second)
-        vAx = np.gradient(cxA) * float(fps)
-        vAy = np.gradient(cyA) * float(fps)
-        vBx = np.gradient(cxB) * float(fps)
-        vBy = np.gradient(cyB) * float(fps)
+        vAx = gradient_along(cxA) * float(fps)
+        vAy = gradient_along(cyA) * float(fps)
+        vBx = gradient_along(cxB) * float(fps)
+        vBy = gradient_along(cyB) * float(fps)
         speedA = np.sqrt(vAx * vAx + vAy * vAy)
         speedB = np.sqrt(vBx * vBx + vBy * vBy)
 
