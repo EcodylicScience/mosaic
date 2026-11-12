@@ -53,6 +53,38 @@ reaches the aggregate of an individual-level feature through
 `"inputs": [{"step": "speed"}, "tracks"]`. The tracks come second, so a payload column
 that both hold is read from the feature, and the tracks' copy is `<column>__1`.
 
+`summarize_run(ds, run, by=..., columns=..., where=...)`, exported from
+`mosaic.core.pipeline` with `RunSummary`, counts and describes one run's rows by group:
+per group `n_rows` and `n_entries`, and per group and column `n`, `n_missing`, `mean`,
+`sd` (`ddof=1`), `sem` and `median` over the finite cells. A key is `group`,
+`sequence`, an identity column the run writes or any other column, such as a kept label.
+Groups are the key combinations that rows hold, sorted by the keys in order. A row with
+a null key is counted in `rows_without_key`, an entry without rows in
+`entries_without_rows`, both before `where`. A key takes one type across entries: an
+entry's all-null column fits any type, integers stored as floating point in one entry
+merge with another's integers, and text, booleans and numbers that mix are refused as
+`SummaryConflict` (kind `conflict`), as is a mixed integer and floating key holding a
+value of magnitude at least 2**53. A run with a `frame` or `time` column, a key of
+another type, a `by` or `where` key that is also a value, a `by` key named as a summary
+column, and a `where` key without values are refused as `SummaryInvalid` (kind
+`invalid`). Both are `ValueError`, and the reader's refusals pass through. The reader's
+errors and the summary's share one base, `RunError` in
+`mosaic.core.pipeline.run_errors`, which carries `feature`, `run_id`, `entries` and
+`columns`.
+
+`summarize_run` takes `tests`, `kruskal`, `mannwhitney` or both, over the finite cells
+of each column. `RunSummary.kruskal` has one row per column from `scipy.stats.kruskal`
+across the groups with a value: `k`, `n`, `statistic` (H), `df` and `p`.
+`RunSummary.mann_whitney` has one row per column and pair of groups from
+`scipy.stats.mannwhitneyu(alternative="two-sided", method="auto")`, with `statistic`
+the U of the first group, and `p_holm`, Holm's step-down adjustment over the pairs of
+that column that have a `p`, whose count is `comparisons`. Columns are not adjusted
+against each other. A row without a statistic names its `reason`: `too_few_groups`
+with fewer than two groups holding values, `no_values` for a pair with a side without
+values, and `no_variation` when every value the test reads is equal, in which case scipy
+is not called. `mannwhitney` over more than `MAX_PAIRWISE_GROUPS` (12) groups is
+refused as `SummaryInvalid` before any test runs.
+
 ## Unreleased: `event-response` measures a value around each event
 
 `event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It

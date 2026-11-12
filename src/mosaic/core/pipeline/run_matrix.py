@@ -52,6 +52,7 @@ from .error_kind import ClassifiedError, ErrorKind
 from .index import feature_index, feature_index_path, missing_outputs_error
 from .memory_watch import host_memory_bytes
 from .parquet_reader import ArrowKind, ParquetFooter, iter_column_batches, read_footer
+from .run_errors import RunError, entry_label
 from .track_universe import AmbiguousTrackLeaf, current_run_id
 from .types import BOOKKEEPING_COLS, META_COLS, Result
 
@@ -59,7 +60,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from mosaic.core.dataset import Dataset
-    from mosaic.core.json_value import JsonValue
 
 __all__ = [
     "AmbiguousRunLeaf",
@@ -118,84 +118,49 @@ _LISTED: Final = 12
 """How many names a message lists before it counts the rest."""
 
 
-class _RunReadError(Exception):
-    """What every refusal of the reader says beyond its message.
-
-    Attributes:
-        feature: The storage name of the feature that was read.
-        run_id: The run that was read, or ``None`` where the read had not chosen one.
-        entries: The entries that the message lists.
-        columns: The columns that the message lists.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        feature: str,
-        run_id: str | None,
-        entries: Sequence[Entry] = (),
-        columns: Sequence[str] = (),
-    ) -> None:
-        super().__init__(message)
-        self.feature: str = feature
-        self.run_id: str | None = run_id
-        self.entries: tuple[Entry, ...] = tuple(entries)
-        self.columns: tuple[str, ...] = tuple(columns)
-
-    def error_detail(self) -> dict[str, JsonValue]:
-        """Return the feature and run, and the entries and columns the message lists."""
-        detail: dict[str, JsonValue] = {"feature": self.feature, "run_id": self.run_id}
-        if self.entries:
-            detail["entries"] = list(_names(self.entries))
-        if self.columns:
-            detail["columns"] = list(self.columns)
-        return detail
-
-
-class RunNotFound(_RunReadError, ClassifiedError, FileNotFoundError):
+class RunNotFound(RunError, ClassifiedError, FileNotFoundError):
     """The feature has no runs here, or the run is not in its index."""
 
     error_kind: ClassVar[ErrorKind] = "not_found"
 
 
-class RunIndexEmpty(_RunReadError, ClassifiedError, ValueError):
+class RunIndexEmpty(RunError, ClassifiedError, ValueError):
     """An unpinned read of a feature whose index lists no run."""
 
     error_kind: ClassVar[ErrorKind] = "not_found"
 
 
-class AmbiguousRunLeaf(_RunReadError, ClassifiedError, AmbiguousTrackLeaf):
+class AmbiguousRunLeaf(RunError, ClassifiedError, AmbiguousTrackLeaf):
     """An unpinned read where two runs are leaves, so there is no default. Pin one."""
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
 
-class RunIncomplete(_RunReadError, ClassifiedError, ValueError):
+class RunIncomplete(RunError, ClassifiedError, ValueError):
     """The scope names entries the run lacks, or the run is not finished."""
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
 
-class RunOutputsGone(_RunReadError, ClassifiedError, FileNotFoundError):
+class RunOutputsGone(RunError, ClassifiedError, FileNotFoundError):
     """An output that the index lists is gone from disk."""
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
 
-class RunColumnsConflict(_RunReadError, ClassifiedError, ValueError):
+class RunColumnsConflict(RunError, ClassifiedError, ValueError):
     """Two entries of the run write different columns."""
 
     error_kind: ClassVar[ErrorKind] = "conflict"
 
 
-class RunReadInvalid(_RunReadError, ClassifiedError, ValueError):
+class RunReadInvalid(RunError, ClassifiedError, ValueError):
     """The request cannot be answered from this run: its scope, columns or dtype."""
 
     error_kind: ClassVar[ErrorKind] = "invalid"
 
 
-class RunTooLarge(_RunReadError, ClassifiedError, MemoryError):
+class RunTooLarge(RunError, ClassifiedError, MemoryError):
     """The array would not fit in the memory available."""
 
     error_kind: ClassVar[ErrorKind] = "unavailable"
@@ -635,8 +600,8 @@ def _plan(
         elif set(chosen + identity) != set(first[0] + first[1]):
             lacks, adds = _differences(first[0] + first[1], chosen + identity)
             msg = (
-                f"{feature} run {run_id}: entry {_name(entry)} writes different "
-                f"columns from entry {_name(first_entry)}"
+                f"{feature} run {run_id}: entry {entry_label(entry)} writes different "
+                f"columns from entry {entry_label(first_entry)}"
                 f"{_difference_clause(lacks, adds)}. A matrix needs one set of "
                 f"columns, so narrow the read with scope=."
             )
@@ -656,7 +621,7 @@ def _plan(
         msg = (
             f"{feature} run {run_id}: no entry writes the key "
             f"{_listed([repr(name) for name in absent])}. The columns of entry "
-            f"{_name(first_entry)} are: {_listed(names)}."
+            f"{entry_label(first_entry)} are: {_listed(names)}."
         )
         raise RunReadInvalid(
             msg, feature=feature, run_id=run_id, entries=[first_entry], columns=names
@@ -723,7 +688,7 @@ def _select_columns(
         chosen = tuple(name for name in candidates if name not in BOOKKEEPING_COLS)
         if not chosen:
             msg = (
-                f"{where}: entry {_name(entry)} has no numeric payload column. Name "
+                f"{where}: entry {entry_label(entry)} has no numeric payload column. Name "
                 f"the columns to read with columns=. Its numeric columns are: "
                 f"{_listed(candidates)}."
             )
@@ -739,7 +704,7 @@ def _select_columns(
         if not matched:
             msg = (
                 f"{where}: columns={pattern!r} matches no numeric column of entry "
-                f"{_name(entry)}. An identity column (frame, time, id, id1, id2, "
+                f"{entry_label(entry)}. An identity column (frame, time, id, id1, id2, "
                 f"perspective) is not a value, and nor is a string column. The "
                 f"numeric columns are: {_listed(candidates)}."
             )
@@ -861,7 +826,9 @@ def _read(
                     )
                 position += n_batch
             if position - start != expected:
-                msg = f"{_name((group, sequence))} changed while it was being read"
+                msg = (
+                    f"{entry_label((group, sequence))} changed while it was being read"
+                )
                 raise RuntimeError(msg)
         start += expected
         groups.append(np.full(expected, group, dtype=object))
@@ -879,12 +846,8 @@ def _joined(pieces: list[npt.NDArray[Any]]) -> npt.NDArray[Any]:
     return np.concatenate(pieces) if pieces else np.empty(0, dtype=object)
 
 
-def _name(entry: Entry) -> str:
-    return f"{entry[0]}/{entry[1]}"
-
-
 def _names(entries: Sequence[Entry]) -> list[str]:
-    return [_name(entry) for entry in entries]
+    return [entry_label(entry) for entry in entries]
 
 
 def _listed(names: Sequence[str]) -> str:

@@ -106,7 +106,7 @@ What lives where:
 - ``trees``: snapshots of a directory tree, and the assertion that a call left
   one unchanged.
 - ``run_summaries``: a feature whose output for each entry is the table a test
-  passes for it, and a run of it.
+  passes for it, a run of it, and a rewrite of a run's feature index.
 - ``aggregates``: a run of an aggregate over two entries of labeled tracks, one
   whose label varies inside every group, with what it wrote and lost.
 
@@ -316,7 +316,7 @@ from tests.helpers.runner_programs import (
     journal_source,
     write_fake_runner,
 )
-from tests.helpers.run_summaries import LabeledFeature, labeled_run
+from tests.helpers.run_summaries import LabeledFeature, labeled_run, rewrite_index
 from tests.helpers.aggregates import MIXED, STEADY, LabeledRun, run_over_labeled_tracks
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.spies import count_property_reads, observed
@@ -746,6 +746,7 @@ __all__ = [
     "record_published_files",
     "revision_file",
     "rewrite_as_older_prepared_index",
+    "rewrite_index",
     "rule_reaching_op_params",
     "read_line",
     "run_child",

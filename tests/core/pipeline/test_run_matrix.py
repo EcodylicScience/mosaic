@@ -56,6 +56,7 @@ from tests.helpers import (
     add_track_sequences,
     labeled_run,
     make_dataset,
+    rewrite_index,
     run_speed,
     tree_snapshot,
 )
@@ -150,15 +151,6 @@ def output_of(ds: Dataset, result: Result, group: str, sequence: str) -> Path:
         & (index["sequence"] == sequence)
     ]
     return ds.resolve_path(rows["abs_path"].iloc[0])
-
-
-def rewrite_index(
-    ds: Dataset, result: Result, edit: Callable[[pd.DataFrame], pd.DataFrame]
-) -> None:
-    """Rewrite the feature index of *result* through *edit*, a frame function."""
-    path = feature_index_path(ds, result.feature)
-    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    edit(frame).to_csv(path, index=False)
 
 
 def tree_digest(root: Path) -> str:

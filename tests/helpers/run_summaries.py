@@ -10,13 +10,14 @@ only the shape of the table.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pandas as pd
 
 from mosaic.core.dataset import Dataset
 from mosaic.core.entry import Entry
+from mosaic.core.pipeline.index import feature_index_path
 from mosaic.core.pipeline.types import Result
 from tests.helpers.datasets import make_dataset
 from tests.helpers.stand_in_features import PlainFeature
@@ -59,3 +60,12 @@ def labeled_run(
     ds = make_dataset(tmp_path / "ds")
     add_track_sequences(ds, *rows_by_entry, n_rows=4)
     return ds, ds.run_feature(LabeledFeature(rows_by_entry))
+
+
+def rewrite_index(
+    ds: Dataset, result: Result[str], edit: Callable[[pd.DataFrame], pd.DataFrame]
+) -> None:
+    """Rewrite the feature index of *result* through *edit*, a frame function."""
+    path = feature_index_path(ds, result.feature)
+    frame = pd.read_csv(path, dtype=str, keep_default_na=False)
+    edit(frame).to_csv(path, index=False)
