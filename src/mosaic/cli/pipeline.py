@@ -872,7 +872,7 @@ def run_command(
     recipe's requests wrote, in any storage, to what that plan reviewed.
     ``--request`` runs the cleanup its request recorded.
 
-    ``--workers`` computes several entries of each parallelizable feature at once.
+    ``--workers`` computes several entries of each parallelizable step at once.
     It belongs to the machine and changes neither a run's identity nor its
     outputs, so ``--request`` accepts it where it rejects the options above.
     Memory grows with the worker count, most steeply with ``--parallel-mode

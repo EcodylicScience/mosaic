@@ -1,8 +1,8 @@
 """A conversion that stopped part way is pending, and a resubmit converts the rest.
 
-``convert-tracks`` takes no scope, so its plan once measured it against the tables
-the dataset already held, and a variant with 6 of 10 raw files converted read
-complete. The plan now measures it against the raw index rows of its format.
+``convert-tracks`` takes no scope, so a plan that measured it against the tables
+the dataset already held would read a variant with 6 of 10 raw files converted as
+complete. The plan measures it against the raw index rows of its format.
 """
 
 from __future__ import annotations

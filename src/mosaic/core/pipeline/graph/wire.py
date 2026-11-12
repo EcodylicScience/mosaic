@@ -288,7 +288,8 @@ class CatalogIndexEntry(GraphModel):
             ``None`` when unrestricted.
         parallelizable: Whether a run of it can compute several entries at once.
             A server's worker limit applies to a step of it, and to no other.
-            An op, and a feature that fits a model across every entry, is not.
+            ``convert-tracks`` and ``resample-tracks`` are, and no other op is,
+            nor a feature that fits a model across every entry.
     """
 
     name: str
@@ -719,7 +720,7 @@ class PlannedStepWire(GraphModel):
             a cleanup: at most :data:`SUPERSEDED_SAMPLE`, removable ones first,
             on the first step of each storage.
         superseded_omitted: How many more there are than ``superseded`` lists.
-        parallelizable: Whether a feature step can compute several entries at once.
+        parallelizable: Whether the step can compute several entries at once.
         workers: How many entries the step would compute at once under the
             server's default settings, 1 for a step that is not parallelizable.
         pairs: The rows of a pair table that an aggregate step's ``sum`` or

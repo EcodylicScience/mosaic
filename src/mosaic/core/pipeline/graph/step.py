@@ -175,11 +175,10 @@ def execute_step(
         owner: Recorded on the attempt.
         cancel_token: Cooperative cancellation, so a signal reaches the work
             rather than only the process around it.
-        parallel: How many entries a feature step computes at once, and how.
-            ``None`` computes them in turn. The setting belongs to the machine
-            and not to the recipe, so it changes neither a step's identity nor
-            its outputs. A feature that is not parallelizable ignores it, and an
-            op step does too.
+        parallel: How many entries a step computes at once, and how. ``None``
+            computes them in turn. The setting belongs to the machine and not to
+            the recipe, so it changes neither a step's identity nor its outputs.
+            A feature or an op that is not parallelizable ignores it.
 
     A step that *request* binds to a run is never executed: it is planned, so
     that a bind it could not have written is refused as at submission, and is

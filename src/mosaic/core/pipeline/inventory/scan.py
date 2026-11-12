@@ -168,7 +168,7 @@ def narrow_target(
     return frozenset(entry for entry in universe if selected(entry))
 
 
-def _entries_held(stems: set[str], candidates: frozenset[Entry]) -> set[Entry]:
+def entries_held(stems: set[str], candidates: frozenset[Entry]) -> set[Entry]:
     """Which of *candidates* the output stems account for.
 
     An entry's output is usually one file named exactly ``make_entry_key(...)``,
@@ -233,7 +233,7 @@ def run_covers(
         return Coverage(target=target, present=frozenset())
     memo = ParquetFooterMemo() if footers is None else footers
     stems = memo.whole_stems(run_root)
-    held = _entries_held(stems, target | known)
+    held = entries_held(stems, target | known)
     if GLOBAL_MARKER in stems:
         # The per-entry mapping still applies. A global fit may write per-entry
         # outputs *beside* its marker -- an apply step does exactly that -- so

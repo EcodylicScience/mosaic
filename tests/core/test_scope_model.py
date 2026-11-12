@@ -27,6 +27,7 @@ from mosaic.core.scope import (
     Scope,
     camera_grain_refusal,
 )
+from tests.helpers import count_property_reads
 
 
 class TestExclusivity:
@@ -253,15 +254,7 @@ class TestSelects:
     def test_a_test_built_once_builds_the_entry_pairs_once(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        built: list[int] = []
-        original = Scope.entry_pairs.fget  # pyright: ignore[reportAttributeAccessIssue]
-        assert original is not None
-
-        def counting(self: Scope) -> set[tuple[str, str]] | None:
-            built.append(1)
-            return original(self)
-
-        monkeypatch.setattr(Scope, "entry_pairs", property(counting))
+        built = count_property_reads(monkeypatch, Scope, "entry_pairs")
         selected = Scope(entries=[("A", str(index)) for index in range(50)]).selecting()
 
         for index in range(100):

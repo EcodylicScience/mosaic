@@ -209,8 +209,8 @@ refusing it for entries that differ in columns. Its run ids change.
 `convert-tracks` and `resample-tracks` write the tracks index once for each batch of
 tables, where each table reread and rewrote the whole index, and `run_feature` no longer
 runs a full garbage collection after each entry, rebuilds the map of its entries for each
-one, or writes its feature index every ten rows however large the index is. On the
-Tracktor study dataset, `convert-tracks` over 800 entries with four threads went from 13.7
+one, or writes its feature index every ten rows however large the index is. On a
+Tracktor dataset, `convert-tracks` over 800 entries with four threads went from 13.7
 to 53.2 entries a second, and over 8,400 entries with six threads from 4.5 entries a
 second (1,880 s) to 132 (63.6 s). `speed-angvel` over 800 entries with four threads went from 6.2 to
 32.5 entries a second, and over 8,400 entries with six workers from 1,572 s (5.3 a second,

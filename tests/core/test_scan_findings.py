@@ -1,8 +1,8 @@
 """What a source scan reports when it drops or cannot place files.
 
-A scan used to return a source's missing directory, a file source's listed
-files and an unmatched group pattern as an empty index with exit status 0. Each
-is now a finding: printed on stderr and returned for ``mosaic scan --json``.
+A source's missing directory, a file source's listed files that a rule skips and
+an unmatched group pattern are each a finding, not an empty index with exit
+status 0: printed on stderr and returned for ``mosaic scan --json``.
 """
 
 from __future__ import annotations
@@ -506,7 +506,7 @@ class TestGroupPatterns:
     def test_a_stem_pattern_that_matches_no_file_names_the_pattern(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """The reported case: a folder pattern given as a stem pattern."""
+        """A folder pattern given as a stem pattern matches nothing and says so."""
         dataset = make_dataset(tmp_path)
         root = tmp_path / "release"
         touch(root / "Behavior_data" / "strainA" / "x.npy")

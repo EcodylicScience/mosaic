@@ -1,7 +1,7 @@
 """A run over thousands of entries does its per-run work a fixed number of times.
 
-A study of 8,400 entries converted at 4 entries a second, with idle workers, because
-each published table reread and rewrote the whole tracks index. A feature step spent
+A dataset of 8,400 entries converts at 4 entries a second, with idle workers, when
+each published table rereads and rewrites the whole tracks index. A feature step spends
 170 ms an entry in the calling process, most of it in a full garbage collection after
 each entry, in a map of every entry rebuilt for each one, and in a write of the feature
 index every ten rows. These tests count that work instead of timing it, with a clock
@@ -34,6 +34,7 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from tests.helpers import (
     add_tracks_variant_in_bulk,
+    count_property_reads,
     make_dataset,
     write_tracktor_recording,
 )
@@ -178,15 +179,7 @@ def test_a_feature_run_maps_its_entries_a_fixed_number_of_times(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dataset = _bulk_dataset(tmp_path, SMALL)
-    builds: list[int] = []
-    original = ResolvedScope.entry_map.fget  # pyright: ignore[reportAttributeAccessIssue]
-    assert original is not None
-
-    def counting(self: ResolvedScope) -> dict[str, tuple[str, str]]:
-        builds.append(1)
-        return original(self)
-
-    monkeypatch.setattr(ResolvedScope, "entry_map", property(counting))
+    builds = count_property_reads(monkeypatch, ResolvedScope, "entry_map")
 
     _speed(dataset)
 

@@ -37,10 +37,8 @@ def parquet_is_readable(path: Path) -> bool:
     import pyarrow.parquet as pq
 
     try:
-        # pyarrow ships no type stubs, the same gap ``track_universe`` documents
-        # at its own ``read_schema`` call. Only whether the footer parsed
-        # matters, so the result is discarded rather than described.
-        pq.read_metadata(path)  # pyright: ignore[reportUnknownMemberType, reportUnusedCallResult]
+        # Opening the file parses its footer, which is all that is asked.
+        pq.ParquetFile(path).close()
     except Exception:
         return False
     return True

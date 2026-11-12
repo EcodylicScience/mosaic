@@ -83,7 +83,7 @@ $ mosaic run [OPTIONS]
 * `--republish`: With --kind: rebuild the op's published outputs from its finished work without redoing it. Ops without a republish path refuse it.
 * `--owner <str>`: Free-form attribution recorded on the attempt.
 * `--execution-id <str>`: Reuse an externally minted ULID (executor unit-of-work).
-* `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
+* `--workers <int range>`: Compute this many entries of a parallelizable step at once: a feature, convert-tracks or resample-tracks. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
 * `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
 * `--json`: Emit one JSON object on stdout; logs go to stderr.
@@ -1283,7 +1283,7 @@ when that cleanup failed. ``--retire <digest>`` adds the runs that a saved
 recipe's requests wrote, in any storage, to what that plan reviewed.
 ``--request`` runs the cleanup its request recorded.
 
-``--workers`` computes several entries of each parallelizable feature at once.
+``--workers`` computes several entries of each parallelizable step at once.
 It belongs to the machine and changes neither a run's identity nor its
 outputs, so ``--request`` accepts it where it rejects the options above.
 Memory grows with the worker count, most steeply with ``--parallel-mode
@@ -1322,7 +1322,7 @@ $ mosaic pipeline run [OPTIONS]
 * `--pin STEP=RUN_ID`: Serve a fitted step from this finished run instead of running it (repeatable; STEP is a step of the recipe that fits over its scope, RUN_ID the run of its storage). The steps below it derive their identity from the run. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --applies-request.
 * `--applies-request REQUEST_ID`: Reuse the fit of this finished request of the dataset over other entries. Its fitted steps are pinned to the runs it made, those steps and the steps they read are locked, and the tracks variant is its own: leave --tracks-run-id unset, since another variant is refused. Refused when a locked step differs from that request's recipe. Recorded on the request a submission makes: give it to the plan and again to the submission. Not with --pin.
 * `--expect-plan <str>`: With --recipe, the fingerprint that 'mosaic pipeline plan' printed. Refuses the run, writing nothing, when the plan has changed since. Required with --cleanup.
-* `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
+* `--workers <int range>`: Compute this many entries of a parallelizable step at once: a feature, convert-tracks or resample-tracks. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
 * `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
 * `--gpu-cards <str>`: With --request, the cards its GPU steps may lease, as one comma-separated value of nvidia-smi indexes (PCI bus order) or UUIDs among the visible cards, such as 0,1. Without it every visible card is leased.
@@ -1432,7 +1432,7 @@ $ mosaic pipeline score [OPTIONS]
 * `--expect-md5 <str>`: The MD5 of the held-out file. Refuses an incomplete copy before anything is done. A file only.
 * `--reuse`: Continue with the copy in --out after a failure or a dry run. The plan recorded before the held-out data was added is the one compared.
 * `--dry-run`: Stop after the comparison of run ids: nothing is run or scored. The study is never written. A held-out group already in the dataset is planned in place and writes nothing at all. Held-out files are added to the copy in --out, which is what the comparison needs.
-* `--workers <int range>`: Compute this many entries of a parallelizable feature at once. The default computes them in turn. More workers use more memory.  [1<=x<=32]
+* `--workers <int range>`: Compute this many entries of a parallelizable step at once: a feature, convert-tracks or resample-tracks. The default computes them in turn. More workers use more memory.  [1<=x<=32]
 * `--parallel-mode <thread|process>`: With --workers above 1, 'thread' (the default) shares one copy of the feature. 'process' uses every core but spawns an interpreter per worker and copies each entry's table to it, so it uses far more memory.
 * `--min-free-memory-fraction <float range>`: With --workers above 1, the share of the host's memory that must stay available. The run waits for its in-flight entries while the share is lower, and fails when it is still lower with none in flight. 0 turns the check off.  [default: 0.0; 0.0<=x<=0.99]
 * `--json`: Emit as a JSON object.

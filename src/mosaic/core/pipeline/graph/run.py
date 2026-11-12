@@ -288,7 +288,7 @@ def run_pipeline(
             does on SIGTERM and SIGINT. Each step's work checks it.
         step_scopes: Narrow single steps, keyed by step id. Recorded on the
             request that is submitted, and ignored when *request* is given.
-        parallel: How many entries a feature step computes at once, and how
+        parallel: How many entries a step computes at once, and how
             (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
             computes them in turn.
         tracks_run_id: The tracks variant that each feature step reading the
@@ -621,7 +621,7 @@ def run_request(
         request: The request.
         cancel_token: Fired to stop the run, as ``mosaic pipeline run`` does on
             SIGTERM and SIGINT.
-        parallel: How many entries a feature step computes at once, and how
+        parallel: How many entries a step computes at once, and how
             (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
             computes them in turn.
         gpu_cards: The cards GPU steps may lease, as ``nvidia-smi`` indexes or
@@ -776,7 +776,7 @@ def start_detached_driver(
     Args:
         ds: The dataset the request was submitted against.
         request: The request.
-        parallel: How many entries a feature step computes at once, and how
+        parallel: How many entries a step computes at once, and how
             (:class:`~mosaic.core.pipeline.parallelism.ParallelSettings`). ``None``
             computes them in turn.
         gpu_cards: The cards the driver may lease to GPU steps, as ``nvidia-smi``

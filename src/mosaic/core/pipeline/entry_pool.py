@@ -265,8 +265,7 @@ class EntryPool[Tag, Result]:
         """Hold dispatch while the host's available memory is under the floor.
 
         Waits for in-flight calls, whose tables free memory as they finish. With
-        none in flight it collects garbage once, which the run no longer does after
-        each entry, and raises when the host is still under the floor.
+        none in flight it collects garbage once, and raises when the host is still under the floor.
         """
         if self._floor <= 0.0:
             return

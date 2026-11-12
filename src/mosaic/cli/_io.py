@@ -116,8 +116,9 @@ WorkersOption = Annotated[
         min=1,
         max=MAX_WORKERS_CEILING,
         help=(
-            "Compute this many entries of a parallelizable feature at once. The "
-            "default computes them in turn. More workers use more memory."
+            "Compute this many entries of a parallelizable step at once: a "
+            "feature, convert-tracks or resample-tracks. The default computes "
+            "them in turn. More workers use more memory."
         ),
     ),
 ]

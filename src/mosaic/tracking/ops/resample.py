@@ -377,6 +377,7 @@ def resample_one_entry(
                 carries_tracklets=read_carries_tracklets(row),
             ),
         )
-    except Exception as exc:  # noqa: BLE001 -- recorded by the caller
+    except Exception as exc:
+        # The caller reports the entry as failed and the run goes on.
         outcome.failure = EntryFailure.capture(key, exc)
     return outcome

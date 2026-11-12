@@ -1959,26 +1959,31 @@ def test_a_row_draft_holds_the_arguments_of_write_tracks_row() -> None:
 def test_a_row_draft_writes_the_row_write_tracks_row_writes(tmp_path: Path) -> None:
     drafted = _dataset(tmp_path / "drafted")
     direct = _dataset(tmp_path / "direct")
-    row = {
-        "run_id": "convert-x.0.1-aaaaaaaaaa",
-        "group": "g",
-        "sequence": "s",
-        "producer": "convert-x",
-        "std_format": "trex_v1",
-        "n_rows": 40,
-        "carries_tracklets": True,
-        "source_md5": "abc",
-        "consumed_source_roots": ("tracks_raw",),
-    }
 
     TracksRowDraft(
         out_path=_track_parquet(drafted, "s"),
-        **row,  # pyright: ignore[reportArgumentType]
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="g",
+        sequence="s",
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        carries_tracklets=True,
+        source_md5="abc",
+        consumed_source_roots=("tracks_raw",),
     ).write(drafted)
     write_tracks_row(
         direct,
         out_path=_track_parquet(direct, "s"),
-        **row,  # pyright: ignore[reportArgumentType]
+        run_id="convert-x.0.1-aaaaaaaaaa",
+        group="g",
+        sequence="s",
+        producer="convert-x",
+        std_format="trex_v1",
+        n_rows=40,
+        carries_tracklets=True,
+        source_md5="abc",
+        consumed_source_roots=("tracks_raw",),
     )
 
     def cells(ds: Dataset) -> list[list[object]]:

@@ -626,9 +626,9 @@ def step_argv(
         program: The command that runs mosaic: argv[0], or the words that the
             argv starts with, as ``[sys.executable, "-m", "mosaic"]``. A driver
             that knows where mosaic lives substitutes it.
-        parallel: How many entries a feature step computes at once, and how. A
-            flag rather than a recipe field, because the count belongs to the
-            machine that runs the step. Nothing is added for one worker.
+        parallel: How many entries a step computes at once, and how. A flag
+            rather than a recipe field, because the count belongs to the machine
+            that runs the step. Nothing is added for one worker.
 
     Returns:
         The argv, ready to run.

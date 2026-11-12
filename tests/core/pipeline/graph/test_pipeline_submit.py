@@ -52,6 +52,7 @@ from mosaic.core.scope import Scope
 from tests.helpers import (
     add_tracks_variant,
     make_dataset,
+    observed,
     run_speed,
     speed_heading_recipe,
     speed_recipe_stepping,
@@ -726,11 +727,11 @@ def _count_plans(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     import mosaic.core.pipeline.graph.request as request_module
 
     resolved: list[int] = []
-    real = request_module.plan_pipeline
 
-    def counted(*args: object, **kwargs: object) -> Plan:
+    def count(*_args: object, **_kwargs: object) -> None:
         resolved.append(1)
-        return real(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    counted = observed(request_module.plan_pipeline, count)
 
     monkeypatch.setattr(request_module, "plan_pipeline", counted)
     return resolved

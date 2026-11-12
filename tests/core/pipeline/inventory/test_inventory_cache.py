@@ -8,6 +8,7 @@ watcher would not work over NFS, which is in the portability story.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -16,10 +17,14 @@ from mosaic.cli._features import build_feature
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.inventory import InventoryCache
 from mosaic.core.pipeline.inventory import cache as cache_module
+from mosaic.core.pipeline.inventory._read import ParquetFooterMemo
+from mosaic.core.pipeline.inventory.model import ArtifactKind
+from mosaic.core.scope import Scope
 from tests.helpers import (
     add_tracks_variant,
     assert_tree_unchanged,
     make_dataset,
+    observed,
     tree_snapshot,
 )
 
@@ -31,11 +36,12 @@ def test_a_held_view_is_reused_rather_than_rebuilt(
     _ = holder.get(kinds=["feature"])
 
     builds: list[int] = []
-    real = cache_module.inventory
+
+    def count_build(*_args: object, **_kwargs: object) -> None:
+        builds.append(1)
+
     monkeypatch.setattr(
-        cache_module,
-        "inventory",
-        lambda *a, **k: (builds.append(1), real(*a, **k))[1],
+        cache_module, "inventory", observed(cache_module.inventory, count_build)
     )
     _ = holder.get()
     _ = holder.get()
@@ -115,17 +121,24 @@ def test_nothing_is_written_to_the_dataset(scenario_dataset: Dataset) -> None:
     assert not (root / ".mosaic" / "inventory.json").exists()
 
 
-def _scanned_kinds(monkeypatch: pytest.MonkeyPatch) -> list[frozenset[str]]:
+def _scanned_kinds(monkeypatch: pytest.MonkeyPatch) -> list[frozenset[ArtifactKind]]:
     """Record the kinds of each scan that the holder makes."""
-    scans: list[frozenset[str]] = []
-    real = cache_module.inventory
+    scans: list[frozenset[ArtifactKind]] = []
 
-    def recorded(*args: object, **kwargs: object) -> object:
-        kinds = kwargs.get("kinds")
-        scans.append(frozenset(kinds))  # pyright: ignore[reportArgumentType]
-        return real(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+    def record(
+        ds: Dataset,
+        *,
+        kinds: Iterable[ArtifactKind] | None = None,
+        scope: Scope | None = None,
+        tracks_run_id: str | None = None,
+        footers: ParquetFooterMemo | None = None,
+    ) -> None:
+        assert kinds is not None
+        scans.append(frozenset(kinds))
 
-    monkeypatch.setattr(cache_module, "inventory", recorded)
+    monkeypatch.setattr(
+        cache_module, "inventory", observed(cache_module.inventory, record)
+    )
     return scans
 
 
@@ -203,11 +216,10 @@ def test_an_index_that_moves_during_a_scan_is_seen_by_the_next_revalidation(
     index_path = scenario_dataset.get_root("tracks") / "index.csv"
     real = cache_module.inventory
 
-    def moving(*args: object, **kwargs: object) -> object:
+    def move_index(*_args: object, **_kwargs: object) -> None:
         _ = index_path.write_text(index_path.read_text() + "\n")
-        return real(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
-    monkeypatch.setattr(cache_module, "inventory", moving)
+    monkeypatch.setattr(cache_module, "inventory", observed(real, move_index))
     holder = InventoryCache(scenario_dataset)
     _ = holder.get()
     monkeypatch.setattr(cache_module, "inventory", real)

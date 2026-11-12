@@ -8,6 +8,7 @@ registry. These pin the answer for the kinds ``core`` can report on by itself.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -24,8 +25,10 @@ from mosaic.core.pipeline.inventory import (
     inventory_wire,
     reclassify,
 )
+from mosaic.core.pipeline.inventory import _read as read_module
 from mosaic.core.pipeline.inventory._read import ParquetFooterMemo
 from mosaic.core.pipeline.inventory.scan import (
+    entries_held,
     entry_universe,
     narrow_target,
     run_covers,
@@ -37,6 +40,7 @@ from tests.helpers import (
     add_track_sequences,
     add_tracks_variant,
     make_dataset,
+    observed,
     run_fresh,
 )
 
@@ -127,7 +131,6 @@ def test_the_stems_a_run_holds_account_for_entries_by_key_or_key_and_double_unde
 ):
     """The rule each entry is tested against, whatever the number of stems."""
     from mosaic.core.helpers import make_entry_key
-    from mosaic.core.pipeline.inventory.scan import _entries_held  # pyright: ignore[reportPrivateUsage]
 
     entries = frozenset(
         {
@@ -143,7 +146,7 @@ def test_the_stems_a_run_holds_account_for_entries_by_key_or_key_and_double_unde
     )
     stems = {"a__id0", "ab", "g__s", "x__y__id1", "a___q", "zz", "g__"}
 
-    held = _entries_held(stems, entries)
+    held = entries_held(stems, entries)
 
     expected = {
         entry
@@ -196,7 +199,7 @@ def test_a_footer_is_read_once_until_its_file_moves(
 
 
 def test_a_deleted_output_is_forgotten_by_the_next_scan_of_its_directory(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_root = tmp_path / "run"
     run_root.mkdir()
@@ -204,11 +207,23 @@ def test_a_deleted_output_is_forgotten_by_the_next_scan_of_its_directory(
         pd.DataFrame({"a": [1]}).to_parquet(run_root / f"{name}.parquet", index=False)
     footers = ParquetFooterMemo()
     assert footers.whole_stems(run_root) == {"seq_a", "seq_b"}
-
-    (run_root / "seq_b.parquet").unlink()
+    deleted = run_root / "seq_b.parquet"
+    stamp = deleted.stat()
+    deleted.unlink()
 
     assert footers.whole_stems(run_root) == {"seq_a"}
-    assert set(footers._known[run_root]) == {"seq_a.parquet"}  # pyright: ignore[reportPrivateUsage]
+
+    parsed: list[Path] = []
+    monkeypatch.setattr(
+        read_module,
+        "parquet_is_readable",
+        observed(read_module.parquet_is_readable, parsed.append),
+    )
+    pd.DataFrame({"a": [1]}).to_parquet(deleted, index=False)
+    os.utime(deleted, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+    assert footers.whole_stems(run_root) == {"seq_a", "seq_b"}
+    assert parsed == [deleted]
 
 
 def test_a_rebuild_after_an_index_moved_reads_no_footer_of_a_file_that_did_not(

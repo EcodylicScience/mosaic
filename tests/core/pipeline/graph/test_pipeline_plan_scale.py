@@ -1,7 +1,7 @@
 """Planning a recipe over thousands of entries costs time in proportion to them.
 
-A study of 8,400 entries waited a minute or more on each ``plan_recipe`` before any
-step computed, because a pass over the tracks index did its work once per entry.
+A dataset of 8,400 entries waits a minute or more on each ``plan_recipe`` before any
+step computes, because a pass over the tracks index did its work once per entry.
 The bounds are far above what a plan costs on a quiet machine and far below
 what a quadratic pass costs at this size, so only a return of one fails them.
 """

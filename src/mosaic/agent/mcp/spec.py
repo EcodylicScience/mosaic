@@ -906,7 +906,7 @@ class SubmitPipelineInput(ToolInput):
         ge=1,
         le=MAX_WORKERS_CEILING,
         description=(
-            "How many entries a parallelizable feature step computes at once. "
+            "How many entries a parallelizable step computes at once. "
             "Omitted: the server's default, which plan_recipe reports in its "
             "parallel block and which is the host's physical cores unless the "
             "operator set another. More than the server's max_workers is refused. "

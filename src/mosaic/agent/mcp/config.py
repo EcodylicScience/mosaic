@@ -101,9 +101,9 @@ class ServerConfig(StrictModel):
             recipes wrote.
         cleanup: Which superseded runs a cleanup keeps by recency and age. The
             operator sets it here; no tool call does.
-        max_workers: The most entries a parallelizable feature step computes at
-            once, and the count a submission that names none receives. 1 computes
-            them in turn. A submission may ask for fewer and never for more.
+        max_workers: The most entries a parallelizable step computes at once,
+            and the count a submission that names none receives. 1 computes them
+            in turn. A submission may ask for fewer and never for more.
             Unset: the host's physical cores, at most 32.
         allow_process_mode: Whether a submission may ask for ``process`` workers,
             which each hold an interpreter and their own copy of an entry's

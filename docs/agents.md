@@ -552,10 +552,11 @@ being planned, and for a recipe with a request that has not ended.
 
 ### Parallel workers and memory
 
-A feature step computes its entries one at a time. A feature that computes each entry on
-its own, such as `speed-angvel` or `body-scale`, can compute several at once, and
-`describe_step_types` reports it as `parallelizable`. A fit across every entry, such as
-`global-kmeans`, and every op but `convert-tracks` and `resample-tracks` are not. The
+A step computes its entries one at a time. A feature that computes each entry on its
+own, such as `speed-angvel` or `body-scale`, can compute several at once, and so can the
+`convert-tracks` and `resample-tracks` ops. `describe_step_types` reports such a step as
+`parallelizable`. A fit across every entry, such as `global-kmeans`, and every other op
+are not. The
 worker count belongs to the machine and not to the recipe, so it changes neither a run's
 identity nor its outputs. A run that used four workers is a cache hit for a run that
 uses one.
