@@ -16,14 +16,19 @@ steps. ``time`` is often ``float32``, whose resolution is about a millisecond
 three hours in, so consecutive differences snap to binary fractions and their
 median is biased in the same direction for every file.
 
+:func:`row_seconds` turns a table's rows into the seconds each stands for, per
+series of rows, from the same two columns, and :func:`frame_step` measures the
+frame spacing it scales by.
+
 This module imports numpy and the standard-library run-log module, so the label
-converters, the resampling op and the features share it.
+converters, the resampling op and the features share it. It reads a table through
+DataFrame methods and imports pandas for type checking only.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -42,9 +47,11 @@ __all__ = [
     "IrregularNotice",
     "TimeAxis",
     "collect_irregular_notices",
+    "frame_step",
     "last_frames_at_or_before",
     "local_periods",
     "measure_time_axis",
+    "row_seconds",
     "step_seconds",
     "uniform_grid_rate",
     "warn_if_irregular",
@@ -126,6 +133,22 @@ def step_seconds(
     return np.where(usable, steps, np.nan)
 
 
+def _frame_axis(df: pd.DataFrame) -> NDArray[np.float64]:
+    """The frame of each row of *df*, as float64.
+
+    The ``frame`` column. A table without one is read as one row per distinct
+    finite ``time``, in time order, so a row's frame is the rank of its time and
+    NaN where its time is not finite.
+    """
+    if FRAME_COLUMN in df.columns:
+        return df[FRAME_COLUMN].to_numpy(dtype=np.float64)
+    times = df[TIME_COLUMN].to_numpy(dtype=np.float64)
+    finite = np.isfinite(times)
+    frames = np.full(times.shape[0], np.nan, dtype=np.float64)
+    frames[finite] = np.unique(times[finite], return_inverse=True)[1]
+    return frames
+
+
 def measure_time_axis(df: pd.DataFrame, who: str) -> TimeAxis:
     """Measure the rate and the steps of *df*'s frame and time columns.
 
@@ -148,13 +171,7 @@ def measure_time_axis(df: pd.DataFrame, who: str) -> TimeAxis:
             f"lacks: it has {sorted(map(str, df.columns))}."
         )
     times = df[TIME_COLUMN].to_numpy(dtype=np.float64)
-    if FRAME_COLUMN in df.columns:
-        frames = df[FRAME_COLUMN].to_numpy(dtype=np.float64)
-    else:
-        frames = np.unique(times[np.isfinite(times)], return_inverse=True)[1].astype(
-            np.float64
-        )
-        frames = np.where(np.isfinite(times), frames, np.nan)
+    frames = _frame_axis(df)
     keep = np.isfinite(frames) & np.isfinite(times)
     unique_frames, first = np.unique(frames[keep], return_index=True)
     unique_times = times[keep][first]
@@ -224,6 +241,93 @@ def local_periods(
     periods[:-1] = step
     periods[-1] = step[-1]
     return np.where(np.isfinite(periods), periods, fallback)
+
+
+def frame_step(frames: NDArray[np.float64]) -> float:
+    """The smallest gap between two distinct finite frames of a table.
+
+    1 for a table with a row on every frame, and for fewer than two distinct
+    frames. ``k`` for one tracked on a media variant decimated by ``k``, which is
+    published on source frames and so holds every ``k``-th. Measured over every
+    individual's rows together, because it describes the table's sampling: an
+    individual missing every other frame of a table that has them all was
+    missing, not sampled more coarsely.
+
+    Args:
+        frames: The frame of each row, in any order and with repeats.
+
+    Returns:
+        The step in frames.
+    """
+    distinct = np.unique(frames[np.isfinite(frames)])
+    if distinct.size < 2:
+        return 1.0
+    return float(np.diff(distinct).min())
+
+
+def row_seconds(
+    df: pd.DataFrame,
+    series: Sequence[str],
+    who: str,
+    *,
+    fps: float | None = None,
+) -> NDArray[np.float64]:
+    """The seconds each row of *df* stands for.
+
+    A row lasts the seconds from its frame to the next frame of its series, scaled
+    to one step of the table's frame axis (:func:`frame_step`), so a row on a
+    table decimated by ``k`` lasts ``k`` frame periods. A skipped frame number
+    counts as one step's period, since the row before it takes the period per
+    frame (:func:`local_periods`), and a dropped stretch of the recording, where
+    ``time`` jumps over contiguous frames, counts in full. Rows that share a
+    series and a frame take one period, from the ``time`` of the first of them.
+    A row with no usable step, or with a frame that is not finite, takes the
+    fallback period times the step.
+
+    Args:
+        df: The table, with ``frame`` and ``time`` columns. Without ``frame``, a
+            row's frame is the rank of its ``time``.
+        series: The columns that split the rows into series, a null key counting
+            as a value. Empty reads the whole table as one series.
+        who: The name that opens an error message.
+        fps: The frame rate, when the caller sets it. Every row then lasts
+            ``step / fps`` and ``time`` is not read. Without it, the fallback
+            period is measured from the table.
+
+    Returns:
+        The seconds of each row, aligned with the rows of *df* by position.
+
+    Raises:
+        ValueError: If *fps* is unset and the table's rate cannot be measured,
+            as :func:`measure_time_axis` raises it, even when every row has a
+            usable step.
+    """
+    fallback = 1.0 / fps if fps is not None else 1.0 / measure_time_axis(df, who).rate
+    frames = _frame_axis(df)
+    step = frame_step(frames)
+    if fps is not None:
+        return np.full(len(df), step * fallback)
+    times = df[TIME_COLUMN].to_numpy(dtype=np.float64)
+    if series:
+        codes = df.groupby(list(series), dropna=False, sort=False).ngroup().to_numpy()
+    else:
+        codes = np.zeros(len(df), dtype=np.int64)
+    seconds = np.full(len(df), step * fallback)
+    order = np.lexsort((frames, codes))
+    n_series = int(codes.max()) + 1 if len(df) else 0
+    bounds = np.searchsorted(codes[order], np.arange(n_series + 1))
+    for low, high in zip(bounds[:-1], bounds[1:], strict=True):
+        at = order[low:high]
+        at = at[np.isfinite(frames[at])]
+        if at.size == 0:
+            continue
+        in_series = frames[at]
+        first = np.ones(at.size, dtype=bool)
+        first[1:] = in_series[1:] != in_series[:-1]
+        starts = np.flatnonzero(first)
+        periods = local_periods(in_series[starts], times[at][starts], fallback) * step
+        seconds[at] = periods[np.cumsum(first) - 1]
+    return seconds
 
 
 @dataclass(frozen=True)

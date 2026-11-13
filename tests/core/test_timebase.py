@@ -9,9 +9,11 @@ import pandas as pd
 import pytest
 
 from mosaic.core.timebase import (
+    frame_step,
     last_frames_at_or_before,
     local_periods,
     measure_time_axis,
+    row_seconds,
     step_seconds,
     uniform_grid_rate,
 )
@@ -22,6 +24,7 @@ from tests.helpers import (
     dropped_frame_times,
     dropped_frame_tracks,
     mean_rate,
+    modules_loaded_by,
 )
 
 
@@ -148,3 +151,116 @@ def test_a_row_with_no_step_takes_the_fallback_period() -> None:
         local_periods(np.array([0.0, 1.0]), np.array([1.0, 1.0]), fallback=0.25),
         [0.25, 0.25],
     )
+
+
+def _one_series(frames: list[float], times: list[float]) -> pd.DataFrame:
+    return pd.DataFrame({"id": 0, "frame": frames, "time": times})
+
+
+def test_one_series_lasts_its_local_periods_times_the_frame_step() -> None:
+    frames = [0.0, 1.0, 2.0, 4.0, 5.0]
+    times = [0.0, 0.1, 1.6, 1.8, 1.9]
+    seconds = row_seconds(_one_series(frames, times), ["id"], "test")
+    expected = local_periods(
+        np.array(frames), np.array(times), fallback=9.0
+    ) * frame_step(np.array(frames))
+    np.testing.assert_array_equal(seconds, expected)
+    np.testing.assert_allclose(seconds, [0.1, 1.5, 0.1, 0.1, 0.1])
+
+
+def test_the_row_before_a_skipped_frame_lasts_one_frame_period() -> None:
+    seconds = row_seconds(_one_series([0.0, 1.0, 3.0], [0.0, 0.1, 0.3]), ["id"], "test")
+    np.testing.assert_allclose(seconds, [0.1, 0.1, 0.1])
+
+
+def test_the_row_before_a_dropped_stretch_lasts_the_whole_stretch() -> None:
+    seconds = row_seconds(_one_series([0.0, 1.0, 2.0], [0.0, 0.1, 2.1]), ["id"], "test")
+    np.testing.assert_allclose(seconds, [0.1, 2.0, 2.0])
+
+
+def test_a_row_of_a_table_on_every_third_frame_lasts_three_frame_periods() -> None:
+    seconds = row_seconds(
+        _one_series([0.0, 3.0, 6.0, 9.0], [0.0, 0.3, 0.6, 0.9]), ["id"], "test"
+    )
+    np.testing.assert_allclose(seconds, [0.3, 0.3, 0.3, 0.3])
+
+
+def test_each_series_keeps_its_own_periods() -> None:
+    table = pd.DataFrame(
+        {
+            "id": ["a", "b", "a", "b", "a", "b"],
+            "frame": [0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+            "time": [0.0, 0.0, 0.1, 0.5, 0.2, 1.0],
+        }
+    )
+    seconds = row_seconds(table, ["id"], "test")
+    np.testing.assert_allclose(seconds, [0.1, 0.5, 0.1, 0.5, 0.1, 0.5])
+
+
+def test_rows_on_one_frame_of_a_series_take_one_period() -> None:
+    table = pd.DataFrame(
+        {
+            "id": [0, 0, 0, 0],
+            "frame": [0.0, 1.0, 1.0, 2.0],
+            "time": [0.0, 0.2, 0.2, 0.4],
+        }
+    )
+    np.testing.assert_allclose(row_seconds(table, ["id"], "test"), [0.2] * 4)
+
+
+def test_a_shuffled_row_order_gives_the_same_seconds_on_the_same_rows() -> None:
+    table = pd.DataFrame(
+        {
+            "id": ["a", "a", "a", "a", "b", "b", "b"],
+            "frame": [0.0, 1.0, 1.0, 3.0, 0.0, 1.0, 2.0],
+            "time": [0.0, 0.1, 0.1, 0.3, 0.0, 0.5, 1.5],
+        }
+    )
+    expected = row_seconds(table, ["id"], "test")
+    np.testing.assert_allclose(expected, [0.1, 0.1, 0.1, 0.1, 0.5, 1.0, 1.0])
+    order = np.array([5, 2, 0, 6, 3, 1, 4])
+    shuffled = table.iloc[order].reset_index(drop=True)
+    np.testing.assert_array_equal(
+        row_seconds(shuffled, ["id"], "test"), expected[order]
+    )
+
+
+def test_a_table_without_frames_ranks_its_times_and_a_missing_time_takes_the_fallback() -> (
+    None
+):
+    table = pd.DataFrame({"id": 0, "time": [0.0, 0.1, np.nan, 0.5]})
+    seconds = row_seconds(table, ["id"], "test")
+    np.testing.assert_allclose(seconds, [0.1, 0.4, 0.25, 0.4])
+
+
+def test_a_table_without_time_is_refused_for_its_rate() -> None:
+    with pytest.raises(ValueError, match=r"test .*'time'"):
+        _ = row_seconds(pd.DataFrame({"id": 0, "frame": [0, 1]}), ["id"], "test")
+
+
+def test_fps_gives_every_row_the_step_times_the_frame_period_without_reading_time() -> (
+    None
+):
+    table = pd.DataFrame({"id": 0, "frame": [0, 3, 6], "time": np.nan})
+    seconds = row_seconds(table, ["id"], "test", fps=10.0)
+    np.testing.assert_array_equal(seconds, np.full(3, 3.0 * (1.0 / 10.0)))
+
+
+def test_the_frame_step_is_the_smallest_gap_between_distinct_finite_frames() -> None:
+    assert frame_step(np.array([], dtype=np.float64)) == 1.0
+    assert frame_step(np.array([7.0])) == 1.0
+    assert frame_step(np.array([0.0, 3.0, np.nan, 6.0])) == 3.0
+    assert frame_step(np.array([5.0, 2.0, 2.0, 8.0])) == 3.0
+    assert frame_step(np.array([np.nan, 4.0])) == 1.0
+
+
+def test_no_series_reads_the_table_as_one_series() -> None:
+    table = pd.DataFrame({"frame": [0.0, 1.0, 2.0, 4.0], "time": [0.0, 0.1, 1.6, 1.8]})
+    np.testing.assert_array_equal(
+        row_seconds(table, [], "test"),
+        row_seconds(table.assign(id=0), ["id"], "test"),
+    )
+
+
+def test_importing_the_time_axis_module_leaves_pandas_unloaded() -> None:
+    assert modules_loaded_by("import mosaic.core.timebase", ["pandas"]) == []

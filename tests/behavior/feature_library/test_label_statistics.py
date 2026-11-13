@@ -424,6 +424,185 @@ def test_no_frame_rate_and_no_time_column_is_refused() -> None:
         _ = feature.apply(table)
 
 
+# --- the output pinned over gaps, a decimated axis and repeated rows ---------------
+
+
+def _gappy_table() -> pd.DataFrame:
+    """Three ids on a table decimated by 3, with a dropped stretch and a repeated row.
+
+    id 0 holds frames 0, 3, ..., 21 with states 0 1 1 0 2 2 0 0, and its clock
+    jumps by 2 s between frames 12 and 15. It has two rows on frame 3, both
+    state 1. id 1 holds frames 6, 9, 12, 15 with states 1 1 0 0. id 2 holds one
+    row, state 0 on frame 9, which has no step to a next row. The rows are
+    shuffled. Usages and transition counts are powers of two, so both entropies
+    are exact.
+    """
+    table = _column_table(
+        {0: [0, 1, 1, 0, 2, 2, 0, 0], 1: [1, 1, 0, 0], 2: [0]},
+        frames={0: list(range(0, 24, 3)), 1: [6, 9, 12, 15], 2: [9]},
+    )
+    table["time"] = table["frame"] / FPS
+    table.loc[(table["id"] == 0) & (table["frame"] >= 15), "time"] += 2.0
+    repeated = table[(table["id"] == 0) & (table["frame"] == 3)]
+    table = pd.concat([table, repeated], ignore_index=True)
+    order = np.random.default_rng(7).permutation(len(table))
+    return table.iloc[order].reset_index(drop=True)
+
+
+_NAN = float("nan")
+
+# Columns the frame rate does not touch, one value per id (0, 1, then 2).
+_PINNED_SHARED: dict[str, list[float]] = {
+    "n_frames": [8, 4, 1],
+    "coverage": [1.0, 1.0, 1.0],
+    "n_bouts": [5, 2, 1],
+    "entropy": [1.5, 1.0, 0.0],
+    "transition_entropy": [0.5, 0.0, _NAN],
+    "usage__0": [0.5, 0.5, 1.0],
+    "usage__1": [0.25, 0.5, 0.0],
+    "usage__2": [0.25, 0.0, 0.0],
+    "bouts__0": [3, 1, 1],
+    "bouts__1": [1, 1, 0],
+    "bouts__2": [1, 0, 0],
+    "bout_mean_s__1": [0.6000000238418579, 0.6000000238418579, _NAN],
+    "bout_median_s__1": [0.6000000238418579, 0.6000000238418579, _NAN],
+    "p__0__1": [0.5, _NAN, _NAN],
+    "p__0__2": [0.5, _NAN, _NAN],
+    "p__1__0": [1.0, 1.0, _NAN],
+    "p__1__2": [0.0, 0.0, _NAN],
+    "p__2__0": [1.0, _NAN, _NAN],
+    "p__2__1": [0.0, _NAN, _NAN],
+}
+
+
+_PINNED_ORDER = [
+    "n_frames",
+    "coverage",
+    "n_bouts",
+    "entropy",
+    "transition_entropy",
+    "usage__0",
+    "usage__1",
+    "usage__2",
+    "bouts__0",
+    "bouts__1",
+    "bouts__2",
+    "rate_per_min__0",
+    "rate_per_min__1",
+    "rate_per_min__2",
+    "bout_mean_s__0",
+    "bout_mean_s__1",
+    "bout_mean_s__2",
+    "bout_median_s__0",
+    "bout_median_s__1",
+    "bout_median_s__2",
+    "p__0__1",
+    "p__0__2",
+    "p__1__0",
+    "p__1__2",
+    "p__2__0",
+    "p__2__1",
+]
+
+
+def _pinned_frame(seconds_columns: dict[str, list[float]]) -> pd.DataFrame:
+    """The recorded output, columns in the feature's order and dtypes."""
+    counts = {"n_frames", "n_bouts", "bouts__0", "bouts__1", "bouts__2"}
+    values = {**_PINNED_SHARED, **seconds_columns}
+    expected = pd.DataFrame(
+        {"group": ["", "", ""], "sequence": ["s"] * 3, "id": np.array([0, 1, 2])}
+    )
+    for name in _PINNED_ORDER:
+        expected[name] = np.array(
+            values[name], dtype=np.int64 if name in counts else np.float32
+        )
+    return expected
+
+
+def test_the_output_over_gaps_and_a_decimated_axis_is_pinned() -> None:
+    """Rows last what the clock says, a dropped stretch included.
+
+    Without ``fps`` each row lasts the seconds to the id's next row. id 0 lasts
+    0.3 s a row except the row at frame 12, which holds 2.3 s across the dropped
+    stretch, so its run of state 2 (frames 12 and 15) lasts 2.3 + 0.3 = 2.6 s
+    and the id lasts 4.4 s in all: 3 bouts of state 0 in 4.4 s is 3 * 60 / 4.4 =
+    40.909... a minute. Its run of state 1 holds two frames, 0.6 s, although a
+    row of it is repeated. id 1 lasts 4 * 0.3 = 1.2 s, its last row repeating
+    the period before it, and 1 bout of state 0 in 1.2 s is 50 a minute. id 2's
+    one row has no step, so it takes the table's measured period, 4.1 s over 21
+    frames, times the step of 3: 4.1 / 7 = 0.5857 s, and 1 bout in it is
+    60 / 0.5857 = 102.4 a minute.
+    """
+    table = _gappy_table()
+    feature = LabelStatistics(
+        params={"labels": ResultColumn(column="state"), "states": [0, 1, 2]}
+    )
+    _ = feature.load_state(Path(), {}, {})
+    out = feature.apply(table)
+
+    expected = _pinned_frame(
+        {
+            "rate_per_min__0": [40.90909194946289, 50.0, 102.43902587890625],
+            "rate_per_min__1": [13.636363983154297, 50.0, 0.0],
+            "rate_per_min__2": [13.636363983154297, 0.0, 0.0],
+            "bout_mean_s__0": [
+                0.4000000059604645,
+                0.6000000238418579,
+                0.5857142806053162,
+            ],
+            "bout_mean_s__2": [2.5999999046325684, _NAN, _NAN],
+            "bout_median_s__0": [
+                0.30000001192092896,
+                0.6000000238418579,
+                0.5857142806053162,
+            ],
+            "bout_median_s__2": [2.5999999046325684, _NAN, _NAN],
+        }
+    )
+    pd.testing.assert_frame_equal(out, expected, check_exact=True)
+
+    first = _row(out, 0)
+    assert first["bouts__0"] * 60 / first["rate_per_min__0"] == pytest.approx(4.4)
+    assert first["bout_mean_s__2"] == pytest.approx(2.6)
+    assert _row(out, 2)["bout_mean_s__0"] == pytest.approx(4.1 / 7)
+
+
+def test_the_output_with_fps_set_is_pinned() -> None:
+    """With ``fps`` set a row lasts ``step / fps``, whatever the clock says.
+
+    Every row of the table lasts 3 / 10 = 0.3 s, so id 0 lasts 8 * 0.3 = 2.4 s
+    and 3 bouts of state 0 are 3 * 60 / 2.4 = 75 a minute, and its run of state
+    2 lasts 0.6 s, not the 2.6 s of the clock. id 2's one row lasts 0.3 s too,
+    not the measured period of the clock.
+    """
+    out = _column_feature(states=[0, 1, 2]).apply(_gappy_table())
+
+    expected = _pinned_frame(
+        {
+            "rate_per_min__0": [75.0, 50.0, 200.0],
+            "rate_per_min__1": [25.0, 50.0, 0.0],
+            "rate_per_min__2": [25.0, 0.0, 0.0],
+            "bout_mean_s__0": [
+                0.4000000059604645,
+                0.6000000238418579,
+                0.30000001192092896,
+            ],
+            "bout_mean_s__2": [0.6000000238418579, _NAN, _NAN],
+            "bout_median_s__0": [
+                0.30000001192092896,
+                0.6000000238418579,
+                0.30000001192092896,
+            ],
+            "bout_median_s__2": [0.6000000238418579, _NAN, _NAN],
+        }
+    )
+    pd.testing.assert_frame_equal(out, expected, check_exact=True)
+
+    first = _row(out, 0)
+    assert first["bouts__0"] * 60 / first["rate_per_min__0"] == pytest.approx(2.4)
+    assert first["bout_mean_s__1"] == pytest.approx(0.6)
+
+
 # --- construction ----------------------------------------------------------------
 
 

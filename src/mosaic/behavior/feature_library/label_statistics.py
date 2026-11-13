@@ -33,7 +33,7 @@ from mosaic.core.label_intervals import (
     segments_from_npz,
 )
 from mosaic.core.schema import TRACK_SPACES, TrackSpace
-from mosaic.core.timebase import local_periods, measure_time_axis
+from mosaic.core.timebase import frame_step, row_seconds
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     Column,
@@ -268,21 +268,6 @@ class _Bouts:
     seconds: NDArray[np.float64]
     covered: NDArray[np.int64]
     covered_any: int
-
-
-def _frame_step(frame: NDArray[np.int64]) -> int:
-    """The entry's frame step: the smallest gap between two of its distinct frames.
-
-    1 for a table with a row on every frame. ``k`` for one tracked on a media
-    variant decimated by ``k``, which is published on source frames and so holds
-    every ``k``-th. Measured over every individual's rows together, because it
-    describes the table's sampling: an individual missing every other frame of a
-    table that has them all was missing, not sampled more coarsely.
-    """
-    distinct = np.unique(frame)
-    if distinct.size < 2:
-        return 1
-    return int(np.diff(distinct).min())
 
 
 def _min_rows(min_bout_frames: int, step: int) -> int:
@@ -649,12 +634,14 @@ class LabelStatistics:
         ensure_columns(df, [C.frame_col, C.id_col])
         group = self._single_text(df, C.group_col)
         sequence = self._single_text(df, C.seq_col)
-        fallback_period = self._fallback_period(df)
-        times = (
-            None
-            if self.params.fps is not None
-            else df[C.time_col].to_numpy(dtype=np.float64)
-        )
+        try:
+            seconds = row_seconds(df, [C.id_col], self.name, fps=self.params.fps)
+        except ValueError as exc:
+            raise ValueError(
+                f"{exc} It needs a frame rate to turn bout lengths into seconds "
+                "and bout counts into rates: set fps, or give it an input whose "
+                f"{C.time_col} column advances with {C.frame_col}."
+            ) from exc
         frame = self._frame_numbers(df)
         id_code, id_values = self._individuals(df)
 
@@ -670,7 +657,7 @@ class LabelStatistics:
         n_states = len(states)
         # Every length below is counted in rows, and each row stands for one
         # step of the frame axis.
-        step = _frame_step(frame)
+        step = int(frame_step(frame.astype(np.float64)))
         min_rows = _min_rows(self.params.min_bout_frames, step)
 
         order = np.lexsort((frame, id_code))
@@ -681,19 +668,7 @@ class LabelStatistics:
             frames = frame[at]
             first = np.ones(frames.size, dtype=bool)
             first[1:] = frames[1:] != frames[:-1]
-            elapsed = np.concatenate(
-                (
-                    [0.0],
-                    np.cumsum(
-                        self._row_seconds(
-                            frames[first],
-                            None if times is None else times[at][first],
-                            step,
-                            fallback_period,
-                        )
-                    ),
-                )
-            )
+            elapsed = np.concatenate(([0.0], np.cumsum(seconds[at][first])))
             if isinstance(source, _PerFrame):
                 codes = source.codes[at]
                 clash = ~first[1:] & (codes[1:] != codes[:-1])
@@ -774,38 +749,6 @@ class LabelStatistics:
                 "per individual"
             )
         return code_array, cast("list[Any]", np.asarray(uniques, dtype=object).tolist())
-
-    def _row_seconds(
-        self,
-        frames: NDArray[np.int64],
-        times: NDArray[np.float64] | None,
-        step: int,
-        fallback_period: float,
-    ) -> NDArray[np.float64]:
-        """The seconds each of one individual's rows stands for.
-
-        With ``fps`` set, every row lasts ``step / fps``. Otherwise a row lasts the
-        seconds to the individual's next row, scaled to one step of the frame axis
-        (:func:`~mosaic.core.timebase.local_periods`), and a row with no usable
-        step takes the table's measured period.
-        """
-        if self.params.fps is not None or times is None:
-            return np.full(frames.size, step * fallback_period)
-        periods = local_periods(frames.astype(np.float64), times, fallback_period)
-        return periods * step
-
-    def _fallback_period(self, df: pd.DataFrame) -> float:
-        """Seconds per frame: ``1 / fps`` when set, else measured from the table."""
-        if self.params.fps is not None:
-            return 1.0 / self.params.fps
-        try:
-            return 1.0 / measure_time_axis(df, self.name).rate
-        except ValueError as exc:
-            raise ValueError(
-                f"{exc} It needs a frame rate to turn bout lengths into seconds "
-                "and bout counts into rates: set fps, or give it an input whose "
-                f"{C.time_col} column advances with {C.frame_col}."
-            ) from exc
 
     # --- Label sources ---
 
