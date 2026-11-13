@@ -51,6 +51,7 @@ __all__ = [
     "last_frames_at_or_before",
     "local_periods",
     "measure_time_axis",
+    "row_frames",
     "row_seconds",
     "step_seconds",
     "uniform_grid_rate",
@@ -133,12 +134,18 @@ def step_seconds(
     return np.where(usable, steps, np.nan)
 
 
-def _frame_axis(df: pd.DataFrame) -> NDArray[np.float64]:
+def row_frames(df: pd.DataFrame) -> NDArray[np.float64]:
     """The frame of each row of *df*, as float64.
 
     The ``frame`` column. A table without one is read as one row per distinct
     finite ``time``, in time order, so a row's frame is the rank of its time and
     NaN where its time is not finite.
+
+    Args:
+        df: The table, with a ``frame`` or a ``time`` column.
+
+    Returns:
+        An array with a value for each row of *df*.
     """
     if FRAME_COLUMN in df.columns:
         return df[FRAME_COLUMN].to_numpy(dtype=np.float64)
@@ -171,7 +178,7 @@ def measure_time_axis(df: pd.DataFrame, who: str) -> TimeAxis:
             f"lacks: it has {sorted(map(str, df.columns))}."
         )
     times = df[TIME_COLUMN].to_numpy(dtype=np.float64)
-    frames = _frame_axis(df)
+    frames = row_frames(df)
     keep = np.isfinite(frames) & np.isfinite(times)
     unique_frames, first = np.unique(frames[keep], return_index=True)
     unique_times = times[keep][first]
@@ -303,7 +310,7 @@ def row_seconds(
             usable step.
     """
     fallback = 1.0 / fps if fps is not None else 1.0 / measure_time_axis(df, who).rate
-    frames = _frame_axis(df)
+    frames = row_frames(df)
     step = frame_step(frames)
     if fps is not None:
         return np.full(len(df), step * fallback)
