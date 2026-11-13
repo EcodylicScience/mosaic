@@ -34,11 +34,21 @@ writes each packet's timestamps in one of two forms:
   it.
   :func:`~mosaic.core.pipeline.store_export.copy_export` refuses a copy that
   presents two frames at one timestamp.
+
+**The output time base differs by ffmpeg version.** Up to 8.0, ``setts`` writes
+the values its expressions return in the time base it was given. From 8.1, it
+rescales them from the input time base into that one unless ``prescale`` is set,
+and with ``prescale`` it hands the expressions timestamps in the output time base.
+The second form computes each packet's frame from ``PTS*TB``, its time in seconds,
+which is the same number under either reading, and sets ``prescale`` where
+:func:`setts_prescales` finds the option.
 """
 
 from __future__ import annotations
 
+import functools
 import math
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -55,12 +65,16 @@ __all__ = [
     "first_packet_dts",
     "header_codec",
     "restamp_expression",
+    "setts_prescales",
     "stream_timescale",
     "write_concat_listing",
 ]
 
 PROBE_TIMEOUT_SECONDS: Final = 3600.0
 """Ceiling for a packet scan, which is minutes over tens of gigabytes."""
+
+_HELP_TIMEOUT_SECONDS: Final = 60.0
+"""Ceiling for ffmpeg to list a filter's options."""
 
 _MINIMUM_TICKS_PER_FRAME: Final = 1000
 """The fewest ticks per frame of a copy restamped onto a time base of its own."""
@@ -232,7 +246,8 @@ def restamp_expression(
     that seeks.
 
     With *out_fps*, the output is stamped at that rate on the time base of
-    :func:`copy_time_base`. A copy can then be stamped at a rate that the input's
+    :func:`copy_time_base`, with ``prescale`` set where :func:`setts_prescales`
+    finds it. A copy can then be stamped at a rate that the input's
     ticks cannot express or that the input does not declare. Every offset is
     converted in frames: *origin*, and each packet's presentation frame. A
     presentation frame is the packet's presentation timestamp counted in
@@ -247,13 +262,37 @@ def restamp_expression(
     time_base = copy_time_base(out_fps)
     ticks = time_base.ticks_per_frame
     start = round(origin * fps / timescale) * ticks
-    frame = f"round(PTS*{fps!r}/{timescale})"
+    frame = f"round(PTS*TB*{fps!r})"
+    prescale = ":prescale=1" if setts_prescales() else ""
     return (
         f"setts=time_base=1/{time_base.ticks_per_second}"
         f":dts=N*{ticks}{start:+d}"
         f":pts={frame}*{ticks}"
         f":duration={ticks}"
+        f"{prescale}"
     )
+
+
+def setts_prescales() -> bool:
+    """Whether the ``ffmpeg`` on ``PATH`` has the ``prescale`` option of ``setts``.
+
+    ffmpeg 8.1 added the option in the release that began rescaling the filter's
+    results into a ``time_base`` it is given. Its presence therefore tells which of
+    the two readings the build applies. The answer is cached for each ``ffmpeg``
+    executable.
+    """
+    return _setts_prescales(shutil.which("ffmpeg"))
+
+
+@functools.cache
+def _setts_prescales(executable: str | None) -> bool:
+    out = run_to_completion(
+        [executable or "ffmpeg", "-hide_banner", "-h", "bsf=setts"],
+        timeout=_HELP_TIMEOUT_SECONDS,
+        action="listing the options of ffmpeg's setts filter",
+        error_type=TranscodeError,
+    )
+    return "prescale" in out
 
 
 def write_concat_listing(paths: list[Path], listing: Path) -> None:

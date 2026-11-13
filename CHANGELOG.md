@@ -28,6 +28,16 @@ warning that names `resample-tracks`. No existing run id moves.
 `mosaic.core.timebase` gains the public `row_frames`, the frame of each row of a table:
 its `frame` column, or the rank of its `time` where it has none.
 
+## Unreleased: export-store copies under ffmpeg 8.1 and later
+
+`export-store` refused every store whose chunks it copies under ffmpeg 8.1 and later,
+which includes every conda-forge build. The copy measured a rate other than the store's
+(15.36 fps for a 30 fps store) and was not written. From 8.1, ffmpeg's `setts` filter
+rescales the timestamps it computes into the time base it is given, and the copy had
+already computed them in that time base. The copy now sets `setts`'s `prescale` where
+the installed ffmpeg has it, and every version stamps the exported frames alike.
+No run id, export name or recipe hash moves.
+
 ## Unreleased: time-weighted duration and share aggregations
 
 `sequence-aggregate` and `individual-aggregate` take two more values of `aggs`.

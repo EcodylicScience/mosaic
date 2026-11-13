@@ -28,7 +28,7 @@ from mosaic.core.media.video_io import open_frame_reader
 from mosaic.core.pipeline.media_index import write_media_index_rows
 from mosaic.core.pipeline.ops import OpIdentity, ScopeRefused, run_op
 from mosaic.core.media.store_rate import STORE_RATE_TOLERANCE, store_rate_mismatch
-from mosaic.core.pipeline import store_export
+from mosaic.core.pipeline import store_export, stream_copy
 from mosaic.core.pipeline.stream_copy import (
     coded_frame_count,
     copy_time_base,
@@ -883,7 +883,7 @@ def test_a_copy_with_two_frames_on_one_timestamp_is_refused(
         expression = restamp_expression(
             timescale=timescale, fps=fps, origin=origin, out_fps=out_fps
         )
-        frame = f"round(PTS*{fps!r}/{timescale})"
+        frame = f"round(PTS*TB*{fps!r})"
         # Frame 0 is presented as frame 1. A comma would end the filter's option.
         return expression.replace(f":pts={frame}", f":pts=(abs({frame}-0.5)+0.5)")
 
@@ -917,7 +917,7 @@ def test_a_copy_that_skips_a_frame_period_is_refused(
         expression = restamp_expression(
             timescale=timescale, fps=fps, origin=origin, out_fps=out_fps
         )
-        frame = f"round(PTS*{fps!r}/{timescale})"
+        frame = f"round(PTS*TB*{fps!r})"
         # (x + abs(x)) / (2x) is 1 above frame 5.5 and 0 below it. A comma would
         # end the filter's option.
         step = f"(({frame}-5.5)+abs({frame}-5.5))/(2*({frame}-5.5))"
@@ -959,6 +959,24 @@ def test_a_copy_time_base_states_its_rate_within_a_twentieth_of_the_tolerance(
     time_base = copy_time_base(rate)
     stated = time_base.ticks_per_second / time_base.ticks_per_frame
     assert abs(stated - rate) / rate <= STORE_RATE_TOLERANCE / 20
+
+
+@pytest.mark.parametrize("prescales", [True, False])
+def test_a_restamp_sets_prescale_only_where_the_ffmpeg_has_it(
+    prescales: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ffmpeg 8.1 and later rescale a ``setts`` result into its time base.
+
+    With ``prescale`` set they hand the expressions timestamps in that time base
+    and write the results as given, as ffmpeg 8.0 and earlier do without the
+    option. A frame read from ``PTS*TB`` is the same number under either.
+    """
+    monkeypatch.setattr(stream_copy, "setts_prescales", lambda: prescales)
+
+    expression = restamp_expression(timescale=12800, fps=25.0, origin=0, out_fps=4.0)
+
+    assert ":pts=round(PTS*TB*25.0)*5000" in expression
+    assert expression.endswith(":prescale=1") is prescales
 
 
 def test_a_store_whose_frame_times_give_no_rate_is_not_exported(
