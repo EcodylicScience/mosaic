@@ -1094,6 +1094,38 @@ def test_the_resources_and_templates_are_listed_and_read(
     assert params["state"] == "absent"
 
 
+def test_a_run_log_tail_drops_the_nul_bytes_of_a_zero_filled_gap(
+    backend: LocalBackend, dataset: Dataset
+) -> None:
+    uuid = _uuid(dataset)
+    execution_id = "E-NUL"
+    records = [
+        {"t": "2026-01-01T00:00:00Z", "ev": "started"},
+        {"t": "2026-01-01T00:00:01Z", "ev": "heartbeat"},
+        {"t": "2026-01-01T00:00:02Z", "ev": "finished"},
+    ]
+    lines = [json.dumps(record) + "\n" for record in records]
+    path = run_log_path(dataset.base_dir, execution_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    gap = "\x00" * 700
+    _ = path.write_text(lines[0] + gap + lines[1] + gap + "\n" + lines[2])
+
+    async def body(client: Client) -> str:
+        uri = f"mosaic://dataset/{uuid}/runs/{execution_id}/log?tail=10"
+        (contents,) = (await client.read_resource(uri)).contents
+        assert isinstance(contents, types.TextResourceContents)
+        return contents.text
+
+    text = _session(backend, body)
+
+    assert "\x00" not in text
+    assert [json.loads(line)["ev"] for line in text.splitlines()] == [
+        "started",
+        "heartbeat",
+        "finished",
+    ]
+
+
 def test_a_request_resource_lists_every_step(
     backend: LocalBackend, dataset: Dataset
 ) -> None:

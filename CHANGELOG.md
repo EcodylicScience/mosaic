@@ -8,6 +8,17 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: a run-log with a zero-filled gap still reads the record after it
+
+On a network share (a CIFS share was seen) a run-log can get a block of NUL bytes in
+mid-file, glued to the front of the next record. The reader dropped that record, so a
+run whose `finished` line sat behind the gap was reported as unfinished. It now removes
+the NUL bytes of a line before it parses it, and `mosaic.runlog.run_log_lines` is the
+one public split of run-log text into those lines. The run-log resource of the MCP
+server (`runs/{eid}/log`) drops the NUL bytes and the lines they leave empty before it
+takes the tail. A record still never contains a raw NUL, because the writer escapes it.
+No run id and no log format moves.
+
 ## Unreleased: `pair-series-correlation` correlates a column between two individuals
 
 `pair-series-correlation` (version 0.1) is a new feature, so the registry grows from 68

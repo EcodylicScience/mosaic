@@ -23,7 +23,9 @@ Design properties:
   change here.
 * **NFS-safe** -- one writer, append-only, flush-per-line, so a remote reader sees a
   partial line only at the end of the file or where a write failed, and the reducer skips
-  it. Exactly where SQLite/WAL failed.
+  it. Exactly where SQLite/WAL failed. On a network filesystem (a CIFS share was seen) a
+  zero-filled gap may also appear in mid-file, glued to the front of the next record.
+  The reader strips it (:func:`run_log_lines`) and still reads that record.
 * **Bounded + ephemeral** -- finite entries*2 (per-entry) or epochs*1 (per-epoch) lines
   (KB-MB), plus at most one ``alive`` line per :data:`LIVENESS_INTERVAL_SECONDS` of
   silence, and it stops growing at a terminal event. The durable truth lives elsewhere
@@ -126,6 +128,7 @@ __all__ = [
     "read_runs_by_run_id",
     "reduce_run_log",
     "run_log_dir",
+    "run_log_lines",
     "run_log_path",
     "written_since",
 ]
@@ -1274,6 +1277,24 @@ TERMINAL_STATUSES: Final[frozenset[str]] = frozenset(
 _PROGRESS_EVENTS = {"entry_start", "entry_end", "epoch", "class_start", "phase"}
 
 
+def run_log_lines(text: str) -> list[str]:
+    """Split run-log text into its lines, without the NUL bytes of a zero-filled gap.
+
+    A network filesystem (a CIFS share was seen) can leave a zero-filled gap in
+    mid-file, glued to the front of the next record. A raw NUL never belongs to a
+    record, because ``json.dumps`` writes U+0000 as ``\\u0000``, so every NUL is
+    removed. Blank lines, including one the gap leaves empty, are dropped.
+
+    Args:
+        text: The content of a run-log.
+
+    Returns:
+        The non-empty lines in file order, stripped of surrounding whitespace.
+    """
+    lines = (line.replace("\x00", "").strip() for line in text.splitlines())
+    return [line for line in lines if line]
+
+
 def read_run_records(
     run_dir: Path | str, execution_id: str
 ) -> list[Mapping[str, object]]:
@@ -1282,7 +1303,9 @@ def read_run_records(
     Returns records in file order, empty when the log is absent. An unparseable
     line (a partial append caught mid-write on NFS, or the remains of a write that
     failed) is skipped rather than raising. The writer begins the line after a
-    failed write on a fresh line, so only the torn line itself is lost.
+    failed write on a fresh line, so only the torn line itself is lost. On a network
+    filesystem a zero-filled gap may also sit in mid-file, glued to the front of the
+    next record. The gap is stripped, and that record is read.
 
     Args:
         run_dir: The run-log directory.
@@ -1297,10 +1320,7 @@ def read_run_records(
     except (OSError, FileNotFoundError):
         return []
     out: list[Mapping[str, object]] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    for line in run_log_lines(text):
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:

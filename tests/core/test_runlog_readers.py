@@ -452,6 +452,57 @@ def test_the_line_after_a_partial_line_still_reduces(
     assert snap["status"] == "finished"
 
 
+NUL_BLOCK = "\x00" * 700
+
+
+def _write_with_nul_block_before(
+    base: Path, execution_id: str, glued_index: int, *records: dict[str, object]
+) -> Path:
+    """Write the records, gluing a block of NUL bytes to the front of one line."""
+    path = run_log_path(base, execution_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(record) + "\n" for record in records]
+    lines[glued_index] = NUL_BLOCK + lines[glued_index]
+    path.write_text("".join(lines))
+    return path
+
+
+def test_a_record_glued_behind_a_nul_block_is_still_read(tmp_path: Path) -> None:
+    _write_with_nul_block_before(
+        tmp_path,
+        "E1",
+        1,
+        {"t": "2026-01-01T00:00:00Z", "ev": "started"},
+        {"t": "2026-01-01T00:00:01Z", "ev": "resources", "workers": 2},
+        {"t": "2026-01-01T00:00:02Z", "ev": "heartbeat"},
+    )
+
+    records = runlog.read_run_records(tmp_path / ".mosaic" / "runs", "E1")
+
+    assert [record["ev"] for record in records] == ["started", "resources", "heartbeat"]
+    assert records[1]["workers"] == 2
+
+
+def test_a_finished_record_behind_a_nul_block_still_reduces_as_finished(
+    tmp_path: Path,
+) -> None:
+    path = _write_with_nul_block_before(
+        tmp_path,
+        "E1",
+        2,
+        {"t": "2026-01-01T00:00:00Z", "ev": "started"},
+        {"t": "2026-01-01T00:00:01Z", "ev": "heartbeat"},
+        {"t": "2026-01-01T00:00:02Z", "ev": "finished"},
+    )
+
+    records = runlog.read_run_records(path.parent, "E1")
+    snap = runlog.reduce_run_log(path)
+
+    assert [record["ev"] for record in records] == ["started", "heartbeat", "finished"]
+    assert snap is not None
+    assert snap["status"] == "finished"
+
+
 def test_an_exit_record_after_a_partial_last_line_still_reduces(
     tmp_path: Path,
 ) -> None:

@@ -265,14 +265,14 @@ def _read_run(backend: LocalBackend, variables: UriVariables) -> ResourceText:
 
 
 def _read_run_log(backend: LocalBackend, variables: UriVariables) -> ResourceText:
-    from mosaic.runlog import run_log_path
+    from mosaic.runlog import run_log_lines, run_log_path
 
     dataset = backend.dataset(_variable(variables, "id"))
     execution_id = _variable(variables, "eid")
     tail = _tail(variables)
     path = run_log_path(dataset.base_dir, execution_id)
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = run_log_lines(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise _not_found(
             f"the run-log of attempt {execution_id}", {"execution_id": execution_id}
