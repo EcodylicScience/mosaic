@@ -74,6 +74,7 @@ ARENA_AWARE = frozenset(
         "pair-keypoints",
         "pair-posedistance-pca",
         "pair-position",
+        "pair-series-correlation",
         "pair-wavelet",
         "pair-world",
         "temporal-stack",
@@ -436,6 +437,7 @@ def test_every_feature_declares_whether_it_follows_ids(cls: type) -> None:
         ("sequence-aggregate", False),
         ("individual-aggregate", True),
         ("event-response", True),
+        ("pair-series-correlation", True),
         ("roi-occupancy", False),
         ("feral", False),
         ("extract-labeled-templates", True),
@@ -457,6 +459,7 @@ TRACK_SPACES_DECLARED: dict[str, frozenset[TrackSpace]] = {
     "sequence-aggregate": _EVERY_SPACE,
     "individual-aggregate": _EVERY_SPACE,
     "event-response": _EVERY_SPACE,
+    "pair-series-correlation": _EVERY_SPACE,
     "id-tag-columns": _EVERY_SPACE,
     "label-predictions": _EVERY_SPACE,
     "pose-egocentric": frozenset({"world_m"}),
@@ -611,13 +614,19 @@ PAIR_SYMMETRY: dict[str, tuple[tuple[str, ...], bool]] = {
         True,
     ),
     "hidra": ((), True),
+    "pair-series-correlation": (
+        ("correlation", "n_samples", "peak_correlation"),
+        True,
+    ),
 }
 """Each feature's symmetric columns and whether it writes both rows of every pair.
 
 Read from the code that builds each perspective, and checked on rows in
-``test_pair_symmetry.py``. A feature left out declares neither. A downstream
-``sum`` or ``count`` reads one perspective of a symmetric column over mirrored
-rows, so a change here bumps the feature's ``version``.
+``test_pair_symmetry.py``, or in ``test_pair_series_correlation.py`` for
+``pair-series-correlation``, whose rows are per sequence. A feature left out
+declares neither. A downstream ``sum`` or ``count`` reads one perspective of a
+symmetric column over mirrored rows, so a change here bumps the feature's
+``version``.
 """
 
 

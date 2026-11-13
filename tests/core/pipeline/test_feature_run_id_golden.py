@@ -116,6 +116,7 @@ _TRACKS_DEFAULT_FEATURES = (
     "pair-interaction-filter",
     "pair-posedistance-pca",
     "pair-position",
+    "pair-series-correlation",
     "pair-wavelet",
     "scale-to-cm",
     "social-motion-summary",
@@ -241,6 +242,11 @@ CASES: tuple[Case, ...] = (
         case_id="event-response/onset-times",
         feature="event-response",
         params={"onset_times": [1.0, 2.5], "value_column": "SPEED"},
+    ),
+    Case(
+        case_id="pair-series-correlation/circular-lag",
+        feature="pair-series-correlation",
+        params={"method": "circular", "max_lag_s": 2.0, "min_samples": 20},
     ),
     Case(
         case_id="roi-occupancy/inline-disc",

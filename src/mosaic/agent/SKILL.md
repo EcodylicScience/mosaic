@@ -389,6 +389,16 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   `speed-angvel` result), or `labels` with `onset_classes`. Windows and latency read the
   `time` column in seconds, never a frame rate. Reduce its rows with
   `individual-aggregate` or `sequence-aggregate`.
+- `pair-series-correlation` gives two rows per pair of individuals of one arena (`id1`,
+  `id2`, `perspective`): the correlation of `value_column` over the frames on which both
+  have a value, and `n_samples`, their count. `value_column` defaults to `ANGLE`, which
+  a tracks table lacks, so run `heading` first. `method` is `pearson` or `circular` (the
+  Fisher-Lee correlation of two angles in radians). A pair with fewer than `min_samples`
+  frames, or a series that does not vary, is NaN. With `max_lag_s`, `peak_correlation`
+  and `peak_lag_s` give the largest correlation over the lags within it and the lag in
+  seconds, positive when `id2` follows `id1` (its sign flips on perspective 1). Lags are
+  whole frame steps, and a table with uneven steps logs a warning: `resample-tracks`
+  first. `sequence-aggregate` over `correlation` summarizes a sequence.
 - To reuse a fit over other sequences, pin its step to the finished run:
   `pins={"<step id>": "<run id>"}` on `submit_request` or `run_pipeline`
   (`--pin STEP=RUN_ID`, repeatable, on `mosaic pipeline plan`, `submit` and `run`;

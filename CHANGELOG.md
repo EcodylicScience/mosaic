@@ -8,6 +8,26 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: `pair-series-correlation` correlates a column between two individuals
+
+`pair-series-correlation` (version 0.1) is a new feature, so the registry grows from 68
+to 69. It writes two rows per pair of individuals of one arena (`emits` `pair`,
+`relates` `arena-aware`): `group`, `sequence`, `id1`, `id2`, `perspective`, `arena` when
+the input has it, `correlation`, `n_samples`, `peak_correlation` and `peak_lag_s`.
+`value_column` (default `ANGLE`) is correlated over the frames on which both individuals
+have a finite value. `method` is `pearson` or `circular`, the Fisher-Lee correlation of
+two angles in radians. A pair with fewer than `min_samples` (10) frames, a series that
+does not vary, or angles that all agree has a NaN correlation. With `max_lag_s` set,
+`peak_correlation` is the largest correlation over the lags of whole frame steps within
+it, and `peak_lag_s` is that lag in seconds, positive when `id2` follows `id1`; both are
+NaN without it. `correlation`, `n_samples` and `peak_correlation` are symmetric, and
+`peak_lag_s` changes sign on perspective 1. An entry with no pair has no rows. The lags
+read the rate that `time` measures, so a table with uneven steps logs the irregular-time
+warning that names `resample-tracks`. No existing run id moves.
+
+`mosaic.core.timebase` gains the public `row_frames`, the frame of each row of a table:
+its `frame` column, or the rank of its `time` where it has none.
+
 ## Unreleased: time-weighted duration and share aggregations
 
 `sequence-aggregate` and `individual-aggregate` take two more values of `aggs`.

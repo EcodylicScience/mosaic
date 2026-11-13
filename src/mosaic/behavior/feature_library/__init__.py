@@ -82,6 +82,7 @@ from . import (
     pair_interaction_filter,
     pair_keypoints,
     pair_position,
+    pair_series_correlation,
     pair_wavelet,
     pair_world,
     pairposedistancepca,
@@ -146,6 +147,7 @@ from .pair_facing import PairFacing
 from .pair_interaction_filter import PairInteractionFilter
 from .pair_keypoints import PairKeypoints
 from .pair_position import PairPositionFeatures
+from .pair_series_correlation import PairSeriesCorrelation
 from .pair_wavelet import PairWavelet
 from .pairposedistancepca import PairPoseDistancePCA
 from .probability_ensemble import ProbabilityEnsembleFeature
@@ -249,6 +251,7 @@ __all__ = [
     "PairKeypoints",
     "PairPositionFeatures",
     "PairPoseDistancePCA",
+    "PairSeriesCorrelation",
     "ProbabilityEnsembleFeature",
     "RoiOccupancy",
     "PairWavelet",
@@ -315,6 +318,7 @@ __all__ = [
     "pair_interaction_filter",
     "pair_keypoints",
     "pair_position",
+    "pair_series_correlation",
     "pair_wavelet",
     "pair_world",
     "pairposedistancepca",

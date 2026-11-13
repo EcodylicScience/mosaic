@@ -3,7 +3,7 @@
 
 # Features
 
-68 features are registered. Each one runs as
+69 features are registered. Each one runs as
 `mosaic run --feature <name>` and constructs directly in a notebook, and the
 parameter tables below are the same JSON-Schema that
 `mosaic features describe <name> --json` prints.
@@ -1005,6 +1005,19 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 | `end_time` | `number` \| `None` | `null` |  | Bin only rows whose time is before this. Read from the time column, which the input must then carry. Unset, to the end. [s] |
 | `nonfocal_flag_col` | `string` | `"Focal_fish"` |  | Name of the column flagging nonfocal animals, read only when focal_category_col is unset or absent from the table. |
 | `nonfocal_flag_value` | `boolean` | `false` |  | The value in nonfocal_flag_col marking an animal as nonfocal, read under the same condition as nonfocal_flag_col. |
+
+### `pair-series-correlation`
+
+Version `0.1` &middot; `mosaic.behavior.feature_library.pair_series_correlation.PairSeriesCorrelation`
+
+Per-sequence feature correlating a column between the individuals of a pair.
+
+| Parameter | Type | Default | Constraints | Description |
+| --- | --- | --- | --- | --- |
+| `value_column` | `string` | `"ANGLE"` |  | The column to correlate between the two individuals of a pair. The default is the body orientation column of the tracks, in radians. |
+| `method` | `"pearson"` \| `"circular"` | `"pearson"` |  | How to correlate the two series. pearson is Pearson's r of the column as written. circular is the Fisher-Lee correlation of two angles in radians, which treats an angle and the same angle plus a turn as one. |
+| `max_lag_s` | `number` \| `None` | `null` |  | The longest lag to search for the largest correlation, in seconds. At a lag, the first individual's value at a frame is paired with the second individual's value that long after it. Unset, only the correlation without a lag is computed and peak_correlation and peak_lag_s are NaN. [s] |
+| `min_samples` | `integer` | `10` | >= `3` | The fewest frames, with a finite value for both individuals, that a correlation needs. A pair with fewer has a NaN correlation, and a lag with fewer is not searched. |
 
 ### `sequence-aggregate`
 

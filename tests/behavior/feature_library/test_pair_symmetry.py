@@ -154,7 +154,10 @@ _CASES: dict[str, _Case] = {
     "pair-world": _Case(PairWorld, _moving_world, "dz", {"front": 0, "rear": 6}),
 }
 """Every feature declaring ``mirrored`` that runs here. ``hidra`` runs an external
-tool, and ``test_hidra_feature.py`` checks its rows against a fake of it."""
+tool, and ``test_hidra_feature.py`` checks its rows against a fake of it.
+``pair-series-correlation`` writes one row per pair per sequence, with no ``frame``
+for ``mirrored_rows`` to key on, and ``test_pair_series_correlation.py`` checks its
+two perspectives."""
 
 _SYMMETRIC = sorted(slug for slug, case in _CASES.items() if case.directional)
 

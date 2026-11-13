@@ -103,6 +103,31 @@ Tracktor's `stimuli`), or as the runs of `onset_classes` in a `labels` kind. The
 and the latency follow the `time` column in seconds, so a table that dropped frames is
 measured the same way. `individual-aggregate` then summarizes the rows.
 
+**Correlation between two individuals.** `pair-series-correlation` correlates one column
+between the two individuals of each pair over the frames on which both have a value, and
+writes two rows per pair, one from each individual's side. Only individuals of one arena
+form a pair. It correlates `ANGLE` unless `value_column` names another column, and a
+tracks table carries no `ANGLE`, so run `heading` first. `method` is `pearson` for the
+column as written, or `circular` for the Fisher-Lee correlation of two angles in
+radians, which does not depend on where the angles wrap. `n_samples` counts the shared
+frames. A pair with fewer than `min_samples` frames, or a series that does not vary, has
+a NaN correlation. Set `max_lag_s` to search the lags within that many seconds for the
+largest correlation: `peak_correlation` is its value and `peak_lag_s` its lag, positive
+when the second individual (`id2`) follows the first and negative on the other row of
+the pair. A lag is a whole number of frame steps, and a table whose time steps are
+uneven logs a warning that names `resample-tracks`. `sequence-aggregate` then summarizes
+a sequence:
+
+```json
+{"id": "heading", "type": "feature", "feature": "heading", "inputs": ["tracks"]},
+{"id": "correlation", "type": "feature", "feature": "pair-series-correlation",
+ "inputs": [{"step": "heading"}],
+ "params": {"method": "circular", "max_lag_s": 2.0}},
+{"id": "by_sequence", "type": "feature", "feature": "sequence-aggregate",
+ "inputs": [{"step": "correlation"}],
+ "params": {"columns": ["correlation"], "aggs": ["mean"]}}
+```
+
 **A label sequence as a fingerprint.** `label-statistics` reduces labels to one row per
 individual: how much of the time each state occupies, how often it starts, how long its
 bouts last and what tends to follow it. It reads ground-truth labels or a categorical

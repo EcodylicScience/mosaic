@@ -76,6 +76,8 @@
   "pair-posedistance-pca/scope-ab": "0.4-9931fb1e91",
   "pair-posedistance-pca/scope-ab-composition-ignored": "0.4-9931fb1e91",
   "pair-position/default": "0.2-8ad4036420",
+  "pair-series-correlation/circular-lag": "0.1-ecac48fe01",
+  "pair-series-correlation/default": "0.1-fe6351d882",
   "pair-wavelet/default": "0.3-be1b51767c",
   "pair-wavelet/params-nfreq": "0.3-19c154574c",
   "pair-world/params-front-rear": "0.2-a8c43c2a97",
