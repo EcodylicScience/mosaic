@@ -413,6 +413,11 @@ def output_columns(
     contain it. A family meets a payload requirement and makes a named column
     possible. It does not guarantee a named column.
 
+    The families that a reference names as possible
+    (:attr:`~mosaic.core.pipeline.column_contract.NamedColumns.possible_prefixes`)
+    are possible families of the output: those of ``adds`` always, and those of
+    a conditional reference unless its condition is unmet. None is guaranteed.
+
     A passthrough output keeps the input's symmetric columns, less those it
     writes again, and a family named after a symmetric input column is a
     symmetric family: ``temporal-stack`` groups pair rows by pair and
@@ -453,6 +458,7 @@ def output_columns(
         unbounded = unbounded or named.unknown
         guaranteed.update(named.columns)
         sure_prefixes.update(named.prefixes)
+        maybe_prefixes.update(named.possible_prefixes)
     for conditional in provides.conditional:
         named = resolve_names(conditional.column, values)
         written.append(named)
@@ -469,6 +475,8 @@ def output_columns(
             sure_prefixes.update(named.prefixes)
         elif whole == "undecided":
             maybe_prefixes.update(named.prefixes)
+        if whole != "unmet":
+            maybe_prefixes.update(named.possible_prefixes)
     return _column_set(
         guaranteed,
         possible,
@@ -499,7 +507,11 @@ def _output_symmetry(
         written: The columns that ``adds`` and ``conditional`` name.
     """
     rewritten = {column for named in written for column in named.columns}
-    rewritten_prefixes = {prefix for named in written for prefix in named.prefixes}
+    rewritten_prefixes = {
+        prefix
+        for named in written
+        for prefix in (*named.prefixes, *named.possible_prefixes)
+    }
     columns = {
         column
         for column in start.symmetric
@@ -592,18 +604,18 @@ def pair_rule_read(
     pairs: PairRule,
     filter_expr: str | None,
 ) -> PairRead | None:
-    """The rows that an aggregate's sums and counts read of pair rows.
+    """The rows that an aggregate's sums, counts and durations read of pair rows.
 
-    ``None`` when none of *aggs* is a sum or a count. A rule written as ``once``
-    or ``each_perspective`` stands. ``auto`` reads ``once`` when no
+    ``None`` when none of *aggs* is a sum, a count or a duration. A rule written
+    as ``once`` or ``each_perspective`` stands. ``auto`` reads ``once`` when no
     *filter_expr* is set, *merged* may hold ``perspective``, its rows are
     mirrored, and every one of *columns* is symmetric, and every row
     (``each_perspective``) otherwise. One rule serves every column, so a single
-    column that is not symmetric makes every sum and count read every row. A filter can keep one row of a pair (on
-    ``id1`` or ``perspective``, say), and ``once`` would then miss pairs. An
-    undeclared or unbounded input has no symmetric column, and its ``auto``
-    reads every row. The other aggregations read every row whatever the rule,
-    and the rule says nothing.
+    column that is not symmetric makes every sum, count and duration read every
+    row. A filter can keep one row of a pair (on ``id1`` or ``perspective``,
+    say), and ``once`` would then miss pairs. An undeclared or unbounded input
+    has no symmetric column, and its ``auto`` reads every row. The other
+    aggregations read every row whatever the rule, and the rule says nothing.
 
     Args:
         merged: The columns of the aggregate's merged input.
@@ -711,7 +723,9 @@ def tracks_columns(catalog: DeclarationCatalog) -> ColumnSet:
 
 def _supplies(named: NamedColumns, need: NamedColumns) -> bool:
     """Whether columns named by an output entry could meet *need*."""
-    return need.met_by(named.columns) or _meets_a_family(need, named.prefixes)
+    return need.met_by(named.columns) or _meets_a_family(
+        need, (*named.prefixes, *named.possible_prefixes)
+    )
 
 
 def _provider(
@@ -741,7 +755,8 @@ def _provider(
 
 def _labels(named: NamedColumns) -> tuple[str, ...]:
     """The names and families of *named*, as plain strings."""
-    return (*named.columns, *(f"{prefix}*" for prefix in named.prefixes))
+    families = (*named.prefixes, *named.possible_prefixes)
+    return (*named.columns, *(f"{prefix}*" for prefix in families))
 
 
 def _other_space(provider: Declaration, consumer: Declaration) -> bool:
@@ -852,19 +867,56 @@ def requires_wire(
 
 
 def provided_wire(provides: Provides, values: ParamValues) -> ProvidedColumns:
-    """A declared ``provides``, read under *values*, as the JSON an editor reads."""
+    """A declared ``provides``, read under *values*, as the JSON an editor reads.
+
+    The families that a reference names only as possible
+    (:attr:`~mosaic.core.pipeline.column_contract.NamedColumns.possible_prefixes`)
+    follow the conditional entries, one entry per reference. The entry of an
+    ``adds`` reference has neither condition, since the data decides it, and
+    that of a conditional reference has the conditions of the reference. The
+    entry of the reference itself lists its columns alone.
+    """
+
+    def when_present_wire(ref: ColumnRef | None) -> ColumnNames | None:
+        return None if ref is None else names_wire(resolve_names(ref, values))
+
+    def family_entry(
+        ref: ColumnRef, when_param: str, when_present: ColumnRef | None
+    ) -> list[ConditionalColumns]:
+        named = resolve_names(ref, values)
+        if not named.possible_prefixes:
+            return []
+        families = NamedColumns(prefixes=named.possible_prefixes, params=named.params)
+        return [
+            ConditionalColumns(
+                names=names_wire(families),
+                when_param=when_param,
+                when_present=when_present_wire(when_present),
+            )
+        ]
+
     return ProvidedColumns(
         passthrough=provides.passthrough,
         adds=tuple(names_wire(resolve_names(ref, values)) for ref in provides.adds),
-        conditional=tuple(
-            ConditionalColumns(
-                names=names_wire(resolve_names(conditional.column, values)),
-                when_param=conditional.when_param,
-                when_present=None
-                if conditional.when_present is None
-                else names_wire(resolve_names(conditional.when_present, values)),
-            )
-            for conditional in provides.conditional
+        conditional=(
+            *(
+                ConditionalColumns(
+                    names=names_wire(resolve_names(conditional.column, values)),
+                    when_param=conditional.when_param,
+                    when_present=when_present_wire(conditional.when_present),
+                )
+                for conditional in provides.conditional
+            ),
+            *(entry for ref in provides.adds for entry in family_entry(ref, "", None)),
+            *(
+                entry
+                for conditional in provides.conditional
+                for entry in family_entry(
+                    conditional.column,
+                    conditional.when_param,
+                    conditional.when_present,
+                )
+            ),
         ),
         payload_families=provides.payload_families,
     )

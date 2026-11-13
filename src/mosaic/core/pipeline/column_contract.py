@@ -124,6 +124,15 @@ class ParamColumn:
         suffixes: A string- or list-valued params field. Each name is repeated
             once per item, joined to it by an underscore, as an aggregate names
             ``<column>_<agg>`` for each column and aggregation.
+        families: The *suffixes* items that name a family of columns instead of
+            one column. Each family column is ``<name>_<suffix>_<member>``.
+        members: The list-valued params field that lists the members of every
+            family in *families*. A list of strings gives one column per member.
+            ``None`` gives a family whose members only the data decides, named
+            by the prefix ``<name>_<suffix>_`` in
+            :attr:`NamedColumns.possible_prefixes`. An absent field, or any
+            other value, leaves the names unknown. The field is read only when
+            *suffixes* lists a family suffix.
     """
 
     field: str
@@ -132,6 +141,8 @@ class ParamColumn:
     renamed_by: str = ""
     unset: Literal["absent", "unknown"] = "absent"
     suffixes: str = ""
+    families: tuple[str, ...] = ()
+    members: str = ""
     kind: Literal["param"] = "param"
 
 
@@ -245,7 +256,8 @@ class ParamIs:
 
     Attributes:
         field: The params field. A dotted field reads a nested params model.
-        equals: The value that the field must hold. ``None`` tests whether the
+        equals: The value that the field must hold. A list-valued field holds
+            it when the list contains the value. ``None`` tests whether the
             field is set (see :func:`is_set`).
         negated: Whether the condition holds in the opposite case: the field
             unset, or holding another value.
@@ -359,7 +371,7 @@ class Provides:
 
 
 type PairRule = Literal["auto", "once", "each_perspective"]
-"""Which rows of a pair table a ``sum`` or ``count`` reads, the aggregates' ``pairs``.
+"""Which rows of a pair table a ``sum``, ``count`` or ``duration`` reads, the ``pairs`` param.
 
 ``once`` reads the perspective-0 row of each pair, ``each_perspective`` every
 row, and ``auto`` leaves the choice to a plan, which resolves it from the
@@ -367,11 +379,11 @@ row, and ``auto`` leaves the choice to a plan, which resolves it from the
 """
 
 type PairRead = Literal["once", "each_perspective"]
-"""The rows that a ``sum`` or ``count`` over pair rows reads, its rule resolved."""
+"""The rows that a ``sum``, ``count`` or ``duration`` reads over pair rows, resolved."""
 
-PAIR_COUNTING_AGGS: Final[frozenset[str]] = frozenset({"sum", "count"})
+PAIR_COUNTING_AGGS: Final[frozenset[str]] = frozenset({"sum", "count", "duration"})
 """The aggregations whose value doubles over the two rows of a pair, which a
-:data:`PairRule` governs."""
+:data:`PairRule` governs: ``sum``, ``count`` and ``duration``."""
 
 PAIR_RULE_FIELD: Final = "pairs"
 """The params field of an aggregate that holds its :data:`PairRule`."""
@@ -481,6 +493,8 @@ def _reference_fields(ref: ColumnRef) -> list[str]:
         found.append(ref.renamed_by)
     if ref.suffixes:
         found.append(ref.suffixes)
+    if ref.members:
+        found.append(ref.members)
     return found
 
 
@@ -598,6 +612,9 @@ class NamedColumns:
     Attributes:
         columns: Column names. A requirement is met by any one of them.
         prefixes: Prefixes of column families, met by any column they begin.
+        possible_prefixes: Prefixes of column families that a non-empty output
+            may lack. A column that one of them begins meets a requirement, as
+            for *prefixes*.
         params: The params fields whose values were read.
         unknown: Whether a params value could not be read as column names. The
             reference then names columns that cannot be listed. A requirement
@@ -609,6 +626,7 @@ class NamedColumns:
 
     columns: tuple[str, ...] = ()
     prefixes: tuple[str, ...] = ()
+    possible_prefixes: tuple[str, ...] = ()
     params: tuple[str, ...] = ()
     unknown: bool = False
     payload: bool = False
@@ -650,7 +668,9 @@ class NamedColumns:
         if self.payload and any(column not in NON_PAYLOAD_COLS for column in present):
             return True
         return any(
-            column.startswith(prefix) for prefix in self.prefixes for column in present
+            column.startswith(prefix)
+            for prefix in (*self.prefixes, *self.possible_prefixes)
+            for column in present
         )
 
 
@@ -743,12 +763,37 @@ def resolve_names(ref: ColumnRef, values: ParamValues) -> NamedColumns:
     if renames is None:
         return unknown
     names = tuple(f"{ref.prefix}{renames.get(name, name)}" for name in listed)
-    if ref.suffixes:
-        suffixes = _listed(values.get(ref.suffixes))
-        if not suffixes:
+    if not ref.suffixes:
+        return NamedColumns(columns=names, params=read)
+    suffixes = _listed(values.get(ref.suffixes))
+    if not suffixes:
+        return unknown
+    members: tuple[str, ...] | None = ()
+    if any(suffix in ref.families for suffix in suffixes):
+        if ref.members not in values:
             return unknown
-        names = tuple(f"{name}_{suffix}" for name in names for suffix in suffixes)
-    return NamedColumns(columns=names, params=read)
+        listed_members = values[ref.members]
+        if listed_members is None:
+            members = None
+        elif isinstance(listed_members, list) and all(
+            isinstance(item, str) for item in listed_members
+        ):
+            members = tuple(item for item in listed_members if isinstance(item, str))
+        else:
+            return unknown
+    columns: list[str] = []
+    possible: list[str] = []
+    for name in names:
+        for suffix in suffixes:
+            if suffix not in ref.families:
+                columns.append(f"{name}_{suffix}")
+            elif members is None:
+                possible.append(f"{name}_{suffix}_")
+            else:
+                columns.extend(f"{name}_{suffix}_{member}" for member in members)
+    return NamedColumns(
+        columns=tuple(columns), possible_prefixes=tuple(possible), params=read
+    )
 
 
 def _dedupe(items: Iterable[str]) -> tuple[str, ...]:
@@ -790,6 +835,9 @@ def _resolved(requirement: AnyOf | ColumnRef, values: ParamValues) -> NamedColum
     return NamedColumns(
         columns=_dedupe(name for one in resolved for name in one.columns),
         prefixes=_dedupe(prefix for one in resolved for prefix in one.prefixes),
+        possible_prefixes=_dedupe(
+            prefix for one in resolved for prefix in one.possible_prefixes
+        ),
         params=_dedupe(field for one in resolved for field in one.params),
         unknown=any(one.unknown for one in resolved),
     )
@@ -828,7 +876,12 @@ def _holds(condition: ParamIs, values: ParamValues) -> bool | None:
     present, value = _lookup(values, condition.field)
     if not present:
         return None
-    holds = is_set(value) if condition.equals is None else value == condition.equals
+    if condition.equals is None:
+        holds = is_set(value)
+    elif isinstance(value, list):
+        holds = condition.equals in value
+    else:
+        holds = value == condition.equals
     return holds != condition.negated
 
 

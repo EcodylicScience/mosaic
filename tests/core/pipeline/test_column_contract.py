@@ -138,6 +138,113 @@ def test_suffixes_name_each_column_once_per_item() -> None:
     assert resolve_names(ref, {"columns": ["speed"], "aggs": None}).unknown
 
 
+_SHARES = ParamColumn(
+    "columns", suffixes="aggs", families=("share",), members="categories"
+)
+
+
+def test_a_family_suffix_names_one_column_per_member() -> None:
+    values: dict[str, JsonValue] = {
+        "columns": ["a"],
+        "aggs": ["mean", "share"],
+        "categories": ["x", "y"],
+    }
+
+    named = resolve_names(_SHARES, values)
+
+    assert named.columns == ("a_mean", "a_share_x", "a_share_y")
+    assert named.possible_prefixes == ()
+    assert named.params == ("columns", "aggs", "categories")
+    assert not named.unknown
+
+
+def test_a_family_expands_in_place_within_each_column() -> None:
+    values: dict[str, JsonValue] = {
+        "columns": ["a", "b"],
+        "aggs": ["share", "mean"],
+        "categories": ["x", "y"],
+    }
+
+    assert resolve_names(_SHARES, values).columns == (
+        "a_share_x",
+        "a_share_y",
+        "a_mean",
+        "b_share_x",
+        "b_share_y",
+        "b_mean",
+    )
+
+
+def test_a_family_without_members_is_a_possible_prefix() -> None:
+    values: dict[str, JsonValue] = {
+        "columns": ["a", "b"],
+        "aggs": ["mean", "share"],
+        "categories": None,
+    }
+
+    named = resolve_names(_SHARES, values)
+
+    assert named.columns == ("a_mean", "b_mean")
+    assert named.possible_prefixes == ("a_share_", "b_share_")
+    assert not named.unknown
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{}, {"categories": [1]}, {"categories": "x"}, {"categories": {"x": 1}}],
+    ids=["absent", "not-strings", "string", "mapping"],
+)
+def test_members_that_cannot_be_read_leave_a_family_unknown(
+    extra: dict[str, JsonValue],
+) -> None:
+    values: dict[str, JsonValue] = {
+        "columns": ["a"],
+        "aggs": ["mean", "share"],
+        **extra,
+    }
+
+    assert resolve_names(_SHARES, values).unknown
+
+
+def test_the_members_are_read_only_when_a_family_suffix_is_listed() -> None:
+    values: dict[str, JsonValue] = {"columns": ["a"], "aggs": ["mean"]}
+
+    named = resolve_names(_SHARES, values)
+
+    assert named.columns == ("a_mean",)
+    assert named.possible_prefixes == ()
+    assert not named.unknown
+
+
+def test_a_reference_without_families_names_no_possible_prefix() -> None:
+    values: dict[str, JsonValue] = {
+        "columns": ["a"],
+        "aggs": ["mean", "share"],
+        "categories": ["x"],
+    }
+
+    named = resolve_names(ParamColumn("columns", suffixes="aggs"), values)
+
+    assert named.columns == ("a_mean", "a_share")
+    assert named.possible_prefixes == ()
+
+
+def test_possible_prefixes_meet_a_requirement_and_survive_an_any_of_group() -> None:
+    assert NamedColumns(possible_prefixes=("a_share_",)).met_by({"a_share_x"})
+    assert not NamedColumns(possible_prefixes=("a_share_",)).met_by({"a_mean"})
+
+    values: dict[str, JsonValue] = {
+        "columns": ["a"],
+        "aggs": ["share"],
+        "categories": None,
+    }
+    (need,) = needs_of((AnyOf((_SHARES, Column("other"))),), values)
+
+    assert need.possible_prefixes == ("a_share_",)
+    assert need.columns == ("other",)
+    assert need.met_by({"a_share_x"})
+
+
 def test_an_unset_field_may_mean_the_data_decides() -> None:
     """``id-tag-columns`` attaches every label field for ``None``, and none for ``[]``."""
     ref = ParamColumn("fields", unset="unknown")
@@ -336,6 +443,29 @@ def test_a_condition_tests_a_value_or_its_absence() -> None:
     assert not needs_of((unless_scaled,), {"cm_per_pixel": 0.1})
 
 
+def test_a_condition_on_a_list_holds_while_the_list_contains_the_value() -> None:
+    needs_time = When(Column("time"), (ParamIs("aggs", equals="duration"),))
+
+    assert needs_of((needs_time,), {"aggs": ["mean", "duration"]}) == (
+        NamedColumns(columns=("time",)),
+    )
+    assert not needs_of((needs_time,), {"aggs": ["mean"]})
+    assert not needs_of((needs_time,), {"aggs": []})
+    assert needs_of((needs_time,), {"aggs": "duration"})
+    assert needs_of((needs_time,), {}) == (
+        NamedColumns(columns=("time",), unknown=True),
+    )
+
+
+def test_a_negated_condition_on_a_list_holds_while_the_value_is_absent() -> None:
+    unless_duration = When(
+        Column("time"), (ParamIs("aggs", equals="duration", negated=True),)
+    )
+
+    assert not needs_of((unless_duration,), {"aggs": ["mean", "duration"]})
+    assert needs_of((unless_duration,), {"aggs": ["mean"]})
+
+
 def test_every_condition_must_hold() -> None:
     head = When(
         Template("poseX{pose_head_index}"),
@@ -362,6 +492,12 @@ def test_contract_fields_include_the_fields_that_conditions_and_selections_read(
         "pose",
         "x_prefix",
     }
+
+
+def test_contract_fields_name_the_members_field_and_not_the_family_suffixes() -> None:
+    provides = Provides(adds=(_SHARES,))
+
+    assert contract_fields((), provides) == {"columns", "aggs", "categories"}
 
 
 def test_contract_fields_lists_every_params_field_the_declarations_read() -> None:

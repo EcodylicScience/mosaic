@@ -25,8 +25,10 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     Column,
+    Conditional,
     PAYLOAD_LABEL,
     NamedColumns,
+    ParamColumn,
     Payload,
     Prefix,
     Provides,
@@ -59,6 +61,7 @@ from mosaic.core.pipeline.graph.columns import (
     need_status,
     needs_of,
     output_columns,
+    pair_rule_read,
     provided_wire,
     providers_of,
     requires_wire,
@@ -1487,6 +1490,179 @@ def test_a_family_of_a_symmetric_column_names_only_its_own_members() -> None:
     assert stacked.is_symmetric("distance__pool_mean")
     assert not stacked.is_symmetric("distance_from_centroid__id1__pool_mean")
     assert pair_rules(recipe) == {"total": "each_perspective"}
+
+
+# --- a family that the data decides ----------------------------------------------------
+
+_SHARES = ParamColumn(
+    "columns", suffixes="aggs", families=("share",), members="categories"
+)
+"""``<column>_<agg>`` per aggregation, with ``share`` naming ``<column>_share_<member>``."""
+
+_SHARE_PARAMS: dict[str, JsonValue] = {
+    "columns": ["a"],
+    "aggs": ["mean", "share"],
+    "categories": None,
+}
+
+
+def _shares(*, conditional: str = "") -> Provides:
+    """A step writing :data:`_SHARES`, always or under a params field."""
+    if conditional:
+        return Provides(conditional=(Conditional(_SHARES, when_param=conditional),))
+    return Provides(adds=(_SHARES,))
+
+
+def test_a_family_whose_members_the_data_decides_is_possible_and_not_guaranteed() -> (
+    None
+):
+    output = output_columns(_shares(), ColumnSet(), _SHARE_PARAMS)
+
+    assert output.guaranteed == {"a_mean"}
+    assert output.guaranteed_prefixes == frozenset()
+    assert output.possible_prefixes == {"a_share_"}
+    assert output.admits("a_share_x")
+    assert need_status(NamedColumns(columns=("a_share_x",)), output) == "possible"
+    assert need_status(NamedColumns(columns=("a_mean",)), output) == "guaranteed"
+
+
+def test_a_family_with_listed_members_is_guaranteed_by_member() -> None:
+    values: dict[str, JsonValue] = {**_SHARE_PARAMS, "categories": ["x"]}
+
+    output = output_columns(_shares(), ColumnSet(), values)
+
+    assert output.guaranteed == {"a_mean", "a_share_x"}
+    assert output.possible_prefixes == frozenset()
+    assert need_status(NamedColumns(columns=("a_share_x",)), output) == "guaranteed"
+
+
+@pytest.mark.parametrize(
+    ("flag", "prefixes"),
+    [(False, frozenset[str]()), (True, frozenset({"a_share_"}))],
+)
+def test_a_conditional_family_is_possible_only_when_its_condition_may_hold(
+    flag: bool, prefixes: frozenset[str]
+) -> None:
+    values = {**_SHARE_PARAMS, "roi": flag}
+
+    output = output_columns(_shares(conditional="roi"), ColumnSet(), values)
+
+    assert output.possible_prefixes == prefixes
+    assert output.guaranteed_prefixes == frozenset()
+
+
+def test_a_conditional_family_with_an_unread_condition_is_possible() -> None:
+    output = output_columns(_shares(conditional="roi"), ColumnSet(), _SHARE_PARAMS)
+
+    assert output.possible_prefixes == {"a_share_"}
+
+
+def test_the_wire_lists_a_possible_family_as_an_unconditional_entry_after_the_rest() -> (
+    None
+):
+    provides = Provides(
+        adds=(_SHARES,),
+        conditional=(Conditional(Column("z"), when_param="roi"),),
+    )
+
+    wire = provided_wire(provides, _SHARE_PARAMS)
+
+    [added] = wire.adds
+    assert added.columns == ("a_mean",)
+    assert added.prefixes == ()
+    assert added.label == "'a_mean'"
+    first, family = wire.conditional
+    assert first.names.columns == ("z",)
+    assert family.names.prefixes == ("a_share_",)
+    assert family.names.columns == ()
+    assert family.names.label == "'a_share_*'"
+    assert family.when_param == ""
+    assert family.when_present is None
+
+
+def test_the_wire_gives_a_conditional_family_the_condition_of_its_reference() -> None:
+    provides = Provides(
+        conditional=(Conditional(_SHARES, when_param="roi", when_present=Column("z")),)
+    )
+
+    wire = provided_wire(provides, _SHARE_PARAMS)
+
+    own, family = wire.conditional
+    assert own.names.columns == ("a_mean",)
+    assert own.names.prefixes == ()
+    assert family.names.prefixes == ("a_share_",)
+    assert family.names.columns == ()
+    assert family.when_param == "roi"
+    assert family.when_present is not None
+    assert family.when_present.columns == ("z",)
+
+
+def test_the_wire_adds_no_entry_for_a_family_with_listed_members() -> None:
+    values: dict[str, JsonValue] = {**_SHARE_PARAMS, "categories": ["x"]}
+
+    wire = provided_wire(_shares(), values)
+
+    assert wire.adds[0].columns == ("a_mean", "a_share_x")
+    assert wire.conditional == ()
+
+
+def test_a_family_that_the_data_decides_is_a_rewritten_family() -> None:
+    """A passthrough keeps a symmetric ``a_share_x`` only when the step writes no such family."""
+    merged = ColumnSet(
+        guaranteed=frozenset({"frame", "id1", "id2", "perspective", "a_share_x"}),
+        symmetric=frozenset({"a_share_x"}),
+        symmetric_prefixes=frozenset({"a_share_"}),
+        mirrored=True,
+    )
+    provides = Provides(adds=(_SHARES,), passthrough=True)
+
+    output = output_columns(provides, merged, _SHARE_PARAMS)
+
+    assert not output.is_symmetric("a_share_x")
+    assert output.symmetric_prefixes == frozenset()
+
+
+def test_a_provider_is_found_through_its_possible_family() -> None:
+    catalog = _payload_catalog()
+    entries = dict(catalog.entries)
+    entries["heading"] = replace(
+        entries["heading"], provides=_shares(), param_defaults=_SHARE_PARAMS
+    )
+    need = NamedColumns(columns=("a_share_x",))
+
+    found = providers_of(
+        need, DeclarationCatalog(entries=entries), ColumnSet(), besides=""
+    )
+
+    assert [provider.feature for provider in found] == ["heading"]
+
+
+def test_a_family_is_a_label_of_a_condition_that_names_it() -> None:
+    entries = dict(declaration_catalog().entries)
+    entries["heading"] = replace(
+        entries["heading"],
+        provides=Provides(
+            conditional=(Conditional(Column("z"), when_present=_SHARES),)
+        ),
+        param_defaults=_SHARE_PARAMS,
+    )
+
+    [found] = providers_of(
+        NamedColumns(columns=("z",)),
+        DeclarationCatalog(entries=entries),
+        ColumnSet(),
+    )
+
+    assert found.when_present == ("a_mean", "a_share_*")
+
+
+def test_a_duration_only_step_reads_pair_rows_once_when_the_column_is_symmetric() -> (
+    None
+):
+    merged = _pairs(symmetric=frozenset({"dist"}), mirrored=True)
+
+    assert pair_rule_read(merged, ["dist"], ["duration"], "auto", None) == "once"
+    assert pair_rule_read(merged, ["dist"], ["mean"], "auto", None) is None
 
 
 # --- a time filter reads the time column -----------------------------------------
