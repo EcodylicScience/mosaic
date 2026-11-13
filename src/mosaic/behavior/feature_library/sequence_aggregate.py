@@ -3,13 +3,16 @@ SequenceAggregate -- one summary row per entry.
 
 Consumes any feature output (or raw tracks) and reduces every row of an entry
 to one row by applying each chosen aggregation (mean/median/min/max/std/sum/
-count) to each chosen column, over all its frames and all its ids. The optional
-pre-aggregation steps of ``frame-aggregate`` apply here too: ``transform="abs"``
-for magnitudes, and ``threshold=X`` with ``"mean"`` in ``aggs`` for the fraction
-of rows that exceed it. An input with an ``arena`` column gives one row per
-arena, and ``subgroup_col`` one row per value of that column.
+count/duration/share) to each chosen column, over all its frames and all its
+ids. The optional pre-aggregation steps of ``frame-aggregate`` apply here too:
+``transform="abs"`` for magnitudes, and ``threshold=X`` with ``"mean"`` in
+``aggs`` for the fraction of rows that exceed it. ``duration`` sums the seconds
+of the rows, and ``share`` gives the fraction of the seconds that a column holds
+each of its values. Both read the input's ``time`` column. An input with an
+``arena`` column gives one row per arena, and ``subgroup_col`` one row per value
+of that column.
 
-The class docstring states which rows of a pair table sum and count read.
+The class docstring states which rows of a pair table sum, count and duration read.
 """
 
 from __future__ import annotations
@@ -22,8 +25,10 @@ import pandas as pd
 from mosaic.core.pipeline.column_contract import (
     Column,
     ParamColumn,
+    ParamIs,
     Provides,
     Requirement,
+    When,
     kept,
 )
 from mosaic.core.pipeline.types import (
@@ -60,13 +65,15 @@ class SequenceAggregate:
       - <subgroup_col>: when set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
+      - <column>_share_<value>: for ``share``, in place of ``<column>_share``,
+        one column per value of the column
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate.Params`.
 
     Notes
     -----
-    A pair table holds each pair once per perspective. For sum/count,
+    A pair table holds each pair once per perspective. For sum/count/duration,
     ``pairs="once"`` keeps the ``perspective == 0`` rows when the input has a
     ``perspective`` column, so each pair counts once, and
     ``pairs="each_perspective"`` reads every row. Under ``auto`` a recipe's
@@ -75,11 +82,12 @@ class SequenceAggregate:
     ``auto`` reads every row. A run outside a plan (``mosaic run --feature``)
     reads every row under ``auto``; set ``pairs="once"``, or
     ``filter_expr="perspective == 0"``, to count each pair once there. For
-    mean/median/min/max/std every row is read under any rule.
+    mean/median/min/max/std/share every row is read under any rule.
 
     An entry whose ``filter_expr`` keeps no row still writes its row, with 0 for
-    ``sum`` and ``count`` and NaN for every other aggregation, so that every
-    entry of a run has the same columns.
+    ``sum``, ``count`` and ``duration`` and NaN for every other aggregation, so
+    that every entry of a run has the same columns. ``share`` is NaN in each
+    column of ``categories``, and writes none when that is unset.
 
     This feature does not filter ``bad_frame`` automatically. Either consume
     upstream output that has already filtered them, or pass
@@ -89,7 +97,8 @@ class SequenceAggregate:
     category = "summary"
     name = "sequence-aggregate"
     # 0.3: an entry whose filter keeps no row writes a row of zero counts and NaN.
-    version = "0.3"
+    # 0.4: the duration and share aggregations write seconds and time fractions.
+    version = "0.4"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -105,6 +114,8 @@ class SequenceAggregate:
         ParamColumn("keep_columns"),
         Column(C.group_col),
         Column(C.seq_col),
+        When(Column(C.time_col), (ParamIs("aggs", equals="duration"),)),
+        When(Column(C.time_col), (ParamIs("aggs", equals="share"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(
@@ -112,7 +123,9 @@ class SequenceAggregate:
             Column(C.seq_col),
             ParamColumn("subgroup_col"),
             ParamColumn("keep_columns"),
-            ParamColumn("columns", suffixes="aggs"),
+            ParamColumn(
+                "columns", suffixes="aggs", families=("share",), members="categories"
+            ),
         ),
         conditional=kept(ARENA_COLUMN),
     )
@@ -156,7 +169,7 @@ class SequenceAggregate:
             return pd.DataFrame()
         keys = [C.group_col, C.seq_col, *split_keys(df, self.params)]
         reduced = reduce_column(
-            df, self.params, keys=keys, pairs=self.params.pair_read()
+            df, self.params, keys=keys, who=self.name, pairs=self.params.pair_read()
         )
         if reduced.empty:
             return blank_reduction(df, self.params, keys)

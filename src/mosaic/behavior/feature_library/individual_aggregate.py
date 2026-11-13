@@ -3,12 +3,14 @@ IndividualAggregate -- one summary row per individual of an entry.
 
 Consumes any feature output (or raw tracks) and reduces the rows of each
 individual to one row by applying each chosen aggregation
-(mean/median/min/max/std/sum/count) to each chosen column, over all its frames.
-The optional pre-aggregation steps of ``frame-aggregate`` apply here too:
-``transform="abs"`` for magnitudes, and ``threshold=X`` with ``"mean"`` in
-``aggs`` for the fraction of an individual's rows that exceed it. An input with
-an ``arena`` column keys each row by its arena too, and ``subgroup_col`` splits
-an individual's rows by that column's value.
+(mean/median/min/max/std/sum/count/duration/share) to each chosen column, over
+all its frames. The optional pre-aggregation steps of ``frame-aggregate`` apply
+here too: ``transform="abs"`` for magnitudes, and ``threshold=X`` with ``"mean"``
+in ``aggs`` for the fraction of an individual's rows that exceed it.
+``duration`` sums the seconds of the rows, and ``share`` gives the fraction of
+the seconds that a column holds each of its values. Both read the input's
+``time`` column. An input with an ``arena`` column keys each row by its arena
+too, and ``subgroup_col`` splits an individual's rows by that column's value.
 
 Individual input is grouped by ``id``, and pair input by the focal ``id1``,
 which the output names ``id``. The class docstring states why pair input reads
@@ -26,8 +28,10 @@ from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
     ParamColumn,
+    ParamIs,
     Provides,
     Requirement,
+    When,
     kept,
 )
 from mosaic.core.pipeline.types import (
@@ -62,6 +66,8 @@ class IndividualAggregate:
       - <subgroup_col>: when set
       - <keep_columns>: each kept column, with its one value per row
       - <column>_<agg>: the aggregated value, for each column and aggregation
+      - <column>_share_<value>: for ``share``, in place of ``<column>_share``,
+        one column per value of the column
 
     Field documentation is on
     :class:`~mosaic.behavior.feature_library.individual_aggregate.IndividualAggregate.Params`.
@@ -81,7 +87,8 @@ class IndividualAggregate:
 
     category = "summary"
     name = "individual-aggregate"
-    version = "0.2"
+    # 0.3: the duration and share aggregations write seconds and time fractions.
+    version = "0.3"
     parallelizable = True
     scope_dependent = False
     relates: RelatesLevel = "none"
@@ -98,6 +105,8 @@ class IndividualAggregate:
         AnyOf((Column(C.id_col), Column(_FOCAL_ID))),
         Column(C.group_col),
         Column(C.seq_col),
+        When(Column(C.time_col), (ParamIs("aggs", equals="duration"),)),
+        When(Column(C.time_col), (ParamIs("aggs", equals="share"),)),
     )
     provides: ClassVar[Provides] = Provides(
         adds=(
@@ -106,7 +115,9 @@ class IndividualAggregate:
             Column(C.id_col),
             ParamColumn("subgroup_col"),
             ParamColumn("keep_columns"),
-            ParamColumn("columns", suffixes="aggs"),
+            ParamColumn(
+                "columns", suffixes="aggs", families=("share",), members="categories"
+            ),
         ),
         conditional=kept(ARENA_COLUMN),
     )
@@ -153,6 +164,7 @@ class IndividualAggregate:
             df,
             self.params,
             keys=[C.group_col, C.seq_col, focal, *split_keys(df, self.params)],
+            who=self.name,
             pairs="each_perspective",
         )
         return result.rename(columns={focal: C.id_col})

@@ -394,3 +394,25 @@ def test_count_excludes_nan():
     df = _make_df({0: [1.0, np.nan, 3.0]})
     out = _apply({"columns": ["value"], "aggs": ["count"]}, df)
     assert int(out["value_count"].iloc[0]) == 2
+
+
+def test_duration_is_refused_and_names_the_aggregates_that_read_it() -> None:
+    with pytest.raises(ValueError, match="duration") as refused:
+        _ = FrameAggregate(params={"columns": ["value"], "aggs": ["mean", "duration"]})
+
+    assert "sequence-aggregate" in str(refused.value)
+    assert "individual-aggregate" in str(refused.value)
+
+
+def test_share_is_refused_and_names_the_aggregates_that_read_it() -> None:
+    with pytest.raises(ValueError, match="share") as refused:
+        _ = FrameAggregate(params={"columns": ["value"], "aggs": ["share"]})
+
+    assert "sequence-aggregate" in str(refused.value)
+    assert "individual-aggregate" in str(refused.value)
+
+
+def test_a_frame_aggregate_without_duration_still_validates() -> None:
+    feature = FrameAggregate(params={"columns": ["value"], "aggs": ["sum", "count"]})
+
+    assert feature.params.aggs == ["sum", "count"]

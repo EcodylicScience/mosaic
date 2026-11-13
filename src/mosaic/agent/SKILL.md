@@ -236,7 +236,9 @@ A dataset is a directory with `dataset.yaml` and named roots
   stored on the arenas or defined inline. Each row gains `in_<roi>`, `dist_<roi>`
   in pixels and `roi`, the first region holding it. Read pixel tracks, not a
   `scale-to-cm` result: scale the `dist_*` columns afterwards. Without a declared
-  boundary, `boundary="estimate"` fits one to the positions:
+  boundary, `boundary="estimate"` fits one to the positions. The time in a region is
+  `sequence-aggregate` with `duration` of `in_<roi>` and `threshold: 0.5`, and the
+  share of the time in each region is `sequence-aggregate` with `share` over `roi`:
   https://ecodylicscience.github.io/mosaic/guides/analysis/features/#time-in-regions.
 - Classifiers: https://ecodylicscience.github.io/mosaic/guides/analysis/train-a-classifier/.
 - Labels: https://ecodylicscience.github.io/mosaic/guides/analysis/import-labels/.
@@ -365,7 +367,12 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   resolve `auto` and reads every row, so a symmetric column counts each pair twice. Set
   `pairs` to `once` there. `individual-aggregate` has no `pairs`: over pair rows it
   reads every row of each focal `id1`, so a directional column such as `A_speed` belongs
-  to its focal.
+  to its focal. `sequence-aggregate` and `individual-aggregate` also take `duration`
+  (the seconds in which a column has a value, or is above `threshold`) and `share` (the
+  fraction of the seconds in which a column holds each value, one
+  `<column>_share_<value>` column per value; `categories` fixes the columns, so set it
+  before summarizing across entries). Both weigh a row by its `time`. `pairs` governs
+  `duration` as it governs `sum` and `count`.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

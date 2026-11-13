@@ -14,16 +14,26 @@ rule (:class:`PairAggregateParams`). Each feature also groups by the input's
 reduction keys: a label such as a strain, which every row of a reduced group
 shares. :func:`reduce_column` refuses a group whose rows disagree on one, and
 :func:`blank_reduction` reads it from an emptied entry's rows before the filter.
+
+``duration`` weighs each row by the seconds it stands for, read from the input's
+``frame`` and ``time`` columns (:func:`~mosaic.core.timebase.row_seconds`), so
+the sum is a time and not a count of rows at a frame rate that varies. ``share``
+weighs the rows the same way: it writes, for each value of a text, categorical,
+boolean or integer column, the fraction of the group's seconds that the column
+holds it.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Annotated, Literal, Self, override
 
 import numpy as np
 import pandas as pd
+from numpy.typing import NDArray
 from pydantic import Field, field_validator, model_validator
 
 from mosaic.core.params import Declared, Params, has_fields
@@ -34,22 +44,48 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.timebase import row_seconds
 
-type Aggregation = Literal["mean", "median", "min", "max", "std", "sum", "count"]
+type Aggregation = Literal[
+    "mean", "median", "min", "max", "std", "sum", "count", "duration", "share"
+]
 
 _COLUMNS_DESCRIPTION = (
     "The names of the columns to aggregate. Each column is reduced by each "
     "aggregation in aggs, and the result column is named column followed by "
-    "agg, joined with an underscore."
+    "agg, joined with an underscore. The share aggregation writes one column "
+    "per value instead, named `<column>_share_<value>`."
 )
 
 _AGGS_DESCRIPTION = (
     "The aggregations applied across the rows that the feature reduces "
     "together: those of one frame, one entry or one id, as the feature "
     "groups them. Known values "
-    "are mean, median, min, max, std, sum and count. Without threshold, "
-    "NaN values are skipped for every mode, and count counts non-null "
-    "values."
+    "are mean, median, min, max, std, sum, count, duration and share. Without "
+    "threshold, NaN values are skipped for every mode, and count counts "
+    "non-null values. duration is the seconds the rows that count last: each "
+    "row lasts until the next frame of its individual, read from the time "
+    "column, and a row counts when its value is not null, or, with threshold, "
+    "when it exceeds it, so a boolean column with threshold 0.5 gives the time "
+    "it holds. share reads a column of text, categories, booleans or integers "
+    "and writes a column `<column>_share_<value>` for each value, true or false for "
+    "a boolean and the decimal integer for a number: the seconds of the rows "
+    "with that value over the seconds of the rows whose value is not null, so "
+    "a group's shares sum to 1. A group whose rows are all null gets NaN, and "
+    "a value the group lacks gets 0. A value must consist of letters, digits, "
+    "underscores and hyphens. share is refused with threshold and with "
+    "transform abs. duration and share need a time column, and "
+    "frame-aggregate takes neither."
+)
+
+_CATEGORIES_DESCRIPTION = (
+    "The values the share aggregation writes a column for, as each value's "
+    "text: a string as it is, true or false for a boolean, an integer in "
+    "decimal. Each gives the column `<column>_share_<value>`, in the listed order, "
+    "and an entry where one does not occur gets 0 for it. A value outside the "
+    "list fails the entry. Unset, share writes one column per value in the "
+    "entry, in sorted order, and entries may differ in columns. Set it to read "
+    "the run as one table. Refused without share in aggs."
 )
 
 _SUBGROUP_COL_DESCRIPTION = (
@@ -87,7 +123,7 @@ _TRANSFORM_DESCRIPTION = (
 )
 
 _PAIRS_DESCRIPTION = (
-    "Which rows of a pair table sum and count read, when the input has a "
+    "Which rows of a pair table sum, count and duration read, when the input has a "
     "perspective column; the other aggregations read every row. once reads "
     "perspective 0, each pair once, and each_perspective reads every "
     "ordered pair row. auto is resolved by a recipe's plan: once when every "
@@ -98,6 +134,12 @@ _PAIRS_DESCRIPTION = (
     "pair once."
 )
 
+_TIME_SENTENCE = (
+    "duration and share weigh each row by its seconds, read from the time column: "
+    "give the step an input with a time column, such as tracks."
+)
+
+_SAFE_VALUE = re.compile(r"[A-Za-z0-9_-]+")
 _PERSPECTIVE_COLUMN = "perspective"
 _FOCAL_COLUMNS = ("id1", "id2")
 _MAX_LISTED_VALUES = 5
@@ -110,7 +152,8 @@ class AggregateParams(Params):
     ``filter_expr`` drops rows, ``transform`` takes the absolute value and
     ``threshold`` turns each column into whether it exceeds a value.
     ``subgroup_col`` splits the rows reduced together. ``keep_columns`` are
-    written to the output beside the keys.
+    written to the output beside the keys. ``categories`` fixes the columns that
+    ``share`` writes.
     :class:`PairAggregateParams` adds the ``pairs`` rule for the aggregates
     whose groups hold both rows of a pair.
     """
@@ -128,15 +171,61 @@ class AggregateParams(Params):
     keep_columns: Annotated[list[str], Declared(_KEEP_COLUMNS_DESCRIPTION)] = Field(
         default_factory=list
     )
+    categories: Annotated[list[str] | None, Declared(_CATEGORIES_DESCRIPTION)] = Field(
+        default=None, min_length=1
+    )
 
-    @field_validator("columns", "aggs", "keep_columns", check_fields=False)
+    @field_validator(
+        "columns", "aggs", "keep_columns", "categories", check_fields=False
+    )
     @classmethod
-    def _no_repeats(cls, value: list[str]) -> list[str]:
-        """Refuse a name listed twice, which would name one result column twice."""
+    def _no_repeats(cls, value: list[str] | None) -> list[str] | None:
+        """Refuse a name listed twice, which would name one result column twice.
+
+        An unset ``categories`` passes.
+        """
+        if value is None:
+            return value
         repeated = sorted({item for item in value if value.count(item) > 1})
         if repeated:
             raise ValueError(f"lists {', '.join(repeated)} more than once")
         return value
+
+    @field_validator("categories", check_fields=False)
+    @classmethod
+    def _safe_categories(cls, value: list[str] | None) -> list[str] | None:
+        """Refuse a category that is not a safe part of a column name."""
+        for item in value or ():
+            if not _SAFE_VALUE.fullmatch(item):
+                raise ValueError(
+                    f"categories lists {item!r}, which is not made of letters, "
+                    "digits, underscores and hyphens"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _refuse_what_share_cannot_read(self) -> Self:
+        """Refuse ``share`` with a step that changes values, and ``categories`` alone.
+
+        A share counts the values of the column as they are, and ``threshold``
+        and ``transform: "abs"`` turn them into others. ``categories`` names the
+        columns of ``share``, so it needs ``share`` in ``aggs``.
+        """
+        if not has_fields(self, "aggs", "threshold", "transform", "categories"):
+            return self
+        shares = "share" in self.aggs
+        if shares and self.threshold is not None:
+            raise ValueError(
+                "share counts values as they are and cannot be combined with threshold"
+            )
+        if shares and self.transform == "abs":
+            raise ValueError(
+                "share counts values as they are and cannot be combined with "
+                "transform 'abs'"
+            )
+        if self.categories is not None and not shares:
+            raise ValueError("categories is set but aggs has no share")
+        return self
 
     @model_validator(mode="after")
     def _refuse_a_kept_name_the_output_has_already(self) -> Self:
@@ -160,24 +249,28 @@ class AggregateParams(Params):
 
     @override
     def identity_dump(self) -> dict[str, object]:
-        """The hashed params, less ``keep_columns`` when it is empty.
+        """The hashed params, less an empty ``keep_columns`` or unset ``categories``.
 
-        A run that keeps no column writes the output it wrote before the field
-        existed, so leaving the field out keeps every such run's identifier. A
-        kept column adds an output column and enters the hash as any field does.
+        A run that keeps no column and sets no category writes the output it
+        wrote before the fields existed, so leaving them out keeps every such
+        run's identifier. A kept column or a category adds output columns and
+        enters the hash as any field does.
         """
         dumped = super().identity_dump()
         if not self.keep_columns:
             del dumped["keep_columns"]
+        if self.categories is None:
+            del dumped["categories"]
         return dumped
 
 
 class PairAggregateParams(AggregateParams):
-    """The shared parameters, and the rows of a pair table a sum or count reads.
+    """The shared parameters, and the pair-table rows that sum, count and duration read.
 
     ``frame-aggregate`` and ``sequence-aggregate`` group both rows of a pair
-    together, so a ``sum`` or ``count`` over a column with one value on the two
-    counts each pair twice. ``pairs`` says whether to read one of them.
+    together, so a ``sum``, ``count`` or ``duration`` over a column with one
+    value on the two counts each pair twice. ``pairs`` says whether to read one
+    of them. ``share`` and the other aggregations read every row.
     """
 
     pairs: Annotated[PairRule, Declared(_PAIRS_DESCRIPTION)] = "auto"
@@ -285,11 +378,224 @@ def _refuse_a_varying_column(
         )
 
 
+def _series_keys(df: pd.DataFrame) -> list[str]:
+    """The columns that split *df* into series of rows with one frame axis each.
+
+    ``arena`` when the input has it, then ``id`` when it has that, and otherwise
+    each of ``id1``, ``id2`` and ``perspective`` it has. A table with none is one
+    series. An aggregate reads one entry, so ``group`` and ``sequence`` are constant.
+    """
+    keys = [ARENA_COLUMN] if ARENA_COLUMN in df.columns else []
+    if C.id_col in df.columns:
+        return [*keys, C.id_col]
+    pair = (*_FOCAL_COLUMNS, _PERSPECTIVE_COLUMN)
+    return [*keys, *(column for column in pair if column in df.columns)]
+
+
+def _seconds_by_row(df: pd.DataFrame, who: str) -> NDArray[np.float64]:
+    """The seconds each row of *df* stands for, by position.
+
+    Raises:
+        ValueError: The table's time axis cannot be measured. The message is the
+            one :func:`~mosaic.core.timebase.row_seconds` raises, followed by what
+            to give the step.
+    """
+    try:
+        return row_seconds(df, _series_keys(df), who)
+    except ValueError as error:
+        raise ValueError(f"{error} {_TIME_SENTENCE}") from error
+
+
+@dataclass(frozen=True)
+class _ShareColumn:
+    """What ``share`` reads of one column, and the columns it writes for it.
+
+    Attributes:
+        texts: The text of each row's value, by position, ``None`` for a null.
+        readable: Whether each row belongs to a group, by position.
+        names: The values that get a column, in the order of the columns.
+    """
+
+    texts: NDArray[np.object_]
+    readable: NDArray[np.bool_]
+    names: list[str]
+
+
+def _texts_of_values(
+    values: pd.Series, column: str
+) -> tuple[NDArray[np.object_], bool]:
+    """The text of each value ``share`` accepts, and whether the values are numbers.
+
+    A string is its own text, a boolean is ``true`` or ``false``, and an integer
+    its decimal form. A categorical column reads the text of its categories.
+
+    Args:
+        values: The column.
+        column: Its name, for the message of a column ``share`` refuses.
+
+    Returns:
+        The texts by position, ``None`` for a null, and whether the values are
+        integers, which sort by number and not by their text.
+
+    Raises:
+        ValueError: The column is of an unaccepted dtype, or an ``object`` column
+            whose values are not all strings.
+    """
+    dtype = values.dtype
+    if isinstance(dtype, pd.CategoricalDtype):
+        names, numeric = _texts_of_values(pd.Series(dtype.categories), column)
+        lookup = np.empty(names.size + 1, dtype=object)
+        lookup[:-1] = names
+        lookup[-1] = None
+        return lookup[values.cat.codes.to_numpy()], numeric
+    numeric = False
+    if pd.api.types.is_bool_dtype(dtype):
+        texts = values.astype("string").str.lower()
+    elif pd.api.types.is_integer_dtype(dtype):
+        texts = values.astype("string")
+        numeric = True
+    elif isinstance(dtype, pd.StringDtype):
+        texts = values
+    elif pd.api.types.is_object_dtype(dtype):
+        if pd.api.types.infer_dtype(values, skipna=True) not in {"string", "empty"}:
+            kinds = sorted(
+                {type(value).__name__ for value in values if not _is_null(value)}
+            )
+            raise ValueError(
+                f"share reads text, categorical, boolean or integer columns, and "
+                f"column {column!r} is an object column of {', '.join(kinds)}"
+            )
+        texts = values
+    else:
+        raise ValueError(
+            f"share reads text, categorical, boolean or integer columns, and "
+            f"column {column!r} has dtype {dtype}"
+        )
+    result = texts.to_numpy(dtype=object, copy=True)
+    result[texts.isna().to_numpy()] = None
+    return result, numeric
+
+
+def _share_column(
+    values: pd.Series,
+    column: str,
+    readable: NDArray[np.bool_],
+    categories: Sequence[str] | None,
+) -> _ShareColumn:
+    """The texts of one column and the values that ``share`` writes a column for.
+
+    The values are those of the rows that belong to a group: ``categories`` in
+    their order when set, and otherwise each value that occurs, integers by
+    number and other values by code point.
+
+    Raises:
+        ValueError: The column is of an unaccepted kind, a value is not made of
+            letters, digits, underscores and hyphens, or a value is not among
+            ``categories``.
+    """
+    texts, numeric = _texts_of_values(values, column)
+    read = {str(text) for text in texts[readable & ~pd.isna(texts)]}
+    unsafe = sorted(text for text in read if not _SAFE_VALUE.fullmatch(text))
+    if unsafe:
+        raise ValueError(
+            f"share cannot name a column for the value {unsafe[0]!r} of column "
+            f"{column!r}: recode it upstream to letters, digits, underscores "
+            "and hyphens"
+        )
+    if categories is None:
+        names = sorted(read, key=int) if numeric else sorted(read)
+    else:
+        outside = sorted(read.difference(categories))
+        if outside:
+            raise ValueError(
+                f"column {column!r} has the value {outside[0]!r}, which is not "
+                f"among the categories {list(categories)}"
+            )
+        names = list(categories)
+    return _ShareColumn(texts=texts, readable=readable, names=names)
+
+
+def _refuse_a_repeated_output_name(
+    params: AggregateParams,
+    keys: Sequence[str],
+    carried: Sequence[str],
+    shares: dict[str, _ShareColumn],
+) -> None:
+    """Refuse an output column name that two of the entry's outputs would take.
+
+    Raises:
+        ValueError: Two sources write one name. The message names the name and
+            both sources.
+    """
+    sources: dict[str, str] = {}
+
+    def claim(name: str, source: str) -> None:
+        if name in sources:
+            raise ValueError(
+                f"the column {name!r} would be written by both {sources[name]} "
+                f"and {source}"
+            )
+        sources[name] = source
+
+    for name in (*keys, *carried):
+        claim(name, f"the column {name!r} of the input")
+    for column in params.columns:
+        for agg in params.aggs:
+            if agg == "share":
+                for value in shares[column].names:
+                    claim(
+                        f"{column}_share_{value}",
+                        f"share of column {column!r} for the value {value!r}",
+                    )
+            else:
+                claim(f"{column}_{agg}", f"{agg} of column {column!r}")
+
+
+def _share_fractions(
+    work: pd.DataFrame,
+    keys: Sequence[str],
+    share: _ShareColumn,
+    seconds: NDArray[np.float64],
+    groups: pd.Index,
+) -> pd.DataFrame:
+    """Each group's fraction of seconds in each value of one column.
+
+    Args:
+        work: The rows reduced, holding the keys.
+        keys: The columns that group the rows.
+        share: The column's texts and the values that get a column.
+        seconds: The seconds of each row of *work*, by position.
+        groups: The groups of the result, in order.
+
+    Returns:
+        One column per value of *share*, ``float64`` with one row per group: the
+        seconds of the rows with that value over the seconds of the rows whose
+        value is not null, 0 for a value a group lacks and NaN for a group with
+        no value.
+    """
+    present = share.readable & ~pd.isna(share.texts)
+    rows = work.loc[present, list(keys)].assign(
+        _text=share.texts[present], _seconds=seconds[present]
+    )
+    if rows.empty:
+        return pd.DataFrame(np.nan, index=groups, columns=share.names)
+    total = rows.groupby(list(keys), sort=True)["_seconds"].sum().reindex(groups)
+    by_value = (
+        rows.groupby([*keys, "_text"], sort=True)["_seconds"]
+        .sum()
+        .unstack("_text")
+        .reindex(index=groups, columns=share.names)
+        .fillna(0.0)
+    )
+    return by_value.div(total, axis=0)
+
+
 def reduce_column(
     df: pd.DataFrame,
     params: AggregateParams,
     keys: Sequence[str],
     *,
+    who: str,
     first: Sequence[str] = (),
     pairs: PairRead,
 ) -> pd.DataFrame:
@@ -304,30 +610,66 @@ def reduce_column(
     empty when no row survives the filter.
 
     A pair table holds each pair once per perspective. Under ``pairs="once"``
-    and with a ``perspective`` column present, ``sum`` and ``count`` read the
-    ``perspective == 0`` rows, so each pair counts once, while the other
-    aggregations of the same call read every row. Under ``each_perspective``
-    every aggregation reads every ordered pair row, as a caller that groups pair
-    rows by a focal id needs.
+    and with a ``perspective`` column present, ``sum``, ``count`` and
+    ``duration`` read the ``perspective == 0`` rows, so each pair counts once,
+    while the other aggregations of the same call read every row. Under
+    ``each_perspective`` every aggregation reads every ordered pair row, as a
+    caller that groups pair rows by a focal id needs.
+
+    ``duration`` is the seconds of the rows that count: a value that is not
+    null, or with ``threshold`` one above it after ``transform``. A row lasts
+    until the next frame of its series, per
+    :func:`~mosaic.core.timebase.row_seconds`, where a series is an arena's
+    individual, or a pair row's ``id1``, ``id2`` and ``perspective``. The
+    seconds are those of the rows before ``filter_expr`` and before ``keys``
+    split them, so a row that the filter keeps lasts as it did without it.
+    ``duration`` is read from the rows ``pairs`` selects, as ``sum`` and
+    ``count`` are, is 0 for a group none of whose rows it reads, and is
+    ``float64``.
+
+    ``share`` writes, for each value of a text, categorical, boolean or integer
+    column, ``<column>_share_<value>``: the
+    seconds of a group's rows whose value is it, over the seconds of the rows
+    whose value is not null. It weighs rows as ``duration`` does, reads the
+    column as it is after ``filter_expr`` and every row under any ``pairs``
+    rule, and is ``float64``. A null row is in neither sum, a group of null
+    rows only is NaN in every share column, and a value the group lacks is 0.
+    Each value's text is the string, ``true`` or ``false``, or the decimal
+    integer. The values are ``params.categories`` in their order when set, and
+    otherwise those of the rows that belong to a group: integers by number,
+    other values by code point. The columns of a ``share`` stand where it is in
+    ``aggs``, within each column. Only a call with ``duration`` or ``share``
+    reads ``time``.
 
     Args:
         df: The rows to reduce.
         params: The columns, aggregations and pre-aggregation steps.
         keys: The columns to group by.
+        who: The feature's name, which opens the message of a time axis that
+            ``duration`` cannot read.
         first: Columns that take their first value within each group.
-        pairs: The rows of a pair table that ``sum`` and ``count`` read.
+        pairs: The rows of a pair table that ``sum``, ``count`` and ``duration``
+            read.
 
     Returns:
         The reduced table, empty when no row remains.
 
     Raises:
         ValueError: A kept column is not in ``df``, or takes more than one value
-            in a group of the rows left after ``filter_expr``.
+            in a group of the rows left after ``filter_expr``, or ``duration``
+            or ``share`` is asked of an input whose ``time`` is missing or does
+            not advance, or ``share`` is asked of a column of an unaccepted
+            kind, of a value that cannot name a column or that is not among
+            ``categories``, or of a name that another output has.
     """
     kept = tuple(params.keep_columns)
     for column in kept:
         if column not in df.columns:
             raise ValueError(f"keep_columns column {column!r} is not in the input")
+    seconds: NDArray[np.float64] | None = None
+    if "duration" in params.aggs or "share" in params.aggs:
+        df = df.reset_index(drop=True)
+        seconds = _seconds_by_row(df, who)
     if params.filter_expr:
         df = df.query(params.filter_expr)
     if df.empty:
@@ -336,6 +678,20 @@ def reduce_column(
 
     carried = (*first, *kept)
     work = pd.DataFrame({key: df[key].to_numpy() for key in (*keys, *carried)})
+    kept_seconds = seconds[df.index.to_numpy()] if seconds is not None else None
+    reduced = _carried_by_group(work, keys, carried)
+    fractions: dict[str, pd.DataFrame] = {}
+    if kept_seconds is not None and "share" in params.aggs:
+        readable = work[list(keys)].notna().all(axis=1).to_numpy()
+        shares = {
+            column: _share_column(df[column], column, readable, params.categories)
+            for column in params.columns
+        }
+        _refuse_a_repeated_output_name(params, keys, carried, shares)
+        fractions = {
+            column: _share_fractions(work, keys, share, kept_seconds, reduced.index)
+            for column, share in shares.items()
+        }
     for index, column in enumerate(params.columns):
         values = df[column]
         if params.transform == "abs":
@@ -343,16 +699,29 @@ def reduce_column(
         if params.threshold is not None:
             values = (values > params.threshold).astype(float)
         work[f"_v{index}"] = _plain_values(values)
+        if kept_seconds is not None and "duration" in params.aggs:
+            counted = (
+                work[f"_v{index}"].to_numpy() == 1.0
+                if params.threshold is not None
+                else values.notna().to_numpy()
+            )
+            work[f"_s{index}"] = np.where(counted, kept_seconds, 0.0)
 
     once = pairs == "once" and _PERSPECTIVE_COLUMN in df.columns
     halved = work[(df[_PERSPECTIVE_COLUMN] == 0).to_numpy()] if once else work
     group_keys = list(keys)
-    reduced = _carried_by_group(work, keys, carried)
     for index, column in enumerate(params.columns):
         for agg in params.aggs:
+            if agg == "share":
+                for value, fraction in fractions[column].items():
+                    reduced[f"{column}_share_{value}"] = fraction
+                continue
             counting = agg in PAIR_COUNTING_AGGS
             source = halved if once and counting else work
-            result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
+            if agg == "duration":
+                result = source.groupby(group_keys, sort=True)[f"_s{index}"].sum()
+            else:
+                result = source.groupby(group_keys, sort=True)[f"_v{index}"].agg(agg)
             # A group whose rows are all of the other perspective sums no row.
             reduced[f"{column}_{agg}"] = (
                 result.reindex(reduced.index, fill_value=0)
@@ -372,9 +741,12 @@ def blank_reduction(
     For an entry whose ``filter_expr`` keeps no row. It has the columns that
     :func:`reduce_column` gives an entry that keeps rows: each of
     ``params.keep_columns`` holds its one value in the group's rows before the
-    filter, each of the ``sum`` and ``count`` aggregations is 0, as for a group
-    none of whose rows it reads, and every other aggregation is NaN. A row whose
-    key is null belongs to no group.
+    filter, each of the ``sum``, ``count`` and ``duration`` aggregations is 0
+    (seconds for ``duration``), as for a group none of whose rows it reads, and
+    every other aggregation is NaN. ``share`` is NaN in the column of each of
+    ``params.categories``, in their order, and writes no column when that is
+    unset, since the entry has no value to name one. A row whose key is null
+    belongs to no group.
 
     Args:
         df: The rows before the filter, which hold the keys and the kept columns.
@@ -393,7 +765,11 @@ def blank_reduction(
     blank = _carried_by_group(work, keys, kept).reset_index()
     for column in params.columns:
         for agg in params.aggs:
-            blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
+            if agg == "share":
+                for category in params.categories or ():
+                    blank[f"{column}_share_{category}"] = np.nan
+            else:
+                blank[f"{column}_{agg}"] = 0.0 if agg in PAIR_COUNTING_AGGS else np.nan
     return blank
 
 

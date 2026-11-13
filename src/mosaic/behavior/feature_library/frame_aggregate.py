@@ -25,9 +25,10 @@ mean/median/min/max/std read every row under any rule.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, final
+from typing import ClassVar, Self, final
 
 import pandas as pd
+from pydantic import model_validator
 
 from mosaic.core.pipeline.types.feature import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
@@ -50,6 +51,7 @@ from mosaic.core.pipeline.types import (
     resolve_order_col,
 )
 
+from mosaic.core.params import has_fields
 from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
 
 from .aggregate_common import PairAggregateParams, reduce_column, split_keys
@@ -113,7 +115,9 @@ class FrameAggregate:
         adds=(
             ParamColumn("subgroup_col"),
             ParamColumn("keep_columns"),
-            ParamColumn("columns", suffixes="aggs"),
+            ParamColumn(
+                "columns", suffixes="aggs", families=("share",), members="categories"
+            ),
         ),
         conditional=kept(C.frame_col, C.time_col, C.seq_col, C.group_col, ARENA_COLUMN),
     )
@@ -124,7 +128,26 @@ class FrameAggregate:
     pair_rule_column: ClassVar[str] = "columns"
 
     class Params(PairAggregateParams):
-        pass
+        """The shared parameters, with every aggregation but ``duration`` and ``share``."""
+
+        @model_validator(mode="after")
+        def _refuse_the_aggregations_of_seconds(self) -> Self:
+            """Refuse ``duration`` and ``share``, which a frame's rows do not give.
+
+            A frame's group holds one row of each individual, and their seconds
+            would sum each individual's step to its next row, outside the frame.
+            """
+            if not has_fields(self, "aggs"):
+                return self
+            for agg in ("duration", "share"):
+                if agg in self.aggs:
+                    raise ValueError(
+                        f"frame-aggregate does not take the {agg} aggregation: a "
+                        "frame's group would sum each individual's seconds to its "
+                        "next frame, which lie outside the frame. Use "
+                        "sequence-aggregate or individual-aggregate."
+                    )
+            return self
 
     def __init__(
         self,
@@ -164,6 +187,7 @@ class FrameAggregate:
             df,
             self.params,
             keys=[order_col, *split_keys(df, self.params)],
+            who=self.name,
             first=["time"] if has_time else [],
             pairs=self.params.pair_read(),
         )

@@ -8,6 +8,28 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: time-weighted duration and share aggregations
+
+`sequence-aggregate` and `individual-aggregate` take two more values of `aggs`.
+`duration` sums the seconds that each row stands for, over the rows where a column has a
+value, or over those above `threshold`. `share` gives the fraction of the seconds that a
+column holds each of its values, one `<column>_share_<value>` column per value. Both
+weigh a row by its `time`, so an input that dropped frames is measured by the seconds it
+covers. `categories` fixes the share columns, so that entries with different values write
+the same columns, which `mosaic summarize` needs across entries. `frame-aggregate`
+accepts neither.
+
+`sequence-aggregate` goes from 0.3 to 0.4 and `individual-aggregate` from 0.2 to 0.3.
+Every run id of either feature moves, while its params hash stays: the new values of
+`aggs` leave every dump as it was, and an unset `categories` leaves the dump. A plan
+finds the earlier runs superseded and computes the steps again. `frame-aggregate` and
+`label-statistics` keep every run id and output.
+
+`mosaic.core.timebase` gains the public `row_seconds`, the seconds each row stands for
+per series, and `frame_step`. In the column contract, `ParamColumn` takes `families` and
+`members`, `NamedColumns` takes `possible_prefixes`, and `ParamIs` reads a list field.
+Every verdict on a scalar field and every `ParamColumn` without `families` is unchanged.
+
 ## Unreleased: runs record their cost, and a step can be probed
 
 Inside a pod or a SLURM job, `psutil` reports the node's memory, so

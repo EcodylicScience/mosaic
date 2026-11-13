@@ -81,7 +81,11 @@ shared set of parameters: to one row per frame, per sequence or per individual. 
 `columns` is reduced by each of `aggs` into `<column>_<agg>`. An input with an `arena`
 column gives one row per arena, and `subgroup_col` splits the rows by a column such as a
 tag. Over pair rows, `individual-aggregate` reduces every row of a focal `id1` to that
-individual's row.
+individual's row. `sequence-aggregate` and `individual-aggregate` also take `duration`,
+the seconds in which a column has a value, or exceeds `threshold`, and `share`, the
+fraction of the seconds in which a column holds each of its values, written as
+`<column>_share_<value>`. Both weigh a row by its `time`, so a table that dropped frames
+is measured in the seconds it covers.
 
 **Responses to events.** `event-response` measures a value, by default the speed of
 `speed-angvel`, around each onset, one row per individual and event: the baseline mean
@@ -344,6 +348,31 @@ command prints. `mosaic inventory -m dataset.yaml` lists the variant as
 
 A stored name that an arena lacks fails that entry, naming both. An entry of several
 arenas needs the `arena` column that `assign-arenas` writes.
+
+**Time in each region.** Two steps of `sequence-aggregate` over the `roi-occupancy`
+output of the dish above give one row per recording. `duration` of `in_center` with
+`threshold: 0.5` is the seconds in the center, and `share` of `roi` is the fraction of
+the time in each region. `share` refuses `threshold`, so it takes its own step:
+
+```json
+{"id": "occupancy", "type": "feature", "feature": "roi-occupancy",
+ "params": {"rois": [{"name": "center", "placement": "arena",
+                       "shape": {"kind": "circle", "cx": 0, "cy": 0, "r": 0.5}}],
+            "boundary": "estimate"}},
+{"id": "seconds_in_center", "type": "feature", "feature": "sequence-aggregate",
+ "inputs": [{"step": "occupancy"}],
+ "params": {"columns": ["in_center"], "aggs": ["duration"], "threshold": 0.5}},
+{"id": "share_by_region", "type": "feature", "feature": "sequence-aggregate",
+ "inputs": [{"step": "occupancy"}],
+ "params": {"columns": ["roi"], "aggs": ["share"], "categories": ["center", "none"]}}
+```
+
+The columns are `in_center_duration` and `roi_share_center` and `roi_share_none`. A row
+without a position counts in neither step: it adds no seconds to the first and none to
+the denominator of the second. While `categories` is unset, each entry writes a column
+for each value it holds, so entries may differ in columns. Set `categories` to the
+regions plus `none` before you summarize across entries, because `mosaic summarize`
+refuses entries whose share columns differ.
 
 **Distance from the center.** `center_distance=true` adds `arena_center_dist`, the
 distance in pixels from the boundary's center, and `arena_radius_norm`, that distance as

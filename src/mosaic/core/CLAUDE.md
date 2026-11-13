@@ -283,11 +283,12 @@ importing `mosaic.tracking` registers neither.
   (`tests/core/track_library/test_tracktor.py`).
 - **`core/timebase.py` is the one reading of `time`.** `step_seconds` gives the seconds
   between rows, `uniform_grid_rate` a rate measured as the frame span over the time span
-  with a warning on uneven steps, and `last_frames_at_or_before` the frame of an event
-  second. A feature takes no frame rate of its own, and `resample-tracks` interpolates
-  on `time`. It imports numpy and the standard-library `mosaic.runlog`, whose
-  `time_irregular_sentence` is the one wording of the uneven-time warning
-  (`tests/core/test_timebase.py`).
+  with a warning on uneven steps, `row_seconds` the seconds each row stands for, per
+  series, `frame_step` the frame gap of a decimated table, and
+  `last_frames_at_or_before` the frame of an event second. A feature takes no frame rate
+  of its own, and `resample-tracks` interpolates on `time`. It imports numpy and the
+  standard-library `mosaic.runlog`, whose `time_irregular_sentence` is the one wording
+  of the uneven-time warning (`tests/core/test_timebase.py`).
 - **A `ClockedLabelConverter` maps event seconds through a `TrackClock`,** which
   `convert_all_labels` builds from each entry's tracks
   (`_EntryTracks` in `dataset.py`, which reads the tracks index and selects the

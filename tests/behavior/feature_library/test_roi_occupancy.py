@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from mosaic.behavior.feature_library.roi_occupancy import RoiOccupancy
 from mosaic.behavior.feature_library.scale_to_cm import ScaleToCm
+from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.behavior.feature_library.speed_angvel import SpeedAngvel
 from mosaic.core.arenas import Arena, ArenaLayout, Rect
 from mosaic.core.dataset import Dataset
@@ -29,6 +30,7 @@ from tests.helpers import (
     entry_error_lines,
     make_dataset,
     refuse_index,
+    result_outputs,
     write_media_index,
 )
 
@@ -972,3 +974,101 @@ class TestCompositionAndDrift:
         errors = entry_error_lines(ds, "TESTROICAMERAS")
         assert len(errors) == 1
         assert "seq_3" in errors[0]
+
+
+# --- the time spent in each region -------------------------------------------------
+
+LEFT = Roi(name="left", shape=RectShape(x0=0.0, y0=0.0, x1=100.0, y1=300.0))
+CENTER = Roi(name="center", shape=CircleShape(cx=200.0, cy=150.0, r=40.0))
+
+IN_LEFT: Position = (50.0, 150.0)
+IN_CENTER: Position = (200.0, 150.0)
+IN_NEITHER: Position = (300.0, 150.0)
+UNPOSITIONED: Position = (math.nan, math.nan)
+
+STAYS: dict[str, tuple[tuple[Position, int], ...]] = {
+    "seq_a": (
+        (IN_LEFT, 4),
+        (UNPOSITIONED, 4),
+        (IN_CENTER, 3),
+        (IN_NEITHER, 2),
+        (IN_LEFT, 2),
+    ),
+    "seq_b": (
+        (IN_NEITHER, 3),
+        (IN_CENTER, 5),
+        (UNPOSITIONED, 1),
+        (IN_NEITHER, 1),
+        (IN_LEFT, 2),
+    ),
+}
+"""Each position that an entry's one id visits and its frame count, in order."""
+
+FRAME_SECONDS = 1.0 / 30.0
+"""The seconds of one frame, which ``_table`` gives every row."""
+
+
+def _aggregated(
+    ds: Dataset, regions: Result, params: dict[str, object]
+) -> dict[str, pd.DataFrame]:
+    """Run ``sequence-aggregate`` over the stored *regions*, one table per entry."""
+    stored = Result(feature=regions.feature, run_id=str(regions.run_id))
+    aggregate = SequenceAggregate(SequenceAggregate.Inputs((stored,)), params=params)
+    return result_outputs(ds, run_feature(ds, aggregate))
+
+
+def test_share_over_roi_gives_the_time_fraction_in_each_region(tmp_path: Path) -> None:
+    layout = _single(_circle_arena("tank", 200.0, 150.0, 150.0))
+    entries: dict[Entry, ArenaLayout] = {("", name): layout for name in STAYS}
+    tables = [
+        _table(
+            ("", name),
+            [position for position, count in stays for _ in range(count)],
+        )
+        for name, stays in STAYS.items()
+    ]
+    ds = _roi_dataset(tmp_path, entries, tables)
+    regions, outputs = _run(
+        ds,
+        {"rois": [roi.model_dump(mode="json") for roi in (LEFT, CENTER)]},
+    )
+    assert outputs["seq_a"]["roi"].isna().sum() == 4
+
+    shares = _aggregated(
+        ds,
+        regions,
+        {
+            "columns": ["roi"],
+            "aggs": ["share"],
+            "categories": ["left", "center", "none"],
+        },
+    )
+
+    names = [
+        "group",
+        "sequence",
+        "roi_share_left",
+        "roi_share_center",
+        "roi_share_none",
+    ]
+    assert {name: list(table.columns) for name, table in shares.items()} == {
+        "seq_a": names,
+        "seq_b": names,
+    }
+    expected = {"seq_a": (6, 3, 2), "seq_b": (2, 5, 4)}
+    for name, counts in expected.items():
+        (row,) = shares[name].iloc[:, 2:].to_numpy()
+        assert row == pytest.approx([count / 11 for count in counts])
+
+    seconds = _aggregated(
+        ds,
+        regions,
+        {"columns": ["in_center"], "aggs": ["duration"], "threshold": 0.5},
+    )
+
+    assert {
+        name: table["in_center_duration"].tolist() for name, table in seconds.items()
+    } == {
+        "seq_a": pytest.approx([3 * FRAME_SECONDS]),
+        "seq_b": pytest.approx([5 * FRAME_SECONDS]),
+    }

@@ -1063,6 +1063,38 @@ def test_an_empty_keep_columns_keeps_each_aggregate_run_id(case_id: str) -> None
     assert kept != golden
 
 
+@pytest.mark.parametrize(
+    "case_id",
+    [
+        "sequence-aggregate/column-speed",
+        "individual-aggregate/column-speed",
+    ],
+)
+def test_an_unset_categories_keeps_each_aggregate_run_id(case_id: str) -> None:
+    """Leaving ``categories`` out and setting it to ``None`` are the golden run.
+
+    A listed category adds output columns, so a list of them is another run.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    case = next(case for case in CASES if case.case_id == case_id)
+    assert case.params is not None
+    golden = read_string_golden(GOLDEN)[case_id]
+
+    absent = _identifier(case)
+    unset = _identifier(replace(case, params={**case.params, "categories": None}))
+    listed = _identifier(
+        replace(
+            case,
+            params={**case.params, "aggs": ["share"], "categories": ["a"]},
+        )
+    )
+
+    assert absent == golden
+    assert unset == golden
+    assert listed != golden
+
+
 def test_zero_overlap_digests_exactly_as_no_overlap() -> None:
     """Asking for no context must reproduce the identifier that predates the term.
 

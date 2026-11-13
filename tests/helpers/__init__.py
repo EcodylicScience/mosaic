@@ -110,7 +110,9 @@ What lives where:
 - ``run_summaries``: a feature whose output for each entry is the table a test
   passes for it, a run of it, and a rewrite of a run's feature index.
 - ``aggregates``: a run of an aggregate over two entries of labeled tracks, one
-  whose label varies inside every group, with what it wrote and lost.
+  whose label varies inside every group, with what it wrote and lost, and the
+  rows of one individual at a steady step, the error text that a missing ``time``
+  gives ``duration`` and ``share``, and the values of an ROI column.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -322,9 +324,17 @@ from tests.helpers.runner_programs import (
 from tests.helpers.run_summaries import LabeledFeature, labeled_run, rewrite_index
 from tests.helpers.aggregates import (
     MIXED,
+    ROI_VALUES,
     STEADY,
+    TIME_SENTENCE,
     LabeledTracksRun,
+    constant_time_in_mixed,
+    record_applied_sequences,
+    run_over_edited_tracks,
     run_over_labeled_tracks,
+    stepped_individual,
+    without_time,
+    without_time_in_mixed,
 )
 from tests.helpers.scope import resolved_scope, scope_over
 from tests.helpers.spies import count_property_reads, observed
@@ -559,7 +569,9 @@ __all__ = [
     "LabeledFeature",
     "LabeledTracksRun",
     "MIXED",
+    "ROI_VALUES",
     "STEADY",
+    "TIME_SENTENCE",
     "LISTED_FRAMES",
     "PREDICTIONS_VARIANT",
     "LightningActionRecorder",
@@ -760,7 +772,13 @@ __all__ = [
     "read_line",
     "refuse_index",
     "run_child",
+    "run_over_edited_tracks",
+    "record_applied_sequences",
+    "constant_time_in_mixed",
+    "without_time",
+    "without_time_in_mixed",
     "run_over_labeled_tracks",
+    "stepped_individual",
     "run_fresh",
     "run_id_digest",
     "record_open_attempt",

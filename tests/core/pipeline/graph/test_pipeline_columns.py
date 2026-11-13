@@ -15,11 +15,14 @@ wrong in a way that once failed only at run time, do not.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
+from mosaic.behavior.feature_library.sequence_aggregate import SequenceAggregate
 from mosaic.cli import app
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.column_contract import (
@@ -70,7 +73,9 @@ from mosaic.core.pipeline.graph.columns import (
 )
 from mosaic.core.pipeline.graph.validate import merge_cautions
 from mosaic.core.pipeline.graph.wire import NeedStatus
+from mosaic.core.regions import CircleShape, Roi
 from tests.helpers import (
+    assert_writes_declared_columns,
     GUPPIES_RECIPE,
     catalog_without_contract,
     golden_path,
@@ -1663,6 +1668,157 @@ def test_a_duration_only_step_reads_pair_rows_once_when_the_column_is_symmetric(
 
     assert pair_rule_read(merged, ["dist"], ["duration"], "auto", None) == "once"
     assert pair_rule_read(merged, ["dist"], ["mean"], "auto", None) is None
+
+
+def test_a_duration_step_over_a_symmetric_pair_column_resolves_auto_to_once() -> None:
+    recipe = _pair_recipe(
+        {
+            "id": "total",
+            "type": "feature",
+            "feature": "sequence-aggregate",
+            "inputs": [{"step": "pairs"}],
+            "params": {"columns": ["AB_dist"], "aggs": ["duration"]},
+        }
+    )
+
+    assert check_recipe(recipe) == ()
+    assert pair_rules(recipe) == {"total": "once"}
+
+
+# --- duration and share ----------------------------------------------------------------
+
+_REGION = Roi(name="disc", shape=CircleShape(cx=50.0, cy=50.0, r=10.0))
+
+
+def _regions_then_aggregate(
+    aggs: list[JsonValue], categories: list[JsonValue] | None = None
+) -> Recipe:
+    """``roi-occupancy`` over the tracks, then ``sequence-aggregate`` of its ``roi``."""
+    params: dict[str, JsonValue] = {"columns": ["roi"], "aggs": aggs}
+    if categories is not None:
+        params["categories"] = categories
+    return read_recipe(
+        {
+            "steps": [
+                {
+                    "id": "regions",
+                    "type": "feature",
+                    "feature": "roi-occupancy",
+                    "inputs": [TRACKS_INPUT],
+                    "params": {"rois": [_REGION.model_dump(mode="json")]},
+                },
+                {
+                    "id": "summary",
+                    "type": "feature",
+                    "feature": "sequence-aggregate",
+                    "inputs": [{"step": "regions"}],
+                    "params": params,
+                },
+            ]
+        }
+    )
+
+
+def test_a_share_with_categories_guarantees_each_listed_column() -> None:
+    recipe = _regions_then_aggregate(["share"], ["disc", "none"])
+
+    assert check_recipe(recipe) == ()
+    columns = resolved_columns(recipe)["summary"]
+
+    assert {"roi_share_disc", "roi_share_none"} <= columns.guaranteed
+    assert columns.guaranteed_prefixes == frozenset()
+    assert "roi_share_" not in columns.possible_prefixes
+    assert not columns.admits("roi_share_other")
+
+
+def test_a_share_without_categories_leaves_its_columns_a_possible_family() -> None:
+    columns = resolved_columns(_regions_then_aggregate(["mean", "share"]))["summary"]
+
+    assert "roi_mean" in columns.guaranteed
+    assert columns.guaranteed_prefixes == frozenset()
+    assert "roi_share_" in columns.possible_prefixes
+    assert columns.admits("roi_share_disc")
+
+
+def test_a_duration_column_is_guaranteed_like_any_other_aggregation() -> None:
+    columns = resolved_columns(_regions_then_aggregate(["duration"]))["summary"]
+
+    assert "roi_duration" in columns.guaranteed
+
+
+def test_the_predicted_columns_hold_for_an_entry_whose_roi_is_null_throughout() -> None:
+    """Without ``categories`` a null column writes no share column, which is declared."""
+    recipe = _regions_then_aggregate(["share"])
+    frame = pd.DataFrame(
+        {
+            "group": ["g"] * 3,
+            "sequence": ["s"] * 3,
+            "frame": [0, 1, 2],
+            "time": [0.0, 0.1, 0.2],
+            "id": [0, 0, 0],
+            "in_disc": pd.array([pd.NA] * 3, dtype="boolean"),
+            "dist_disc": [math.nan] * 3,
+            "roi": pd.Series([None] * 3, dtype=object),
+        }
+    )
+
+    output = SequenceAggregate(params={"columns": ["roi"], "aggs": ["share"]}).apply(
+        frame
+    )
+
+    assert list(output.columns) == ["group", "sequence"]
+    assert_writes_declared_columns(
+        "sequence-aggregate", resolved_columns(recipe)["summary"], output
+    )
+
+
+@pytest.mark.parametrize("aggs", [["duration"], ["share"]])
+def test_duration_and_share_over_an_input_without_time_are_refused_naming_time(
+    aggs: list[JsonValue],
+) -> None:
+    """``individual-aggregate`` writes one row per individual and no ``time``."""
+    steps: list[JsonValue] = [
+        {
+            "id": "individuals",
+            "type": "feature",
+            "feature": "individual-aggregate",
+            "inputs": [TRACKS_INPUT],
+            "params": {"columns": ["id"], "aggs": ["mean"]},
+        },
+        {
+            "id": "summary",
+            "type": "feature",
+            "feature": "sequence-aggregate",
+            "inputs": [{"step": "individuals"}],
+            "params": {"columns": ["id_mean"], "aggs": aggs},
+        },
+    ]
+
+    (problem,) = check_recipe(read_recipe({"steps": steps}))
+
+    assert problem.step == "summary"
+    assert "'time'" in problem.message
+
+
+def test_the_other_aggregations_over_an_input_without_time_are_not_refused() -> None:
+    steps: list[JsonValue] = [
+        {
+            "id": "individuals",
+            "type": "feature",
+            "feature": "individual-aggregate",
+            "inputs": [TRACKS_INPUT],
+            "params": {"columns": ["id"], "aggs": ["mean"]},
+        },
+        {
+            "id": "summary",
+            "type": "feature",
+            "feature": "sequence-aggregate",
+            "inputs": [{"step": "individuals"}],
+            "params": {"columns": ["id_mean"], "aggs": ["mean", "sum"]},
+        },
+    ]
+
+    assert check_recipe(read_recipe({"steps": steps})) == ()
 
 
 # --- a time filter reads the time column -----------------------------------------

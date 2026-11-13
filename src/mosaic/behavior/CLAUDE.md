@@ -23,10 +23,11 @@ own environments.
   that builds each perspective. `symmetric` names the columns with one value on both
   rows of a pair in a frame, and `mirrored` says the feature writes both rows of every
   pair on every frame where it writes one (`symmetric` implies it). A plan reads them
-  to count each pair once in a `sum` or `count` (`pairs` in `aggregate_common.py`), so
-  a change to either bumps the declaring feature's `version`: a downstream aggregate
-  then reads other rows. `test_each_pair_feature_declares_its_symmetric_columns` pins
-  each declaration, and `test_pair_symmetry.py` checks it on rows.
+  to count each pair once in a `sum`, `count` or `duration` (`pairs` in
+  `aggregate_common.py`), so a change to either bumps the declaring feature's `version`:
+  a downstream aggregate then reads other rows.
+  `test_each_pair_feature_declares_its_symmetric_columns` pins each declaration, and
+  `test_pair_symmetry.py` checks it on rows.
 - **Keypoints are optional in `mosaic_v1`.** A feature defined on them names them in
   `requires` or checks for them in `apply`, and refuses a table without them in an
   error naming the feature. A feature that only prefers them, such as `egocentric-crop`
