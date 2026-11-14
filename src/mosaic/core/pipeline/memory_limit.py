@@ -44,6 +44,10 @@ class MemoryLimit:
         host_total_bytes: The host's physical memory.
         host_available_bytes: The memory the host can give a process without
             swapping.
+        nonreclaimable_bytes: The memory under the limit that the kernel cannot
+            reclaim: anonymous and shared memory plus kernel memory, from the
+            limiting cgroup's ``memory.stat``. 0 for ``host`` and where the file
+            cannot be read.
     """
 
     limit_bytes: int
@@ -52,6 +56,7 @@ class MemoryLimit:
     peak_bytes: int
     host_total_bytes: int
     host_available_bytes: int
+    nonreclaimable_bytes: int = 0
 
     @property
     def available_bytes(self) -> int:
@@ -68,6 +73,7 @@ class _Level:
     limit_bytes: int
     in_use_bytes: int
     peak_bytes: int
+    nonreclaimable_bytes: int = 0
 
 
 def _read_int(path: Path) -> int | None:
@@ -78,20 +84,20 @@ def _read_int(path: Path) -> int | None:
         return None
 
 
-def _read_stat_value(path: Path, key: str) -> int:
-    """Return the value of *key* in a ``memory.stat`` file, 0 when it cannot be read."""
+def _read_stat(path: Path) -> dict[str, int]:
+    """Return the integer entries of a ``memory.stat`` file, empty when unreadable."""
     try:
         text = path.read_text()
     except OSError:
-        return 0
+        return {}
+    stat: dict[str, int] = {}
     for line in text.splitlines():
         name, _, value = line.partition(" ")
-        if name == key:
-            try:
-                return int(value.strip())
-            except ValueError:
-                return 0
-    return 0
+        try:
+            stat[name] = int(value.strip())
+        except ValueError:
+            continue
+    return stat
 
 
 def _cgroup_paths(proc_self_cgroup: Path) -> tuple[str | None, str | None]:
@@ -145,9 +151,18 @@ def _level_v2(directory: Path) -> _Level | None:
     current = _read_int(directory / "memory.current")
     if current is None:
         return None
-    inactive = _read_stat_value(directory / "memory.stat", "inactive_file")
+    stat = _read_stat(directory / "memory.stat")
+    inactive = stat.get("inactive_file", 0)
+    if "kernel" in stat:
+        kernel = stat["kernel"]
+    else:
+        kernel = sum(
+            stat.get(key, 0)
+            for key in ("slab_unreclaimable", "pagetables", "kernel_stack", "sock")
+        )
+    nonreclaimable = stat.get("anon", 0) + stat.get("shmem", 0) + kernel
     peak = _read_int(directory / "memory.peak") or 0
-    return _Level(limit, max(0, current - inactive), peak)
+    return _Level(limit, max(0, current - inactive), peak, nonreclaimable)
 
 
 def _level_v1(directory: Path) -> _Level | None:
@@ -155,9 +170,11 @@ def _level_v1(directory: Path) -> _Level | None:
     usage = _read_int(directory / "memory.usage_in_bytes")
     if limit is None or usage is None:
         return None
-    inactive = _read_stat_value(directory / "memory.stat", "total_inactive_file")
+    stat = _read_stat(directory / "memory.stat")
+    inactive = stat.get("total_inactive_file", 0)
+    nonreclaimable = stat.get("total_rss", 0) + stat.get("total_shmem", 0)
     peak = _read_int(directory / "memory.max_usage_in_bytes") or 0
-    return _Level(limit, max(0, usage - inactive), peak)
+    return _Level(limit, max(0, usage - inactive), peak, nonreclaimable)
 
 
 def _tightest(levels: list[_Level]) -> _Level | None:
@@ -228,6 +245,7 @@ def read_memory_limit(
                 peak_bytes=level.peak_bytes,
                 host_total_bytes=host_total,
                 host_available_bytes=host_available,
+                nonreclaimable_bytes=level.nonreclaimable_bytes,
             )
         break
     return MemoryLimit(

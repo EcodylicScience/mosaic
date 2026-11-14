@@ -13,6 +13,13 @@ Resident memory counts a page once for every process that maps it. Thread mode l
 one process and is exact. Process mode overstates a little where workers share
 libraries.
 
+The non-reclaimable figure is the memory the kernel cannot reclaim, which is what a
+limit kills a job for. Under a cgroup limit it is the cgroup's own figure, read once for
+the whole tree (:attr:`MemoryLimit.nonreclaimable_bytes`). Where no limit applies it is
+the sum over the tree of ``RssAnon + RssShmem`` from ``/proc/<pid>/status``, and where
+there is no ``/proc`` it is not measured. A worker process cannot read its share of the
+cgroup, so :func:`peak_nonreclaimable_while` samples the worker's own status file.
+
 The watch also measures a run's cost from the moment :meth:`MemoryWatch.begin` is
 called: the CPU time of the process tree and the wall time since then. A sampling
 thread (:meth:`MemoryWatch.start_sampling`) measures between the run's own events, so
@@ -33,8 +40,10 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from .memory_limit import MemoryLimit, read_memory_limit
@@ -43,9 +52,13 @@ __all__ = [
     "ESTIMATE_SAMPLE_INTERVAL_SECONDS",
     "SAMPLE_INTERVAL_SECONDS",
     "SAMPLER_THREAD_NAME",
+    "WORKER_SAMPLER_THREAD_NAME",
     "MemorySample",
     "MemoryWatch",
+    "NonreclaimablePeak",
     "max_rss_bytes",
+    "peak_nonreclaimable_while",
+    "process_nonreclaimable_bytes",
     "process_rss_bytes",
 ]
 
@@ -57,6 +70,11 @@ ESTIMATE_SAMPLE_INTERVAL_SECONDS: Final = 0.5
 
 SAMPLER_THREAD_NAME: Final = "mosaic-memory-sampler"
 """The name of the thread :meth:`MemoryWatch.start_sampling` starts."""
+
+WORKER_SAMPLER_THREAD_NAME: Final = "mosaic-worker-memory-sampler"
+"""The name of the thread :func:`peak_nonreclaimable_while` starts."""
+
+_DEFAULT_PROC_ROOT: Final = Path("/proc")
 
 _SPAWNED_WORKER_MARK: Final = "spawn_main"
 """What the command line of a worker that ``multiprocessing`` spawned contains."""
@@ -76,6 +94,11 @@ class MemorySample:
             spawned as workers since :meth:`MemoryWatch.begin`, which are a
             process-mode run's live workers. A resource tracker is not one, nor is
             a process a worker forked, which keeps the worker's command line.
+        nonreclaimable_bytes: The memory the kernel cannot reclaim: the limit's
+            figure where a cgroup limit applies, else the sum over the process tree
+            of ``RssAnon + RssShmem``. ``None`` where ``/proc`` cannot be read,
+            where a process that is still alive had no readable figure, or where a
+            cgroup's figure is 0, which a cgroup that holds a process never has.
     """
 
     tree_rss_bytes: int
@@ -83,6 +106,7 @@ class MemorySample:
     total_bytes: int
     limit: MemoryLimit
     spawned_workers: int = 0
+    nonreclaimable_bytes: int | None = None
 
 
 def max_rss_bytes() -> int:
@@ -105,6 +129,110 @@ def process_rss_bytes() -> int:
         return int(psutil.Process().memory_info().rss)
     except psutil.Error:
         return 0
+
+
+def process_nonreclaimable_bytes(
+    pid: int | None = None, *, proc_root: Path = _DEFAULT_PROC_ROOT
+) -> int | None:
+    """Return the anonymous and shared resident memory of a process, in bytes.
+
+    Args:
+        pid: The process to read, this process when ``None``.
+        proc_root: Where ``/proc`` is mounted.
+
+    Returns:
+        ``RssAnon + RssShmem`` from the process's ``status`` file, or ``None``
+        where the file is missing, unreadable or lacks either line, as it does
+        without ``/proc`` and for a process that has gone.
+    """
+    name = "self" if pid is None else str(pid)
+    try:
+        text = (proc_root / name / "status").read_text()
+    except (OSError, ValueError):
+        return None
+    kilobytes: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key not in ("RssAnon", "RssShmem"):
+            continue
+        fields = value.split()
+        if len(fields) != 2 or fields[1] != "kB":
+            return None
+        try:
+            kilobytes[key] = int(fields[0])
+        except ValueError:
+            return None
+    if len(kilobytes) != 2:
+        return None
+    return sum(kilobytes.values()) * 1024
+
+
+@dataclass(slots=True)
+class NonreclaimablePeak:
+    """The largest figure that :func:`peak_nonreclaimable_while` has read.
+
+    Attributes:
+        peak: The largest read in bytes, ``None`` while no read has succeeded.
+    """
+
+    peak: int | None = None
+
+    def record(self, figure: int | None) -> None:
+        """Keep *figure* when it is larger than the peak so far."""
+        if figure is not None and (self.peak is None or figure > self.peak):
+            self.peak = figure
+
+
+@contextmanager
+def peak_nonreclaimable_while(
+    *,
+    interval: float = ESTIMATE_SAMPLE_INTERVAL_SECONDS,
+    proc_root: Path = _DEFAULT_PROC_ROOT,
+) -> Generator[NonreclaimablePeak]:
+    """Track this process's peak non-reclaimable memory while the block runs.
+
+    The peak is the largest of a read on entry, a read every *interval* seconds on
+    a daemon thread named :data:`WORKER_SAMPLER_THREAD_NAME`, and a read on exit.
+    The thread stops and is joined on exit, whether the block raised or not.
+
+    Args:
+        interval: The seconds between two reads of the sampling thread.
+        proc_root: Where ``/proc`` is mounted.
+
+    Yields:
+        A holder whose ``peak`` is ``None`` when no read succeeded.
+    """
+    holder = NonreclaimablePeak()
+    holder.record(process_nonreclaimable_bytes(proc_root=proc_root))
+    stop = threading.Event()
+
+    def keep_reading() -> None:
+        while not stop.wait(interval):
+            holder.record(process_nonreclaimable_bytes(proc_root=proc_root))
+
+    sampler = threading.Thread(
+        target=keep_reading, name=WORKER_SAMPLER_THREAD_NAME, daemon=True
+    )
+    sampler.start()
+    try:
+        yield holder
+    finally:
+        stop.set()
+        sampler.join()
+        holder.record(process_nonreclaimable_bytes(proc_root=proc_root))
+
+
+def _process_has_gone(pid: int, proc_root: Path) -> bool:
+    """Whether *pid* has no ``status`` file or is a zombie or dead."""
+    try:
+        text = (proc_root / str(pid) / "status").read_text()
+    except (OSError, ValueError):
+        return True
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key == "State":
+            return value.strip()[:1] in ("Z", "X")
+    return False
 
 
 def _child_pids() -> frozenset[int]:
@@ -159,10 +287,20 @@ class MemoryWatch:
             limit, 0 before the first measurement.
         limit_peak_bytes: The largest high-water mark the limit's accounting
             reported, 0 when it reports none.
+        nonreclaimable_bytes: The latest sample's non-reclaimable figure, 0 when
+            that sample could not measure it.
+        peak_nonreclaimable_bytes: The largest non-reclaimable figure measured, 0
+            when none was.
     """
 
-    def __init__(self, *, interval_seconds: float = SAMPLE_INTERVAL_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        interval_seconds: float = SAMPLE_INTERVAL_SECONDS,
+        proc_root: Path = _DEFAULT_PROC_ROOT,
+    ) -> None:
         self._interval: float = interval_seconds
+        self._proc_root: Path = proc_root
         self._last: float | None = None
         self._lock: threading.Lock = threading.Lock()
         self._began: float | None = None
@@ -177,6 +315,8 @@ class MemoryWatch:
         self.limit: MemoryLimit | None = None
         self.min_available_in_limit_bytes: int = 0
         self.limit_peak_bytes: int = 0
+        self.nonreclaimable_bytes: int = 0
+        self.peak_nonreclaimable_bytes: int = 0
 
     def begin(self) -> None:
         """Start measuring cost: CPU, wall time and the high-water mark count from now.
@@ -264,8 +404,16 @@ class MemoryWatch:
             total_bytes=int(host.total),
             limit=limit,
             spawned_workers=workers,
+            nonreclaimable_bytes=self._tree_nonreclaimable_bytes(
+                limit, [member.pid for member in members]
+            ),
         )
+        measured = sample.nonreclaimable_bytes or 0
         with self._lock:
+            self.nonreclaimable_bytes = measured
+            self.peak_nonreclaimable_bytes = max(
+                self.peak_nonreclaimable_bytes, measured
+            )
             self.peak_rss_bytes = max(self.peak_rss_bytes, sample.tree_rss_bytes)
             if self.min_available_bytes == 0:
                 self.min_available_bytes = sample.available_bytes
@@ -283,6 +431,30 @@ class MemoryWatch:
             self.limit_peak_bytes = max(self.limit_peak_bytes, limit.peak_bytes)
             self.limit = limit
         return sample
+
+    def _tree_nonreclaimable_bytes(
+        self, limit: MemoryLimit, pids: list[int]
+    ) -> int | None:
+        """Return the non-reclaimable memory of the process tree, ``None`` if not read.
+
+        A cgroup limit's figure already holds every process in the cgroup and is not
+        summed per process, and a figure of 0 means its ``memory.stat`` was not read.
+        Without a cgroup the status files of *pids* are summed. A process that has
+        gone since *pids* was listed, or is a zombie, adds nothing, and a live one
+        with no readable figure leaves the whole figure out.
+        """
+        if limit.source != "host":
+            return limit.nonreclaimable_bytes or None
+        if not pids or not self._proc_root.is_dir():
+            return None
+        total = 0
+        for pid in pids:
+            figure = process_nonreclaimable_bytes(pid, proc_root=self._proc_root)
+            if figure is not None:
+                total += figure
+            elif not _process_has_gone(pid, self._proc_root):
+                return None
+        return total
 
     def sample_if_due(self) -> bool:
         """Measure when the interval has passed since the last measurement this took.

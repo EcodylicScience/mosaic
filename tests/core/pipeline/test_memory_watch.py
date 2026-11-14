@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import types
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from mosaic.core.pipeline import memory_watch
 from mosaic.core.pipeline.memory_limit import MemoryLimit, usable_memory_bytes
-from mosaic.core.pipeline.memory_watch import MemoryWatch
+from mosaic.core.pipeline.memory_watch import (
+    MemoryWatch,
+    peak_nonreclaimable_while,
+    process_nonreclaimable_bytes,
+)
 
 GIB = 1024**3
 
@@ -192,7 +199,9 @@ def test_a_sample_inside_the_interval_is_not_taken(
     assert watch.sample_if_due() is False
 
 
-def _cgroup(*, limit: int, in_use: int, peak: int = 0) -> MemoryLimit:
+def _cgroup(
+    *, limit: int, in_use: int, peak: int = 0, nonreclaimable: int = 0
+) -> MemoryLimit:
     return MemoryLimit(
         limit_bytes=limit,
         source="cgroup_v2",
@@ -200,6 +209,7 @@ def _cgroup(*, limit: int, in_use: int, peak: int = 0) -> MemoryLimit:
         peak_bytes=peak,
         host_total_bytes=64 * GIB,
         host_available_bytes=32 * GIB,
+        nonreclaimable_bytes=nonreclaimable,
     )
 
 
@@ -266,3 +276,268 @@ def test_a_host_without_psutil_reports_nothing(monkeypatch: pytest.MonkeyPatch) 
     assert watch.sample_if_due() is False
     assert watch.free_fraction() is None
     assert usable_memory_bytes() == (0, 0)
+
+
+def _status(proc_root: Path, pid: int | str, anon_kb: int, shmem_kb: int) -> None:
+    """Write a ``/proc/<pid>/status`` with the resident split lines among others."""
+    path = proc_root / str(pid) / "status"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "Name:\tpython\n"
+        f"VmRSS:\t{(anon_kb + shmem_kb + 999)} kB\n"
+        "RssAnon:\t" + f"{anon_kb:>8} kB\n"
+        "RssFile:\t     999 kB\n"
+        "RssShmem:\t" + f"{shmem_kb:>7} kB\n"
+        "Threads:\t4\n"
+    )
+
+
+def test_a_process_reads_its_anonymous_and_shared_resident_memory(
+    tmp_path: Path,
+) -> None:
+    _status(tmp_path, 4242, anon_kb=100, shmem_kb=20)
+
+    assert process_nonreclaimable_bytes(4242, proc_root=tmp_path) == 120 * 1024
+
+
+def test_a_process_without_a_pid_reads_its_own_status(tmp_path: Path) -> None:
+    _status(tmp_path, "self", anon_kb=7, shmem_kb=1)
+
+    assert process_nonreclaimable_bytes(proc_root=tmp_path) == 8 * 1024
+
+
+def test_a_missing_proc_or_a_gone_process_reads_none(tmp_path: Path) -> None:
+    assert process_nonreclaimable_bytes(proc_root=tmp_path / "absent") is None
+    assert process_nonreclaimable_bytes(31337, proc_root=tmp_path) is None
+
+
+def test_a_status_without_the_resident_split_reads_none(tmp_path: Path) -> None:
+    path = tmp_path / "5" / "status"
+    path.parent.mkdir()
+    path.write_text("Name:\tkthreadd\nVmRSS:\t 4 kB\n")
+
+    assert process_nonreclaimable_bytes(5, proc_root=tmp_path) is None
+
+
+def _host_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Process:
+    """A host with a parent and two workers, and no cgroup limit."""
+    workers = [_Process(2 * GIB), _Process(3 * GIB)]
+    root = _Process(GIB, workers)
+    _install_psutil(monkeypatch, root)
+    _no_cgroup(monkeypatch, tmp_path)
+    return root
+
+
+def test_a_host_sample_sums_the_status_of_every_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _host_tree(monkeypatch, tmp_path)
+    proc_root = tmp_path / "procfs"
+    for member, anon in zip([root, *root.child_processes], [10, 20, 30], strict=True):
+        _status(proc_root, member.pid, anon_kb=anon, shmem_kb=1)
+
+    sample = MemoryWatch(proc_root=proc_root).sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes == (10 + 20 + 30 + 3) * 1024
+
+
+def test_a_process_that_has_gone_adds_nothing_to_the_sum(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _host_tree(monkeypatch, tmp_path)
+    proc_root = tmp_path / "procfs"
+    _status(proc_root, root.pid, anon_kb=10, shmem_kb=0)
+    _status(proc_root, root.child_processes[0].pid, anon_kb=20, shmem_kb=0)
+
+    sample = MemoryWatch(proc_root=proc_root).sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes == 30 * 1024
+
+
+def test_a_live_process_with_an_unreadable_status_leaves_the_figure_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _host_tree(monkeypatch, tmp_path)
+    proc_root = tmp_path / "procfs"
+    _status(proc_root, root.pid, anon_kb=10, shmem_kb=0)
+    _status(proc_root, root.child_processes[0].pid, anon_kb=20, shmem_kb=0)
+    bad = proc_root / str(root.child_processes[1].pid) / "status"
+    bad.parent.mkdir()
+    bad.write_text("Name:\tpython\n")
+
+    sample = MemoryWatch(proc_root=proc_root).sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes is None
+
+
+def test_a_zombie_or_dead_process_adds_nothing_to_the_sum(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _host_tree(monkeypatch, tmp_path)
+    proc_root = tmp_path / "procfs"
+    _status(proc_root, root.pid, anon_kb=10, shmem_kb=0)
+    for member, state in zip(root.child_processes, ["Z (zombie)", "X (dead)"]):
+        path = proc_root / str(member.pid) / "status"
+        path.parent.mkdir(parents=True)
+        path.write_text(f"Name:\tpython\nState:\t{state}\nPid:\t{member.pid}\n")
+
+    sample = MemoryWatch(proc_root=proc_root).sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes == 10 * 1024
+
+
+def test_a_sample_without_proc_has_no_figure_on_a_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _host_tree(monkeypatch, tmp_path)
+    watch = MemoryWatch(proc_root=tmp_path / "absent")
+
+    sample = watch.sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes is None
+    assert watch.nonreclaimable_bytes == 0
+    assert watch.peak_nonreclaimable_bytes == 0
+
+
+def test_a_cgroup_sample_carries_the_limits_figure_once_for_the_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = _Process(GIB, [_Process(2 * GIB), _Process(3 * GIB)])
+    _install_psutil(monkeypatch, root)
+    monkeypatch.setattr(
+        memory_watch,
+        "read_memory_limit",
+        lambda: _cgroup(limit=8 * GIB, in_use=GIB, nonreclaimable=5 * GIB),
+    )
+    proc_root = tmp_path / "procfs"
+    for member in [root, *root.child_processes]:
+        _status(proc_root, member.pid, anon_kb=1000, shmem_kb=0)
+
+    sample = MemoryWatch(proc_root=proc_root).sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes == 5 * GIB
+
+
+def test_a_cgroup_figure_of_zero_is_not_a_measurement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_psutil(monkeypatch, _Process(GIB))
+    monkeypatch.setattr(
+        memory_watch,
+        "read_memory_limit",
+        lambda: _cgroup(limit=8 * GIB, in_use=GIB, nonreclaimable=0),
+    )
+    watch = MemoryWatch(proc_root=tmp_path / "absent")
+
+    sample = watch.sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes is None
+    assert watch.nonreclaimable_bytes == 0
+
+
+def test_a_cgroup_sample_needs_no_proc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_psutil(monkeypatch, _Process(GIB))
+    monkeypatch.setattr(
+        memory_watch,
+        "read_memory_limit",
+        lambda: _cgroup(limit=8 * GIB, in_use=GIB, nonreclaimable=GIB),
+    )
+
+    sample = MemoryWatch(proc_root=tmp_path / "absent").sample()
+
+    assert sample is not None
+    assert sample.nonreclaimable_bytes == GIB
+
+
+def test_the_watch_keeps_the_latest_non_reclaimable_figure_and_the_peak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_psutil(monkeypatch, _Process(GIB))
+    figures = iter([2 * GIB, 6 * GIB, 4 * GIB])
+    monkeypatch.setattr(
+        memory_watch,
+        "read_memory_limit",
+        lambda: _cgroup(limit=8 * GIB, in_use=GIB, nonreclaimable=next(figures)),
+    )
+    watch = MemoryWatch()
+
+    for _ in range(3):
+        _ = watch.sample()
+
+    assert watch.nonreclaimable_bytes == 4 * GIB
+    assert watch.peak_nonreclaimable_bytes == 6 * GIB
+
+
+def _wait_for(condition: Callable[[], bool], *, seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "the condition never held"
+        time.sleep(0.005)
+
+
+def test_the_peak_while_a_block_runs_is_the_largest_read(tmp_path: Path) -> None:
+    _status(tmp_path, "self", anon_kb=100, shmem_kb=0)
+    with peak_nonreclaimable_while(interval=0.01, proc_root=tmp_path) as holder:
+        _status(tmp_path, "self", anon_kb=900, shmem_kb=0)
+        _wait_for(lambda: holder.peak == 900 * 1024)
+        _status(tmp_path, "self", anon_kb=300, shmem_kb=0)
+        time.sleep(0.05)
+        assert holder.peak == 900 * 1024
+    assert holder.peak == 900 * 1024
+
+
+def test_a_read_on_exit_can_set_the_peak(tmp_path: Path) -> None:
+    _status(tmp_path, "self", anon_kb=100, shmem_kb=0)
+    with peak_nonreclaimable_while(interval=3600, proc_root=tmp_path) as holder:
+        assert holder.peak == 100 * 1024
+        _status(tmp_path, "self", anon_kb=500, shmem_kb=0)
+
+    assert holder.peak == 500 * 1024
+
+
+def test_the_peak_is_none_when_no_read_succeeded(tmp_path: Path) -> None:
+    with peak_nonreclaimable_while(
+        interval=0.01, proc_root=tmp_path / "absent"
+    ) as holder:
+        pass
+
+    assert holder.peak is None
+
+
+def _sampler_threads() -> list[threading.Thread]:
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.name == "mosaic-worker-memory-sampler"
+    ]
+
+
+def test_the_sampler_thread_runs_inside_the_block_and_is_gone_after_it(
+    tmp_path: Path,
+) -> None:
+    _status(tmp_path, "self", anon_kb=1, shmem_kb=0)
+    with peak_nonreclaimable_while(interval=0.01, proc_root=tmp_path):
+        threads = _sampler_threads()
+        assert len(threads) == 1
+        assert threads[0].daemon
+
+    assert _sampler_threads() == []
+
+
+def test_the_sampler_thread_is_gone_after_the_block_raises(tmp_path: Path) -> None:
+    _status(tmp_path, "self", anon_kb=1, shmem_kb=0)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with peak_nonreclaimable_while(interval=0.01, proc_root=tmp_path):
+            raise RuntimeError("boom")
+
+    assert _sampler_threads() == []

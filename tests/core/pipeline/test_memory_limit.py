@@ -261,3 +261,64 @@ def test_the_usable_memory_is_the_limit_and_what_is_left_under_it(
     )
 
     assert usable_memory_bytes() == (8 * GIB, 5 * GIB)
+
+
+def _v2_stat(tmp_path: Path, stat: str) -> MemoryLimit:
+    _proc(tmp_path, "0::/\n")
+    directory = tmp_path / "cgroup"
+    _v2_level(directory, max_text=str(8 * GIB), current=3 * GIB)
+    _write(directory / "memory.stat", stat)
+    return _read(tmp_path)
+
+
+def test_version_2_counts_anon_shmem_and_the_kernel_key(tmp_path: Path) -> None:
+    limit = _v2_stat(
+        tmp_path,
+        "anon 100\nshmem 20\nkernel 7\nslab_unreclaimable 1000\n"
+        "pagetables 1000\nfile 5000\n",
+    )
+
+    assert limit.nonreclaimable_bytes == 127
+
+
+def test_version_2_without_the_kernel_key_sums_its_parts(tmp_path: Path) -> None:
+    limit = _v2_stat(
+        tmp_path,
+        "anon 100\nshmem 20\nslab_unreclaimable 3\npagetables 4\n"
+        "kernel_stack 5\nsock 6\nfile 5000\nslab_reclaimable 900\n",
+    )
+
+    assert limit.nonreclaimable_bytes == 138
+
+
+def test_version_1_counts_total_rss_and_total_shmem(tmp_path: Path) -> None:
+    _proc(tmp_path, "4:memory:/\n")
+    memory = tmp_path / "cgroup" / "memory"
+    _write(memory / "memory.limit_in_bytes", f"{8 * GIB}\n")
+    _write(memory / "memory.usage_in_bytes", f"{5 * GIB}\n")
+    _write(
+        memory / "memory.stat",
+        "cache 9000\nrss 1\ntotal_rss 300\ntotal_shmem 40\ntotal_cache 9000\n",
+    )
+
+    limit = _read(tmp_path)
+
+    assert limit.source == "cgroup_v1"
+    assert limit.nonreclaimable_bytes == 340
+
+
+def test_a_host_reads_zero_non_reclaimable_bytes(tmp_path: Path) -> None:
+    limit = _read(tmp_path)
+
+    assert limit.source == "host"
+    assert limit.nonreclaimable_bytes == 0
+
+
+def test_an_unreadable_stat_reads_zero_non_reclaimable_bytes(tmp_path: Path) -> None:
+    _proc(tmp_path, "0::/\n")
+    _v2_level(tmp_path / "cgroup", max_text=str(8 * GIB), current=3 * GIB)
+
+    limit = _read(tmp_path)
+
+    assert limit.source == "cgroup_v2"
+    assert limit.nonreclaimable_bytes == 0
