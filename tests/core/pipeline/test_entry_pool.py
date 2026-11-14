@@ -23,6 +23,7 @@ from mosaic.core.pipeline.entry_pool import (
     OrderedResults,
     worker_dataset,
 )
+from mosaic.core.pipeline.memory_limit import MemoryLimit
 from mosaic.core.pipeline.memory_watch import MemoryWatch
 from mosaic.core.pipeline.parallelism import (
     MemoryFloorReached,
@@ -321,6 +322,62 @@ def test_the_resources_name_the_workers_and_the_mode_only_when_there_are_several
         several.resources[-1].workers,
         several.resources[-1].parallel_mode,
     ) == (2, "thread")
+
+
+def _limit_holding(figure: list[int]) -> Callable[[], MemoryLimit]:
+    def read() -> MemoryLimit:
+        return MemoryLimit(
+            limit_bytes=64 * 1024**3,
+            source="cgroup_v2",
+            in_use_bytes=1024**3,
+            peak_bytes=0,
+            host_total_bytes=128 * 1024**3,
+            host_available_bytes=64 * 1024**3,
+            nonreclaimable_bytes=figure[0],
+        )
+
+    return read
+
+
+def test_an_ops_report_carries_the_watchs_latest_and_peak_non_reclaimable_figure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    figure = [900]
+    monkeypatch.setattr(memory_watch, "read_memory_limit", _limit_holding(figure))
+    heard = _Heard()
+    pool = _pool(heard)
+
+    pool.submit(1, double, 1)
+    pool.finish()
+    assert pool.watch.sample() is not None
+    figure[0] = 500
+    pool.close()
+
+    report = heard.resources[-1]
+    assert report.nonreclaimable_bytes == 500
+    assert report.peak_nonreclaimable_bytes == 900
+    assert (
+        report.base_nonreclaimable_bytes,
+        report.worker_base_nonreclaimable_bytes,
+        report.peak_grown_bytes,
+        report.peak_in_flight_entries,
+        report.peak_in_flight_rows,
+    ) == (0, 0, 0, 0, 0)
+
+
+def test_an_ops_report_of_a_sample_without_the_figure_reads_it_as_not_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(memory_watch, "read_memory_limit", _limit_holding([0]))
+    heard = _Heard()
+    pool = _pool(heard)
+
+    pool.submit(1, double, 1)
+    pool.finish()
+    pool.close()
+
+    report = heard.resources[-1]
+    assert (report.nonreclaimable_bytes, report.peak_nonreclaimable_bytes) == (0, 0)
 
 
 def test_a_settled_pool_hands_back_the_calls_in_flight_and_drops_what_a_callback_raises() -> (

@@ -44,10 +44,10 @@ class MemoryLimit:
         host_total_bytes: The host's physical memory.
         host_available_bytes: The memory the host can give a process without
             swapping.
-        nonreclaimable_bytes: The memory under the limit that the kernel cannot
-            reclaim: anonymous and shared memory plus kernel memory, from the
-            limiting cgroup's ``memory.stat``. 0 for ``host`` and where the file
-            cannot be read.
+        nonreclaimable_bytes: The memory under the limit that the kernel cannot reclaim:
+            anonymous and shared memory, plus kernel memory under cgroup v2, from the
+            limiting cgroup's ``memory.stat``. 0 for ``host`` and where the file cannot
+            be read.
     """
 
     limit_bytes: int

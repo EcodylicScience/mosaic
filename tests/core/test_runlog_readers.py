@@ -844,7 +844,14 @@ def _full_report() -> ResourceReport:
         fit_entries=3,
         fit_input_rows=900,
         worker_base_rss_bytes=60,
+        worker_base_nonreclaimable_bytes=55,
         apply_wall_seconds=2.75,
+        nonreclaimable_bytes=210,
+        peak_nonreclaimable_bytes=230,
+        base_nonreclaimable_bytes=35,
+        peak_grown_bytes=150,
+        peak_in_flight_entries=3,
+        peak_in_flight_rows=1200,
     )
 
 
@@ -882,6 +889,17 @@ def test_a_report_of_only_its_required_fields_reads_every_other_as_empty() -> No
     )
     assert (report.memory_limit_bytes, report.memory_limit_source) == (0, "")
     assert (report.admission_margin, report.admission_waits) == (0.0, 0)
+    assert (
+        report.nonreclaimable_bytes,
+        report.peak_nonreclaimable_bytes,
+        report.base_nonreclaimable_bytes,
+        report.worker_base_nonreclaimable_bytes,
+    ) == (0, 0, 0, 0)
+    assert (
+        report.peak_grown_bytes,
+        report.peak_in_flight_entries,
+        report.peak_in_flight_rows,
+    ) == (0, 0, 0)
 
 
 def test_an_entry_end_carries_its_measure_only_when_given(tmp_path: Path) -> None:
@@ -910,6 +928,33 @@ def test_an_entry_end_carries_its_measure_only_when_given(tmp_path: Path) -> Non
         "total": 2,
         "key": "a__2",
     }
+
+
+def test_an_entry_end_carries_the_growth_only_when_it_was_measured(
+    tmp_path: Path,
+) -> None:
+    grown = EntryMeasure(
+        wall_seconds=2.5,
+        apply_seconds=1.5,
+        input_rows=40,
+        in_flight=1,
+        cpu_seconds=3.0,
+        peak_grown_bytes=4096,
+    )
+    none_measured = dataclasses.replace(grown, in_flight=2, peak_grown_bytes=None)
+    nothing_grown = dataclasses.replace(grown, peak_grown_bytes=0)
+    with _log(tmp_path, "E1") as log:
+        log.started(kind="feature", target="t")
+        log.on_entry_end(1, 3, "a__1", measure=grown)
+        log.on_entry_end(2, 3, "a__2", measure=none_measured)
+        log.on_entry_end(3, 3, "a__3", measure=nothing_grown)
+
+    first, second, third = _events_of(tmp_path, "E1", "entry_end")
+
+    assert first["peak_grown_bytes"] == 4096
+    assert "peak_grown_bytes" not in second
+    assert second["in_flight"] == 2
+    assert third["peak_grown_bytes"] == 0
 
 
 def test_a_probe_event_names_its_request_step_entries_and_kind(tmp_path: Path) -> None:
@@ -943,7 +988,12 @@ def test_a_log_with_the_new_fields_reduces_to_the_snapshot_of_one_without(
     tmp_path: Path,
 ) -> None:
     measure = EntryMeasure(
-        wall_seconds=2.5, apply_seconds=1.5, input_rows=40, in_flight=2, cpu_seconds=3.0
+        wall_seconds=2.5,
+        apply_seconds=1.5,
+        input_rows=40,
+        in_flight=1,
+        cpu_seconds=3.0,
+        peak_grown_bytes=4096,
     )
     report = _full_report()
     with _log(tmp_path, "NEW") as log:

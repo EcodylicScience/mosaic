@@ -271,20 +271,29 @@ are in `graph/CLAUDE.md`.
 - The memory limit comes from `read_memory_limit` (`memory_limit.py`): a container's
   cgroup limit, else the host's memory. The floor, the gate and the run-log's limit
   figures read it, never `psutil.virtual_memory()` alone.
+- A run measures the memory the kernel cannot reclaim, which a limit kills a job for:
+  the cgroup's `anon + shmem`, plus `kernel` under cgroup v2, where `read_memory_limit`
+  returns a cgroup source, else the `/proc` tree sum of `RssAnon + RssShmem`
+  (`memory_watch.py`). It fixes its measure at the base sample, non-reclaimable where
+  that sample measured it and tree RSS where it did not (macOS). The estimate, the
+  worker bases, the peak sample and the budget all use that one measure. A sample or
+  worker that lacks the figure in a non-reclaimable run is left out and is never read as
+  0 (`tests/core/pipeline/test_run_measures.py`). `peak_rss_bytes` stays tree RSS.
 - The per-row estimate is `RowCostEstimate` (`admission.py`). `bytes_per_row` is `None`
-  until an observation exceeds the fixed part, and the gate reads `None` as no
-  estimate.
+  until an observation exceeds the fixed part, and the gate reads `None` as no estimate.
+  A process worker samples its own `RssAnon + RssShmem` while it applies
+  (`peak_nonreclaimable_while`).
 - Every exit of an entry lowers `EntriesInFlight`: an output written, a failure, a
   skip without a table, and missing pair rows. An exit that does not would stall the
   gate (`tests/core/pipeline/test_run_measures.py`).
 - With several workers the gate (`admission_margin` above 0) and then the floor run in
   `before_load`, before the table is read, through `EntryPool.drain_one` and
-  `wait_for_memory`, and `run_feature` builds its pool with `floor_at_submit=False` and its
-  own `MemoryWatch`. The slot wait stays after the load. Until
-  an entry with input rows is written the gate runs each entry alone. Its budget
-  (`admission_budget`) is the limit's available memory plus the run's tree, capped at
-  the limit, less the floor. `EntryOverMemoryLimit` compares the unmargined prediction
-  with the limit less the floor, never with what is available now
+  `wait_for_memory`, and `run_feature` builds its pool with `floor_at_submit=False` and
+  its own `MemoryWatch`. The slot wait stays after the load. Until an entry with input
+  rows is written the gate runs each entry alone. Its budget (`admission_budget`) is the
+  limit's available memory plus the run's tree in the run's measure, capped at the
+  limit, less the floor. `EntryOverMemoryLimit` compares the unmargined prediction with
+  the limit less the floor, never with what is available now
   (`tests/core/pipeline/test_parallel_run.py`).
 - Entries go largest first (`by_rows`) only with the gate, and only the apply order
   moves. The fit reads `manifest` in its own order.

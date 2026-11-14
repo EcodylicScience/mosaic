@@ -153,13 +153,16 @@ resumable state when it stays lower.
 `--admission-margin 1.5` starts an entry beside the ones in flight only when its
 predicted memory, times 1.5, fits what the run may still grow to under the limit. The
 run learns what an input row costs from its own entries, so the first entry runs alone,
-and entries start largest first. An entry that does not fit beside the others waits and
-then runs alone. One predicted over the limit even alone fails the step with
-`EntryOverMemoryLimit`. Run it again with a larger limit; the entries already written
-are kept. The margin is 0 (off) by default, or from 1 to 4, and like `--workers` it
-changes neither a run's identity nor its outputs. It applies to feature steps. The
-`convert-tracks` and `resample-tracks` steps compute their entries in parallel without it
-and keep the memory floor alone.
+and entries start largest first. It counts the memory the kernel cannot reclaim, which
+is what a limit kills a job for: anonymous and shared memory, and under a cgroup v2
+limit the kernel memory too. It does not count the page cache or GPU memory. Where
+`/proc` is missing, as on macOS, it counts the resident memory of the process tree
+instead. An entry that does not fit beside the others waits and then runs alone. One
+predicted over the limit even alone fails the step with `EntryOverMemoryLimit`. Run it
+again with a larger limit; the entries already written are kept. The margin is 0 (off)
+by default, or from 1 to 4, and like `--workers` it changes neither a run's identity nor
+its outputs. It applies to feature steps. The `convert-tracks` and `resample-tracks`
+steps compute their entries in parallel without it and keep the memory floor alone.
 
 The commands that take these options are `mosaic run --feature`,
 `mosaic run --graph-request`, `mosaic pipeline run` and `mosaic pipeline score`.
@@ -198,8 +201,20 @@ from mosaic.runlog import run_log_dir
 
 cost = read_run_cost(run_log_dir(dataset.base_dir), "<execution_id>")
 cost.memory_limit_bytes, cost.memory_limit_source   # "cgroup_v2", "cgroup_v1" or "host"
-cost.peak_rss_bytes, cost.seconds_per_row, cost.thread_scaling
+cost.peak_rss_bytes, cost.peak_nonreclaimable_bytes, cost.seconds_per_row
+cost.thread_scaling
 ```
+
+`peak_rss_bytes` is the largest resident memory of the process tree, and it counts a
+page that several workers map once for each. `peak_nonreclaimable_bytes` is the figure
+that the admission gate uses, `None` where it was not measured. It leaves out the page
+cache and GPU memory. It counts kernel memory only under a cgroup v2 limit. It is the
+largest of the samples taken every half second and at the run's events, in any mode, so
+it can miss a shorter spike, which the high-water mark that `peak_rss_bytes` includes in
+thread mode does not. `peak_bytes_per_row` is in whichever of the two the run used. In
+process mode its per-row figure also comes from each worker's samples of its anonymous
+and shared memory, which leave out the worker's kernel memory and also miss a spike
+shorter than half a second.
 
 An attempt that ran in a container reports the container's limit and where it was read
 from. A refused subset leaves a run-log with no `probe` event and no measurements, and

@@ -46,6 +46,9 @@ _BASE_REPORT = ResourceReport(
     fit_input_rows=1200,
     worker_base_rss_bytes=GIB // 2,
     apply_wall_seconds=10.0,
+    peak_nonreclaimable_bytes=2 * GIB,
+    base_nonreclaimable_bytes=GIB // 4,
+    worker_base_nonreclaimable_bytes=GIB // 8,
 )
 
 
@@ -84,7 +87,14 @@ def test_a_sequential_run_reads_its_costs_and_the_one_workers_cpu(
         log.started(kind="feature", target="speed")
         log.set_run_id("0.3-abcdef0123")
         log.set_total(2)
-        log.resources(_report(workers=1, parallel_mode="", worker_base_rss_bytes=0))
+        log.resources(
+            _report(
+                workers=1,
+                parallel_mode="",
+                worker_base_rss_bytes=0,
+                worker_base_nonreclaimable_bytes=0,
+            )
+        )
         log.on_entry_end(
             1, 2, "g__a", measure=_measure(rows=100, wall=2.0, in_flight=1, cpu=1.5)
         )
@@ -111,6 +121,9 @@ def test_a_sequential_run_reads_its_costs_and_the_one_workers_cpu(
     assert (cost.fit_seconds, cost.fit_peak_rss_bytes) == (2.5, 2 * GIB)
     assert (cost.fit_entries, cost.fit_input_rows) == (4, 1200)
     assert cost.worker_base_rss_bytes is None
+    assert cost.peak_nonreclaimable_bytes == 2 * GIB
+    assert cost.base_nonreclaimable_bytes == GIB // 4
+    assert cost.worker_base_nonreclaimable_bytes is None
     assert cost.peak_bytes_per_row == 1000
     assert (cost.entries_measured, cost.rows_measured) == (2, 400)
     assert cost.largest_entry_rows == 300
@@ -120,6 +133,44 @@ def test_a_sequential_run_reads_its_costs_and_the_one_workers_cpu(
     assert (cost.cpu_seconds, cost.wall_seconds) == (30.0, 20.0)
     assert cost.cpu_per_wall_second == pytest.approx(1.5)
     assert cost.thread_scaling is None
+
+
+def test_a_run_with_the_non_reclaimable_figures_reads_each_of_them(
+    tmp_path: Path,
+) -> None:
+    with _log(tmp_path, "NR") as log:
+        log.started(kind="feature", target="speed")
+        log.resources(_report())
+        log.finished()
+
+    cost = _read(tmp_path, "NR")
+
+    assert (
+        cost.peak_nonreclaimable_bytes,
+        cost.base_nonreclaimable_bytes,
+        cost.worker_base_nonreclaimable_bytes,
+    ) == (2 * GIB, GIB // 4, GIB // 8)
+
+
+def test_a_figure_the_run_did_not_measure_reads_none(tmp_path: Path) -> None:
+    with _log(tmp_path, "RSS") as log:
+        log.started(kind="feature", target="speed")
+        log.resources(
+            _report(
+                peak_nonreclaimable_bytes=0,
+                base_nonreclaimable_bytes=0,
+                worker_base_nonreclaimable_bytes=0,
+            )
+        )
+        log.finished()
+
+    cost = _read(tmp_path, "RSS")
+
+    assert (
+        cost.peak_nonreclaimable_bytes,
+        cost.base_nonreclaimable_bytes,
+        cost.worker_base_nonreclaimable_bytes,
+    ) == (None, None, None)
 
 
 def test_a_probe_run_reads_the_alone_and_the_paired_phase_apart(
@@ -215,6 +266,11 @@ def test_an_old_log_reads_every_measured_field_as_empty(tmp_path: Path) -> None:
     assert (cost.memory_limit_bytes, cost.memory_limit_source) == (0, "")
     assert (cost.limit_peak_bytes, cost.base_rss_bytes, cost.fit_entries) == (0, 0, 0)
     assert (cost.worker_base_rss_bytes, cost.peak_bytes_per_row) == (None, None)
+    assert (
+        cost.peak_nonreclaimable_bytes,
+        cost.base_nonreclaimable_bytes,
+        cost.worker_base_nonreclaimable_bytes,
+    ) == (None, None, None)
     assert (cost.seconds_per_row, cost.alone_cpu_per_wall_second) == (None, None)
     assert (cost.rows_per_second, cost.cpu_per_wall_second) == (None, None)
     assert (cost.entries_measured, cost.rows_measured) == (0, 0)

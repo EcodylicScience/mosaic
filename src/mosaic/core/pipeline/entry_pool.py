@@ -257,6 +257,8 @@ class EntryPool[Tag, Result]:
                 memory_limit_bytes=0 if limit is None else limit.limit_bytes,
                 memory_limit_source="" if limit is None else limit.source,
                 limit_peak_bytes=self.watch.limit_peak_bytes,
+                nonreclaimable_bytes=self.watch.nonreclaimable_bytes,
+                peak_nonreclaimable_bytes=self.watch.peak_nonreclaimable_bytes,
             )
         )
 

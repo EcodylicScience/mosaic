@@ -302,7 +302,9 @@ class ResourceReport:
         fit_seconds: The wall time of the fit.
         fit_peak_rss_bytes: The largest resident memory of the tree during the fit.
         peak_bytes_per_row: The run's estimate of an entry's peak memory per input
-            row, 0 before it has one.
+            row, 0 before it has one. It is in the run's measure: the
+            non-reclaimable figure when ``base_nonreclaimable_bytes`` is above 0,
+            else the tree's resident memory.
         admission_margin: The factor the admission gate multiplies a prediction by,
             0 when the gate is off.
         admission_waits: How many times the gate held an entry back.
@@ -313,8 +315,23 @@ class ResourceReport:
             describe the stream it was offered and not what it read.
         worker_base_rss_bytes: One process worker's own memory, 0 when not
             measured.
+        worker_base_nonreclaimable_bytes: One process worker's own anonymous and
+            shared memory, the largest seen, 0 when not measured.
         apply_wall_seconds: The wall time from the first entry's load start to the
             last output written.
+        nonreclaimable_bytes: The memory the kernel cannot reclaim at the latest
+            sample, 0 when not measured. The cgroup's figure where one limit
+            applies, else the sum over the process tree.
+        peak_nonreclaimable_bytes: The largest such figure any sample read, 0 when
+            not measured.
+        base_nonreclaimable_bytes: The figure before the first entry loads, 0 when
+            not measured. A run whose base sample measured it gates and estimates
+            in this measure.
+        peak_grown_bytes: What the sample with the largest such figure and an entry
+            in flight held over the run's base and its live workers' bases, 0 when
+            the run's measure is not this figure or a base needed was not measured.
+        peak_in_flight_entries: The entries in flight at that sample, 0 without one.
+        peak_in_flight_rows: Their input rows.
     """
 
     workers: int
@@ -339,7 +356,14 @@ class ResourceReport:
     fit_entries: int = 0
     fit_input_rows: int = 0
     worker_base_rss_bytes: int = 0
+    worker_base_nonreclaimable_bytes: int = 0
     apply_wall_seconds: float = 0.0
+    nonreclaimable_bytes: int = 0
+    peak_nonreclaimable_bytes: int = 0
+    base_nonreclaimable_bytes: int = 0
+    peak_grown_bytes: int = 0
+    peak_in_flight_entries: int = 0
+    peak_in_flight_rows: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,6 +379,11 @@ class EntryMeasure:
             own.
         cpu_seconds: The CPU time of the process tree between its load start and
             its output written.
+        peak_grown_bytes: The memory the kernel cannot reclaim that the entry added
+            over its base: in thread mode, when it ran alone, the largest figure
+            sampled while it was in flight less the run's base; in process mode, its
+            worker's peak less the worker's base. ``None`` when it was not measured,
+            and then left out of the event.
     """
 
     wall_seconds: float
@@ -362,6 +391,7 @@ class EntryMeasure:
     input_rows: int
     in_flight: int
     cpu_seconds: float
+    peak_grown_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1174,7 +1204,13 @@ class JsonlRunLog:
         """Record an entry that ended, with its cost when the writer measured it."""
         fields: dict[str, Any] = {"index": index, "total": total, "key": key}
         if measure is not None:
-            fields.update(dataclasses.asdict(measure))
+            fields.update(
+                {
+                    name: value
+                    for name, value in dataclasses.asdict(measure).items()
+                    if value is not None
+                }
+            )
         _ = self._write("entry_end", fields, progress=(index, total))
 
     def on_epoch_end(

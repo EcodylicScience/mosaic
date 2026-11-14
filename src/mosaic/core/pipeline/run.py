@@ -4,9 +4,10 @@ import importlib
 import json
 import multiprocessing as mp
 import sys
+import threading
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from collections.abc import (
     Callable,
     Generator,
@@ -43,9 +44,14 @@ from ._utils import (
 )
 from .admission import (
     EntriesInFlight,
+    PeakSample,
     RowCostEstimate,
+    WorkerBase,
+    WorkerBases,
     WorkerMeasure,
     admission_budget,
+    grown_over_bases,
+    larger_peak,
 )
 from .arena_guard import (
     ArenaBlindFeature,
@@ -128,7 +134,14 @@ from .types import (
 )
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .entry_pool import EntryPool
-from .memory_watch import MemorySample, MemoryWatch, max_rss_bytes, process_rss_bytes
+from .memory_watch import (
+    MemorySample,
+    MemoryWatch,
+    max_rss_bytes,
+    peak_nonreclaimable_while,
+    process_nonreclaimable_bytes,
+    process_rss_bytes,
+)
 from .pacing import PacedCollector, Pacer
 from .parallelism import (
     EntryOverMemoryLimit,
@@ -479,6 +492,9 @@ def process_apply_worker(
         The output of ``apply``, and the worker's own memory: its resident memory
         after ``load_state`` and before ``apply`` less the table it was handed, its
         high-water mark at that moment, and its high-water mark after ``apply``.
+        The same for its anonymous and shared memory, where ``/proc`` gives it:
+        the figure before ``apply`` less the table, and the largest figure read
+        from before ``apply`` to after it.
     """
     with _rebuilt_feature(
         module_name,
@@ -497,12 +513,17 @@ def process_apply_worker(
         # (``process_worker_base``).
         handed = int(df.memory_usage(deep=True).sum())
         base = max(0, process_rss_bytes() - handed)
+        resident = process_nonreclaimable_bytes()
+        base_nonreclaimable = None if resident is None else max(0, resident - handed)
         peak_before = max_rss_bytes()
-        output, notices = apply_noting_irregular_time(feature.apply, df)
+        with peak_nonreclaimable_while() as sampled:
+            output, notices = apply_noting_irregular_time(feature.apply, df)
         measure = WorkerMeasure(
             base_rss_bytes=base,
             peak_before_rss_bytes=peak_before,
             peak_rss_bytes=max_rss_bytes(),
+            base_nonreclaimable_bytes=base_nonreclaimable,
+            peak_nonreclaimable_bytes=sampled.peak,
         )
     return output, notices, measure
 
@@ -517,14 +538,15 @@ def process_worker_base(
     dependency_lookups: dict[str, DependencyLookup],
     ds_manifest_path: str | None = None,
     tracklets: Mapping[Entry, bool | None] | None = None,
-) -> int:
+) -> WorkerBase:
     """Rebuild a feature in a worker process as for apply, and return the worker's memory.
 
-    Nothing is applied. The figure is what one process worker holds before it is
+    Nothing is applied. The figures are what one process worker holds before it is
     handed a table: an interpreter, the feature's imports and its loaded state.
 
     Returns:
-        The worker's resident memory in bytes, 0 where it cannot be measured.
+        The worker's resident memory in bytes, 0 where it cannot be measured, and
+        its anonymous and shared memory, ``None`` where ``/proc`` does not give it.
     """
     with _rebuilt_feature(
         module_name,
@@ -537,7 +559,10 @@ def process_worker_base(
         ds_manifest_path,
         tracklets,
     ):
-        return process_rss_bytes()
+        return WorkerBase(
+            rss_bytes=process_rss_bytes(),
+            nonreclaimable_bytes=process_nonreclaimable_bytes(),
+        )
 
 
 # --- Filter factory ---
@@ -1442,6 +1467,10 @@ class _RunCost:
 
     The sampling thread reads it to write a report, and the run's thread and its
     apply threads update it, one assignment at a time.
+
+    The run fixes its measure at the base sample: the non-reclaimable figure where
+    that sample measured it (``nonreclaimable``), else tree RSS. Every figure the
+    estimate and the gate take afterwards is in that measure.
     """
 
     fitting: bool = False
@@ -1451,7 +1480,11 @@ class _RunCost:
     fit_input_rows: int = 0
     high_water_after_fit: int | None = None
     base_rss_bytes: int = 0
-    worker_base_rss_bytes: int = 0
+    base_nonreclaimable_bytes: int = 0
+    worker_bases: WorkerBases = field(default_factory=WorkerBases)
+    nonreclaimable: bool = False
+    peak_sample: PeakSample | None = None
+    _peak_lock: threading.Lock = field(default_factory=threading.Lock)
     apply_started: float | None = None
     apply_ended: float | None = None
     admission_waits: int = 0
@@ -1466,6 +1499,33 @@ class _RunCost:
         )
         self.high_water_after_fit = watch.high_water_mark()
         self.fitting = False
+
+    def figure_of(self, sample: MemorySample) -> int | None:
+        """Return *sample*'s memory in the run's measure.
+
+        ``None`` for a sample of a non-reclaimable run that could not measure the
+        figure. A caller leaves that sample out rather than read it as 0.
+        """
+        if self.nonreclaimable:
+            return sample.nonreclaimable_bytes
+        return sample.tree_rss_bytes
+
+    def consider_peak(
+        self, bytes_: int, *, entries: int, rows: int, live_workers: int
+    ) -> None:
+        """Replace the peak sample with this one when it is larger and has entries.
+
+        Samples arrive from the sampling thread and from apply threads, so the
+        compare and the assignment happen under one lock.
+        """
+        with self._peak_lock:
+            self.peak_sample = larger_peak(
+                self.peak_sample,
+                bytes_=bytes_,
+                entries=entries,
+                rows=rows,
+                live_workers=live_workers,
+            )
 
     def apply_wall_seconds(self) -> float:
         """From the first entry's load start to the last output written, 0 before both."""
@@ -1520,8 +1580,14 @@ def _report_worker_base(
             file=sys.stderr,
         )
         return
-    if measured > 0:
-        ctx.resources(replace(frozen, worker_base_rss_bytes=measured))
+    if measured.rss_bytes > 0:
+        ctx.resources(
+            replace(
+                frozen,
+                worker_base_rss_bytes=measured.rss_bytes,
+                worker_base_nonreclaimable_bytes=measured.nonreclaimable_bytes or 0,
+            )
+        )
 
 
 def run_feature(
@@ -1604,8 +1670,10 @@ def run_feature(
         start largest first. An entry starts beside others only when its
         prediction fits what the run may grow to: the memory available under the
         limit plus the run's own, less the floor. Otherwise it waits for the
-        entries in flight and starts alone. An entry whose prediction without the
-        margin exceeds the limit less the floor raises
+        entries in flight and starts alone. The prediction and the run's own
+        memory are the memory the kernel cannot reclaim where the run measures
+        it, else the process tree's resident memory. An entry whose prediction
+        without the margin exceeds the limit less the floor raises
         :class:`~mosaic.core.pipeline.parallelism.EntryOverMemoryLimit`, and the
         entries already written are kept. The margin changes neither the run id
         nor the outputs.
@@ -2024,6 +2092,7 @@ def _run_feature_impl(
             # One process: its high-water mark counts once it rises past the fit.
             peak = max(peak, watch.high_water_mark_since(cost.high_water_after_fit))
         per_row = estimate.bytes_per_row
+        peak_sample = cost.peak_sample
         return ResourceReport(
             workers=max_workers,
             parallel_mode=parallel_mode_str if max_workers > 1 else "",
@@ -2044,10 +2113,21 @@ def _run_feature_impl(
             peak_bytes_per_row=0 if per_row is None else per_row,
             fit_entries=cost.fit_entries,
             fit_input_rows=cost.fit_input_rows,
-            worker_base_rss_bytes=cost.worker_base_rss_bytes,
+            worker_base_rss_bytes=cost.worker_bases.rss_bytes,
+            worker_base_nonreclaimable_bytes=cost.worker_bases.nonreclaimable_bytes,
             apply_wall_seconds=cost.apply_wall_seconds(),
             admission_margin=margin,
             admission_waits=cost.admission_waits,
+            nonreclaimable_bytes=watch.nonreclaimable_bytes,
+            peak_nonreclaimable_bytes=watch.peak_nonreclaimable_bytes,
+            base_nonreclaimable_bytes=cost.base_nonreclaimable_bytes,
+            peak_grown_bytes=grown_over_bases(
+                peak_sample,
+                base_bytes=cost.base_nonreclaimable_bytes,
+                worker_base_bytes=cost.worker_bases.nonreclaimable_bytes,
+            ),
+            peak_in_flight_entries=0 if peak_sample is None else peak_sample.entries,
+            peak_in_flight_rows=0 if peak_sample is None else peak_sample.rows,
         )
 
     def _publish_resources() -> None:
@@ -2075,11 +2155,23 @@ def _run_feature_impl(
 
         In process mode the fixed part counts the worker processes alive in the
         sample, because the pool starts one only when no worker is idle.
+
+        The figure is the run's measure. A sample of a non-reclaimable run that
+        could not measure it is left out, so it is never read as 0 held.
+        Non-reclaimable samples also raise the largest sample of each entry in
+        flight and may replace the run's peak sample.
         """
         if sample is None:
             return
+        figure = cost.figure_of(sample)
+        if figure is None:
+            return
         workers = sample.spawned_workers if parallel_mode_str == "process" else 0
-        estimate.observe(sample.tree_rss_bytes, in_flight.rows(), workers)
+        entries, rows = in_flight.totals(sampled_from=sample.started_at)
+        estimate.observe(figure, rows, workers)
+        if cost.nonreclaimable:
+            in_flight.observe_memory(figure, sampled_from=sample.started_at)
+            cost.consider_peak(figure, entries=entries, rows=rows, live_workers=workers)
 
     def _on_sample(sample: MemorySample) -> None:
         _observe(sample)
@@ -2151,7 +2243,10 @@ def _run_feature_impl(
         base = watch.sample()
         if base is not None:
             cost.base_rss_bytes = base.tree_rss_bytes
-            estimate.parent_base(base.tree_rss_bytes)
+            base_figure = base.nonreclaimable_bytes
+            cost.nonreclaimable = base_figure is not None
+            cost.base_nonreclaimable_bytes = base_figure or 0
+            estimate.parent_base(cost.figure_of(base) or 0)
 
         # Apply phase — index rows are flushed periodically for interrupt recovery
         _pending_idx_rows: list[FeatureIndexRow] = []
@@ -2168,6 +2263,12 @@ def _run_feature_impl(
                 _total_written += len(rows)
                 _pending_idx_rows.clear()
 
+        # The growth each process worker measured of the entry it applied, held
+        # until the entry's row is recorded. A worker that could not read its figure
+        # holds None, so its entry is not given the parent's sample, which counts
+        # every worker.
+        worker_growth: dict[str, int | None] = {}
+
         def _record_row(row: FeatureIndexRow) -> None:
             _pending_idx_rows.append(row)
             # Single per-entry choke point (fires on cache-hit, inline, and
@@ -2183,12 +2284,18 @@ def _run_feature_impl(
                 cost.apply_ended = written
                 if span.rows > 0:
                     cost.entries_with_rows_written += 1
+                grown = (
+                    worker_growth.pop(key)
+                    if key in worker_growth
+                    else span.grown_bytes(base_bytes=cost.base_nonreclaimable_bytes)
+                )
                 measure = EntryMeasure(
                     wall_seconds=written - span.load_started,
                     apply_seconds=span.apply_seconds,
                     input_rows=span.rows,
                     in_flight=span.most_in_flight,
                     cpu_seconds=max(0.0, watch.cpu_seconds() - span.cpu_at_load),
+                    peak_grown_bytes=grown,
                 )
             ctx.entry_ended(done, ctx.total, key, measure)
             ctx.heartbeat(done)
@@ -2502,13 +2609,17 @@ def _run_feature_impl(
             # apply's end is stamped here too. The earlier stamp wins.
             in_flight.applied(key, time.monotonic())
             if worker is not None:
-                cost.worker_base_rss_bytes = max(
-                    cost.worker_base_rss_bytes, worker.base_rss_bytes
+                worker_growth[key] = worker.grown_bytes if cost.nonreclaimable else None
+                worker_base = cost.worker_bases.learn(
+                    worker, nonreclaimable=cost.nonreclaimable
                 )
-                estimate.worker_base(cost.worker_base_rss_bytes)
+                if worker_base is not None:
+                    estimate.worker_base(worker_base)
                 # The worker's peak sees what no sample between two of its
                 # entries did.
-                estimate.observe_worker(worker, in_flight.rows_of(key))
+                estimate.observe_worker(
+                    worker, in_flight.rows_of(key), nonreclaimable=cost.nonreclaimable
+                )
                 # A process worker's apply ends here as far as the run sees it.
                 _observe(watch.sample())
             for notice in notices:
@@ -2617,6 +2728,10 @@ def _run_feature_impl(
             budget, and alone otherwise. Alone, an entry whose prediction without
             the margin exceeds the limit less the floor raises, whatever is
             available now, which the floor answers next.
+
+            A sample that measured nothing, or a non-reclaimable run's sample
+            without the figure, holds the entry back like a wait for an entry in
+            flight, so the budget never takes an unmeasured figure as 0 held.
             """
             if estimate.bytes_per_row is None or cost.entries_with_rows_written == 0:
                 while active.in_flight:
@@ -2624,12 +2739,13 @@ def _run_feature_impl(
             else:
                 while active.in_flight:
                     sample = watch.sample()
-                    if sample is None:
+                    held = None if sample is None else cost.figure_of(sample)
+                    if sample is None or held is None:
                         _hold_back()
                         continue
                     budget = admission_budget(
                         available_bytes=sample.limit.available_bytes,
-                        tree_rss_bytes=sample.tree_rss_bytes,
+                        held_bytes=held,
                         limit_bytes=sample.limit.limit_bytes,
                         floor=min_free_memory_fraction,
                     )
@@ -2847,7 +2963,7 @@ def _run_feature_impl(
     if (
         measure_worker_base
         and capable
-        and cost.worker_base_rss_bytes == 0
+        and cost.worker_bases.rss_bytes == 0
         and not every_entry_failed
     ):
         _report_worker_base(

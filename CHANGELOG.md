@@ -8,6 +8,35 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the admission gate counts the memory the kernel cannot reclaim
+
+A memory limit kills a job for the memory the kernel cannot reclaim, which resident
+memory does not measure. The admission gate (`--admission-margin`), its per-row estimate
+and its budget now use that figure where it can be measured. Under a cgroup limit it is
+the cgroup's `anon + shmem`, plus kernel memory under cgroup v2, from `memory.stat`
+(`MemoryLimit.nonreclaimable_bytes`, 0 on a `host` source). Without a limit it is the
+sum over the process tree of `RssAnon + RssShmem` from `/proc`. Without `/proc`, as on
+macOS, the run gates on the tree's resident memory as before. A run fixes one measure at
+its base sample and never mixes the two. `EntryOverMemoryLimit` and `peak_bytes_per_row`
+are in that measure. Page cache and GPU memory are in neither. The tree's figure is
+sampled every 0.5 seconds and at the run's events, so a shorter spike can be missed. A
+process worker samples its own `RssAnon + RssShmem` at the same interval while it
+applies an entry, which feeds the per-row estimate and the entry's `peak_grown_bytes`,
+and it leaves out its own kernel memory. `peak_rss_bytes` is still the tree's resident
+memory.
+
+Wire additions of the run-log, all optional to a reader and 0 when absent: the
+`resources` event gains `nonreclaimable_bytes`, `peak_nonreclaimable_bytes`,
+`base_nonreclaimable_bytes`, `worker_base_nonreclaimable_bytes`, `peak_grown_bytes`,
+`peak_in_flight_entries` and `peak_in_flight_rows`. `peak_grown_bytes` is what the
+sample with the largest figure and an entry in flight held over the run's base and its
+workers' bases, with the entries and input rows in flight at that sample. An entry's
+`entry_end` adds `peak_grown_bytes` when the entry ran alone in thread mode or in a
+process worker that read its figures, and leaves it out otherwise. `RunCost` gains
+`peak_nonreclaimable_bytes`, `base_nonreclaimable_bytes` and
+`worker_base_nonreclaimable_bytes`, `None` when unmeasured. `runlog.TERMINAL_STATUSES`
+and every run id, version, golden and output are unchanged.
+
 ## Unreleased: a run-log with a zero-filled gap still reads the record after it
 
 On a network share (a CIFS share was seen) a run-log can get a block of NUL bytes in

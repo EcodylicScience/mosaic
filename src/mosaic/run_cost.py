@@ -112,10 +112,18 @@ class RunCost:
             offered and not what it read.
         worker_base_rss_bytes: One process worker's own memory, ``None`` when
             unmeasured.
+        peak_nonreclaimable_bytes: The largest memory the kernel cannot reclaim
+            that a sample read, ``None`` when unmeasured.
+        base_nonreclaimable_bytes: The same before the first entry loaded, ``None``
+            when unmeasured.
+        worker_base_nonreclaimable_bytes: One process worker's own anonymous and
+            shared memory, ``None`` when unmeasured.
         peak_bytes_per_row: The run's estimate of an entry's peak memory per input
             row, ``None`` until an observation with rows exceeds the fixed part:
             when no entry had input rows, or none rose above the run's base and
-            its workers' own memory.
+            its workers' own memory. It is in the run's measure: the
+            non-reclaimable figure when ``base_nonreclaimable_bytes`` is set, else
+            the tree's resident memory.
         seconds_per_row: Wall seconds per input row over the entries that ran
             alone.
         alone_cpu_per_wall_second: CPU seconds per wall second over the entries
@@ -158,6 +166,9 @@ class RunCost:
     fit_entries: int
     fit_input_rows: int
     worker_base_rss_bytes: int | None
+    peak_nonreclaimable_bytes: int | None
+    base_nonreclaimable_bytes: int | None
+    worker_base_nonreclaimable_bytes: int | None
     peak_bytes_per_row: int | None
     seconds_per_row: float | None
     alone_cpu_per_wall_second: float | None
@@ -238,6 +249,15 @@ def read_run_cost(run_dir: Path | str, execution_id: str) -> RunCost | None:
         fit_input_rows=record_count(resources, "fit_input_rows"),
         worker_base_rss_bytes=(
             record_count(resources, "worker_base_rss_bytes") or None
+        ),
+        peak_nonreclaimable_bytes=(
+            record_count(resources, "peak_nonreclaimable_bytes") or None
+        ),
+        base_nonreclaimable_bytes=(
+            record_count(resources, "base_nonreclaimable_bytes") or None
+        ),
+        worker_base_nonreclaimable_bytes=(
+            record_count(resources, "worker_base_nonreclaimable_bytes") or None
         ),
         peak_bytes_per_row=record_count(resources, "peak_bytes_per_row") or None,
         seconds_per_row=_seconds_per_row(alone),

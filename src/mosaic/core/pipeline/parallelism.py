@@ -366,8 +366,10 @@ class EntryOverMemoryLimit(RuntimeError):
 
     The prediction has no margin, and is compared with the limit less the memory
     floor, never with the memory available at the moment, so it is a property of
-    the entry and the limit. In process mode the prediction includes the live
-    workers' own memory, so the message offers thread mode as well.
+    the entry and the limit. It is in the run's measure: the memory the kernel
+    cannot reclaim where the run measured it, else the process tree's resident
+    memory. In process mode the prediction includes the live workers' own memory, so
+    the message offers thread mode as well.
     """
 
     def __init__(

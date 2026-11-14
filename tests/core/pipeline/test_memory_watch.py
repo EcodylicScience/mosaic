@@ -121,6 +121,20 @@ def test_a_sample_adds_the_process_and_every_process_below_it(
     assert (sample.available_bytes, sample.total_bytes) == (32 * GIB, 64 * GIB)
 
 
+def test_a_sample_records_when_its_measurement_began(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_psutil(monkeypatch, _Process(GIB))
+
+    before = time.monotonic()
+    sample = MemoryWatch().sample()
+    after = time.monotonic()
+
+    assert sample is not None
+    assert sample.started_at is not None
+    assert before <= sample.started_at <= after
+
+
 def test_a_sample_counts_the_spawned_workers_started_since_measuring_began(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

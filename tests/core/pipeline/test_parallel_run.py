@@ -378,10 +378,24 @@ def _rows(monkeypatch: pytest.MonkeyPatch, rows: dict[str, int]) -> None:
     monkeypatch.setattr(run_module, "entry_input_size", entry_input_size)
 
 
+_MEASURES = pytest.mark.parametrize(
+    "nonreclaimable_gib", [0.0, 0.5], ids=["tree-rss", "nonreclaimable"]
+)
+"""The gate's measure: the cgroup reports no non-reclaimable figure, or one."""
+
+
 def _limit(
-    monkeypatch: pytest.MonkeyPatch, *, limit_gib: float, in_use_gib: float
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    limit_gib: float,
+    in_use_gib: float,
+    nonreclaimable_gib: float = 0.0,
 ) -> None:
-    """Put the run under a container limit of which *in_use_gib* is in use."""
+    """Put the run under a container limit of which *in_use_gib* is in use.
+
+    The run holds *nonreclaimable_gib* of it, 0 where the limit reports no
+    figure and the gate falls back to tree RSS.
+    """
     limit = MemoryLimit(
         limit_bytes=int(limit_gib * _GIB),
         source="cgroup_v2",
@@ -389,6 +403,7 @@ def _limit(
         peak_bytes=0,
         host_total_bytes=512 * _GIB,
         host_available_bytes=256 * _GIB,
+        nonreclaimable_bytes=int(nonreclaimable_gib * _GIB),
     )
     monkeypatch.setattr(memory_watch, "read_memory_limit", lambda: limit)
 
@@ -400,8 +415,10 @@ class _OneGibARow(RowCostEstimate):
         super().__init__()
         self.seen: bool = False
 
-    def observe(self, tree_rss: int, in_flight_rows: int, live_workers: int) -> None:
-        super().observe(tree_rss, in_flight_rows, live_workers)
+    def observe(
+        self, measured_bytes: int, in_flight_rows: int, live_workers: int
+    ) -> None:
+        super().observe(measured_bytes, in_flight_rows, live_workers)
         if in_flight_rows > 0:
             self.seen = True
 
@@ -451,13 +468,16 @@ def test_without_a_margin_the_entries_keep_their_order(
     assert loads == list(_SEQUENCES)
 
 
+@_MEASURES
 def test_an_entry_predicted_over_the_budget_beside_another_waits_for_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nonreclaimable_gib: float
 ) -> None:
     ds = _dataset(tmp_path)
     _rows(monkeypatch, {"seq_a": 40, "seq_b": 40, "seq_c": 40})
     # One entry is 60 GiB with the margin and two are 120 GiB, over 100 GiB.
-    _limit(monkeypatch, limit_gib=100, in_use_gib=1)
+    _limit(
+        monkeypatch, limit_gib=100, in_use_gib=1, nonreclaimable_gib=nonreclaimable_gib
+    )
     monkeypatch.setattr(run_module, "RowCostEstimate", _OneGibARow)
 
     result = run_feature(
@@ -476,13 +496,19 @@ def test_an_entry_predicted_over_the_budget_beside_another_waits_for_it(
     assert waits >= 2
 
 
+@_MEASURES
 def test_an_entry_that_fits_the_limit_but_not_what_is_available_starts_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nonreclaimable_gib: float
 ) -> None:
     ds = _dataset(tmp_path)
     _rows(monkeypatch, {"seq_a": 40, "seq_b": 40, "seq_c": 40})
     # 40 GiB an entry fits the 100 GiB limit, and not the half GiB available.
-    _limit(monkeypatch, limit_gib=100, in_use_gib=99.5)
+    _limit(
+        monkeypatch,
+        limit_gib=100,
+        in_use_gib=99.5,
+        nonreclaimable_gib=nonreclaimable_gib,
+    )
     monkeypatch.setattr(run_module, "RowCostEstimate", _OneGibARow)
 
     result = run_feature(
@@ -498,13 +524,16 @@ def test_an_entry_that_fits_the_limit_but_not_what_is_available_starts_alone(
     assert _in_flight(ds, "TESTGATEBUSY") == dict.fromkeys(_SEQUENCES, 1)
 
 
+@_MEASURES
 def test_an_entry_predicted_over_the_limit_fails_the_run_resumably(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nonreclaimable_gib: float
 ) -> None:
     ds = _dataset(tmp_path)
     _rows(monkeypatch, {"seq_a": 40, "seq_b": 40, "seq_c": 40})
     # 40 GiB an entry is over a 30 GiB limit; the first runs before the estimate.
-    _limit(monkeypatch, limit_gib=30, in_use_gib=1)
+    _limit(
+        monkeypatch, limit_gib=30, in_use_gib=1, nonreclaimable_gib=nonreclaimable_gib
+    )
     monkeypatch.setattr(run_module, "RowCostEstimate", _OneGibARow)
 
     with pytest.raises(EntryOverMemoryLimit) as raised:

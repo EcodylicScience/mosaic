@@ -606,7 +606,8 @@ The agent sees what it needs to choose:
 - `get_request_status` reports each step's `workers`, `parallel_mode`, `peak_rss_bytes`
   and `min_available_bytes` while it runs and after. The peak is the resident memory of
   the step's process and its workers. A page that several processes map counts once for
-  each, so process mode reads a little high.
+  each, so process mode reads a little high. A container's limit enforces the memory the
+  kernel cannot reclaim, which can differ from this peak.
 - A worker that the host stops, usually for lack of memory, ends the step with
   `WorkerProcessDied`. The message gives the workers, the mode and the peak, and says
   to run again with fewer workers or in thread mode. Entries already written are kept,

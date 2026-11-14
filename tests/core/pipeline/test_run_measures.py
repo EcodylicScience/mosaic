@@ -8,25 +8,36 @@ estimate, and is written during a fit as during apply.
 
 from __future__ import annotations
 
+import dataclasses
+import functools
 import json
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from mosaic.core.dataset import Dataset
+from mosaic.core.entry import Entry
 from mosaic.core.pipeline import manifest as manifest_module
 from mosaic.core.pipeline import memory_watch
+from mosaic.core.pipeline.memory_watch import MemorySample, MemoryWatch
 from mosaic.core.pipeline import run as run_module
 from mosaic.core.pipeline.column_contract import MissingInputColumns
 from mosaic.core.pipeline.loading import PairRowsMissing
 from mosaic.core.pipeline.memory_limit import MemoryLimit
-from mosaic.core.pipeline.admission import EntriesInFlight, RowCostEstimate
-from mosaic.core.pipeline.run import run_feature
+from mosaic.core.pipeline.admission import (
+    EntriesInFlight,
+    PeakSample,
+    RowCostEstimate,
+    WorkerBase,
+    WorkerMeasure,
+)
+from mosaic.core.pipeline.run import ApplyOutcome, process_apply_worker, run_feature
 from mosaic.core.pipeline._loaders import LoadSpec
 from mosaic.core.pipeline.types import DependencyLookup
 from mosaic.runlog import read_run, run_log_dir, run_log_path
@@ -49,6 +60,7 @@ _MEASURE_FIELDS = (
     "cpu_seconds",
 )
 _SAMPLER = "mosaic-memory-sampler"
+_GIB = 1024**3
 
 
 def _dataset(tmp_path: Path, name: str = "ds") -> Dataset:
@@ -205,9 +217,11 @@ class _RecordingEstimate(RowCostEstimate):
 
     rows_seen: list[int] = []
 
-    def observe(self, tree_rss: int, in_flight_rows: int, live_workers: int) -> None:
+    def observe(
+        self, measured_bytes: int, in_flight_rows: int, live_workers: int
+    ) -> None:
         _RecordingEstimate.rows_seen.append(in_flight_rows)
-        super().observe(tree_rss, in_flight_rows, live_workers)
+        super().observe(measured_bytes, in_flight_rows, live_workers)
 
 
 @pytest.mark.parametrize("workers", [1, 2], ids=["inline", "thread"])
@@ -475,9 +489,11 @@ def test_a_process_capable_feature_has_one_worker_measured(tmp_path: Path) -> No
     assert _number(frozen, "worker_base_rss_bytes") == 0
     assert _number(measured, "worker_base_rss_bytes") > 0
     assert _number(measured, "cpu_seconds") == _number(frozen, "cpu_seconds")
-    assert {
-        k: v for k, v in measured.items() if k not in {"t", "worker_base_rss_bytes"}
-    } == {k: v for k, v in frozen.items() if k not in {"t", "worker_base_rss_bytes"}}
+    assert "worker_base_nonreclaimable_bytes" in measured
+    bases = {"t", "worker_base_rss_bytes", "worker_base_nonreclaimable_bytes"}
+    assert {k: v for k, v in measured.items() if k not in bases} == {
+        k: v for k, v in frozen.items() if k not in bases
+    }
 
 
 def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
@@ -534,8 +550,8 @@ def test_a_process_workers_base_leaves_out_the_table_it_is_handed(
         ).result()
 
     assert measure is not None
-    assert empty > 0
-    assert abs(measure.base_rss_bytes - empty) < table_bytes // 4
+    assert empty.rss_bytes > 0
+    assert abs(measure.base_rss_bytes - empty.rss_bytes) < table_bytes // 4
 
 
 def test_a_feature_that_needs_its_scope_has_no_worker_measured(
@@ -649,9 +665,9 @@ live_workers = [0]
 
 
 class Recording(RowCostEstimate):
-    def observe(self, tree_rss, in_flight_rows, live_workers_now):
+    def observe(self, measured_bytes, in_flight_rows, live_workers_now):
         live_workers[0] = max(live_workers[0], live_workers_now)
-        super().observe(tree_rss, in_flight_rows, live_workers_now)
+        super().observe(measured_bytes, in_flight_rows, live_workers_now)
 
 
 manifest.load_entry_data = load
@@ -732,3 +748,656 @@ def test_a_process_mode_run_measures_its_workers_base(
 
     report = _last_resources(ds, "TESTPROCESS")
     assert _number(report, "worker_base_rss_bytes") > 0
+
+
+# --- the entries in flight keep their largest sample ----------------------------
+
+
+def test_a_flight_keeps_its_largest_sample() -> None:
+    in_flight = EntriesInFlight()
+    in_flight.enter("a", 10, started=0.0, cpu=0.0)
+    in_flight.observe_memory(500)
+    in_flight.enter("b", 20, started=1.0, cpu=0.0)
+    in_flight.observe_memory(900)
+    in_flight.observe_memory(700)
+
+    span_a = in_flight.leave("a")
+    in_flight.observe_memory(800)
+    span_b = in_flight.leave("b")
+
+    assert span_a is not None
+    assert span_a.peak_nonreclaimable_bytes == 900
+    assert span_b is not None
+    assert span_b.peak_nonreclaimable_bytes == 900
+
+
+def test_an_entry_that_saw_no_sample_reads_none() -> None:
+    in_flight = EntriesInFlight()
+    in_flight.enter("a", 10, started=0.0, cpu=0.0)
+    in_flight.observe_memory(500)
+    _ = in_flight.leave("a")
+    in_flight.enter("b", 20, started=1.0, cpu=0.0)
+
+    span = in_flight.leave("b")
+
+    assert span is not None
+    assert span.peak_nonreclaimable_bytes is None
+
+
+def test_an_entry_that_entered_after_a_sample_began_takes_no_figure_from_it() -> None:
+    in_flight = EntriesInFlight()
+    in_flight.enter("early", 10, started=1.0, cpu=0.0)
+    in_flight.enter("late", 20, started=3.0, cpu=0.0)
+
+    in_flight.observe_memory(900, sampled_from=2.0)
+    early = in_flight.leave("early")
+    late = in_flight.leave("late")
+
+    assert early is not None
+    assert early.peak_nonreclaimable_bytes == 900
+    assert late is not None
+    assert late.peak_nonreclaimable_bytes is None
+
+
+def test_an_entry_that_entered_when_a_sample_began_takes_its_figure() -> None:
+    in_flight = EntriesInFlight()
+    in_flight.enter("a", 10, started=2.0, cpu=0.0)
+
+    in_flight.observe_memory(900, sampled_from=2.0)
+
+    span = in_flight.leave("a")
+    assert span is not None
+    assert span.peak_nonreclaimable_bytes == 900
+
+
+def test_a_sample_counts_only_the_entries_that_entered_before_it_began() -> None:
+    in_flight = EntriesInFlight()
+    in_flight.enter("early", 10, started=1.0, cpu=0.0)
+    in_flight.enter("late", 20, started=3.0, cpu=0.0)
+
+    assert in_flight.totals(sampled_from=2.0) == (1, 10)
+    assert in_flight.totals(sampled_from=3.0) == (2, 30)
+    assert in_flight.totals() == (2, 30)
+
+
+def test_the_entries_and_rows_in_flight_are_read_together() -> None:
+    in_flight = EntriesInFlight()
+    assert in_flight.totals() == (0, 0)
+    in_flight.enter("a", 10, started=0.0, cpu=0.0)
+    in_flight.enter("b", 20, started=0.0, cpu=0.0)
+
+    assert in_flight.totals() == (2, 30)
+
+    _ = in_flight.leave("a")
+
+    assert in_flight.totals() == (1, 20)
+
+
+# --- the run's measure -----------------------------------------------------------
+
+_BASE = 7 * _GIB + 12_345
+"""A non-reclaimable figure no tree of this test's size reaches."""
+
+
+class _Spy(RowCostEstimate):
+    """Keeps every figure the run hands its estimate."""
+
+    bases: list[int] = []
+    worker_bases: list[int] = []
+    worker_flags: list[bool] = []
+    observed: list[int] = []
+    peak_samples: list[PeakSample] = []
+    base_fixed: threading.Event = threading.Event()
+
+    @property
+    def bytes_per_row(self) -> int | None:
+        return 1
+
+    def parent_base(self, bytes_: int) -> None:
+        _Spy.bases.append(bytes_)
+        _Spy.base_fixed.set()
+        super().parent_base(bytes_)
+
+    def worker_base(self, bytes_: int) -> None:
+        _Spy.worker_bases.append(bytes_)
+        super().worker_base(bytes_)
+
+    def observe_worker(
+        self, measure: WorkerMeasure, rows: int, *, nonreclaimable: bool
+    ) -> None:
+        _Spy.worker_flags.append(nonreclaimable)
+        super().observe_worker(measure, rows, nonreclaimable=nonreclaimable)
+
+    def observe(
+        self, measured_bytes: int, in_flight_rows: int, live_workers: int
+    ) -> None:
+        _Spy.observed.append(measured_bytes)
+        super().observe(measured_bytes, in_flight_rows, live_workers)
+
+
+class _Sleeps(ParallelFeature):
+    """Holds each entry for a moment, so a later one loads beside it."""
+
+    name = "prov-parallel-sleeps"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        time.sleep(0.4)
+        return df
+
+
+@pytest.fixture
+def spied(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[int]]:
+    """The figures a run hands its estimate and its budget, and its peak samples.
+
+    The estimate reports 1 byte a row once asked, so the gate computes a budget
+    whenever an entry loads beside another.
+    """
+    _Spy.bases, _Spy.worker_bases, _Spy.worker_flags = [], [], []
+    _Spy.observed, _Spy.peak_samples = [], []
+    _Spy.base_fixed = threading.Event()
+    held: list[int] = []
+    peaks: list[int] = []
+    real_budget = run_module.admission_budget
+
+    def budget(
+        *, available_bytes: int, held_bytes: int, limit_bytes: int, floor: float
+    ) -> int:
+        held.append(held_bytes)
+        return real_budget(
+            available_bytes=available_bytes,
+            held_bytes=held_bytes,
+            limit_bytes=limit_bytes,
+            floor=floor,
+        )
+
+    real_peak = run_module.larger_peak
+
+    def larger(
+        peak: PeakSample | None,
+        *,
+        bytes_: int,
+        entries: int,
+        rows: int,
+        live_workers: int,
+    ) -> PeakSample | None:
+        peaks.append(bytes_)
+        found = real_peak(
+            peak, bytes_=bytes_, entries=entries, rows=rows, live_workers=live_workers
+        )
+        if found is not None:
+            _Spy.peak_samples.append(found)
+        return found
+
+    monkeypatch.setattr(run_module, "RowCostEstimate", _Spy)
+    monkeypatch.setattr(run_module, "admission_budget", budget)
+    monkeypatch.setattr(run_module, "larger_peak", larger)
+    return {
+        "bases": _Spy.bases,
+        "observed": _Spy.observed,
+        "held": held,
+        "peaks": peaks,
+    }
+
+
+def _figure_after_the_base(
+    monkeypatch: pytest.MonkeyPatch,
+    before: Callable[[], int],
+    after: Callable[[], int],
+) -> None:
+    """Make the limit's non-reclaimable figure *before* until the run fixes its base.
+
+    The estimate takes the run's base once, right after the base sample, so the
+    figure switches to *after* from then on.
+    """
+
+    def read() -> MemoryLimit:
+        return MemoryLimit(
+            limit_bytes=64 * _GIB,
+            source="cgroup_v2",
+            in_use_bytes=_GIB,
+            peak_bytes=0,
+            host_total_bytes=128 * _GIB,
+            host_available_bytes=64 * _GIB,
+            nonreclaimable_bytes=after() if _Spy.base_fixed.is_set() else before(),
+        )
+
+    monkeypatch.setattr(memory_watch, "read_memory_limit", read)
+
+
+def _run_gated(ds: Dataset, execution_id: str) -> None:
+    _ = run_feature(
+        ds,
+        _Sleeps(),
+        parallel_workers=2,
+        parallel_mode="thread",
+        admission_margin=1.5,
+        execution_id=execution_id,
+    )
+
+
+def test_a_run_whose_base_measured_the_figure_gates_on_it_throughout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    ds = _dataset(tmp_path)
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+
+    _run_gated(ds, "TESTMEASURENR")
+
+    assert spied["bases"] == [_BASE]
+    assert set(spied["observed"]) <= {_BASE, _BASE + _GIB}
+    assert _BASE + _GIB in spied["observed"]
+    assert spied["held"], "the gate never computed a budget"
+    assert set(spied["held"]) == {_BASE + _GIB}
+    assert max(spied["peaks"]) == _BASE + _GIB
+
+
+def test_a_run_whose_base_had_no_figure_gates_on_tree_rss_throughout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    ds = _dataset(tmp_path)
+    # The figure appears after the base sample, which the run has already measured
+    # as tree RSS.
+    _figure_after_the_base(monkeypatch, lambda: 0, lambda: _BASE)
+
+    _run_gated(ds, "TESTMEASURERSS")
+
+    base_rss = _number(_last_resources(ds, "TESTMEASURERSS"), "base_rss_bytes")
+    assert spied["bases"] == [int(base_rss)]
+    assert _BASE not in spied["observed"]
+    assert spied["observed"]
+    assert spied["held"], "the gate never computed a budget"
+    assert _BASE not in spied["held"]
+    assert spied["peaks"] == []
+
+
+def test_a_sample_without_the_figure_is_never_read_as_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    ds = _dataset(tmp_path)
+    readings = iter(range(10**6))
+    # After the base, every second sample has no figure.
+    _figure_after_the_base(
+        monkeypatch,
+        lambda: _BASE,
+        lambda: 0 if next(readings) % 2 else _BASE + _GIB,
+    )
+
+    _run_gated(ds, "TESTMEASUREGAP")
+
+    assert 0 not in spied["observed"]
+    assert 0 not in spied["held"]
+    assert 0 not in spied["peaks"]
+    assert _BASE + _GIB in spied["observed"]
+
+
+def test_a_process_run_takes_its_worker_figures_in_the_runs_measure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+
+    _ = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=2,
+        parallel_mode="process",
+        execution_id="TESTPROCESSMEASURE",
+    )
+
+    # Every worker's measure was taken in the run's measure, whether or not the
+    # worker could read its figure: without /proc (macOS) it cannot, and then the
+    # estimate takes no worker base, rather than the worker's resident memory.
+    assert _Spy.worker_flags
+    assert all(_Spy.worker_flags)
+    if not Path("/proc/self/status").exists():
+        assert _Spy.worker_bases == []
+    else:
+        assert _Spy.worker_bases
+    report = _last_resources(ds, "TESTPROCESSMEASURE")
+    assert _number(report, "worker_base_rss_bytes") > 0
+
+
+def test_the_peak_sample_has_an_entry_in_flight_and_never_comes_from_the_fit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    ds = _dataset(tmp_path)
+    # The fit and the base sample see a large figure, and the apply a smaller one
+    # that grows with each sample.
+    growth = iter(range(10**6))
+    _figure_after_the_base(
+        monkeypatch, lambda: 50 * _GIB, lambda: _BASE + next(growth) * 1024**2
+    )
+
+    _ = run_feature(
+        ds,
+        FittingFeature(FitControl()),
+        execution_id="TESTMEASUREPEAK",
+    )
+
+    assert spied["bases"] == [50 * _GIB]
+    assert _Spy.peak_samples
+    for sample in _Spy.peak_samples:
+        assert sample.entries >= 1
+        assert sample.rows > 0
+        assert _BASE <= sample.bytes_ < 50 * _GIB
+
+
+def _non_reclaimable_growth(
+    base: int | None,
+    peak: int | None,
+    module_name: str,
+    class_name: str,
+    inputs_dump: dict[str, object],
+    params_dump: dict[str, object],
+    run_root_str: str,
+    artifact_paths_str: dict[str, str],
+    dependency_lookups: dict[str, DependencyLookup],
+    df: pd.DataFrame,
+    ds_manifest_path: str | None = None,
+    tracklets: Mapping[Entry, bool | None] | None = None,
+) -> ApplyOutcome:
+    """Apply as a process worker does, and report the given non-reclaimable pair."""
+    output, notices, measure = process_apply_worker(
+        module_name,
+        class_name,
+        inputs_dump,
+        params_dump,
+        run_root_str,
+        artifact_paths_str,
+        dependency_lookups,
+        df,
+        ds_manifest_path,
+        tracklets,
+    )
+    assert measure is not None
+    measure = dataclasses.replace(
+        measure, base_nonreclaimable_bytes=base, peak_nonreclaimable_bytes=peak
+    )
+    return output, notices, measure
+
+
+def _grown_ends(ds: Dataset, execution_id: str) -> list[tuple[int, object]]:
+    return [
+        (int(_number(end, "in_flight")), end.get("peak_grown_bytes"))
+        for end in _events(ds, execution_id, "entry_end")
+    ]
+
+
+def test_the_resources_carry_the_peak_sample_and_its_growth_over_the_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+
+    _run_gated(ds, "TESTPEAKGROWN")
+
+    report = _last_resources(ds, "TESTPEAKGROWN")
+    assert report["base_nonreclaimable_bytes"] == _BASE
+    assert report["nonreclaimable_bytes"] == _BASE + _GIB
+    assert report["peak_nonreclaimable_bytes"] == _BASE + _GIB
+    assert report["peak_grown_bytes"] == _GIB
+    peak = _Spy.peak_samples[-1]
+    assert peak.entries >= 1
+    assert peak.rows > 0
+    assert report["peak_in_flight_entries"] == peak.entries
+    assert report["peak_in_flight_rows"] == peak.rows
+
+
+@pytest.mark.parametrize("workers", [1, 2], ids=["inline", "thread"])
+def test_an_alone_thread_entry_carries_its_growth_and_a_paired_one_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spied: dict[str, list[int]],
+    workers: int,
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+
+    _ = run_feature(
+        ds,
+        _Sleeps(),
+        parallel_workers=workers,
+        parallel_mode="thread",
+        execution_id=f"TESTGROWTHALONE{workers}",
+    )
+
+    ends = _grown_ends(ds, f"TESTGROWTHALONE{workers}")
+    assert len(ends) == len(_SEQUENCES)
+    for in_flight, grown in ends:
+        assert grown == (_GIB if in_flight == 1 else None)
+    assert any(grown is None for _, grown in ends) == (workers == 2)
+    if workers == 2:
+        assert any(in_flight > 1 for in_flight, _ in ends)
+
+
+def test_a_run_that_measures_tree_rss_records_no_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    _figure_after_the_base(monkeypatch, lambda: 0, lambda: 0)
+
+    _ = run_feature(ds, ParallelFeature(), execution_id="TESTGROWTHRSS")
+
+    report = _last_resources(ds, "TESTGROWTHRSS")
+    assert [grown for _, grown in _grown_ends(ds, "TESTGROWTHRSS")] == [None] * 3
+    for field in (
+        "nonreclaimable_bytes",
+        "peak_nonreclaimable_bytes",
+        "base_nonreclaimable_bytes",
+        "worker_base_nonreclaimable_bytes",
+        "peak_grown_bytes",
+    ):
+        assert report[field] == 0
+    assert _number(report, "peak_in_flight_entries") == 0
+
+
+def test_every_process_entry_carries_its_workers_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    samples = iter(range(10**6))
+    _figure_after_the_base(
+        monkeypatch, lambda: _BASE, lambda: _BASE + _GIB + next(samples) * 1024
+    )
+    worker_base = _GIB // 4
+    monkeypatch.setattr(
+        run_module,
+        "process_apply_worker",
+        functools.partial(
+            _non_reclaimable_growth, worker_base, worker_base + _GIB // 2
+        ),
+    )
+
+    _ = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=2,
+        parallel_mode="process",
+        execution_id="TESTGROWTHPROCESS",
+    )
+
+    ends = _grown_ends(ds, "TESTGROWTHPROCESS")
+    assert [grown for _, grown in ends] == [_GIB // 2] * 3
+    report = _last_resources(ds, "TESTGROWTHPROCESS")
+    assert report["worker_base_nonreclaimable_bytes"] == worker_base
+    # The parent's base and one or two workers' bases come off the peak sample.
+    assert _GIB // 2 <= _number(report, "peak_grown_bytes") <= _GIB * 3 // 4 + 10**6
+
+
+def test_a_process_entry_whose_worker_gave_no_figure_carries_no_growth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    samples = iter(range(10**6))
+    _figure_after_the_base(
+        monkeypatch, lambda: _BASE, lambda: _BASE + _GIB + next(samples) * 1024
+    )
+    monkeypatch.setattr(
+        run_module,
+        "process_apply_worker",
+        functools.partial(_non_reclaimable_growth, None, None),
+    )
+
+    _ = run_feature(
+        ds,
+        ParallelFeature(),
+        parallel_workers=2,
+        parallel_mode="process",
+        admission_margin=1.5,
+        execution_id="TESTGROWTHBLIND",
+    )
+
+    ends = _grown_ends(ds, "TESTGROWTHBLIND")
+    # The gate starts the first entry alone, where the parent's own sample would
+    # give a figure if the entry were not left to its worker.
+    assert any(in_flight == 1 for in_flight, _ in ends)
+    assert [grown for _, grown in ends] == [None] * 3
+    report = _last_resources(ds, "TESTGROWTHBLIND")
+    assert report["worker_base_nonreclaimable_bytes"] == 0
+    # A worker base that no worker gave is not subtracted as 0.
+    assert report["peak_grown_bytes"] == 0
+
+
+# --- a process worker's two bases ---------------------------------------------------
+
+
+def _base_of_a_worker(tmp_path: Path) -> WorkerBase:
+    feature = ParallelFeature()
+    return run_module.process_worker_base(
+        type(feature).__module__,
+        type(feature).__name__,
+        feature.inputs.model_dump(),
+        feature.params.model_dump(),
+        str(tmp_path),
+        {},
+        {},
+    )
+
+
+def test_a_process_worker_reports_both_bases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_module, "process_nonreclaimable_bytes", lambda: 123_456)
+
+    base = _base_of_a_worker(tmp_path)
+
+    assert base.rss_bytes > 0
+    assert base.nonreclaimable_bytes == 123_456
+
+
+def test_a_process_worker_without_the_figure_reports_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_module, "process_nonreclaimable_bytes", lambda: None)
+
+    base = _base_of_a_worker(tmp_path)
+
+    assert base.rss_bytes > 0
+    assert base.nonreclaimable_bytes is None
+
+
+_SAMPLING: dict[str, bool] = {"active": False, "during_apply": False}
+
+
+class _SeesTheSampler(ParallelFeature):
+    name = "prov-parallel-sees-sampler"
+
+    def apply(self, df: pd.DataFrame) -> pd.DataFrame:
+        _SAMPLING["during_apply"] = _SAMPLING["active"]
+        return df
+
+
+def test_a_process_worker_measures_its_non_reclaimable_growth_around_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reader = 5 * _GIB
+    monkeypatch.setattr(run_module, "process_nonreclaimable_bytes", lambda: reader)
+
+    @contextmanager
+    def peak_while() -> Generator[memory_watch.NonreclaimablePeak]:
+        _SAMPLING["active"] = True
+        try:
+            yield memory_watch.NonreclaimablePeak(peak=reader + 4096)
+        finally:
+            _SAMPLING["active"] = False
+
+    monkeypatch.setattr(run_module, "peak_nonreclaimable_while", peak_while)
+    _SAMPLING["during_apply"] = False
+    feature = _SeesTheSampler()
+    table = pd.DataFrame({"sequence": ["seq_a"] * 100, "value": range(100)})
+    handed = int(table.memory_usage(deep=True).sum())
+
+    _, _, measure = run_module.process_apply_worker(
+        type(feature).__module__,
+        type(feature).__name__,
+        feature.inputs.model_dump(),
+        feature.params.model_dump(),
+        str(tmp_path),
+        {},
+        {},
+        table,
+    )
+
+    assert _SAMPLING["during_apply"]
+    assert isinstance(measure, WorkerMeasure)
+    assert measure.base_nonreclaimable_bytes == reader - handed
+    assert measure.peak_nonreclaimable_bytes == reader + 4096
+
+
+def test_a_process_worker_without_the_figure_leaves_both_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_module, "process_nonreclaimable_bytes", lambda: None)
+
+    @contextmanager
+    def peak_while() -> Generator[memory_watch.NonreclaimablePeak]:
+        yield memory_watch.NonreclaimablePeak()
+
+    monkeypatch.setattr(run_module, "peak_nonreclaimable_while", peak_while)
+    feature = ParallelFeature()
+    table = pd.DataFrame({"sequence": ["seq_a"] * 10})
+
+    _, _, measure = run_module.process_apply_worker(
+        type(feature).__module__,
+        type(feature).__name__,
+        feature.inputs.model_dump(),
+        feature.params.model_dump(),
+        str(tmp_path),
+        {},
+        {},
+        table,
+    )
+
+    assert isinstance(measure, WorkerMeasure)
+    assert measure.base_nonreclaimable_bytes is None
+    assert measure.peak_nonreclaimable_bytes is None
+
+
+def test_a_sample_that_began_before_every_entry_gives_none_a_figure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spied: dict[str, list[int]]
+) -> None:
+    _ = spied
+    ds = _dataset(tmp_path)
+    _figure_after_the_base(monkeypatch, lambda: _BASE, lambda: _BASE + _GIB)
+    real_sample = MemoryWatch.sample
+
+    def began_first(self: MemoryWatch) -> MemorySample | None:
+        sample = real_sample(self)
+        if sample is None:
+            return None
+        return dataclasses.replace(sample, started_at=-1.0)
+
+    monkeypatch.setattr(MemoryWatch, "sample", began_first)
+
+    _ = run_feature(ds, _Sleeps(), execution_id="TESTSAMPLEBEFORE")
+
+    assert {grown for _, grown in _grown_ends(ds, "TESTSAMPLEBEFORE")} == {None}
+    report = _last_resources(ds, "TESTSAMPLEBEFORE")
+    assert report["peak_in_flight_entries"] == 0
+    assert report["peak_in_flight_rows"] == 0

@@ -2,23 +2,28 @@
 
 A run with several workers is where memory runs out: each process-mode worker is an
 interpreter with its own copy of the feature stack and of every table it is handed.
-:class:`MemoryWatch` reports the resident memory of the process tree, which contains
-the workers, the memory the host still has available, and the memory limit that
-applies. In a container that is the cgroup's limit, which the kernel enforces and
-``psutil`` does not show, and on a host with no limit it is the host's memory
-(:mod:`mosaic.core.pipeline.memory_limit`). The free fraction a floor reads is the
-share of that limit still available.
+:class:`MemoryWatch` reports the resident memory of the process tree, which contains the
+workers, its non-reclaimable memory, the memory the host still has available, and the
+memory limit that applies. In a container that is the cgroup's limit, which the kernel
+enforces and ``psutil`` does not show, and on a host with no limit it is the host's
+memory (:mod:`mosaic.core.pipeline.memory_limit`). The free fraction a floor reads is
+the share of that limit still available.
 
 Resident memory counts a page once for every process that maps it. Thread mode lives in
 one process and is exact. Process mode overstates a little where workers share
 libraries.
 
 The non-reclaimable figure is the memory the kernel cannot reclaim, which is what a
-limit kills a job for. Under a cgroup limit it is the cgroup's own figure, read once for
-the whole tree (:attr:`MemoryLimit.nonreclaimable_bytes`). Where no limit applies it is
-the sum over the tree of ``RssAnon + RssShmem`` from ``/proc/<pid>/status``, and where
-there is no ``/proc`` it is not measured. A worker process cannot read its share of the
-cgroup, so :func:`peak_nonreclaimable_while` samples the worker's own status file.
+memory limit kills a job for, and the admission gate reads it in place of resident
+memory where a run measures it. Under a cgroup limit it is the cgroup's own figure, read
+once for the whole tree (:attr:`MemoryLimit.nonreclaimable_bytes`): anonymous and shared
+memory, plus kernel memory under cgroup v2, and it counts every process in the cgroup.
+Where no limit applies it is the sum over the tree of ``RssAnon + RssShmem`` from
+``/proc/<pid>/status``, which leaves out kernel memory. Where there is no ``/proc`` it
+is not measured, and a run gates on resident memory. Neither figure counts the page
+cache or GPU memory. A worker process cannot read its share of the cgroup, so
+:func:`peak_nonreclaimable_while` samples the worker's own status file, which leaves out
+the worker's kernel memory and misses a spike shorter than its interval.
 
 The watch also measures a run's cost from the moment :meth:`MemoryWatch.begin` is
 called: the CPU time of the process tree and the wall time since then. A sampling
@@ -99,6 +104,10 @@ class MemorySample:
             of ``RssAnon + RssShmem``. ``None`` where ``/proc`` cannot be read,
             where a process that is still alive had no readable figure, or where a
             cgroup's figure is 0, which a cgroup that holds a process never has.
+        started_at: ``time.monotonic()`` when the measurement began, before the
+            processes were listed, so an entry that started after it is not in
+            this sample. ``None`` where the sample was not taken by a
+            :class:`MemoryWatch`.
     """
 
     tree_rss_bytes: int
@@ -107,6 +116,7 @@ class MemorySample:
     limit: MemoryLimit
     spawned_workers: int = 0
     nonreclaimable_bytes: int | None = None
+    started_at: float | None = None
 
 
 def max_rss_bytes() -> int:
@@ -370,6 +380,7 @@ class MemoryWatch:
             import psutil
         except ImportError:
             return None
+        started_at = time.monotonic()
         host = psutil.virtual_memory()
         limit = read_memory_limit()
         if limit is None:
@@ -407,6 +418,7 @@ class MemoryWatch:
             nonreclaimable_bytes=self._tree_nonreclaimable_bytes(
                 limit, [member.pid for member in members]
             ),
+            started_at=started_at,
         )
         measured = sample.nonreclaimable_bytes or 0
         with self._lock:

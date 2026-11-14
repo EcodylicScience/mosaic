@@ -925,10 +925,12 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   own, so check that the memory available under the limit holds that per worker, and
   lower `workers` before a step runs out of memory.
 - Watch memory while a step runs: `get_request_status` reports each step's
-  `peak_rss_bytes` and `min_available_bytes`. When a step ends with `WorkerProcessDied`
-  or a memory-floor failure, or its peak nears the memory limit, halve `workers` or use
-  `thread`, then submit the recipe again. Written entries are kept, because the worker
-  count is not part of a run's identity. Do not retry at the same setting.
+  `peak_rss_bytes` and `min_available_bytes`. `peak_rss_bytes` is resident memory, which
+  counts a page several workers map once for each. When a step ends with
+  `WorkerProcessDied` or a memory-floor failure, or its peak nears the memory limit,
+  halve `workers` or use `thread`, then submit the recipe again. Written entries are
+  kept, because the worker count is not part of a run's identity. Do not retry at the
+  same setting.
 - `EntryOverMemoryLimit` depends on the entry and the memory limit, not on the worker
   count, so fewer workers fail the same way. Run the step again with a larger memory
   limit, or in thread mode when it ran in process mode, and tell the user which.
@@ -937,11 +939,13 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   For a run that must not be killed, the user can start it with `--admission-margin`
   (from 1 to 4, say 1.5) on the CLI: an entry then starts beside others only when its
   predicted memory times the margin fits under the limit, and one predicted over the
-  limit even alone ends the step with `EntryOverMemoryLimit`. It applies to feature
-  steps only, not to `convert-tracks` or `resample-tracks`. It is off by default and
-  is not a `submit_pipeline` argument. `mosaic run --probe` and `--step-entries`, and
-  `read_run_cost`, are mosaic-queue's tools for sizing a job. Do not use them to tune a
-  run.
+  limit even alone ends the step with `EntryOverMemoryLimit`. The prediction counts the
+  memory the kernel cannot reclaim, which is what the limit enforces, and not the page
+  cache; where `/proc` is missing, as on macOS, it counts resident memory. It applies to
+  feature steps only, not to `convert-tracks` or `resample-tracks`. It is off by default
+  and is not a `submit_pipeline` argument. `mosaic run --probe` and `--step-entries`,
+  and `read_run_cost`, are mosaic-queue's tools for sizing a job. Do not use them to
+  tune a run.
 - GPU cards: on a host with several cards, one user's requests that run at the same time
   take separate cards, one to each step on a GPU lane, the steps that raise the
   `gpu_lane` confirmation, unless its run and the runs of all its upstream steps were
