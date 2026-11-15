@@ -14,7 +14,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 from scipy.ndimage import gaussian_filter1d
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -27,12 +27,12 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     NNResult,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 from mosaic.core.timebase import uniform_grid_rate
 

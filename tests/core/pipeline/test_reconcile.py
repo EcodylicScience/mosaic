@@ -44,7 +44,6 @@ from mosaic.core.pipeline.tracks_identity import (
 )
 from mosaic.core.pipeline.tracks_index import tracks_index, tracks_index_path
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     Feature,
     GroundTruthLabelsSource,
     InputRequire,
@@ -52,6 +51,7 @@ from mosaic.core.pipeline.types import (
     InputStream,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 

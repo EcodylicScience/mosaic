@@ -13,11 +13,12 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
-from mosaic.core.pipeline._utils import ResolvedScope, hash_params
+from mosaic.core.pipeline._utils import ResolvedScope, canonical_json, hash_params
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.media_index import read_media_index
 from mosaic.core.pipeline.run import _scope_term, compute_run_id, run_feature
 from mosaic.core.pipeline.sequence_index import read_sequence_index
+from mosaic.core.pipeline.storage_names import text_digest
 from mosaic.core.pipeline.tracks_index import read_tracks_index
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
 from mosaic.core.dataset import Dataset, new_dataset_manifest
@@ -815,3 +816,10 @@ def test_a_composition_does_not_reach_a_per_frame_identifier(
     )
     assert bare == carrying, "a composition reached a per-frame identifier"
     assert run_feature(scenario_dataset_with_media, _MediaReader()).run_id == bare[0]
+
+
+def test_hash_params_digests_the_canonical_json() -> None:
+    payload = {"b": {2, 1}, "a": (1, "x")}
+
+    assert canonical_json(payload) == '{"a": [1, "x"], "b": [1, 2]}'
+    assert hash_params(payload) == text_digest(canonical_json(payload))

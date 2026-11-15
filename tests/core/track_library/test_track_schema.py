@@ -29,7 +29,6 @@ from mosaic.core.schema import (
     GAZE_COLUMNS,
     HEAD_COLUMNS,
     TRACK_SCHEMAS,
-    TRACK_SPACES,
     ForbiddenTrackColumnError,
     IncompleteTrackColumnsError,
     TrackSchema,
@@ -40,6 +39,7 @@ from mosaic.core.schema import (
     schema_family,
     schema_space,
 )
+from mosaic.core.spaces import TRACK_SPACES
 from mosaic.core.scope import Scope
 
 from tests.helpers import add_tracks_variant

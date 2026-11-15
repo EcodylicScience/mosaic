@@ -9,7 +9,7 @@ import numpy.typing as npt
 import pandas as pd
 from scipy.signal import savgol_filter
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
@@ -20,13 +20,13 @@ from mosaic.core.pipeline.column_contract import (
     When,
 )
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     COLUMNS,
     DependencyLookup,
     InputStream,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.timebase import step_seconds

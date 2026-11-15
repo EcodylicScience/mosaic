@@ -22,12 +22,8 @@ from mosaic.core.pipeline.run import (
     process_apply_worker,
     run_feature,
 )
-from mosaic.core.pipeline.types import (
-    EmitsLevel,
-    Inputs,
-    InputStream,
-    TrackInput,
-)
+from mosaic.core.pipeline.types import Inputs, InputStream, TrackInput
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
 from tests.helpers import (
     add_track_sequences,

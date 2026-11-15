@@ -53,7 +53,7 @@ import pandas as pd
 from pydantic import Field, model_validator
 
 from mosaic.core.helpers import UNLABELED
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -66,14 +66,14 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.loading import events_for_rows
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     GroundTruthLabelsSource,
     Inputs,
     InputStream,
     Result,
     TrackInput,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .classifier_common import (

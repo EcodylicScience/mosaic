@@ -57,7 +57,7 @@ from mosaic.core.pipeline.tracks_index import (
 )
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.pipeline.types import Feature, Inputs, Result, TrackInput
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.scope import Scope
 from tests.helpers import (
     CropLike,

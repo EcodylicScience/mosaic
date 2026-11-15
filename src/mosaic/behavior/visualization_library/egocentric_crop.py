@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.media.preprocess.appearance import apply_clahe, make_clahe, to_gray
 from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.column_contract import (
@@ -34,7 +34,6 @@ from mosaic.core.pose_columns import (
     frame_keypoint_centroid,
 )
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     COLUMNS,
     Inputs,
     POSE_CONFIG_DESCRIPTION,
@@ -42,6 +41,7 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.types.feature import DependencyLookup
 from mosaic.user_paths import user_path

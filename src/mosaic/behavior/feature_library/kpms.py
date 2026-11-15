@@ -40,7 +40,7 @@ from typing import (
 import numpy as np
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline._utils import atomic_write
@@ -62,7 +62,6 @@ from mosaic.core.pipeline.toolenv import (
 )
 from mosaic.core.pose_columns import KeypointArrays, keypoint_arrays, keypoint_suffixes
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     DependencyLookup,
     InputStream,
     JoblibArtifact,
@@ -71,6 +70,7 @@ from mosaic.core.pipeline.types import (
     PoseConfig,
     TrackInputs,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,

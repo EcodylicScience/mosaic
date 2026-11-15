@@ -48,7 +48,6 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.loading import load_entry_data, merge_naming
 from mosaic.core.pipeline.run import AllEntriesFailed, run_feature
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     Inputs,
     NON_PAYLOAD_COLS,
     InputStream,
@@ -56,6 +55,7 @@ from mosaic.core.pipeline.types import (
     ParquetLoadSpec,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.runlog import run_log_path
 from tests.helpers import add_track_sequences, make_dataset
 

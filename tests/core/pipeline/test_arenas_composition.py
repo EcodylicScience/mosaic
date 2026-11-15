@@ -33,7 +33,7 @@ from mosaic.core.pipeline.sequence_index import (
     read_entry_compositions,
 )
 from mosaic.core.pipeline.types import Result
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.scope import Scope
 from tests.helpers import (
     Counted,

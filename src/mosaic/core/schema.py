@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
-from typing import Final, Literal
+from typing import Final
 
 import pandas as pd
 
 from mosaic.core.pose_columns import keypoint_suffixes
+from mosaic.core.spaces import TrackSpace
 
 _NO_COLUMNS: AbstractSet[str] = frozenset()
 """The empty column set, as a typed immutable default for the optional fields."""
@@ -21,12 +22,10 @@ __all__ = [
     "HEAD_COLUMNS",
     "LEGACY_SCHEMA",
     "TRACK_SCHEMAS",
-    "TRACK_SPACES",
     "ForbiddenTrackColumnError",
     "IncompleteTrackColumnsError",
     "TrackSchema",
     "TrackSchemaError",
-    "TrackSpace",
     "UnknownTrackSchemaError",
     "ensure_track_schema",
     "register_track_schema",
@@ -44,29 +43,6 @@ has to decide what an unrecorded schema means reads it from here, so the two
 that ask -- the scope check in ``pipeline.manifest`` and the crop features'
 units guard -- cannot drift into answering differently.
 """
-
-
-type TrackSpace = Literal["image_px", "plane_cm", "world_m"]
-"""What a table's spatial columns are measured in, and against what.
-
-- ``"image_px"`` -- video pixels of the view the producer read. ``mosaic_v1`` and
-  everything extending it. The only space a coordinate may be *drawn* in as it
-  stands: an overlay or a crop places it on the frame directly.
-- ``"plane_cm"`` -- centimeters in the image plane, for archived tables whose
-  pixel factor cannot be recovered (``mosaic_cm_v1``, ``trex_v1``). Nothing draws
-  it, though a planar feature computes in it.
-- ``"world_m"`` -- meters in a calibrated world frame, right-handed with +Z up,
-  for a multi-view or fused producer (``mosaic_world_v1``). Three axes. It
-  reaches a video only through a projection with the recording's calibration.
-
-Declared on a schema family rather than inferred from columns, because the two
-2D spaces are indistinguishable by their columns -- a centimeter table and a
-pixel table both carry ``X`` and ``Y`` -- and the difference reads as a
-plausible number either way.
-"""
-
-TRACK_SPACES: Final[tuple[TrackSpace, ...]] = ("image_px", "plane_cm", "world_m")
-"""Every :data:`TrackSpace`, in a stable order for messages and iteration."""
 
 
 @dataclass(frozen=True)

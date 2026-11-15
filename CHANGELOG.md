@@ -27,6 +27,13 @@ directory, and a read-only open creates nothing. A scan of a source declared at 
 dataset root skips `feature_definitions/` by path component, and `reindex` leaves it
 untouched.
 
+`EmitsLevel`, `RelatesLevel` and `RELATES_LEVELS` are declared in
+`mosaic.core.pipeline.feature_levels`, which imports only the standard library. They
+are no longer importable from `mosaic.core.pipeline.types` or
+`mosaic.core.pipeline.types.feature`. A feature defined outside the toolkit imports
+them from the new module. Likewise `TrackSpace` and `TRACK_SPACES` are declared in
+`mosaic.core.spaces` and are no longer importable from `mosaic.core.schema`.
+
 ## Unreleased: the admission gate counts the memory the kernel cannot reclaim
 
 A memory limit kills a job for the memory the kernel cannot reclaim, which resident

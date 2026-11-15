@@ -32,11 +32,8 @@ from mosaic.core.pipeline.graph import (
     step_type_detail,
 )
 from mosaic.core.pipeline.graph.param_table import description_text
-from mosaic.core.pipeline.types.feature import (
-    DependencyLookup,
-    EmitsLevel,
-    InputStream,
-)
+from mosaic.core.pipeline.types.feature import DependencyLookup, InputStream
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types.inputs import InputsLike
 
 

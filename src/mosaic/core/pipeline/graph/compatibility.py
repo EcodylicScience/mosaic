@@ -37,12 +37,12 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
 from mosaic.core.json_value import JsonValue
-from mosaic.core.schema import TrackSpace
+from mosaic.core.spaces import TrackSpace
 
 from ..column_contract import Provides, Requirement
 from ..loading import alignment_verdict, widening_hint, widens
 from ..types.data_config import COLUMNS
-from ..types.feature import EmitsLevel
+from ..feature_levels import EmitsLevel
 
 if TYPE_CHECKING:
     # Annotation only. Importing ``ops`` at module scope would put the op

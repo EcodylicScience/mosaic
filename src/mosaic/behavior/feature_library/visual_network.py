@@ -53,14 +53,14 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     Result,
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 
 from .helpers import ensure_columns, with_frame_times
 from .registry import register_feature

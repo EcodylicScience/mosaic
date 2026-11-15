@@ -15,7 +15,7 @@ from mosaic.core import scope as scope_module
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.storage_names import text_digest
-from mosaic.core.schema import TrackSpace
+from mosaic.core.spaces import TrackSpace
 
 # ``now_iso`` / ``new_execution_id`` now live in the dependency-light leaf
 # ``mosaic.runlog`` (so external readers can import them without the heavy pipeline).
@@ -94,7 +94,7 @@ class ResolvedScope:
     the table they were handed rather than of whichever row an index lookup
     meets first. Never hashed."""
     track_spaces: frozenset[TrackSpace] = frozenset()
-    """The :data:`~mosaic.core.schema.TrackSpace` of every track-shaped table this
+    """The :data:`~mosaic.core.spaces.TrackSpace` of every track-shaped table this
     run reads: the recorded schema's space for a ``"tracks"`` input, and
     ``"world_m"`` for a track-shaped ``Result`` carrying ``Z``. A schema not
     registered in this process contributes nothing, because nothing can be said
@@ -273,12 +273,22 @@ def hash_params(d: object) -> str:
     thousand distinct parameter sets and reaching a tenth of a percent takes
     roughly 47,000. If a family ever does need more, widen it inside that
     family's own minter behind an identity-scheme bump, not here.
-
-    ``json.dumps`` is called without a ``default=`` fallback on purpose: a
-    fallback would silently stringify whatever ``identity_ready`` was meant to
-    reject, making the raise unreachable.
     """
-    return text_digest(json.dumps(identity_ready(d), sort_keys=True))
+    return text_digest(canonical_json(d))
+
+
+def canonical_json(d: object) -> str:
+    """The canonical JSON text of *d* that :func:`hash_params` digests.
+
+    ``identity_ready`` with sorted keys. ``json.dumps`` is called without a
+    ``default=`` fallback on purpose: a fallback would silently stringify
+    whatever ``identity_ready`` was meant to reject, making the raise
+    unreachable.
+
+    Raises:
+        TypeError: if any value cannot be represented in JSON.
+    """
+    return json.dumps(identity_ready(d), sort_keys=True)
 
 
 # Process umask, read once at import (single-threaded startup). Used to restore

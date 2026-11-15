@@ -18,7 +18,7 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.run_matrix import load_run_matrix
 from mosaic.core.pipeline.types import Result
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from tests.helpers import (
     MIXED,

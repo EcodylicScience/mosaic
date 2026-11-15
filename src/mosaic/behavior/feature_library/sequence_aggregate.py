@@ -34,15 +34,16 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     Result,
     TrackInput,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 
-from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
+from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .aggregate_common import (
     PairAggregateParams,

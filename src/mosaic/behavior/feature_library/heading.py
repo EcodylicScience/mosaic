@@ -27,7 +27,7 @@ from typing import Annotated, ClassVar, Literal, final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.kinematics import angle_from_pca, angle_from_two_points
 from mosaic.core.pose_columns import pose_column_pairs
@@ -43,12 +43,12 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     DependencyLookup,
     InputStream,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 
 from .registry import register_feature

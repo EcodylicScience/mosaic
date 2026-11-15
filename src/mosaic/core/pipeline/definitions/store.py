@@ -199,8 +199,10 @@ class DefinitionCorrupt(_Coded, ClassifiedError):
     error_kind: ClassVar[ErrorKind] = "conflict"
     code: ClassVar[str] = "definition_corrupt"
 
-    def __init__(self, name: str, digest: str | None, path: Path) -> None:
-        super().__init__(f"{path} of the definition {name!r} is corrupt")
+    def __init__(
+        self, name: str, digest: str | None, path: Path, *, reason: str = "is corrupt"
+    ) -> None:
+        super().__init__(f"{path} of the definition {name!r} {reason}")
         self.name: str = name
         self.digest: str | None = digest
         self.path: Path = path

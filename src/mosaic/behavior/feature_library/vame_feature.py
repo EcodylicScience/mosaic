@@ -21,7 +21,7 @@ import joblib
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import HASH_EXCLUDE, Declared, Params
 from mosaic.core.pipeline._utils import atomic_write
@@ -44,13 +44,13 @@ from mosaic.core.pipeline.types import (
     COLUMNS,
     POSE_CONFIG_DESCRIPTION,
     DependencyLookup,
-    EmitsLevel,
     InputStream,
     JoblibArtifact,
     JoblibLoadSpec,
     PoseConfig,
     TrackInputs,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.optional_dependency import Prerequisite
 
 from .external.runner_wire import HEARTBEAT, Event

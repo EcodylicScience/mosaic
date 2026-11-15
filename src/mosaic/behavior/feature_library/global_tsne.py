@@ -15,7 +15,7 @@ import pandas as pd
 from openTSNE import TSNEEmbedding, affinity, initialization
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Column,
@@ -24,7 +24,6 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
 )
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     InputRequire,
@@ -36,6 +35,7 @@ from mosaic.core.pipeline.types import (
     NpzLoadSpec,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, DeclaredModel
 from mosaic.optional_dependency import require
 

@@ -17,7 +17,7 @@ from mosaic.core.pipeline.manifest import build_manifest
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.tracks_index import backfill_frame_extents
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     InputRequire,
     Inputs,

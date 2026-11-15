@@ -57,7 +57,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared
@@ -73,7 +73,6 @@ from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.refusal import ToolUnavailable
 from mosaic.core.pipeline.types import (
     COLUMNS,
-    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     GroundTruthLabelsSource,
@@ -85,6 +84,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.track_quality import consecutive_runs
 from mosaic.optional_dependency import (
     MissingOptionalDependency,

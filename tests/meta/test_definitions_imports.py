@@ -1,7 +1,7 @@
-"""The definition store loads neither pandas nor the feature library at import.
+"""The definition store and sidecar load neither pandas nor the feature library.
 
 ``agent/mcp/spec.py`` imports the store's models, and its import budget excludes
-the analysis stack.
+the analysis stack. Planning reads sidecars on the same budget.
 """
 
 from __future__ import annotations
@@ -20,6 +20,15 @@ def test_importing_the_store_loads_neither_pandas_nor_the_feature_library() -> N
     assert (
         modules_loaded_by(
             "import mosaic.core.pipeline.definitions.store", HEAVY_MODULES
+        )
+        == []
+    )
+
+
+def test_importing_the_sidecar_loads_neither_pandas_nor_the_feature_library() -> None:
+    assert (
+        modules_loaded_by(
+            "import mosaic.core.pipeline.definitions.sidecar", HEAVY_MODULES
         )
         == []
     )

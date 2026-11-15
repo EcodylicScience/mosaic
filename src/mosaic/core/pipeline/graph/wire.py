@@ -41,7 +41,7 @@ from mosaic.core.scope import Scope
 from ..column_contract import PairRead
 from ..inventory.wire import CoverageWire
 from ..ops import ScopeTakes
-from ..types.feature import EmitsLevel
+from ..feature_levels import EmitsLevel
 from .compatibility import Declaration, Reach
 from .model import CleanupPolicy, GraphModel, StepStatus
 from .status import RequestSummaryWire, RetirableRecipeWire

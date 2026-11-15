@@ -34,8 +34,9 @@ import is a layering break.
   keeps `core` and `behavior` out of an import cycle.
 - `label_converter.ensure_label_converters_registered()` imports
   `behavior.label_library` to fill `LABEL_CONVERTERS`.
-- `core/pipeline/graph/resolve.py` reads `FEATURES` (`tests/meta/test_graph_imports.py`)
-  and calls `mosaic.tracking.register_ops` to fill `OPS`.
+- `core/pipeline/graph/resolve.py` reads `FEATURES` (`tests/meta/test_graph_imports.py`),
+  calls `mosaic.tracking.register_ops` to fill `OPS`, and imports a feature
+  definition's toolkit models by `ref` (`toolkit_model_for_ref`).
 - `core/pipeline/reconcile_features.py` `_feature_class` looks a feature class up by
   name in `FEATURES`.
 - `core/pipeline/run.py` imports a feature's module by its `__module__` to rebuild the

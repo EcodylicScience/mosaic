@@ -28,11 +28,11 @@ import pandas as pd
 
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     InputStream,
     TrackInputs,
     resolve_order_col,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 
 from .helpers import feature_columns, meta_columns

@@ -45,12 +45,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     InputStream,
     Result,
     TrackInputs,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.region_geometry import (
     Boundary,
     BoundaryEstimate,
@@ -70,7 +70,8 @@ from mosaic.core.regions import (
     RoiName,
     Shape,
 )
-from mosaic.core.schema import ARENA_COLUMN, TrackSpace
+from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.spaces import TrackSpace
 
 from .helpers import ensure_columns, entry_identity
 from .registry import register_feature

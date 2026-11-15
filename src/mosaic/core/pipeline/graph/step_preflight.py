@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
     from mosaic.core.entry import Entry
     from mosaic.core.json_value import JsonValue
-    from mosaic.core.schema import TrackSpace
+    from mosaic.core.spaces import TrackSpace
 
     from .compatibility import DeclarationCatalog
     from .wire import Problem

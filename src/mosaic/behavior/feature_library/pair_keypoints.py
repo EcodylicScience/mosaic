@@ -45,13 +45,9 @@ from mosaic.core.pipeline.column_contract import (
     kept,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import (
-    DependencyLookup,
-    EmitsLevel,
-    InputStream,
-    TrackInputs,
-)
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 
 from .derivatives import (
     FPS_DESCRIPTION,

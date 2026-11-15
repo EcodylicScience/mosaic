@@ -35,15 +35,10 @@ from mosaic.core.pipeline.track_space import (
 )
 from mosaic.core.pipeline.track_universe import carries_z, run_is_track_shaped
 from mosaic.core.pipeline.tracks_index import read_tracks_index
-from mosaic.core.pipeline.types import (
-    EmitsLevel,
-    Inputs,
-    InputStream,
-    Result,
-    TrackInputs,
-)
+from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInputs
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.scope import Scope
 
 from tests.helpers import add_tracks_table, track_table, world_track_table

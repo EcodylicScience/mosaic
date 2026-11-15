@@ -22,8 +22,8 @@ import numpy.typing as npt
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
@@ -36,12 +36,8 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import (
-    DependencyLookup,
-    EmitsLevel,
-    InputStream,
-    TrackInputs,
-)
+from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.keypoint_refs import (
     check_heading_pair,
     check_keypoint_refs,

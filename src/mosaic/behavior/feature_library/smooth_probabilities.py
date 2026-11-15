@@ -59,13 +59,13 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import (
     COLUMNS,
     DependencyLookup,
-    EmitsLevel,
     InputRequire,
     Inputs,
     InputStream,
     Result,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.track_quality import consecutive_runs
 

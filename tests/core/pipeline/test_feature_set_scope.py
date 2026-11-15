@@ -21,7 +21,7 @@ import pandas as pd
 
 from mosaic.core.dataset import Dataset, new_dataset_manifest, open_dataset
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     Inputs,
     InputRequire,

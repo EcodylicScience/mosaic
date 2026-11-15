@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from av.codec.codec import UnknownCodecError
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic_media import MediaProbeError
 from mosaic_media.io import FFmpegVideoWriter
 from pydantic import Field
@@ -33,10 +33,8 @@ from mosaic.core.pose_columns import (
     configured_pose_pairs,
     frame_keypoint_centroid,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,

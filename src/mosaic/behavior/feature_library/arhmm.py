@@ -25,7 +25,7 @@ import numpy as np
 from pydantic import Field
 from sklearn.decomposition import PCA
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     Payload,
@@ -34,7 +34,6 @@ from mosaic.core.pipeline.column_contract import (
     kept,
 )
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     DependencyLookup,
     InputRequire,
     Inputs,
@@ -43,6 +42,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,

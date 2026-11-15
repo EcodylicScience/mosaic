@@ -1,6 +1,6 @@
 """Refuse a feature that relates individuals across arenas on an entry with several.
 
-A feature declares ``relates`` (:data:`~mosaic.core.pipeline.types.feature.RelatesLevel`).
+A feature declares ``relates`` (:data:`~mosaic.core.pipeline.feature_levels.RelatesLevel`).
 One that is ``"arena-blind"`` measures across individuals without
 :func:`~mosaic.core.individuals.individual_pairs`, such as a nearest neighbor,
 so on a camera of several tanks it relates animals that never met.

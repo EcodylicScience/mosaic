@@ -23,7 +23,7 @@ from pydantic import Field, model_validator
 
 from mosaic.core.entry import Entry
 from mosaic.core.helpers import text_cell
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     Conditional,
@@ -34,10 +34,8 @@ from mosaic.core.pipeline.column_contract import (
     When,
     kept,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,

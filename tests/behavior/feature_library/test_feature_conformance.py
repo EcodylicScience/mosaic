@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from mosaic.behavior.feature_library.registry import FEATURES
 from mosaic.core.pipeline.column_contract import Column, declared_provides
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 EMITS_LEVELS = frozenset({"individual", "pair", "unidentified", "as-input"})
 """Spelled out rather than derived from the type alias, so a value silently

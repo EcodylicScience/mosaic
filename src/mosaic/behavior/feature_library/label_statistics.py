@@ -24,7 +24,7 @@ from numpy.typing import NDArray
 from pydantic import Field, model_validator
 
 # Its argument is a bare ``dict``, so its signature is partly Unknown.
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.helpers import detect_label_format  # pyright: ignore[reportUnknownVariableType]
 from mosaic.core.label_intervals import (
     SCENE_LEVEL,
@@ -32,7 +32,7 @@ from mosaic.core.label_intervals import (
     label_vocabulary,
     segments_from_npz,
 )
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.timebase import frame_step, row_seconds
 from mosaic.core.params import Declared, Params
 from mosaic.core.pipeline.column_contract import (
@@ -49,7 +49,6 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     GroundTruthLabelsSource,
     Inputs,
     InputStream,
@@ -58,6 +57,7 @@ from mosaic.core.pipeline.types import (
     ResultColumn,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.writers import read_parquet_table_columns
 
 from .helpers import ensure_columns

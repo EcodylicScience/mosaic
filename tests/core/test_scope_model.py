@@ -21,7 +21,7 @@ from mosaic.core.pipeline._utils import ResolvedScope
 from mosaic.core.pipeline.index import feature_index, feature_index_path
 from mosaic.core.pipeline.run import resolve_feature_identity, run_feature
 from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInput
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.scope import (
     SCOPE_PARAM_KEYS,
     Scope,

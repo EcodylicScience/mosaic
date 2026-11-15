@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     ParamColumn,
@@ -15,17 +15,15 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
     kept,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,
     LabelsSource,
     TrackInputs,
 )
-from mosaic.core.schema import TRACK_SPACES, TrackSpace
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.params import Declared, Params
 
 from .helpers import entry_identity

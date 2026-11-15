@@ -20,7 +20,8 @@ from ...core.recording import (
     adjacent,
     facts_from_frame_extents,
 )
-from ...core.schema import LEGACY_SCHEMA, TrackSpace, schema_family, schema_spaces
+from ...core.schema import LEGACY_SCHEMA, schema_family, schema_spaces
+from ...core.spaces import TrackSpace
 from ...core.scope import Scope
 from ...core.entry import Entry
 from .arena_index import entry_compositions

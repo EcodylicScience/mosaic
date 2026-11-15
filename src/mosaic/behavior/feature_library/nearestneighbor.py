@@ -6,7 +6,7 @@ from typing import ClassVar, final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     ORDER_COLUMN,
@@ -15,10 +15,8 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,

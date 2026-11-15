@@ -30,7 +30,7 @@ from typing import ClassVar, Self, final
 import pandas as pd
 from pydantic import model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     ParamColumn,
@@ -38,10 +38,8 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
     kept,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,
@@ -52,7 +50,8 @@ from mosaic.core.pipeline.types import (
 )
 
 from mosaic.core.params import has_fields
-from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
+from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .aggregate_common import PairAggregateParams, reduce_column, split_keys
 from .registry import register_feature

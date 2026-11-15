@@ -27,7 +27,7 @@ import pandas as pd
 from mosaic.core.params import Params
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.types import DependencyLookup, Inputs, InputStream
-from mosaic.core.pipeline.types.feature import EmitsLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 
 
 class _P(Params):

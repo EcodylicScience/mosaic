@@ -74,7 +74,7 @@ from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.inventory.params import read_run_params
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.parquet_reader import ParquetUnreadable, output_n_rows
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
@@ -86,7 +86,6 @@ from mosaic.core.pipeline.column_contract import (
 )
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
-    EmitsLevel,
     DependencyLookup,
     InputRequire,
     GroundTruthLabelsSource,
@@ -98,6 +97,7 @@ from mosaic.core.pipeline.types import (
     Result,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import (
     HASH_EXCLUDE,
     Declared,

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Annotated, ClassVar, Literal, Self, final
 import pandas as pd
 from pydantic import model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
     AnyOf,
@@ -51,13 +51,13 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     NON_PAYLOAD_COLS,
-    EmitsLevel,
     DependencyLookup,
     Inputs,
     InputStream,
     Result,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 
 from .registry import register_feature

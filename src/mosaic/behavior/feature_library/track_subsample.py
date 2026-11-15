@@ -33,10 +33,9 @@ import numpy.typing as npt
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import Provides, Requirement
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     COLUMNS,
     DependencyLookup,
     InputStream,
@@ -44,6 +43,7 @@ from mosaic.core.pipeline.types import (
     PoseConfig,
     TrackInputs,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 
 from .registry import register_feature

@@ -28,7 +28,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.evaluation import Weighting, majority_mapping, select_scored_rows
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.params import Declared, Params
@@ -46,7 +46,6 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     META_COLS,
     DependencyLookup,
-    EmitsLevel,
     GroundTruthLabelsSource,
     Inputs,
     InputStream,
@@ -54,6 +53,7 @@ from mosaic.core.pipeline.types import (
     ParquetLoadSpec,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 
 from .helpers import ensure_columns, entry_identity

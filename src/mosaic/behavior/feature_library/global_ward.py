@@ -17,7 +17,7 @@ from scipy.cluster.hierarchy import fcluster
 from scipy.cluster.hierarchy import linkage as _sch_linkage
 from sklearn.neighbors import NearestNeighbors
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Column,
@@ -25,10 +25,8 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     GlobalModelParams,

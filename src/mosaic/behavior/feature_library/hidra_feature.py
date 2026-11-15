@@ -64,13 +64,13 @@ from mosaic.core.pipeline.types import (
 from mosaic.core.pipeline.types import (
     POSE_CONFIG_DESCRIPTION,
     DependencyLookup,
-    EmitsLevel,
     InputStream,
     PoseConfig,
     TrackInputs,
     resolve_order_col,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.optional_dependency import Prerequisite
 from mosaic.user_paths import user_path
 

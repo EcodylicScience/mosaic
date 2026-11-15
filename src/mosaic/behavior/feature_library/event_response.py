@@ -49,15 +49,16 @@ from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     DependencyLookup,
-    EmitsLevel,
     GroundTruthLabelsSource,
     Inputs,
     InputStream,
     Result,
     TrackInput,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
-from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 
 from .helpers import ensure_columns, entry_identity
 from .registry import register_feature

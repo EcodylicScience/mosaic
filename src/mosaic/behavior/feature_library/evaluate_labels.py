@@ -64,7 +64,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.evaluation import (
     ClassificationScores,
     ClassScore,
@@ -96,12 +96,12 @@ from mosaic.core.pipeline.types import (
 )
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     GroundTruthLabelsSource,
     Inputs,
     InputStream,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.resample import check_bootstrap_settings
 

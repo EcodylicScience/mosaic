@@ -40,15 +40,16 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import (
     COLUMNS as C,
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     Result,
     TrackInput,
     resolve_order_col,
 )
-from mosaic.core.pipeline.types.feature import RelatesLevel
-from mosaic.core.schema import ARENA_COLUMN, TRACK_SPACES, TrackSpace
+from mosaic.core.pipeline.feature_levels import EmitsLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
+from mosaic.core.schema import ARENA_COLUMN
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.timebase import frame_step, row_frames, uniform_grid_rate
 
 from .helpers import ensure_columns, entry_identity

@@ -18,13 +18,8 @@ from mosaic.core.helpers import make_entry_key
 from mosaic.core.params import Params
 from mosaic.core.pipeline.loading import MultiInputAlignmentError
 from mosaic.core.pipeline.run import run_feature
-from mosaic.core.pipeline.types import (
-    EmitsLevel,
-    Inputs,
-    InputStream,
-    Result,
-    TrackInput,
-)
+from mosaic.core.pipeline.types import Inputs, InputStream, Result, TrackInput
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.runlog import run_log_path
 from tests.helpers import add_track_sequences, make_dataset, result_outputs
 

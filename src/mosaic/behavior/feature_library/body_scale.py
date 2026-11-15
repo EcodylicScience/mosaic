@@ -13,7 +13,7 @@ from typing import ClassVar, final
 import numpy as np
 import pandas as pd
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pose_columns import pose_column_pairs
 from mosaic.core.pipeline.column_contract import (
     kept,
@@ -24,12 +24,8 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
 )
 from mosaic.core.pipeline.types import COLUMNS as C
-from mosaic.core.pipeline.types import (
-    EmitsLevel,
-    DependencyLookup,
-    InputStream,
-    TrackInputs,
-)
+from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
 
 from .helpers import (

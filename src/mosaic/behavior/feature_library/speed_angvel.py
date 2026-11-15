@@ -8,7 +8,7 @@ import pandas as pd
 from pydantic import Field
 from scipy.signal import savgol_filter
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.individuals import iter_individuals
 from mosaic.core.pipeline.column_contract import (
     META_KEPT,
@@ -17,10 +17,8 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,

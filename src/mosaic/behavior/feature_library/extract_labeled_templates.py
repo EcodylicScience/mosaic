@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, field_validator, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.helpers import UNLABELED
 from mosaic.core.pipeline.loading import labels_for_rows
 from mosaic.core.pipeline.column_contract import (
@@ -18,10 +18,8 @@ from mosaic.core.pipeline.column_contract import (
     Provides,
     Requirement,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     TEMPLATES_ARTIFACT_NAME,
     DependencyLookup,

@@ -16,7 +16,8 @@ are imports from ``core`` upward, made only to fill a registry, and kept inside 
 call so that importing this package stays cheap and ``core`` imports neither
 ``behavior`` nor ``tracking`` at module scope.
 ``tests/meta/test_graph_imports.py`` checks the feature-library imports. No test
-checks the ``mosaic.tracking`` ones.
+checks the ``mosaic.tracking`` ones. :func:`toolkit_model_for_ref` imports the
+module of a toolkit model that a feature definition names, also inside the call.
 
 **Declarations are read off what a class already declares**, never off its name.
 Whether a feature accepts tracks is answered by validating a probe payload
@@ -52,7 +53,7 @@ if TYPE_CHECKING:
 
     from mosaic.core.pipeline.ops import Op
     from mosaic.core.pipeline.types import Feature
-    from mosaic.core.params import Params
+    from mosaic.core.params import DeclaredModel, Params
 
 from ..column_contract import (
     PAIR_RULE_FIELD,
@@ -67,7 +68,7 @@ from ..label_controls import LABEL_CONTROL_FIELDS
 from ..refusal import ToolUnavailable
 from ..track_space import feature_track_spaces
 from ..types.data_config import COLUMNS
-from ..types.feature import EmitsLevel
+from ..feature_levels import EmitsLevel
 from .columns import provided_wire, requires_wire, tracks_provides
 from .compatibility import (
     TRACKS_DECLARATION,
@@ -114,6 +115,7 @@ __all__ = [
     "describe_step_type",
     "editor_catalog",
     "feature_class_for_slug",
+    "first_docstring_line",
     "fields_need_ground_truth",
     "op_class_for_kind",
     "op_writes_tracks",
@@ -122,6 +124,7 @@ __all__ = [
     "run_reference_fields",
     "step_type_detail",
     "step_type_lane",
+    "toolkit_model_for_ref",
     "unavailable_tool",
 ]
 
@@ -772,7 +775,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         type=kind,
         version=declared_version(kind, name),
         category=declared.category,
-        summary=_first_docstring_line(cls),
+        summary=first_docstring_line(cls),
         declaration=declared,
         params_schema=schema,
         reference_fields=reference_fields,
@@ -959,7 +962,7 @@ def step_type_lane(entry: CatalogEntry) -> str | None:
     return None if entry.type == "tracks" else lane_for(entry.declaration)
 
 
-def _first_docstring_line(cls: object) -> str:
+def first_docstring_line(cls: object) -> str:
     """The summary line of *cls*'s docstring, or ``""`` when it has none."""
     lines = (inspect.getdoc(cls) or "").strip().splitlines()
     return lines[0] if lines else ""
@@ -1291,3 +1294,53 @@ def resolve_step_spec(
         filter_end_time=step.run.filter_end_time,
         overlap_frames=step.run.overlap_frames,
     )
+
+
+def toolkit_model_for_ref(ref: str, *, definition: str) -> type[DeclaredModel]:
+    """The toolkit model that a definition's sidecar names by ``<module>:<class>``.
+
+    A sidecar records a toolkit model by reference, and planning imports it here
+    so that a definition's params are rebuilt from the toolkit's own class. Only a
+    module under ``mosaic.`` is imported, which excludes the definitions'
+    ``mosaic_definitions.`` modules, so a sidecar names no code but the toolkit's.
+
+    Args:
+        ref: ``<module>:<qualified class name>``.
+        definition: The name of the definition whose sidecar holds *ref*, which
+            each error names.
+
+    Raises:
+        DefinitionInvalid: *ref* names a module outside ``mosaic.``, or a class
+            that is not a ``DeclaredModel``.
+        DefinitionToolkitModelMissing: The module or the class does not exist in
+            this installation.
+    """
+    import importlib
+
+    from mosaic.core.params import DeclaredModel
+    from mosaic.core.pipeline.definitions.store import (
+        DefinitionFinding,
+        DefinitionInvalid,
+        DefinitionToolkitModelMissing,
+    )
+
+    def invalid(reason: str) -> DefinitionInvalid:
+        finding = DefinitionFinding(
+            check="params_type", field=None, message=f"the model {ref!r} {reason}"
+        )
+        return DefinitionInvalid(definition, [finding])
+
+    module_name, separator, qualified_name = ref.partition(":")
+    if not separator or not qualified_name:
+        raise invalid("is not of the form <module>:<class>")
+    if not module_name.startswith("mosaic."):
+        raise invalid("is not a toolkit model, whose module is under mosaic.")
+    try:
+        found: object = importlib.import_module(module_name)
+        for part in qualified_name.split("."):
+            found = getattr(found, part)
+    except (ImportError, AttributeError):
+        raise DefinitionToolkitModelMissing(definition, ref) from None
+    if not (isinstance(found, type) and issubclass(found, DeclaredModel)):
+        raise invalid("is not a DeclaredModel")
+    return found

@@ -4,7 +4,7 @@ A planar feature handed a world-frame table does not fail. It reads ``X`` and
 ``Y``, ignores ``Z``, and returns numbers that look like speeds and headings and
 are the projection of the real ones onto one plane of the calibration. The schema
 family already says what a table's coordinates are
-(:data:`~mosaic.core.schema.TrackSpace`). This module is where a feature says what
+(:data:`~mosaic.core.spaces.TrackSpace`). This module is where a feature says what
 it computes in, and where the two are compared before any work starts.
 
 A feature that declares nothing computes in the two 2D spaces. That is the safe
@@ -30,7 +30,8 @@ from mosaic.core.pipeline.manifest import tracks_table_schemas
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.core.pipeline.track_universe import run_is_track_shaped
 from mosaic.core.pipeline.tracks_index import AmbiguousTracksVariant
-from mosaic.core.schema import TRACK_SPACES, TrackSpace, schema_spaces
+from mosaic.core.schema import schema_spaces
+from mosaic.core.spaces import TRACK_SPACES, TrackSpace
 from mosaic.core.scope import Scope
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ def feature_track_spaces(feature: object) -> frozenset[TrackSpace]:
 
     Raises:
         TypeError: If the declaration is a string, is not a set, or names a value
-            outside :data:`~mosaic.core.schema.TRACK_SPACES`.
+            outside :data:`~mosaic.core.spaces.TRACK_SPACES`.
     """
     declared: object = getattr(feature, "track_spaces", None)
     if declared is None:

@@ -8,7 +8,7 @@ import pandas as pd
 from pydantic import Field
 from sklearn.preprocessing import StandardScaler
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     NON_PAYLOAD_KEPT,
     Payload,
@@ -16,7 +16,6 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
 )
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     InputRequire,
@@ -29,6 +28,7 @@ from mosaic.core.pipeline.types import (
     Result,
     TemplatesRef,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared
 
 from .helpers import ensure_columns, feature_columns, write_bundle

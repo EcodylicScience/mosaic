@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 from pydantic import Field, model_validator
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     POSE_X,
     POSE_Y,
@@ -41,12 +41,12 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     Result,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 from mosaic.core.keypoint_refs import check_keypoint_refs, resolve_keypoint_refs
 from mosaic.core.pose_columns import pose_column_pairs

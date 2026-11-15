@@ -29,12 +29,12 @@ from mosaic.core.pipeline.index import feature_run_root
 from mosaic.core.pipeline.run import run_feature
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     Feature,
     Inputs,
     InputStream,
     TemplatesRef,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 

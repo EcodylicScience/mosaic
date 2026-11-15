@@ -30,7 +30,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.individuals import id_arenas, individual_pairs
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     AnyOf,
     Column,
@@ -43,12 +43,12 @@ from mosaic.core.pipeline.column_contract import (
 from mosaic.core.pipeline.types import COLUMNS as C
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     Result,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 
 from .helpers import ego_rotate, ensure_columns, one_row_per_frame_and_id, wrap_angle

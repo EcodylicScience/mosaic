@@ -11,7 +11,7 @@ from typing import ClassVar, final
 
 import pandas as pd
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     Column,
     Conditional,
@@ -22,10 +22,8 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
     kept,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,

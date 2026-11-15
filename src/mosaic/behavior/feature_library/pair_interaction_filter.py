@@ -23,7 +23,7 @@ import pandas as pd
 from scipy.ndimage import binary_closing, binary_opening
 
 from mosaic.core.individuals import id_arenas, individual_pairs
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     POSE_X,
@@ -37,10 +37,8 @@ from mosaic.core.pipeline.column_contract import (
     When,
     kept,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     Inputs,

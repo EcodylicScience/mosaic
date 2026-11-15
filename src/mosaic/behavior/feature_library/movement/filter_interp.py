@@ -9,14 +9,10 @@ from typing import Annotated, ClassVar, final
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import Provides, Requirement
-from mosaic.core.pipeline.types import (
-    EmitsLevel,
-    DependencyLookup,
-    InputStream,
-    TrackInputs,
-)
+from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 from mosaic.optional_dependency import Prerequisite
 

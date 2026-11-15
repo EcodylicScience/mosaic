@@ -31,7 +31,6 @@ from mosaic.core.pipeline.types.data_config import (
 from mosaic.core.pipeline.types.feature import (
     ClosesResources,
     DependencyLookup,
-    EmitsLevel,
     Feature,
     InputStream,
 )
@@ -68,7 +67,6 @@ __all__ = [
     "ClosesResources",
     "Columns",
     "DependencyLookup",
-    "EmitsLevel",
     "Feature",
     "FeatureLabelsSource",
     "GlobalModelParams",

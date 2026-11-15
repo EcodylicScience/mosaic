@@ -28,16 +28,11 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar
 import pandas as pd
 from pydantic import Field
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.pipeline.column_contract import Column, Provides, Requirement
-from mosaic.core.pipeline.types import (
-    COLUMNS,
-    EmitsLevel,
-    Inputs,
-    Result,
-    TrackInput,
-)
+from mosaic.core.pipeline.types import COLUMNS, Inputs, Result, TrackInput
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import Declared, Params
 
 from ..feature_library.helpers import entry_identity

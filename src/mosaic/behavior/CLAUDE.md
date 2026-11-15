@@ -56,7 +56,7 @@ own environments.
 ## Relating individuals
 
 - **Every feature declares `relates`**, `none`, `arena-aware` or `arena-blind`
-  (`RelatesLevel` in `core/pipeline/types/feature.py`), a class attribute outside the
+  (`RelatesLevel` in `core/pipeline/feature_levels.py`), a class attribute outside the
   protocol. `test_feature_conformance.py` pins the aware and blind sets.
 - **Pairs come from `individual_pairs`** (`core/individuals.py`), with each id's arena
   from `id_arenas(df)`. A vectorized pairing filters with `same_arena_mask`. No feature

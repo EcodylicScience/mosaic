@@ -37,7 +37,7 @@ import pandas as pd
 from pydantic import Field
 
 from mosaic.core.individuals import id_arenas, individual_pairs
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     ORDER_COLUMN,
     Column,
@@ -46,10 +46,8 @@ from mosaic.core.pipeline.column_contract import (
     Template,
     kept,
 )
-from mosaic.core.pipeline.types import (
-    COLUMNS as C,
-    EmitsLevel,
-)
+from mosaic.core.pipeline.types import COLUMNS as C
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.types import (
     DependencyLookup,
     InputStream,

@@ -35,12 +35,12 @@ from mosaic.core.pipeline.tracks_index import write_tracks_row
 from mosaic.core.params import Params
 from mosaic.core.pipeline.types import (
     DependencyLookup,
-    EmitsLevel,
     Inputs,
     InputStream,
     ResultColumn,
     TrackInput,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.pipeline.writers import write_parquet_atomic
 from mosaic.core.schema import ensure_track_schema
 

@@ -22,7 +22,7 @@ import pandas as pd
 from pydantic import Field, field_validator, model_validator
 from xgboost import XGBClassifier
 
-from mosaic.core.pipeline.types.feature import RelatesLevel
+from mosaic.core.pipeline.feature_levels import RelatesLevel
 from mosaic.core.pipeline.column_contract import (
     META_COLUMNS_KEPT,
     Column,
@@ -32,7 +32,6 @@ from mosaic.core.pipeline.column_contract import (
     Requirement,
 )
 from mosaic.core.pipeline.types import (
-    EmitsLevel,
     DependencyLookup,
     GlobalModelParams,
     LabeledTemplatesRef,
@@ -43,6 +42,7 @@ from mosaic.core.pipeline.types import (
     JoblibLoadSpec,
     Result,
 )
+from mosaic.core.pipeline.feature_levels import EmitsLevel
 from mosaic.core.params import HASH_EXCLUDE, Declared
 from mosaic.core.pipeline.graph.compatibility import GpuWhen
 from mosaic.core.pipeline._utils import atomic_write
