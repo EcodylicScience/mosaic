@@ -32,8 +32,6 @@ from mosaic.core.pipeline.graph import (
     RecipeRefused,
     RecipeRefusedAtStep,
     Request,
-    declaration_catalog,
-    editor_catalog,
     execute_step,
     plan_pipeline,
     plan_wire,
@@ -43,6 +41,10 @@ from mosaic.core.pipeline.graph import (
     submit_request,
 )
 from mosaic.core.pipeline.graph.columns import measured_columns
+from mosaic.core.pipeline.graph.resolve import (
+    builtin_declaration_catalog,
+    builtin_editor_catalog,
+)
 from mosaic.core.pipeline.refusal import REFUSED_EXIT_CODE
 from mosaic.core.scope import Scope
 from mosaic.core.track_library.calms21 import Calms21Converter
@@ -717,16 +719,16 @@ def test_a_pinned_step_is_not_refused_over_tracks_without_tracklets(
     assert pin
     with monkeypatch.context() as patch:
         patch.setattr(PairPoseDistancePCA, "follows_ids", True)
-        declaration_catalog.cache_clear()
-        editor_catalog.cache_clear()
+        builtin_declaration_catalog.cache_clear()
+        builtin_editor_catalog.cache_clear()
         try:
             unpinned = plan_pipeline(untracked_split, recipe, refuse=False)
             pinned = plan_pipeline(
                 untracked_split, recipe, pins={"fit": pin}, refuse=False
             )
         finally:
-            declaration_catalog.cache_clear()
-            editor_catalog.cache_clear()
+            builtin_declaration_catalog.cache_clear()
+            builtin_editor_catalog.cache_clear()
 
     assert [p.where for p in unpinned.problems] == ["inputs"]
     assert pinned.problems == ()

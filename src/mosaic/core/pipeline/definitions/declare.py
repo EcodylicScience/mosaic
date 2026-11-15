@@ -85,6 +85,8 @@ from mosaic.core.pipeline.definitions.sidecar import (
     TupleType,
     TypeNode,
     UnionType,
+    default_inputs,
+    prerequisite_extra_findings,
     prerequisite_findings,
     rebuild_inputs_model,
     rebuild_params_model,
@@ -149,8 +151,6 @@ _BOOLEAN_ATTRIBUTES: Final = ("fits", "costly_fit", "stacks_inputs")
 _TEXT_ATTRIBUTES: Final = ("report_file", "resource_class")
 _INPUTS_DECLARATIONS: Final = frozenset({"_require", "_track_input"})
 _INPUT_REQUIRES: Final = ("nonempty", "empty", "any")
-_UPSTREAM: Final = "upstream__from__tracks"
-"""The feature a probe ``Result`` names, for an ``Inputs`` that reads no tracks."""
 
 _MODEL_MARKER: Final = "$model"
 _TOOLKIT_PREFIX: Final = "mosaic."
@@ -398,6 +398,7 @@ def declare_class(
         prerequisites=prerequisites,
     )
     findings.found.extend(prerequisite_findings(sidecar))
+    findings.found.extend(prerequisite_extra_findings(sidecar))
     _rebuild_findings(sidecar, params_model, toolkit_model, findings)
     if not findings.found:
         _construction_findings(cls, sidecar, toolkit_model, findings)
@@ -1187,15 +1188,6 @@ def _rebuild_findings(
             )
 
 
-def _default_inputs(record: InputsRecord) -> list[JsonValue]:
-    """The inputs the class is built with: none, ``tracks``, or a probe ``Result``."""
-    if record.require != "nonempty":
-        return []
-    if "tracks" in record.items:
-        return ["tracks"]
-    return [{"feature": _UPSTREAM}]
-
-
 def _construction_findings(
     cls: type,
     sidecar: DefinitionSidecar,
@@ -1203,7 +1195,7 @@ def _construction_findings(
     findings: _Findings,
 ) -> None:
     """Build the class with its default inputs and params, and compare its identity."""
-    payload = _default_inputs(sidecar.inputs)
+    payload = default_inputs(sidecar.inputs)
     inputs_model = _declared(cls, "Inputs")
     constructor: object = cls
     try:

@@ -120,15 +120,15 @@ def registered() -> Iterator[None]:
     nor leaves one built with it.
     """
     from mosaic.behavior.feature_library import FEATURES
-    from mosaic.core.pipeline.graph import declaration_catalog
+    from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
 
     FEATURES["FailsOnOneSequence"] = FailsOnOneSequence
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
     try:
         yield
     finally:
         del FEATURES["FailsOnOneSequence"]
-        declaration_catalog.cache_clear()
+        builtin_declaration_catalog.cache_clear()
 
 
 @pytest.fixture

@@ -32,6 +32,10 @@ from mosaic.core.pipeline.graph import (
     reject_unless_valid,
     validation_report,
 )
+from mosaic.core.pipeline.graph.resolve import (
+    builtin_declaration_catalog,
+    builtin_editor_catalog,
+)
 from mosaic.core.pipeline.graph import validate as validate_module
 from mosaic.optional_dependency import Prerequisite, unmet
 from tests.helpers import run_child
@@ -60,14 +64,14 @@ def speed_unavailable() -> Iterator[None]:
     assert cls is not None
     assert not hasattr(cls, "prerequisites")
     setattr(cls, "prerequisites", (_Unmet(),))
-    declaration_catalog.cache_clear()
-    editor_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
+    builtin_editor_catalog.cache_clear()
     try:
         yield
     finally:
         delattr(cls, "prerequisites")
-        declaration_catalog.cache_clear()
-        editor_catalog.cache_clear()
+        builtin_declaration_catalog.cache_clear()
+        builtin_editor_catalog.cache_clear()
 
 
 def _speed(**fields: object) -> Document:

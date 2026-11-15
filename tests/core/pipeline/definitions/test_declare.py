@@ -23,6 +23,7 @@ from pydantic import (
 from mosaic.core.json_value import JsonValue
 from mosaic.core.params import Declared, DeclaredModel, NestedParams
 from mosaic.core.params import Params as ParamsBase
+import mosaic.core.pipeline.definitions.sidecar as sidecar_module
 from mosaic.core.pipeline.definitions.declare import declare_class
 from mosaic.core.pipeline.definitions.sidecar import (
     DefinitionSidecar,
@@ -43,6 +44,7 @@ from mosaic.core.pipeline.types.data_config import PoseConfig
 from mosaic.core.pipeline.types.inputs import Inputs as InputsBase
 from mosaic.core.pipeline.types.inputs import TrackInput
 from mosaic.core.pipeline.types.results import Result
+from mosaic.optional_dependency import OptionalModule
 
 NAME: Final = "demo"
 DIGEST: Final = "b" * 64
@@ -562,6 +564,41 @@ def test_each_check_refuses_with_its_finding(
     classes: tuple[type, ...], expected: list[tuple[DefinitionCheck, str | None]]
 ) -> None:
     assert findings_of(*classes) == expected
+
+
+def test_a_prerequisite_naming_an_extra_mosaic_does_not_declare_is_refused() -> None:
+    cls = feature(prerequisites=(OptionalModule("movement", "no-such-extra", "y"),))
+
+    with pytest.raises(DefinitionInvalid) as caught:
+        _ = declare(cls)
+
+    (finding,) = caught.value.findings
+    assert (finding.check, finding.field) == ("attribute", "prerequisites")
+    assert "no-such-extra" in finding.message
+
+
+def test_a_prerequisite_naming_a_declared_extra_is_recorded() -> None:
+    cls = feature(prerequisites=(OptionalModule("movement", "movement", "y"),))
+
+    assert [each.extra for each in declare(cls).prerequisites] == ["movement"]
+
+
+def test_the_declared_extras_are_read_from_the_installed_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cls = feature(prerequisites=(OptionalModule("movement", "movement", "y"),))
+    monkeypatch.setattr(sidecar_module, "installed_extras", lambda: frozenset({"x"}))
+
+    assert findings_of(cls) == [("attribute", "prerequisites")]
+
+
+def test_no_extra_is_judged_without_an_installed_distribution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cls = feature(prerequisites=(OptionalModule("movement", "no-such-extra", "y"),))
+    monkeypatch.setattr(sidecar_module, "installed_extras", lambda: None)
+
+    assert [each.extra for each in declare(cls).prerequisites] == ["no-such-extra"]
 
 
 def test_a_model_marker_where_no_toolkit_model_fits_is_plain_data() -> None:

@@ -53,6 +53,7 @@ __all__ = [
     "VersionStem",
     "check_definition_name",
     "definition_module_name",
+    "is_definition_slug",
     "is_under_definitions_root",
     "list_definition_names",
     "list_versions",
@@ -407,6 +408,11 @@ def check_definition_name(name: str) -> None:
         raise DefinitionNameInvalid(name)
 
 
+def is_definition_slug(slug: str) -> bool:
+    """Whether *slug* names a definition, as every ``def:`` slug does, valid or not."""
+    return slug.startswith(_SLUG_HEAD)
+
+
 def parse_definition_slug(slug: str) -> tuple[str, str | None]:
     """Split ``def:<name>[@<digest>]`` into the name and the digest or prefix.
 
@@ -414,7 +420,7 @@ def parse_definition_slug(slug: str) -> tuple[str, str | None]:
         DefinitionNameInvalid: *slug* is not a definition slug, its name is not
             valid, or its digest is not 12 to 64 lowercase hex characters.
     """
-    if not slug.startswith(_SLUG_HEAD):
+    if not is_definition_slug(slug):
         raise DefinitionNameInvalid(slug, pattern=SLUG_PATTERN)
     name, separator, digest = slug.removeprefix(_SLUG_HEAD).partition("@")
     try:

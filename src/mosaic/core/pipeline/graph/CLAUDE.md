@@ -454,6 +454,14 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   lane decisions and status views do not pay the feature-library import
   (`tests/meta/test_graph_imports.py`). Its import of `mosaic.tracking` is listed under
   [Upward imports](../../CLAUDE.md#upward-imports).
+- `builtin_declaration_catalog()` and `builtin_editor_catalog()` are built once per
+  process, and a test that changes a registry or a prerequisite clears them.
+  `declaration_catalog()` and `editor_catalog()` join them with the definitions of the
+  definition scope in force (a `def:<name>` entry per definition, derived from its
+  sidecar and cached with the declared class), on each call, and are the built-in
+  catalogs under no scope and under a disabled one. `DeclarationCatalog.get` of a `def:`
+  slug reads the scope at the lookup, so a catalog handed to another caller answers for
+  that caller's dataset (`tests/core/pipeline/definitions/test_catalog.py`).
 - `can_connect` and `can_join` (`compatibility.py`) answer from `declaration_catalog()`
   with no dataset. `can_join` refuses a join of mismatched entity granularity unless the
   consumer cross-joins (`alignment_verdict`, `CROSS_JOIN_FEATURES`), or expands

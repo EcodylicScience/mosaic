@@ -53,7 +53,16 @@ def test_reading_a_directory_and_rendering_an_error_load_neither() -> None:
     assert modules_loaded_by(statement, HEAVY_MODULES) == []
 
 
-@pytest.mark.parametrize("module", ["declare.py", "loader.py"])
+def test_importing_the_scope_loads_neither_pandas_nor_the_feature_library() -> None:
+    assert (
+        modules_loaded_by(
+            "import mosaic.core.pipeline.definitions.scope", HEAVY_MODULES
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("module", ["declare.py", "loader.py", "scope.py"])
 def test_the_declaring_and_loading_modules_name_neither_upper_layer(
     module: str,
 ) -> None:

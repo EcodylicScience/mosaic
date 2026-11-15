@@ -497,6 +497,22 @@ def test_a_prerequisite_that_is_not_a_plain_top_level_name_is_refused(
     assert module in finding.message
 
 
+def test_a_stored_prerequisite_naming_an_undeclared_extra_is_read(
+    tmp_path: Path,
+) -> None:
+    """A sidecar recorded before an extra was renamed still reads: only its hint is stale."""
+    prerequisite: dict[str, JsonValue] = {
+        "module": "movement",
+        "extra": "no-such-extra",
+        "purpose": "y",
+    }
+    path = write(tmp_path, sidecar_data(prerequisites=[prerequisite]), sort_keys=True)
+
+    assert [each.extra for each in read_sidecar(path).prerequisites] == [
+        "no-such-extra"
+    ]
+
+
 def test_the_rebuilt_inputs_follow_the_recorded_require(tmp_path: Path) -> None:
     tracks = read_sidecar(write(tmp_path, sidecar_data(), sort_keys=True))
     track_inputs = rebuild_inputs_model(tracks)

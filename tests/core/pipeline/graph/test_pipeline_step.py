@@ -56,6 +56,7 @@ from mosaic.core.entry import to_safe_name
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.storage_names import NAME_MAX_BYTES, SHORTENED_MARKER
 from mosaic.core.pipeline.graph.claims import FileFailureStore
+from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
 from mosaic.core.pipeline.graph.digest import document_digest, recipe_digest
 from mosaic.core.pipeline.entry_claim import RunRootHeld
 from mosaic.core.pipeline.job import Cancelled
@@ -1907,7 +1908,7 @@ def _submit_with_kpms(tracked: Dataset, monkeypatch: pytest.MonkeyPatch) -> Requ
     """Submit the kpms recipe where the license is accepted and an interpreter found."""
     monkeypatch.setenv(KPMS_LICENSE_ENV, "1")
     monkeypatch.setenv(KPMS_PYTHON_ENV, sys.executable)
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
     return submit_request(tracked, _tool_recipe("kpms")).request
 
 
@@ -1953,7 +1954,7 @@ def test_kpms_without_its_license_exits_65(
 ) -> None:
     request = _submit_with_kpms(tracked, monkeypatch)
     monkeypatch.delenv(KPMS_LICENSE_ENV)
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
 
     code, payload = _run_step_json(tracked, request, "tool")
 
@@ -1971,10 +1972,10 @@ def test_lightning_action_not_installed_exits_65(
     tracked: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _ = install_lightning_action_stub(monkeypatch)
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
     request = submit_request(tracked, _tool_recipe("lightning-action")).request
     hide_package(monkeypatch, "lightning_action")
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
 
     code, payload = _run_step_json(tracked, request, "tool")
 
@@ -1991,7 +1992,7 @@ def test_a_sibling_step_runs_on_a_worker_without_the_tool(
 ) -> None:
     request = _submit_with_kpms(tracked, monkeypatch)
     monkeypatch.delenv(KPMS_LICENSE_ENV)
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
 
     outcome = execute_step(tracked, request, "speed")
 
@@ -2011,7 +2012,7 @@ def test_a_refusal_before_the_run_log_records_the_step_ended(
 ) -> None:
     request = _submit_with_kpms(tracked, monkeypatch)
     monkeypatch.delenv(KPMS_LICENSE_ENV)
-    declaration_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
     attempt = request.execution_of("tool")
     _ = execute_step(tracked, request, "speed")
 

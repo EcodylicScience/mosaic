@@ -27,9 +27,12 @@ from mosaic.core.pipeline.graph import (
     catalog_index,
     compact_params_schema,
     declaration_catalog,
-    editor_catalog,
     param_rows,
     step_type_detail,
+)
+from mosaic.core.pipeline.graph.resolve import (
+    builtin_declaration_catalog,
+    builtin_editor_catalog,
 )
 from mosaic.core.pipeline.graph.param_table import description_text
 from mosaic.core.pipeline.types.feature import DependencyLookup, InputStream
@@ -165,11 +168,11 @@ class _DeclaresNothing:
 def declares_nothing_registered() -> Iterator[None]:
     with pytest.MonkeyPatch.context() as patch:
         patch.setitem(FEATURES, "DeclaresNothing", _DeclaresNothing)
-        declaration_catalog.cache_clear()
-        editor_catalog.cache_clear()
+        builtin_declaration_catalog.cache_clear()
+        builtin_editor_catalog.cache_clear()
         yield
-    declaration_catalog.cache_clear()
-    editor_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
+    builtin_editor_catalog.cache_clear()
 
 
 def test_a_feature_that_declares_nothing_follows_ids(

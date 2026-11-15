@@ -23,7 +23,8 @@ import keyword
 import types
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from functools import partial
+from functools import lru_cache, partial
+from importlib import metadata
 from datetime import date
 from pathlib import Path
 from typing import Annotated, ClassVar, Final, Literal, Self, TypeAliasType, Union
@@ -85,6 +86,9 @@ __all__ = [
     "TypeKind",
     "TypeNode",
     "UnionType",
+    "default_inputs",
+    "installed_extras",
+    "prerequisite_extra_findings",
     "prerequisite_findings",
     "read_sidecar",
     "rebuild_inputs_model",
@@ -104,6 +108,8 @@ each field an earlier version lacks with its default.
 
 _MODEL_MARKER: Final = "$model"
 _MODEL_SET: Final = "set"
+_UPSTREAM: Final = "upstream__from__tracks"
+"""The feature a probe ``Result`` names, for an ``Inputs`` that reads no tracks."""
 
 type TypeKind = Literal[
     "bool",
@@ -405,6 +411,21 @@ def sidecar_json(sidecar: DefinitionSidecar) -> bytes:
     return (json.dumps(dumped, indent=2, sort_keys=True) + "\n").encode("utf-8")
 
 
+@lru_cache(maxsize=1)
+def installed_extras() -> frozenset[str] | None:
+    """The extras that the installed ``mosaic-behavior`` distribution declares.
+
+    Read from the distribution's metadata, never from ``pyproject.toml``. ``None``
+    when no such distribution is installed, as when the source is run in place,
+    and no extra can then be judged.
+    """
+    try:
+        declared = metadata.metadata("mosaic-behavior").get_all("Provides-Extra")
+    except metadata.PackageNotFoundError:
+        return None
+    return frozenset(declared or ())
+
+
 def prerequisite_findings(sidecar: DefinitionSidecar) -> list[DefinitionFinding]:
     """Return a finding for each prerequisite whose import name is not plain.
 
@@ -423,6 +444,31 @@ def prerequisite_findings(sidecar: DefinitionSidecar) -> list[DefinitionFinding]
         )
         for prerequisite in sidecar.prerequisites
         if not _is_plain_module(prerequisite.module)
+    ]
+
+
+def prerequisite_extra_findings(sidecar: DefinitionSidecar) -> list[DefinitionFinding]:
+    """Return a finding for each prerequisite whose extra mosaic does not declare.
+
+    The extra is the one an install hint tells a user to install, so an undeclared
+    one would send the user to an extra that does not exist. Only a new definition
+    is checked: a stored sidecar that names an extra a later toolkit renamed still
+    reads, and costs only its hint.
+    """
+    extras = installed_extras()
+    if extras is None:
+        return []
+    return [
+        DefinitionFinding(
+            check="attribute",
+            field="prerequisites",
+            message=(
+                f"the prerequisite {prerequisite.module!r} names the extra "
+                f"{prerequisite.extra!r}, which mosaic does not declare"
+            ),
+        )
+        for prerequisite in sidecar.prerequisites
+        if prerequisite.extra not in extras
     ]
 
 
@@ -722,6 +768,15 @@ def _model_refs(annotation: object) -> set[str]:
         for argument in arguments:
             found |= _model_refs(argument)
     return found
+
+
+def default_inputs(record: InputsRecord) -> list[JsonValue]:
+    """The inputs a definition is built with: none, ``tracks``, or a probe ``Result``."""
+    if record.require != "nonempty":
+        return []
+    if "tracks" in record.items:
+        return ["tracks"]
+    return [{"feature": _UPSTREAM}]
 
 
 def rebuild_inputs_model(sidecar: DefinitionSidecar) -> type[BaseModel]:

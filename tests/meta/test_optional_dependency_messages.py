@@ -45,6 +45,13 @@ Named rather than counted: a threshold on how many files were read passes on a
 walk that read the wrong ones, and reading installed third-party source is
 exactly how a walk comes to read thousands of the wrong ones.
 """
+_REBUILT_PREREQUISITES = ("core/pipeline/definitions/scope.py", "OptionalModule")
+"""The one call whose ``extra`` is a variable, by file under ``src/mosaic`` and call name.
+
+It rebuilds the prerequisites that a definition's sidecar recorded. The declare
+check refuses an undeclared extra, and a sidecar recorded before an extra was
+renamed forwards a stale one, which costs only its install hint.
+"""
 
 
 def _declared_extras() -> dict[str, list[str]]:
@@ -132,6 +139,8 @@ def test_every_require_call_names_a_declared_extra() -> None:
             if name not in calling or len(node.args) < 2:
                 continue
             extra = node.args[1]
+            if (str(path.relative_to(SOURCE_ROOT)), name) == _REBUILT_PREREQUISITES:
+                continue
             if not isinstance(extra, ast.Constant) or not isinstance(extra.value, str):
                 bad.append(f"{path.relative_to(REPO_ROOT)} passes a non-literal extra")
                 continue

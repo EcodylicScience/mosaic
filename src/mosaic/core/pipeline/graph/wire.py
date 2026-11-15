@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Annotated, Final, Literal
 
 from pydantic import Field
@@ -59,6 +60,7 @@ __all__ = [
     "ColumnProvider",
     "ConditionalColumns",
     "CoverageShortWire",
+    "DefinitionWire",
     "DepsIncompleteWire",
     "EditorCatalog",
     "HeldOnParentsWire",
@@ -194,6 +196,22 @@ class ProvidedColumns(GraphModel):
     payload_families: bool
 
 
+class DefinitionWire(GraphModel):
+    """The feature definition behind a catalog entry.
+
+    Attributes:
+        name: The definition's name, without the ``def:`` prefix.
+        digest: The full SHA-256 of the version's source, ``None`` for a definition
+            whose files cannot be read.
+        defined_on: The UTC date the version was first defined, ``None`` for a
+            definition whose files cannot be read.
+    """
+
+    name: str
+    digest: str | None = None
+    defined_on: date | None = None
+
+
 class CatalogEntry(GraphModel):
     """One step type an editor may offer.
 
@@ -228,6 +246,11 @@ class CatalogEntry(GraphModel):
         license_note: The uses that a license of something it needs forbids,
             such as commercial or fee-for-service use. ``None`` when no
             prerequisite limits its use. Listed whether or not it runs here.
+        definition: The feature definition the entry was derived from, ``None``
+            for a built-in step type. A definition's entry names the version that
+            its slug resolves to in the scope that listed it. A definition whose
+            files cannot be read is listed with only its name and the reason in
+            ``unavailable``.
     """
 
     name: str
@@ -244,6 +267,7 @@ class CatalogEntry(GraphModel):
     license_note: str | None = None
     ground_truth_fields: tuple[str, ...] = ()
     needs_ground_truth: bool = False
+    definition: DefinitionWire | None = None
 
 
 class EditorCatalog(GraphModel):
@@ -290,6 +314,8 @@ class CatalogIndexEntry(GraphModel):
             A server's worker limit applies to a step of it, and to no other.
             ``convert-tracks`` and ``resample-tracks`` are, and no other op is,
             nor a feature that fits a model across every entry.
+        definition: The feature definition the entry was derived from, ``None``
+            for a built-in step type.
     """
 
     name: str
@@ -306,6 +332,7 @@ class CatalogIndexEntry(GraphModel):
     unavailable: str | None
     license_note: str | None
     parallelizable: bool = False
+    definition: DefinitionWire | None = None
 
 
 class ParamRow(GraphModel):

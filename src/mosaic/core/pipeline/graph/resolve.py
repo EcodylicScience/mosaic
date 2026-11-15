@@ -32,15 +32,22 @@ all.
 from __future__ import annotations
 
 import inspect
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, ClassVar, Final, Literal, cast
+from weakref import WeakKeyDictionary
 
 from pydantic import BaseModel
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.narrowing import is_object_tuple
+from mosaic.core.pipeline.definitions.store import (
+    DefinitionCorrupt,
+    DefinitionInvalid,
+    DefinitionToolkitModelMissing,
+)
 from mosaic.core.scope import Scope
 from mosaic.optional_dependency import (
     Prerequisite,
@@ -53,6 +60,7 @@ if TYPE_CHECKING:
     from pydantic import ValidationError
     from pydantic.fields import FieldInfo
 
+    from mosaic.core.pipeline.definitions.sidecar import DefinitionSidecar
     from mosaic.core.pipeline.ops import Op
     from mosaic.core.pipeline.types import Feature
     from mosaic.core.params import DeclaredModel, Params
@@ -94,7 +102,10 @@ from .wire import (
     CatalogEntry,
     CatalogIndex,
     CatalogIndexEntry,
+    ColumnNames,
+    DefinitionWire,
     EditorCatalog,
+    ProvidedColumns,
     ReferenceKind,
     StepTypeDetail,
     render_location,
@@ -112,10 +123,13 @@ __all__ = [
     "build_op_params",
     "build_step_feature",
     "build_step_op_params",
+    "builtin_declaration_catalog",
+    "builtin_editor_catalog",
     "catalog_index",
     "declaration_catalog",
     "declared_fit",
     "declared_version",
+    "definition_declaration",
     "describe_step_type",
     "editor_catalog",
     "feature_class_for_slug",
@@ -160,7 +174,21 @@ def feature_class_for_slug(slug: str) -> type | None:
     Returns ``None`` rather than raising, because both callers want to phrase
     their own refusal: the CLI lists the available slugs, and recipe validation
     names the step the unknown slug sits in.
+
+    A ``def:`` slug names a feature definition of the ambient definition scope
+    (:func:`~mosaic.core.pipeline.definitions.scope.definition_class_for_slug`),
+    never a registered class.
+
+    Raises:
+        FeatureDefinitionsNotAllowed: *slug* is a ``def:`` slug and the scope is
+            disabled.
     """
+    from mosaic.core.pipeline.definitions.store import is_definition_slug
+
+    if is_definition_slug(slug):
+        from mosaic.core.pipeline.definitions.scope import definition_class_for_slug
+
+        return definition_class_for_slug(slug)
     from mosaic.behavior.feature_library import FEATURES
 
     for cls in FEATURES.values():
@@ -363,15 +391,97 @@ def build_feature(
             -- which is what reconstructs an artifact reference from a bare
             ``{"feature", "run_id"}``.
 
+    A ``def:`` slug under a definition scope that loads code builds the loaded
+    class and the class declared from its sidecar alike, and the two must agree
+    on every term of the run identity.
+
     Raises:
         StepBuildError: The slug names nothing, the inputs are not admissible,
             or the params do not validate.
+        DefinitionMismatch: The loaded definition's instance differs from its
+            declared one in a term of the run identity, each named.
     """
-    from pydantic import BaseModel, ValidationError
-
     cls = feature_class_for_slug(slug)
     if cls is None:
         raise StepBuildError("slug", slug, f"no registered feature is named {slug!r}")
+    feature = _construct(cls, slug, inputs_payload, params)
+    _refuse_a_differing_load(cls, slug, feature, inputs_payload, params)
+    return feature
+
+
+_IDENTITY_ATTRIBUTES: Final = (
+    "version",
+    "scope_dependent",
+    "consumed_roots",
+    "fits",
+    "parallelizable",
+    "emits",
+)
+"""The instance values that a run's identity and its plan read."""
+
+
+def _refuse_a_differing_load(
+    cls: type,
+    slug: str,
+    loaded: "Feature",
+    inputs_payload: object | None,
+    params: object | None,
+) -> None:
+    """Refuse a loaded definition whose identity its declared class does not predict.
+
+    The declared instance is built from the same inputs and params. They must
+    agree on the canonical JSON of each identity term and on the instance values
+    of :data:`_IDENTITY_ATTRIBUTES`, read as ``compute_run_id`` reads them.
+
+    Raises:
+        DefinitionMismatch: They differ, naming each differing term.
+    """
+    from mosaic.core.pipeline.definitions.loader import DEFINITION_MARK
+    from mosaic.core.pipeline.definitions.scope import declared_class_of
+    from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
+    from mosaic.core.pipeline.definitions.store import (
+        DefinitionMismatch,
+        is_definition_slug,
+    )
+
+    if not is_definition_slug(slug):
+        return
+    declared_cls = declared_class_of(cls)
+    ref: object = getattr(cls, DEFINITION_MARK, None)
+    if declared_cls is None or not isinstance(ref, DefinitionRef):
+        return
+    from mosaic.core.pipeline._utils import canonical_json
+    from mosaic.core.pipeline.run import identity_terms
+
+    declared = _construct(declared_cls, slug, inputs_payload, params)
+    loaded_terms = identity_terms(loaded.params, loaded.inputs)
+    declared_terms = identity_terms(declared.params, declared.inputs)
+    differing = [
+        term
+        for term in sorted(loaded_terms)
+        if canonical_json(loaded_terms[term])
+        != canonical_json(declared_terms.get(term))
+    ]
+    differing.extend(
+        attribute
+        for attribute in _IDENTITY_ATTRIBUTES
+        if canonical_json(getattr(loaded, attribute, None))
+        != canonical_json(getattr(declared, attribute, None))
+    )
+    if differing:
+        raise DefinitionMismatch(ref.name, ref.digest, differing)
+
+
+def _construct(
+    cls: type, slug: str, inputs_payload: object | None, params: object | None
+) -> "Feature":
+    """Build *cls* from JSON inputs and params, as :func:`build_feature` does.
+
+    Raises:
+        StepBuildError: The inputs are not admissible or the params do not
+            validate.
+    """
+    from pydantic import BaseModel, ValidationError
 
     inputs_cls: object = getattr(cls, "Inputs", None)
     if not (isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel)):
@@ -662,15 +772,13 @@ def _op_declaration(kind: str, op_cls: type[Op[Params]]) -> Declaration:
 
 
 @lru_cache(maxsize=1)
-def declaration_catalog() -> DeclarationCatalog:
-    """Every step type this installation knows, as declarations.
+def builtin_declaration_catalog() -> DeclarationCatalog:
+    """Every built-in step type this installation knows, as declarations.
 
     Cached for the process, which is safe because both registries are filled by
     import side effect and are fixed once the modules that populate them have
-    run. Anything registering a feature after the first call would not appear,
-    and only a test does that. A feature's prerequisites are evaluated once as
-    well. A package installed or a variable set after the first call is seen by
-    the next process.
+    run. A feature's prerequisites are evaluated once as well. A package
+    installed or a variable set after the first call is seen by the next process.
 
     The result is JSON-serializable by construction, so an API can hand it
     straight to a browser and the canvas answers connection questions locally
@@ -694,6 +802,166 @@ def declaration_catalog() -> DeclarationCatalog:
     return DeclarationCatalog(entries=entries)
 
 
+def declaration_catalog() -> DeclarationCatalog:
+    """Every step type this installation knows here, as declarations.
+
+    The built-in catalog (:func:`builtin_declaration_catalog`) joined with the
+    definitions of the scope in force, each listed as ``def:<name>`` under the
+    version its bare slug resolves to. Without a scope, and under a disabled one,
+    it is the built-in catalog. The join is assembled on each call from the
+    dataset's listing and costs no source import, so a definition added while a
+    process runs appears at its next call. A definition whose files cannot be read
+    is left out, and :meth:`DeclarationCatalog.get` of its slug raises the error.
+    """
+    builtin = builtin_declaration_catalog()
+    usable = [listed for listed in _listed_definitions() if listed.usable]
+    if not usable:
+        return builtin
+    return DeclarationCatalog(
+        entries={
+            **builtin.entries,
+            **{listed.entry.name: listed.declaration for listed in usable},
+        }
+    )
+
+
+def definition_declaration(slug: str) -> Declaration | None:
+    """The declaration of the version a ``def:`` slug names in the scope in force.
+
+    ``None`` under no scope, under a disabled one, and for a slug that matches no
+    version. Derived from the version's sidecar and cached with its declared
+    class, so no source is imported.
+
+    Raises:
+        DefinitionDigestAmbiguous: A prefix matches more than one version.
+        DefinitionCorrupt: A stored file is not what its name says.
+        DefinitionToolkitModelMissing: The definition names a toolkit model this
+            installation lacks.
+    """
+    sidecar = _scope_sidecar(slug)
+    return None if sidecar is None else _definition_entry(sidecar).declaration
+
+
+def _scope_sidecar(slug: str) -> DefinitionSidecar | None:
+    """The sidecar a ``def:`` slug names in the scope in force, ``None`` when none."""
+    from mosaic.core.pipeline.definitions.scope import definition_sidecar_for_slug
+    from mosaic.core.pipeline.definitions.store import FeatureDefinitionsNotAllowed
+
+    try:
+        return definition_sidecar_for_slug(slug)
+    except FeatureDefinitionsNotAllowed:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _DefinitionEntry:
+    """What the catalogs derive from one definition version, once."""
+
+    declaration: Declaration
+    entry: CatalogEntry
+    usable: bool = True
+    """``False`` for a stand-in that lists a definition whose files cannot be read."""
+
+
+_UNUSABLE: Final = (
+    DefinitionCorrupt,
+    DefinitionInvalid,
+    DefinitionToolkitModelMissing,
+)
+"""The refusals that make one definition unreadable and no other."""
+
+
+def _listed_definitions() -> list[_DefinitionEntry]:
+    """The entry of each definition the scope in force lists, in name order.
+
+    One definition that cannot be read is listed as an unavailable stand-in, so it
+    leaves every other definition and every built-in step type readable.
+    """
+    from mosaic.core.pipeline.definitions.scope import scope_definition_names
+
+    listed: list[_DefinitionEntry] = []
+    for name in scope_definition_names():
+        try:
+            sidecar = _scope_sidecar(f"def:{name}")
+            if sidecar is not None:
+                listed.append(_definition_entry(sidecar))
+        except _UNUSABLE as exc:
+            listed.append(_unusable_entry(name, exc))
+    return listed
+
+
+def _unusable_entry(name: str, error: Exception) -> _DefinitionEntry:
+    """The stand-in that lists the definition *name*, whose files raised *error*.
+
+    It takes no inputs and carries the reason as its ``unavailable`` sentence, so
+    validation reports a step that runs it and an attach candidate is refused with
+    it.
+    """
+    slug = f"def:{name}"
+    sentence = f"the feature definition {name!r} cannot be used: {error}"
+    declaration = Declaration(
+        produces=ProducerDecl(name=slug, kind="feature", level="individual"),
+        consumes=ConsumerDecl(name=slug, kind="feature", takes_no_inputs=True),
+        emits="individual",
+        unavailable=sentence,
+    )
+    entry = CatalogEntry(
+        name=slug,
+        type="feature",
+        version="",
+        category="",
+        summary="",
+        declaration=declaration,
+        params_schema=None,
+        reference_fields={},
+        requires=None,
+        provides=None,
+        unavailable=sentence,
+        definition=DefinitionWire(name=name),
+    )
+    return _DefinitionEntry(declaration, entry, usable=False)
+
+
+_DEFINITION_ENTRIES: Final[WeakKeyDictionary[type, _DefinitionEntry]] = (
+    WeakKeyDictionary()
+)
+"""Each derived entry, by the declared class it was derived from.
+
+A declared class is cached by digest and replaced when the definition caches are
+cleared, which leaves the entry derived from the old class behind with it.
+"""
+_ENTRIES_LOCK: Final = threading.Lock()
+
+
+def _definition_entry(sidecar: DefinitionSidecar) -> _DefinitionEntry:
+    """The declaration and the editor-catalog entry of a definition version.
+
+    Raises:
+        DefinitionInvalid: A toolkit model the sidecar names is not one.
+        DefinitionToolkitModelMissing: This installation lacks a toolkit model the
+            sidecar names.
+    """
+    from mosaic.core.pipeline.definitions.scope import declared_class
+
+    cls = declared_class(sidecar)
+    with _ENTRIES_LOCK:
+        cached = _DEFINITION_ENTRIES.get(cls)
+    if cached is not None:
+        return cached
+    declaration = _feature_declaration(cls)
+    entry = _entry_of_class(
+        f"def:{sidecar.name}",
+        declaration,
+        cls,
+        version=sidecar.version,
+        definition=DefinitionWire(
+            name=sidecar.name, digest=sidecar.digest, defined_on=sidecar.defined_on
+        ),
+    )
+    with _ENTRIES_LOCK:
+        return _DEFINITION_ENTRIES.setdefault(cls, _DefinitionEntry(declaration, entry))
+
+
 _TRACKS_SUMMARY: Final = (
     "The dataset's standardized tracks, which every chain starts from."
 )
@@ -701,12 +969,12 @@ _TRACKS_SUMMARY: Final = (
 
 
 @lru_cache(maxsize=1)
-def editor_catalog() -> EditorCatalog:
-    """Every step type a recipe may run here, with what an editor draws it from.
+def builtin_editor_catalog() -> EditorCatalog:
+    """Every built-in step type a recipe may run, with what an editor draws it from.
 
-    The declarations of :func:`declaration_catalog`, each joined to its params
-    JSON Schema, its version, a one-line summary, and the params fields that
-    accept a step reference. Kinds a graph may not run are left out, and an
+    The declarations of :func:`builtin_declaration_catalog`, each joined to its
+    params JSON Schema, its version, a one-line summary, and the params fields
+    that accept a step reference. Kinds a graph may not run are left out, and an
     editor offers only steps that validate. Cached for the process for the same
     reason the declaration catalog is: both registries are fixed once their
     modules have been imported.
@@ -716,7 +984,7 @@ def editor_catalog() -> EditorCatalog:
     from .model import SCHEMA_VERSION
     from .validate import EXCLUDED_KINDS
 
-    declarations = declaration_catalog()
+    declarations = builtin_declaration_catalog()
     entries: list[CatalogEntry] = []
     for name in declarations.names():
         declared = declarations.get(name)
@@ -730,8 +998,32 @@ def editor_catalog() -> EditorCatalog:
     )
 
 
-def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
-    """One editor-catalog entry, read off the class behind *name*."""
+def editor_catalog() -> EditorCatalog:
+    """Every step type a recipe may run here, with what an editor draws it from.
+
+    The built-in catalog (:func:`builtin_editor_catalog`) joined with the
+    definitions of the scope in force, sorted by name. A definition's entry is
+    derived from its sidecar by this installation and carries its
+    ``definition``. A definition whose files cannot be read is listed as an
+    unavailable entry that names the reason. Without a scope, and under a disabled
+    one, it is the built-in catalog.
+    """
+    builtin = builtin_editor_catalog()
+    listed = _listed_definitions()
+    if not listed:
+        return builtin
+    entries = [*builtin.entries, *(each.entry for each in listed)]
+    return builtin.model_copy(update={"entries": tuple(sorted(entries, key=_by_name))})
+
+
+def _by_name(entry: CatalogEntry) -> str:
+    return entry.name
+
+
+def _column_wires(
+    declared: Declaration,
+) -> tuple[tuple[ColumnNames, ...] | None, ProvidedColumns | None]:
+    """The columns *declared* reads and writes under its default params, as wires."""
     requires = (
         None
         if declared.requires is None
@@ -742,6 +1034,12 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         if declared.provides is None
         else provided_wire(declared.provides, declared.param_defaults)
     )
+    return requires, provides
+
+
+def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
+    """One editor-catalog entry, read off the class behind *name*."""
+    requires, provides = _column_wires(declared)
     kind = declared.produces.kind
     if kind == "tracks":
         return CatalogEntry(
@@ -758,13 +1056,28 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
             unavailable=declared.unavailable,
         )
     cls = feature_class_for_slug(name) if kind == "feature" else op_class_for_kind(name)
+    return _entry_of_class(
+        name, declared, cls, version=declared_version(kind, name), definition=None
+    )
+
+
+def _entry_of_class(
+    name: str,
+    declared: Declaration,
+    cls: type | None,
+    *,
+    version: str,
+    definition: DefinitionWire | None,
+) -> CatalogEntry:
+    """The editor-catalog entry of a feature or op class, read off *cls*."""
+    requires, provides = _column_wires(declared)
     prerequisites = () if cls is None else _prerequisites_of(cls)
     params_cls: object = getattr(cls, "Params", None)
     schema: dict[str, JsonValue] | None = None
     if isinstance(params_cls, type) and issubclass(params_cls, BaseModel):
         schema = params_cls.model_json_schema()
     reference_fields: dict[str, ReferenceKind] = {}
-    field_types = _params_field_types(kind, name)
+    field_types = _field_types_of(getattr(cls, "Params", None))
     for field_name, annotation in field_types.items():
         site = _reference_site_of(annotation)
         if site == "result" or site == "identifier" or site == "labels":
@@ -778,8 +1091,8 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
     )
     return CatalogEntry(
         name=name,
-        type=kind,
-        version=declared_version(kind, name),
+        type=declared.produces.kind,
+        version=version,
         category=declared.category,
         summary=first_docstring_line(cls),
         declaration=declared,
@@ -791,6 +1104,7 @@ def _catalog_entry(name: str, declared: Declaration) -> CatalogEntry:
         license_note=license_notes(prerequisites),
         ground_truth_fields=ground_truth_fields,
         needs_ground_truth=fields_need_ground_truth(field_types),
+        definition=definition,
     )
 
 
@@ -912,7 +1226,10 @@ def step_type_detail(
         ("nothing", consumes.takes_no_inputs),
     )
     scope_dependent = declared.scope_dependent
-    if entry.type == "feature":
+    if entry.definition is not None:
+        sidecar = _entry_sidecar(entry.definition)
+        scope_dependent = sidecar is not None and sidecar.flags.scope_dependent
+    elif entry.type == "feature":
         # A feature's declaration does not carry it; the planner reads the class.
         cls = feature_class_for_slug(name)
         scope_dependent = bool(getattr(cls, "scope_dependent", False))
@@ -957,10 +1274,37 @@ def _index_entry(entry: CatalogEntry) -> CatalogIndexEntry:
         payload_families=provides is not None and provides.payload_families,
         unavailable=entry.unavailable,
         license_note=entry.license_note,
-        parallelizable=feature_parallelizable(entry.name)
-        if entry.type == "feature"
-        else op_parallelizable(entry.name),
+        parallelizable=_parallelizable(entry),
+        definition=entry.definition,
     )
+
+
+def _entry_sidecar(definition: DefinitionWire) -> DefinitionSidecar | None:
+    """The sidecar of the version *definition* names, read in the scope in force.
+
+    ``None`` when its files cannot be read.
+    """
+    slug = f"def:{definition.name}"
+    if definition.digest is not None:
+        slug = f"{slug}@{definition.digest}"
+    try:
+        return _scope_sidecar(slug)
+    except _UNUSABLE:
+        return None
+
+
+def _parallelizable(entry: CatalogEntry) -> bool:
+    """Whether a run of *entry* can compute several entries at once.
+
+    A definition answers from its sidecar's flags, so a listing never imports its
+    source.
+    """
+    if entry.definition is not None:
+        sidecar = _entry_sidecar(entry.definition)
+        return sidecar is not None and sidecar.flags.parallelizable
+    if entry.type == "feature":
+        return feature_parallelizable(entry.name)
+    return op_parallelizable(entry.name)
 
 
 def step_type_lane(entry: CatalogEntry) -> str | None:
@@ -1072,6 +1416,11 @@ def _params_field_types(kind: str, name: str) -> dict[str, object]:
     else:
         op_cls = op_class_for_kind(name)
         params_cls = getattr(op_cls, "Params", None) if op_cls is not None else None
+    return _field_types_of(params_cls)
+
+
+def _field_types_of(params_cls: object) -> dict[str, object]:
+    """The declared type of each top-level field of the params model *params_cls*."""
     declared: object = getattr(params_cls, "model_fields", None)
     if not isinstance(declared, dict):
         return {}

@@ -58,6 +58,48 @@ are no longer importable from `mosaic.core.pipeline.types` or
 them from the new module. Likewise `TrackSpace` and `TRACK_SPACES` are declared in
 `mosaic.core.spaces` and are no longer importable from `mosaic.core.schema`.
 
+A `def:` slug names a definition only inside a definition scope.
+`definition_scope(ds_or_base, *, load, pins=None, sidecars=None, allowed=True)`
+(`mosaic.core.pipeline.definitions.scope`) is a context manager that enters a
+`DefinitionScope` for a dataset, its directory or no dataset, holding `base_dir`,
+`load`, `pins` (name to full digest), `sidecars` (full digest to sidecar, taking
+precedence over the dataset's file of that digest) and `allowed`. The scope is a
+context variable, so it belongs to one thread or asyncio task, and a thread starts
+with none. Under no scope `feature_class_for_slug("def:<name>")` is `None`. Under a
+`load=False` scope it is a class declared from the sidecar, which imports no source
+and whose `load_state`, `fit`, `save_state` and `apply` raise `definition_not_loaded`,
+and under a `load=True` scope the loaded class. A bare `def:<name>` resolves to the
+scope's pin for the name, else to `current`, and `parse_definition_slug` splits a
+slug into its name and digest. An entry under a scope of the same dataset, or of no
+dataset, reuses it, fills in its dataset, raises `load` and adds only the pins the
+outer scope lacks. An entry of another dataset replaces the scope until it exits, and
+a disabled scope (`allowed=False`) is kept by every entry under it and refuses a
+`def:` slug with `feature_definitions_not_allowed`. Under a `load=True` scope,
+`build_feature` of a `def:` slug refuses with `definition_mismatch`, naming each
+differing term, a loaded instance whose params, inputs, `version`,
+`scope_dependent`, `consumed_roots`, `fits`, `parallelizable` or `emits` differ from
+those of the instance declared from its sidecar.
+
+Under a definition scope the catalogs list the scope's definitions beside the built-in
+step types. `declaration_catalog()` and `editor_catalog()` return the built-in catalog
+(`builtin_declaration_catalog()`, `builtin_editor_catalog()`, each built once per
+process) joined with a `def:<name>` entry for each definition, under the version that its
+bare slug resolves to, sorted by name. Each entry is derived from the sidecar, so no
+source is imported. Without a scope, and under a disabled one, the catalogs are the
+built-in catalogs. A `DeclarationCatalog.get` of a `def:` slug answers from the scope in
+force at the call, so a catalog handed to another caller answers for that caller's
+dataset, and `def:<name>@<digest>` finds a version that is not current. `CatalogEntry`
+and `CatalogIndexEntry` gain `definition`, `{name, digest, defined_on}` for a definition
+and `null` for every built-in step type, which `StepTypeDetail` carries too. `check_recipe`
+without a scope reports a problem at `feature` for a `def:` step, naming the step and the
+dataset it needs, and under a scope that disallows definitions says so. A definition whose
+files cannot be read does not break the other reads: the editor catalog lists it with its
+name alone in `definition` and the reason in `unavailable`, the declaration catalog leaves
+it out, and a lookup of its slug raises its error. `DefinitionWire.digest` and
+`defined_on` are `null` for such an entry. Declaring a definition whose prerequisite names
+an `extra` that the installed distribution does not declare is refused as a finding on
+`prerequisites`, and a stored sidecar that names one still reads.
+
 ## Unreleased: the admission gate counts the memory the kernel cannot reclaim
 
 A memory limit kills a job for the memory the kernel cannot reclaim, which resident

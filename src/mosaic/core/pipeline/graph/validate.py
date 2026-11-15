@@ -129,6 +129,8 @@ from .wire import (
     ValidationReport,
     render_location,
 )
+from ..definitions.scope import current_scope
+from ..definitions.store import is_definition_slug
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.label_controls import LABEL_CONTROL_FIELDS
 from mosaic.core.pipeline.types import ArtifactSpec
@@ -498,9 +500,22 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
     expected_kind = "feature" if isinstance(step, FeatureStepSpec) else "op"
     if declared is None or declared.produces.kind != expected_kind:
         walk.broken.add(step.id)
-        return [
-            Problem(step.id, where, f"no registered {expected_kind} is named {name!r}")
-        ]
+        scope = current_scope()
+        if declared is not None or not is_definition_slug(name):
+            message = f"no registered {expected_kind} is named {name!r}"
+        elif scope is None:
+            message = (
+                f"{name!r} names a feature definition, which only a dataset holds: "
+                "validate it against the dataset (--manifest, or a dataset argument)"
+            )
+        elif not scope.allowed:
+            message = (
+                f"{name!r} names a feature definition, and feature definitions are "
+                "not allowed here (feature_definitions_not_allowed)"
+            )
+        else:
+            message = f"no registered {expected_kind} is named {name!r}"
+        return [Problem(step.id, where, message)]
     walk.runs[step.id] = name
     if isinstance(step, FeatureStepSpec) and declared.requires is None:
         walk.unchecked.append(step.id)

@@ -40,6 +40,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.spaces import TrackSpace
 
 from ..column_contract import Provides, Requirement
+from ..definitions.store import is_definition_slug
 from ..loading import alignment_verdict, widening_hint, widens
 from ..types.data_config import COLUMNS
 from ..feature_levels import EmitsLevel
@@ -350,6 +351,10 @@ class DeclarationCatalog:
     (:class:`~mosaic.core.pipeline.graph.wire.EditorCatalog`) serializes each one
     as JSON for an API to hand a browser, and the canvas then answers connection
     questions without a round trip.
+
+    A ``def:`` slug is answered from the definition scope in force when it is
+    asked, whatever the scope the catalog was built under, so a catalog handed to
+    another caller answers for that caller's dataset.
     """
 
     entries: Mapping[str, Declaration] = field(
@@ -357,10 +362,18 @@ class DeclarationCatalog:
     )
 
     def __contains__(self, name: str) -> bool:
-        return name in self.entries
+        return self.get(name) is not None
 
     def get(self, name: str) -> Declaration | None:
-        """The declaration for *name*, or ``None`` if nothing declares it."""
+        """The declaration for *name*, or ``None`` if nothing declares it.
+
+        A ``def:`` slug names the version of a definition that it resolves to in
+        the scope in force, ``None`` under no scope and under a disabled one.
+        """
+        if is_definition_slug(name):
+            from .resolve import definition_declaration
+
+            return definition_declaration(name)
         return self.entries.get(name)
 
     def names(self) -> tuple[str, ...]:

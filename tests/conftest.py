@@ -337,15 +337,18 @@ def fresh_catalogs() -> Iterator[None]:
     registry would otherwise read a catalog another test built in the same
     worker, and leave its own behind for the next.
     """
-    from mosaic.core.pipeline.graph.resolve import declaration_catalog, editor_catalog
+    from mosaic.core.pipeline.graph.resolve import (
+        builtin_declaration_catalog,
+        builtin_editor_catalog,
+    )
 
-    declaration_catalog.cache_clear()
-    editor_catalog.cache_clear()
+    builtin_declaration_catalog.cache_clear()
+    builtin_editor_catalog.cache_clear()
     try:
         yield
     finally:
-        declaration_catalog.cache_clear()
-        editor_catalog.cache_clear()
+        builtin_declaration_catalog.cache_clear()
+        builtin_editor_catalog.cache_clear()
 
 
 @pytest.fixture
