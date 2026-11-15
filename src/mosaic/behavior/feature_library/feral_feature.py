@@ -1707,11 +1707,7 @@ class FeralFeature:
         p = self.params
         model = self._model
         device = next(model.parameters()).device
-        normalize = _video_normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        scale = 1 / 255
-
-        def prepare(video: torch.Tensor) -> torch.Tensor:
-            return normalize(video * scale)
+        prepare = _feral_normalize_frames()
 
         # The precision context, built once for every batch. Inference runs in
         # full float32 by default, as the evaluation paths do, because its
@@ -2230,10 +2226,6 @@ class _FeralReadRangeVideo(Protocol):
     ) -> torch.Tensor: ...
 
 
-class _VideoTransform(Protocol):
-    def __call__(self, video: torch.Tensor) -> torch.Tensor: ...
-
-
 class _FeralGetFrameIds(Protocol):
     def __call__(
         self, total_frames: int, chunk_shift: int, chunk_length: int, chunk_step: int
@@ -2268,18 +2260,16 @@ def _feral_collate_fn_val() -> Callable[[list[object]], object]:
     return importlib.import_module("feral.dataset").collate_fn_val
 
 
+def _feral_normalize_frames() -> Callable[[torch.Tensor], torch.Tensor]:
+    return importlib.import_module("feral.dataset").normalize_frames
+
+
 def _feral_get_frame_count() -> _FeralGetFrameCount:
     return importlib.import_module("feral.dataset").get_frame_count
 
 
 def _feral_read_range_video() -> _FeralReadRangeVideo:
     return importlib.import_module("feral.dataset").read_range_video_decord
-
-
-def _video_normalize(
-    mean: tuple[float, float, float], std: tuple[float, float, float]
-) -> _VideoTransform:
-    return importlib.import_module("torchvision.transforms.v2").Normalize(mean, std)
 
 
 def _feral_get_frame_ids() -> _FeralGetFrameIds:
@@ -2736,6 +2726,10 @@ def _run_inference_loop(
     convention of training, evaluation and apply. A *loader* of ``None`` gives no
     answers.
 
+    FERAL's ``ClsDataset`` yields uint8 frames, and each batch is scaled and
+    normalized with FERAL's ``normalize_frames`` once it is on *device*, as FERAL's
+    own loops do.
+
     With a non-empty ``progress_label`` and a positive ``progress_interval``,
     prints a progress line every ``progress_interval`` batches and after the
     last one.
@@ -2748,8 +2742,9 @@ def _run_inference_loop(
     answers: list[FeralAnswer] = []
     total = len(loader)
     with torch.no_grad():
+        normalize_frames = _feral_normalize_frames()
         for i, (data, target, names) in enumerate(loader):
-            data = data.to(device)
+            data = normalize_frames(data.to(device))
             target = target.to(device).view(-1, num_classes)
             output = model(data)
             output_prob = (

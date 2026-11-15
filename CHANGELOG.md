@@ -886,6 +886,15 @@ The one param, `first_frame` (default 62), drops the frames before it. `stimuli`
 `place` and `prefix` ride on every row. The smoothed columns and the raw table's arena
 centre are not carried. A row whose position is `NA` has no row.
 
+### The `feral` extra needs FERAL 1.0.4
+
+FERAL 1.0.4 moved frame normalization out of `ClsDataset`, which now yields uint8
+frames, into `feral.dataset.normalize_frames`, which its own loops call on each batch.
+The held-out evaluation of a `feral` fit runs the model in mosaic's own loop, which now
+calls `normalize_frames` too, and apply normalizes its frames with it in place of its own
+copy of the same transform, so every path follows FERAL's. The `feral` extra requires
+`feral>=1.0.4,<1.1`, since 1.0.3 and earlier have no `normalize_frames`. No run id moves.
+
 ## 0.21.0: `trajectory-smooth` flags gaps it cannot bridge, plus world-frame 3D tracks and FERAL training
 
 ### `trajectory-smooth` marks the positions it fills and the runs it cannot bridge, and two summaries exclude flagged rows
