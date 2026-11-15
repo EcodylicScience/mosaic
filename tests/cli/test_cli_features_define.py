@@ -148,5 +148,8 @@ def test_a_missing_file_exits_without_defining(tmp_path: Path) -> None:
         ],
     )
 
-    assert result.exit_code != 0
-    assert "absent.py" in result.output
+    assert result.exit_code == 2
+    # Typer's error panel wraps the temporary path at the terminal width, which
+    # can break the file name across lines.
+    joined = "".join(result.output.replace("\u2502", "").split())
+    assert "absent.py" in joined
