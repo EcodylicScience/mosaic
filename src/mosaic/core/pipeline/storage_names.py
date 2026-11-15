@@ -43,6 +43,9 @@ contains it was shortened or reads a shortened storage.
 
 _LINEAGE_BOUNDARIES: Final = ("+", "__from__")
 
+_DEFINITION_SLUG_HEAD: Final = "def:"
+_DEFINITION_STORAGE_HEAD: Final = "def."
+
 
 def text_digest(text: str) -> str:
     """The first 10 hex characters of the SHA-1 of *text* in UTF-8.
@@ -91,7 +94,15 @@ def derive_storage_name(feature_name: str, inputs_suffix: str | None) -> str:
 
     Names that fit are returned unchanged. A step reading a shortened name
     inherits the short form, and names stop growing at a shortened step.
+
+    A feature definition's slug ``def:<name>`` becomes ``def.<name>``, because a
+    path component may not contain ``:`` on Windows and ``scp`` reads it as a
+    host separator. :func:`feature_slug_of` maps it back.
     """
+    if feature_name.startswith(_DEFINITION_SLUG_HEAD):
+        feature_name = _DEFINITION_STORAGE_HEAD + feature_name.removeprefix(
+            _DEFINITION_SLUG_HEAD
+        )
     if inputs_suffix is None:
         return feature_name
     prefix = f"{feature_name}__from__"
@@ -109,9 +120,14 @@ def feature_slug_of(storage_name: str) -> str:
 
     :func:`derive_storage_name` writes ``<slug>`` or ``<slug>__from__<suffix>``,
     and a shortened name keeps its slug, so the slug is everything before the
-    first ``__from__``.
+    first ``__from__``. A ``def.<name>`` head, which is how
+    :func:`derive_storage_name` stores a feature definition, reads back as the
+    slug ``def:<name>``.
     """
-    return storage_name.split("__from__", 1)[0]
+    slug = storage_name.split("__from__", 1)[0]
+    if slug.startswith(_DEFINITION_STORAGE_HEAD):
+        return _DEFINITION_SLUG_HEAD + slug.removeprefix(_DEFINITION_STORAGE_HEAD)
+    return slug
 
 
 def _byte_length(text: str) -> int:

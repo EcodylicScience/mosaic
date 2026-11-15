@@ -109,6 +109,23 @@ def test_reindex_drops_the_row_of_a_deleted_tracker_directory(
     )
 
 
+def test_reindex_leaves_the_definitions_root_byte_identical(tmp_path: Path) -> None:
+    manifest = new_dataset_manifest("t", base_dir=tmp_path)
+    directory = tmp_path / "feature_definitions" / "speed"
+    directory.mkdir(parents=True)
+    stem = f"2026-11-13_{'a' * 64}"
+    _ = (directory / f"{stem}.py").write_bytes(b"class Speed:\n    pass\n")
+    _ = (directory / f"{stem}.json").write_bytes(b"{}\n")
+    _ = (directory / "current").write_bytes(f"{stem}\n".encode())
+    before = {p: p.read_bytes() for p in directory.parent.rglob("*") if p.is_file()}
+
+    result = _cli("reindex", "-m", str(manifest), "--apply", "--json")
+
+    assert result.returncode == 0, result.stderr
+    after = {p: p.read_bytes() for p in directory.parent.rglob("*") if p.is_file()}
+    assert after == before
+
+
 def test_sweep_does_not_call_a_rowed_directory_unrowed(
     dataset_with_a_tracker_run: tuple[Path, Dataset, Path],
 ) -> None:

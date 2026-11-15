@@ -21,6 +21,7 @@ from mosaic.core.dataset import (
     legacy_tracking_roots,
     new_dataset_manifest,
 )
+from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 from mosaic.core.pipeline.tracking_roots import (
     TRACKING_ROOT,
     TRACKING_ROOTS,
@@ -157,6 +158,47 @@ def test_the_exclusion_is_not_expressible_as_an_exclude_pattern(tmp_path: Path) 
 
     assert matched == [], "a basename pattern cannot name a directory"
     assert iter_track_files([base], ["*.npz"], exclude_patterns=[TRACKING_ROOT]) == []
+
+
+def test_the_raw_tracks_scanner_does_not_descend_into_definitions(
+    tmp_path: Path,
+) -> None:
+    """A definition's sidecar is JSON named by a digest, and no track."""
+    base = tmp_path / "ds"
+    uploaded = base / "tracks_raw" / "seq_a.json"
+    uploaded.parent.mkdir(parents=True)
+    _ = uploaded.write_text("{}")
+    sidecar = base / DEFINITIONS_ROOT / "speed" / f"2026-11-13_{'a' * 64}.json"
+    sidecar.parent.mkdir(parents=True)
+    _ = sidecar.write_text("{}")
+
+    found = [path for path, _stat in iter_track_files([base], ["*.json"])]
+
+    assert found == [uploaded]
+
+
+def test_the_media_scanner_does_not_descend_into_definitions(
+    tmp_path: Path, requires_ffmpeg: None
+) -> None:
+    base = tmp_path / "ds"
+    for sub in ("media_raw", "media", "tracks"):
+        (base / sub).mkdir(parents=True)
+    dataset = Dataset(
+        manifest_path=base / "dataset.yaml",
+        roots={
+            "media_raw": str(base / "media_raw"),
+            "media": str(base / "media"),
+            "tracks": str(base / "tracks"),
+        },
+    )
+    write_mpeg4_mp4(base / "media_raw" / "seq_a.mp4")
+    inside = base / DEFINITIONS_ROOT / "speed"
+    inside.mkdir(parents=True)
+    write_mpeg4_mp4(inside / "clip.mp4")
+
+    indexed = pd.read_csv(dataset.index_media([base], extensions=(".mp4",)))
+
+    assert [Path(p).name for p in indexed["abs_path"]] == ["seq_a.mp4"]
 
 
 def test_the_media_scanner_does_not_descend_into_tracking(

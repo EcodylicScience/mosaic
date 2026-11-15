@@ -20,7 +20,9 @@ from pathlib import Path
 
 import pytest
 
+from mosaic.cli._context import load_dataset
 from mosaic.core.dataset import Dataset, new_dataset_manifest, open_dataset
+from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 
 # --- One message per state ---------------------------------------------------
 
@@ -109,6 +111,30 @@ def test_open_dataset_without_ensure_roots_writes_nothing(tmp_path: Path) -> Non
 
     _ = open_dataset(manifest)
     assert (base / "tracks").is_dir()
+
+
+def test_loading_a_dataset_creates_the_definitions_root(tmp_path: Path) -> None:
+    base = tmp_path / "ds"
+    manifest = new_dataset_manifest(name="lookup", base_dir=base)
+    shutil.rmtree(base / DEFINITIONS_ROOT)
+
+    _ = Dataset(manifest_path=manifest).load(ensure_roots=False)
+    assert not (base / DEFINITIONS_ROOT).exists()
+
+    dataset = Dataset(manifest_path=manifest).load()
+    assert (base / DEFINITIONS_ROOT).is_dir()
+    assert dataset.get_root(DEFINITIONS_ROOT) == (base / DEFINITIONS_ROOT).resolve()
+
+
+def test_a_read_only_open_creates_no_definitions_root(tmp_path: Path) -> None:
+    base = tmp_path / "ds"
+    manifest = new_dataset_manifest(name="lookup", base_dir=base)
+    shutil.rmtree(base / DEFINITIONS_ROOT)
+
+    _ = open_dataset(manifest, ensure_roots=False)
+    _ = load_dataset(manifest, read_only=True)
+
+    assert not (base / DEFINITIONS_ROOT).exists()
 
 
 def test_open_dataset_raises_for_a_directory_with_no_manifest(tmp_path: Path) -> None:

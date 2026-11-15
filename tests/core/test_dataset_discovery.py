@@ -14,6 +14,7 @@ from mosaic.core.dataset_discovery import (
     discover_datasets,
 )
 from mosaic.core.manifest import MANIFEST_VERSION
+from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 from tests.helpers import make_dataset
 
 
@@ -54,6 +55,16 @@ def test_hidden_directories_and_the_roots_of_a_dataset_are_not_entered(
 
     assert _names(discover_datasets(tmp_path)) == ["project", "nested-library"]
     assert {"_tracking", "features", "media", "models", "tracks"} <= SKIPPED_DIRECTORIES
+
+
+def test_a_manifest_named_file_under_the_definitions_root_is_not_a_dataset(
+    tmp_path: Path,
+) -> None:
+    ds = make_dataset(tmp_path / "project", name="project")
+    _ = make_dataset(ds.base_dir / DEFINITIONS_ROOT / "speed", name="in-definitions")
+
+    assert _names(discover_datasets(tmp_path, max_depth=5)) == ["project"]
+    assert DEFINITIONS_ROOT in SKIPPED_DIRECTORIES
 
 
 def test_a_folder_named_as_a_root_outside_a_dataset_is_entered(tmp_path: Path) -> None:

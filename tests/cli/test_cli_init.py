@@ -48,6 +48,14 @@ class TestInit:
         for relative in default_roots.values():
             assert (target / relative).is_dir(), relative
 
+    def test_the_manifest_declares_the_definitions_root(self, tmp_path: Path) -> None:
+        target = tmp_path / "ds"
+        _ = runner.invoke(app, ["init", str(target)])
+        roots = read_manifest_file(target)["roots"]
+        assert isinstance(roots, dict)
+        assert roots["feature_definitions"] == "feature_definitions"
+        assert (target / "feature_definitions").is_dir()
+
     def test_it_refuses_over_an_existing_manifest(self, tmp_path: Path) -> None:
         target = tmp_path / "ds"
         _ = runner.invoke(app, ["init", str(target), "--name", "first"])

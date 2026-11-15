@@ -277,6 +277,7 @@ from .pipeline.entry_keys import (
     media_index_entries,
     root_index_entries,
 )
+from .pipeline.definitions.store import is_under_definitions_root
 from .pipeline.preprocess_layout import media_variant_filter, media_variants_root
 from .pipeline.promotion import correction_revision
 from .pipeline.tracking_roots import (
@@ -4737,6 +4738,7 @@ class Dataset:
                 if (
                     not cand.is_dir()
                     or is_under_tracking_root(cand.parts)
+                    or is_under_definitions_root(cand.parts)
                     or is_media_variant(cand)
                 ):
                     continue
@@ -4771,6 +4773,9 @@ class Dataset:
                 # file a `video_uuid` and a place in a sequence's composition.
                 if is_under_tracking_root(p.parts):
                     tracking_skipped += 1
+                    continue
+                # Definitions hold source and sidecars, never source media.
+                if is_under_definitions_root(p.parts):
                     continue
                 # Skip files that live inside an imgstore directory (its chunks).
                 if imgstore_dirs and any(

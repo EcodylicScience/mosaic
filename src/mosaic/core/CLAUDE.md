@@ -61,13 +61,17 @@ importing `mosaic.tracking` registers neither.
   resolve through `Dataset.resolve_media_root()`.
 - Code reads each tracker working root from `TRACKING_ROOTS`
   (`tests/core/pipeline/test_tracking_roots.py`).
-- A walk of the dataset for user content skips three things by path, because
+- A walk of the dataset for user content skips four things by path, because
   `exclude_patterns` match basenames only: `_tracking/` by path component
-  (`is_under_tracking_root`), media variants by resolved path (`media_variant_filter`)
-  and label series by their marker (`is_under_label_series`). `_probe_dir_rows` checks
-  the first two and `iter_track_files` the first and third. A new walk checks each that
-  applies (`tests/core/pipeline/test_tracking_roots.py`,
+  (`is_under_tracking_root`), `feature_definitions/` by path component
+  (`is_under_definitions_root`), media variants by resolved path
+  (`media_variant_filter`) and label series by their marker (`is_under_label_series`).
+  `_probe_dir_rows` checks the first three and `iter_track_files` the first, second
+  and fourth. A new walk checks each that applies
+  (`tests/core/pipeline/test_tracking_roots.py`,
   `tests/core/media/preprocess/test_preprocess_index.py`).
+- `feature_definitions` is a declared root: the first open that is not read-only
+  creates it, a read-only open creates nothing, and `reindex` leaves it alone.
 
 ## Manifest
 

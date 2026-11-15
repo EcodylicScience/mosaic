@@ -66,6 +66,7 @@ from mosaic.core.pipeline.composition import SourceMember
 from mosaic.core.entry import validate_entry_name
 from mosaic.core.pipeline._utils import atomic_write
 from mosaic.core.pipeline.label_series import is_under_label_series
+from mosaic.core.pipeline.definitions.store import is_under_definitions_root
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, is_under_tracking_root
 from mosaic.core.pipeline.media_index import mtime_iso
 
@@ -195,7 +196,7 @@ def frame_from_rows(rows: Sequence[Mapping[str, object]]) -> pd.DataFrame:
 
 def _skip_reason(
     path: Path, exclude_patterns: Sequence[str]
-) -> Literal["fork", "excluded", "tracking", "series"] | None:
+) -> Literal["fork", "excluded", "tracking", "definitions", "series"] | None:
     """Why a scan leaves *path* out, or ``None`` to keep it.
 
     Checked in order of cost: the label-series marker is three ``stat`` calls.
@@ -206,6 +207,8 @@ def _skip_reason(
         return "excluded"
     if is_under_tracking_root(path.parts):
         return "tracking"
+    if is_under_definitions_root(path.parts):
+        return "definitions"
     if is_under_label_series(path):
         return "series"
     return None

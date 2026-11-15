@@ -8,6 +8,25 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: feature definitions in the dataset
+
+A dataset can hold a feature as source under its `feature_definitions` directory,
+named by a slug `def:<name>` or `def:<name>@<digest>`, where `<name>` is lowercase
+kebab-case of at most 64 characters and `<digest>` is 12 to 64 lowercase hex
+characters of the source's SHA-256. A `def:` feature stores under the name
+`def.<name>`, as in `features/def.<name>__from__tracks/<run_id>/`, because `:` is
+not allowed in a path component on Windows and `scp` reads it as a host separator.
+`feature_slug_of` maps `def.<name>` back to `def:<name>`. No built-in name
+contains `:`, `.` or `@` or starts with `def`, and no existing storage name, run id
+or golden line moves.
+
+`feature_definitions` is a manifest root with the default path `feature_definitions`.
+`mosaic init` writes it into a new manifest, and a manifest written before it gains it in
+memory, with its file unchanged. The first open that is not read-only creates the empty
+directory, and a read-only open creates nothing. A scan of a source declared at the
+dataset root skips `feature_definitions/` by path component, and `reindex` leaves it
+untouched.
+
 ## Unreleased: the admission gate counts the memory the kernel cannot reclaim
 
 A memory limit kills a job for the memory the kernel cannot reclaim, which resident

@@ -652,3 +652,14 @@ def test_only_pair_features_declare_symmetric_columns(cls: type) -> None:
     symmetric, mirrored = _symmetry(cls)
     if symmetric or mirrored:
         assert getattr(cls, "emits", None) == "pair"
+
+
+def test_no_built_in_name_collides_with_the_definition_syntax() -> None:
+    """A ``def:`` slug and its ``def.`` storage name never read as a built-in's."""
+    offenders = sorted(
+        cls.name
+        for cls in FEATURE_CLASSES
+        if any(character in cls.name for character in ":.@")
+        or cls.name.startswith("def")
+    )
+    assert offenders == []

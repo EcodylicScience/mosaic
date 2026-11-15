@@ -52,6 +52,7 @@ from mosaic.core.json_value import JsonValue
 from mosaic.core.media.store_division import RecordingIdentity, recording_name_problem
 from mosaic.core.strict_model import StrictModel
 from mosaic.core.pipeline._utils import atomic_write
+from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 from mosaic.core.pipeline.error_kind import ClassifiedError, ErrorKind
 from mosaic.user_paths import user_path
 from mosaic.core.pipeline.label_series import series_spec
@@ -259,6 +260,8 @@ _DEFAULT_ROOTS: Final[dict[str, str]] = {
     "selections": "selections",
     # declared: arena layouts, one file per recording and camera
     "arenas": "arenas",
+    # declared: feature definitions, source a user reads before running it
+    DEFINITIONS_ROOT: DEFINITIONS_ROOT,
 }
 
 default_roots: Final[Mapping[str, str]] = MappingProxyType(_DEFAULT_ROOTS)
@@ -312,6 +315,7 @@ def backfill_roots(roots: dict[str, str]) -> dict[str, str]:
         "frame_predictions",
         "selections",
         "arenas",
+        DEFINITIONS_ROOT,
     ):
         _ = roots.setdefault(key, _DEFAULT_ROOTS[key])
     return roots

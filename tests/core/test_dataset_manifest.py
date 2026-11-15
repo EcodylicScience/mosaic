@@ -45,6 +45,7 @@ from mosaic.core.manifest import (
     validate_root_inside,
     write_manifest,
 )
+from mosaic.core.pipeline.definitions.store import DEFINITIONS_ROOT
 from mosaic.core.pipeline.tracking_roots import TRACKING_ROOT, TRACKING_ROOTS
 from tests.helpers import make_dataset
 
@@ -123,12 +124,35 @@ class TestMigration:
         self, tmp_path: Path
     ) -> None:
         manifest = read_manifest(write_v1(tmp_path))
-        backfilled = ("labels_raw", "frame_predictions", "selections", "arenas")
+        backfilled = (
+            "labels_raw",
+            "frame_predictions",
+            "selections",
+            "arenas",
+            DEFINITIONS_ROOT,
+        )
         for key in (TRACKING_ROOT, *TRACKING_ROOTS, *backfilled):
             assert manifest.roots[key] == default_roots[key]
         assert manifest.roots["frame_predictions"] == "frame_predictions"
         assert manifest.roots["selections"] == "selections"
         assert manifest.roots["arenas"] == "arenas"
+
+    def test_a_manifest_written_before_the_definitions_root_gains_it_in_memory(
+        self, tmp_path: Path
+    ) -> None:
+        path = write_v1(tmp_path)
+        before = path.read_bytes()
+
+        manifest = read_manifest(path)
+
+        assert manifest.roots[DEFINITIONS_ROOT] == DEFINITIONS_ROOT
+        assert path.read_bytes() == before
+
+    def test_the_default_roots_list_the_definitions_root(self) -> None:
+        assert default_roots[DEFINITIONS_ROOT] == "feature_definitions"
+        assert list(default_roots).index(DEFINITIONS_ROOT) == (
+            list(default_roots).index("arenas") + 1
+        )
 
     def test_a_declared_legacy_root_is_never_repointed(self) -> None:
         manifest = migrate_to_current({"roots": {"trex": "tracks_raw/trex"}})
