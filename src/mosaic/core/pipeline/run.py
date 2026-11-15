@@ -22,6 +22,7 @@ from typing import ClassVar, Final, TYPE_CHECKING, get_args
 
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel
 
 from mosaic.runlog import EntryMeasure, ProbeRecord, ResourceReport
 from mosaic.version import installed_version
@@ -132,6 +133,7 @@ from .types import (
     TrackInput,
     TracksColumn,
 )
+from .types.inputs import InputsLike
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .entry_pool import EntryPool
 from .memory_watch import (
@@ -1067,6 +1069,23 @@ def _scope_term(feature: Feature, scope: ResolvedScope) -> list[list[object]]:
     return term
 
 
+def identity_terms(params: Params, inputs: InputsLike | BaseModel) -> dict[str, object]:
+    """The ``_params`` and ``_inputs`` terms that open a run's identity payload.
+
+    The one place these two terms are built. ``compute_run_id`` extends them with
+    the run's scope, frame range and window; a caller comparing two identities
+    on params and inputs alone uses them as returned.
+
+    Args:
+        params: The feature's params; only their identity fields are dumped.
+        inputs: The feature's inputs model.
+
+    Returns:
+        The payload fragment keyed ``_params`` and ``_inputs``.
+    """
+    return {"_params": params.identity_dump(), "_inputs": inputs.model_dump()}
+
+
 def compute_run_id(
     feature: Feature,
     frame_start: int | None,
@@ -1145,8 +1164,7 @@ def compute_run_id(
             f"the tables its inputs hand it, which is almost all of them."
         )
     hashable: dict[str, object] = {
-        "_params": feature.params.identity_dump(),
-        "_inputs": feature.inputs.model_dump(),
+        **identity_terms(feature.params, feature.inputs),
         "_frame_range": [frame_start, frame_end],
     }
     if feature.scope_dependent:

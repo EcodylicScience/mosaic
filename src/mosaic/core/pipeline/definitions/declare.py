@@ -107,6 +107,7 @@ from mosaic.core.pipeline.graph.resolve import (
     registry_snapshot,
     toolkit_model_for_ref,
 )
+from mosaic.core.pipeline.run import identity_terms
 from mosaic.core.pipeline.track_space import feature_track_spaces
 from mosaic.core.pipeline.types.inputs import Inputs, TrackInput
 from mosaic.core.pipeline.types.labels import LabelsSource
@@ -119,6 +120,7 @@ __all__ = [
     "SOURCE_MAX_BYTES",
     "declare_class",
     "declare_source",
+    "definition_class",
     "main",
     "registry_findings",
 ]
@@ -364,7 +366,7 @@ def declare_class(
     Raises:
         DefinitionInvalid: The class fails a check, with every finding.
     """
-    cls = _definition_class(module, name)
+    cls = definition_class(module, name)
     findings = _Findings()
     version = _version(cls, findings)
     flags = _flags(cls, findings)
@@ -437,7 +439,7 @@ class _Findings:
         self.found.append(DefinitionFinding(check=check, field=field, message=message))
 
 
-def _definition_class(module: types.ModuleType, name: str) -> type:
+def definition_class(module: types.ModuleType, name: str) -> type:
     """The one class in *module* whose ``name`` is *name*.
 
     Raises:
@@ -1248,9 +1250,7 @@ def _construction_findings(
 
 
 def _identity_payload(params: Params, inputs: BaseModel) -> str:
-    return _canonical(
-        {"_params": params.identity_dump(), "_inputs": inputs.model_dump()}
-    )
+    return _canonical(identity_terms(params, inputs))
 
 
 if __name__ == "__main__":

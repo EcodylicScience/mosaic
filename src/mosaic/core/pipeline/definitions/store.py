@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from mosaic.core.pipeline.definitions.sidecar import DefinitionSidecar
 
 __all__ = [
+    "DEFINITIONS_PACKAGE",
     "DEFINITIONS_ROOT",
     "DIGEST_PREFIX_MIN",
     "NAME_MAX_LENGTH",
@@ -58,8 +59,12 @@ __all__ = [
     "parse_definition_slug",
     "read_current",
     "resolve_digest",
+    "resolve_stored_slug",
     "write_definition",
 ]
+
+DEFINITIONS_PACKAGE: Final = "mosaic_definitions"
+"""The package that every definition's module is imported under."""
 
 DEFINITIONS_ROOT: Final = "feature_definitions"
 """The name of the dataset root that holds the definitions, and its default path."""
@@ -91,7 +96,7 @@ _STEM = re.compile(r"(?P<day>[0-9]{4}-[0-9]{2}-[0-9]{2})_(?P<digest>[0-9a-f]{64}
 _VERSION_FILE = re.compile(r"(?P<stem>[^.]+)\.(?P<suffix>py|json)")
 _CURRENT: Final = "current"
 _SLUG_HEAD: Final = "def:"
-_MODULE_PREFIX: Final = "mosaic_definitions."
+_MODULE_PREFIX: Final = f"{DEFINITIONS_PACKAGE}."
 
 
 class _Coded:
@@ -223,6 +228,16 @@ class DefinitionCorrupt(_Coded, ClassifiedError):
         self.name: str = name
         self.digest: str | None = digest
         self.path: Path = path
+
+    @classmethod
+    def of_digest(cls, name: str, digest: str, path: Path) -> DefinitionCorrupt:
+        """The refusal of a source whose bytes do not hash to the digest in its name."""
+        return cls(
+            name,
+            digest,
+            path,
+            reason="holds bytes whose SHA-256 is not the digest in its name",
+        )
 
     def error_detail(self) -> dict[str, JsonValue]:
         """Return the name, the digest when the file names one, and the path."""
@@ -542,6 +557,33 @@ def resolve_digest(directory: Path, digest_or_prefix: str) -> str:
     return matches[0]
 
 
+def resolve_stored_slug(root: Path, slug: str) -> tuple[str, str]:
+    """Return the name and the full digest of the version that *slug* names.
+
+    ``def:<name>`` names the version ``current`` names, and ``def:<name>@<digest>``
+    the one version whose digest starts with the given text.
+
+    Args:
+        root: The dataset's ``feature_definitions`` root.
+        slug: ``def:<name>[@<digest or prefix>]``.
+
+    Raises:
+        DefinitionNameInvalid: *slug* is not a definition slug.
+        DefinitionNotFound: The name has no current version, or no complete
+            version matches.
+        DefinitionDigestAmbiguous: A prefix matches more than one version.
+        DefinitionCorrupt: ``current`` holds text that is not a version stem.
+    """
+    name, digest = parse_definition_slug(slug)
+    directory = root / name
+    if digest is None:
+        current = read_current(directory)
+        if current is None:
+            raise DefinitionNotFound(slug)
+        digest = current.digest
+    return name, resolve_digest(directory, digest)
+
+
 def write_definition(
     root: Path, name: str, source: bytes, sidecar: DefinitionSidecar
 ) -> DefinitionRecord:
@@ -593,12 +635,7 @@ def write_definition(
         if not source_path.exists():
             atomic_write(source_path, lambda path: path.write_bytes(source))
         elif source_path.read_bytes() != source:
-            raise DefinitionCorrupt(
-                name,
-                digest,
-                source_path,
-                reason="holds bytes whose SHA-256 is not the digest in its name",
-            )
+            raise DefinitionCorrupt.of_digest(name, digest, source_path)
         if not complete:
             dated = sidecar.model_copy(update={"defined_on": stem.date})
             atomic_write(

@@ -51,6 +51,7 @@ from mosaic.core.params import (
 )
 from mosaic.core.pipeline.feature_levels import EmitsLevel, RelatesLevel
 from mosaic.core.pipeline.definitions.store import (
+    DEFINITIONS_PACKAGE,
     DefinitionCorrupt,
     DefinitionFinding,
     DefinitionInvalid,
@@ -103,7 +104,6 @@ each field an earlier version lacks with its default.
 
 _MODEL_MARKER: Final = "$model"
 _MODEL_SET: Final = "set"
-_RESERVED_MODULE_PREFIX: Final = "mosaic_definitions"
 
 type TypeKind = Literal[
     "bool",
@@ -430,7 +430,7 @@ def _is_plain_module(module: str) -> bool:
     return (
         module.isidentifier()
         and not keyword.iskeyword(module)
-        and not module.startswith(_RESERVED_MODULE_PREFIX)
+        and not module.startswith(DEFINITIONS_PACKAGE)
     )
 
 

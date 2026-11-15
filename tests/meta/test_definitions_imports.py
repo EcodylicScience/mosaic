@@ -1,12 +1,15 @@
 """The definition store and sidecar load neither pandas nor the feature library.
 
 ``agent/mcp/spec.py`` imports the store's models, and its import budget excludes
-the analysis stack. Planning reads sidecars on the same budget.
+the analysis stack. Planning reads sidecars on the same budget. The modules that
+declare and load a definition name no layer above ``core``.
 """
 
 from __future__ import annotations
 
-from tests.helpers import modules_loaded_by
+import pytest
+
+from tests.helpers import SOURCE_ROOT, modules_loaded_by
 
 HEAVY_MODULES = (
     "pandas",
@@ -48,3 +51,14 @@ def test_reading_a_directory_and_rendering_an_error_load_neither() -> None:
         "error_envelope(store.DefinitionNotFound('def:x'))\n"
     )
     assert modules_loaded_by(statement, HEAVY_MODULES) == []
+
+
+@pytest.mark.parametrize("module", ["declare.py", "loader.py"])
+def test_the_declaring_and_loading_modules_name_neither_upper_layer(
+    module: str,
+) -> None:
+    text = (SOURCE_ROOT / "core" / "pipeline" / "definitions" / module).read_text(
+        encoding="utf-8"
+    )
+    assert "mosaic.behavior" not in text
+    assert "mosaic.tracking" not in text

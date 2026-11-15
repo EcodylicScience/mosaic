@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel, ValidationError
 
+from mosaic.core.pipeline.definitions.loader import load_definition
 from mosaic.core.pipeline.definitions.sidecar import DefinitionSidecar
 from mosaic.core.pipeline.definitions.store import (
     DEFINITIONS_ROOT,
@@ -23,14 +24,16 @@ from mosaic.core.pipeline.definitions.store import (
     DefinitionNameTaken,
     DefinitionRecord,
     check_definition_name,
+    resolve_stored_slug,
     write_definition,
 )
 from mosaic.core.pipeline.graph.resolve import feature_class_for_slug
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.types.feature import Feature
 
-__all__ = ["DECLARE_TIMEOUT_SECONDS", "define_feature"]
+__all__ = ["DECLARE_TIMEOUT_SECONDS", "define_feature", "load_feature_definition"]
 
 DECLARE_TIMEOUT_SECONDS: Final = 300
 """Seconds the child that checks a source has before it is killed."""
@@ -75,6 +78,29 @@ def define_feature(ds: Dataset, name: str, source: str | bytes) -> DefinitionRec
         ) from None
     sidecar = _declare_in_child(name, data)
     return write_definition(ds.get_root(DEFINITIONS_ROOT), name, data, sidecar)
+
+
+def load_feature_definition(ds: Dataset, slug: str) -> type[Feature]:
+    """Load the version of a definition in *ds* that *slug* names, and return its class.
+
+    Args:
+        ds: The dataset whose ``feature_definitions`` root holds the definition.
+        slug: ``def:<name>`` for the current version, or ``def:<name>@<digest>``
+            with the full digest or a prefix of at least 12 characters.
+
+    Raises:
+        DefinitionNameInvalid: *slug* is not a definition slug.
+        DefinitionNotFound: No version matches *slug*.
+        DefinitionDigestAmbiguous: The prefix matches more than one version.
+        DefinitionCorrupt: A stored file is not what its name says.
+        DefinitionInvalid: The source changed a registry or fails a check.
+        DefinitionMismatch: The loaded class differs from its sidecar.
+        DefinitionToolkitModelMissing: The class names a toolkit model this
+            installation lacks.
+    """
+    root = ds.get_root(DEFINITIONS_ROOT)
+    name, digest = resolve_stored_slug(root, slug)
+    return load_definition(root, name, digest)
 
 
 def _declare_in_child(name: str, source: bytes) -> DefinitionSidecar:
