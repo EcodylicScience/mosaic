@@ -1,20 +1,35 @@
-"""Declaring a feature definition's class: the checks it must pass and its sidecar.
+"""Declaring a feature definition: the checks its source must pass and its sidecar.
 
-:func:`declare_class` finds the class that a definition runs in its imported
-module, checks it against the feature protocol, the identity of a run and the
-params rules, and records the facts its sidecar keeps. Each failed check is a
+:func:`declare_source` checks a source's bytes, imports it with every registry
+filled and refuses an import that changes a registry. :func:`declare_class` finds
+the class that a definition runs in its imported module, checks it against the
+feature protocol, the identity of a run and the params rules, and records the facts
+its sidecar keeps. Each failed check is a
 :class:`~mosaic.core.pipeline.definitions.store.DefinitionFinding`, and the class
 is refused with every finding.
 
-The caller passes the lookup of a toolkit model by reference, so this module names
-no module of the feature library.
+Run as ``python -m mosaic.core.pipeline.definitions.declare <name> <path>``, the
+module declares the source at *path* and writes to its standard output the sidecar
+JSON, or, exiting with status 1, the findings as ``{"findings": [...]}``. Whatever
+the source prints goes to the standard error.
+
+The registries and the toolkit models are reached through ``graph.resolve``, so
+this module names no module of the feature library.
 """
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
+import json
+import os
+import sys
+import tempfile
 import types
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
+from functools import partial
+from pathlib import Path
 from typing import (
     Annotated,
     Final,
@@ -73,16 +88,25 @@ from mosaic.core.pipeline.definitions.sidecar import (
     prerequisite_findings,
     rebuild_inputs_model,
     rebuild_params_model,
+    sidecar_json,
 )
 from mosaic.core.pipeline.definitions.store import (
     DefinitionCheck,
     DefinitionFinding,
     DefinitionInvalid,
+    check_definition_name,
+    definition_module_name,
 )
 from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.feature_levels import RELATES_LEVELS, EmitsLevel
 from mosaic.core.pipeline.graph.compatibility import GpuWhen
-from mosaic.core.pipeline.graph.resolve import first_docstring_line
+from mosaic.core.pipeline.graph.resolve import (
+    RegistrySnapshot,
+    fill_builtin_registries,
+    first_docstring_line,
+    registry_snapshot,
+    toolkit_model_for_ref,
+)
 from mosaic.core.pipeline.track_space import feature_track_spaces
 from mosaic.core.pipeline.types.inputs import Inputs, TrackInput
 from mosaic.core.pipeline.types.labels import LabelsSource
@@ -91,7 +115,18 @@ from mosaic.core.strict_model import terse
 from mosaic.optional_dependency import OptionalModule
 from mosaic.version import installed_version
 
-__all__ = ["declare_class"]
+__all__ = [
+    "SOURCE_MAX_BYTES",
+    "declare_class",
+    "declare_source",
+    "main",
+    "registry_findings",
+]
+
+SOURCE_MAX_BYTES: Final = 1024 * 1024
+"""The most bytes a definition's source holds."""
+
+_REFUSED_EXIT: Final = 1
 
 _FLAGS_IN_INIT: Final = (
     "name",
@@ -172,6 +207,137 @@ _REFERENCE_TYPES: Final[tuple[type, ...]] = (Result, LabelsSource)
 _JSON_VALUE: Final[TypeAdapter[JsonValue]] = TypeAdapter(JsonValue)
 _REQUIREMENT: Final[TypeAdapter[Requirement]] = TypeAdapter(Requirement)
 _PROVIDES: Final[TypeAdapter[Provides]] = TypeAdapter(Provides)
+
+
+def declare_source(source: bytes, name: str) -> DefinitionSidecar:
+    """Check *source* as the definition *name*, and return its sidecar.
+
+    The source must be UTF-8 of at most :data:`SOURCE_MAX_BYTES`. Every registry is
+    filled with the built-ins before the source is imported, from a temporary file,
+    under the module name it has when it runs. Neither the import nor the checks
+    that build the class may change a registry. The module is removed from
+    ``sys.modules`` afterwards. The sidecar's ``defined_on`` is today's UTC date.
+
+    Raises:
+        DefinitionNameInvalid: *name* does not match the grammar.
+        DefinitionInvalid: The source or its class fails a check, with every
+            finding.
+    """
+    check_definition_name(name)
+    if len(source) > SOURCE_MAX_BYTES:
+        raise DefinitionInvalid.of_source(
+            name,
+            f"the source is {len(source)} bytes, more than the {SOURCE_MAX_BYTES} "
+            "a definition may hold",
+        )
+    try:
+        _ = source.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DefinitionInvalid.of_source(
+            name, f"the source is not UTF-8: {exc}"
+        ) from None
+    digest = hashlib.sha256(source).hexdigest()
+    defined_on = datetime.now(UTC).date()
+    module_name = definition_module_name(name, digest)
+    fill_builtin_registries()
+    before = registry_snapshot()
+    with tempfile.TemporaryDirectory(prefix="mosaic-definition-") as directory:
+        path = Path(directory) / f"{module_name.rpartition('.')[2]}.py"
+        _ = path.write_bytes(source)
+        try:
+            module = _import_source(path, module_name, name)
+            changed = registry_findings(before, registry_snapshot())
+            if changed:
+                raise DefinitionInvalid(name, changed)
+            try:
+                sidecar = declare_class(
+                    module,
+                    name,
+                    digest,
+                    defined_on,
+                    partial(toolkit_model_for_ref, definition=name),
+                )
+            except DefinitionInvalid as exc:
+                changed = registry_findings(before, registry_snapshot())
+                raise DefinitionInvalid(name, [*exc.findings, *changed]) from None
+            changed = registry_findings(before, registry_snapshot())
+            if changed:
+                raise DefinitionInvalid(name, changed)
+            return sidecar
+        finally:
+            _ = sys.modules.pop(module_name, None)
+
+
+def _import_source(path: Path, module_name: str, name: str) -> types.ModuleType:
+    """Import the file at *path* as *module_name*.
+
+    Raises:
+        DefinitionInvalid: Importing the source raised, or called ``sys.exit``.
+    """
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise DefinitionInvalid.of_source(name, f"{path} cannot be imported")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except (Exception, SystemExit) as exc:
+        raise DefinitionInvalid.of_source(
+            name, f"importing the source raised {type(exc).__name__}: {exc}"
+        ) from None
+    return module
+
+
+def registry_findings(
+    before: RegistrySnapshot, after: RegistrySnapshot
+) -> list[DefinitionFinding]:
+    """A ``registry`` finding for each registry whose keys differ between snapshots.
+
+    Each names the registry as its field and the keys that were added or removed.
+    """
+    findings: list[DefinitionFinding] = []
+    for registry, keys in before.items():
+        added = sorted(after[registry] - keys)
+        removed = sorted(keys - after[registry])
+        if not (added or removed):
+            continue
+        changes = [
+            f"{label} {', '.join(names)}"
+            for label, names in (("added", added), ("removed", removed))
+            if names
+        ]
+        findings.append(
+            DefinitionFinding(
+                "registry",
+                registry,
+                f"importing the source changed {registry}: {'; '.join(changes)}. A "
+                "definition does not call register_feature or another registrar",
+            )
+        )
+    return findings
+
+
+def main(argv: Sequence[str]) -> int:
+    """Declare the source at ``argv[1]`` as the definition ``argv[0]``.
+
+    Writes the sidecar JSON to the standard output and returns 0, or writes
+    ``{"findings": [...]}`` and returns 1 when the source is refused. The standard
+    output is moved to the standard error while the source runs, so nothing the
+    source prints reaches the result.
+    """
+    name, path = argv
+    sys.stdout.flush()
+    result = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
+    _ = os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    with result:
+        try:
+            sidecar = declare_source(Path(path).read_bytes(), name)
+        except DefinitionInvalid as exc:
+            findings = [finding.as_json() for finding in exc.findings]
+            _ = result.write(json.dumps({"findings": findings}).encode("utf-8"))
+            return _REFUSED_EXIT
+        _ = result.write(sidecar_json(sidecar))
+    return 0
 
 
 def declare_class(
@@ -1085,3 +1251,7 @@ def _identity_payload(params: Params, inputs: BaseModel) -> str:
     return _canonical(
         {"_params": params.identity_dump(), "_inputs": inputs.model_dump()}
     )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

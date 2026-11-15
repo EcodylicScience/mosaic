@@ -1,9 +1,14 @@
-"""``mosaic features`` sub-app: list | describe (schema-driven feature discovery)."""
+"""``mosaic features`` sub-app: list | describe | define.
+
+``list`` and ``describe`` are schema-driven feature discovery, and ``define`` stores
+a feature's source in a dataset.
+"""
 
 from __future__ import annotations
 
 import typer
 
+from mosaic.cli.features.define import define_command
 from mosaic.cli.features.describe import describe_command
 from mosaic.cli.features.list import list_command
 
@@ -16,3 +21,4 @@ features_app = typer.Typer(
 
 _ = features_app.command(name="list")(list_command)
 _ = features_app.command(name="describe")(describe_command)
+_ = features_app.command(name="define")(define_command)

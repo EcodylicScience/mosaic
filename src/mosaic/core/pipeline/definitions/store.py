@@ -5,18 +5,21 @@ dataset's ``feature_definitions`` root. A version is a pair of files named by it
 stem, ``<YYYY-MM-DD>_<sha256>``: the source (``.py``) and its sidecar (``.json``).
 The text file ``current`` holds the stem of the version that a bare ``def:<name>``
 resolves to. Files are never edited, so a digest names one source under one name.
+:func:`write_definition` is the one writer.
 
 The module imports the standard library, pydantic and the error base only. The
 agent's tool contract imports :class:`DefinitionRecord` and the status reads import
-the grammar, and neither may load pandas or the feature library.
+the grammar, and neither may load pandas or the feature library. The writer imports
+``atomic_write``, whose module loads pandas, inside the function.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Literal
 
@@ -25,6 +28,7 @@ from mosaic.core.strict_model import StrictModel
 
 if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
+    from mosaic.core.pipeline.definitions.sidecar import DefinitionSidecar
 
 __all__ = [
     "DEFINITIONS_ROOT",
@@ -54,6 +58,7 @@ __all__ = [
     "parse_definition_slug",
     "read_current",
     "resolve_digest",
+    "write_definition",
 ]
 
 DEFINITIONS_ROOT: Final = "feature_definitions"
@@ -152,8 +157,15 @@ type DefinitionCheck = Literal[
     "model_marker",
     "model_rebuild",
     "construction",
+    "source",
+    "registry",
 ]
-"""The kinds of finding that make a source an invalid definition."""
+"""The kinds of finding that make a source an invalid definition.
+
+``source`` refuses the source itself: not UTF-8, too large, raising on import, or
+running past the time its check has. ``registry`` refuses a source whose import
+changed a process-global registry, and names the registry as its field.
+"""
 
 
 @dataclass(frozen=True)
@@ -186,6 +198,11 @@ class DefinitionInvalid(_Coded, ClassifiedError):
         super().__init__(f"the definition {name!r} is invalid: {reasons}")
         self.name: str = name
         self.findings: tuple[DefinitionFinding, ...] = tuple(findings)
+
+    @classmethod
+    def of_source(cls, name: str, message: str) -> DefinitionInvalid:
+        """The refusal of a source itself, with one ``source`` finding."""
+        return cls(name, [DefinitionFinding("source", None, message)])
 
     def error_detail(self) -> dict[str, JsonValue]:
         """Return the name and every finding."""
@@ -430,8 +447,14 @@ def list_versions(directory: Path) -> list[VersionStem]:
     skips ``current``, ``current.lock``, the hidden ``.tmp`` files an interrupted
     write leaves, and any other file. An absent directory has no versions.
     """
+    suffixes = _version_suffixes(directory)
+    return sorted(stem for stem, found in suffixes.items() if found == {"py", "json"})
+
+
+def _version_suffixes(directory: Path) -> dict[VersionStem, set[str]]:
+    """Each stem in *directory* and the suffixes (``py``, ``json``) of its files."""
     if not directory.is_dir():
-        return []
+        return {}
     suffixes: dict[VersionStem, set[str]] = {}
     for path in directory.iterdir():
         matched = _VERSION_FILE.fullmatch(path.name)
@@ -440,7 +463,7 @@ def list_versions(directory: Path) -> list[VersionStem]:
         stem = VersionStem.parse(matched["stem"])
         if stem is not None:
             suffixes.setdefault(stem, set()).add(matched["suffix"])
-    return sorted(stem for stem, found in suffixes.items() if found == {"py", "json"})
+    return suffixes
 
 
 def read_current(directory: Path) -> VersionStem | None:
@@ -517,3 +540,98 @@ def resolve_digest(directory: Path, digest_or_prefix: str) -> str:
     if len(matches) > 1:
         raise DefinitionDigestAmbiguous(slug, matches)
     return matches[0]
+
+
+def write_definition(
+    root: Path, name: str, source: bytes, sidecar: DefinitionSidecar
+) -> DefinitionRecord:
+    """Store *source* and its *sidecar* as a version of *name*, and make it current.
+
+    Under the lock of ``<root>/<name>/current``, a complete version of the source's
+    digest is reused. A ``.py`` of the digest left without its ``.json`` is completed
+    under its own stem, keeping its date. Otherwise the ``.py``, the ``.json`` and
+    ``current`` are written in that order, under the UTC date of the write. A crash
+    before ``current`` leaves a version that no reader lists and that the next
+    definition of the same source completes. The sidecar written records the
+    version's date as its ``defined_on``.
+
+    Args:
+        root: The dataset's ``feature_definitions`` root, created when absent.
+        name: The definition's name.
+        source: The source's bytes.
+        sidecar: The sidecar of *source*, as its check gave it.
+
+    Returns:
+        The version's name, digest and date, whether an existing version was reused,
+        and the digest ``current`` named before when it moved.
+
+    Raises:
+        DefinitionNameInvalid: *name* does not match the grammar.
+        DefinitionCorrupt: A stored ``.py`` of the digest holds other bytes.
+        ValueError: *sidecar* describes another name or another source.
+    """
+    from mosaic.core.pipeline._utils import atomic_write
+    from mosaic.core.pipeline.definitions.sidecar import sidecar_json
+    from mosaic.core.pipeline.index_lock import index_lock
+
+    check_definition_name(name)
+    digest = hashlib.sha256(source).hexdigest()
+    if (sidecar.name, sidecar.digest) != (name, digest):
+        raise ValueError(
+            f"the sidecar of {sidecar.name!r} with digest {sidecar.digest} does not "
+            f"describe this source of {name!r}, whose digest is {digest}"
+        )
+    directory = root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    with index_lock(directory / _CURRENT):
+        try:
+            previous = read_current(directory)
+        except DefinitionCorrupt:
+            previous = None
+        stem, complete = _stored_version(directory, digest)
+        source_path = directory / f"{stem.stem}.py"
+        if not source_path.exists():
+            atomic_write(source_path, lambda path: path.write_bytes(source))
+        elif source_path.read_bytes() != source:
+            raise DefinitionCorrupt(
+                name,
+                digest,
+                source_path,
+                reason="holds bytes whose SHA-256 is not the digest in its name",
+            )
+        if not complete:
+            dated = sidecar.model_copy(update={"defined_on": stem.date})
+            atomic_write(
+                directory / f"{stem.stem}.json",
+                lambda path: path.write_bytes(sidecar_json(dated)),
+            )
+        moved = previous != stem
+        if moved:
+            atomic_write(
+                directory / _CURRENT,
+                lambda path: path.write_text(f"{stem.stem}\n", encoding="utf-8"),
+            )
+    return DefinitionRecord(
+        name=name,
+        digest=digest,
+        defined_on=stem.date,
+        reused=complete,
+        previous_digest=previous.digest if moved and previous is not None else None,
+    )
+
+
+def _stored_version(directory: Path, digest: str) -> tuple[VersionStem, bool]:
+    """The stem a source of *digest* is stored under, and whether its pair is complete.
+
+    A complete version comes first, then a ``.py`` left without its ``.json``, then a
+    new stem dated today in UTC.
+    """
+    stored = sorted(
+        (found != {"py", "json"}, stem)
+        for stem, found in _version_suffixes(directory).items()
+        if stem.digest == digest and "py" in found
+    )
+    if stored:
+        lone, stem = stored[0]
+        return stem, not lone
+    return VersionStem(datetime.now(UTC).date(), digest), False

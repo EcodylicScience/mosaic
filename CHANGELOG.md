@@ -27,6 +27,30 @@ directory, and a read-only open creates nothing. A scan of a source declared at 
 dataset root skips `feature_definitions/` by path component, and `reindex` leaves it
 untouched.
 
+`define_feature(ds, name, source)` (`mosaic.core.pipeline.definitions.define`)
+checks a source in a child interpreter and stores it under
+`feature_definitions/<name>/` as a version: `<YYYY-MM-DD>_<sha256>.py`, the source as
+given, beside `<YYYY-MM-DD>_<sha256>.json`, its sidecar, where the date is the UTC
+date of the source's first definition under that name. The text file `current`
+holds the stem of the version that `def:<name>` names. Defining identical source
+again writes nothing and returns `reused`, and defining an earlier source makes its
+version current again. It returns a `DefinitionRecord` and refuses a name that is a
+built-in feature's (`definition_name_taken`) and a source that fails a check
+(`definition_invalid`, with every finding). The source is UTF-8 of at most 1 MiB, its
+import changes no registry, and its check ends within 300 seconds.
+`declare_source(source, name)` (`definitions.declare`, also run as
+`python -m mosaic.core.pipeline.definitions.declare <name> <path>`) gives the sidecar
+of a source, `write_definition(root, name, source, sidecar)` (`definitions.store`)
+stores a source whose sidecar is already known, and `read_sidecar(path)`
+(`definitions.sidecar`) reads a sidecar.
+
+`mosaic features define <name> <file.py> --manifest <dataset.yaml> [--json]` calls
+`define_feature` on the dataset and prints the `DefinitionRecord` (`name`, `digest`,
+`defined_on`, `reused`, `previous_digest`) under `--json`, and otherwise a sentence
+with the name, the first 12 characters of the digest and the date. A refusal exits 1
+with every finding on standard error, and under `--json` with the error envelope
+whose `detail.findings` lists them.
+
 `EmitsLevel`, `RelatesLevel` and `RELATES_LEVELS` are declared in
 `mosaic.core.pipeline.feature_levels`, which imports only the standard library. They
 are no longer importable from `mosaic.core.pipeline.types` or

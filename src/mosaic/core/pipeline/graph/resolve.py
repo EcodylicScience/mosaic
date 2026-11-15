@@ -18,6 +18,8 @@ call so that importing this package stays cheap and ``core`` imports neither
 ``tests/meta/test_graph_imports.py`` checks the feature-library imports. No test
 checks the ``mosaic.tracking`` ones. :func:`toolkit_model_for_ref` imports the
 module of a toolkit model that a feature definition names, also inside the call.
+:func:`fill_builtin_registries` and :func:`registry_snapshot` fill and read every
+registry, for the check that a definition's source registers nothing.
 
 **Declarations are read off what a class already declares**, never off its name.
 Whether a feature accepts tracks is answered by validating a probe payload
@@ -100,6 +102,8 @@ from .wire import (
 
 __all__ = [
     "ReferenceSite",
+    "RegistryName",
+    "RegistrySnapshot",
     "ResolvedStep",
     "StepBuildError",
     "StepSpec",
@@ -115,11 +119,13 @@ __all__ = [
     "describe_step_type",
     "editor_catalog",
     "feature_class_for_slug",
+    "fill_builtin_registries",
     "first_docstring_line",
     "fields_need_ground_truth",
     "op_class_for_kind",
     "op_writes_tracks",
     "params_reference_site",
+    "registry_snapshot",
     "resolve_step_spec",
     "run_reference_fields",
     "step_type_detail",
@@ -1344,3 +1350,53 @@ def toolkit_model_for_ref(ref: str, *, definition: str) -> type[DeclaredModel]:
     if not (isinstance(found, type) and issubclass(found, DeclaredModel)):
         raise invalid("is not a DeclaredModel")
     return found
+
+
+def fill_builtin_registries() -> None:
+    """Register every built-in feature, op, converter and track schema.
+
+    Importing the feature library registers the features, ``register_ops`` the
+    ops, and the two converter calls and the schema module the rest. A source
+    that imports a module of the feature library, as a definition may, then
+    finds every registry already full and adds nothing to it.
+    """
+    import importlib
+
+    from mosaic.core.label_converter import ensure_label_converters_registered
+    from mosaic.core.track_converter import ensure_track_converters_registered
+    from mosaic.tracking import register_ops
+
+    _ = importlib.import_module("mosaic.behavior.feature_library")
+    register_ops()
+    ensure_label_converters_registered()
+    ensure_track_converters_registered()
+    _ = importlib.import_module("mosaic.core.schema")
+
+
+type RegistryName = Literal[
+    "FEATURES", "OPS", "TRACK_CONVERTERS", "LABEL_CONVERTERS", "TRACK_SCHEMAS"
+]
+"""The process-global registries that a definition's source must leave unchanged."""
+
+type RegistrySnapshot = dict[RegistryName, frozenset[str]]
+"""The keys each registry holds, a label converter's as ``<format>:<kind>``."""
+
+
+def registry_snapshot() -> RegistrySnapshot:
+    """The keys every registry holds now, to compare with a later snapshot."""
+    from mosaic.behavior.feature_library import FEATURES
+    from mosaic.core.label_converter import LABEL_CONVERTERS
+    from mosaic.core.pipeline.ops import OPS
+    from mosaic.core.schema import TRACK_SCHEMAS
+    from mosaic.core.track_converter import TRACK_CONVERTERS
+
+    return {
+        "FEATURES": frozenset(FEATURES),
+        "OPS": frozenset(OPS),
+        "TRACK_CONVERTERS": frozenset(TRACK_CONVERTERS),
+        "LABEL_CONVERTERS": frozenset(
+            f"{source_format}:{label_kind}"
+            for source_format, label_kind in LABEL_CONVERTERS
+        ),
+        "TRACK_SCHEMAS": frozenset(TRACK_SCHEMAS),
+    }

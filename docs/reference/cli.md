@@ -783,6 +783,7 @@ $ mosaic features [OPTIONS] COMMAND [ARGS]...
 
 * `list`: List the registered features with their...
 * `describe`: Describe one feature: its params and the...
+* `define`: Define a feature in the dataset from a...
 
 ### `mosaic features list`
 
@@ -828,6 +829,33 @@ $ mosaic features describe [OPTIONS] {slug}
 
 * `--detail <fields|schema>`: 'fields' prints a row per params field, nested ones as dotted paths. 'schema' also prints the params JSON Schema.  [default: fields]
 * `--json`: Emit the description as JSON.
+* `--help`: Show this message and exit.
+
+### `mosaic features define`
+
+Define a feature in the dataset from a source file.
+
+The file is checked in a child interpreter and stored under the dataset's
+feature_definitions directory as a version of the name, which the slug
+def:<name> then names. Defining the same source again reuses its version.
+Defining other source adds a version and makes it current. A refusal prints
+every finding and exits 1.
+
+**Usage**:
+
+```console
+$ mosaic features define [OPTIONS] {name} {file}
+```
+
+**Arguments**:
+
+* `name`: The definition's name, lowercase kebab-case.  [required]
+* `file`: The Python file that declares the feature class.  [required]
+
+**Options**:
+
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml).  [required]
+* `--json`: Emit the record as JSON.
 * `--help`: Show this message and exit.
 
 ## `mosaic tracking`

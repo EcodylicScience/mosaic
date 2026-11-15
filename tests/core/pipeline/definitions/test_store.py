@@ -151,6 +151,8 @@ def test_the_finding_checks_are_the_declared_set() -> None:
         "model_marker",
         "model_rebuild",
         "construction",
+        "source",
+        "registry",
     )
 
 

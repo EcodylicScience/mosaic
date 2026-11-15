@@ -105,6 +105,8 @@ What lives where:
 - ``recipes``: the recipes a graph test validates, plans or runs.
 - ``state_writes``: the files a feature's ``save_state`` publishes and their order,
   and whether ``load_state`` finds a state after each publish fails.
+- ``feature_definitions``: the sources of feature definitions, and a dataset with
+  tracks that defines them.
 - ``trees``: snapshots of a directory tree, and the assertion that a call left
   one unchanged.
 - ``run_summaries``: a feature whose output for each entry is the table a test
@@ -134,6 +136,18 @@ from tests.helpers.catalogs import catalog_without_contract
 from tests.helpers.column_contract import assert_writes_declared_columns, mirrored_rows
 from tests.helpers.cli import invoke_json, invoke_ok
 from tests.helpers.datasets import make_dataset
+from tests.helpers.feature_definitions import (
+    CANARY_NAME,
+    CANARY_SOURCE,
+    CANARY_VARIABLE,
+    GLOBAL_NAME,
+    GLOBAL_SOURCE,
+    MINIMAL_NAME,
+    MINIMAL_SOURCE,
+    POSE_NAME,
+    POSE_SOURCE,
+    defined_dataset,
+)
 from tests.helpers.decode_probe import FakeToolPython, install_fake_tool_python
 from tests.helpers.extracted_frames import (
     extract_entry_camera,
@@ -531,6 +545,16 @@ __all__ = [
     "CONSUMER_OWNED",
     "CONVERT_TRACKS_STEP",
     "Counted",
+    "CANARY_NAME",
+    "CANARY_SOURCE",
+    "CANARY_VARIABLE",
+    "GLOBAL_NAME",
+    "GLOBAL_SOURCE",
+    "MINIMAL_NAME",
+    "MINIMAL_SOURCE",
+    "POSE_NAME",
+    "POSE_SOURCE",
+    "defined_dataset",
     "CHILD_TIMEOUT_SECONDS",
     "CI_FERAL_MODULES",
     "CI_LIGHTNING_ACTION_MODULES",
