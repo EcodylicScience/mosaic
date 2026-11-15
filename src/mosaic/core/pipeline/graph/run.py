@@ -97,6 +97,7 @@ from ..gpu_lease import (
     step_environment,
     try_lease,
 )
+from ..definitions.scope import definition_scope
 from .lanes import DEFAULT_LANE, GPU_LANES, lane_for_step
 from .model import OpStepSpec
 from .plan import plan_pipeline
@@ -262,6 +263,11 @@ def run_pipeline(
     its lease and the request reads ``failed``.
     A later call in this process takes over the lease that an earlier one kept.
 
+    The run plans from the sidecars of the feature definitions its steps name,
+    in a ``load=False`` definition scope of *ds* nested in its caller's, and
+    loads each one in this process when its step runs, the version its request
+    recorded (:func:`~.step.execute_step`).
+
     A request with a cleanup (``Request.cleanup``) runs it here once every step
     has finished (:func:`~.cleanup.run_cleanup`), under the same lease. A failed
     cleanup does not fail the run.
@@ -306,6 +312,9 @@ def run_pipeline(
         the order they were run.
 
     Raises:
+        FeatureDefinitionsNotAllowed: The definition scope in force is disabled
+            and a step names a feature definition. Raised before the recipe is
+            validated.
         StepRefused: A step declined to run, naming why. ``CoverageShortfall`` is
             the case a caller most often means to catch. Raised after the steps
             that do not descend from it have run, as is any other error of a
@@ -318,132 +327,134 @@ def run_pipeline(
             step.
         Cancelled: The cancel token fired, or a cancel recorded a step.
     """
-    if request is not None:
-        _release_own_leftover_lease(ds, request.request_id)
-        _refuse_running_step(ds, request)
-    submitted = request
-    if submitted is None:
-        submitted = submit_request(
-            ds,
-            recipe,
-            scope=scope,
-            allow_partial=allow_partial,
-            owner=owner,
-            inventory=inventory,
-            catalog=catalog,
-            step_scopes=step_scopes,
-            tracks_run_id=tracks_run_id,
-            pins=pins,
-            applies_request_id=applies_request_id,
-        ).request
-    elif allow_partial and not submitted.allow_partial:
-        submitted = submitted.model_copy(update={"allow_partial": True})
+    with definition_scope(ds, load=False):
+        if request is not None:
+            _release_own_leftover_lease(ds, request.request_id)
+            _refuse_running_step(ds, request)
+        submitted = request
+        if submitted is None:
+            submitted = submit_request(
+                ds,
+                recipe,
+                scope=scope,
+                allow_partial=allow_partial,
+                owner=owner,
+                inventory=inventory,
+                catalog=catalog,
+                step_scopes=step_scopes,
+                tracks_run_id=tracks_run_id,
+                pins=pins,
+                applies_request_id=applies_request_id,
+            ).request
+        elif allow_partial and not submitted.allow_partial:
+            submitted = submitted.model_copy(update={"allow_partial": True})
 
-    token = CancelToken() if cancel_token is None else cancel_token
-    order = tuple(step.id for step in topological_order(recipe))
-    lease = take_driver_lease(ds.base_dir, submitted.request_id, in_process=True)
-    keeper = LeaseKeeper(ds.base_dir, lease)
-    keeper.start()
-    _IN_PROCESS_LEASES.add(_lease_key(lease))
-    outcomes: list[StepOutcome] = []
-    cleanup_status = ""
-    below_failure: set[str] = set()
-    unrecorded: set[str] = set()
-    first_error: Exception | None = None
-    driving_ended = False
-    try:
-        for step_id in order:
-            if step_id in below_failure or step_id in unrecorded:
-                continue
-            keeper.ensure_held()
-            keeper.record_step(step_id, os.getpid())
-            before = _run_record(ds, submitted, step_id)
-            try:
-                # Checked once the lease names the step. A cancel that reads the
-                # lease from then on signals this process instead of recording
-                # the step, so only a cancel already under way can record it
-                # behind this check.
-                if (
-                    token.is_cancelled()
-                    or _recorded_status(ds, submitted, step_id) == "cancelled"
-                ):
-                    raise Cancelled()
-                outcome = _execute_or_error(
-                    ds,
-                    submitted,
-                    step_id,
-                    store=store,
-                    inventory=inventory,
-                    catalog=catalog,
-                    owner=owner,
-                    cancel_token=token,
-                    parallel=parallel,
-                )
-            finally:
-                # Cleared however the step ended. A lease left naming a step
-                # with this pid would read that step as running for as long as
-                # this process lives, as a notebook kernel does after a step
-                # raised before writing its run-log.
-                keeper.record_step("", 0)
-            if isinstance(outcome, Exception):
-                first_error = first_error or outcome
-                # A record left by an earlier call is not this call's failure.
-                after = _run_record(ds, submitted, step_id)
-                if after is None or after == before or after["status"] != "failed":
+        token = CancelToken() if cancel_token is None else cancel_token
+        order = tuple(step.id for step in topological_order(recipe))
+        lease = take_driver_lease(ds.base_dir, submitted.request_id, in_process=True)
+        keeper = LeaseKeeper(ds.base_dir, lease)
+        keeper.start()
+        _IN_PROCESS_LEASES.add(_lease_key(lease))
+        outcomes: list[StepOutcome] = []
+        cleanup_status = ""
+        below_failure: set[str] = set()
+        unrecorded: set[str] = set()
+        first_error: Exception | None = None
+        driving_ended = False
+        try:
+            for step_id in order:
+                if step_id in below_failure or step_id in unrecorded:
+                    continue
+                keeper.ensure_held()
+                keeper.record_step(step_id, os.getpid())
+                before = _run_record(ds, submitted, step_id)
+                try:
+                    # Checked once the lease names the step. A cancel that reads the
+                    # lease from then on signals this process instead of recording
+                    # the step. Only a cancel already under way can record it
+                    # behind this check.
+                    if (
+                        token.is_cancelled()
+                        or _recorded_status(ds, submitted, step_id) == "cancelled"
+                    ):
+                        raise Cancelled()
+                    outcome = _execute_or_error(
+                        ds,
+                        submitted,
+                        step_id,
+                        store=store,
+                        inventory=inventory,
+                        catalog=catalog,
+                        owner=owner,
+                        cancel_token=token,
+                        parallel=parallel,
+                    )
+                finally:
+                    # Cleared however the step ended. A lease left naming a step
+                    # with this pid would read that step as running for as long as
+                    # this process lives, as a notebook kernel does after a step
+                    # raised before writing its run-log.
+                    keeper.record_step("", 0)
+                if isinstance(outcome, Exception):
+                    first_error = first_error or outcome
+                    # A record left by an earlier call is not this call's failure.
+                    after = _run_record(ds, submitted, step_id)
+                    if after is None or after == before or after["status"] != "failed":
+                        unrecorded |= blocked_by(recipe, submitted, step_id)
+                    elif _refuses_every_step(after):
+                        break
+                    else:
+                        _ = _record_blocked(ds, submitted, recipe, step_id)
+                        below_failure |= blocked_by(recipe, submitted, step_id)
+                    continue
+                outcomes.append(outcome)
+                if outcome.state == "stalled" and not submitted.allow_partial:
+                    # Its branch stops after one stall rather than after K attempts.
+                    # A feature legitimately producing fewer outputs than inputs never
+                    # reads as complete and would be resubmitted forever; an attempt
+                    # counter renders a *correct* pipeline red and invites a retry
+                    # that cannot succeed.
+                    first_error = first_error or CoverageShortfall(
+                        step_id,
+                        outcome.covered,
+                        outcome.target,
+                        "the attempt exited clean and coverage did not move",
+                    )
                     unrecorded |= blocked_by(recipe, submitted, step_id)
-                elif _refuses_every_step(after):
-                    break
-                else:
-                    _ = _record_blocked(ds, submitted, recipe, step_id)
-                    below_failure |= blocked_by(recipe, submitted, step_id)
-                continue
-            outcomes.append(outcome)
-            if outcome.state == "stalled" and not submitted.allow_partial:
-                # Its branch stops after one stall rather than after K attempts.
-                # A feature legitimately producing fewer outputs than inputs never
-                # reads as complete and would be resubmitted forever; an attempt
-                # counter renders a *correct* pipeline red and invites a retry
-                # that cannot succeed.
-                first_error = first_error or CoverageShortfall(
-                    step_id,
-                    outcome.covered,
-                    outcome.target,
-                    "the attempt exited clean and coverage did not move",
-                )
-                unrecorded |= blocked_by(recipe, submitted, step_id)
-        if _cleanup_due(ds, submitted):
-            keeper.ensure_held()
-            cleanup_status = run_cleanup(
-                ds, submitted, token=token, inventory=inventory, catalog=catalog
-            ).status
-        driving_ended = not unrecorded
-    except (Cancelled, KeyboardInterrupt):
-        _ = _cancel_unended(ds, submitted, order)
-        raise
-    finally:
-        keeper.stop()
-        _IN_PROCESS_LEASES.discard(_lease_key(lease))
-        if request_rollup(
-            ds.base_dir, submitted, read_lease=not driving_ended
-        ).is_terminal:
-            release_driver_lease(ds.base_dir, lease)
-    if first_error is not None:
-        raise first_error
+            if _cleanup_due(ds, submitted):
+                keeper.ensure_held()
+                cleanup_status = run_cleanup(
+                    ds, submitted, token=token, inventory=inventory, catalog=catalog
+                ).status
+            driving_ended = not unrecorded
+        except (Cancelled, KeyboardInterrupt):
+            _ = _cancel_unended(ds, submitted, order)
+            raise
+        finally:
+            keeper.stop()
+            _IN_PROCESS_LEASES.discard(_lease_key(lease))
+            if request_rollup(
+                ds.base_dir, submitted, read_lease=not driving_ended
+            ).is_terminal:
+                release_driver_lease(ds.base_dir, lease)
+        if first_error is not None:
+            raise first_error
 
-    final = plan_pipeline(
-        ds,
-        recipe,
-        request=submitted,
-        inventory=inventory,
-        catalog=catalog,
-    )
-    return PipelineRun(
-        recipe_digest=final.recipe_digest,
-        scope=final.scope,
-        outcomes=tuple(outcomes),
-        request_id=submitted.request_id,
-        cleanup_status=cleanup_status,
-    )
+        with definition_scope(ds, load=False, pins=submitted.definitions):
+            final = plan_pipeline(
+                ds,
+                recipe,
+                request=submitted,
+                inventory=inventory,
+                catalog=catalog,
+            )
+        return PipelineRun(
+            recipe_digest=final.recipe_digest,
+            scope=final.scope,
+            outcomes=tuple(outcomes),
+            request_id=submitted.request_id,
+            cleanup_status=cleanup_status,
+        )
 
 
 class StepStillRunning(ClassifiedError):
@@ -597,6 +608,10 @@ def run_request(
     whose cleanup has not ended is still running, so a driver killed during it
     leaves the request ``orphaned``, and running it again finishes the cleanup.
 
+    The driver reads the request's feature definitions from their sidecars, in
+    the definition scope of *ds* with the request's ``definitions`` as its pins,
+    and imports none. Each step's process loads the version its request recorded.
+
     The driver holds the request's lease while it runs, names in it the step whose
     process runs, and deletes it when the request has ended. A driver that raises
     keeps it, and the request then reads ``orphaned`` until it is run again. Before
@@ -644,120 +659,123 @@ def run_request(
             :data:`~.driver_lease.DRIVER_LEASE_UNREFRESHED_LIMIT_SECONDS`, checked
             before each step.
     """
-    recipe, order = _refuse_undrivable(ds, request)
-    log_path = driver_log_path(ds.base_dir, request.request_id)
-    ended = request_rollup(ds.base_dir, request)
-    if ended.is_terminal:
-        # A lease left here is stale, because a live one was refused above.
-        stale = read_driver_lease(ds.base_dir, request.request_id)
-        if stale is not None:
-            release_driver_lease(ds.base_dir, stale)
-        return RequestRun(
-            request_id=request.request_id,
-            status=ended.status,
-            ran=(),
-            skipped=tuple(
-                attempt.step_id
-                for attempt in ended.steps
-                if attempt.status == "finished"
-            ),
-            cancelled=(),
-            log_path=log_path,
-        )
-    computes = load_computes(ds.base_dir, request.request_id)
-    computed = None if computes is None else frozenset(run.step for run in computes)
-    gpu_steps = frozenset(
-        step_id
-        for step_id in order
-        if step_id not in request.stand_ins
-        and (
-            computed is None
-            or not computed.isdisjoint(
-                ancestors_of(recipe, step_id, cut=request.stand_ins)
+    with definition_scope(ds, load=False, pins=request.definitions):
+        recipe, order = _refuse_undrivable(ds, request)
+        log_path = driver_log_path(ds.base_dir, request.request_id)
+        ended = request_rollup(ds.base_dir, request)
+        if ended.is_terminal:
+            # A lease left here is stale, because a live one was refused above.
+            stale = read_driver_lease(ds.base_dir, request.request_id)
+            if stale is not None:
+                release_driver_lease(ds.base_dir, stale)
+            return RequestRun(
+                request_id=request.request_id,
+                status=ended.status,
+                ran=(),
+                skipped=tuple(
+                    attempt.step_id
+                    for attempt in ended.steps
+                    if attempt.status == "finished"
+                ),
+                cancelled=(),
+                log_path=log_path,
             )
+        computes = load_computes(ds.base_dir, request.request_id)
+        computed = None if computes is None else frozenset(run.step for run in computes)
+        gpu_steps = frozenset(
+            step_id
+            for step_id in order
+            if step_id not in request.stand_ins
+            and (
+                computed is None
+                or not computed.isdisjoint(
+                    ancestors_of(recipe, step_id, cut=request.stand_ins)
+                )
+            )
+            and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
+            and step_lane(recipe, step_id) in GPU_LANES
         )
-        and _recorded_status(ds, request, step_id) not in TERMINAL_STATUSES
-        and step_lane(recipe, step_id) in GPU_LANES
-    )
-    cards = leasable_cards(gpu_cards) if gpu_cards is not None or gpu_steps else None
-    token = CancelToken() if cancel_token is None else cancel_token
-    lease = take_driver_lease(ds.base_dir, request.request_id)
-    keeper = LeaseKeeper(ds.base_dir, lease)
-    keeper.start()
-    ran: list[str] = []
-    skipped: list[str] = []
-    blocked: list[str] = []
-    below_failure: set[str] = set()
-    cancelled: tuple[str, ...] = ()
-    cleanup_status = ""
-    try:
-        with log_path.open("a", encoding="utf-8") as log:
-            if cards is not None and cards.warning:
-                _ = log.write(f"{card_warning(cards)}\n")
-                log.flush()
-            for step_id in order:
-                if token.is_cancelled():
-                    break
-                if step_id in below_failure:
-                    continue
-                status = _recorded_status(ds, request, step_id)
-                if status == "finished":
-                    skipped.append(step_id)
-                    continue
-                if status not in TERMINAL_STATUSES and step_id in request.bind:
-                    # Recorded here, in no process of its own: it is the run it
-                    # names, unless the plan refuses the bind.
-                    keeper.ensure_held()
-                    status = _settle_bound(ds, request, step_id)
+        cards = (
+            leasable_cards(gpu_cards) if gpu_cards is not None or gpu_steps else None
+        )
+        token = CancelToken() if cancel_token is None else cancel_token
+        lease = take_driver_lease(ds.base_dir, request.request_id)
+        keeper = LeaseKeeper(ds.base_dir, lease)
+        keeper.start()
+        ran: list[str] = []
+        skipped: list[str] = []
+        blocked: list[str] = []
+        below_failure: set[str] = set()
+        cancelled: tuple[str, ...] = ()
+        cleanup_status = ""
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                if cards is not None and cards.warning:
+                    _ = log.write(f"{card_warning(cards)}\n")
+                    log.flush()
+                for step_id in order:
+                    if token.is_cancelled():
+                        break
+                    if step_id in below_failure:
+                        continue
+                    status = _recorded_status(ds, request, step_id)
                     if status == "finished":
                         skipped.append(step_id)
                         continue
-                if status not in TERMINAL_STATUSES:
-                    keeper.ensure_held()
-                    started = _run_step(
-                        ds,
-                        request,
-                        step_id,
-                        log=log,
-                        token=token,
-                        keeper=keeper,
-                        parallel=parallel,
-                        cards=cards if step_id in gpu_steps else None,
-                    )
-                    if started is None:
-                        status = "cancelled"
-                    else:
-                        ran.append(step_id)
-                        status = started
-                if status == "finished":
-                    continue
-                if status != "failed" or _refuses_every_step(
-                    _run_record(ds, request, step_id)
-                ):
-                    break
-                blocked.extend(_record_blocked(ds, request, recipe, step_id))
-                below_failure |= blocked_by(recipe, request, step_id)
-        if not token.is_cancelled() and _cleanup_due(ds, request):
-            keeper.ensure_held()
-            cleanup_status = run_cleanup(ds, request, token=token).status
-        if token.is_cancelled():
-            cancelled = _cancel_unended(ds, request, order)
-    finally:
-        keeper.stop()
-    # Read without the lease, because this driver has ended its steps.
-    rollup = request_rollup(ds.base_dir, request, read_lease=False)
-    if rollup.is_terminal:
-        release_driver_lease(ds.base_dir, lease)
-    return RequestRun(
-        request_id=request.request_id,
-        status=rollup.status,
-        ran=tuple(ran),
-        skipped=tuple(skipped),
-        cancelled=cancelled,
-        log_path=log_path,
-        cleanup_status=cleanup_status,
-        blocked=tuple(blocked),
-    )
+                    if status not in TERMINAL_STATUSES and step_id in request.bind:
+                        # Recorded here, in no process of its own: it is the run it
+                        # names, unless the plan refuses the bind.
+                        keeper.ensure_held()
+                        status = _settle_bound(ds, request, step_id)
+                        if status == "finished":
+                            skipped.append(step_id)
+                            continue
+                    if status not in TERMINAL_STATUSES:
+                        keeper.ensure_held()
+                        started = _run_step(
+                            ds,
+                            request,
+                            step_id,
+                            log=log,
+                            token=token,
+                            keeper=keeper,
+                            parallel=parallel,
+                            cards=cards if step_id in gpu_steps else None,
+                        )
+                        if started is None:
+                            status = "cancelled"
+                        else:
+                            ran.append(step_id)
+                            status = started
+                    if status == "finished":
+                        continue
+                    if status != "failed" or _refuses_every_step(
+                        _run_record(ds, request, step_id)
+                    ):
+                        break
+                    blocked.extend(_record_blocked(ds, request, recipe, step_id))
+                    below_failure |= blocked_by(recipe, request, step_id)
+            if not token.is_cancelled() and _cleanup_due(ds, request):
+                keeper.ensure_held()
+                cleanup_status = run_cleanup(ds, request, token=token).status
+            if token.is_cancelled():
+                cancelled = _cancel_unended(ds, request, order)
+        finally:
+            keeper.stop()
+        # Read without the lease, because this driver has ended its steps.
+        rollup = request_rollup(ds.base_dir, request, read_lease=False)
+        if rollup.is_terminal:
+            release_driver_lease(ds.base_dir, lease)
+        return RequestRun(
+            request_id=request.request_id,
+            status=rollup.status,
+            ran=tuple(ran),
+            skipped=tuple(skipped),
+            cancelled=cancelled,
+            log_path=log_path,
+            cleanup_status=cleanup_status,
+            blocked=tuple(blocked),
+        )
 
 
 def start_detached_driver(

@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, NoReturn
 
 import typer
 
-from mosaic.cli._context import load_dataset
+from mosaic.cli._context import definitions_of, load_dataset
 from mosaic.cli._io import (
     EntriesOption,
     GroupOption,
@@ -69,6 +69,8 @@ from mosaic.core.pipeline.ops import ScopeRefused
 from mosaic.core.pipeline.refusal import Refusal
 from mosaic.cli._render import render_step_type_detail, render_table
 from mosaic.cli.features.describe import DetailOption
+from mosaic.cli.tags import DefinitionsManifestOption
+from mosaic.core.pipeline.definitions.scope import definition_scope
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.parallelism import ParallelSettings
@@ -314,11 +316,22 @@ def fail_unrunnable(
     fail_classified(error, as_json=as_json, message=message, step=step)
 
 
-def validate_command(recipe: RecipeOption, as_json: JsonOption = False) -> None:
-    """Check a recipe against the registries. Opens no dataset."""
+def validate_command(
+    recipe: RecipeOption,
+    manifest: DefinitionsManifestOption = None,
+    as_json: JsonOption = False,
+) -> None:
+    """Check a recipe against the registries.
+
+    Without --manifest it opens no dataset, and a step that names a feature
+    definition (def:<name>) is reported, since only a dataset holds one. With
+    --manifest the dataset is opened read-only, and its definitions are checked
+    from their stored sidecars without importing any.
+    """
     from mosaic.core.pipeline.graph import merge_cautions, validation_report
 
-    report = validation_report(recipe_document(recipe))
+    with definitions_of(manifest):
+        report = validation_report(recipe_document(recipe))
     if as_json:
         emit_json(report.model_dump(mode="json"))
         if not report.valid:
@@ -441,50 +454,51 @@ def plan_command(
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     pins, applies_request_id = _pins_and_apply(pin, applies_request)
-    try:
-        with stdout_to_stderr():
-            plan = plan_with_cleanup(
-                ds,
-                parsed,
-                cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
-                scope=scope,
-                step_scopes=step_scopes,
-                retire=retire or (),
-                tracks_run_id=tracks_run_id,
-                pins=pins or None,
-                applies_request_id=applies_request_id,
-            )
-    except RecipeRefused as refusal:
-        if as_json:
-            emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
-            raise typer.Exit(code=1) from refusal
-        fail(str(refusal))
-    except ClassifiedError as error:
-        fail_unrunnable(error, as_json=as_json)
-    unended = requests_matching(
-        ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
-    )
-    retirable, omitted = (
-        retirable_recipes(
-            ds.base_dir,
-            exclude_digest=plan.recipe_digest,
-            present=lambda storage, run_id: feature_run_root(
-                ds, storage, run_id
-            ).is_dir(),
+    with definition_scope(ds, load=False):
+        try:
+            with stdout_to_stderr():
+                plan = plan_with_cleanup(
+                    ds,
+                    parsed,
+                    cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
+                    scope=scope,
+                    step_scopes=step_scopes,
+                    retire=retire or (),
+                    tracks_run_id=tracks_run_id,
+                    pins=pins or None,
+                    applies_request_id=applies_request_id,
+                )
+        except RecipeRefused as refusal:
+            if as_json:
+                emit_json(plan_wire(refusal.plan).model_dump(mode="json"))
+                raise typer.Exit(code=1) from refusal
+            fail(str(refusal))
+        except ClassifiedError as error:
+            fail_unrunnable(error, as_json=as_json)
+        unended = requests_matching(
+            ds.base_dir, plan.recipe_digest, Scope() if scope is None else scope
         )
-        if plan.cleanup is not None
-        else ((), 0)
-    )
-    _emit_plan(
-        plan,
-        open_requests=unended,
-        retirable=retirable,
-        retirable_omitted=omitted,
-        extra_cautions=assume_added_cautions(
-            parsed, plan, assume_added or (), scope=scope
-        ),
-        as_json=as_json,
-    )
+        retirable, omitted = (
+            retirable_recipes(
+                ds.base_dir,
+                exclude_digest=plan.recipe_digest,
+                present=lambda storage, run_id: feature_run_root(
+                    ds, storage, run_id
+                ).is_dir(),
+            )
+            if plan.cleanup is not None
+            else ((), 0)
+        )
+        _emit_plan(
+            plan,
+            open_requests=unended,
+            retirable=retirable,
+            retirable_omitted=omitted,
+            extra_cautions=assume_added_cautions(
+                parsed, plan, assume_added or (), scope=scope
+            ),
+            as_json=as_json,
+        )
 
 
 AtolOption = Annotated[
@@ -946,103 +960,106 @@ def run_command(
     scope = entries_scope(entry, group)
     step_scopes = parse_step_scopes(step_scope)
     pins, applies_request_id = _pins_and_apply(pin, applies_request)
-    submitted: Request | None = None
-    token = CancelToken()
-    install_signal_handler(token)
-    try:
-        with stdout_to_stderr():
-            # Submitted here rather than inside run_pipeline, so that a refusal
-            # raised by one step can be traced to that step's attempt.
-            recorded = submit_request(
-                ds,
-                parsed,
-                scope=scope,
-                allow_partial=allow_partial,
-                owner=owner,
-                step_scopes=step_scopes,
-                expect_plan=expect_plan,
-                cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
-                retire=retire or (),
-                tracks_run_id=tracks_run_id,
-                pins=pins or None,
-                applies_request_id=applies_request_id,
-            )
-            submitted = recorded.request
-            _warn_duplicates(recorded.duplicates)
-            done = run_pipeline(
-                ds,
-                parsed,
-                request=submitted,
-                owner=owner,
-                cancel_token=token,
-                parallel=parallel,
-            )
-    except Cancelled:
-        if submitted is not None:
-            report = request_status_wire(ds.base_dir, submitted)
-            if as_json:
-                emit_json(report.model_dump(mode="json"))
-            else:
-                _render_request_status(report)
-        raise typer.Exit(code=130) from None
-    except Refusal as refusal:
-        # A step's own refusal, or one raised inside a step's attempt, such as a
-        # tracker's refusal of a codec. The run raises the first one after the
-        # steps on other branches have run.
-        step_id, execution_id = _failed_attempt(ds.base_dir, submitted, refusal)
-        exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
-    except ClassifiedError as error:
-        step_id, _ = _failed_attempt(ds.base_dir, submitted, error)
-        fail_unrunnable(error, as_json=as_json, step=step_id)
+    with definition_scope(ds, load=False):
+        submitted: Request | None = None
+        token = CancelToken()
+        install_signal_handler(token)
+        try:
+            with stdout_to_stderr():
+                # Submitted here instead of inside run_pipeline. A refusal raised by
+                # one step can then be traced to that step's attempt.
+                recorded = submit_request(
+                    ds,
+                    parsed,
+                    scope=scope,
+                    allow_partial=allow_partial,
+                    owner=owner,
+                    step_scopes=step_scopes,
+                    expect_plan=expect_plan,
+                    cleanup=_cleanup_policy(cleanup, keep_newest, min_age_hours),
+                    retire=retire or (),
+                    tracks_run_id=tracks_run_id,
+                    pins=pins or None,
+                    applies_request_id=applies_request_id,
+                )
+                submitted = recorded.request
+                _warn_duplicates(recorded.duplicates)
+                done = run_pipeline(
+                    ds,
+                    parsed,
+                    request=submitted,
+                    owner=owner,
+                    cancel_token=token,
+                    parallel=parallel,
+                )
+        except Cancelled:
+            if submitted is not None:
+                report = request_status_wire(ds.base_dir, submitted)
+                if as_json:
+                    emit_json(report.model_dump(mode="json"))
+                else:
+                    _render_request_status(report)
+            raise typer.Exit(code=130) from None
+        except Refusal as refusal:
+            # A step's own refusal, or one raised inside a step's attempt, such as a
+            # tracker's refusal of a codec. The run raises the first one after the
+            # steps on other branches have run.
+            step_id, execution_id = _failed_attempt(ds.base_dir, submitted, refusal)
+            exit_refused(execution_id, refusal, step_id=step_id, as_json=as_json)
+        except ClassifiedError as error:
+            step_id, _ = _failed_attempt(ds.base_dir, submitted, error)
+            fail_unrunnable(error, as_json=as_json, step=step_id)
 
-    rows = [
-        {
-            "step": outcome.step_id,
-            "type": outcome.kind,
-            "run_id": outcome.run_id,
-            "state": outcome.state,
-        }
-        for outcome in done.outcomes
-    ]
-    removal = (
-        request_status_wire(ds.base_dir, submitted).cleanup
-        if submitted.cleanup is not None
-        else None
-    )
-    if as_json:
-        emit_json(
+        rows = [
             {
-                "request_id": done.request_id,
-                "cleanup": None if removal is None else removal.model_dump(mode="json"),
-                "recipe_digest": done.recipe_digest,
-                "scope": sorted(list(pair) for pair in done.scope),
-                "steps": [
-                    {
-                        **row,
-                        "planned_run_id": outcome.planned_run_id,
-                        "execution_id": outcome.execution_id,
-                        "covered": outcome.covered,
-                        "target": outcome.target,
-                    }
-                    for row, outcome in zip(rows, done.outcomes, strict=True)
-                ],
+                "step": outcome.step_id,
+                "type": outcome.kind,
+                "run_id": outcome.run_id,
+                "state": outcome.state,
             }
+            for outcome in done.outcomes
+        ]
+        removal = (
+            request_status_wire(ds.base_dir, submitted).cleanup
+            if submitted.cleanup is not None
+            else None
         )
-        _exit_on_failed_cleanup(done.cleanup_status)
-        return
-    render_table(rows, ["step", "type", "run_id", "state"])
-    if removal is not None:
-        _render_cleanup_status(removal)
-    for outcome in done.outcomes:
-        if outcome.diverged:
-            # Worth saying out loud: the plan is a preview, and a step that
-            # recorded a different identifier means the preview was wrong about
-            # something -- most often a scope that changed underneath it.
-            log(
-                f"note: step {outcome.step_id!r} recorded {outcome.run_id}, "
-                f"where the plan resolved {outcome.planned_run_id}"
+        if as_json:
+            emit_json(
+                {
+                    "request_id": done.request_id,
+                    "cleanup": None
+                    if removal is None
+                    else removal.model_dump(mode="json"),
+                    "recipe_digest": done.recipe_digest,
+                    "scope": sorted(list(pair) for pair in done.scope),
+                    "steps": [
+                        {
+                            **row,
+                            "planned_run_id": outcome.planned_run_id,
+                            "execution_id": outcome.execution_id,
+                            "covered": outcome.covered,
+                            "target": outcome.target,
+                        }
+                        for row, outcome in zip(rows, done.outcomes, strict=True)
+                    ],
+                }
             )
-    _exit_on_failed_cleanup(done.cleanup_status)
+            _exit_on_failed_cleanup(done.cleanup_status)
+            return
+        render_table(rows, ["step", "type", "run_id", "state"])
+        if removal is not None:
+            _render_cleanup_status(removal)
+        for outcome in done.outcomes:
+            if outcome.diverged:
+                # The plan is a preview. A step that recorded a different identifier
+                # than the plan resolved shows that the plan diverged from execution,
+                # most often because a scope changed after planning.
+                log(
+                    f"note: step {outcome.step_id!r} recorded {outcome.run_id}, "
+                    f"where the plan resolved {outcome.planned_run_id}"
+                )
+        _exit_on_failed_cleanup(done.cleanup_status)
 
 
 def _exit_on_failed_cleanup(status: str) -> None:
@@ -1082,74 +1099,75 @@ def _run_request(
     from mosaic.core.pipeline.job import CancelToken, install_signal_handler
 
     ds = load_dataset(manifest)
-    try:
-        request = load_request(ds.base_dir, request_id)
-    except FileNotFoundError as exc:
-        fail(str(exc))
-    if detach:
+    with definition_scope(ds, load=False):
         try:
-            if gpu_cards is not None:
-                _ = leasable_cards(gpu_cards)
-            driver = start_detached_driver(
-                ds, request, parallel=parallel, gpu_cards=gpu_cards
-            )
+            request = load_request(ds.base_dir, request_id)
+        except FileNotFoundError as exc:
+            fail(str(exc))
+        if detach:
+            try:
+                if gpu_cards is not None:
+                    _ = leasable_cards(gpu_cards)
+                driver = start_detached_driver(
+                    ds, request, parallel=parallel, gpu_cards=gpu_cards
+                )
+            except Refusal as refusal:
+                exit_refused("", refusal, as_json=as_json)
+            except ClassifiedError as error:
+                fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+            if as_json:
+                emit_json(
+                    {
+                        "request_id": driver.request_id,
+                        "driver_pid": driver.pid,
+                        "log_path": str(driver.log_path),
+                    }
+                )
+            else:
+                log(
+                    f"[mosaic] request {driver.request_id} is driven by pid "
+                    f"{driver.pid}; its output is appended to {driver.log_path}"
+                )
+            return
+        token = CancelToken()
+        install_signal_handler(token)
+        try:
+            with stdout_to_stderr():
+                done = run_request(
+                    ds,
+                    request,
+                    cancel_token=token,
+                    parallel=parallel,
+                    gpu_cards=gpu_cards,
+                )
         except Refusal as refusal:
             exit_refused("", refusal, as_json=as_json)
         except ClassifiedError as error:
             fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
+        report = request_status_wire(ds.base_dir, request)
         if as_json:
             emit_json(
                 {
-                    "request_id": driver.request_id,
-                    "driver_pid": driver.pid,
-                    "log_path": str(driver.log_path),
+                    "request_id": done.request_id,
+                    "status": report.status,
+                    "verdict": report.verdict,
+                    "ran": list(done.ran),
+                    "skipped": list(done.skipped),
+                    "cancelled": list(done.cancelled),
+                    "blocked": list(done.blocked),
+                    "log_path": str(done.log_path),
+                    "cleanup": None
+                    if report.cleanup is None
+                    else report.cleanup.model_dump(mode="json"),
                 }
             )
         else:
-            log(
-                f"[mosaic] request {driver.request_id} is driven by pid "
-                f"{driver.pid}; its output is appended to {driver.log_path}"
-            )
-        return
-    token = CancelToken()
-    install_signal_handler(token)
-    try:
-        with stdout_to_stderr():
-            done = run_request(
-                ds,
-                request,
-                cancel_token=token,
-                parallel=parallel,
-                gpu_cards=gpu_cards,
-            )
-    except Refusal as refusal:
-        exit_refused("", refusal, as_json=as_json)
-    except ClassifiedError as error:
-        fail_unrunnable(error, as_json=as_json, step=error.error_step() or "")
-    report = request_status_wire(ds.base_dir, request)
-    if as_json:
-        emit_json(
-            {
-                "request_id": done.request_id,
-                "status": report.status,
-                "verdict": report.verdict,
-                "ran": list(done.ran),
-                "skipped": list(done.skipped),
-                "cancelled": list(done.cancelled),
-                "blocked": list(done.blocked),
-                "log_path": str(done.log_path),
-                "cleanup": None
-                if report.cleanup is None
-                else report.cleanup.model_dump(mode="json"),
-            }
-        )
-    else:
-        _render_request_status(report)
-        log(f"note: the steps' output is in {done.log_path}")
-    if done.status == "failed" or done.cleanup_status == "failed":
-        raise typer.Exit(code=1)
-    if done.status == "cancelled":
-        raise typer.Exit(code=130)
+            _render_request_status(report)
+            log(f"note: the steps' output is in {done.log_path}")
+        if done.status == "failed" or done.cleanup_status == "failed":
+            raise typer.Exit(code=1)
+        if done.status == "cancelled":
+            raise typer.Exit(code=130)
 
 
 def submit_command(
@@ -1385,9 +1403,10 @@ def status_command(
         request = load_request(ds.base_dir, request_id)
     except FileNotFoundError as exc:
         fail(str(exc))
-    report = request_status_wire(
-        ds.base_dir, request, brief=brief, wait_seconds=wait_seconds
-    )
+    with definition_scope(ds, load=False, pins=request.definitions):
+        report = request_status_wire(
+            ds.base_dir, request, brief=brief, wait_seconds=wait_seconds
+        )
     if as_json:
         emit_json(report.model_dump(mode="json"))
         return

@@ -1,8 +1,8 @@
 """The definition scope: the definitions a ``def:`` slug may name, and its class.
 
 A scope is the definitions of one dataset and whether its caller may load their
-code. It lives in a ``ContextVar``, so it belongs to one thread or asyncio task, and
-a thread starts with none. Under no scope a ``def:`` slug names nothing. The slug
+code. It lives in a ``ContextVar`` and belongs to one thread or asyncio task. A
+thread starts with none. Under no scope a ``def:`` slug names nothing. The slug
 lookups read the ambient scope through :func:`definition_class_for_slug`, which
 returns the declared class of a sidecar under a ``load=False`` scope and the loaded
 class under a ``load=True`` one.
@@ -70,6 +70,7 @@ __all__ = [
     "definition_sidecar_for_slug",
     "resolve_definition_slug",
     "scope_definition_names",
+    "scope_version_slugs",
 ]
 
 
@@ -87,7 +88,8 @@ class DefinitionScope:
         allowed: Whether definitions may be used at all. Under a disabled scope a
             ``def:`` slug is refused.
         definitions_dir: The dataset's ``feature_definitions`` root, ``None`` for
-            a scope of no dataset.
+            a scope of no dataset or of a dataset that declares no
+            ``feature_definitions`` root.
     """
 
     base_dir: Path | None
@@ -158,11 +160,17 @@ def definition_scope(
 
 
 def _located(ds_or_base: Dataset | Path | None) -> tuple[Path | None, Path | None]:
-    """The dataset directory and its ``feature_definitions`` root."""
+    """The dataset directory and its ``feature_definitions`` root.
+
+    A dataset that declares its roots without ``feature_definitions`` holds no
+    definitions. Its root is ``None``.
+    """
     if ds_or_base is None:
         return None, None
     if isinstance(ds_or_base, Path):
         return ds_or_base, ds_or_base / DEFINITIONS_ROOT
+    if not ds_or_base.has_root(DEFINITIONS_ROOT):
+        return ds_or_base.base_dir, None
     return ds_or_base.base_dir, ds_or_base.get_root(DEFINITIONS_ROOT)
 
 
@@ -318,6 +326,29 @@ def scope_definition_names() -> list[str]:
     return sorted(names)
 
 
+def scope_version_slugs(slug: str) -> list[str]:
+    """The slug of each version of the definition *slug* names that this scope holds.
+
+    Every version of the name in the dataset and among the scope's sidecars, as
+    ``def:<name>@<digest>`` sorted by digest, whatever digest *slug* gives. Empty
+    under no scope and under a disabled one, and for a slug that is not a
+    definition's.
+    """
+    scope = _SCOPE.get()
+    if scope is None or not scope.allowed:
+        return []
+    try:
+        name, _ = parse_definition_slug(slug)
+    except DefinitionNameInvalid:
+        return []
+    digests = {held for held, sidecar in scope.sidecars.items() if sidecar.name == name}
+    if scope.definitions_dir is not None:
+        digests.update(
+            version.digest for version in list_versions(scope.definitions_dir / name)
+        )
+    return [f"def:{name}@{digest}" for digest in sorted(digests)]
+
+
 def declared_class_of(loaded: type) -> type | None:
     """The declared class of the version *loaded* is, under a ``load=True`` scope.
 
@@ -368,7 +399,7 @@ def _read_sidecar(path: Path, name: str, digest: str) -> DefinitionSidecar:
 def clear_definition_caches() -> None:
     """Forget every sidecar read and every declared class built in this process.
 
-    A test that changes a toolkit model in-process calls it, so the next lookup
+    A test that changes a toolkit model in-process calls it. The next lookup then
     rebuilds the declared class against the changed model.
     """
     with _CACHE_LOCK:

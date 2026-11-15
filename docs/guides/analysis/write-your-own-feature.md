@@ -118,9 +118,125 @@ can reach it:
   add the import line to `feature_library/__init__.py`. It is then reachable from
   `mosaic run --feature`, appears in `mosaic features list`, and lands in the
   generated reference.
-- **Out of the tree, or in a notebook.** Import your module before you build the
-  pipeline and it registers on import. This is Python-API only: a fresh `mosaic`
-  process never imports it, so the CLI cannot see it.
+- **In a notebook.** Import your module before you build the pipeline and it
+  registers on import. This is Python-API only. A fresh `mosaic` process does not
+  import it, and the CLI cannot see it.
+- **In a dataset.** [Define the feature](#define-a-feature-in-a-dataset) from one
+  file, and every process that opens the dataset can run it.
+
+## Define a feature in a dataset
+
+A definition stores a feature's source in the dataset, as `def:<name>`. The CLI, a
+recipe, the MCP server and every worker that opens the dataset then find it, with no
+change to mosaic and no registration. Write one Python file that declares the feature
+class, with the definition's name as the class's `name`, and store it:
+
+```bash
+mosaic features define my-feature my_feature.py --manifest study/dataset.yaml
+```
+
+From Python, `define_feature(ds, "my-feature", source_bytes)` in
+`mosaic.core.pipeline.definitions.define` does the same. A name is lowercase kebab-case
+of at most 64 characters and may not equal a built-in feature's. The file is imported
+once in a child process and checked against the rules below as far as a check can test
+them. The version bump, determinism in `apply` and the environments that other machines
+run in stay the author's to keep. A file that fails is refused with every finding,
+listed under `detail.findings` with `--json`.
+
+Defining the same source again reuses its version. Other source adds a version and
+makes it current. A new version gives new run ids, and the runs of earlier versions
+stay readable. A feature's slug names which version runs:
+
+- `def:my-feature` is the current version when a recipe is validated or planned. A
+  plan pins the version's digest, and a request runs that version after a later
+  definition moves `current`.
+- `def:my-feature@<digest>` names one version, by 12 to 64 hex characters of its
+  SHA-256, as `mosaic features list --manifest study/dataset.yaml` shows them.
+  Pin a recipe this way to keep it on a version.
+
+Use the slug as the feature of a step, or run it alone:
+
+```bash
+mosaic run -m study/dataset.yaml --feature def:my-feature
+```
+
+`mosaic features list`, `mosaic features describe def:my-feature` and
+`mosaic pipeline validate` list, describe and check definitions when given
+`--manifest`, and without it know only the built-ins. A run writes under
+`features/def.my-feature__from__tracks/`, since `:` is not allowed in a folder name on
+every platform. Definitions are unavailable to a `Dataset` built in code with roots
+that omit `feature_definitions`.
+
+### Rules for the code
+
+Start from the per-sequence template above, with these differences:
+
+- **One file, with absolute imports.** Write
+  `from mosaic.behavior.feature_library.helpers import meta_columns`. A relative
+  import such as `from .helpers import ...` fails. Leave `register_feature` out, as the
+  template does. The file is UTF-8 of at most 1 MiB. The class whose `name` is the
+  definition's name is the only one that counts, and other classes and helpers in the
+  file are allowed. Do not declare `__mosaic_definition__`.
+- **Import only what the environment has.** A definition runs wherever a step runs:
+  your machine, the MCP server's, a queue worker's. A module missing there fails the
+  step.
+- **Be deterministic**, at import as well as in `apply`. A file that reads its
+  environment while it is imported can declare different params in two imports, and
+  its load then fails with `definition_mismatch`.
+- **Bump `version` when the output's meaning changes.** An edit gives new run ids
+  whether or not you bump it. The version is the run id's prefix and what a request
+  checks to find that a producer moved.
+- **Do not call `register_feature`.** An import that changes a registry (features,
+  ops, converters, track schemas) is refused. A definition stays out of the registries.
+- **Declare the flags as class constants**, outside `__init__`. Planning reads
+  `parallelizable`, `scope_dependent`, `accepts_overlap`, `emits`, `consumed_roots`,
+  `fits` and `costly_fit` from the class, and an instance that sets one runs under a
+  different value than it was planned with. `parallelizable`, `scope_dependent`,
+  `accepts_overlap`, `emits` and `consumed_roots` are required.
+- **Give `temporal_reach` as an int or `None`.** A function of the params and a
+  `temporal_reach_by_option` are refused, because planning reads the reach without
+  the class.
+- **Type the params from a closed set.** Every field has a default and is one of:
+  `bool`, `int`, `float`, `str` or `None`; a `Literal` of those; a `list`, a `tuple`
+  (`tuple[T, ...]` or a fixed length) or a `dict` with `str` keys of these types; a
+  union of them; a toolkit config model such as `PoseConfig`; or a model defined in the
+  file from the same types, subclassing `DeclaredModel` or `NestedParams`. A reference
+  to another run (`Result`, `ArtifactSpec`, a labels source) is refused. Constraints
+  (`gt`, `ge`, `lt`, `le`, `multiple_of`, `min_length`, `max_length`, `pattern`),
+  `Declared` and `HASH_EXCLUDE` go at the top level of a field: `Annotated[list[str] |
+  None, Declared(...)]`. `Optional[Annotated[list[str], Declared(...)]]` is refused.
+  Describe a field with `Declared`, because `Field(description=...)` is refused. `Field`
+  takes a default, a default factory and the constraints above, and any other argument
+  is refused.
+- **Leave the params models plain.** No validator, serializer, computed field, alias,
+  `model_config`, `model_post_init` or `__init__`, on `Params` or on a model it
+  contains. Planning rebuilds the model from its fields alone, and each of these
+  changes validation or the dump outside them.
+- **Subclass the toolkit's `Inputs`** with items of `TrackInput`, `Result` or both,
+  and declare nothing on it but `_require` and `_track_input`.
+
+The class must also build as `MyFeature(MyFeature.Inputs(...), None)`, as the template
+does.
+
+### Trust
+
+A definition is Python, run with every privilege of the process that runs a step naming
+it: your account at a workstation, the server's under the MCP server, the worker's
+identity on a queue. It runs outside any sandbox. The check at definition runs in a
+child process, which keeps your session clean and isolates nothing else.
+
+- Whoever can write a dataset's `feature_definitions/` folder runs code as whoever
+  later runs a step naming `def:` on it. A recipe pinned to `def:<name>@<digest>`
+  runs that version only, and one naming `def:<name>` runs whichever version is
+  current when it is planned.
+- Opening, listing, describing, validating and planning a dataset you received runs none
+  of its code. Running or verifying (`mosaic pipeline verify`) a recipe that names a
+  `def:` step does, and loads only that step's definition at its pinned version. Read
+  `feature_definitions/<name>/<date>_<digest>.py` first. `mosaic features list
+  --manifest` shows the digest.
+- Your CLI and Python calls run without a flag, because you already run code as
+  yourself. The MCP server runs definitions only when its operator
+  [allows them](../../agents.md#feature-definitions).
 
 ## Determinism
 

@@ -130,7 +130,7 @@ from .wire import (
     render_location,
 )
 from ..definitions.scope import current_scope
-from ..definitions.store import is_definition_slug
+from ..definitions.store import FeatureDefinitionsNotAllowed, is_definition_slug
 from ..preprocess_layout import PREPROCESS_KIND
 from mosaic.core.pipeline.label_controls import LABEL_CONTROL_FIELDS
 from mosaic.core.pipeline.types import ArtifactSpec
@@ -156,6 +156,7 @@ __all__ = [
     "patch_validation_report",
     "pair_rules",
     "read_recipe",
+    "refuse_disallowed_definitions",
     "reject_unless_valid",
     "resolved_columns",
     "resolved_levels",
@@ -503,7 +504,7 @@ def _check_step(step: Step, recipe: Recipe, walk: _Walk) -> list[Problem]:
         scope = current_scope()
         if declared is not None or not is_definition_slug(name):
             message = f"no registered {expected_kind} is named {name!r}"
-        elif scope is None:
+        elif scope is None or (scope.allowed and scope.base_dir is None):
             message = (
                 f"{name!r} names a feature definition, which only a dataset holds: "
                 "validate it against the dataset (--manifest, or a dataset argument)"
@@ -1155,11 +1156,33 @@ def reject_unless_valid(
             run is no problem (:func:`check_recipe`).
 
     Raises:
+        FeatureDefinitionsNotAllowed: The scope in force is disabled and a step
+            names a feature definition (:func:`refuse_disallowed_definitions`).
         RecipeInvalid: Carrying every problem found, not only the first.
     """
+    refuse_disallowed_definitions(recipe)
     problems = check_recipe(recipe, catalog, ignore_unavailable=ignore_unavailable)
     if problems:
         raise RecipeInvalid(problems)
+
+
+def refuse_disallowed_definitions(recipe: Recipe) -> None:
+    """Raise when definitions are disabled here and a step of *recipe* names one.
+
+    Under a disabled definition scope a ``def:`` step cannot run. A caller that
+    plans, submits or runs *recipe* refuses it with the reason, and
+    :func:`check_recipe` reports it as one problem among the others.
+
+    Raises:
+        FeatureDefinitionsNotAllowed: The scope in force is disabled, naming the
+            first step in recipe order whose feature is a ``def:`` slug.
+    """
+    scope = current_scope()
+    if scope is None or scope.allowed:
+        return
+    for step in recipe.steps:
+        if isinstance(step, FeatureStepSpec) and is_definition_slug(step.feature):
+            raise FeatureDefinitionsNotAllowed(step.feature)
 
 
 def read_recipe(document: object) -> Recipe:

@@ -276,7 +276,7 @@ def track_space_refusals(
     for step in topological_order(recipe):
         if not isinstance(step, FeatureStepSpec) or step.id in exempt:
             continue
-        declared = catalog.entries[step.feature]
+        declared = catalog[step.feature]
         if not declared.track_spaces:
             continue
         target = targets[step.id]

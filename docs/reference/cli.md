@@ -59,6 +59,10 @@ $ mosaic [OPTIONS] COMMAND [ARGS]...
 
 Run a feature (--feature), an op (--kind), or one step of a request.
 
+--feature also takes a feature definition of the dataset, def:<name> or
+def:<name>@<digest>. Its source is imported to build the feature, and no
+other definition is.
+
 **Usage**:
 
 ```console
@@ -794,6 +798,12 @@ features that match, best match first: the name, then words of the name,
 then the summary or category. Under --json each row also names what the
 installation lacks to run the feature and any use its license forbids.
 
+With --manifest the dataset's feature definitions are listed beside the
+built-in features as def:<name>, each with its version, the first 12
+characters of its digest and the date it was defined. Listing imports no
+definition. Under --json a definition's row carries its name, full digest
+and date in `definition`, which is null for a built-in feature.
+
 **Usage**:
 
 ```console
@@ -803,6 +813,7 @@ $ mosaic features list [OPTIONS]
 **Options**:
 
 * `--query <str>`: List only the features whose name, summary or category contains every word, best match first.
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Names the dataset whose feature definitions (def:<name>) are listed and resolved, which it opens read-only without importing any. Without it only the built-in features are known.
 * `--json`: Emit the list as a JSON array.
 * `--help`: Show this message and exit.
 
@@ -814,6 +825,10 @@ Also names its version, category and lane, what it consumes, whether its
 output depends on its scope, what the installation lacks to run it, and any
 use its license forbids. Each params field is a row, nested ones as dotted
 paths; ``--detail schema`` adds the params JSON Schema.
+
+With --manifest the slug may be def:<name>, the current version of a feature
+definition of the dataset, described from its stored sidecar without
+importing its source.
 
 **Usage**:
 
@@ -828,6 +843,7 @@ $ mosaic features describe [OPTIONS] {slug}
 **Options**:
 
 * `--detail <fields|schema>`: 'fields' prints a row per params field, nested ones as dotted paths. 'schema' also prints the params JSON Schema.  [default: fields]
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Names the dataset whose feature definitions (def:<name>) are listed and resolved, which it opens read-only without importing any. Without it only the built-in features are known.
 * `--json`: Emit the description as JSON.
 * `--help`: Show this message and exit.
 
@@ -1149,7 +1165,12 @@ $ mosaic pipeline catalog [OPTIONS] [NAME]
 
 ### `mosaic pipeline validate`
 
-Check a recipe against the registries. Opens no dataset.
+Check a recipe against the registries.
+
+Without --manifest it opens no dataset, and a step that names a feature
+definition (def:<name>) is reported, since only a dataset holds one. With
+--manifest the dataset is opened read-only, and its definitions are checked
+from their stored sidecars without importing any.
 
 **Usage**:
 
@@ -1160,6 +1181,7 @@ $ mosaic pipeline validate [OPTIONS]
 **Options**:
 
 * `-r, --recipe <str>`: Recipe as a path to a JSON file, @file.json, @- for stdin, or an inline JSON object.  [required]
+* `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Names the dataset whose feature definitions (def:<name>) are listed and resolved, which it opens read-only without importing any. Without it only the built-in features are known.
 * `--json`: Emit as a JSON object.
 * `--help`: Show this message and exit.
 
@@ -1616,9 +1638,10 @@ $ mosaic agent serve [OPTIONS]
 **Options**:
 
 * `--dataset <path>`: A dataset to serve: its manifest or its directory. Repeatable.
-* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`, the `gpu_cards` its GPU steps may lease, the `dataset_roots` and `source_roots` that manage_dataset may write inside, and the `recipe_roots` that a recipe file is read from. Its relative paths are read from its directory.
+* `--config <path>`: A YAML file listing `datasets`, `discover` directories, `allow_managed_writes`, `allow_cleanup`, the `cleanup` policy, the parallelism limits `max_workers`, `allow_process_mode` and `min_free_memory_fraction`, the `gpu_cards` its GPU steps may lease, the `dataset_roots` and `source_roots` that manage_dataset may write inside, the `recipe_roots` that a recipe file is read from, and `allow_feature_definitions`. Its relative paths are read from its directory.
 * `--allow-managed-writes`: Let submit_pipeline and cancel_request change a dataset whose manifest names a managing service.
 * `--allow-cleanup <str>`: Let submit_pipeline remove superseded feature runs with cleanup 'superseded', and with retire the runs that a retired recipe wrote, after the user confirms. Repeatable; the one class is feature-runs. The policy is the config file's cleanup.
+* `--allow-feature-definitions`: Let the tools read and run a dataset's feature definitions and manage_dataset define one. A definition is Python that runs as this server's account. This gives the agent the access of a shell.
 * `--http HOST:PORT`: Serve one user over streamable HTTP at http://HOST:PORT/mcp instead of stdio, for a trusted network such as a tailnet. Needs --token-file. Write an IPv6 host in brackets.
 * `--token-file <path>`: With --http: a file of mode 0600 holding the bearer token that every request must send as 'Authorization: Bearer <token>'.
 * `--allowed-host <str>`: With --http: a host name clients reach the server by, such as its tailnet name. Requests naming another host are refused. Repeatable. Without it, a non-loopback address checks no host.

@@ -24,6 +24,7 @@ import pandas as pd
 from mosaic.core.filter_bounds import TimeWindow, check_one_filter_per_boundary
 from mosaic.core.scope import Scope
 
+from .definitions.scope import definition_scope
 from .storage_names import derive_storage_name
 from .inventory.scan import entry_universe, narrow_target, run_covers
 from .index import (
@@ -274,210 +275,209 @@ class Pipeline:
         the entry term predicted empty while execution hashed the real entries.
         Prediction is now handed the entries a run *will* see: the same
         ``target`` this method already computes for the completeness check.
+
+        It predicts in the definition scope of *dataset*, nested in its caller's,
+        and loads no definition.
         """
-        mock_results: dict[str, Result] = {}
-        stale_steps: set[str] = set()
-        resolved: list[dict] = []
+        with definition_scope(dataset, load=False):
+            mock_results: dict[str, Result] = {}
+            stale_steps: set[str] = set()
+            resolved: list[dict] = []
 
-        # The intended sequence universe, per tracks selector. Each step's
-        # target scope is this universe narrowed by that step's restriction; a
-        # step is "cached" only when every target sequence is present on disk.
-        #
-        # Cached per distinct selector rather than read once per pipeline: a step
-        # pinned to a variant covering part of the index has to be measured
-        # against that variant, or it reads as permanently incomplete and marks
-        # every step below it stale on every invocation. Steps almost always
-        # share one selector, so this is still one read in practice.
-        universes: dict[str | None, frozenset[tuple[str, str]]] = {}
+            # The intended sequence universe, per tracks selector. Each step's
+            # target scope is this universe narrowed by that step's restriction; a
+            # step is "cached" only when every target sequence is present on disk.
+            #
+            # Cached per distinct selector rather than read once per pipeline: a step
+            # pinned to a variant covering part of the index has to be measured
+            # against that variant, or it reads as permanently incomplete and marks
+            # every step below it stale on every invocation. Steps almost always
+            # share one selector, which makes the cache one read in practice.
+            universes: dict[str | None, frozenset[tuple[str, str]]] = {}
 
-        def track_universe_for(pin: str | None) -> frozenset[tuple[str, str]]:
-            if pin not in universes:
-                universes[pin] = entry_universe(dataset, pin)
-            return universes[pin]
+            def track_universe_for(pin: str | None) -> frozenset[tuple[str, str]]:
+                if pin not in universes:
+                    universes[pin] = entry_universe(dataset, pin)
+                return universes[pin]
 
-        # Inverted DAG: {parent -> [children]} for staleness propagation
-        adj = self.dag()
-        children_of: dict[str, list[str]] = {name: [] for name in adj}
-        for child, parents in adj.items():
-            for parent in parents:
-                if parent in children_of:
-                    children_of[parent].append(child)
+            # Inverted DAG: {parent -> [children]} for staleness propagation
+            adj = self.dag()
+            children_of: dict[str, list[str]] = {name: [] for name in adj}
+            for child, parents in adj.items():
+                for parent in parents:
+                    if parent in children_of:
+                        children_of[parent].append(child)
 
-        for step in self.steps:
-            step_is_stale = step.name in stale_steps
+            for step in self.steps:
+                step_is_stale = step.name in stale_steps
 
-            if isinstance(step, CallbackStep):
-                # Mark stale if any dependency is not cached
-                if not step_is_stale:
-                    for dep in step.depends_on:
-                        dep_info = next(
-                            (r for r in resolved if r["step"].name == dep), None
-                        )
-                        if dep_info and not dep_info["cached"]:
-                            step_is_stale = True
-                            break
-                # Propagate staleness to children if this callback is stale
-                if step_is_stale:
+                if isinstance(step, CallbackStep):
+                    # Mark stale if any dependency is not cached
+                    if not step_is_stale:
+                        for dep in step.depends_on:
+                            dep_info = next(
+                                (r for r in resolved if r["step"].name == dep), None
+                            )
+                            if dep_info and not dep_info["cached"]:
+                                step_is_stale = True
+                                break
+                    # Propagate staleness to children if this callback is stale
+                    if step_is_stale:
+                        for child_name in children_of.get(step.name, []):
+                            stale_steps.add(child_name)
+                    resolved.append(
+                        {
+                            "step": step,
+                            "storage_name": None,
+                            "expected_run_id": None,
+                            "cached": None,
+                            "stale": step_is_stale,
+                            "mock_result": None,
+                        }
+                    )
+                    continue
+
+                # Only construction is guarded. A mis-specified step, or one whose
+                # upstream could not be constructed, is reported and skipped, and the
+                # rest of the preview stays useful. Scope resolution and identity
+                # after this point are unguarded. A failure there raises instead of
+                # yielding an identifier that is valid under other assumptions.
+                try:
+                    # Build inputs from upstream results. A KeyError here means an
+                    # upstream step failed to construct, and the failure cascades to
+                    # this step.
+                    if step.input_names:
+                        input_items = tuple(mock_results[n] for n in step.input_names)
+                    else:
+                        input_items = ("tracks",)
+
+                    feature = build_step_feature(step, input_items)
+                    feat_storage_name = storage_name(feature)
+                except Exception as e:
+                    # No mock_results entry is made. A Result named by the short
+                    # feature name instead of the storage name changes the Inputs of
+                    # the next step and with them every downstream predicted
+                    # identifier. An absent entry makes dependents fail to construct
+                    # too.
+                    resolved.append(
+                        {
+                            "step": step,
+                            "storage_name": step.feature_cls.name,
+                            "expected_run_id": None,
+                            "cached": False,
+                            "stale": step_is_stale,
+                            "mock_result": None,
+                            "feature_short": step.feature_cls.name,
+                            "error": str(e)[:60],
+                        }
+                    )
                     for child_name in children_of.get(step.name, []):
                         stale_steps.add(child_name)
+                    continue
+
+                # Frame range and time window from merged kwargs
+                kwargs = {**self.default_run_kwargs, **step.run_kwargs}
+                frame_start = _frame_bound(kwargs.get("filter_start_frame"))
+                frame_end = _frame_bound(kwargs.get("filter_end_frame"))
+                time_window = TimeWindow(
+                    _time_bound(kwargs.get("filter_start_time")),
+                    _time_bound(kwargs.get("filter_end_time")),
+                )
+                check_one_filter_per_boundary(
+                    frame_start, frame_end, time_window.start, time_window.end
+                )
+                # Read here for the same reason as the frame range: every argument
+                # the digest covers is recovered from the merged kwargs, or the
+                # prediction differs from the identifier `run` mints. A complete
+                # predicted directory makes `run` skip the step and pin the predicted
+                # id into the next step's inputs. A missed term then reports "cached"
+                # over a directory built with different edge handling.
+                step_overlap = int(kwargs.get("overlap_frames") or 0)
+
+                # Target scope for this step: the intended sequence universe
+                # narrowed by the step's selector. Used both for the completeness
+                # check and (for scope_dependent features) the run_id hash.
+                selector = _step_scope(kwargs)
+                target = narrow_target(
+                    track_universe_for(_as_run_id(kwargs.get("tracks_run_id"))),
+                    selector,
+                )
+
+                # Identity comes from the one site that answers this question. The
+                # graph planner calls it too. The prediction decides execution as
+                # well as display: when the predicted directory reads complete,
+                # run() skips run_feature and pins the predicted identifier into the
+                # next step's inputs. The single implementation keeps a "cached"
+                # report consistent with what run() executes.
+                #
+                # Inputs are pinned first, as run_feature pins them: a params-level
+                # reference (a global fitter's `templates`) that identity saw as None
+                # predicts one identifier and executes another. Chain inputs arrive
+                # already pinned from mock_results below. This pass covers the params
+                # half.
+                #
+                # The entries handed over are this step's `target`, the sequences
+                # the run will see. A manifest gives an uncomputed upstream an empty
+                # scope. That suits reading and misleads predicting.
+                _ = resolve_references(dataset, feature)
+                expected_run_id, _ = resolve_feature_identity(
+                    dataset,
+                    feature,
+                    scope=Scope(entries=sorted(target)),
+                    tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
+                    labels_run_id=_as_run_id(kwargs.get("labels_run_id")),
+                    frame_start=frame_start,
+                    frame_end=frame_end,
+                    overlap_frames=step_overlap,
+                    time_window=time_window,
+                )
+
+                # Check the cache on disk. A step is cached only when the run is
+                # complete for its target scope, and a non-empty run is not enough.
+                run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
+                # One measurement serves both the gate and the display. Separate
+                # measurements disagree on a torn file: the display counts a parquet
+                # that the gate rejects as unreadable.
+                coverage = run_covers(run_root, target)
+                cached = coverage.is_satisfied
+                n_present = len(coverage.present if not target else coverage.covered)
+                n_target = len(target)
+
+                # Staleness: if this step was marked stale by an upstream,
+                # its cache cannot be trusted
+                if step_is_stale:
+                    cached = False
+
+                # Pinned unconditionally, cached or not. `Pipeline.run` always feeds
+                # a concrete `Result` from `run_feature` into the next step. A None
+                # for an uncached step gives the downstream step a different inputs
+                # payload to hash, and a cold chain predicts identifiers that
+                # execution does not produce. The prediction is deterministic, and
+                # pinning it matches execution.
+                result = Result(feature=feat_storage_name, run_id=expected_run_id)
+                mock_results[step.name] = result
+
                 resolved.append(
                     {
                         "step": step,
-                        "storage_name": None,
-                        "expected_run_id": None,
-                        "cached": None,
+                        "storage_name": feat_storage_name,
+                        "expected_run_id": expected_run_id,
+                        "cached": cached,
                         "stale": step_is_stale,
-                        "mock_result": None,
+                        "mock_result": result,
+                        "feature_short": feature.name,
+                        "n_present": n_present,
+                        "n_target": n_target,
                     }
                 )
-                continue
 
-            # Only *construction* is guarded. A mis-specified step, or one whose
-            # upstream could not be constructed, is reported and skipped so the
-            # rest of the preview stays useful. Everything after this point --
-            # scope resolution and identity -- is deliberately unguarded: a
-            # failure there must raise rather than silently yield a value that
-            # is a valid identifier under some other set of assumptions.
-            try:
-                # Build inputs from upstream results. A KeyError here means an
-                # upstream step failed to construct, so this one cannot be
-                # resolved either -- the correct cascade.
-                if step.input_names:
-                    input_items = tuple(mock_results[n] for n in step.input_names)
-                else:
-                    input_items = ("tracks",)
+                # If this step is not cached, mark its direct children stale
+                # (transitive propagation happens naturally via topological order)
+                if not resolved[-1]["cached"]:
+                    for child_name in children_of.get(step.name, []):
+                        stale_steps.add(child_name)
 
-                feature = build_step_feature(step, input_items)
-                feat_storage_name = storage_name(feature)
-            except Exception as e:
-                # Deliberately no mock_results entry. The previous code inserted
-                # Result(feature=step.feature_cls.name) here -- the *short* name
-                # rather than the storage name -- which fed the next step's
-                # Inputs and silently moved every downstream predicted
-                # identifier. Leaving it absent makes dependents fail to
-                # construct too, which is honest.
-                resolved.append(
-                    {
-                        "step": step,
-                        "storage_name": step.feature_cls.name,
-                        "expected_run_id": None,
-                        "cached": False,
-                        "stale": step_is_stale,
-                        "mock_result": None,
-                        "feature_short": step.feature_cls.name,
-                        "error": str(e)[:60],
-                    }
-                )
-                for child_name in children_of.get(step.name, []):
-                    stale_steps.add(child_name)
-                continue
-
-            # Frame range and time window from merged kwargs
-            kwargs = {**self.default_run_kwargs, **step.run_kwargs}
-            frame_start = _frame_bound(kwargs.get("filter_start_frame"))
-            frame_end = _frame_bound(kwargs.get("filter_end_frame"))
-            time_window = TimeWindow(
-                _time_bound(kwargs.get("filter_start_time")),
-                _time_bound(kwargs.get("filter_end_time")),
-            )
-            check_one_filter_per_boundary(
-                frame_start, frame_end, time_window.start, time_window.end
-            )
-            # Read here for the same reason the frame range is: every argument
-            # the digest covers has to be recovered from the merged kwargs, or
-            # this predicts a different identifier than `run` will mint. The
-            # prediction is load-bearing rather than advisory -- a complete
-            # predicted directory makes `run` skip the step and pin the predicted
-            # id into the next step's inputs -- so a missed term reports "cached"
-            # over a directory built with different edge handling.
-            step_overlap = int(kwargs.get("overlap_frames") or 0)
-
-            # Target scope for this step: the intended sequence universe
-            # narrowed by the step's selector. Used both for the completeness
-            # check and (for scope_dependent features) the run_id hash.
-            selector = _step_scope(kwargs)
-            target = narrow_target(
-                track_universe_for(_as_run_id(kwargs.get("tracks_run_id"))), selector
-            )
-
-            # Identity comes from the one site that answers this question, which
-            # the graph planner calls too. The prediction is load-bearing for
-            # *execution*, not display: when the predicted directory reads
-            # complete, run() skips run_feature entirely and pins the predicted
-            # identifier into the next step's inputs, so a second implementation
-            # that drifted would report "cached" over stale results.
-            #
-            # Inputs are pinned first, for the same reason run_feature pins them:
-            # a params-level reference (a global fitter's `templates`) that
-            # identity saw as None would predict one identifier and execute
-            # another. Chain inputs arrive already pinned from mock_results
-            # below, so this pass covers the params half.
-            #
-            # The entries handed over are this step's `target` -- what the run
-            # *will* see -- rather than what a manifest resolves today. A
-            # manifest reports an empty scope for an upstream that has not been
-            # computed, which is right for reading and wrong for predicting.
-            _ = resolve_references(dataset, feature)
-            expected_run_id, _ = resolve_feature_identity(
-                dataset,
-                feature,
-                scope=Scope(entries=sorted(target)),
-                tracks_run_id=_as_run_id(kwargs.get("tracks_run_id")),
-                labels_run_id=_as_run_id(kwargs.get("labels_run_id")),
-                frame_start=frame_start,
-                frame_end=frame_end,
-                overlap_frames=step_overlap,
-                time_window=time_window,
-            )
-
-            # Check cache on disk: cached only when the run is *complete*
-            # for this step's target scope, not merely non-empty.
-            run_root = feature_run_root(dataset, feat_storage_name, expected_run_id)
-            # One measurement, used for both the gate and the display. It used to
-            # be two: the gate filtered out unreadable parquets and the display
-            # re-globbed without that filter, so a torn file made the reported
-            # count exceed what the gate had accepted.
-            coverage = run_covers(run_root, target)
-            cached = coverage.is_satisfied
-            n_present = len(coverage.present if not target else coverage.covered)
-            n_target = len(target)
-
-            # Staleness: if this step was marked stale by an upstream,
-            # its cache cannot be trusted
-            if step_is_stale:
-                cached = False
-
-            # Pinned unconditionally, cached or not. Passing None for an
-            # uncached step made the *downstream* step hash a different inputs
-            # payload than the one execution would build -- `Pipeline.run`
-            # always feeds a concrete `Result` from `run_feature` -- so a cold
-            # chain predicted identifiers it then did not produce. The
-            # prediction is deterministic, so pinning it is exactly what
-            # execution will do.
-            result = Result(feature=feat_storage_name, run_id=expected_run_id)
-            mock_results[step.name] = result
-
-            resolved.append(
-                {
-                    "step": step,
-                    "storage_name": feat_storage_name,
-                    "expected_run_id": expected_run_id,
-                    "cached": cached,
-                    "stale": step_is_stale,
-                    "mock_result": result,
-                    "feature_short": feature.name,
-                    "n_present": n_present,
-                    "n_target": n_target,
-                }
-            )
-
-            # If this step is not cached, mark its direct children stale
-            # (transitive propagation happens naturally via topological order)
-            if not resolved[-1]["cached"]:
-                for child_name in children_of.get(step.name, []):
-                    stale_steps.add(child_name)
-
-        return resolved
+            return resolved
 
     # -- public API ---------------------------------------------------------
 

@@ -18,6 +18,7 @@
     dataset_roots: []       # where manage_dataset may create datasets, served too
     source_roots: []        # where manage_dataset may declare sources
     recipe_roots: []        # where a recipe argument {path: ...} may be read
+    allow_feature_definitions: false   # true: tools define and run dataset code
 
 A relative path is read from the file's directory. :func:`served_manifests`
 joins the file's datasets with the ones named on the command line.
@@ -131,6 +132,12 @@ class ServerConfig(StrictModel):
         recipe_roots: Directories inside which a recipe argument named
             ``{"path": ...}`` may be read. A relative path is read from the
             first. Empty: a recipe is sent whole or named by digest or name.
+        allow_feature_definitions: Whether the tools read and run a dataset's
+            feature definitions and ``manage_dataset`` defines one. A definition
+            is Python that runs as the server's account. Turning it on gives
+            the agent the access of a shell. Off: no tool lists a ``def:`` step
+            type, and a recipe naming one or a ``define_feature`` call is refused
+            with ``feature_definitions_not_allowed``.
     """
 
     datasets: list[Path] = Field(default_factory=list)
@@ -149,6 +156,7 @@ class ServerConfig(StrictModel):
     dataset_roots: list[Path] = Field(default_factory=list)
     source_roots: list[Path] = Field(default_factory=list)
     recipe_roots: list[Path] = Field(default_factory=list)
+    allow_feature_definitions: bool = False
 
     @property
     def parallel_limits(self) -> ParallelLimits:

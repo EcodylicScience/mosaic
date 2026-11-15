@@ -9,9 +9,8 @@ import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail_classified
+from mosaic.cli._render import DIGEST_PREFIX_LENGTH
 from mosaic.cli.tags import ManifestOption
-
-_DIGEST_PREFIX_LENGTH = 12
 
 
 def define_command(
@@ -61,7 +60,7 @@ def define_command(
     if as_json:
         emit_json(record.model_dump(mode="json"))
         return
-    version = f"version {record.digest[:_DIGEST_PREFIX_LENGTH]} of {record.defined_on}"
+    version = f"version {record.digest[:DIGEST_PREFIX_LENGTH]} of {record.defined_on}"
     if record.reused:
         typer.echo(f"Reused {record.name!r}: {version} was already defined.")
     else:

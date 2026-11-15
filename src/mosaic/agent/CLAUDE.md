@@ -103,6 +103,27 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   widens the same deletion to the runs of retired recipes in any storage. It needs
   `cleanup`, applies to one call, and shares the flag and the condition, so its
   finding names the retired recipes.
+- Feature definitions are the operator's to allow: `allow_feature_definitions`
+  (`mosaic agent serve --allow-feature-definitions`, `ServerConfig`), off by default
+  because a definition runs as the server's account. A tool that reads a catalog or
+  a recipe (`describe_step_types`, `validate_recipe`, `suggest_steps`,
+  `patch_recipe`, `plan_recipe`, `submit_pipeline`, `manage_dataset`) runs in the
+  definition scope of the dataset it names through `LocalBackend._scoped`, with
+  `load=False`. No tool imports a definition. Off, the scope is disabled: the
+  catalogs list no `def:` step type, and a recipe naming one is refused with
+  `feature_definitions_not_allowed` before it is validated
+  (`refuse_disallowed_definitions`, `graph/validate.py`). A caller's disabled scope
+  stays disabled. The `mosaic://catalog` resources take no dataset and list
+  built-ins; the report resource enters its dataset's scope
+  (`tests/agent/mcp/test_feature_definitions.py`).
+- `manage_dataset`'s `define_feature` action stores `source` as the definition
+  `name` through `define_feature`, returns the `DefinitionRecord` in
+  `DatasetChange.definition`, is refused without the flag and on a managed dataset
+  unless `allow_managed_writes`, and asks no confirmation. It is idempotent for
+  identical source.
+- `_declarations` and `_catalog_index` hold `_catalog_lock` around the built-in
+  catalogs only, which are built once, and join the scope's definitions outside it,
+  so calls on two datasets do not wait on each other's reads.
 - The agent tools never write `splits`, the manifest roles (`train`, `test`, `sealed`)
   that mark a group held out. An agent that could set a role could unseal what it
   protects, so only the operator's `mosaic splits` verbs write them. The tools read

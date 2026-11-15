@@ -129,6 +129,19 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   `refuse` says, so `submit_request` writes nothing, and its plan and fingerprint are
   those a step makes. `save_request` leaves `pins` out when empty, and the fingerprint
   covers them only when there are any (`test_pipeline_pins.py`).
+- A planned `def:` step's `StepSpec.feature` names the full digest of the version it
+  resolved to (`resolve_step_spec`). `submit_request` records the digests of the bare
+  `def:<name>` steps in `Request.definitions`, read off the plan it records and never
+  resolved again, since a step naming a digest needs no pin, and reads `step_versions`
+  off the planned specs. `execute_step` and `run_request` enter the dataset's definition
+  scope with them as pins. A version made current after submit therefore changes no
+  step. Planning, submitting, the live `Pipeline`, the detached driver, `execute_step`
+  and `run_pipeline` run under `load=False`. Only a `def:` step's run loads code, its
+  own definition's, when `_run` (`step.py`) builds the feature. `run_feature` loads
+  nothing and reads a `def.` input's producer from the sidecar of the version its run
+  recorded. A step therefore leaves every other definition of its recipe unimported.
+  `save_request` leaves `definitions` out when empty
+  (`tests/core/pipeline/definitions/test_planning.py`).
 - `Request.applies_request_id` names a finished request whose fit the request applies
   (`apply.py`). `derive_applied_fit` locks every feature step that fits without a
   `model` and every step it reads (`ancestors_of`), refuses a locked step that differs
@@ -460,8 +473,8 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   definition scope in force (a `def:<name>` entry per definition, derived from its
   sidecar and cached with the declared class), on each call, and are the built-in
   catalogs under no scope and under a disabled one. `DeclarationCatalog.get` of a `def:`
-  slug reads the scope at the lookup, so a catalog handed to another caller answers for
-  that caller's dataset (`tests/core/pipeline/definitions/test_catalog.py`).
+  slug reads the scope at the lookup. A catalog handed to another caller therefore
+  answers for that caller's dataset (`tests/core/pipeline/definitions/test_catalog.py`).
 - `can_connect` and `can_join` (`compatibility.py`) answer from `declaration_catalog()`
   with no dataset. `can_join` refuses a join of mismatched entity granularity unless the
   consumer cross-joins (`alignment_verdict`, `CROSS_JOIN_FEATURES`), or expands

@@ -85,6 +85,11 @@ class MockDataset:
     def base_dir(self) -> Path:
         return self._root
 
+    def has_root(self, key: str) -> bool:
+        """Return True: every root lives under *root*, as :meth:`get_root` says."""
+        _ = key
+        return True
+
     def get_root(self, key: str) -> Path:
         return self._root / key
 

@@ -67,6 +67,11 @@ from .column_contract import (
     check_input_columns,
     declared_provides,
 )
+from .definitions.store import (
+    DEFINITIONS_PACKAGE,
+    DEFINITIONS_ROOT,
+    is_definition_slug,
+)
 from .entry_claim import INFLIGHT_REFRESH_SECONDS, held_run_root, renew_run_root_claim
 from .error_kind import ClassifiedError, ErrorKind
 from .identity_scheme import (
@@ -443,7 +448,25 @@ def _rebuilt_feature(
     ``bind_dataset``, ``load_state`` and the caller's work all run inside the
     ``try``, because each of them may acquire the resource that ``close()``
     releases.
+
+    A feature definition's module lives in the dataset, not on the import path.
+    For a *module_name* under ``mosaic_definitions.`` the worker first opens the
+    manifest at *ds_manifest_path*, which creates nothing, and registers the
+    dataset's definitions directory with the definition finder. The import then
+    runs the loader's checks as every load does. The class therefore has the same
+    ``name`` and ``__mosaic_definition__`` as the one the run built.
     """
+    if ds_manifest_path is not None and module_name.startswith(
+        f"{DEFINITIONS_PACKAGE}."
+    ):
+        from mosaic.core.dataset import open_dataset
+        from mosaic.core.pipeline.definitions.loader import register_definitions_root
+
+        register_definitions_root(
+            open_dataset(ds_manifest_path, ensure_roots=False).get_root(
+                DEFINITIONS_ROOT
+            )
+        )
     mod = importlib.import_module(module_name)
     cls = getattr(mod, class_name)
     inputs_obj = Inputs.model_validate(inputs_dump)
@@ -774,7 +797,7 @@ class InputWritesNoColumns(ClassifiedError, ValueError):
         super().__init__(message)
 
 
-def _refuse_inputs_without_columns(feature: Feature) -> None:
+def _refuse_inputs_without_columns(ds: Dataset, feature: Feature) -> None:
     """Refuse a run of *feature* when an input names a feature with an empty output.
 
     Raises:
@@ -784,10 +807,23 @@ def _refuse_inputs_without_columns(feature: Feature) -> None:
 
     for result in feature.inputs.feature_inputs:
         producer = feature_slug_of(result.feature)
-        cls = feature_class_for_slug(producer)
+        cls = feature_class_for_slug(_producer_version(ds, result, producer))
         provides = None if cls is None else declared_provides(cls)
         if provides is not None and provides.is_empty:
             raise InputWritesNoColumns(feature.name, result.feature, producer)
+
+
+def _producer_version(ds: Dataset, result: Result[str], producer: str) -> str:
+    """The slug of the version of *producer* that wrote the run *result* pins.
+
+    A definition's run records its version, and every other run is named by
+    *producer*, as is an unpinned *result* or a run that records none.
+    """
+    if result.run_id is None or not is_definition_slug(producer):
+        return producer
+    params = read_run_params(feature_run_root(ds, result.feature, result.run_id))
+    recorded = None if params.params is None else params.params.definition
+    return producer if recorded is None else recorded.slug
 
 
 def encode_consumed_roots(roots: Iterable[str]) -> str:
@@ -1143,6 +1179,15 @@ def compute_run_id(
     on the ``time`` column and never reads a frame rate. It follows the
     omit-when-absent rule: a run with no window digests as it always has.
 
+    ``_definition`` is the SHA-256 of the source of a feature definition, beside
+    ``_tracks`` and under the same omit-when-absent rule. A built-in digests as
+    it always has. It is added when the feature's class declares
+    ``__mosaic_definition__``, a loaded definition and the class declared from its
+    sidecar alike, which therefore give one run id. An edit of the source changes
+    the digest. The run therefore misses the cache of an earlier version,
+    whether or not its author bumped ``version``. The name is not hashed, because
+    the storage name holds it.
+
     Raises:
         MissingScopeDeclaration: if *feature* declares no ``scope_dependent``.
     """
@@ -1187,6 +1232,11 @@ def compute_run_id(
         hashable["_time_range"] = [
             None if bound is None else float(bound) for bound in time_window
         ]
+    from mosaic.core.pipeline.definitions.loader import definition_ref_of
+
+    definition = definition_ref_of(type(feature))
+    if definition is not None:
+        hashable["_definition"] = definition.digest
     params_hash = hash_params(hashable)
     return f"{feature.version}-{params_hash}", params_hash
 
@@ -1397,6 +1447,10 @@ def build_run_params_payload(
     identity from this document alone. A document without it reads as an open
     window.
 
+    ``_definition`` is written for a feature definition only, as its ``name`` and
+    full source ``digest``. A reader finds the version that wrote the run from it,
+    and the digest is the term ``compute_run_id`` hashes.
+
     ``_execution_id`` and ``_mosaic_version`` are what make an artifact on disk
     joinable back to the attempt that produced it. Without them this document is
     strictly present-tense -- it says what a run *is*, never when, by whom, or
@@ -1415,7 +1469,9 @@ def build_run_params_payload(
     *unknown*, as it does for every other unestablishable cell here: a run
     predating these keys, or a source tree with nothing installed.
     """
-    return {
+    from mosaic.core.pipeline.definitions.loader import definition_ref_of
+
+    payload: dict[str, object] = {
         "_params": json_ready(feature.params),
         "_inputs": feature.inputs.model_dump(),
         "_frame_range": [frame_start, frame_end],
@@ -1448,6 +1504,13 @@ def build_run_params_payload(
             for variant in scope.labels_variants
         ],
     }
+    definition = definition_ref_of(type(feature))
+    if definition is not None:
+        payload["_definition"] = {
+            "name": definition.name,
+            "digest": definition.digest,
+        }
+    return payload
 
 
 def _asked_by_now(
@@ -1774,46 +1837,51 @@ def run_feature(
         ``cache_hit``, ``failed_entries`` and ``entries_written`` (excluded from
         serialization, so they never perturb a downstream feature's ``run_id``).
     """
-    storage_feature_name = derive_storage_name(
-        feature.name, feature.inputs.storage_suffix()
-    )
-    with job_context(
-        ds,
-        kind="feature",
-        target=storage_feature_name,
-        execution_id=execution_id,
-        owner=owner,
-        track=track,
-        progress_callback=progress_callback,
-        cancel_token=cancel_token,
-    ) as ctx:
-        try:
-            if probe is not None and ctx.run_log is not None:
-                probe.write(ctx.run_log)
-            return _run_feature_impl(
-                ds,
-                feature,
-                ctx,
-                storage_feature_name,
-                scope=scope,
-                tracks_run_id=tracks_run_id,
-                labels_run_id=labels_run_id,
-                overwrite=overwrite,
-                parallel_workers=parallel_workers,
-                parallel_mode=parallel_mode,
-                overlap_frames=overlap_frames,
-                filter_start_frame=filter_start_frame,
-                filter_end_frame=filter_end_frame,
-                filter_start_time=filter_start_time,
-                filter_end_time=filter_end_time,
-                check_output=check_output,
-                asks_every_entry=asks_every_entry,
-                min_free_memory_fraction=min_free_memory_fraction,
-                measure_worker_base=measure_worker_base,
-                admission_margin=admission_margin,
-            )
-        finally:
-            _close_feature(feature)
+    from mosaic.core.pipeline.definitions.scope import definition_scope
+
+    # The run skips loading a definition because the feature is already built. It
+    # reads the sidecar of a ``def.`` producer of its inputs.
+    with definition_scope(ds, load=False):
+        storage_feature_name = derive_storage_name(
+            feature.name, feature.inputs.storage_suffix()
+        )
+        with job_context(
+            ds,
+            kind="feature",
+            target=storage_feature_name,
+            execution_id=execution_id,
+            owner=owner,
+            track=track,
+            progress_callback=progress_callback,
+            cancel_token=cancel_token,
+        ) as ctx:
+            try:
+                if probe is not None and ctx.run_log is not None:
+                    probe.write(ctx.run_log)
+                return _run_feature_impl(
+                    ds,
+                    feature,
+                    ctx,
+                    storage_feature_name,
+                    scope=scope,
+                    tracks_run_id=tracks_run_id,
+                    labels_run_id=labels_run_id,
+                    overwrite=overwrite,
+                    parallel_workers=parallel_workers,
+                    parallel_mode=parallel_mode,
+                    overlap_frames=overlap_frames,
+                    filter_start_frame=filter_start_frame,
+                    filter_end_frame=filter_end_frame,
+                    filter_start_time=filter_start_time,
+                    filter_end_time=filter_end_time,
+                    check_output=check_output,
+                    asks_every_entry=asks_every_entry,
+                    min_free_memory_fraction=min_free_memory_fraction,
+                    measure_worker_base=measure_worker_base,
+                    admission_margin=admission_margin,
+                )
+            finally:
+                _close_feature(feature)
 
 
 def _run_feature_impl(
@@ -1890,14 +1958,13 @@ def _run_feature_impl(
                 f"the scope to mean every sequence."
             )
 
-    _refuse_inputs_without_columns(feature)
-
     # Pin every unpinned upstream *before* anything hashes or reads it. An
     # unpinned reference used to be resolved after the digest, into a local that
     # was discarded, so a run that consumed the latest `extract-templates` and a
     # run that consumed a later one shared one identifier and one directory.
     # Resolution reads the filesystem; compute_run_id below stays pure.
     resolutions = resolve_references(ds, feature)
+    _refuse_inputs_without_columns(ds, feature)
 
     # Build manifest
     if feature.inputs.is_empty:

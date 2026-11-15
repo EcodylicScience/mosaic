@@ -280,10 +280,9 @@ def hash_params(d: object) -> str:
 def canonical_json(d: object) -> str:
     """The canonical JSON text of *d* that :func:`hash_params` digests.
 
-    ``identity_ready`` with sorted keys. ``json.dumps`` is called without a
-    ``default=`` fallback on purpose: a fallback would silently stringify
-    whatever ``identity_ready`` was meant to reject, making the raise
-    unreachable.
+    ``identity_ready`` with sorted keys. ``json.dumps`` takes no ``default=``
+    fallback. A fallback stringifies the values that ``identity_ready`` rejects,
+    and its raise becomes unreachable.
 
     Raises:
         TypeError: if any value cannot be represented in JSON.

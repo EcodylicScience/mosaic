@@ -351,7 +351,10 @@ def _read_report(backend: LocalBackend, variables: UriVariables) -> ResourceText
     name = _variable(variables, "name")
     run_id = _variable(variables, "run_id")
     slug = feature_slug_of(name)
-    cls = feature_class_for_slug(slug)
+    # A definition's class is declared from its sidecar in the dataset's scope,
+    # which refuses it when the server does not allow feature definitions.
+    with backend.definitions(dataset):
+        cls = feature_class_for_slug(slug)
     report_file: object = getattr(cls, "report_file", None)
     if not isinstance(report_file, str):
         raise _not_found(
@@ -395,7 +398,7 @@ RESOURCES: Final[tuple[ResourceSpec, ...]] = (
         uri="mosaic://catalog",
         name="catalog",
         description=(
-            "Every feature and op a recipe may run, without params schemas. "
+            "Every built-in feature and op a recipe may run, without params schemas. "
             "mosaic://catalog/{name} has one in full."
         ),
         mime_type="application/json",
@@ -404,7 +407,7 @@ RESOURCES: Final[tuple[ResourceSpec, ...]] = (
     ResourceSpec(
         uri="mosaic://catalog/{name}",
         name="step-type",
-        description="One feature or op in full, with its params schema.",
+        description="One built-in feature or op in full, with its params schema.",
         mime_type="application/json",
         read=_read_catalog_entry,
     ),

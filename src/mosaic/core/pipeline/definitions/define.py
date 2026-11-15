@@ -106,7 +106,7 @@ def load_feature_definition(ds: Dataset, slug: str) -> type[Feature]:
 def _declare_in_child(name: str, source: bytes) -> DefinitionSidecar:
     """The sidecar that a child interpreter declares for *source*.
 
-    The child inherits this process's environment and runs with ``-P``, so the
+    The child inherits this process's environment and runs with ``-P``. The
     working directory is not on its import path.
     """
     with tempfile.TemporaryDirectory(prefix="mosaic-definition-") as directory:

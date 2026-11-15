@@ -121,6 +121,7 @@ whole store. Every other dataset stays at version 3 and opens in an older mosaic
 ├── selections/
 │   └── select-frames/      frame lists chosen from tracks
 ├── arenas/                 the arena layout of each recording and camera
+├── feature_definitions/    features stored as source, one folder per name
 ├── _tracking/
 │   ├── trex/  trex-convert/  sleap/  litpose/  ultralytics/
 │   └── infer-pose/  infer-points/  infer-localizer/
@@ -137,7 +138,8 @@ Directory assignments:
 - **Raw files**, what you supplied — `media_raw/` recordings index, `tracks_raw/` raw
   tracks, `labels_raw/` raw annotations.
 - **Declarations**, what you stated about the recordings — `arenas/` the
-  [arena layouts](#arenas).
+  [arena layouts](#arenas). `feature_definitions/` contains the
+  [features you defined](guides/analysis/write-your-own-feature.md#define-a-feature-in-a-dataset).
 - **Derived files**, computed by mosaic and recomputable — `media/` transcode
   derivatives, `media/frames/` extracted PNGs for annotation, `media/preprocess/`
   media variants, `tracks/` standardized parquet (with `tracks/<variant>/appearance/`,
@@ -149,6 +151,16 @@ Directory assignments:
 - **Run records**, in `.mosaic/`: what was attempted and submitted here, as
   [Run work and see what ran](guides/pipelines/run-and-see-what-ran.md#where-what-ran-is-recorded)
   describes.
+
+`feature_definitions/` is the manifest root `feature_definitions`. The first open that
+is not read-only creates it, and a scan of a source declared at the dataset root skips
+it. A definition is a folder `<name>/` of versions: `<date>_<sha256>.py` is a version's
+source, `<date>_<sha256>.json` the record of its checks, and the `current` file names
+the version that `def:<name>` means. `mosaic features define` writes all of them. Do not
+edit them by hand. Keep the folder: a run of a version that you removed cannot be
+resolved by `mosaic reconcile`. Opening, listing and planning a dataset you received
+runs none of its definitions. Read `<name>/<date>_<sha256>.py` before running or
+verifying a recipe that names one.
 
 Deleting a derived or temporary folder costs time, never data. Keep `.mosaic/claims/`.
 It counts how often each entry has failed in a pipeline, across resubmissions, and

@@ -17,6 +17,7 @@ import typer
 
 from mosaic.cli._context import load_dataset
 from mosaic.cli._io import emit_json, fail, stdout_to_stderr
+from mosaic.core.pipeline.definitions.scope import definition_scope
 
 
 def reconcile_command(
@@ -79,7 +80,7 @@ def reconcile_command(
 
     ds = load_dataset(manifest, read_only=not apply)
     try:
-        with stdout_to_stderr():
+        with stdout_to_stderr(), definition_scope(ds, load=False):
             report = ds.reconcile(apply=apply, force=force, only=only_keys)
     except Exception as exc:  # noqa: BLE001 - surface reconcile errors cleanly
         fail(f"reconcile failed: {exc}")

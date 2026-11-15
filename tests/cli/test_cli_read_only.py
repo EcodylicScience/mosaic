@@ -10,13 +10,18 @@ A new read joins ``CLI_READS`` or ``LIBRARY_READS``, and also
 read that needs a finished fitting request joins ``CLI_READS_OF_A_FIT``. A
 read that names entries from the media index also joins ``MEDIA_READS``.
 ``reprobe-media`` needs indexed videos and ``media probe`` a store, and each has a
-test of its own. ``features list``, ``features describe``, ``pipeline catalog``,
-``catalog_index``, ``describe_step_type`` and ``step_type_detail`` take no dataset
-and are not listed.
+test of its own. ``pipeline catalog``, ``catalog_index``, ``describe_step_type`` and
+``step_type_detail`` take no dataset and are not listed.
+
+The ``populated`` dataset holds a definition whose top level writes a canary file.
+A read runs nothing except ``pipeline verify``, which imports the pinned definition of
+a step it refits. Each other case therefore also asserts that the canary was not
+written.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +37,9 @@ from mosaic.core.dataset import Dataset, open_dataset
 from mosaic.core.dataset_discovery import discover_datasets
 from mosaic.core.dataset_summary import dataset_summary
 from mosaic.core.entry import make_entry_key
+from mosaic.core.pipeline.definitions.define import define_feature
+from mosaic.core.pipeline.definitions.scope import clear_definition_caches
+from mosaic.core.pipeline.definitions.store import definition_module_name
 from mosaic.core.pipeline.appearance import (
     appearance_columns,
     appearance_path,
@@ -73,18 +81,26 @@ from mosaic.tracking.frame_predictions.read import (
     read_score_summary,
 )
 from tests.helpers import (
+    CANARY_NAME,
+    CANARY_SOURCE,
+    CANARY_VARIABLE,
     CONVERT_LABELS_STEP,
     CONVERT_TRACKS_STEP,
+    GLOBAL_NAME,
+    GLOBAL_SOURCE,
     SPEED_OF_CONVERTED_STEP,
     SPEED_RECIPE,
     calms21_dataset,
     classifier_recipe,
+    defined_dataset,
     speed_recipe,
     speed_recipe_stepping,
     add_media_sequence,
     add_tracks_variant,
     assert_tree_unchanged,
     entry_predictions,
+    forget_imported_definitions,
+    imported_definitions,
     invoke_ok,
     make_dataset,
     record_entry_predictions,
@@ -96,6 +112,8 @@ from tests.helpers import (
     video_store_maker,
     write_calms21_npy,
 )
+
+pytestmark = pytest.mark.usefixtures("fresh_definitions")
 
 VARIANT = "convert-trex.0.2-1111111111"
 MODEL_KIND = "train-pose"
@@ -122,6 +140,9 @@ class ReadDataset:
     lossy_execution_id: str = ""
     feature_run_id: str = ""
     aggregate_run_id: str = ""
+    definition_recipe_path: Path | None = None
+    canary: Path | None = None
+    """The file the dataset's definition writes when it is imported."""
 
     @property
     def root(self) -> Path:
@@ -172,6 +193,24 @@ def _recipe_file(tmp_path: Path) -> Path:
     return path
 
 
+def _definition_recipe_file(tmp_path: Path) -> Path:
+    """A recipe of one step that runs the canary definition."""
+    document = {
+        **SPEED_RECIPE,
+        "steps": [
+            {
+                "id": "canary",
+                "type": "feature",
+                "feature": f"def:{CANARY_NAME}",
+                "inputs": ["tracks"],
+            }
+        ],
+    }
+    path = tmp_path / "definition.recipe.json"
+    _ = path.write_text(json.dumps(document), encoding="utf-8")
+    return path
+
+
 def _record_appearance(dataset: Dataset, sequence: str) -> None:
     """Writes *sequence*'s appearance table in ``VARIANT`` and records it in the index."""
     tracks = track_table("", sequence, n_rows=40, n_ids=2)
@@ -198,8 +237,8 @@ def _record_appearance(dataset: Dataset, sequence: str) -> None:
 
 
 @pytest.fixture
-def populated(tmp_path: Path) -> ReadDataset:
-    """Tracks and an appearance table, a feature run, its request, a model, predictions, and a selection."""
+def populated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ReadDataset:
+    """Tracks and an appearance table, a feature run, its request, a model, predictions, a selection and a definition."""
     dataset = make_dataset(tmp_path / "populated")
     add_tracks_variant(dataset, VARIANT, "seq_a", "seq_b", std_format="mosaic_v1")
     _record_appearance(dataset, "seq_a")
@@ -222,10 +261,15 @@ def populated(tmp_path: Path) -> ReadDataset:
         ArenaLayout.grid(xs=(0, 50, 100), ys=(0, 100)), group="", sequence="seq_a"
     )
     _lose_an_entity(dataset.base_dir)
+    _ = define_feature(dataset, CANARY_NAME, CANARY_SOURCE)
+    canary = tmp_path / "canary.jsonl"
+    monkeypatch.setenv(CANARY_VARIABLE, str(canary))
     _strip_to_content(dataset.base_dir)
     return ReadDataset(
         dataset=dataset,
         recipe_path=_recipe_file(tmp_path),
+        definition_recipe_path=_definition_recipe_file(tmp_path),
+        canary=canary,
         request_id=done.request_id,
         execution_id=done.outcomes[0].execution_id,
         lossy_execution_id=LOSSY_EXECUTION_ID,
@@ -328,6 +372,8 @@ CLI_READS: dict[str, CliArguments] = {
     "arenas show": lambda _: ["arenas", "show"],
     "arenas show --recording": lambda _: ["arenas", "show", "--recording", "seq_a"],
     "describe": lambda _: ["describe"],
+    "features describe": lambda _: ["features", "describe", f"def:{CANARY_NAME}"],
+    "features list": lambda _: ["features", "list"],
     "inventory": lambda _: ["inventory"],
     "inventory --limit": lambda _: ["inventory", "--limit", "1", "--entry", ":seq_a"],
     "inventory show": lambda _: ["inventory", "show", MODEL_REF],
@@ -337,6 +383,12 @@ CLI_READS: dict[str, CliArguments] = {
     "notes show": lambda _: ["notes", "show"],
     "pipeline list": lambda _: ["pipeline", "list", "--limit", "1"],
     "pipeline plan": lambda f: ["pipeline", "plan", "--recipe", f"@{f.recipe_path}"],
+    "pipeline plan of a definition": lambda f: [
+        "pipeline",
+        "plan",
+        "--recipe",
+        f"@{f.definition_recipe_path}",
+    ],
     "pipeline plan --step-scope": lambda f: [
         "pipeline",
         "plan",
@@ -397,6 +449,18 @@ CLI_READS: dict[str, CliArguments] = {
     ],
     "pipeline status": lambda f: ["pipeline", "status", "--request", f.request_id],
     "prerequisites": lambda _: ["prerequisites", "--kind", "trex"],
+    "pipeline validate": lambda f: [
+        "pipeline",
+        "validate",
+        "--recipe",
+        f"@{f.recipe_path}",
+    ],
+    "pipeline validate of a definition": lambda f: [
+        "pipeline",
+        "validate",
+        "--recipe",
+        f"@{f.definition_recipe_path}",
+    ],
     "pipeline verify": lambda f: [
         "pipeline",
         "verify",
@@ -433,12 +497,14 @@ CLI_READS: dict[str, CliArguments] = {
 CLI_READS_OF_NOTHING = (
     "arenas show",
     "describe",
+    "features list",
     "inventory",
     "inventory --limit",
     "libraries list",
     "measure-tracks --dry-run",
     "notes show",
     "pipeline list",
+    "pipeline validate",
     "prerequisites",
     "prune-joined --dry-run",
     "prune-media --dry-run",
@@ -495,6 +561,8 @@ def _invoke_read(fixture: ReadDataset, verb: str) -> None:
     else:
         result = invoke_ok(command)
     json.loads(result.stdout)
+    if fixture.canary is not None:
+        assert not fixture.canary.exists()
 
 
 @pytest.mark.parametrize("verb", sorted(CLI_READS))
@@ -879,3 +947,46 @@ def test_verifying_a_fitted_recipe_writes_nothing_under_the_dataset(
     report = json.loads(result.stdout)
     assert report["ok"] is True
     assert report["verified"] == 2
+
+
+def test_verifying_a_definition_imports_only_its_pinned_version_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    """``pipeline verify`` imports the version its recipe pins, and no other."""
+    dataset = defined_dataset(tmp_path, {GLOBAL_NAME: GLOBAL_SOURCE})
+    digest = hashlib.sha256(GLOBAL_SOURCE.encode("utf-8")).hexdigest()
+    recipe = {
+        "schema_version": 1,
+        "steps": [
+            {
+                "id": "d",
+                "type": "feature",
+                "feature": f"def:{GLOBAL_NAME}@{digest}",
+                "inputs": ["tracks"],
+            }
+        ],
+    }
+    _ = run_pipeline(dataset, Recipe.model_validate(recipe))
+    _ = define_feature(dataset, GLOBAL_NAME, GLOBAL_SOURCE.replace('"1"', '"2"'))
+    recipe_file = tmp_path / "pinned.recipe.json"
+    _ = recipe_file.write_text(json.dumps(recipe), encoding="utf-8")
+    forget_imported_definitions()
+    clear_definition_caches()
+    _strip_to_content(dataset.base_dir)
+    before = tree_snapshot(dataset.base_dir)
+
+    result = invoke_ok(
+        [
+            "pipeline",
+            "verify",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--recipe",
+            f"@{recipe_file}",
+            "--json",
+        ]
+    )
+
+    assert_tree_unchanged(dataset.base_dir, before)
+    assert json.loads(result.stdout)["ok"] is True
+    assert imported_definitions() == [definition_module_name(GLOBAL_NAME, digest)]

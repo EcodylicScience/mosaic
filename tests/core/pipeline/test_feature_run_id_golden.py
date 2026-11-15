@@ -22,15 +22,20 @@ dataset.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import pytest
 
 from mosaic.cli._features import build_feature
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.definitions.scope import definition_scope
 from mosaic.core.pipeline.run import compute_run_id
 
 from tests.helpers import (
+    MINIMAL_NAME,
+    MINIMAL_SOURCE,
     UPDATE_GOLDEN_ENV,
+    defined_dataset,
     read_string_golden,
     regenerate_command,
     updating_golden,
@@ -1171,6 +1176,28 @@ def test_identifier_matches_golden(case: Case) -> None:
         f"`{regenerate_command(__name__)}` and explain every "
         f"moved line in the commit message."
     )
+
+
+@pytest.mark.parametrize("load", [False, True])
+def test_a_definition_scope_moves_no_builtin_run_id(load: bool, tmp_path: Path) -> None:
+    """Every case keeps its golden identifier inside the scope of a dataset with a definition.
+
+    The scope adds definitions to what a slug may name and changes nothing a
+    built-in's identity reads, whether or not it may load code.
+    """
+    if updating_golden():
+        pytest.skip(f"{UPDATE_GOLDEN_ENV}=1: regenerating")
+    golden = read_string_golden(GOLDEN)
+    ds = defined_dataset(tmp_path, {MINIMAL_NAME: MINIMAL_SOURCE})
+
+    with definition_scope(ds, load=load):
+        moved = {
+            case.case_id: identifier
+            for case in CASES
+            if (identifier := _identifier(case)) != golden[case.case_id]
+        }
+
+    assert not moved, f"a definition scope moved built-in run ids: {sorted(moved)}"
 
 
 def test_regenerate_golden() -> None:

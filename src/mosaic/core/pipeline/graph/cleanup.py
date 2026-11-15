@@ -70,6 +70,9 @@ from typing import TYPE_CHECKING, Final, Literal
 
 from mosaic.core.entry import Entry
 
+from ..definitions.scope import definition_scope, scope_version_slugs
+from ..definitions.store import is_definition_slug
+from ..error_kind import ClassifiedError
 from ..storage_names import SHORTENED_MARKER, feature_slug_of
 from .model import REQUEST_HOLD_FLOOR_HOURS, CleanupPolicy, FeatureStepSpec
 
@@ -286,18 +289,19 @@ def plan_with_cleanup(
     )
     if cleanup is None:
         return plan
-    found = plan_cleanup(
-        ds,
-        plan,
-        policy=cleanup,
-        inventory=held,
-        catalog=declarations,
-        recipe_name=recipe.name,
-        own_request=request,
-        now=now,
-        retire=retired,
-        retired_before=request.created_at if request is not None else "",
-    )
+    with definition_scope(ds, load=False):
+        found = plan_cleanup(
+            ds,
+            plan,
+            policy=cleanup,
+            inventory=held,
+            catalog=declarations,
+            recipe_name=recipe.name,
+            own_request=request,
+            now=now,
+            retire=retired,
+            retired_before=request.created_at if request is not None else "",
+        )
     return replace(plan, cleanup=found)
 
 
@@ -321,7 +325,8 @@ def plan_cleanup(
     With *retire*, the runs that the retired recipes' requests wrote are judged
     too, wherever they sit. The rules are listed in the module docstring, and the
     first that matches is the reason a run is kept. Every kept run is reported
-    with it.
+    with it. A run of a feature definition is judged from the sidecar of the
+    version it recorded. The caller must call it within a definition scope of *ds*.
 
     Args:
         ds: The planned dataset.
@@ -507,7 +512,9 @@ def run_cleanup(
     them names or reads is kept, as is a run that a request submitted since holds.
     A removal that an earlier attempt began is finished only under the same
     checks, and never for a run the plan now expects. The keepers whose
-    directories existed before are checked to exist after.
+    directories existed before are checked to exist after. It judges in the
+    definition scope of *ds*, nested in the caller's, with the digests that
+    *request* pinned, and loads no definition.
 
     A run whose removal raises is recorded as a lost entry and the cleanup goes
     on. The cancel token is read between runs. The cleanup runs again from its
@@ -565,16 +572,17 @@ def run_cleanup(
             for record in read_removal_records(run_log_dir(base), spec.execution_id)
         }
         try:
-            outcome = _remove_approved(
-                ds,
-                request,
-                log=log,
-                token=token,
-                prior=prior,
-                inventory=inventory,
-                catalog=catalog,
-                now=now,
-            )
+            with definition_scope(ds, load=False, pins=request.definitions):
+                outcome = _remove_approved(
+                    ds,
+                    request,
+                    log=log,
+                    token=token,
+                    prior=prior,
+                    inventory=inventory,
+                    catalog=catalog,
+                    now=now,
+                )
         except Exception as error:
             blob = json.dumps(
                 {
@@ -852,7 +860,7 @@ class _Watch:
             for step in recipe.steps:
                 if not isinstance(step, FeatureStepSpec):
                     continue
-                if step.feature == slug:
+                if _storage_slug_of(step.feature) == slug:
                     return ("held_by_request", f"{label} runs {slug}")
                 if _literal_reads(step.params).covers(*key):
                     return ("held_by_request", f"{label} names it")
@@ -1101,7 +1109,7 @@ def _request_holds(
                 if not isinstance(step, FeatureStepSpec):
                     continue
                 if verdict == "running":
-                    _ = holds.slugs.setdefault(step.feature, label)
+                    _ = holds.slugs.setdefault(_storage_slug_of(step.feature), label)
                 # A run its params name outright, which no step of it writes.
                 named = _literal_reads(step.params)
                 for pair in named.pairs:
@@ -1174,6 +1182,11 @@ def _may_still_run(
 # --- one candidate -----------------------------------------------------------------
 
 
+def _storage_slug_of(feature: str) -> str:
+    """The slug a run's storage name gives for *feature*: a definition's has no digest."""
+    return feature.partition("@")[0] if is_definition_slug(feature) else feature
+
+
 def _first_reason(
     record: AnyRecord,
     *,
@@ -1203,15 +1216,17 @@ def _first_reason(
         )
     if key in bound:
         return ("bound", "the request pins it")
-    declaration = catalog.get(slug)
+    recorded = record.params.definition if record.params is not None else None
+    declared = slug if recorded is None else recorded.slug
+    declaration = catalog.get(declared)
     if declaration is None:
         return (
             "costly_fit",
-            f"{slug} is not in the catalog, so whether it is costly to fit again "
-            f"is unknown",
+            f"{declared} is not in the catalog. Whether it is costly to fit "
+            f"again is unknown",
         )
     if declaration.costly_fit:
-        return ("costly_fit", f"{slug} is costly to fit again")
+        return ("costly_fit", f"{declared} is costly to fit again")
     if record.params is None or record.params_state != "present":
         return (
             "params_unknown",
@@ -1431,20 +1446,39 @@ def _reads_of(storage: str, params: RunParams | None, fit: FitScope | None) -> _
     that has not named its run is read by this rule as well. A cleanup during
     an attempt on a shortened storage keeps every superseded run.
     """
-    from .resolve import run_reference_fields
-
     via: frozenset[tuple[str, str]] = (
         frozenset((ref.feature, ref.run_id) for ref in fit.via) if fit else frozenset()
     )
     if params is None:
-        slug, _, chain = storage.partition(_FROM)
+        _, _, chain = storage.partition(_FROM)
         return _Reads(
             pairs=via,
             chain=chain,
-            everything=bool(run_reference_fields(slug)) or SHORTENED_MARKER in chain,
+            everything=_takes_a_run_through_params(feature_slug_of(storage))
+            or SHORTENED_MARKER in chain,
         )
     pairs, storages = params.upstream_references()
     return _Reads(pairs=via | pairs, storages=storages)
+
+
+def _takes_a_run_through_params(slug: str) -> bool:
+    """Whether feature *slug* declares a params field that may name another run.
+
+    A run of unknown params has no recorded definition. A definition's slug therefore
+    answers for every version of it that the ambient scope holds, from the sidecars,
+    because the run may be any of them. A version that cannot be read counts as
+    declaring one, and so does a definition of which the scope holds no version.
+    """
+    from .resolve import run_reference_fields
+
+    slugs = scope_version_slugs(slug) if is_definition_slug(slug) else [slug]
+    if not slugs:
+        return True
+    try:
+        return any(run_reference_fields(each) for each in slugs)
+    except ClassifiedError:
+        # A version whose files cannot be read may declare any field.
+        return True
 
 
 def _literal_reads(values: Mapping[str, object]) -> _Reads:

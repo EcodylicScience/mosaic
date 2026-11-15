@@ -43,6 +43,20 @@ ManifestOption = Annotated[
     ),
 ]
 
+DefinitionsManifestOption = Annotated[
+    Path | None,
+    typer.Option(
+        "--manifest",
+        "-m",
+        help=(
+            "Path to the dataset manifest (dataset.yaml). Names the dataset whose "
+            "feature definitions (def:<name>) are listed and resolved, which it "
+            "opens read-only without importing any. Without it only the built-in "
+            "features are known."
+        ),
+    ),
+]
+
 
 @notes_app.command("show")
 def show_notes(

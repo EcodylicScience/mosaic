@@ -618,6 +618,16 @@ class Request(GraphModel):
     request without one reads in an older mosaic.
     """
 
+    definitions: dict[str, str] = Field(default_factory=dict)
+    """The full digest that each bare ``def:<name>`` step was planned at, by name.
+
+    Taken from the plan the request records, whose ``def:`` steps each name one
+    version. A bare ``def:<name>`` resolves through it, and a version made current
+    after submit changes none of the request's steps. A step naming a digest
+    resolves to that digest. The request file omits the field when it is empty,
+    and a request of built-ins only then reads in an older mosaic.
+    """
+
     applies_request_id: str | None = None
     """The finished request whose fit this request applies, or ``None``.
 

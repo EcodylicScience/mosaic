@@ -10,95 +10,167 @@ message of their branch, and for both the answer was **nothing**.
 
 ## Unreleased: feature definitions in the dataset
 
-A dataset can hold a feature as source under its `feature_definitions` directory,
-named by a slug `def:<name>` or `def:<name>@<digest>`, where `<name>` is lowercase
-kebab-case of at most 64 characters and `<digest>` is 12 to 64 lowercase hex
-characters of the source's SHA-256. A `def:` feature stores under the name
-`def.<name>`, as in `features/def.<name>__from__tracks/<run_id>/`, because `:` is
-not allowed in a path component on Windows and `scp` reads it as a host separator.
-`feature_slug_of` maps `def.<name>` back to `def:<name>`. No built-in name
-contains `:`, `.` or `@` or starts with `def`, and no existing storage name, run id
-or golden line moves.
+A dataset can contain a feature as source. A definition is one Python file under the
+dataset's `feature_definitions` directory, named by the slug `def:<name>` or
+`def:<name>@<digest>`, where `<name>` is lowercase kebab-case of at most 64 characters
+and `<digest>` is 12 to 64 lowercase hex characters of the source's SHA-256. A `def:`
+feature stores under `features/def.<name>__from__tracks/<run_id>/`, because `:` is not
+allowed in a path component on Windows and `scp` reads it as a host separator, and
+`feature_slug_of` maps `def.<name>` back to `def:<name>`. No built-in name contains `:`,
+`.` or `@` or starts with `def`. No existing storage name, run id or golden line moves.
 
 `feature_definitions` is a manifest root with the default path `feature_definitions`.
-`mosaic init` writes it into a new manifest, and a manifest written before it gains it in
-memory, with its file unchanged. The first open that is not read-only creates the empty
+`mosaic init` writes it into a new manifest, and a manifest written before it gains it
+in memory, with its file unchanged. Definitions are unavailable to a `Dataset` built in
+code with roots that omit it. The first open that is not read-only creates the empty
 directory, and a read-only open creates nothing. A scan of a source declared at the
 dataset root skips `feature_definitions/` by path component, and `reindex` leaves it
-untouched.
+untouched. Under it, `<name>/` contains each version as `<YYYY-MM-DD>_<sha256>.py`, the
+source as given, beside `<YYYY-MM-DD>_<sha256>.json`, its sidecar, where the date is the
+UTC date of the source's first definition under that name. The text file `current`
+contains the stem of the version that `def:<name>` names. A file is not edited after it
+is written, and a definition is removed only by hand.
 
-`define_feature(ds, name, source)` (`mosaic.core.pipeline.definitions.define`)
-checks a source in a child interpreter and stores it under
-`feature_definitions/<name>/` as a version: `<YYYY-MM-DD>_<sha256>.py`, the source as
-given, beside `<YYYY-MM-DD>_<sha256>.json`, its sidecar, where the date is the UTC
-date of the source's first definition under that name. The text file `current`
-holds the stem of the version that `def:<name>` names. Defining identical source
+`define_feature(ds, name, source)` (`mosaic.core.pipeline.definitions.define`) checks a
+source in a child interpreter against the feature protocol, the identity of a run and
+the params rules, and stores it as a version of `name`. It returns a `DefinitionRecord`
+(`name`, `digest`, `defined_on`, `reused`, `previous_digest`). Defining identical source
 again writes nothing and returns `reused`, and defining an earlier source makes its
-version current again. It returns a `DefinitionRecord` and refuses a name that is a
-built-in feature's (`definition_name_taken`) and a source that fails a check
-(`definition_invalid`, with every finding). The source is UTF-8 of at most 1 MiB, its
-import changes no registry, and its check ends within 300 seconds.
-`declare_source(source, name)` (`definitions.declare`, also run as
-`python -m mosaic.core.pipeline.definitions.declare <name> <path>`) gives the sidecar
-of a source, `write_definition(root, name, source, sidecar)` (`definitions.store`)
-stores a source whose sidecar is already known, and `read_sidecar(path)`
-(`definitions.sidecar`) reads a sidecar.
+version current again. The source is UTF-8 of at most 1 MiB, its import changes no
+registry (features, ops, converters, track schemas) and its check ends within 300
+seconds. A refusal is `definition_name_invalid` for a name outside the grammar,
+`definition_name_taken` for a built-in feature's name, or `definition_invalid`, which
+lists every finding as `{check, field, message}` in `detail.findings`.
+`declare_source(source, name)` (`definitions.declare`) gives a source's sidecar without
+storing it.
 
 `mosaic features define <name> <file.py> --manifest <dataset.yaml> [--json]` calls
-`define_feature` on the dataset and prints the `DefinitionRecord` (`name`, `digest`,
-`defined_on`, `reused`, `previous_digest`) under `--json`, and otherwise a sentence
-with the name, the first 12 characters of the digest and the date. A refusal exits 1
-with every finding on standard error, and under `--json` with the error envelope
-whose `detail.findings` lists them.
+`define_feature` and prints the record under `--json`, and otherwise a sentence with the
+name, the first 12 characters of the digest and the date. A refusal exits 1 with every
+finding on standard error, and under `--json` with the error envelope. `mosaic features
+list --manifest <dataset.yaml>` lists the dataset's definitions beside the built-in
+features as `def:<name>`, with the columns `digest` and `defined` added when one is
+listed, and `definition` (`{name, digest, defined_on}`, `null` for a built-in) under
+`--json`. `mosaic features describe def:<name> --manifest <dataset.yaml>` describes the
+current version, and `mosaic pipeline validate --manifest <dataset.yaml>` accepts a
+`def:` step. Without `--manifest` a `def:` slug is unknown. `mosaic run --feature
+def:<name>[@<digest>]`, `mosaic pipeline plan`, `pipeline run` and `pipeline submit`
+take `def:` slugs, with no flag, since the CLI's user already runs code as themselves.
 
 `EmitsLevel`, `RelatesLevel` and `RELATES_LEVELS` are declared in
-`mosaic.core.pipeline.feature_levels`, which imports only the standard library. They
-are no longer importable from `mosaic.core.pipeline.types` or
-`mosaic.core.pipeline.types.feature`. A feature defined outside the toolkit imports
-them from the new module. Likewise `TrackSpace` and `TRACK_SPACES` are declared in
-`mosaic.core.spaces` and are no longer importable from `mosaic.core.schema`.
+`mosaic.core.pipeline.feature_levels`, which imports only the standard library, and are
+no longer importable from `mosaic.core.pipeline.types` or
+`mosaic.core.pipeline.types.feature`. Likewise `TrackSpace` and `TRACK_SPACES` are
+declared in `mosaic.core.spaces` and are no longer importable from `mosaic.core.schema`.
 
 A `def:` slug names a definition only inside a definition scope.
 `definition_scope(ds_or_base, *, load, pins=None, sidecars=None, allowed=True)`
-(`mosaic.core.pipeline.definitions.scope`) is a context manager that enters a
-`DefinitionScope` for a dataset, its directory or no dataset, holding `base_dir`,
-`load`, `pins` (name to full digest), `sidecars` (full digest to sidecar, taking
-precedence over the dataset's file of that digest) and `allowed`. The scope is a
-context variable, so it belongs to one thread or asyncio task, and a thread starts
-with none. Under no scope `feature_class_for_slug("def:<name>")` is `None`. Under a
-`load=False` scope it is a class declared from the sidecar, which imports no source
-and whose `load_state`, `fit`, `save_state` and `apply` raise `definition_not_loaded`,
-and under a `load=True` scope the loaded class. A bare `def:<name>` resolves to the
-scope's pin for the name, else to `current`, and `parse_definition_slug` splits a
-slug into its name and digest. An entry under a scope of the same dataset, or of no
-dataset, reuses it, fills in its dataset, raises `load` and adds only the pins the
-outer scope lacks. An entry of another dataset replaces the scope until it exits, and
-a disabled scope (`allowed=False`) is kept by every entry under it and refuses a
-`def:` slug with `feature_definitions_not_allowed`. Under a `load=True` scope,
-`build_feature` of a `def:` slug refuses with `definition_mismatch`, naming each
-differing term, a loaded instance whose params, inputs, `version`,
-`scope_dependent`, `consumed_roots`, `fits`, `parallelizable` or `emits` differ from
-those of the instance declared from its sidecar.
+(`mosaic.core.pipeline.definitions.scope`) is a context manager for a dataset, its
+directory or no dataset. It records `load` (whether the block may import a definition's
+source), `pins` (name to full digest), `sidecars` (full digest to sidecar) and
+`allowed`. The scope is a context variable, and a thread starts without one. Outside a
+scope `feature_class_for_slug("def:<name>")` is `None`. Under a `load=False` scope it is
+a class declared from the sidecar. That class does not import the source, and its
+`load_state`, `fit`, `save_state` and `apply` raise `definition_not_loaded`. Under a
+`load=True` scope it is the loaded class. `build_feature` compares the loaded class with
+the declared one and refuses with `definition_mismatch`, naming each differing term,
+when their params, inputs, `version`, `scope_dependent`, `consumed_roots`, `fits`,
+`parallelizable` or `emits` differ. A bare `def:<name>` resolves to the scope's pin for
+the name, else to `current`. A scope with `allowed=False` refuses every `def:` slug with
+`feature_definitions_not_allowed`, and a scope entered under it stays disabled.
 
-Under a definition scope the catalogs list the scope's definitions beside the built-in
-step types. `declaration_catalog()` and `editor_catalog()` return the built-in catalog
-(`builtin_declaration_catalog()`, `builtin_editor_catalog()`, each built once per
-process) joined with a `def:<name>` entry for each definition, under the version that its
-bare slug resolves to, sorted by name. Each entry is derived from the sidecar, so no
-source is imported. Without a scope, and under a disabled one, the catalogs are the
-built-in catalogs. A `DeclarationCatalog.get` of a `def:` slug answers from the scope in
-force at the call, so a catalog handed to another caller answers for that caller's
-dataset, and `def:<name>@<digest>` finds a version that is not current. `CatalogEntry`
-and `CatalogIndexEntry` gain `definition`, `{name, digest, defined_on}` for a definition
-and `null` for every built-in step type, which `StepTypeDetail` carries too. `check_recipe`
-without a scope reports a problem at `feature` for a `def:` step, naming the step and the
-dataset it needs, and under a scope that disallows definitions says so. A definition whose
-files cannot be read does not break the other reads: the editor catalog lists it with its
-name alone in `definition` and the reason in `unavailable`, the declaration catalog leaves
-it out, and a lookup of its slug raises its error. `DefinitionWire.digest` and
-`defined_on` are `null` for such an entry. Declaring a definition whose prerequisite names
-an `extra` that the installed distribution does not declare is refused as a finding on
-`prerequisites`, and a stored sidecar that names one still reads.
+Under a scope, `declaration_catalog()` and `editor_catalog()` return the built-in
+catalog, built once per process as `builtin_declaration_catalog()` and
+`builtin_editor_catalog()`, joined with a `def:<name>` entry for each definition,
+derived from its sidecar and sorted by name. Without a scope, and under a disabled one,
+they are the built-in catalogs. `CatalogEntry`, `CatalogIndexEntry` and `StepTypeDetail`
+gain `definition`, `{name, digest, defined_on}` for a definition and `null` for every
+built-in step type. A definition whose files cannot be read does not break the other
+reads: the editor catalog lists it by name with the reason in `unavailable`
+(`DefinitionWire.digest` and `defined_on` are `null`), the declaration catalog leaves it
+out, and a lookup of its slug raises its error. `check_recipe` reports a `def:` step as
+a problem at `feature` outside a scope of its dataset, and a disabled scope says so in
+that problem. A prerequisite whose `extra` the installed distribution does not declare
+is refused at definition, and a stored sidecar that names one still reads.
+
+A definition's run id gains the term `_definition`, the SHA-256 of its source, which
+`compute_run_id` adds when the feature's class declares `__mosaic_definition__` and
+omits otherwise. A built-in's payload is unchanged. No built-in run id and no line of
+`feature_run_id_golden.json` moves, and `definition_run_id_golden.json` pins the
+definitions' ids. An edit of the source gives new run ids at the same `version`, and the
+loaded class and the class declared from its sidecar give one id. `params.json` of a
+definition's run records `_definition` as `{"name", "digest"}`, and
+`RunParams.definition` (`DefinitionRef | None`, alias `_definition`) reads it, `None`
+for a built-in.
+
+A recipe may name a definition. `plan_pipeline`, `submit_request` and the live
+`Pipeline` plan under a `load=False` scope without importing a definition. A `def:` step
+is hashed from the class declared from its sidecar. A planned `def:` step's
+`StepSpec.feature` is `def:<name>@<sha256>`, the full digest of the version it resolved
+to. A `def:<name>@<prefix>` that more than one version starts with raises
+`DefinitionDigestAmbiguous`. `Request` gains `definitions`, name to full digest, for
+each bare `def:<name>` step, and `step_versions` records the sidecar `version` each
+`def:` step was planned at, which lets one recipe run two versions of a definition. The
+request file leaves `definitions` out when it is empty, which keeps the bytes of a
+request of built-ins as they were. A definition made current after a plan was reviewed
+changes the run id of each bare `def:<name>` step, so `submit_pipeline` with that plan's
+fingerprint returns `conflict`, and the caller plans again.
+
+Only the process that builds a `def:` feature to run it imports its source. It imports
+that one definition, at the version its request pinned. `execute_step`, which runs in a
+detached driver's step subprocess and in a queue worker's graph-step job, plans under
+the request's `definitions` as pins. A version made current after submit therefore
+changes none of the request's steps, and another definition's `definition_mismatch`
+cannot fail the step. `run_pipeline` imports each `def:` step's definition in the
+calling process when the step runs. `mosaic run --feature def:<name>[@<digest>]` imports
+that definition to build the feature, and a run of the feature imports nothing more.
+`verify_plan` imports the pinned version of each `def:` step it refits. A process worker
+of `run_feature` opens the manifest read-only, registers the dataset's
+`feature_definitions` directory with the definition finder and imports the module by its
+stable name `mosaic_definitions.<name>__<sha256>`. An object pickled by `save_state`
+from the definition's module then unpickles in a later process. `run_feature` itself
+does not import a definition. It reads a `def.` producer of its inputs from the sidecar
+of the version that the producer's run recorded.
+
+Every other reader reads sidecars under a `load=False` scope: `run_request`,
+`step_input_size` (which pins the request's `definitions`), `mosaic pipeline plan` and
+`status`, `reconcile`, `cleanup`, the catalogs and the CLI's `features` verbs.
+`Dataset.reconcile` rebuilds a `def.<name>` run's feature from the sidecar of the digest
+its `params.json` records, and a run of a version that is no longer `current` reports
+`ok`. A run whose version files were removed by hand is reported unresolvable and
+stepped past. A cleanup judges a `def.<name>` storage as any other: a run of unknown
+params reads every run when any version of the definition declares a `str` or `Result`
+params field, and a run of a version other than `current` is superseded under the rules
+every run follows. `run_cleanup` takes the digests its request pinned. `verify_plan`
+refits a `def:` step as it refits a built-in and reports `ok` or `differs`.
+
+Under a disabled scope, `plan_pipeline`, `submit_request` and `run_pipeline` (and so
+`mosaic pipeline plan`, `pipeline run` and `pipeline submit`) raise
+`FeatureDefinitionsNotAllowed` for a recipe naming a `def:` step, before it is
+validated. The error envelope is `kind: "unavailable"`, `reason:
+"feature_definitions_not_allowed"`, `detail: {"slug": ...}`. `check_recipe`,
+`validation_report` and `mosaic pipeline validate` report the step as a problem instead.
+
+The MCP server runs feature definitions only when its operator allows them:
+`ServerConfig.allow_feature_definitions` (default `false`) and `mosaic agent serve
+--allow-feature-definitions`. Each of `describe_step_types`, `validate_recipe`,
+`suggest_steps`, `patch_recipe`, `plan_recipe`, `submit_pipeline` and `manage_dataset`
+runs in the definition scope of the dataset it names, without importing a definition.
+With the flag off the catalogs list no `def:` step type, and a recipe naming one,
+whether sent whole, read from a file or named by digest or saved name, is refused with
+`kind: "unavailable"`, `reason: "feature_definitions_not_allowed"` and `detail: {"tool",
+"slug"}`. With it on, each call lists and plans the definitions of the dataset it names
+only. `describe_step_types` takes an optional `dataset`, whose definitions it lists
+beside the built-ins, and `validate_recipe` and `suggest_steps` need `dataset` for a
+recipe sent whole that names a `def:` step. `manage_dataset` gains the action
+`define_feature`, which reads `dataset`, `name` and the new field `source` (the
+definition file's text) and returns the `DefinitionRecord` in the new
+`DatasetChange.definition` (`null` for every other action). It does not ask for
+confirmation, is refused without the flag (`detail: {"tool"}`) and on a managed dataset
+unless the server allows managed writes, and returns `definition_invalid` with
+`detail.findings` for a refused source. The report resource reads a `def.<name>` run's
+report when the flag is on and refuses it with `feature_definitions_not_allowed` when it
+is off, and the `mosaic://catalog` resources list built-ins only.
 
 ## Unreleased: the admission gate counts the memory the kernel cannot reclaim
 

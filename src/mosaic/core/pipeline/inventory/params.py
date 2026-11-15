@@ -51,6 +51,7 @@ from pydantic import (
 from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.helpers import make_entry_key
 from mosaic.core.narrowing import is_str_mapping
+from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
 from mosaic.core.pipeline.index import DatasetRoots, feature_run_root
 
 __all__ = [
@@ -158,6 +159,8 @@ class RunParams(BaseModel):
     resolved: list[ResolvedRef] = Field(default_factory=list, alias="_resolved")
     execution_id: str = Field("", alias="_execution_id")
     mosaic_version: str = Field("", alias="_mosaic_version")
+    definition: DefinitionRef | None = Field(None, alias="_definition")
+    """The feature definition that wrote the run, ``None`` for a built-in."""
 
     @property
     def records_resolutions(self) -> bool:

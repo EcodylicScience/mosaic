@@ -353,8 +353,8 @@ class DeclarationCatalog:
     questions without a round trip.
 
     A ``def:`` slug is answered from the definition scope in force when it is
-    asked, whatever the scope the catalog was built under, so a catalog handed to
-    another caller answers for that caller's dataset.
+    asked, whatever the scope the catalog was built under. A catalog handed to
+    another caller therefore answers for that caller's dataset.
     """
 
     entries: Mapping[str, Declaration] = field(
@@ -363,6 +363,17 @@ class DeclarationCatalog:
 
     def __contains__(self, name: str) -> bool:
         return self.get(name) is not None
+
+    def __getitem__(self, name: str) -> Declaration:
+        """The declaration for *name*, as :meth:`get` finds it.
+
+        Raises:
+            KeyError: Nothing declares *name*.
+        """
+        declared = self.get(name)
+        if declared is None:
+            raise KeyError(name)
+        return declared
 
     def get(self, name: str) -> Declaration | None:
         """The declaration for *name*, or ``None`` if nothing declares it.

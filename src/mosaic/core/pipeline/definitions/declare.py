@@ -324,8 +324,8 @@ def main(argv: Sequence[str]) -> int:
 
     Writes the sidecar JSON to the standard output and returns 0, or writes
     ``{"findings": [...]}`` and returns 1 when the source is refused. The standard
-    output is moved to the standard error while the source runs, so nothing the
-    source prints reaches the result.
+    output is moved to the standard error while the source runs. Nothing the
+    source prints appears in the result.
     """
     name, path = argv
     sys.stdout.flush()

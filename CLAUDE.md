@@ -109,10 +109,13 @@ every registered step (`tests/core/media/preprocess/test_media_steps.py`).
   `partial`, a refusal or `orphaned`. `alive` and `phase` are events, not statuses.
   Three repositories read the set, and mosaic-api's sweeper reaps it
   (`tests/core/pipeline/graph/test_pipeline_partial_failure.py`).
-- **A read writes nothing.** A read-only verb or a dry run opens its dataset with
-  `load_dataset(..., read_only=True)` (`cli/_context.py`), and a dry run takes no
-  lock (`index_lock_unless_dry_run`). A new read joins the cases of
-  `tests/cli/test_cli_read_only.py`.
+- **A read writes nothing and imports no feature definition.** A read-only verb or a
+  dry run opens its dataset with `load_dataset(..., read_only=True)`
+  (`cli/_context.py`), and a dry run takes no lock (`index_lock_unless_dry_run`). A
+  read that resolves a `def:` slug enters `definition_scope(ds, load=False)` and reads
+  a definition's sidecar without importing its source. `pipeline verify` alone imports
+  the pinned version of a `def:` step it refits (`verify.py`). A new read joins the
+  cases of `tests/cli/test_cli_read_only.py`.
 
 ## Docstrings
 

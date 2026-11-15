@@ -28,17 +28,23 @@ if TYPE_CHECKING:
 
 
 def available_slugs() -> list[str]:
-    """Sorted list of every registered feature slug (for error messages/help)."""
+    """Sorted list of every feature slug known here (for error messages/help).
+
+    The registered features, and the ``def:<name>`` of each feature definition of
+    the definition scope in force.
+    """
     from mosaic.behavior.feature_library import FEATURES
+    from mosaic.core.pipeline.definitions.scope import scope_definition_names
 
     slugs: list[str] = []
     for cls in FEATURES.values():
         name_raw = getattr(cls, "name", None)
         slugs.append(name_raw if isinstance(name_raw, str) else cls.__name__)
+    slugs.extend(f"def:{name}" for name in scope_definition_names())
     return sorted(slugs)
 
 
-def feature_class_for_slug(slug: str) -> "type[Feature]":
+def feature_class_for_slug(slug: str, *, as_json: bool = False) -> "type[Feature]":
     """Resolve a discovery slug (``cls.name``) to its feature class, or exit.
 
     The lookup itself lives in the graph package, which is where a recipe and a
@@ -46,10 +52,17 @@ def feature_class_for_slug(slug: str) -> "type[Feature]":
     available. Three copies of the scan existed -- here, in recipe resolution,
     and in mosaic-api's lane routing -- and a fourth would have been written the
     next time something had to turn a slug into a class.
+
+    A ``def:`` slug names a definition of the definition scope in force, and under
+    a ``load=False`` scope its class is the one declared from its sidecar.
     """
+    from mosaic.core.pipeline.definitions.store import FeatureDefinitionsNotAllowed
     from mosaic.core.pipeline.graph import feature_class_for_slug as lookup
 
-    found = lookup(slug)
+    try:
+        found = lookup(slug)
+    except FeatureDefinitionsNotAllowed as exc:
+        fail_classified(exc, as_json=as_json)
     if found is None:
         fail(f"Unknown feature '{slug}'. Available: {', '.join(available_slugs())}")
     return cast("type[Feature]", found)

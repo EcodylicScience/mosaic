@@ -26,6 +26,10 @@ from pydantic import ValidationError
 
 from mosaic.core.filter_bounds import TimeWindow
 from mosaic.core.pipeline._utils import ResolvedScope, atomic_write
+from mosaic.core.pipeline.definitions.scope import definition_scope
+from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
+from mosaic.core.pipeline.definitions.store import is_definition_slug
+from mosaic.core.pipeline.error_kind import ClassifiedError
 from mosaic.core.pipeline.storage_names import feature_slug_of
 from mosaic.core.pipeline.dataset_indexes import feature_storages
 from mosaic.core.pipeline.inventory.params import (
@@ -81,25 +85,37 @@ def _split_feature_run_id(run_id: str) -> tuple[str, str] | None:
     return version, digest
 
 
-def _feature_class(slug: str) -> "type[Feature] | None":
-    """The feature class registered under *slug*, or ``None`` if none is.
+def _feature_class(slug: str) -> type | None:
+    """The feature class named *slug* in the ambient definition scope, or ``None``.
 
-    The registry lookup ``cli._features.feature_class_for_slug`` performs, but
-    returning ``None`` rather than exiting: a run whose feature has been removed
-    from the registry is one this pass reports as unresolvable and steps past, not
-    one that aborts the sweep.
+    The lookup :func:`~mosaic.core.pipeline.graph.resolve.feature_class_for_slug`
+    performs, returning ``None`` for a class without an ``Inputs`` model: a run
+    whose feature has been removed from the registry is one this pass reports as
+    unresolvable and steps past, not one that aborts the sweep.
+
+    Raises:
+        ClassifiedError: *slug* names a definition that the scope refuses or
+            cannot read.
     """
-    from mosaic.behavior.feature_library import FEATURES
     from pydantic import BaseModel
 
-    for cls in FEATURES.values():
-        if getattr(cls, "name", None) != slug:
-            continue
-        inputs_cls = getattr(cls, "Inputs", None)
-        if isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel):
-            return cls
-        return None
+    from mosaic.core.pipeline.graph.resolve import feature_class_for_slug
+
+    cls = feature_class_for_slug(slug)
+    inputs_cls = getattr(cls, "Inputs", None)
+    if isinstance(inputs_cls, type) and issubclass(inputs_cls, BaseModel):
+        return cls
     return None
+
+
+def _missing_feature(slug: str, recorded: DefinitionRef | None) -> str:
+    """Why *slug* names no class: no such registered feature, or no such version."""
+    if recorded is None:
+        return f"feature {slug!r} is not in the registry"
+    return (
+        f"definition {recorded.name!r} version {recorded.digest[:12]} is not in "
+        "this dataset's feature definitions"
+    )
 
 
 def _is_result(value: object) -> TypeGuard["Result[str]"]:
@@ -245,17 +261,22 @@ class FeatureReconciler:
         params = read.params
         if params is None:
             return None, read.finding, ()
-        cls = _feature_class(slug)
-        if cls is None:
-            return None, f"feature {slug!r} is not in the registry", ()
-
-        inputs_cls = getattr(cls, "Inputs", None)
-        if inputs_cls is None:
-            return None, f"feature {slug!r} has no Inputs model", ()
+        recorded = params.definition
+        if is_definition_slug(slug) and recorded is None:
+            return None, f"the run of {slug!r} records no definition", ()
+        lookup = slug if recorded is None else recorded.slug
         try:
-            inputs_obj = inputs_cls.model_validate(params.inputs)
-            params_dict = params.params
-            feature = cls(inputs_obj, params_dict)  # pyright: ignore[reportCallIssue]
+            with definition_scope(self._ds, load=False):
+                cls = _feature_class(lookup)
+                if cls is None:
+                    return None, _missing_feature(slug, recorded), ()
+                inputs_cls = getattr(cls, "Inputs", None)
+                if inputs_cls is None:
+                    return None, f"feature {slug!r} has no Inputs model", ()
+                inputs_obj = inputs_cls.model_validate(params.inputs)
+                feature = cls(inputs_obj, params.params)  # pyright: ignore[reportCallIssue]
+        except ClassifiedError as exc:
+            return None, f"feature {slug!r} cannot be read: {exc}", ()
         except (ValidationError, ValueError, TypeError) as exc:
             return None, f"could not rebuild feature: {exc}", ()
         return feature, "", _upstream_feature_runs(feature)

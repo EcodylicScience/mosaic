@@ -206,8 +206,9 @@ def serve_command(
                 "the parallelism limits `max_workers`, `allow_process_mode` "
                 "and `min_free_memory_fraction`, the `gpu_cards` its GPU steps "
                 "may lease, the `dataset_roots` and "
-                "`source_roots` that manage_dataset may write inside, and the "
-                "`recipe_roots` that a recipe file is read from. "
+                "`source_roots` that manage_dataset may write inside, the "
+                "`recipe_roots` that a recipe file is read from, and "
+                "`allow_feature_definitions`. "
                 "Its relative paths are read from its directory."
             ),
         ),
@@ -234,6 +235,18 @@ def serve_command(
             ),
         ),
     ] = None,
+    allow_feature_definitions: Annotated[
+        bool,
+        typer.Option(
+            "--allow-feature-definitions",
+            help=(
+                "Let the tools read and run a dataset's feature definitions and "
+                "manage_dataset define one. A definition is Python that runs as "
+                "this server's account. This gives the agent the access of a "
+                "shell."
+            ),
+        ),
+    ] = False,
     http: Annotated[
         str | None,
         typer.Option(
@@ -335,6 +348,7 @@ def serve_command(
             *settings.allow_cleanup,
         ]
     )
+    definitions = allow_feature_definitions or settings.allow_feature_definitions
     _check_gpu_cards(settings)
     if http is not None:
         _serve_http(
@@ -347,6 +361,7 @@ def serve_command(
             allow_model_confirm=allow_model_confirm,
             allow_managed=allow_managed_writes or settings.allow_managed_writes,
             allow_cleanup=granted,
+            allow_feature_definitions=definitions,
             settings=settings,
         )
         return
@@ -376,6 +391,7 @@ def serve_command(
             dataset_roots=settings.dataset_roots,
             source_roots=settings.source_roots,
             recipe_roots=settings.recipe_roots,
+            allow_feature_definitions=definitions,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))
@@ -415,6 +431,7 @@ def _serve_http(
     allow_model_confirm: bool,
     allow_managed: bool,
     allow_cleanup: frozenset[CleanupClass],
+    allow_feature_definitions: bool,
     settings: ServerConfig,
 ) -> None:
     """Check the HTTP options and serve, or exit with what is wrong."""
@@ -462,6 +479,7 @@ def _serve_http(
             dataset_roots=settings.dataset_roots,
             source_roots=settings.source_roots,
             recipe_roots=settings.recipe_roots,
+            allow_feature_definitions=allow_feature_definitions,
         )
     except MissingOptionalDependency as exc:
         fail(str(exc))

@@ -8,6 +8,11 @@ recorded in the dataset and run by a detached driver
 (:func:`~mosaic.core.pipeline.graph.start_detached_driver`), which outlives the
 server.
 
+Every tool that reads a catalog or a recipe runs in the definition scope of the
+dataset it names, which never loads a definition's code. On a backend built
+without ``allow_feature_definitions`` that scope is disabled: the catalogs list
+no ``def:`` step type, and a recipe naming one is refused before it is validated.
+
 Two rules guard the tools that change a dataset. A dataset whose manifest names
 a managing service (``managed_by``) refuses them unless the backend was built
 with ``allow_managed``. ``submit_pipeline`` and ``cancel_request`` refuse a call
@@ -24,7 +29,8 @@ import json
 import logging
 import threading
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Generator, Iterable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,6 +90,7 @@ from .spec import (
     cleanup_not_allowed,
     confirmation_required,
     dataset_managed,
+    feature_definitions_not_allowed,
     invalid_cursor,
     unknown_dataset,
     validation_errors,
@@ -95,6 +102,7 @@ if TYPE_CHECKING:
     from mosaic.core.manifest import DatasetManifest
     from mosaic.core.media.store_division import DivisionRefused
     from mosaic.core.pipeline.cancel import RequestCancel
+    from mosaic.core.pipeline.definitions.store import DefinitionRecord
     from mosaic.core.pipeline.graph import (
         CatalogEntry,
         CatalogIndex,
@@ -213,6 +221,7 @@ class LocalBackend:
         dataset_roots: Sequence[Path] = (),
         source_roots: Sequence[Path] = (),
         recipe_roots: Sequence[Path] = (),
+        allow_feature_definitions: bool = False,
     ) -> None:
         """Serve the datasets of *manifests*.
 
@@ -245,6 +254,10 @@ class LocalBackend:
                 declare a source, fixed by the operator.
             recipe_roots: The directories inside which a recipe argument
                 ``{"path": ...}`` is read, fixed by the operator.
+            allow_feature_definitions: Whether the tools read and run the
+                datasets' feature definitions and ``manage_dataset`` defines one,
+                fixed by the operator. Off, every call runs under a disabled
+                definition scope.
         """
         self._manifests: tuple[Path, ...] = tuple(manifests)
         self._allow_managed: bool = allow_managed
@@ -266,6 +279,7 @@ class LocalBackend:
         self._recipe_roots: tuple[Path, ...] = tuple(
             root.resolve() for root in recipe_roots
         )
+        self._allow_feature_definitions: bool = allow_feature_definitions
         self._served: dict[str, _Served] | None = None
         self._looked_at: set[Path] = set()
         self._served_lock: threading.Lock = threading.Lock()
@@ -291,6 +305,7 @@ class LocalBackend:
         cleanup_policy: CleanupPolicy | None = None,
         parallel_limits: ParallelLimits | None = None,
         gpu_cards: Sequence[str] | None = None,
+        allow_feature_definitions: bool = False,
     ) -> LocalBackend:
         """Serve the datasets found in *root* and below it.
 
@@ -307,6 +322,7 @@ class LocalBackend:
             cleanup_policy: As for :class:`LocalBackend`.
             parallel_limits: As for :class:`LocalBackend`.
             gpu_cards: As for :class:`LocalBackend`.
+            allow_feature_definitions: As for :class:`LocalBackend`.
         """
         manifests = discovered_manifests(root, max_depth=max_depth)
         return cls(
@@ -318,6 +334,7 @@ class LocalBackend:
             cleanup_policy=cleanup_policy,
             parallel_limits=parallel_limits,
             gpu_cards=gpu_cards,
+            allow_feature_definitions=allow_feature_definitions,
         )
 
     def dataset(self, uuid: str) -> Dataset:
@@ -327,6 +344,21 @@ class LocalBackend:
             ToolFailure: The allowlist names no dataset *uuid*.
         """
         return self._dataset(uuid).dataset
+
+    @contextmanager
+    def definitions(self, dataset: Dataset | None) -> Generator[None]:
+        """Run the block in the definition scope a call on *dataset* runs in.
+
+        The scope never loads a definition's code, and it is disabled unless the
+        backend allows feature definitions. A caller's disabled scope stays
+        disabled. A resource read of a served dataset enters it as a tool does.
+        """
+        from mosaic.core.pipeline.definitions.scope import definition_scope
+
+        with definition_scope(
+            dataset, load=False, allowed=self._allow_feature_definitions
+        ):
+            yield
 
     def catalog(self) -> CatalogIndex:
         """Return the step-type catalog index, building it once across threads."""
@@ -364,31 +396,57 @@ class LocalBackend:
         self, args: DescribeStepTypesInput
     ) -> ToolResult[StepTypes]:
         """Answer ``describe_step_types``."""
-        return answer(lambda: self._describe_step_types(args))
+        return answer(
+            lambda: self._scoped(
+                "describe_step_types",
+                args.dataset,
+                lambda: self._describe_step_types(args),
+            )
+        )
 
     def validate_recipe(
         self, args: ValidateRecipeInput
     ) -> ToolResult[ValidationReport]:
         """Answer ``validate_recipe``."""
-        return answer(lambda: self._validate_recipe(args))
+        return answer(
+            lambda: self._scoped(
+                "validate_recipe", args.dataset, lambda: self._validate_recipe(args)
+            )
+        )
 
     def suggest_steps(self, args: SuggestStepsInput) -> ToolResult[StepSuggestions]:
         """Answer ``suggest_steps``."""
-        return answer(lambda: self._suggest_steps(args))
+        return answer(
+            lambda: self._scoped(
+                "suggest_steps", args.dataset, lambda: self._suggest_steps(args)
+            )
+        )
 
     def patch_recipe(self, args: PatchRecipeInput) -> ToolResult[PatchedRecipe]:
         """Answer ``patch_recipe``."""
-        return answer(lambda: self._patch_recipe(args))
+        return answer(
+            lambda: self._scoped(
+                "patch_recipe", args.dataset, lambda: self._patch_recipe(args)
+            )
+        )
 
     def plan_recipe(self, args: PlanRecipeInput) -> ToolResult[PlanPage]:
         """Answer ``plan_recipe``."""
-        return answer(lambda: self._plan_recipe(args))
+        return answer(
+            lambda: self._scoped(
+                "plan_recipe", args.dataset, lambda: self._plan_recipe(args)
+            )
+        )
 
     def submit_pipeline(
         self, args: SubmitPipelineInput
     ) -> ToolResult[SubmittedPipeline]:
         """Answer ``submit_pipeline``."""
-        return answer(lambda: self._submit_pipeline(args))
+        return answer(
+            lambda: self._scoped(
+                "submit_pipeline", args.dataset, lambda: self._submit_pipeline(args)
+            )
+        )
 
     def get_request_status(
         self, args: GetRequestStatusInput
@@ -418,7 +476,38 @@ class LocalBackend:
 
     def manage_dataset(self, args: ManageDatasetInput) -> ToolResult[DatasetChange]:
         """Answer ``manage_dataset``."""
-        return answer(lambda: self._manage_dataset(args))
+        return answer(
+            lambda: self._scoped(
+                "manage_dataset", args.dataset, lambda: self._manage_dataset(args)
+            )
+        )
+
+    def _scoped[T](
+        self, tool: ToolName, dataset: str | None, compute: Callable[[], T]
+    ) -> T:
+        """Return *compute*'s result, computed in the definition scope of *dataset*.
+
+        On a backend that does not allow feature definitions, a definition that
+        the call names is refused with the operator's setting named.
+
+        Raises:
+            ToolFailure: *dataset* is not served, or the call names a definition
+                that this backend does not allow.
+        """
+        from mosaic.core.pipeline.definitions.store import (
+            FeatureDefinitionsNotAllowed,
+        )
+
+        served = None if dataset is None else self._dataset(dataset).dataset
+        try:
+            with self.definitions(served):
+                return compute()
+        except FeatureDefinitionsNotAllowed as refused:
+            if self._allow_feature_definitions:
+                raise
+            raise ToolFailure(
+                feature_definitions_not_allowed(tool, refused.slug)
+            ) from refused
 
     # ------------------------------------------------------------- datasets
 
@@ -660,16 +749,23 @@ class LocalBackend:
 
     def _validate_recipe(self, args: ValidateRecipeInput) -> ValidationReport:
         from mosaic.core.pipeline.graph import (
+            RecipeInvalid,
             canonical_recipe,
             merge_cautions,
+            read_recipe,
             recipe_reference,
             validation_report,
         )
+        from mosaic.core.pipeline.graph.validate import refuse_disallowed_definitions
 
         document = self._recipe_document(args.recipe)
         if recipe_reference(document) is None:
             # Sent whole or read from a file, it is reported and not refused when
             # it does not parse.
+            try:
+                refuse_disallowed_definitions(read_recipe(document))
+            except RecipeInvalid:
+                pass
             report = validation_report(document, self._declarations())
         else:
             recipe = self._recipe(document, args.dataset)
@@ -741,6 +837,7 @@ class LocalBackend:
             patch_validation_report,
             save_recipe,
         )
+        from mosaic.core.pipeline.graph.validate import refuse_disallowed_definitions
 
         from .outputs import PatchedRecipe
 
@@ -748,6 +845,8 @@ class LocalBackend:
         dataset = self._changeable(held, "patch_recipe")
         base = self._recipe(args.base, args.dataset)
         patched = patch_recipe(base, args.ops)
+        # An edit may add a definition the base did not name.
+        refuse_disallowed_definitions(patched)
         _ = save_recipe(dataset.base_dir, patched)
         report, unchanged = patch_validation_report(
             canonical_recipe(base), canonical_recipe(patched), self._declarations()
@@ -793,6 +892,8 @@ class LocalBackend:
         Raises:
             ToolFailure: It names a file outside the recipe roots, or a saved
                 recipe and no dataset is given.
+            FeatureDefinitionsNotAllowed: A step names a feature definition and
+                the definition scope is disabled.
             JsonFileUnreadable: The file it names does not read as JSON.
             RecipeInvalid: It does not parse.
             RecipeNotSaved: The dataset has no saved recipe it names.
@@ -803,11 +904,14 @@ class LocalBackend:
             recipe_reference,
             resolve_saved_recipe,
         )
+        from mosaic.core.pipeline.graph.validate import refuse_disallowed_definitions
 
         document = self._recipe_document(document)
         reference = recipe_reference(document)
         if reference is None:
-            return read_recipe(document)
+            recipe = read_recipe(document)
+            refuse_disallowed_definitions(recipe)
+            return recipe
         if dataset is None:
             raise ToolFailure(
                 ErrorEnvelope(
@@ -820,7 +924,11 @@ class LocalBackend:
                     detail={"field": "dataset"},
                 )
             )
-        return resolve_saved_recipe(self._dataset(dataset).dataset.base_dir, reference)
+        recipe = resolve_saved_recipe(
+            self._dataset(dataset).dataset.base_dir, reference
+        )
+        refuse_disallowed_definitions(recipe)
+        return recipe
 
     # ------------------------------------------------------------- planning
 
@@ -1024,6 +1132,8 @@ class LocalBackend:
 
         from .dataset_tools import PathRefused
 
+        if args.action == "define_feature" and not self._allow_feature_definitions:
+            raise ToolFailure(feature_definitions_not_allowed("manage_dataset"))
         try:
             if args.action == "create":
                 held, message = self._create_dataset(args)
@@ -1034,6 +1144,7 @@ class LocalBackend:
             dataset = self._changeable(held, "manage_dataset")
             scanned = _Scanned()
             orphaned: int | None = None
+            defined: DefinitionRecord | None = None
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
         try:
@@ -1055,6 +1166,13 @@ class LocalBackend:
                     message = _set_tags(dataset, args)
                 case "set_arenas":
                     message = _set_arenas(dataset, args)
+                case "define_feature":
+                    defined = _define_feature(dataset, args)
+                    message = (
+                        f"{'reused' if defined.reused else 'defined'} the feature "
+                        f"definition {defined.name!r} at {defined.digest[:12]}; "
+                        f"recipes name it def:{defined.name}"
+                    )
         except PathRefused as refused:
             raise ToolFailure(refused.envelope) from refused
         finally:
@@ -1069,6 +1187,7 @@ class LocalBackend:
                 "refused": scanned.divisions.refused,
                 "findings": scanned.findings,
                 "orphaned_rows": orphaned,
+                "definition": defined,
                 "next_steps": dataset_next_steps(held.dataset),
             }
         )
@@ -1433,18 +1552,31 @@ class LocalBackend:
                 self._contributors_registered = True
 
     def _declarations(self) -> DeclarationCatalog:
-        """Return the declaration catalog, building it once across threads."""
+        """Return the declaration catalog of the scope in force.
+
+        The built-in catalog is built once across threads, under the lock. The
+        scope's definitions are joined outside it. Calls on two datasets therefore
+        do not wait on each other's reads.
+        """
         from mosaic.core.pipeline.graph import declaration_catalog
+        from mosaic.core.pipeline.graph.resolve import builtin_declaration_catalog
 
         with self._catalog_lock:
-            return declaration_catalog()
+            _ = builtin_declaration_catalog()
+        return declaration_catalog()
 
     def _catalog_index(self) -> CatalogIndex:
-        """Return the catalog index, building the editor catalog once across threads."""
+        """Return the catalog index of the scope in force.
+
+        The built-in editor catalog is built once across threads, under the lock,
+        and the scope's definitions are joined outside it.
+        """
         from mosaic.core.pipeline.graph import catalog_index
+        from mosaic.core.pipeline.graph.resolve import builtin_editor_catalog
 
         with self._catalog_lock:
-            return catalog_index()
+            _ = builtin_editor_catalog()
+        return catalog_index()
 
     def _cancel_findings(
         self, dataset: Dataset, request: Request
@@ -1843,6 +1975,23 @@ def _division_refused(refused: DivisionRefused) -> ErrorEnvelope:
         message=str(refused),
         detail={"refusal": refused.reason},
     )
+
+
+def _define_feature(dataset: Dataset, args: ManageDatasetInput) -> DefinitionRecord:
+    """Define ``args.source`` as the feature definition ``args.name`` of *dataset*.
+
+    Raises:
+        ToolFailure: The call gives no name or no source.
+        ClassifiedError: The name or the source is refused, as ``define_feature``
+            refuses them.
+    """
+    from mosaic.core.pipeline.definitions.define import define_feature
+
+    if args.name is None:
+        raise ToolFailure(missing_field("define_feature", "name"))
+    if args.source is None:
+        raise ToolFailure(missing_field("define_feature", "source"))
+    return define_feature(dataset, args.name, args.source)
 
 
 def _set_tags(dataset: Dataset, args: ManageDatasetInput) -> str:

@@ -5,8 +5,8 @@ resolves ``mosaic_definitions`` as a namespace package and
 ``mosaic_definitions.<name with - as _>__<sha256>`` from the
 ``feature_definitions`` roots registered with it. Any other name under the package
 is refused. Every import of a definition's module, a worker's by name included,
-goes through :meth:`_DefinitionLoader.exec_module`, so the class it yields carries
-``name = "def:<name>"`` and ``__mosaic_definition__``.
+goes through :meth:`_DefinitionLoader.exec_module`. The class it yields therefore
+has ``name = "def:<name>"`` and ``__mosaic_definition__``.
 
 At import the module loads the standard library and the store and sidecar modules
 only. Executing a definition imports the checks, the registries and the feature
@@ -50,6 +50,7 @@ if TYPE_CHECKING:
 __all__ = [
     "DEFINITION_MARK",
     "DefinitionFinder",
+    "definition_ref_of",
     "load_definition",
     "register_definitions_root",
 ]
@@ -171,8 +172,8 @@ class _DefinitionLoader(importlib.abc.Loader):
 class DefinitionFinder(importlib.abc.MetaPathFinder):
     """Finds the definitions' modules in the ``feature_definitions`` roots it holds.
 
-    The root registered last is searched first, so a load reads the version from
-    the dataset it names when another dataset holds the same digest. The first
+    The root registered last is searched first. A load therefore reads the version
+    from the dataset it names when another dataset holds the same digest. The first
     root that holds a complete version of the digest supplies the file.
     """
 
@@ -259,7 +260,7 @@ def register_definitions_root(path: Path) -> None:
 def load_definition(definitions_dir: Path, name: str, digest: str) -> type[Feature]:
     """Import the version *digest* of the definition *name* and return its class.
 
-    The module stays in ``sys.modules``, so a later load or an import by its name
+    The module stays in ``sys.modules``. A later load or an import by its name
     returns the same class.
 
     Args:
@@ -291,6 +292,15 @@ def load_definition(definitions_dir: Path, name: str, digest: str) -> type[Featu
     )
 
 
+def definition_ref_of(cls: type) -> DefinitionRef | None:
+    """The version of a definition that *cls* is, ``None`` for any other class.
+
+    Both a loaded class and a class declared from a sidecar carry the mark.
+    """
+    ref: object = getattr(cls, DEFINITION_MARK, None)
+    return ref if isinstance(ref, DefinitionRef) else None
+
+
 def _is_feature_class(cls: type) -> TypeIs[type[Feature]]:
     """Whether *cls* has the four methods of a feature.
 
@@ -308,11 +318,11 @@ def _differing_fields(
 ) -> list[str]:
     """Each definition-owned field, dotted into records, where the two sidecars differ.
 
-    Values are compared through their canonical JSON, a field left unset reading
-    as its default, so the result is the same in every process and a sidecar
-    that omits a defaulted fact still matches. A field of ``flags`` or
-    ``attributes`` whose default is ``None`` differs also when only one side
-    declares it, because a declared ``None`` is not an undeclared attribute.
+    Values are compared through their canonical JSON, a field left unset reading as its
+    default. The result is the same in every process, and a sidecar that omits a
+    defaulted fact still matches. A field of ``flags`` or ``attributes`` whose default
+    is ``None`` differs also when only one side declares it, because a declared ``None``
+    is not an undeclared attribute.
     """
     from mosaic.core.json_object import JSON_OBJECT
 

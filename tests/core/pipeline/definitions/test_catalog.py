@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
@@ -35,6 +33,7 @@ from mosaic.core.pipeline.graph.resolve import (
     step_type_detail,
 )
 from tests.helpers import (
+    imported_definitions,
     GLOBAL_NAME,
     GLOBAL_SOURCE,
     MINIMAL_NAME,
@@ -94,16 +93,6 @@ def other_dataset(tmp_path_factory: pytest.TempPathFactory) -> Dataset:
     return defined_dataset(
         tmp_path_factory.mktemp("other"), {MINIMAL_NAME: TRIPLED_SOURCE}
     )
-
-
-@pytest.fixture(autouse=True)
-def forget_loaded_definitions() -> Iterator[None]:
-    """Remove the definition modules a test imported, so each test loads afresh."""
-    before = set(sys.modules)
-    yield
-    for name in set(sys.modules) - before:
-        if name.startswith("mosaic_definitions."):
-            _ = sys.modules.pop(name)
 
 
 def _recipe(feature: str, **params: object) -> Recipe:
@@ -182,7 +171,7 @@ def test_the_catalogs_import_no_definition_under_a_load_scope(
         _ = catalog_index()
         _ = step_type_detail(GLOBAL_SLUG)
         assert declaration_catalog().get(SLUG) is not None
-    assert not [name for name in sys.modules if name.startswith("mosaic_definitions.")]
+    assert not imported_definitions()
 
 
 def test_the_lane_of_a_definition_follows_its_attributes(dataset: Dataset) -> None:

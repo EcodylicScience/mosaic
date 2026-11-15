@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import sys
 import threading
-from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Final
@@ -45,10 +43,13 @@ from mosaic.core.pipeline.graph.resolve import (
     run_reference_fields,
 )
 from tests.helpers import (
+    imported_definitions,
     GLOBAL_NAME,
     GLOBAL_SOURCE,
     MINIMAL_NAME,
     MINIMAL_SOURCE,
+    NARROWING_NAME,
+    NARROWING_SOURCE,
     defined_dataset,
     run_fresh,
 )
@@ -67,18 +68,6 @@ TRAITS_SOURCE: Final = (
         "    consumed_roots = ()\n", "    consumed_roots = ()\n    temporal_reach = 3\n"
     )
     .replace("scale: float = 1.0", 'scale: float = 1.0\n        label: str = "a"')
-)
-
-NARROWING_NAME: Final = "narrow-distance"
-NARROWING_SOURCE: Final = (
-    MINIMAL_SOURCE.replace(f'name = "{MINIMAL_NAME}"', f'name = "{NARROWING_NAME}"')
-    .replace("scale: float = 1.0", "scale: float = 1.0\n        wide: bool = False")
-    .replace(
-        "        self.params = self.Params.from_overrides(params)\n",
-        "        self.params = self.Params.from_overrides(params)\n"
-        "        if self.params.wide:\n"
-        "            self.scope_dependent = True\n",
-    )
 )
 
 SLUG: Final = f"def:{MINIMAL_NAME}"
@@ -112,16 +101,6 @@ def other_dataset(tmp_path_factory: pytest.TempPathFactory) -> Dataset:
     )
 
 
-@pytest.fixture(autouse=True)
-def forget_loaded_definitions() -> Iterator[None]:
-    """Remove the definition modules a test imported, so each test loads afresh."""
-    before = set(sys.modules)
-    yield
-    for name in set(sys.modules) - before:
-        if name.startswith("mosaic_definitions."):
-            _ = sys.modules.pop(name)
-
-
 def _sidecar(dataset: Dataset, name: str, digest: str) -> DefinitionSidecar:
     directory = dataset.get_root(DEFINITIONS_ROOT) / name
     (version,) = [each for each in list_versions(directory) if each.digest == digest]
@@ -153,7 +132,7 @@ def test_a_read_scope_gives_the_declared_class(dataset: Dataset) -> None:
     with pytest.raises(DefinitionNotLoaded) as raised:
         feature.load_state(Path(), {}, {})
     assert raised.value.method == "load_state"
-    assert not [name for name in sys.modules if name.startswith("mosaic_definitions.")]
+    assert not imported_definitions()
 
 
 def test_a_read_scope_imports_no_definition_and_no_declaring_module(

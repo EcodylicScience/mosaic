@@ -8,6 +8,8 @@ stacks.
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +45,27 @@ def load_dataset(manifest: Path, *, read_only: bool = False) -> "Dataset":
         return open_dataset(manifest, ensure_roots=not read_only)
     except Exception as exc:  # noqa: BLE001 - surface any load failure cleanly
         fail(f"Failed to load dataset from {manifest}: {exc}")
+
+
+@contextmanager
+def definitions_of(manifest: Path | None) -> Generator[None]:
+    """Hold the definition scope of the dataset at *manifest* for the block.
+
+    The dataset is opened read-only and the scope does not load definitions, so
+    the block resolves each ``def:`` slug from its sidecar and imports no source.
+    A caller's scope that disables definitions stays as it is. Without a manifest
+    the block holds no scope of its own, and only the built-in features are known.
+
+    Args:
+        manifest: The manifest file, or the directory holding it, or ``None``.
+    """
+    if manifest is None:
+        yield
+        return
+    from mosaic.core.pipeline.definitions.scope import definition_scope
+
+    with definition_scope(load_dataset(manifest, read_only=True), load=False):
+        yield
 
 
 def run_log_dir_for(ds: "Dataset") -> Path:

@@ -67,6 +67,8 @@ from mosaic.core.strict_model import StrictModel
 from mosaic.user_paths import user_path
 
 from ._utils import FeatureMeta, ResolvedScope
+from .definitions.scope import definition_scope
+from .definitions.store import is_definition_slug
 from .index import feature_index, feature_index_path, feature_run_root
 from .loading import (
     CROSS_JOIN_FEATURES,
@@ -1149,11 +1151,15 @@ def verify_plan(
 
     Returns:
         One verdict per step. A step that cannot be verified is ``skipped`` with the
-        reason, and a fit or a scoring that raised is ``error``.
+        reason, and a fit or a scoring that raised is ``error``. The check of a
+        feature definition's step loads the version the plan pins, and no other
+        definition loads.
 
     Raises:
         ScratchRefused: *scratch* is inside the dataset or holds other files.
         UnknownStepsNamed: *steps* names a step that *plan* lacks.
+        FeatureDefinitionsNotAllowed: *plan* names a feature definition and the
+            caller's scope disables them.
     """
     from threadpoolctl import threadpool_limits
 
@@ -1165,7 +1171,7 @@ def verify_plan(
     verdicts: list[StepVerdict] = []
     unfinished = 0
     applied: dict[tuple[str, str], _Applied] = {}
-    with _scratch_directory(scratch, ds) as root:
+    with definition_scope(ds, load=False), _scratch_directory(scratch, ds) as root:
         for planned in plan.steps:
             skipped = StepVerdict(
                 step=planned.step_id, runs=planned.runs, status="skipped"
@@ -1203,7 +1209,12 @@ def verify_plan(
             work = root / planned.step_id
             check = _verify_scores if evaluation and not planned.fits else _verify_fit
             try:
-                with threadpool_limits(limits=n_threads):
+                # A definition step's check runs its source: the version its plan
+                # pins loads here, and no other definition.
+                with (
+                    threadpool_limits(limits=n_threads),
+                    definition_scope(ds, load=is_definition_slug(planned.spec.feature)),
+                ):
                     verdicts.append(
                         check(
                             ds,

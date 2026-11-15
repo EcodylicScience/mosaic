@@ -513,6 +513,44 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   label of its own direction, so a CalMS21 label marks only the resident-focal row.
 - A custom feature must be deterministic, with typed Pydantic parameters:
   https://ecodylicscience.github.io/mosaic/guides/analysis/write-your-own-feature/.
+- A feature that the CLI, a recipe or a queue worker must run is a definition stored in
+  the dataset: one Python file declaring the feature class, whose `name` is the
+  definition's name, stored with `mosaic features define <name> <file.py> -m <manifest>`
+  (from Python, `define_feature(ds, name, source_bytes)` in
+  `mosaic.core.pipeline.definitions.define`). A recipe step's `feature` and `mosaic run
+  --feature` then name `def:<name>`, or `def:<name>@<digest>` for one version (12 to 64
+  hex characters, which `mosaic features list --manifest <manifest>` shows). A bare
+  `def:<name>` is the current version when the recipe is planned, and the plan pins its
+  digest. Defining the same source again reuses its version, other source adds one, and
+  each version gives different run ids. `mosaic features list`, `mosaic features
+  describe` and `mosaic pipeline validate` know the dataset's definitions only with
+  `--manifest`. Do not edit `feature_definitions/` by hand. The rules for the code
+  follow. A check at definition tests them as far as it can and lists every finding in
+  a refusal. The author keeps the version bump, determinism in `apply` and the
+  environments that other machines run in:
+  - one file with absolute imports (`mosaic.behavior.feature_library.helpers`; a
+    relative import fails), importing only what the environment has, without
+    `register_feature`;
+  - deterministic at import and in `apply`, with `version` bumped when the meaning of
+    the output changes;
+  - `parallelizable`, `scope_dependent`, `accepts_overlap`, `emits`, `consumed_roots`,
+    `fits` and `costly_fit` as class constants, set outside `__init__`, and
+    `temporal_reach` an int or `None`;
+  - params with a default on every field, typed from scalars, `Literal`, `list`,
+    `tuple`, `dict` with `str` keys, unions of these, toolkit config models such as
+    `PoseConfig` and models defined in the file from the same types, with `Declared` and
+    constraints at the top level of a field (`Annotated[list[str] | None,
+    Declared(...)]`) and no `Result`, `ArtifactSpec` or labels field;
+  - no validator, serializer, computed field, alias, `model_config`, `model_post_init`
+    or `__init__` on a params model.
+
+  A definition is Python that runs with the privileges of whoever runs a step naming it,
+  with no sandbox. Planning, validation and every other read import none of it. `mosaic
+  pipeline verify` imports the pinned version of each `def:` step it refits, as a run
+  does, and a step loads only that step's definition at its pinned version. Read
+  `feature_definitions/<name>/<date>_<digest>.py` before running a dataset's definition
+  that the user did not write. Definitions are unavailable to a `Dataset` built in code
+  with roots that omit `feature_definitions`.
 
 ## Trackers, pose models and annotations
 
@@ -812,6 +850,18 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   Then plan a recipe that begins with `convert-tracks` (and `convert-labels`). A
   refusal with `roots_not_configured` means the user runs `mosaic init`,
   `mosaic sources add` and `mosaic scan` instead. Never try to change `splits`.
+- Where the operator started the server with `--allow-feature-definitions` (or
+  `allow_feature_definitions` in its configuration), `manage_dataset` with
+  `define_feature` (`dataset`, `name`, and `source`, the file's text) stores a feature
+  definition without asking, and a recipe then names `def:<name>` (see Running
+  features). A refused source returns `definition_invalid` with its findings in
+  `detail`. Pass `dataset` to `validate_recipe` and `suggest_steps` for a recipe sent
+  whole that names a `def:` step. Without the flag the action, and every call that names
+  a `def:` step, is refused with `feature_definitions_not_allowed`. Do not look for
+  another route to run Python as the server. Tell the user the operator can start the
+  server with the flag, which gives you what a shell gives. A definition stored after a
+  plan moves its bare `def:` steps to the new version. A reviewed fingerprint then
+  returns `conflict`. Plan again and show the user the new plan.
 - Validate a recipe with `validate_recipe`, then plan it with `plan_recipe`. Show the
   user the plan and its `cautions` (a plan over the whole dataset, a step asked for
   more than 100 entries) and wait for their approval, then you may pass its fingerprint

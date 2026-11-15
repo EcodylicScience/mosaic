@@ -54,6 +54,8 @@ from mosaic.cli._io import (
     with_command_line_scope,
 )
 from mosaic.cli._render import render_kv
+from mosaic.core.pipeline.definitions.scope import definition_scope
+from mosaic.core.pipeline.definitions.store import is_definition_slug
 from mosaic.core.strict_model import terse
 from mosaic.runlog import attempt_outcome
 
@@ -181,7 +183,12 @@ def run_command(
         ),
     ] = False,
 ) -> None:
-    """Run a feature (--feature), an op (--kind), or one step of a request."""
+    """Run a feature (--feature), an op (--kind), or one step of a request.
+
+    --feature also takes a feature definition of the dataset, def:<name> or
+    def:<name>@<digest>. Its source is imported to build the feature, and no
+    other definition is.
+    """
     named = [feature is not None, kind is not None, graph_request is not None]
     if sum(named) != 1:
         fail("Provide exactly one of --feature, --kind or --graph-request.")
@@ -309,9 +316,12 @@ def run_command(
                 ],
             }
         elif feature is not None:
-            feat = build_feature(
-                feature, load_json_arg(inputs), params_dict, as_json=as_json
-            )
+            # Only the build of a definition loads its source. The run reads the
+            # sidecars. A definition it builds is therefore the only one imported.
+            with definition_scope(ds, load=is_definition_slug(feature)):
+                feat = build_feature(
+                    feature, load_json_arg(inputs), params_dict, as_json=as_json
+                )
             from mosaic.core.pipeline.run import run_feature
 
             log(f"[mosaic] execution_id={exec_id} running {feature}")

@@ -11,15 +11,25 @@ definition name of the same constant (``MINIMAL_NAME`` for ``MINIMAL_SOURCE``):
   pickles an instance of a class of its own file.
 - ``POSE_SOURCE``: a per-sequence feature whose params hold a ``PoseConfig``
   default.
+- ``NARROWING_SOURCE``: ``MINIMAL_SOURCE`` whose ``__init__`` sets
+  ``scope_dependent`` under the param ``wide``, which its sidecar cannot declare, so
+  loading it with ``wide`` set fails the identity check.
 """
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from pathlib import Path
+from types import ModuleType
 from typing import Final
 
+import pytest
+
 from mosaic.core.dataset import Dataset
+from mosaic.core.pipeline.definitions import loader
+from mosaic.core.pipeline.graph.resolve import StepSpec
+from mosaic.core.pipeline.types import Feature
 from tests.helpers.datasets import make_dataset
 from tests.helpers.tracks import add_track_sequences
 
@@ -31,15 +41,21 @@ __all__ = [
     "GLOBAL_SOURCE",
     "MINIMAL_NAME",
     "MINIMAL_SOURCE",
+    "NARROWING_NAME",
+    "NARROWING_SOURCE",
     "POSE_NAME",
     "POSE_SOURCE",
     "defined_dataset",
+    "forget_imported_definitions",
+    "imported_definitions",
+    "noting_definition_loads",
 ]
 
 MINIMAL_NAME: Final = "origin-distance"
 CANARY_NAME: Final = "canary-distance"
 GLOBAL_NAME: Final = "mean-distance"
 POSE_NAME: Final = "pose-count"
+NARROWING_NAME: Final = "narrow-distance"
 
 CANARY_VARIABLE: Final = "MOSAIC_TEST_DEFINITION_CANARY"
 """The environment variable naming the file that ``CANARY_SOURCE`` appends to."""
@@ -113,6 +129,17 @@ CANARY_SOURCE: Final = (
     "    with open(_canary, 'a', encoding='utf-8') as _handle:\n"
     "        _handle.write(json.dumps({'pid': os.getpid(), 'argv': sys.argv}) + '\\n')\n"
     + _PER_SEQUENCE_BODY.format(name=CANARY_NAME)
+)
+
+NARROWING_SOURCE: Final = (
+    MINIMAL_SOURCE.replace(f'name = "{MINIMAL_NAME}"', f'name = "{NARROWING_NAME}"')
+    .replace("scale: float = 1.0", "scale: float = 1.0\n        wide: bool = False")
+    .replace(
+        "        self.params = self.Params.from_overrides(params)\n",
+        "        self.params = self.Params.from_overrides(params)\n"
+        "        if self.params.wide:\n"
+        "            self.scope_dependent = True\n",
+    )
 )
 
 GLOBAL_SOURCE: Final = f'''"""The mean distance from the origin over the scope."""
@@ -261,3 +288,40 @@ def defined_dataset(tmp_path: Path, sources: Mapping[str, str]) -> Dataset:
     for name, source in sources.items():
         _ = define_feature(dataset, name, source)
     return dataset
+
+
+def imported_definitions() -> list[str]:
+    """The names of the definition modules this process has imported."""
+    return [name for name in sys.modules if name.startswith("mosaic_definitions.")]
+
+
+def forget_imported_definitions() -> None:
+    """Remove every definition module from ``sys.modules``."""
+    for name in imported_definitions():
+        del sys.modules[name]
+
+
+def noting_definition_loads(
+    monkeypatch: pytest.MonkeyPatch, builders: ModuleType
+) -> list[tuple[str, str]]:
+    """Note each step feature that *builders* builds and each definition loaded.
+
+    Replaces ``builders.build_step_feature`` and ``loader.load_definition`` for the
+    test. The events, in order, are ``("build", <the step's feature slug>)`` and
+    ``("load", "def:<name>@<digest>")``.
+    """
+    events: list[tuple[str, str]] = []
+    build = builders.build_step_feature
+    load = loader.load_definition
+
+    def noting_build(spec: StepSpec) -> Feature:
+        events.append(("build", spec.feature))
+        return build(spec)
+
+    def noting_load(definitions_dir: Path, name: str, digest: str) -> type[Feature]:
+        events.append(("load", f"def:{name}@{digest}"))
+        return load(definitions_dir, name, digest)
+
+    monkeypatch.setattr(builders, "build_step_feature", noting_build)
+    monkeypatch.setattr(loader, "load_definition", noting_load)
+    return events

@@ -58,6 +58,7 @@ from mosaic.core.media.facts_columns import AnalysisDerivativeMissingError
 from mosaic.core.scope import Scope
 
 from ..column_contract import PairRead
+from ..definitions.scope import definition_scope
 from ..convert_ops import (
     ConvertLabelsOp,
     ConvertLabelsParams,
@@ -699,6 +700,11 @@ def plan_pipeline(
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
+    It plans in the definition scope of *ds*, nested in the scope its caller
+    entered, and loads no definition: a ``def:`` step is resolved from its
+    sidecar, and its planned spec names the full digest of the version it
+    resolved to.
+
     Args:
         ds: The dataset. Read only -- planning writes nothing, not even a cache.
         recipe: The graph. Refused before *ds* is touched if it is malformed.
@@ -762,8 +768,13 @@ def plan_pipeline(
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
 
     Raises:
+        FeatureDefinitionsNotAllowed: The definition scope in force is disabled
+            and a step names a feature definition. Raised before the recipe is
+            validated.
         RecipeInvalid: The recipe is malformed. Raised before *ds* is read, and
             reporting every problem found rather than the first.
+        DefinitionDigestAmbiguous: A ``def:`` step names a digest prefix that more
+            than one version of its definition starts with.
         RecipeRefused: The recipe validates and this dataset cannot run it, with
             every problem found. Raised only when *refuse* is set.
         StepRefused: The tracks tables in reach are of mixed schema families
@@ -785,233 +796,251 @@ def plan_pipeline(
             because it takes the dataset to enumerate the selector against and
             so cannot be answered alongside the recipe problems above.
     """
-    catalog = declaration_catalog() if catalog is None else catalog
-    reject_unless_valid(recipe, catalog, ignore_unavailable=ignore_unavailable)
-    pair_reads = pair_rules(recipe, catalog)
+    with definition_scope(ds, load=False):
+        catalog = declaration_catalog() if catalog is None else catalog
+        reject_unless_valid(recipe, catalog, ignore_unavailable=ignore_unavailable)
+        pair_reads = pair_rules(recipe, catalog)
 
-    narrowing = scope
-    if narrowing is None and request is not None:
-        narrowing = request.scope
-    if tracks_run_id is None and request is not None:
-        tracks_run_id = request.tracks_run_id
-    if bind is None:
-        bind = request.bind if request is not None else {}
-    if applies_request_id is not None:
-        # Imported here, because apply imports this module through request.
-        from .apply import derive_applied_fit
+        narrowing = scope
+        if narrowing is None and request is not None:
+            narrowing = request.scope
+        if tracks_run_id is None and request is not None:
+            tracks_run_id = request.tracks_run_id
+        if bind is None:
+            bind = request.bind if request is not None else {}
+        if applies_request_id is not None:
+            # Imported here, because apply imports this module through request.
+            from .apply import derive_applied_fit
 
-        refuse_pins_beside_apply(pins, applies_request_id)
-        fit = derive_applied_fit(
-            ds, recipe, applies_request_id, tracks_run_id=tracks_run_id, catalog=catalog
-        )
-        pins, tracks_run_id, locked = fit.pins, fit.tracks_run_id, fit.locked
-    else:
-        locked = tuple(request.locked) if request is not None else ()
-    if pins is None:
-        pins = request.pins if request is not None else {}
-    # A bound or pinned step is not executed: it reads no tracks and fits
-    # nothing.
-    exempt = frozenset(bind) | frozenset(pins)
-    if refuse:
-        # Imported here, because step_preflight imports this module.
-        from .step_preflight import refuse_mixed_schemas
+            refuse_pins_beside_apply(pins, applies_request_id)
+            fit = derive_applied_fit(
+                ds,
+                recipe,
+                applies_request_id,
+                tracks_run_id=tracks_run_id,
+                catalog=catalog,
+            )
+            pins, tracks_run_id, locked = fit.pins, fit.tracks_run_id, fit.locked
+        else:
+            locked = tuple(request.locked) if request is not None else ()
+        if pins is None:
+            pins = request.pins if request is not None else {}
+        # A bound or pinned step is not executed: it reads no tracks and fits
+        # nothing.
+        exempt = frozenset(bind) | frozenset(pins)
+        if refuse:
+            # Imported here, because step_preflight imports this module.
+            from .step_preflight import refuse_mixed_schemas
 
-        refuse_mixed_schemas(
-            ds,
-            "",
-            recipe=recipe,
-            tracks_run_id=tracks_run_id,
-            scope=narrowing,
-            bound=exempt,
-        )
-    # A converter of raw files takes no scope and writes whatever entries its
-    # files hold, which need not be what there is media for, so it does not
-    # make the media universe the target the way a tracker does.
-    unscoped_writers = frozenset(
-        name
-        for name, declared in catalog.entries.items()
-        if declared.produces.writes_tracks and declared.scope_takes == "none"
-    )
-    intended = intended_scope(
-        ds,
-        recipe,
-        narrowing,
-        tracks_run_id=tracks_run_id,
-        produces_tracks=[
+            refuse_mixed_schemas(
+                ds,
+                "",
+                recipe=recipe,
+                tracks_run_id=tracks_run_id,
+                scope=narrowing,
+                bound=exempt,
+            )
+        # A converter of raw files takes no scope and writes whatever entries its
+        # files hold. Those entries need not have media. The media universe is
+        # therefore not its target, as it is a tracker's.
+        unscoped_writers = frozenset(
             name
             for name, declared in catalog.entries.items()
-            if declared.produces.writes_tracks and name not in unscoped_writers
-        ],
-    )
-    target = frozenset(intended.entries) - frozenset(quarantined)
-    deferred_by = _deferring_converter(ds, recipe, narrowing, unscoped_writers)
-    if step_scopes is None:
-        step_scopes = request.step_scopes if request is not None else {}
-    narrowed = dict(step_scopes)
-
-    held = InventoryCache(ds) if inventory is None else inventory
-    if revalidate:
-        _ = held.revalidate()
-    inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
-    # A pinned run was fit on entries of its own, which a view narrowed to this
-    # plan's target would not measure it over. The held view cannot answer: it
-    # keeps whatever scope it was first built with.
-    pinned_inv = scan_inventory(ds, kinds=("feature",)) if pins else None
-
-    resolved: dict[str, ResolvedStep] = {}
-    planned: dict[str, PlannedStep] = {}
-    steps: list[PlannedStep] = []
-    findings = _Findings()
-    splits = ds.splits
-    for step in topological_order(recipe):
-        step_entries = _step_target(step.id, target, narrowed)
-        step_plan = _plan_step(
+            if declared.produces.writes_tracks and declared.scope_takes == "none"
+        )
+        intended = intended_scope(
             ds,
             recipe,
-            step,
-            catalog=catalog,
-            inv=inv,
-            target=step_entries,
-            bind=bind,
-            resolved=resolved,
-            planned=planned,
-            recorded={**(recorded or {}), **pins},
-            problems=findings.problems,
-            deferred_by=deferred_by,
+            narrowing,
             tracks_run_id=tracks_run_id,
-            pinned_inv=pinned_inv if step.id in pins else None,
-            pair_read=pair_reads.get(step.id),
+            produces_tracks=[
+                name
+                for name, declared in catalog.entries.items()
+                if declared.produces.writes_tracks and name not in unscoped_writers
+            ],
         )
-        if isinstance(step, FeatureStepSpec):
-            findings.problems.extend(_shared_run_problems(recipe, step, resolved))
-            # A step bound or pinned to a run is not executed, so it fits
-            # nothing. The guard does not wait on a step scope: a whole-dataset
-            # request with none is the case it exists for.
-            leak = (
-                None
-                if step.id in exempt
-                else held_out_fit_problem(
-                    step_plan, step_entries, splits, narrowed=step.id in narrowed
-                )
-            )
-            if leak is None and deferred_by is not None and step.id not in exempt:
-                # No entries to ask yet, but a scope that names the group says
-                # where the step will read.
-                leak = deferred_scope_problem(
-                    step_plan,
-                    splits,
-                    request_scope=narrowing,
-                    step_scope=narrowed.get(step.id),
-                )
-            if leak is not None:
-                findings.problems.append(leak)
-            if (
-                TRACKS_INPUT in step.inputs
-                and step.id not in pins
-                and (step.tracks is None or step_plan.spec.tracks_run_id)
-            ):
-                # A tracks reference to a producer whose identity is unresolved
-                # does not name a variant, and its tables cannot be read.
-                findings.read_tracks(ds, step.id, step_plan.spec.tracks_run_id, target)
-            if (
-                TRACKS_INPUT in step.inputs
-                and step.id not in exempt
-                and catalog.entries[step.feature].follows_ids
-                and (step.tracks is None or step_plan.spec.tracks_run_id)
-            ):
-                lacking = rows_without_tracklets(
-                    ds, step_plan.spec.tracks_run_id, step_entries
-                )
-                if lacking:
-                    findings.problems.append(_without_tracklets_problem(step, lacking))
-        else:
-            findings.problems.extend(
-                _conversion_source_problems(
-                    ds, step, identified=step_plan.run_id is not None
-                )
-            )
-            findings.problems.extend(
-                _untranscoded_media_problems(
-                    ds, recipe, step, step_plan, catalog=catalog, planned=planned
-                )
-            )
-        planned[step.id] = step_plan
-        steps.append(step_plan)
-        resolved[step.id] = ResolvedStep(
-            step_id=step.id,
-            storage_name=step_plan.storage_name,
-            run_id=step_plan.run_id,
-            tracks_variant=step_plan.tracks_variant,
-            model_run_id=step_plan.model_run_id,
-            labels_variant=step_plan.labels_variant,
-            labels_kind=step_plan.labels_kind,
-        )
+        target = frozenset(intended.entries) - frozenset(quarantined)
+        deferred_by = _deferring_converter(ds, recipe, narrowing, unscoped_writers)
+        if step_scopes is None:
+            step_scopes = request.step_scopes if request is not None else {}
+        narrowed = dict(step_scopes)
 
-    # Imported here, because step_preflight imports this module.
-    from .step_preflight import StepRefused, track_space_refusals
+        held = InventoryCache(ds) if inventory is None else inventory
+        if revalidate:
+            _ = held.revalidate()
+        inv = held.get(scope=Scope(entries=sorted(target)) if target else None)
+        # A pinned run was fit on entries of its own, which a view narrowed to this
+        # plan's target would not measure it over. The held view cannot answer: it
+        # keeps whatever scope it was first built with.
+        pinned_inv = scan_inventory(ds, kinds=("feature",)) if pins else None
 
-    refused_spaces = track_space_refusals(
-        ds,
-        recipe,
-        planned,
-        catalog=catalog,
-        targets={
-            step_id: _step_target(step_id, target, narrowed) for step_id in planned
-        },
-        exempt=exempt,
-    )
-    for step_id, refusal in refused_spaces.items():
-        if refuse:
-            raise StepRefused(
-                "schema_family_mismatch", step_id, str(refusal), refusal.detail
-            ) from refusal
-        findings.problems.append(Problem(step_id, "inputs", str(refusal)))
-    reached = reach_findings(recipe, steps, skip=exempt)
-    problems = list(findings.problems)
-    problems.extend(_pinned_input_problems(recipe, pins))
-    problems.extend(reached.problems)
-    problems.extend(
-        _step_scope_problems(
-            recipe, planned, narrowed, catalog=catalog, bind=bind, deferred=deferred_by
-        )
-    )
-    problems.extend(_bind_problems(ds, recipe, planned, bind))
-    if findings.tracks:
-        problems.extend(
-            check_recipe(
+        resolved: dict[str, ResolvedStep] = {}
+        planned: dict[str, PlannedStep] = {}
+        steps: list[PlannedStep] = []
+        findings = _Findings()
+        splits = ds.splits
+        for step in topological_order(recipe):
+            step_entries = _step_target(step.id, target, narrowed)
+            step_plan = _plan_step(
+                ds,
                 recipe,
-                catalog,
-                tracks=findings.tracks,
-                ignore_unavailable=ignore_unavailable,
+                step,
+                catalog=catalog,
+                inv=inv,
+                target=step_entries,
+                bind=bind,
+                resolved=resolved,
+                planned=planned,
+                recorded={**(recorded or {}), **pins},
+                problems=findings.problems,
+                deferred_by=deferred_by,
+                tracks_run_id=tracks_run_id,
+                pinned_inv=pinned_inv if step.id in pins else None,
+                pair_read=pair_reads.get(step.id),
+            )
+            if isinstance(step, FeatureStepSpec):
+                findings.problems.extend(_shared_run_problems(recipe, step, resolved))
+                # A step bound or pinned to a run is not executed and fits nothing.
+                # The guard does not wait on a step scope. A whole-dataset request
+                # with none is the case it exists for.
+                leak = (
+                    None
+                    if step.id in exempt
+                    else held_out_fit_problem(
+                        step_plan, step_entries, splits, narrowed=step.id in narrowed
+                    )
+                )
+                if leak is None and deferred_by is not None and step.id not in exempt:
+                    # No entries to ask yet, but a scope that names the group says
+                    # where the step will read.
+                    leak = deferred_scope_problem(
+                        step_plan,
+                        splits,
+                        request_scope=narrowing,
+                        step_scope=narrowed.get(step.id),
+                    )
+                if leak is not None:
+                    findings.problems.append(leak)
+                if (
+                    TRACKS_INPUT in step.inputs
+                    and step.id not in pins
+                    and (step.tracks is None or step_plan.spec.tracks_run_id)
+                ):
+                    # A tracks reference to a producer whose identity is unresolved
+                    # does not name a variant, and its tables cannot be read.
+                    findings.read_tracks(
+                        ds, step.id, step_plan.spec.tracks_run_id, target
+                    )
+                if (
+                    TRACKS_INPUT in step.inputs
+                    and step.id not in exempt
+                    and catalog[step.feature].follows_ids
+                    and (step.tracks is None or step_plan.spec.tracks_run_id)
+                ):
+                    lacking = rows_without_tracklets(
+                        ds, step_plan.spec.tracks_run_id, step_entries
+                    )
+                    if lacking:
+                        findings.problems.append(
+                            _without_tracklets_problem(step, lacking)
+                        )
+            else:
+                findings.problems.extend(
+                    _conversion_source_problems(
+                        ds, step, identified=step_plan.run_id is not None
+                    )
+                )
+                findings.problems.extend(
+                    _untranscoded_media_problems(
+                        ds, recipe, step, step_plan, catalog=catalog, planned=planned
+                    )
+                )
+            planned[step.id] = step_plan
+            steps.append(step_plan)
+            resolved[step.id] = ResolvedStep(
+                step_id=step.id,
+                storage_name=step_plan.storage_name,
+                run_id=step_plan.run_id,
+                tracks_variant=step_plan.tracks_variant,
+                model_run_id=step_plan.model_run_id,
+                labels_variant=step_plan.labels_variant,
+                labels_kind=step_plan.labels_kind,
+            )
+
+        # Imported here, because step_preflight imports this module.
+        from .step_preflight import StepRefused, track_space_refusals
+
+        refused_spaces = track_space_refusals(
+            ds,
+            recipe,
+            planned,
+            catalog=catalog,
+            targets={
+                step_id: _step_target(step_id, target, narrowed) for step_id in planned
+            },
+            exempt=exempt,
+        )
+        for step_id, refusal in refused_spaces.items():
+            if refuse:
+                raise StepRefused(
+                    "schema_family_mismatch", step_id, str(refusal), refusal.detail
+                ) from refusal
+            findings.problems.append(Problem(step_id, "inputs", str(refusal)))
+        reached = reach_findings(recipe, steps, skip=exempt)
+        problems = list(findings.problems)
+        problems.extend(_pinned_input_problems(recipe, pins))
+        problems.extend(reached.problems)
+        problems.extend(
+            _step_scope_problems(
+                recipe,
+                planned,
+                narrowed,
+                catalog=catalog,
+                bind=bind,
+                deferred=deferred_by,
             )
         )
-    order = {planned_step.step_id: index for index, planned_step in enumerate(steps)}
-    plan = Plan(
-        recipe_digest=recipe_digest(recipe),
-        scope=target,
-        steps=tuple(steps),
-        problems=tuple(sorted(problems, key=lambda found: order.get(found.step, -1))),
-        dataset_uuid=ds.uuid or "",
-        covers_dataset=intended.selector.is_unset,
-        step_scopes=narrowed,
-        splits=splits,
-        deferred_by=deferred_by,
-        reach_cautions=reached.cautions,
-        bound=frozenset(bind),
-        pinned=frozenset(step_id for step_id in pins if step_id in planned),
-        request_scope=narrowing,
-        tracks_run_id=tracks_run_id,
-        locked=locked,
-        track_space_refusals=refused_spaces,
-    )
-    if pinned_inv is not None:
-        # Imported here, because pins imports this module.
-        from .pins import refuse_unusable_pins
+        problems.extend(_bind_problems(ds, recipe, planned, bind))
+        if findings.tracks:
+            problems.extend(
+                check_recipe(
+                    recipe,
+                    catalog,
+                    tracks=findings.tracks,
+                    ignore_unavailable=ignore_unavailable,
+                )
+            )
+        order = {
+            planned_step.step_id: index for index, planned_step in enumerate(steps)
+        }
+        plan = Plan(
+            recipe_digest=recipe_digest(recipe),
+            scope=target,
+            steps=tuple(steps),
+            problems=tuple(
+                sorted(problems, key=lambda found: order.get(found.step, -1))
+            ),
+            dataset_uuid=ds.uuid or "",
+            covers_dataset=intended.selector.is_unset,
+            step_scopes=narrowed,
+            splits=splits,
+            deferred_by=deferred_by,
+            reach_cautions=reached.cautions,
+            bound=frozenset(bind),
+            pinned=frozenset(step_id for step_id in pins if step_id in planned),
+            request_scope=narrowing,
+            tracks_run_id=tracks_run_id,
+            locked=locked,
+            track_space_refusals=refused_spaces,
+        )
+        if pinned_inv is not None:
+            # Imported here, because pins imports this module.
+            from .pins import refuse_unusable_pins
 
-        refuse_unusable_pins(ds, recipe, plan, pins, inventory=pinned_inv)
-    if refuse and plan.problems:
-        raise RecipeRefused(plan)
-    return plan
+            refuse_unusable_pins(ds, recipe, plan, pins, inventory=pinned_inv)
+        if refuse and plan.problems:
+            raise RecipeRefused(plan)
+        return plan
 
 
 def _plan_step(
@@ -1050,9 +1079,7 @@ def _plan_step(
     :func:`~.validate.pair_rules`. A resolved ``once`` enters its params.
     """
     pairs: Literal["once"] | None = "once" if pair_read == "once" else None
-    declared = catalog.entries[
-        step.feature if isinstance(step, FeatureStepSpec) else step.kind
-    ]
+    declared = catalog[step.feature if isinstance(step, FeatureStepSpec) else step.kind]
     parents = parents_of(recipe, step.id)
     bound = bind.get(step.id)
     if bound is not None and isinstance(step, FeatureStepSpec):
@@ -1700,7 +1727,7 @@ def _resolve_feature_step(
                     spec=spec,
                     run_id=None,
                     storage_name=spec.storage_name,
-                    parallelizable=feature_parallelizable(step.feature),
+                    parallelizable=feature_parallelizable(spec.feature),
                 ),
                 scope_dependent=scope_dependent,
                 fits=fits,
@@ -1725,7 +1752,7 @@ def _resolve_feature_step(
             run_id=run_id,
             storage_name=spec.storage_name,
             artifact=FeatureRunRef(name=spec.storage_name, run_id=run_id),
-            parallelizable=feature_parallelizable(step.feature),
+            parallelizable=feature_parallelizable(spec.feature),
         ),
         scope_dependent=scope_dependent,
         fits=fits,
@@ -1767,7 +1794,7 @@ def _unresolved_feature(
         run_id=None,
         storage_name=spec.storage_name,
         reason=IdentityUnresolved(step=step.id, because=problems[0].message),
-        parallelizable=feature_parallelizable(step.feature),
+        parallelizable=feature_parallelizable(spec.feature),
     )
 
 

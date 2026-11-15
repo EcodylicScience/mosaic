@@ -155,6 +155,11 @@ class DefinitionRef:
     name: str
     digest: str
 
+    @property
+    def slug(self) -> str:
+        """The slug naming this version, ``def:<name>@<digest>``."""
+        return f"def:{self.name}@{self.digest}"
+
 
 class _Record(StrictModel):
     """The frozen base of every record in a sidecar."""
@@ -271,7 +276,7 @@ class ParamRecord(_Record):
             model of the definition's own file is its full dump.
         default_factory: Whether the source gives the default through
             ``default_factory``. ``Params.from_overrides`` merges a partial dict
-            override into such a field only, so the rebuilt field keeps the form.
+            override into such a field only. The rebuilt field therefore keeps the form.
         hash_excluded: Whether the field is marked ``HASH_EXCLUDE``.
         description: The ``Declared`` description, ``None`` without a ``Declared``.
         unit: The ``Declared`` unit.
@@ -450,10 +455,9 @@ def prerequisite_findings(sidecar: DefinitionSidecar) -> list[DefinitionFinding]
 def prerequisite_extra_findings(sidecar: DefinitionSidecar) -> list[DefinitionFinding]:
     """Return a finding for each prerequisite whose extra mosaic does not declare.
 
-    The extra is the one an install hint tells a user to install, so an undeclared
-    one would send the user to an extra that does not exist. Only a new definition
-    is checked: a stored sidecar that names an extra a later toolkit renamed still
-    reads, and costs only its hint.
+    The extra is the one an install hint tells a user to install, and an undeclared
+    extra cannot be installed. Only a new definition is checked: a stored sidecar that
+    names an extra a later toolkit renamed still reads, and costs only its hint.
     """
     extras = installed_extras()
     if extras is None:

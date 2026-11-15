@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from mosaic.agent.mcp.config import (
     ServerConfig,
@@ -12,6 +13,7 @@ from mosaic.agent.mcp.config import (
     read_server_config,
     served_manifests,
 )
+from mosaic.cli import app
 from mosaic.core.pipeline.graph import CleanupPolicy
 from mosaic.core.pipeline import parallelism
 from mosaic.core.pipeline.parallelism import (
@@ -216,3 +218,56 @@ def test_an_empty_card_limit_is_invalid(tmp_path: Path) -> None:
 
     with pytest.raises(ServerConfigInvalid, match="gpu_cards"):
         _ = read_server_config(config)
+
+
+def test_feature_definitions_are_off_unless_the_operator_allows_them(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "server.yaml"
+    _ = config.write_text("allow_feature_definitions: true\n", encoding="utf-8")
+
+    assert not ServerConfig().allow_feature_definitions
+    assert read_server_config(config).allow_feature_definitions
+
+
+@pytest.mark.parametrize(
+    ("flags", "listed", "allowed"),
+    [
+        (["--allow-feature-definitions"], "", True),
+        ([], "allow_feature_definitions: true\n", True),
+        ([], "", False),
+    ],
+    ids=["flag", "config", "neither"],
+)
+@pytest.mark.parametrize("transport", ["serve", "serve_http"])
+def test_serve_passes_the_feature_definitions_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    listed: str,
+    allowed: bool,
+    transport: str,
+) -> None:
+    served: dict[str, object] = {}
+
+    def record(manifests: object, **options: object) -> None:
+        served.update(options)
+
+    monkeypatch.setattr(f"mosaic.agent.mcp.server.{transport}", record)
+    config = tmp_path / "server.yaml"
+    _ = config.write_text(f"datasets: [{tmp_path}]\n{listed}", encoding="utf-8")
+    token = tmp_path / "token"
+    _ = token.write_text("x" * 40 + "\n", encoding="utf-8")
+    token.chmod(0o600)
+    http = (
+        ["--http", "127.0.0.1:8765", "--token-file", str(token)]
+        if transport == "serve_http"
+        else []
+    )
+
+    result = CliRunner().invoke(
+        app, ["agent", "serve", "--config", str(config), *flags, *http]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert served["allow_feature_definitions"] is allowed

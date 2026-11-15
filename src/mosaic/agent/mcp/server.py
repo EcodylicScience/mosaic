@@ -73,6 +73,7 @@ def serve(
     dataset_roots: Sequence[Path] = (),
     source_roots: Sequence[Path] = (),
     recipe_roots: Sequence[Path] = (),
+    allow_feature_definitions: bool = False,
 ) -> None:
     """Serve the datasets of *manifests* to one client over standard input and output.
 
@@ -98,6 +99,8 @@ def serve(
         dataset_roots: Where ``manage_dataset`` may create a dataset.
         source_roots: Where ``manage_dataset`` may declare a source.
         recipe_roots: Where a recipe argument ``{"path": ...}`` may be read.
+        allow_feature_definitions: Whether the tools read and run the datasets'
+            feature definitions and ``manage_dataset`` defines one.
 
     Raises:
         MissingOptionalDependency: The ``mcp`` extra is not installed.
@@ -117,6 +120,7 @@ def serve(
             dataset_roots=dataset_roots,
             source_roots=source_roots,
             recipe_roots=recipe_roots,
+            allow_feature_definitions=allow_feature_definitions,
         )
     )
 
@@ -132,6 +136,7 @@ async def _serve(
     dataset_roots: Sequence[Path],
     source_roots: Sequence[Path],
     recipe_roots: Sequence[Path],
+    allow_feature_definitions: bool,
 ) -> None:
     from mcp.server.stdio import stdio_server
 
@@ -149,6 +154,7 @@ async def _serve(
             dataset_roots=dataset_roots,
             source_roots=source_roots,
             recipe_roots=recipe_roots,
+            allow_feature_definitions=allow_feature_definitions,
         )
         server = bind_server(backend)
         _LOG.info("serving %d dataset manifest(s) over stdio", len(manifests))
@@ -174,6 +180,7 @@ def serve_http(
     dataset_roots: Sequence[Path] = (),
     source_roots: Sequence[Path] = (),
     recipe_roots: Sequence[Path] = (),
+    allow_feature_definitions: bool = False,
 ) -> None:
     """Serve the datasets of *manifests* to one user over streamable HTTP.
 
@@ -202,6 +209,7 @@ def serve_http(
         dataset_roots: As for :func:`serve`.
         source_roots: As for :func:`serve`.
         recipe_roots: As for :func:`serve`.
+        allow_feature_definitions: As for :func:`serve`.
 
     Raises:
         MissingOptionalDependency: The ``mcp`` extra is not installed.
@@ -223,6 +231,7 @@ def serve_http(
         dataset_roots=dataset_roots,
         source_roots=source_roots,
         recipe_roots=recipe_roots,
+        allow_feature_definitions=allow_feature_definitions,
     )
     server = bind_server(backend, model_confirm=allow_model_confirm)
     app = server.streamable_http_app(

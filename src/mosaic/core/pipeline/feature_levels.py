@@ -1,6 +1,6 @@
 """The entity levels a feature declares: what its output is keyed by and what it relates.
 
-A leaf that imports only the standard library, so a reader of a feature's declared
+This leaf imports only the standard library. A reader of a feature's declared
 levels, such as a definition's sidecar, loads neither pandas nor the feature library.
 """
 

@@ -65,8 +65,9 @@ are in `graph/CLAUDE.md`.
 
 - `compute_run_id` (`run.py`) names a feature run `<version>-<10 hex>` over
   `_params` (`identity_dump()`), `_inputs` and `_frame_range`, plus `_scope_entries`,
-  `_tracks`, `_labels` and `_overlap_frames` only when present. A new term is omitted
-  when absent, which leaves existing identifiers unchanged
+  `_tracks`, `_labels`, `_overlap_frames` and `_definition` (a feature definition's
+  source digest) only when present. A new term is omitted when absent, which leaves
+  existing identifiers unchanged
   (`tests/core/pipeline/test_feature_run_id_golden.py`). The neighbors an overlapped
   entry read are recorded on its row and left out of the identifier.
 - `resolve_labels_variants` takes a pinned `labels_run_id` as given, as a pinned
@@ -322,7 +323,10 @@ are in `graph/CLAUDE.md`.
   step again into a scratch directory and compares it with the stored run. It never
   offers a stored bundle to `load_state`, which would answer that the state is cached
   and skip the fit, and it writes nothing under the dataset
-  (`tests/core/pipeline/test_verify_plan.py`, `tests/cli/test_cli_read_only.py`).
+  (`tests/core/pipeline/test_verify_plan.py`, `tests/cli/test_cli_read_only.py`). It
+  plans under a `load=False` definition scope and raises `load` around the check of a
+  `def:` step alone, which loads the version its plan pins
+  (`tests/core/pipeline/definitions/test_maintenance.py`).
 - A report that compared nothing is not `ok`. `ok` needs one verified step and no step
   without a complete run. Values of different kinds are a mismatch, and a value the
   walker cannot read or reach is named in the detail and never counted as compared

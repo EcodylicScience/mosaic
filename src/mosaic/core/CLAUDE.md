@@ -38,10 +38,10 @@ import is a layering break.
   calls `mosaic.tracking.register_ops` to fill `OPS`, imports a feature
   definition's toolkit models by `ref` (`toolkit_model_for_ref`), and fills the
   built-in registries for a definition's check (`fill_builtin_registries`).
-- `core/pipeline/reconcile_features.py` `_feature_class` looks a feature class up by
-  name in `FEATURES`.
 - `core/pipeline/run.py` imports a feature's module by its `__module__` to rebuild the
-  feature in a worker process.
+  feature in a worker process. For a `mosaic_definitions.` module it first opens the
+  manifest read-only and registers the dataset's definitions directory with the
+  definition finder (`register_definitions_root`).
 
 `tracking` adds its runs to `core`'s views through `register_inventory_contributor`
 (`tests/core/pipeline/inventory/test_inventory_contributors.py`) and

@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, ClassVar
 from mosaic.runlog import new_execution_id, now_iso
 from mosaic.core.scope import Scope
 
+from ..definitions.scope import definition_scope
+from ..definitions.store import is_definition_slug, parse_definition_slug
 from ..error_kind import ClassifiedError, ErrorKind
 from ..parallelism import ParallelSettings, parallel_flags
 from .digest import document_digest, recipe_digest
@@ -301,6 +303,12 @@ def submit_request(
     one execution id per step, and pins the version every step's producer
     declares. Nothing is executed and nothing is enqueued.
 
+    It plans in the definition scope of *ds*, nested in its caller's, and loads
+    no definition. The request records in ``definitions`` the full digest that
+    each bare ``def:<name>`` step of the recorded plan names, and the
+    ``step_versions`` of ``def:`` steps are the sidecars' ``version`` of the
+    versions the plan names.
+
     Args:
         ds: The dataset this submission is against.
         recipe: The graph. Refused before the dataset is touched if malformed.
@@ -364,7 +372,12 @@ def submit_request(
     Raises:
         RequestIdMalformed: *request_id* is given and is not a ULID. Nothing
             is written.
+        FeatureDefinitionsNotAllowed: The definition scope in force is disabled
+            and a step names a feature definition. Raised before the recipe is
+            validated.
         RecipeInvalid: The recipe is malformed.
+        DefinitionDigestAmbiguous: A ``def:`` step names a digest prefix that more
+            than one version of its definition starts with.
         PlanChanged: *expect_plan* differs from the fingerprint of the plan
             resolved here. The dataset is left unwritten.
         DuplicateRequest: *refuse_duplicates* is set and an open request
@@ -392,119 +405,158 @@ def submit_request(
             raise CleanupNeedsPlan()
         if ds.manifest.is_managed:
             raise CleanupOnManagedDataset(ds.manifest.managed_by)
-    applied = None
-    if applies_request_id is not None:
-        # Imported here, because apply imports this module.
-        from .apply import derive_applied_fit
+    with definition_scope(ds, load=False):
+        applied = None
+        if applies_request_id is not None:
+            # Imported here, because apply imports this module.
+            from .apply import derive_applied_fit
 
-        refuse_pins_beside_apply(pins, applies_request_id)
-        catalog = declaration_catalog() if catalog is None else catalog
-        # Validated first, as plan_pipeline validates, so a malformed recipe
-        # is refused as one before the named request is read.
-        reject_unless_valid(recipe, catalog)
-        applied = derive_applied_fit(
-            ds, recipe, applies_request_id, tracks_run_id=tracks_run_id, catalog=catalog
-        )
-    planning = planning_request(
-        recipe,
-        scope=scope,
-        bind=bind,
-        step_scopes=step_scopes,
-        tracks_run_id=tracks_run_id,
-        pins=pins,
-        applied=applied,
-    )
-    narrowing = planning.scope
-    digest = planning.recipe_digest
-    retired = validate_retirement(
-        ds.base_dir, digest, retire, cleanup=cleanup is not None
-    )
-    if cleanup is not None:
-        from ..inventory.cache import InventoryCache
-
-        inventory = InventoryCache(ds) if inventory is None else inventory
-        catalog = declaration_catalog() if catalog is None else catalog
-    plan = _unchanged_plan(reviewed, inventory, revalidate=revalidate)
-    if plan is None:
-        # Planned with the choices that each step plans with, so that the bound
-        # steps, the variant and the pins are judged here as they are at each
-        # step.
-        plan = plan_pipeline(
-            ds,
-            recipe,
-            request=planning,
-            inventory=inventory,
-            catalog=catalog,
-            revalidate=revalidate,
-        )
-        if cleanup is not None and inventory is not None and catalog is not None:
-            # What plan_with_cleanup does, with the plan_pipeline of this module.
-            found_runs = plan_cleanup(
+            refuse_pins_beside_apply(pins, applies_request_id)
+            catalog = declaration_catalog() if catalog is None else catalog
+            # Validated first, as plan_pipeline validates. A malformed recipe is
+            # refused as one before the named request is read.
+            reject_unless_valid(recipe, catalog)
+            applied = derive_applied_fit(
                 ds,
-                plan,
-                policy=cleanup,
+                recipe,
+                applies_request_id,
+                tracks_run_id=tracks_run_id,
+                catalog=catalog,
+            )
+        planning = planning_request(
+            recipe,
+            scope=scope,
+            bind=bind,
+            step_scopes=step_scopes,
+            tracks_run_id=tracks_run_id,
+            pins=pins,
+            applied=applied,
+        )
+        narrowing = planning.scope
+        digest = planning.recipe_digest
+        retired = validate_retirement(
+            ds.base_dir, digest, retire, cleanup=cleanup is not None
+        )
+        if cleanup is not None:
+            from ..inventory.cache import InventoryCache
+
+            inventory = InventoryCache(ds) if inventory is None else inventory
+            catalog = declaration_catalog() if catalog is None else catalog
+        plan = _unchanged_plan(reviewed, inventory, revalidate=revalidate)
+        if plan is None:
+            # Planned with the choices that each step plans with. The bound steps,
+            # the variant and the pins are judged here as they are at each step.
+            plan = plan_pipeline(
+                ds,
+                recipe,
+                request=planning,
                 inventory=inventory,
                 catalog=catalog,
-                recipe_name=recipe.name,
-                own_request=planning,
-                retire=retired,
+                revalidate=revalidate,
             )
-            plan = replace(plan, cleanup=found_runs)
-    found = plan_fingerprint(plan)
-    if expect_plan is not None and found != expect_plan:
-        raise PlanChanged(expected=expect_plan, found=found)
-    removal = (
-        None
-        if cleanup is None or plan.cleanup is None
-        else CleanupSpec(
-            policy=cleanup,
-            execution_id=new_execution_id(),
-            # The plan keeps the runs that the submission binds.
-            approved=[
-                CleanupTarget(storage=run.storage, run_id=run.run_id)
-                for run in plan.cleanup.removable
-            ],
-            fingerprint=found,
-            retired=list(retired),
-        )
-    )
-    ordered = topological_order(recipe)
-    request = planning.model_copy(
-        update={
-            "request_id": request_id or new_execution_id(),
-            "owner": owner,
-            "created_at": now_iso(),
-            "allow_partial": allow_partial,
-            "max_concurrent_steps": max_concurrent_steps,
-            "step_executions": {step.id: new_execution_id() for step in ordered},
-            "step_versions": {
-                step.id: declared_version(
-                    "feature" if isinstance(step, FeatureStepSpec) else "op",
-                    step.feature if isinstance(step, FeatureStepSpec) else step.kind,
+            if cleanup is not None and inventory is not None and catalog is not None:
+                # What plan_with_cleanup does, with the plan_pipeline of this module.
+                found_runs = plan_cleanup(
+                    ds,
+                    plan,
+                    policy=cleanup,
+                    inventory=inventory,
+                    catalog=catalog,
+                    recipe_name=recipe.name,
+                    own_request=planning,
+                    retire=retired,
                 )
-                for step in ordered
-            },
-            "cleanup": removal,
+                plan = replace(plan, cleanup=found_runs)
+        found = plan_fingerprint(plan)
+        if expect_plan is not None and found != expect_plan:
+            raise PlanChanged(expected=expect_plan, found=found)
+        removal = (
+            None
+            if cleanup is None or plan.cleanup is None
+            else CleanupSpec(
+                policy=cleanup,
+                execution_id=new_execution_id(),
+                # The plan keeps the runs that the submission binds.
+                approved=[
+                    CleanupTarget(storage=run.storage, run_id=run.run_id)
+                    for run in plan.cleanup.removable
+                ],
+                fingerprint=found,
+                retired=list(retired),
+            )
+        )
+        ordered = topological_order(recipe)
+        definitions = _planned_definitions(recipe, plan)
+        # A planned feature step names the version it hashed. Each step reads its
+        # own version's ``version``, whatever ``current`` names now.
+        features = {planned.step_id: planned.spec.feature for planned in plan.steps}
+        versions = {
+            step.id: declared_version(
+                "feature" if isinstance(step, FeatureStepSpec) else "op",
+                features.get(step.id, step.feature)
+                if isinstance(step, FeatureStepSpec)
+                else step.kind,
+            )
+            for step in ordered
         }
-    )
-    computes = computed_runs(plan)
-    with submission_lock(ds.base_dir):
-        duplicates = open_duplicates(
-            ds.base_dir, digest, narrowing, computes, step_scopes=planning.step_scopes
+        request = planning.model_copy(
+            update={
+                "request_id": request_id or new_execution_id(),
+                "owner": owner,
+                "created_at": now_iso(),
+                "allow_partial": allow_partial,
+                "max_concurrent_steps": max_concurrent_steps,
+                "step_executions": {step.id: new_execution_id() for step in ordered},
+                "step_versions": versions,
+                "definitions": definitions,
+                "cleanup": removal,
+            }
         )
-        if duplicates and refuse_duplicates:
-            raise DuplicateRequest(recipe_digest=digest, duplicates=duplicates)
-        recorded = save_recipe(ds.base_dir, recipe)
-        # Before the request file, so that no request this mosaic wrote is
-        # read without its runs.
-        _ = save_computes(ds.base_dir, request.request_id, computes)
-        return SubmittedRequest(
-            request=request,
-            plan=plan,
-            recipe_path=recorded,
-            request_path=save_request(ds.base_dir, request),
-            duplicates=duplicates,
-        )
+        computes = computed_runs(plan)
+        with submission_lock(ds.base_dir):
+            duplicates = open_duplicates(
+                ds.base_dir,
+                digest,
+                narrowing,
+                computes,
+                step_scopes=planning.step_scopes,
+            )
+            if duplicates and refuse_duplicates:
+                raise DuplicateRequest(recipe_digest=digest, duplicates=duplicates)
+            recorded = save_recipe(ds.base_dir, recipe)
+            # Written before the request file. A request this mosaic wrote is then
+            # always read with its runs.
+            _ = save_computes(ds.base_dir, request.request_id, computes)
+            return SubmittedRequest(
+                request=request,
+                plan=plan,
+                recipe_path=recorded,
+                request_path=save_request(ds.base_dir, request),
+                duplicates=duplicates,
+            )
+
+
+def _planned_definitions(recipe: Recipe, plan: Plan) -> dict[str, str]:
+    """The full digest that each bare ``def:<name>`` step of *recipe* planned, by name.
+
+    Read off each planned step's spec, whose ``def:`` feature names the version
+    the plan resolved. A request pins the versions of the plan it records. A step
+    naming a digest resolves to it without a pin, and a pin of its version moves a
+    bare step of the same name off the version it was planned at.
+    """
+    pinned: dict[str, str] = {}
+    for planned in plan.steps:
+        step = recipe.step(planned.step_id)
+        if not isinstance(step, FeatureStepSpec) or not is_definition_slug(
+            step.feature
+        ):
+            continue
+        if parse_definition_slug(step.feature)[1] is not None:
+            continue
+        name, digest = parse_definition_slug(planned.spec.feature)
+        if digest is not None:
+            pinned[name] = digest
+    return pinned
 
 
 def _unchanged_plan(

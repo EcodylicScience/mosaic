@@ -264,7 +264,23 @@ def declared_version(kind: Literal["feature", "op"], name: str) -> str:
 
     ``""`` for a name no registry holds, rather than raising: the caller that
     cares about an unknown slug is recipe validation, which names the step.
+
+    A ``def:`` slug reads the ``version`` of the sidecar of the version it names
+    in the definition scope in force, and imports no source.
+
+    Raises:
+        FeatureDefinitionsNotAllowed: *name* is a ``def:`` slug and the scope is
+            disabled.
+        DefinitionDigestAmbiguous: *name* names a digest prefix that more than
+            one version starts with.
     """
+    from mosaic.core.pipeline.definitions.store import is_definition_slug
+
+    if kind == "feature" and is_definition_slug(name):
+        from mosaic.core.pipeline.definitions.scope import definition_sidecar_for_slug
+
+        sidecar = definition_sidecar_for_slug(name)
+        return "" if sidecar is None else sidecar.version
     if kind == "feature":
         cls = feature_class_for_slug(name)
     else:
@@ -436,9 +452,8 @@ def _refuse_a_differing_load(
     Raises:
         DefinitionMismatch: They differ, naming each differing term.
     """
-    from mosaic.core.pipeline.definitions.loader import DEFINITION_MARK
+    from mosaic.core.pipeline.definitions.loader import definition_ref_of
     from mosaic.core.pipeline.definitions.scope import declared_class_of
-    from mosaic.core.pipeline.definitions.sidecar import DefinitionRef
     from mosaic.core.pipeline.definitions.store import (
         DefinitionMismatch,
         is_definition_slug,
@@ -447,8 +462,8 @@ def _refuse_a_differing_load(
     if not is_definition_slug(slug):
         return
     declared_cls = declared_class_of(cls)
-    ref: object = getattr(cls, DEFINITION_MARK, None)
-    if declared_cls is None or not isinstance(ref, DefinitionRef):
+    ref = definition_ref_of(cls)
+    if declared_cls is None or ref is None:
         return
     from mosaic.core.pipeline._utils import canonical_json
     from mosaic.core.pipeline.run import identity_terms
@@ -809,7 +824,7 @@ def declaration_catalog() -> DeclarationCatalog:
     definitions of the scope in force, each listed as ``def:<name>`` under the
     version its bare slug resolves to. Without a scope, and under a disabled one,
     it is the built-in catalog. The join is assembled on each call from the
-    dataset's listing and costs no source import, so a definition added while a
+    dataset's listing and costs no source import. A definition added while a
     process runs appears at its next call. A definition whose files cannot be read
     is left out, and :meth:`DeclarationCatalog.get` of its slug raises the error.
     """
@@ -830,7 +845,7 @@ def definition_declaration(slug: str) -> Declaration | None:
 
     ``None`` under no scope, under a disabled one, and for a slug that matches no
     version. Derived from the version's sidecar and cached with its declared
-    class, so no source is imported.
+    class, without a source import.
 
     Raises:
         DefinitionDigestAmbiguous: A prefix matches more than one version.
@@ -874,8 +889,8 @@ _UNUSABLE: Final = (
 def _listed_definitions() -> list[_DefinitionEntry]:
     """The entry of each definition the scope in force lists, in name order.
 
-    One definition that cannot be read is listed as an unavailable stand-in, so it
-    leaves every other definition and every built-in step type readable.
+    One definition that cannot be read is listed as an unavailable stand-in. Every
+    other definition and every built-in step type stays readable.
     """
     from mosaic.core.pipeline.definitions.scope import scope_definition_names
 
@@ -1296,8 +1311,7 @@ def _entry_sidecar(definition: DefinitionWire) -> DefinitionSidecar | None:
 def _parallelizable(entry: CatalogEntry) -> bool:
     """Whether a run of *entry* can compute several entries at once.
 
-    A definition answers from its sidecar's flags, so a listing never imports its
-    source.
+    A definition answers from its sidecar's flags without importing its source.
     """
     if entry.definition is not None:
         sidecar = _entry_sidecar(entry.definition)
@@ -1401,6 +1415,22 @@ def _input_name(item: JsonValue) -> str:
     return ""
 
 
+def _declaring_class(slug: str) -> type | None:
+    """The class that declares feature *slug*'s params, or ``None``.
+
+    A ``def:`` slug names the class declared from its sidecar whatever the scope
+    loads. A read of the declared fields leaves the source unimported.
+    """
+    from mosaic.core.pipeline.definitions.store import is_definition_slug
+
+    if not is_definition_slug(slug):
+        return feature_class_for_slug(slug)
+    from mosaic.core.pipeline.definitions.scope import declared_class
+
+    sidecar = _scope_sidecar(slug)
+    return None if sidecar is None else declared_class(sidecar)
+
+
 def _params_field_types(kind: str, name: str) -> dict[str, object]:
     """The declared type of each top-level params field of a step.
 
@@ -1411,7 +1441,7 @@ def _params_field_types(kind: str, name: str) -> dict[str, object]:
     the file gets to make.
     """
     if kind == "feature":
-        cls = feature_class_for_slug(name)
+        cls = _declaring_class(name)
         params_cls = getattr(cls, "Params", None) if cls is not None else None
     else:
         op_cls = op_class_for_kind(name)
@@ -1551,6 +1581,15 @@ def resolve_step_spec(
     *pairs* is the ``once`` that a plan resolved an aggregate's ``auto`` pair
     rule to (:func:`~.validate.pair_rules`). It is written into the params of a
     step left at ``auto``, and a step that writes its own rule keeps it.
+
+    A ``def:`` feature is written ``def:<name>@<sha256>``, the version it resolves
+    to in the definition scope in force, and stores under its name alone.
+
+    Raises:
+        FeatureDefinitionsNotAllowed: A ``def:`` feature under a disabled scope.
+        DefinitionNotFound: A ``def:`` feature that names no version.
+        DefinitionDigestAmbiguous: A ``def:`` feature whose digest prefix more
+            than one version starts with.
     """
     step = recipe.step(step_id)
 
@@ -1637,7 +1676,7 @@ def resolve_step_spec(
     return StepSpec(
         step_id=step_id,
         kind="feature",
-        feature=step.feature,
+        feature=_pinned_feature_slug(step.feature),
         inputs=tuple(inputs),
         params=params,
         tracks_run_id=read_variant,
@@ -1651,13 +1690,34 @@ def resolve_step_spec(
     )
 
 
+def _pinned_feature_slug(slug: str) -> str:
+    """*slug* naming one version: a ``def:`` slug with its full digest.
+
+    A built-in slug is returned as it is. A ``def:`` slug resolves in the
+    definition scope in force, and the plan records the version it hashed.
+
+    Raises:
+        FeatureDefinitionsNotAllowed: The scope is disabled.
+        DefinitionNotFound: No version matches *slug*.
+        DefinitionDigestAmbiguous: A prefix matches more than one version.
+    """
+    from mosaic.core.pipeline.definitions.store import is_definition_slug
+
+    if not is_definition_slug(slug):
+        return slug
+    from mosaic.core.pipeline.definitions.scope import resolve_definition_slug
+
+    name, digest = resolve_definition_slug(slug)
+    return f"def:{name}@{digest}"
+
+
 def toolkit_model_for_ref(ref: str, *, definition: str) -> type[DeclaredModel]:
     """The toolkit model that a definition's sidecar names by ``<module>:<class>``.
 
-    A sidecar records a toolkit model by reference, and planning imports it here
-    so that a definition's params are rebuilt from the toolkit's own class. Only a
-    module under ``mosaic.`` is imported, which excludes the definitions'
-    ``mosaic_definitions.`` modules, so a sidecar names no code but the toolkit's.
+    A sidecar records a toolkit model by reference, and planning imports it here so that
+    a definition's params are rebuilt from the toolkit's own class. Only a module under
+    ``mosaic.`` is imported, and the definitions' ``mosaic_definitions.`` modules are
+    excluded. A sidecar can name only the toolkit's code.
 
     Args:
         ref: ``<module>:<qualified class name>``.

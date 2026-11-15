@@ -137,6 +137,7 @@ gpu_cards: [0, 1]      # the cards GPU steps may lease, by nvidia-smi index or U
 dataset_roots: []      # where manage_dataset may create datasets; those below are served
 source_roots: []       # where manage_dataset may declare sources of raw files
 recipe_roots: []       # where a recipe named {"path": ...} is read from
+allow_feature_definitions: false   # true: tools define and run a dataset's feature code
 ```
 
 The tools name a dataset by the `uuid` in its manifest, which `list_datasets` reports.
@@ -157,9 +158,9 @@ by that first `create`.
 | `list_datasets`, `describe_dataset` | The served datasets, and one dataset's manifest fields, notes, tags, `splits`, counts and recordings |
 | `list_sequences` | The entries of the media and tracks indexes, each with its recording and the tracks table it resolves to, filtered by group to list one divided recording's sequences |
 | `get_inventory` | A dataset's computed artifacts, each with its status and coverage, and one artifact in depth with its params |
-| `describe_step_types` | The features and ops a recipe may run, listed by category or found by words, and the ones named with their params as a table |
+| `describe_step_types` | The features and ops a recipe may run, listed by category or found by words, and the ones named with their params as a table. With the server's `allow_feature_definitions` and a `dataset`, the dataset's [feature definitions](#feature-definitions) are listed beside them |
 | `validate_recipe`, `suggest_steps` | A recipe checked against the step types, and the steps or inputs that may be added |
-| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, or sets the dataset's tags, inside the roots you allow. Reports the dataset's `next_steps` |
+| `manage_dataset` | Creates a dataset, declares or removes a source of raw files, scans the sources, sets the dataset's tags, inside the roots you allow, or, when you allow [feature definitions](#feature-definitions), defines one. Reports the dataset's `next_steps` |
 | `patch_recipe` | A recipe changed by edits (add, remove or replace a step, set a param) and saved in the dataset, so the other tools take its digest instead of the document. Its validation report lists only the cautions the edits added, and counts the ones the base recipe already held (`cautions_unchanged`). `validate_recipe` gives the full list, with a caution that several steps share said once |
 | `plan_recipe` | A recipe resolved against a dataset: each step's run id, status and coverage, the plan's cautions, and its fingerprint. `assume_added` names groups to treat as added, and the cautions then say which steps would fit again. With `cleanup: superseded`, the superseded runs of its storages and the saved recipes that `retire` can reclaim runs from. The parallelism a submission may ask for, with the host's processors and memory |
 | `submit_pipeline` | Plans a recipe, or checks it against a reviewed plan's fingerprint, submits it and starts it in the background. Its result counts the steps by status and lists the first few to compute. With `cleanup: superseded`, removes the superseded runs afterwards, and with `retire` the runs that retired recipes wrote. Takes `workers` and `parallel_mode` within your limits |
@@ -262,6 +263,43 @@ lets the agent start from a folder of raw files: create a dataset inside a datas
 - `describe_dataset` and `mosaic describe` list `next_steps` for a dataset that is
   not ready: a source to declare, sources to scan, raw files to convert.
 - Files cannot be uploaded: the raw files must already be on the server's disk.
+
+### Feature definitions
+
+A dataset can contain a feature as Python source, which a recipe names as `def:<name>`
+([Define a feature in a dataset](guides/analysis/write-your-own-feature.md#define-a-feature-in-a-dataset)).
+The server reads and runs a dataset's definitions only when you start it with
+`--allow-feature-definitions`, or set `allow_feature_definitions: true` in its
+configuration. The default is off. Only the operator's configuration turns it on.
+
+**Turning it on lets the agent write and run arbitrary Python as the server's
+account**, which equals giving it a shell. A definition runs with every privilege of
+the process that runs its step, and it runs outside any sandbox. Turn it on only where
+you would give the agent a shell, and read a definition you did not write before a
+recipe runs it.
+
+- **Off**, the catalogs list no `def:` step type. `validate_recipe`, `suggest_steps`,
+  `patch_recipe`, `plan_recipe` and `submit_pipeline` refuse a recipe that names one,
+  whether it is sent whole, read from a file or named by digest or saved name, and
+  `manage_dataset` refuses `define_feature`, each with
+  `feature_definitions_not_allowed`.
+- **On**, `manage_dataset` with `action: "define_feature"` takes `dataset`, `name` and
+  `source`, the file's text, and stores it as a version of the definition `name`. It
+  does not ask for confirmation, because the flag is the gate. It is refused on a
+  managed dataset unless the server allows managed writes, and defining the same source
+  again reuses the version. A source that fails the checks is refused with
+  `definition_invalid`, and the findings in the error's `detail`. A recipe then names
+  `def:<name>` or `def:<name>@<digest>`, and the tools list, plan and run the
+  definitions of the dataset they name.
+- **`validate_recipe` and `suggest_steps`** take `dataset` for a recipe sent whole with
+  a `def:` step, to name the dataset whose definitions to read. Without it they report
+  the step as a problem. A recipe named by digest or saved name already takes `dataset`.
+- **No tool imports a definition.** The server plans from the checks recorded when the
+  definition was stored, and each step's process loads that step's definition at
+  the digest its request pinned. A plan pins a bare `def:<name>` to the version that
+  is current when it is planned. A definition stored after you review a plan moves
+  `current`, so `submit_pipeline` with the reviewed fingerprint returns `conflict`.
+  Plan again and show the new plan.
 
 The server also offers resources (the agent guide, the step-type catalog, and per
 dataset its manifest, inventory, recipes, requests, run-logs, recorded params and a

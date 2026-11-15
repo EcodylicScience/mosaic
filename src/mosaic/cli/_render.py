@@ -11,6 +11,9 @@ import typer
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph import RecordedErrorWire, StepTypeDetail
 
+DIGEST_PREFIX_LENGTH = 12
+"""How many characters of a definition's digest a command prints."""
+
 
 def render_kv(payload: Mapping[str, object]) -> None:
     """Print ``key: value`` lines to stdout."""

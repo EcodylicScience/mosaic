@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Literal
 from mosaic.core.entry import Entry, entry_token
 from mosaic.core.scope import Scope
 
+from ..definitions.scope import definition_scope
 from ..input_size import EntryInputSize, by_rows, manifest_input_sizes
 from ..loading import resolve_sequence_identity, stacks_inputs
 from ..manifest import UnrunFeatureInput, build_manifest
@@ -131,6 +132,11 @@ def step_input_size(ds: Dataset, request: Request, step_id: str) -> StepInputSiz
     ``scope_dependent`` step, its entries. Without it the step would be refused
     for the shortfall, so ``inputs_ready`` is False with that reason.
 
+    The plan and the step's feature are made under a ``load=False`` definition
+    scope that pins the request's ``definitions``. A ``def:`` step is sized
+    against the version the request pinned, from its sidecar, and imports no
+    definition. A caller's disabled scope stays disabled.
+
     Args:
         ds: The dataset, which may be opened read-only.
         request: The submission the step belongs to.
@@ -143,7 +149,15 @@ def step_input_size(ds: Dataset, request: Request, step_id: str) -> StepInputSiz
     Raises:
         KeyError: The recipe has no step *step_id*.
         StepRefused: A parent step's run-log records no run.
+        FeatureDefinitionsNotAllowed: The definition scope in force is disabled
+            and the request names a feature definition.
     """
+    with definition_scope(ds, load=False, pins=request.definitions):
+        return _step_input_size(ds, request, step_id)
+
+
+def _step_input_size(ds: Dataset, request: Request, step_id: str) -> StepInputSizeWire:
+    """Size step *step_id* of *request* in the definition scope in force."""
     recipe = load_recipe_for_request(ds.base_dir, request)
     _ = recipe.step(step_id)
     store = FileFailureStore(ds.base_dir)

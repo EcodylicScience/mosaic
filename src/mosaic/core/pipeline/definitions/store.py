@@ -4,7 +4,7 @@ A dataset keeps each definition under ``<root>/<name>/``, where ``<root>`` is th
 dataset's ``feature_definitions`` root. A version is a pair of files named by its
 stem, ``<YYYY-MM-DD>_<sha256>``: the source (``.py``) and its sidecar (``.json``).
 The text file ``current`` holds the stem of the version that a bare ``def:<name>``
-resolves to. Files are never edited, so a digest names one source under one name.
+resolves to. Files are not edited. A digest therefore names one source under one name.
 :func:`write_definition` is the one writer.
 
 The module imports the standard library, pydantic and the error base only. The
@@ -374,7 +374,7 @@ class DefinitionRecord(StrictModel):
 class VersionStem:
     """The stem ``<YYYY-MM-DD>_<sha256>`` that names a version.
 
-    Instances sort by date, then digest, which is the order of their stems.
+    Instances sort in stem order, by date and then digest.
 
     Attributes:
         date: The UTC date of the source's first definition under its name.
@@ -451,11 +451,10 @@ def definition_module_name(name: str, digest: str) -> str:
 def is_under_definitions_root(parts: tuple[str, ...]) -> bool:
     """Does a path with these components pass through ``feature_definitions``?
 
-    Component-wise, never by prefix string, so a sibling named
-    ``feature_definitions_backup`` is not under it. A scan is handed arbitrary
-    search directories and matches the root's default path, as
-    ``is_under_tracking_root`` matches ``_tracking``, because ``exclude_patterns``
-    match basenames only.
+    Matches by path component. A sibling named ``feature_definitions_backup``
+    is not under it. A scan is handed arbitrary search directories and matches the
+    root's default path, as ``is_under_tracking_root`` matches ``_tracking``, because
+    ``exclude_patterns`` match basenames only.
     """
     return DEFINITIONS_ROOT in parts
 
@@ -464,9 +463,9 @@ def list_versions(directory: Path) -> list[VersionStem]:
     """Return the complete versions in *directory*, sorted by stem.
 
     A version is complete when its ``.py`` and its ``.json`` both exist. The listing
-    reads only names of the form ``<YYYY-MM-DD>_<64 hex>.py`` or ``.json``, so it
-    skips ``current``, ``current.lock``, the hidden ``.tmp`` files an interrupted
-    write leaves, and any other file. An absent directory has no versions.
+    reads only names of the form ``<YYYY-MM-DD>_<64 hex>.py`` or ``.json``,
+    and skips ``current``, ``current.lock``, the hidden ``.tmp`` files an
+    interrupted write leaves, and any other file. An absent directory has no versions.
     """
     suffixes = _version_suffixes(directory)
     return sorted(stem for stem, found in suffixes.items() if found == {"py", "json"})

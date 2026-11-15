@@ -4408,12 +4408,15 @@ class Dataset:
         """
         import dataclasses
 
+        from .pipeline.definitions.scope import definition_scope
         from .pipeline.reconcile import identity_reconcilers, run_reconcile
 
         # identity_reconcilers imports the built-in reconciler modules for their
-        # registration side effect, the same seam FEATURES/OPS use.
-        reconcilers = identity_reconcilers(self, only)
-        report = run_reconcile(reconcilers, apply=apply, force=force)
+        # registration side effect, the same seam FEATURES/OPS use. A feature
+        # definition's run is rebuilt from its sidecar, importing no source.
+        with definition_scope(self, load=False):
+            reconcilers = identity_reconcilers(self, only)
+            report = run_reconcile(reconcilers, apply=apply, force=force)
 
         # Compose the cheap index-hygiene passes so one command brings a dataset
         # fully current. Only on a full run -- a narrowed ``only`` is asking about

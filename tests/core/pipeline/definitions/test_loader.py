@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
-import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
@@ -63,16 +61,6 @@ REACH_SOURCE: Final = MINIMAL_SOURCE.replace(
     "    consumed_roots = ()\n    temporal_reach = None\n",
     1,
 )
-
-
-@pytest.fixture(autouse=True)
-def forget_loaded_definitions() -> Iterator[None]:
-    """Remove the definition modules a test imported, so each test loads afresh."""
-    before = set(sys.modules)
-    yield
-    for name in set(sys.modules) - before:
-        if name.startswith("mosaic_definitions."):
-            _ = sys.modules.pop(name)
 
 
 def _digest(source: str) -> str:

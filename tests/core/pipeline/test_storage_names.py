@@ -12,6 +12,12 @@ def test_a_definition_stores_under_a_dotted_name() -> None:
     assert derive_storage_name("def:x", None) == "def.x"
 
 
+def test_every_version_of_a_definition_stores_under_its_name() -> None:
+    digest = "ab" * 32
+    assert derive_storage_name(f"def:x@{digest}", "tracks") == "def.x__from__tracks"
+    assert derive_storage_name(f"def:x@{digest[:12]}", None) == "def.x"
+
+
 def test_the_slug_of_a_definition_storage_name_is_the_def_slug() -> None:
     assert feature_slug_of("def.x__from__tracks") == "def:x"
     assert feature_slug_of("def.speed-x") == "def:speed-x"

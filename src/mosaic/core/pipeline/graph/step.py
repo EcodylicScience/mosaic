@@ -59,6 +59,8 @@ from ..parallelism import (
     effective_parallel,
     process_capable,
 )
+from ..definitions.scope import definition_scope
+from ..definitions.store import is_definition_slug
 from ..refusal import Refusal
 from ..run import run_feature
 from .claims import FileFailureStore
@@ -213,6 +215,12 @@ def execute_step(
     recorded as a cache hit of the pinned run, with the outcome ``bound``. The
     drivers call this for it in their own process.
 
+    The step plans in a ``load=False`` definition scope of *ds* with the
+    request's ``definitions`` as its pins, nested in its caller's scope: a
+    ``def:`` step runs the version the request recorded, whatever version is
+    current now. Only the run of a ``def:`` step loads code, its own definition's,
+    so a step imports no other definition of its recipe.
+
     Returns:
         What this step did, and what it recorded doing it under.
 
@@ -228,45 +236,46 @@ def execute_step(
             does not refuse this one.
         RecipeInvalid: The recipe this request names is malformed.
     """
-    attempt = execution_id or request.execution_of(step_id)
-    if subset is not None and attempt == request.execution_of(step_id):
-        # Refused before anything is written: that run-log is the step's status,
-        # and a subset recorded there would read as the step having ended.
-        raise ValueError(
-            f"a {subset.kind} of step {step_id!r} runs under an execution id of "
-            f"its own, not {attempt!r}, the attempt the request assigned the step"
-        )
-    failures = FileFailureStore(ds.base_dir) if store is None else store
-    try:
-        return _execute(
-            ds,
-            request,
-            step_id,
-            attempt=attempt,
-            overwrite=overwrite,
-            store=failures,
-            inventory=inventory,
-            catalog=catalog,
-            owner=owner,
-            cancel_token=cancel_token,
-            parallel=parallel,
-            subset=subset,
-        )
-    except StepRefused as refusal:
-        # Written here because nothing else will: a refusal happens before
-        # ``run_feature`` opens the run-log it would otherwise own, and the queue
-        # releases a child on its parent's terminal record. A refusal with no
-        # record is a step that reads as still running forever.
-        _record_terminal(
-            ds,
-            attempt,
-            kind=STEP_RUN_KIND,
-            target=step_id,
-            owner=owner,
-            error_json=refusal.error_json(),
-            gpu_card=leased_card(),
-        )
-        raise
+    with definition_scope(ds, load=False, pins=request.definitions):
+        attempt = execution_id or request.execution_of(step_id)
+        if subset is not None and attempt == request.execution_of(step_id):
+            # Refused before anything is written: that run-log is the step's status,
+            # and a subset recorded there would read as the step having ended.
+            raise ValueError(
+                f"a {subset.kind} of step {step_id!r} runs under an execution id of "
+                f"its own, not {attempt!r}, the attempt the request assigned the step"
+            )
+        failures = FileFailureStore(ds.base_dir) if store is None else store
+        try:
+            return _execute(
+                ds,
+                request,
+                step_id,
+                attempt=attempt,
+                overwrite=overwrite,
+                store=failures,
+                inventory=inventory,
+                catalog=catalog,
+                owner=owner,
+                cancel_token=cancel_token,
+                parallel=parallel,
+                subset=subset,
+            )
+        except StepRefused as refusal:
+            # Written here because nothing else will: a refusal happens before
+            # ``run_feature`` opens the run-log it would otherwise own, and the queue
+            # releases a child on its parent's terminal record. A refusal with no
+            # record is a step that reads as still running forever.
+            _record_terminal(
+                ds,
+                attempt,
+                kind=STEP_RUN_KIND,
+                target=step_id,
+                owner=owner,
+                error_json=refusal.error_json(),
+                gpu_card=leased_card(),
+            )
+            raise
 
 
 def _execute(
@@ -710,6 +719,9 @@ def _refuse_moved_versions(recipe: Recipe, request: Request, step_id: str) -> No
     Reported rather than silently re-planned: a resubmit re-resolves every
     version and is the cheap way forward, because everything already on disk
     under the old identifiers stays a cache hit for whatever still names them.
+
+    A ``def:`` step's version is the ``version`` of the sidecar of the version
+    the request pins (:func:`~.resolve.declared_version`).
     """
     for step in recipe.steps:
         pinned = request.step_versions.get(step.id)
@@ -798,7 +810,9 @@ def _run(
 
     spec = planned.spec
     try:
-        feature = build_step_feature(spec)
+        # The step's own definition loads here, and no other.
+        with definition_scope(ds, load=is_definition_slug(spec.feature)):
+            feature = build_step_feature(spec)
         # Resolved from the built feature: a recipe does not say whether a feature
         # is parallelizable, and a feature that defines ``set_scope`` cannot run in
         # process workers.

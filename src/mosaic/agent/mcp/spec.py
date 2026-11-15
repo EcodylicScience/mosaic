@@ -40,6 +40,10 @@ from mosaic.core.media.division_wire import DivisionSpanWire
 from mosaic.core.media.store_division import RecordingIdentity
 from mosaic.core.pipeline.artifact_kinds import ArtifactKind, ArtifactStatus
 from mosaic.core.pipeline.cancel import RequestCancel
+from mosaic.core.pipeline.definitions.store import (
+    DefinitionRecord,
+    FeatureDefinitionsNotAllowed,
+)
 from mosaic.core.pipeline.error_envelope import ErrorEnvelope
 from mosaic.core.pipeline.graph import (
     MAX_WAIT_SECONDS,
@@ -89,6 +93,7 @@ __all__ = [
     "CONFIRM_FIELD",
     "DATASET_MANAGED",
     "DEFAULT_PAGE_SIZE",
+    "FEATURE_DEFINITIONS_NOT_ALLOWED",
     "INVALID_ARGUMENTS",
     "INVALID_CURSOR",
     "LISTED_STATUS_NOT",
@@ -168,6 +173,7 @@ __all__ = [
     "confirmation_tag",
     "confirmation_unanswered",
     "confirmation_unavailable",
+    "feature_definitions_not_allowed",
     "dataset_managed",
     "invalid_cursor",
     "open_duplicates_in",
@@ -328,6 +334,9 @@ INVALID_CURSOR: Final = "invalid_cursor"
 
 CLEANUP_NOT_ALLOWED: Final = "cleanup_not_allowed"
 """The ``reason`` of a cleanup the server was not started to allow."""
+
+FEATURE_DEFINITIONS_NOT_ALLOWED: Final = FeatureDefinitionsNotAllowed.code
+"""The ``reason`` of a feature definition used on a server not started to allow it."""
 
 RESULT_TOO_LARGE: Final = "result_too_large"
 """The ``reason`` of a read whose result is above :data:`MAX_RESULT_CHARS`."""
@@ -718,6 +727,10 @@ class DescribeStepTypesInput(ToolInput):
             "adds the params table, 'schema' adds the params JSON Schema."
         ),
     )
+    dataset: str | None = Field(
+        default=None,
+        description="List this dataset's feature definitions beside the built-ins.",
+    )
     limit: PageSize = DEFAULT_PAGE_SIZE
     cursor: Cursor = None
 
@@ -752,8 +765,8 @@ class DescribeStepTypesInput(ToolInput):
 
 
 _REFERENCE_DATASET: Final = (
-    "The dataset holding a recipe named by digest or saved name. Not needed for a "
-    "recipe sent whole."
+    "The dataset holding a recipe named by digest or saved name, or the def: "
+    "steps of a recipe sent whole."
 )
 
 
@@ -1187,7 +1200,13 @@ class PreviewOutputInput(ToolInput):
 
 
 type DatasetAction = Literal[
-    "create", "add_source", "remove_source", "scan", "set_tags", "set_arenas"
+    "create",
+    "add_source",
+    "remove_source",
+    "scan",
+    "set_tags",
+    "set_arenas",
+    "define_feature",
 ]
 """What ``manage_dataset`` does to a dataset."""
 
@@ -1208,7 +1227,8 @@ class ManageDatasetInput(ToolInput):
             "(its rows stay). scan: index the declared sources of kind, or all; "
             "source_id narrows it to one. set_tags: set tags, remove remove_tags. "
             "set_arenas: declare arena_layout as the arenas of recording, for "
-            "camera or every camera."
+            "camera or every camera. define_feature: store source as the feature "
+            "definition name, run as def:<name>."
         )
     )
     dataset: str | None = Field(
@@ -1222,7 +1242,15 @@ class ManageDatasetInput(ToolInput):
             "source_roots."
         ),
     )
-    name: str | None = Field(default=None, description="create: the dataset's name.")
+    name: str | None = Field(
+        default=None,
+        description=(
+            "create: the dataset's name. define_feature: the definition's name."
+        ),
+    )
+    source: str | None = Field(
+        default=None, description="define_feature: the definition file's Python text."
+    )
     kind: SourceKindName | None = None
     source_id: str | None = Field(
         default=None,
@@ -1335,6 +1363,7 @@ class DatasetChange(StrictModel):
             pattern that matches no file.
         orphaned_rows: Under ``remove_source``, the index rows the source
             claimed, which stay.
+        definition: Under ``define_feature``, the version defined or reused.
         next_steps: What the dataset needs before a pipeline runs on it.
     """
 
@@ -1349,6 +1378,7 @@ class DatasetChange(StrictModel):
     refused: tuple[DivisionSpanWire, ...] = ()
     findings: tuple[ScanFinding, ...] = ()
     orphaned_rows: int | None = None
+    definition: DefinitionRecord | None = None
     next_steps: tuple[str, ...] = ()
 
 
@@ -2682,6 +2712,34 @@ def cleanup_not_allowed(name: ToolName) -> ErrorEnvelope:
         reason=CLEANUP_NOT_ALLOWED,
         message=message,
         detail={"tool": name, "allow_cleanup": "feature-runs"},
+    )
+
+
+def feature_definitions_not_allowed(
+    name: ToolName, slug: str | None = None
+) -> ErrorEnvelope:
+    """Refuse a feature definition on a server that was not started to allow it.
+
+    Args:
+        name: The tool called.
+        slug: The ``def:`` slug the call named, ``None`` for ``define_feature``.
+    """
+    used = "defines a feature" if slug is None else f"names the definition {slug!r}"
+    message = (
+        f"this {name} call {used}, and this server does not allow feature "
+        "definitions: their code runs as the server's account. The operator starts "
+        "the server with --allow-feature-definitions, or sets "
+        "allow_feature_definitions in its configuration. Use a built-in step "
+        "type, or report this to the user."
+    )
+    detail: dict[str, JsonValue] = {"tool": name}
+    if slug is not None:
+        detail["slug"] = slug
+    return ErrorEnvelope(
+        kind="unavailable",
+        reason=FEATURE_DEFINITIONS_NOT_ALLOWED,
+        message=message,
+        detail=detail,
     )
 
 
