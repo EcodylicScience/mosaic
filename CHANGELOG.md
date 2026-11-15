@@ -8,7 +8,9 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: feature definitions in the dataset
+## 0.22.0: features defined in a dataset, the admission gate counts the memory the kernel cannot reclaim, runs record their cost and a step can be probed, ROI occupancy, run summaries, features read `time`, and planning and conversion scale to thousands of entries
+
+### Feature definitions in the dataset
 
 A dataset can contain a feature as source. A definition is one Python file under the
 dataset's `feature_definitions` directory, named by the slug `def:<name>` or
@@ -172,7 +174,7 @@ unless the server allows managed writes, and returns `definition_invalid` with
 report when the flag is on and refuses it with `feature_definitions_not_allowed` when it
 is off, and the `mosaic://catalog` resources list built-ins only.
 
-## Unreleased: the admission gate counts the memory the kernel cannot reclaim
+### The admission gate counts the memory the kernel cannot reclaim
 
 A memory limit kills a job for the memory the kernel cannot reclaim, which resident
 memory does not measure. The admission gate (`--admission-margin`), its per-row estimate
@@ -201,7 +203,7 @@ process worker that read its figures, and leaves it out otherwise. `RunCost` gai
 `worker_base_nonreclaimable_bytes`, `None` when unmeasured. `runlog.TERMINAL_STATUSES`
 and every run id, version, golden and output are unchanged.
 
-## Unreleased: a run-log with a zero-filled gap still reads the record after it
+### A run-log with a zero-filled gap still reads the record after it
 
 On a network share (a CIFS share was seen) a run-log can get a block of NUL bytes in
 mid-file, glued to the front of the next record. The reader dropped that record, so a
@@ -212,7 +214,7 @@ server (`runs/{eid}/log`) drops the NUL bytes and the lines they leave empty bef
 takes the tail. A record still never contains a raw NUL, because the writer escapes it.
 No run id and no log format moves.
 
-## Unreleased: `pair-series-correlation` correlates a column between two individuals
+### `pair-series-correlation` correlates a column between two individuals
 
 `pair-series-correlation` (version 0.1) is a new feature, so the registry grows from 68
 to 69. It writes two rows per pair of individuals of one arena (`emits` `pair`,
@@ -232,7 +234,7 @@ warning that names `resample-tracks`. No existing run id moves.
 `mosaic.core.timebase` gains the public `row_frames`, the frame of each row of a table:
 its `frame` column, or the rank of its `time` where it has none.
 
-## Unreleased: export-store copies under ffmpeg 8.1 and later
+### Export-store copies under ffmpeg 8.1 and later
 
 `export-store` refused every store whose chunks it copies under ffmpeg 8.1 and later,
 which includes the ffmpeg 9 that a fresh conda-forge install gets. The copy measured a
@@ -242,7 +244,7 @@ is given, and the copy had already computed them in that time base. The copy now
 `setts`'s `prescale` where the installed ffmpeg has it, and every version stamps the
 exported frames alike. No run id, export name or recipe hash moves.
 
-## Unreleased: time-weighted duration and share aggregations
+### Time-weighted duration and share aggregations
 
 `sequence-aggregate` and `individual-aggregate` take two more values of `aggs`.
 `duration` sums the seconds that each row stands for, over the rows where a column has a
@@ -264,7 +266,7 @@ per series, and `frame_step`. In the column contract, `ParamColumn` takes `famil
 `members`, `NamedColumns` takes `possible_prefixes`, and `ParamIs` reads a list field.
 Every verdict on a scalar field and every `ParamColumn` without `families` is unchanged.
 
-## Unreleased: runs record their cost, and a step can be probed
+### Runs record their cost, and a step can be probed
 
 Inside a pod or a SLURM job, `psutil` reports the node's memory, so
 `--min-free-memory-fraction` protected nothing. `run_feature`'s floor, the check before
@@ -374,7 +376,7 @@ The `resources` event's keys, all optional to a reader and empty when absent, ar
 adds `wall_seconds`, `apply_seconds`, `input_rows`, `in_flight` and `cpu_seconds`.
 `runlog.TERMINAL_STATUSES` and every run id, version, golden and output are unchanged.
 
-## Unreleased: ROI occupancy and arena geometry
+### ROI occupancy and arena geometry
 
 The `pydantic` requirement rises from `>=2.12` to `>=2.12.3`. `Field(exclude_if=...)`,
 checked at 2.12.3, lets an arena's boundary and regions of interest leave a dump while
@@ -455,7 +457,7 @@ unlabeled tables for the entries none of them holds, so a part-migrated dataset 
 checked too. `RunParams.consumed_tracks_variants()` names the variants on a run's tracks
 edge, and `run_is_track_shaped` answers whether a stored run's output is track-shaped.
 
-## Unreleased: run summaries across entries
+### Run summaries across entries
 
 `load_run_matrix` raises classified errors, so `error_envelope` renders each refusal
 with a kind (`not_found`, `conflict`, `invalid` or `unavailable`) and the feature and
@@ -571,7 +573,7 @@ raising. `KeyValue` and `SummaryTest` are in `mosaic.core.pipeline.summary_argum
 and `summarize_ref(ds, ref, ...)` in `mosaic.core.pipeline.run_summary` reads a run by
 its address and returns the wire model.
 
-## Unreleased: `event-response` measures a value around each event
+### `event-response` measures a value around each event
 
 `event-response` (version 0.1) is a new feature, so the registry grows from 66 to 67. It
 writes one row per individual and event (`emits` `individual`): `group`, `sequence`,
@@ -598,7 +600,7 @@ so mosaic-app's picker offers them on a project without ground-truth labels. mos
 reads the same flag. Every other entry's flag and every `ground_truth_fields` is
 unchanged.
 
-## Unreleased: a declined or unanswered `open_duplicate` names the open requests
+### A declined or unanswered `open_duplicate` names the open requests
 
 When `submit_pipeline`'s confirmation is declined or unanswered and its conditions
 include `open_duplicate`, the `confirmation_declined` or `confirmation_unanswered`
@@ -610,7 +612,7 @@ stays open. The `confirmation_required` finding lists them too. A decline of any
 condition is unchanged. `ConfirmationFinding` gains a defaulted `duplicates` field, and
 the two envelope builders a defaulted `duplicates` argument.
 
-## Unreleased: features read `time` and a table that dropped frames keeps its timing
+### Features read `time` and a table that dropped frames keeps its timing
 
 Every track schema carries `time`, and a feature now turns a step into seconds with it
 instead of a constant frame rate. `core/timebase.py` is the one reading: the seconds
@@ -689,7 +691,7 @@ Plugin versions: `speed-angvel` 0.3, `collective-motion-metrics` 0.3,
 `modified_boris` 0.2. The feature run ids and the
 `resample-tracks` and label variant identifiers of those move.
 
-## Unreleased: an interrupted `convert-tracks` plans the files left
+### An interrupted `convert-tracks` plans the files left
 
 A `convert-tracks` step is measured against the raw rows of its `source_format`
 instead of the tables the dataset already holds, so a conversion that stopped part way
@@ -701,7 +703,7 @@ entry `["", <path relative to the dataset root>]` until a table records it as it
 source, and then leaves it. Only the plan's coverage of the step changes: no run id,
 table or index row does.
 
-## Unreleased: a time window filters on `time` and needs no frame rate
+### A time window filters on `time` and needs no frame rate
 
 `filter_start_time` and `filter_end_time` of a feature run, a recipe step's `run` block
 and `Pipeline` keep the rows whose `time` is in `[start, end)`, in seconds. They no
@@ -718,7 +720,7 @@ reports a problem at `run.filter_start_time`. A frame filter and the time filter
 equals it at the dataset's frame rate are now two runs. A time window with
 `overlap_frames` is still refused.
 
-## Unreleased: `mosaic agent serve` starts with no dataset when it has a dataset root
+### `mosaic agent serve` starts with no dataset when it has a dataset root
 
 `mosaic agent serve` refused to start unless a dataset was named, though
 `manage_dataset` creates one inside a `dataset_roots` directory and serves it at once.
@@ -726,7 +728,7 @@ It now refuses only when it has no dataset and no `dataset_roots`. With roots it
 empty, `list_datasets` returns an empty list, and a dataset root that does not exist yet
 holds none instead of raising `NotADirectoryError`. No run id or table moves.
 
-## Unreleased: `convert-tracks` fails when every entry fails
+### `convert-tracks` fails when every entry fails
 
 `mosaic convert-tracks` prints `"status": "failed"` and exits 1 when no entry converted,
 and `partial` with exit 0 when some did. The `convert-tracks` op raises
@@ -735,7 +737,7 @@ for a partial run. `ConversionOutcome.converted` counts the entries written or c
 where it also counted the entries that failed, so `converted` in the JSON result and
 `entries_written` in the run-log no longer include them. No run id and no table moves.
 
-## Unreleased: a scan reports the files it drops, and a source can group by path
+### A scan reports the files it drops, and a source can group by path
 
 `mosaic scan --json` and `manage_dataset` `scan` return `findings`, each naming its
 source: a tracks, labels or media source whose path is missing or a dangling link, a
@@ -753,7 +755,7 @@ version 5, which mosaic 0.21 and earlier refuse with `ManifestVersionError`. A m
 without one keeps its version, and no run id moves. `Dataset.scan_tracks` and
 `scan_labels` return a `RawScanResult` (`path`, `findings`) in place of the index path.
 
-## Unreleased: short tracks and filtered entries no longer fail or blank a run
+### Short tracks and filtered entries no longer fail or blank a run
 
 `speed-angvel` smooths an id shorter than `smooth_window` with the largest odd window
 that fits, and leaves an id under 3 rows unsmoothed, where it raised and failed the
@@ -767,7 +769,7 @@ no row writes one row per group with 0 for `sum` and `count` and NaN for the oth
 aggregations, where it wrote no row, so `load_run_matrix` read the run instead of
 refusing it for entries that differ in columns. Its run ids change.
 
-## Unreleased: `convert-tracks` and a feature run cost the same per entry at any size
+### `convert-tracks` and a feature run cost the same per entry at any size
 
 `convert-tracks` and `resample-tracks` write the tracks index once for each batch of
 tables, where each table reread and rewrote the whole index, and `run_feature` no longer
@@ -793,7 +795,7 @@ index, and `Scope.selecting` returns the test that `Scope.selects` applies, buil
 for a caller that tests many entries. The index of a feature run lags the outputs by the
 rows written in the last two seconds, or in four times the cost of the last write.
 
-## Unreleased: planning a recipe over thousands of entries takes seconds
+### Planning a recipe over thousands of entries takes seconds
 
 `plan_recipe` and `submit_pipeline` on a dataset of 8,400 entries took 216 s and 244 s
 cold and 20 s and 42 s warm, on a recipe of `convert-tracks`, `speed-angvel`,
@@ -809,7 +811,7 @@ a feature index moved, and every kind otherwise, and keeps the parquet footers t
 by path, size and modification time (`ParquetFooterMemo`). `Dataset.resolve_paths`
 resolves a list of stored paths with one resolution of each directory.
 
-## Unreleased: `convert-tracks` and `resample-tracks` compute their entries at once
+### `convert-tracks` and `resample-tracks` compute their entries at once
 
 `Op` gains the class attribute `parallelizable`, false unless an op sets it, and
 `convert-tracks` and `resample-tracks` set it. A pipeline step of either kind runs with
@@ -833,7 +835,7 @@ where it was skipped as current. `read_tracks_index` reads a zero-byte index as 
 `run_feature` computes its entries through the same pool, in `core/pipeline/entry_pool.py`,
 and behaves as before.
 
-## Unreleased: a submission defaults to one worker per physical core, and process mode is allowed
+### A submission defaults to one worker per physical core, and process mode is allowed
 
 `ParallelLimits` and the MCP server's `ServerConfig` default `max_workers` to the host's
 physical cores, at most 32, where they defaulted to 1, and `allow_process_mode` to true,
@@ -857,7 +859,7 @@ pipeline run` are unchanged: they compute entries in turn unless `--workers` is 
 and then in threads unless `--parallel-mode process` is given. Run ids and outputs do
 not change.
 
-## Unreleased: two Tracktor track converters read the DGRP looming release
+### Two Tracktor track converters read the DGRP looming release
 
 Two new track converters, `tracktor_corrected_tsv` and `tracktor_raw_csv` (both version
 0.1), read one arena recording per file into `mosaic_v1`, in pixels. The corrected
