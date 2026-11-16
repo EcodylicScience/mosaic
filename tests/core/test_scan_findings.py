@@ -19,7 +19,7 @@ from mosaic.core.manifest import (
     TracksScanSource,
 )
 from mosaic.core.pipeline.tracks_raw_index import read_tracks_raw_index
-from mosaic.core.scan_findings import ScanFinding
+from mosaic.core.scan_findings import FindingLog, ScanFinding
 
 VideoWriter = Callable[..., None]
 
@@ -573,3 +573,29 @@ class TestGroupPatterns:
     def test_a_path_pattern_that_is_not_a_regex_is_refused(self) -> None:
         with pytest.raises(ValueError, match="regular expression"):
             _ = TracksScanSource(id="s", path="/x", group_path_pattern="(strain")
+
+
+class TestAnUnmatchedRowNamesItsLine:
+    def test_a_row_that_names_no_entry_is_recorded_printed_and_dumped(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        log = FindingLog(kind="labels", source="design.csv")
+
+        log.report("row_unmatched", "row names no entry: 'x'", line=7)
+
+        (finding,) = log.findings
+        assert (finding.problem, finding.line) == ("row_unmatched", 7)
+        assert capsys.readouterr().err == (
+            "[WARN] labels source 'design.csv': row names no entry: 'x'\n"
+        )
+        assert ScanFinding.model_validate(finding.model_dump()) == finding
+        assert finding.model_dump()["line"] == 7
+
+    def test_a_finding_without_a_line_dumps_a_null_line(self) -> None:
+        log = FindingLog(kind="tracks", source="s")
+
+        log.report("path_missing", "gone")
+
+        (finding,) = log.findings
+        assert finding.line is None
+        assert finding.model_dump()["line"] is None

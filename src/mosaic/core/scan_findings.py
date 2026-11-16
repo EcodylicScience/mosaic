@@ -39,6 +39,7 @@ ScanProblem = Literal[
     "listed_file_skipped",
     "group_pattern_unmatched",
     "group_path_pattern_unmatched",
+    "row_unmatched",
 ]
 """Why a source's files were dropped or left ungrouped.
 
@@ -47,7 +48,8 @@ does not. ``listed_file_missing``: a file source lists a file that is not there.
 ``listed_file_skipped``: a file source lists a file that a rule skips, such as a
 resource fork. ``group_pattern_unmatched`` and
 ``group_path_pattern_unmatched``: the pattern matched none of the files the
-source indexed, so each has an empty group.
+source indexed, so each has an empty group. ``row_unmatched``: a row of a CSV
+the dataset imports names no entry.
 """
 
 
@@ -61,6 +63,8 @@ class ScanFinding(StrictModel):
         message: The problem, for a person.
         path: The path it concerns, when it concerns one.
         pattern: The pattern it concerns, when it concerns one.
+        line: The line of the file it concerns, counting the header as line 1,
+            when it concerns one.
     """
 
     kind: FindingKind
@@ -69,6 +73,7 @@ class ScanFinding(StrictModel):
     message: str
     path: str | None = None
     pattern: str | None = None
+    line: int | None = None
 
 
 def missing_path_finding(
@@ -129,6 +134,7 @@ class FindingLog:
         *,
         path: Path | None = None,
         pattern: str | None = None,
+        line: int | None = None,
     ) -> None:
         """Make a finding of this source's, and record and print it."""
         self.add(
@@ -139,6 +145,7 @@ class FindingLog:
                 message=message,
                 path=None if path is None else str(path),
                 pattern=pattern,
+                line=line,
             )
         )
 

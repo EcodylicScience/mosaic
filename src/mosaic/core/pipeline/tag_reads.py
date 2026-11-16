@@ -18,6 +18,7 @@ from mosaic.core.annotations.tag_table import (
     TagTable,
     parse_tag_table,
     read_tag_table,
+    reserved_name_message,
     sequence_tags_projection,
 )
 from mosaic.core.pipeline._utils import LabelRevisionTerm
@@ -168,8 +169,7 @@ def tag_read_problems(table: TagTable, read: TagRead) -> list[tuple[str, str]]:
     problems.extend(
         (
             "params.fields",
-            f"tag '{name}' has the name of a column that this step writes; "
-            "rename the tag to read it",
+            reserved_name_message(name),
         )
         for name in sorted(defined & read.writes)
     )

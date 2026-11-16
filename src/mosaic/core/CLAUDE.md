@@ -163,7 +163,9 @@ importing `mosaic.tracking` registers neither.
 - A scan reports what it drops as `ScanFinding`s (`scan_findings.py`): `scan_media`,
   `scan_tracks` and `scan_labels` return them, and `mosaic scan --json` and the MCP's
   `manage_dataset` print them (`tests/core/test_scan_findings.py`). A new place where a
-  scan drops a file reports through a `FindingLog`, never a bare `print`.
+  scan drops a file reports through a `FindingLog`, never a bare `print`. The CSV import
+  of sequence tags reports each row that names no entry as `row_unmatched` with its
+  `line`.
 - A labels source with `series` goes to `Dataset.index_label_series` instead of
   `_index_raw`. Series rows are not pruned as unsourced.
 - A media write raises `StoreGroupingError` (`core/pipeline/media_index.py`) for

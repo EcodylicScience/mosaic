@@ -57,6 +57,7 @@ __all__ = [
     "check_tag_value",
     "parse_tag_table",
     "read_tag_table",
+    "reserved_name_message",
     "sequence_tags_projection",
     "tag_table_payload",
 ]
@@ -219,6 +220,14 @@ def check_tag_value(type_: TypedAttributeType, value: TypedAttributeValue) -> No
             raise ValueError(msg)
         return
     validate_typed_value(type_, {}, value)
+
+
+def reserved_name_message(name: str) -> str:
+    """Why a tag named *name* cannot be read: its name is a column a step writes."""
+    return (
+        f"tag '{name}' has the name of a column that this step writes; "
+        "rename the tag to read it"
+    )
 
 
 def tag_table_payload(table: TagTable) -> bytes:
