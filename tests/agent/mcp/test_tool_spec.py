@@ -690,6 +690,17 @@ def test_the_plan_and_submit_descriptions_leave_the_fingerprint_optional() -> No
         assert "fingerprint" in spec.description, name
 
 
+def test_the_plan_description_says_its_digest_needs_a_saved_recipe() -> None:
+    spec = tool_spec("plan_recipe")
+    assert spec is not None
+
+    description = " ".join(spec.description.split())
+
+    assert "recipe_digest" in description
+    assert "only once the dataset has saved the recipe" in description
+    assert "patch_recipe" in description
+
+
 def test_plan_recipe_gains_no_output_field_for_the_host_dependent_cautions() -> None:
     """Cautions ride the existing ``cautions`` list, and the schema is near its cap.
 

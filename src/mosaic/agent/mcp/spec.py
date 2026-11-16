@@ -1921,7 +1921,10 @@ TOOLS: Final[tuple[ToolSpec, ...]] = (
             "problems that refuse it, the cautions to show the user, and the plan "
             "fingerprint that submit_pipeline takes. Show the user the plan "
             "and its cautions before submitting. With cleanup 'superseded' it also "
-            "lists the saved recipes that retire can reclaim runs from. A plan of "
+            "lists the saved recipes that retire can reclaim runs from. Its "
+            "recipe_digest names the recipe by digest only once the dataset has "
+            "saved the recipe, which an inline submit_pipeline or a patch_recipe "
+            "call with no ops does; planning saves nothing. A plan of "
             "about 40 steps or more is refused as too large: page it with limit "
             "(about 25) and cursor, and show the user every page."
         ),

@@ -905,6 +905,8 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
   `ops`), then pass `{"digest": "<digest>"}` as `recipe` to `validate_recipe` (with
   `dataset`), `plan_recipe` and `submit_pipeline`, and change it with `patch_recipe` ops
   (`add_step`, `remove_step`, `set_param`, `replace_step`), each returning a new digest.
+  Planning saves nothing: a plan's `recipe_digest` names the recipe only once the dataset
+  has saved it, as an inline `submit_pipeline` or a `patch_recipe` call with no `ops` does.
   A `patch_recipe` result omits the cautions the base recipe already held and counts them
   (`cautions_unchanged`); `validate_recipe` gives the full list.
   When the server has recipe roots, keep the recipe in a JSON file inside one instead,

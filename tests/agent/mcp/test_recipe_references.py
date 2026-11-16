@@ -229,6 +229,17 @@ def test_a_plan_by_digest_is_the_plan_of_the_document_and_its_call_is_small(
     assert len(json.dumps(by_reference)) < 5_000
 
 
+def test_planning_an_inline_recipe_saves_nothing(
+    backend: LocalBackend, split: Dataset
+) -> None:
+    pipelines = split.base_dir / ".mosaic" / "pipelines"
+
+    plan = _call(backend, "plan_recipe", PlanWire, dataset=_uuid(split), recipe=RECIPE)
+
+    assert not pipelines.exists() or not list(pipelines.rglob("*"))
+    assert not recipe_path(split.base_dir, plan.recipe_digest).exists()
+
+
 def test_a_patched_recipe_is_submitted_by_its_digest(
     backend: LocalBackend, split: Dataset, starter: RecordingStarter
 ) -> None:
