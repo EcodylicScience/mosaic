@@ -120,18 +120,20 @@ _BIN_S_DESCRIPTION = (
     "The length in seconds of the time bins. Unset, an entry is reduced "
     "whole. Set, each row goes to the bin floor(time / bin_s), anchored at "
     "time 0 of the recording's axis, so the bins of two entries or two "
-    "divisions of one recording line up. A time within a billionth of a "
-    "bin's width of an edge counts as on the edge. The output gains "
-    "bin_start and bin_end, in seconds, after the keys, and has one row per "
-    "reduced group and bin. A bin that no row starts in is not written. duration and share "
-    "weigh a row by the seconds of the interval from its time to the next "
-    "frame of its individual: a row that crosses a bin edge gives each bin the "
-    "seconds it overlaps, and seconds that fall in a bin where the group has "
-    "no row starting are dropped. The other aggregations read each row in the "
-    "bin it starts in. A row without a time is in no bin. Needs a time column, "
-    "so give the step an input with one, such as tracks. Refused by "
-    "frame-aggregate, whose rows are one frame each. keep_columns and "
-    "subgroup_col may not be bin_start or bin_end."
+    "divisions of one recording line up. A time counts as on a bin edge "
+    "when its distance from it, in bins, is at most a billionth of the "
+    "edge's index, or a billionth of a bin if that is more. The output "
+    "gains bin_start and bin_end, in seconds, after the keys, and has one "
+    "row per reduced group and bin. A bin that no row starts in is not "
+    "written. duration and share weigh a row by the seconds of the interval "
+    "from its time to the next frame of its individual: a row that crosses "
+    "a bin edge gives each bin the seconds it overlaps, and seconds that "
+    "fall in a bin where the group has no row starting are dropped. The "
+    "other aggregations read each row in the bin it starts in. A row "
+    "without a time is in no bin. Needs a time column, so give the step an "
+    "input with one, such as tracks. Refused by frame-aggregate, whose rows "
+    "are one frame each. keep_columns and subgroup_col may not be bin_start "
+    "or bin_end."
 )
 
 _FILTER_EXPR_DESCRIPTION = (
@@ -691,15 +693,19 @@ def _share_fractions(
 
 
 _EDGE_TOLERANCE = 1e-9
-"""How near a whole number of bins a time counts as on the edge, in bins."""
+"""How near a whole number of bins a time counts as on the edge.
+
+The distance is relative to the edge's position in bins, and at least this
+many bins.
+"""
 
 
 def _in_bins(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
-    """Each time in bins, snapped to a whole number within a billionth of it.
+    """Each time in bins, snapped to a nearby whole number.
 
     A time that is ``frame / rate`` in floating point can fall an ulp under the
-    edge it names: ``0.3 / 0.1`` is ``2.9999999999999996``. Within the tolerance
-    of the larger of 1 and the whole number, the time is on the edge.
+    edge it names: ``0.3 / 0.1`` is ``2.9999999999999996``. A position within
+    ``_EDGE_TOLERANCE`` times the larger of 1 and the whole number is on it.
     """
     with np.errstate(invalid="ignore"):
         quotient = times / bin_s
@@ -713,8 +719,8 @@ def _in_bins(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
 def _bin_index(times: NDArray[np.float64], bin_s: float) -> NDArray[np.float64]:
     """The bin ``floor(time / bin_s)`` of each time, NaN if not finite.
 
-    A time within a billionth of a bin's width of an edge is on the edge, so
-    it starts the later bin (:func:`_in_bins`).
+    A time within the tolerance of an edge is on the edge, so it starts the
+    later bin (:func:`_in_bins`).
     """
     with np.errstate(invalid="ignore"):
         index = np.floor(_in_bins(times, bin_s))
