@@ -115,6 +115,57 @@ def test_threshold_mean():
     np.testing.assert_allclose(out["value_mean"], [0.75, 0.25])
 
 
+@pytest.mark.parametrize(
+    ("op", "share"),
+    [(">", 1 / 3), (">=", 2 / 3), ("<", 1 / 3), ("<=", 2 / 3)],
+)
+def test_threshold_op_picks_the_comparison(op: str, share: float):
+    df = _make_df({0: [1.0, 2.0, 3.0]})
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["mean"],
+            "threshold": 2.0,
+            "threshold_op": op,
+        },
+        df,
+    )
+    np.testing.assert_allclose(out["value_mean"], [share])
+
+
+def test_threshold_op_defaults_to_greater_than():
+    df = _make_df({0: [1.0, 2.0, 3.0]})
+    out = _apply({"columns": ["value"], "aggs": ["mean"], "threshold": 2.0}, df)
+    np.testing.assert_allclose(out["value_mean"], [1 / 3])
+
+
+@pytest.mark.parametrize("op", [">", ">=", "<", "<="])
+def test_a_missing_float_stays_missing_under_a_threshold(op: str):
+    df = _make_df({0: [1.0, np.nan, 3.0]})
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["mean", "count"],
+            "threshold": 2.0,
+            "threshold_op": op,
+        },
+        df,
+    )
+    # The NaN is neither above nor below: the mean is over the two values.
+    assert out["value_mean"].tolist() == [0.5]
+    assert out["value_count"].tolist() == [2]
+
+
+def test_a_missing_int64_stays_missing_under_a_threshold():
+    df = _make_df({0: [1.0, np.nan, 3.0]})
+    df["value"] = df["value"].astype("Int64")
+    out = _apply(
+        {"columns": ["value"], "aggs": ["mean", "count"], "threshold": 2.0}, df
+    )
+    assert out["value_mean"].tolist() == [0.5]
+    assert out["value_count"].tolist() == [2]
+
+
 # ---------------------------------------------------------------------------
 # filter_expr
 # ---------------------------------------------------------------------------

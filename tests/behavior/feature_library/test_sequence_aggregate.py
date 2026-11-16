@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -587,6 +588,48 @@ def test_a_dropped_stretch_counts_in_full_for_the_row_before_it() -> None:
 
     # Frame 1 lasts until the stretch ends: 0.1 + 2.0 + 0.1.
     assert seconds == pytest.approx(2.2)
+
+
+def _with_a_missing_value(dtype: Literal["float64", "Int64"]) -> pd.Series:
+    """The values 1, missing, 3 and 4 in a column of *dtype*."""
+    return pd.Series([1, None, 3, 4], dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", ["float64", "Int64"])
+def test_a_missing_value_under_a_threshold_is_not_counted_by_duration(
+    dtype: Literal["float64", "Int64"],
+) -> None:
+    value = _with_a_missing_value(dtype)
+    table = _timed_table(*_SKIPPED, value=value)
+
+    seconds = _duration({"columns": ["value"], "threshold": 2.0}, table)
+
+    # Frames 3 and 4 are above 2 for 0.1 s each; frame 1 is missing.
+    assert seconds == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("op", ["<", "<="])
+@pytest.mark.parametrize("dtype", ["float64", "Int64"])
+def test_a_missing_value_is_below_nothing_under_a_threshold(
+    op: str, dtype: Literal["float64", "Int64"]
+) -> None:
+    value = _with_a_missing_value(dtype)
+    table = _timed_table(*_SKIPPED, value=value)
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["mean", "count", "duration"],
+            "threshold": 3.0,
+            "threshold_op": op,
+        },
+        table,
+    )
+
+    below = 1 if op == "<" else 2
+    assert out["value_mean"].tolist() == pytest.approx([below / 3])
+    assert out["value_count"].tolist() == [3]
+    assert out["value_duration"].tolist() == pytest.approx([0.1 * below])
 
 
 def test_duration_without_a_threshold_sums_the_seconds_of_the_non_null_rows() -> None:
@@ -1210,6 +1253,47 @@ def test_categories_enter_the_identity_dump_when_set() -> None:
     params = SequenceAggregate(params=_share_params(categories=["a"])).params
 
     assert params.identity_dump()["categories"] == ["a"]
+
+
+def test_a_threshold_op_other_than_greater_than_needs_a_threshold() -> None:
+    with pytest.raises(ValueError, match="threshold_op.*threshold"):
+        _ = SequenceAggregate(params={"columns": ["value"], "threshold_op": ">="})
+
+
+def test_the_default_threshold_op_without_a_threshold_is_accepted() -> None:
+    params = SequenceAggregate(params={"columns": ["value"], "threshold_op": ">"})
+
+    assert params.params.threshold_op == ">"
+
+
+def test_an_explicit_greater_than_leaves_the_identity_dump_as_it_was() -> None:
+    plain = SequenceAggregate(params={"columns": ["value"]}).params
+    explicit = SequenceAggregate(
+        params={"columns": ["value"], "threshold_op": ">"}
+    ).params
+
+    assert explicit.identity_dump() == plain.identity_dump()
+    assert "threshold_op" not in plain.identity_dump()
+    assert "threshold_missing" not in plain.identity_dump()
+
+
+def test_threshold_op_enters_the_identity_dump_when_not_greater_than() -> None:
+    params = SequenceAggregate(
+        params={"columns": ["value"], "threshold": 1.0, "threshold_op": "<="}
+    ).params
+
+    assert params.identity_dump()["threshold_op"] == "<="
+
+
+def test_a_threshold_adds_the_missing_value_rule_to_the_identity_dump() -> None:
+    plain = SequenceAggregate(params={"columns": ["value"]}).params
+    thresholded = SequenceAggregate(
+        params={"columns": ["value"], "threshold": 1.0}
+    ).params
+
+    assert "threshold_missing" not in plain.identity_dump()
+    assert thresholded.identity_dump()["threshold_missing"] == "skip"
+    assert "threshold_op" not in thresholded.identity_dump()
 
 
 # --- labels of the tracks table ------------------------------------------------------

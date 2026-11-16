@@ -8,6 +8,24 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
+## Unreleased: the aggregates compare with `threshold_op`, and a missing value stays missing under a threshold
+
+`frame-aggregate`, `sequence-aggregate` and `individual-aggregate` take `threshold_op`,
+one of `>` (the default), `>=`, `<` and `<=`, the comparison of each value with
+`threshold`. It is refused unless `threshold` is set, apart from the default.
+
+With `threshold` set, a missing value now stays missing after the comparison whatever the
+column's dtype. A NaN in a float column used to become 0, so `mean` and `count` read it as
+below the threshold, while a null in a nullable integer or boolean column stayed missing.
+Both are missing now: `mean` skips it, `count` does not count it and `duration` does not
+count its seconds. The output of a thresholded run changes on an input with missing
+values.
+
+A set `threshold` adds the key `threshold_missing` to the run identity, so every
+thresholded run of the three features has a new run id and a plan computes its step
+again. At `>`, `threshold_op` leaves the run identity as it was, and a run without a
+`threshold` keeps its run id. No feature's `version` moves.
+
 ## 0.22.0: features defined in a dataset, the admission gate counts the memory the kernel cannot reclaim, runs record their cost and a step can be probed, ROI occupancy, run summaries, features read `time`, and planning and conversion scale to thousands of entries
 
 ### Feature definitions in the dataset

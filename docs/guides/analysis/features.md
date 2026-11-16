@@ -81,11 +81,13 @@ shared set of parameters: to one row per frame, per sequence or per individual. 
 `columns` is reduced by each of `aggs` into `<column>_<agg>`. An input with an `arena`
 column gives one row per arena, and `subgroup_col` splits the rows by a column such as a
 tag. Over pair rows, `individual-aggregate` reduces every row of a focal `id1` to that
-individual's row. `sequence-aggregate` and `individual-aggregate` also take `duration`,
-the seconds in which a column has a value, or exceeds `threshold`, and `share`, the
-fraction of the seconds in which a column holds each of its values, written as
-`<column>_share_<value>`. Both weigh a row by its `time`, so a table that dropped frames
-is measured in the seconds it covers.
+individual's row. With `threshold`, each column becomes whether its value passes
+`threshold_op` (`>` by default, or `>=`, `<`, `<=`) against it, and a missing value stays
+missing, so `mean`, `count` and `duration` leave it out. `sequence-aggregate` and
+`individual-aggregate` also take `duration`, the seconds in which a column has a value,
+or passes the `threshold` comparison, and `share`, the fraction of the seconds in which a
+column holds each of its values, written as `<column>_share_<value>`. Both weigh a row by
+its `time`, so a table that dropped frames is measured in the seconds it covers.
 
 **Responses to events.** `event-response` measures a value, by default the speed of
 `speed-angvel`, around each onset, one row per individual and event: the baseline mean

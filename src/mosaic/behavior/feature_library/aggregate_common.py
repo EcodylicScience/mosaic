@@ -26,8 +26,9 @@ holds it.
 from __future__ import annotations
 
 import math
+import operator
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal, Self, override
 
@@ -50,6 +51,8 @@ type Aggregation = Literal[
     "mean", "median", "min", "max", "std", "sum", "count", "duration", "share"
 ]
 
+type ThresholdOp = Literal[">", ">=", "<", "<="]
+
 _COLUMNS_DESCRIPTION = (
     "The names of the columns to aggregate. Each column is reduced by each "
     "aggregation in aggs, and the result column is named column followed by "
@@ -61,17 +64,20 @@ _AGGS_DESCRIPTION = (
     "The aggregations applied across the rows that the feature reduces "
     "together: those of one frame, one entry or one id, as the feature "
     "groups them. Known values "
-    "are mean, median, min, max, std, sum, count, duration and share. Without "
-    "threshold, NaN values are skipped for every mode, and count counts "
-    "non-null values. duration is the seconds the rows that count last: each "
-    "row lasts until the next frame of its individual, read from the time "
-    "column, and a row counts when its value is not null, or, with threshold, "
-    "when it exceeds it, so a boolean column with threshold 0.5 gives the time "
-    "it holds. share reads a column of text, categories, booleans or integers "
-    "and writes a column `<column>_share_<value>` for each value, true or false for "
-    "a boolean and the decimal integer for a number: the seconds of the rows "
-    "with that value over the seconds of the rows whose value is not null, so "
-    "a group's shares sum to 1. A group whose rows are all null gets NaN, and "
+    "are mean, median, min, max, std, sum, count, duration and share. A null "
+    "value (NaN, None or NA) is skipped for every mode, and count counts "
+    "non-null values. With threshold, a null value stays null: it passes no "
+    "comparison, so mean skips it, count does not count it and duration does "
+    "not count its seconds. "
+    "duration is the seconds the rows that count last: each row lasts until the "
+    "next frame of its individual, read from the time column, and a row counts "
+    "when its value is not null, or, with threshold, when it passes the "
+    "comparison threshold_op, so a boolean column with threshold 0.5 gives the "
+    "time it holds. share reads a column of text, categories, booleans or "
+    "integers and writes a column `<column>_share_<value>` for each value, true "
+    "or false for a boolean and the decimal integer for a number: the seconds "
+    "of the rows with that value over the seconds of the rows whose value is "
+    "not null, so a group's shares sum to 1. A group whose rows are all null gets NaN, and "
     "a value the group lacks gets 0. A value must consist of letters, digits, "
     "underscores and hyphens. share is refused with threshold and with "
     "transform abs. duration and share need a time column, and "
@@ -110,10 +116,17 @@ _FILTER_EXPR_DESCRIPTION = (
 )
 
 _THRESHOLD_DESCRIPTION = (
-    "Aggregate the boolean column > threshold instead of each raw column. "
-    "Unset, the raw columns are aggregated. With mean in aggs, the "
-    "result is the fraction of the rows reduced together that exceed the "
-    "threshold."
+    "Aggregate whether each value passes the comparison threshold_op "
+    "instead of each raw column. Unset, the raw columns are aggregated. With "
+    "mean in aggs, the result is the fraction of the rows reduced together "
+    "that pass. A null value passes no comparison and stays null, so it is "
+    "left out of that fraction."
+)
+
+_THRESHOLD_OP_DESCRIPTION = (
+    "The comparison of each value with threshold: > (greater than), >= "
+    "(at least), < (less than) or <= (at most). Refused unless threshold is "
+    "set, except for the default >."
 )
 
 _TRANSFORM_DESCRIPTION = (
@@ -150,7 +163,8 @@ class AggregateParams(Params):
 
     Each of ``columns`` is reduced by each of ``aggs``. Before it,
     ``filter_expr`` drops rows, ``transform`` takes the absolute value and
-    ``threshold`` turns each column into whether it exceeds a value.
+    ``threshold`` turns each column into whether it passes the comparison
+    ``threshold_op`` against a value, with a null staying null.
     ``subgroup_col`` splits the rows reduced together. ``keep_columns`` are
     written to the output beside the keys. ``categories`` fixes the columns that
     ``share`` writes.
@@ -164,6 +178,7 @@ class AggregateParams(Params):
     )
     filter_expr: Annotated[str | None, Declared(_FILTER_EXPR_DESCRIPTION)] = None
     threshold: Annotated[float | None, Declared(_THRESHOLD_DESCRIPTION)] = None
+    threshold_op: Annotated[ThresholdOp, Declared(_THRESHOLD_OP_DESCRIPTION)] = ">"
     transform: Annotated[Literal["none", "abs"], Declared(_TRANSFORM_DESCRIPTION)] = (
         "none"
     )
@@ -228,6 +243,17 @@ class AggregateParams(Params):
         return self
 
     @model_validator(mode="after")
+    def _refuse_a_threshold_comparison_without_a_threshold(self) -> Self:
+        """Refuse a ``threshold_op`` other than ``>`` when ``threshold`` is unset."""
+        if not has_fields(self, "threshold", "threshold_op"):
+            return self
+        if self.threshold is None and self.threshold_op != ">":
+            raise ValueError(
+                f"threshold_op is {self.threshold_op!r} but threshold is not set"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _refuse_a_kept_name_the_output_has_already(self) -> Self:
         """Refuse a kept name that is aggregated, splits the rows or is a reduction key.
 
@@ -249,18 +275,28 @@ class AggregateParams(Params):
 
     @override
     def identity_dump(self) -> dict[str, object]:
-        """The hashed params, less an empty ``keep_columns`` or unset ``categories``.
+        """The hashed params, less each field left at its output-preserving value.
 
-        A run that keeps no column and sets no category writes the output it
-        wrote before the fields existed, so leaving them out keeps every such
-        run's identifier. A kept column or a category adds output columns and
-        enters the hash as any field does.
+        ``keep_columns`` empty, ``categories`` unset and ``threshold_op`` ``>``
+        write the output a run wrote before the fields existed, so leaving them
+        out keeps every such run's identifier. A kept column or a category adds
+        output columns and enters the hash as any field does.
+
+        A set ``threshold`` adds ``threshold_missing``: a null value stays null
+        under the comparison, where a NaN of a float column once counted as
+        below it. A thresholded run's output differs on an input with missing
+        values, so its identifier moves, and a run without a threshold keeps its
+        own.
         """
         dumped = super().identity_dump()
         if not self.keep_columns:
             del dumped["keep_columns"]
         if self.categories is None:
             del dumped["categories"]
+        if self.threshold_op == ">":
+            del dumped["threshold_op"]
+        if self.threshold is not None:
+            dumped["threshold_missing"] = "skip"
         return dumped
 
 
@@ -301,6 +337,27 @@ def split_keys(df: pd.DataFrame, params: AggregateParams) -> list[str]:
     if params.subgroup_col and params.subgroup_col not in keys:
         keys.append(params.subgroup_col)
     return keys
+
+
+_COMPARISONS: dict[ThresholdOp, Callable[[pd.Series, float], pd.Series]] = {
+    ">": operator.gt,
+    ">=": operator.ge,
+    "<": operator.lt,
+    "<=": operator.le,
+}
+
+
+def _passes_threshold(
+    values: pd.Series, threshold: float, op: ThresholdOp
+) -> pd.Series:
+    """Whether each value passes ``op`` against *threshold*, as 0.0 or 1.0.
+
+    A missing value (NaN, ``None`` or ``NA``) stays NaN whatever the dtype of
+    the column, so ``mean`` skips it, ``count`` does not count it and ``duration``
+    does not count its seconds.
+    """
+    compared = _COMPARISONS[op](values, threshold)
+    return compared.astype(float).where(values.notna())
 
 
 def _plain_values(values: pd.Series) -> np.ndarray:
@@ -617,8 +674,8 @@ def reduce_column(
     caller that groups pair rows by a focal id needs.
 
     ``duration`` is the seconds of the rows that count: a value that is not
-    null, or with ``threshold`` one above it after ``transform``. A row lasts
-    until the next frame of its series, per
+    null, or with ``threshold`` one that passes the ``threshold_op`` comparison
+    after ``transform``. A row lasts until the next frame of its series, per
     :func:`~mosaic.core.timebase.row_seconds`, where a series is an arena's
     individual, or a pair row's ``id1``, ``id2`` and ``perspective``. The
     seconds are those of the rows before ``filter_expr`` and before ``keys``
@@ -697,7 +754,7 @@ def reduce_column(
         if params.transform == "abs":
             values = values.abs()
         if params.threshold is not None:
-            values = (values > params.threshold).astype(float)
+            values = _passes_threshold(values, params.threshold, params.threshold_op)
         work[f"_v{index}"] = _plain_values(values)
         if kept_seconds is not None and "duration" in params.aggs:
             counted = (

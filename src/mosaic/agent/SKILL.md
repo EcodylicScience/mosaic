@@ -367,12 +367,14 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   resolve `auto` and reads every row, so a symmetric column counts each pair twice. Set
   `pairs` to `once` there. `individual-aggregate` has no `pairs`: over pair rows it
   reads every row of each focal `id1`, so a directional column such as `A_speed` belongs
-  to its focal. `sequence-aggregate` and `individual-aggregate` also take `duration`
-  (the seconds in which a column has a value, or is above `threshold`) and `share` (the
-  fraction of the seconds in which a column holds each value, one
-  `<column>_share_<value>` column per value; `categories` fixes the columns, so set it
-  before summarizing across entries). Both weigh a row by its `time`. `pairs` governs
-  `duration` as it governs `sum` and `count`.
+  to its focal. `threshold` turns a column into whether it passes `threshold_op` (`>` by
+  default, `>=`, `<` or `<=`), and a missing value stays missing, so `mean`, `count` and
+  `duration` leave it out. `sequence-aggregate` and `individual-aggregate` also take
+  `duration` (the seconds in which a column has a value, or passes the `threshold`
+  comparison) and `share` (the fraction of the seconds in which a column holds each
+  value, one `<column>_share_<value>` column per value; `categories` fixes the columns,
+  so set it before summarizing across entries). Both weigh a row by its `time`. `pairs`
+  governs `duration` as it governs `sum` and `count`.
 - `event-response` gives one row per individual and event: the mean of `value_column`
   (default `speed`, from `speed-angvel`) over `baseline_s` before the onset, its minimum
   and mean over `response_s` after, and `recovery_latency_s`, the time from the onset to

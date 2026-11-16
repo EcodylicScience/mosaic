@@ -376,6 +376,48 @@ def test_duration_of_a_thresholded_column_is_the_time_the_individual_is_above_it
     assert out["in_center_duration"].tolist() == pytest.approx([0.1 + 2.0 + 0.1] * 2)
 
 
+@pytest.mark.parametrize("dtype", ["float64", "Int64"])
+def test_a_missing_value_under_a_threshold_is_skipped_by_every_aggregation(
+    dtype: Literal["float64", "Int64"],
+) -> None:
+    table = _timed_individuals().assign(value=lambda df: df["value"].astype(dtype))
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["mean", "count", "duration"],
+            "threshold": 0.5,
+        },
+        table,
+    )
+
+    # Individual 1 has no value at frame 3: not below, not counted, no seconds.
+    assert out["value_mean"].tolist() == [1.0, 1.0]
+    assert out["value_count"].tolist() == [4, 3]
+    assert out["value_duration"].tolist() == pytest.approx([2.3, 2.2])
+
+
+@pytest.mark.parametrize(
+    ("op", "seconds"),
+    [(">", 0.2), (">=", 2.2), ("<", 0.1), ("<=", 2.1)],
+)
+def test_threshold_op_picks_the_rows_duration_counts(op: str, seconds: float) -> None:
+    table = _timed_individuals().assign(value=lambda df: df["frame"].astype(float))
+
+    out = _apply(
+        {
+            "columns": ["value"],
+            "aggs": ["duration"],
+            "threshold": 1.0,
+            "threshold_op": op,
+        },
+        table,
+    )
+
+    assert out["id"].tolist() == [0, 1]
+    assert out["value_duration"].tolist() == pytest.approx([seconds, seconds])
+
+
 def test_a_filter_leaves_a_kept_row_the_seconds_it_had_before_it() -> None:
     out = _apply(
         {
