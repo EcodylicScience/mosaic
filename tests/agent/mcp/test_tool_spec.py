@@ -335,6 +335,7 @@ def test_a_merged_tool_name_points_at_its_replacement(merged: str) -> None:
         {"names": ["trex"], "query": "track"},
         {"names": ["trex"], "type": "op"},
         {"names": ["trex"], "available_only": True},
+        {"names": ["trex"], "track_space": "world_m"},
         {"names": ["trex"], "cursor": "[]"},
         {"detail": "fields"},
         {"query": "track", "detail": "schema"},

@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .catalog_search import (
         CatalogMatch as CatalogMatch,
         catalog_listing as catalog_listing,
+        computes_in_track_space as computes_in_track_space,
         search_catalog as search_catalog,
     )
     from .claims import (
@@ -449,6 +450,7 @@ if TYPE_CHECKING:
 _MODULE_OF: Final[dict[str, str]] = {
     "CatalogMatch": ".catalog_search",
     "catalog_listing": ".catalog_search",
+    "computes_in_track_space": ".catalog_search",
     "search_catalog": ".catalog_search",
     "FileFailureStore": ".claims",
     "claims_root": ".claims",
@@ -1008,6 +1010,7 @@ __all__ = [
     "compatible_consumers",
     "compatible_producers",
     "computed_runs",
+    "computes_in_track_space",
     "computes_path",
     "computes_root",
     "coverage_against",

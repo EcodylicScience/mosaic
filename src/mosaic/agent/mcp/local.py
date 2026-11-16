@@ -658,7 +658,11 @@ class LocalBackend:
     # -------------------------------------------------------------- catalog
 
     def _describe_step_types(self, args: DescribeStepTypesInput) -> StepTypes:
-        from mosaic.core.pipeline.graph import catalog_listing, search_catalog
+        from mosaic.core.pipeline.graph import (
+            catalog_listing,
+            computes_in_track_space,
+            search_catalog,
+        )
 
         from .outputs import StepTypes
 
@@ -672,6 +676,10 @@ class LocalBackend:
             if (args.type is None or match.entry.type == args.type)
             and (args.category is None or match.entry.category == args.category)
             and not (args.available_only and match.entry.unavailable)
+            and (
+                args.track_space is None
+                or computes_in_track_space(match.entry, args.track_space)
+            )
         ]
         page, next_cursor = _page(
             matched, lambda match: match.key, args.limit, args.cursor

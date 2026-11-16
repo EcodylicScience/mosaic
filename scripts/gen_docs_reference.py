@@ -202,6 +202,7 @@ def params_table(
 
 def render_features() -> str:
     from mosaic.behavior.feature_library import FEATURES
+    from mosaic.core.pipeline.track_space import feature_track_spaces
 
     grouped: dict[str | None, list[type]] = {}
     for cls in FEATURES.values():
@@ -236,10 +237,14 @@ def render_features() -> str:
         for cls in members:
             slug = getattr(cls, "name", cls.__name__)
             version = getattr(cls, "version", "0.0")
+            spaces = ", ".join(
+                f"`{space}`" for space in sorted(feature_track_spaces(cls))
+            )
             lines += [
                 f"### `{slug}`",
                 "",
-                f"Version `{version}` &middot; `{cls.__module__}.{cls.__qualname__}`",
+                f"Version `{version}` &middot; `{cls.__module__}.{cls.__qualname__}`"
+                f" &middot; Track spaces {spaces}",
                 "",
             ]
             text = summary_line(cls)

@@ -20,7 +20,7 @@ factory rather than being a literal, so there is no value to print.
 
 ### `approach-avoidance`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance`
+Version `0.5` &middot; `mosaic.behavior.feature_library.approach_avoidance.ApproachAvoidance` &middot; Track spaces `image_px`, `plane_cm`
 
 Approach-avoidance events between every pair of individuals in a sequence.
 
@@ -50,7 +50,7 @@ Approach-avoidance events between every pair of individuals in a sequence.
 
 ### `attention-target`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget`
+Version `0.3` &middot; `mosaic.behavior.feature_library.attention_target.AttentionTarget` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-frame attention target with group-membership labeling.
 
@@ -60,7 +60,7 @@ Per-frame attention target with group-membership labeling.
 
 ### `body-length`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.body_length.BodyLength`
+Version `0.1` &middot; `mosaic.behavior.feature_library.body_length.BodyLength` &middot; Track spaces `image_px`, `plane_cm`
 
 Body length of each individual, per frame and as a per-sequence median.
 
@@ -73,7 +73,7 @@ Body length of each individual, per frame and as a per-sequence median.
 
 ### `body-scale`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.body_scale.BodyScaleFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.body_scale.BodyScaleFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-frame body scale: median intra-animal pose distance.
 
@@ -81,7 +81,7 @@ No parameters.
 
 ### `ffgroups`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups.FFGroups`
+Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups.FFGroups` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-sequence fission-fusion grouping metrics.
 
@@ -93,7 +93,7 @@ Per-sequence fission-fusion grouping metrics.
 
 ### `heading`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.heading.HeadingFeature`
+Version `0.1` &middot; `mosaic.behavior.feature_library.heading.HeadingFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-frame body heading derived from pose keypoints.
 
@@ -106,7 +106,7 @@ Per-frame body heading derived from pose keypoints.
 
 ### `hidra`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.hidra_feature.HidraFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.hidra_feature.HidraFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
 
@@ -145,7 +145,7 @@ HiDRA's pretrained mouse social-behavior heads, per frame and ordered pair.
 
 ### `individual-wavelet`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet`
+Version `0.2` &middot; `mosaic.behavior.feature_library.individual_wavelet.IndividualWavelet` &middot; Track spaces `image_px`, `plane_cm`
 
 CWT spectrograms of numeric columns of each individual. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. A pair model reads them through a join to its pair rows.
 
@@ -161,7 +161,7 @@ CWT spectrograms of numeric columns of each individual. The columns are those ``
 
 ### `keypoint-kinematics`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.keypoint_kinematics.KeypointKinematics`
+Version `0.2` &middot; `mosaic.behavior.feature_library.keypoint_kinematics.KeypointKinematics` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
 
@@ -178,7 +178,7 @@ Per-keypoint smoothed speed and acceleration, and inter-keypoint distances.
 
 ### `label-predictions`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.label_predictions.LabelPredictions`
+Version `0.1` &middot; `mosaic.behavior.feature_library.label_predictions.LabelPredictions` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Read a label kind of predictions onto the rows of one input.
 
@@ -197,7 +197,7 @@ Read a label kind of predictions onto the rows of one input.
 
 ### `local-order-metrics`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.local_order_metrics.LocalOrderMetrics`
+Version `0.1` &middot; `mosaic.behavior.feature_library.local_order_metrics.LocalOrderMetrics` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-(frame, id) local order parameters (Tunstrom et al. 2013, Fig 7B/D).
 
@@ -227,7 +227,7 @@ Per-(frame, id) local order parameters (Tunstrom et al. 2013, Fig 7B/D).
 
 ### `movement-filter-interpolate`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.movement.filter_interp.MovementFilterInterpolate`
+Version `0.1` &middot; `mosaic.behavior.feature_library.movement.filter_interp.MovementFilterInterpolate` &middot; Track spaces `image_px`, `plane_cm`
 
 Filter low-confidence points and interpolate gaps using ``movement``.
 
@@ -242,7 +242,7 @@ Filter low-confidence points and interpolate gaps using ``movement``.
 
 ### `movement-smooth`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.movement.smooth.MovementSmooth`
+Version `0.1` &middot; `mosaic.behavior.feature_library.movement.smooth.MovementSmooth` &middot; Track spaces `image_px`, `plane_cm`
 
 Smooth trajectory positions using the ``movement`` library.
 
@@ -260,7 +260,7 @@ Smooth trajectory positions using the ``movement`` library.
 
 ### `nearest-neighbor`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.nearestneighbor.NearestNeighbor`
+Version `0.3` &middot; `mosaic.behavior.feature_library.nearestneighbor.NearestNeighbor` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-sequence feature computing nearest-neighbor identity and relative kinematics.
 
@@ -268,7 +268,7 @@ No parameters.
 
 ### `neighbor-delta-response`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.neighbor_delta_response.NeighborDeltaResponse`
+Version `0.2` &middot; `mosaic.behavior.feature_library.neighbor_delta_response.NeighborDeltaResponse` &middot; Track spaces `image_px`, `plane_cm`
 
 Change in a focal individual's position, heading and speed, by each neighbor.
 
@@ -287,7 +287,7 @@ Change in a focal individual's position, heading and speed, by each neighbor.
 
 ### `nn-delta-response`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.nn_delta_response.NearestNeighborDelta`
+Version `0.4` &middot; `mosaic.behavior.feature_library.nn_delta_response.NearestNeighborDelta` &middot; Track spaces `image_px`, `plane_cm`
 
 Change in a focal individual's position, heading and speed, by its nearest neighbor.
 
@@ -310,7 +310,7 @@ Change in a focal individual's position, heading and speed, by its nearest neigh
 
 ### `orientation-rel`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.orientation_relative.OrientationRelativeFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.orientation_relative.OrientationRelativeFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Orientation-aware relative features between animal pairs, order-agnostic to pose points.
 
@@ -333,7 +333,7 @@ Orientation-aware relative features between animal pairs, order-agnostic to pose
 
 ### `pair-egocentric`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_egocentric.PairEgocentricFeatures` &middot; Track spaces `image_px`, `plane_cm`
 
 Egocentric and kinematic features of every pair, from pose keypoints.
 
@@ -373,7 +373,7 @@ Egocentric and kinematic features of every pair, from pose keypoints.
 
 ### `pair-facing`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_facing.PairFacing` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-frame directional facing metric for all ordered pairs of individuals.
 
@@ -390,7 +390,7 @@ Per-frame directional facing metric for all ordered pairs of individuals.
 
 ### `pair-interaction-filter`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_interaction_filter.PairInteractionFilter` &middot; Track spaces `image_px`, `plane_cm`
 
 Detect pairwise interaction segments from trajectory data.
 
@@ -409,7 +409,7 @@ Detect pairwise interaction segments from trajectory data.
 
 ### `pair-keypoints`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pair_keypoints.PairKeypoints`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_keypoints.PairKeypoints` &middot; Track spaces `image_px`, `plane_cm`
 
 Each partner keypoint's position and velocity in the focal's body frame.
 
@@ -425,7 +425,7 @@ Each partner keypoint's position and velocity in the focal's body frame.
 
 ### `pair-posedistance-pca`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA`
+Version `0.4` &middot; `mosaic.behavior.feature_library.pairposedistancepca.PairPoseDistancePCA` &middot; Track spaces `image_px`, `plane_cm`
 
 Principal components of the pose distances between every pair, per frame.
 
@@ -482,7 +482,7 @@ Principal components of the pose distances between every pair, per frame.
 
 ### `pair-position`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_position.PairPositionFeatures`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_position.PairPositionFeatures` &middot; Track spaces `image_px`, `plane_cm`
 
 Egocentric and kinematic features of every pair, from position and heading.
 
@@ -507,7 +507,7 @@ Egocentric and kinematic features of every pair, from position and heading.
 
 ### `pair-wavelet`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet`
+Version `0.3` &middot; `mosaic.behavior.feature_library.pair_wavelet.PairWavelet` &middot; Track spaces `image_px`, `plane_cm`
 
 CWT spectrograms of numeric columns of pair rows. The columns are those ``cols`` names, else the ``pc_prefix`` columns, else every numeric feature column. It is the spectral stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper.
 
@@ -523,7 +523,7 @@ CWT spectrograms of numeric columns of pair rows. The columns are those ``cols``
 
 ### `pair-world`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld`
+Version `0.2` &middot; `mosaic.behavior.feature_library.pair_world.PairWorld` &middot; Track spaces `world_m`
 
 Per-frame geometry of every pair of individuals, in the world frame.
 
@@ -536,7 +536,7 @@ Per-frame geometry of every pair of individuals, in the world frame.
 
 ### `pose-egocentric`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pose_egocentric.PoseEgocentric`
+Version `0.1` &middot; `mosaic.behavior.feature_library.pose_egocentric.PoseEgocentric` &middot; Track spaces `world_m`
 
 Per-frame 3D keypoints in each individual's own body frame.
 
@@ -553,7 +553,7 @@ Per-frame 3D keypoints in each individual's own body frame.
 
 ### `roi-occupancy`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.roi_occupancy.RoiOccupancy`
+Version `0.1` &middot; `mosaic.behavior.feature_library.roi_occupancy.RoiOccupancy` &middot; Track spaces `image_px`
 
 Per-frame membership of each region of interest, and the distance to it.
 
@@ -615,7 +615,7 @@ Per-frame membership of each region of interest, and the distance to it.
 
 ### `scale-to-bl`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.scale_to_bl.ScaleToBodyLength`
+Version `0.1` &middot; `mosaic.behavior.feature_library.scale_to_bl.ScaleToBodyLength` &middot; Track spaces `image_px`, `plane_cm`
 
 Convert every length-bearing column into body lengths.
 
@@ -640,7 +640,7 @@ Convert every length-bearing column into body lengths.
 
 ### `scale-to-cm`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.scale_to_cm.ScaleToCm`
+Version `0.2` &middot; `mosaic.behavior.feature_library.scale_to_cm.ScaleToCm` &middot; Track spaces `image_px`, `plane_cm`
 
 Convert every length-bearing column into centimeters.
 
@@ -653,7 +653,7 @@ Convert every length-bearing column into centimeters.
 
 ### `smooth-probabilities`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.smooth_probabilities.SmoothProbabilitiesFeature`
+Version `0.1` &middot; `mosaic.behavior.feature_library.smooth_probabilities.SmoothProbabilitiesFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Smooth a classifier's class probabilities along consecutive frames.
 
@@ -692,7 +692,7 @@ Smooth a classifier's class probabilities along consecutive frames.
 
 ### `speed-angvel`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.speed_angvel.SpeedAngvel`
+Version `0.3` &middot; `mosaic.behavior.feature_library.speed_angvel.SpeedAngvel` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-sequence feature computing translational speed and angular velocity.
 
@@ -703,7 +703,7 @@ Per-sequence feature computing translational speed and angular velocity.
 
 ### `temporal-stack`
 
-Version `0.6` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature`
+Version `0.6` &middot; `mosaic.behavior.feature_library.temporal_stacking.TemporalStackingFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Build temporal context windows over per-sequence feature data.
 
@@ -734,7 +734,7 @@ Build temporal context windows over per-sequence feature data.
 
 ### `track-subsample`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSubsample`
+Version `0.4` &middot; `mosaic.behavior.feature_library.track_subsample.TrackSubsample` &middot; Track spaces `image_px`, `plane_cm`
 
 Subsample tracks rows for downstream per-row features.
 
@@ -760,7 +760,7 @@ Subsample tracks rows for downstream per-row features.
 
 ### `trajectory-smooth`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth`
+Version `0.3` &middot; `mosaic.behavior.feature_library.trajectory_smooth.TrajectorySmooth` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-sequence feature that smooths and interpolates trajectory positions.
 
@@ -776,7 +776,7 @@ Per-sequence feature that smooths and interpolates trajectory positions.
 
 ### `visual-network`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.visual_network.VisualNetwork`
+Version `0.2` &middot; `mosaic.behavior.feature_library.visual_network.VisualNetwork` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-frame visibility between individuals, by 2-D ray casting.
 
@@ -801,7 +801,7 @@ Per-frame visibility between individuals, by 2-D ray casting.
 
 ### `collective-motion-metrics`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics`
+Version `0.3` &middot; `mosaic.behavior.feature_library.collective_motion_metrics.CollectiveMotionMetrics` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
@@ -820,7 +820,7 @@ Per-frame group-level collective-motion metrics (Tunstrom et al. 2013).
 
 ### `evaluate-labels`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels`
+Version `0.2` &middot; `mosaic.behavior.feature_library.evaluate_labels.EvaluateLabels` &middot; Track spaces `image_px`, `plane_cm`
 
 Score a run's predictions or clusters against ground-truth labels.
 
@@ -873,7 +873,7 @@ Score a run's predictions or clusters against ground-truth labels.
 
 ### `event-response`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.event_response.EventResponse`
+Version `0.2` &middot; `mosaic.behavior.feature_library.event_response.EventResponse` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-sequence feature measuring a value around each event, per individual.
 
@@ -899,7 +899,7 @@ Per-sequence feature measuring a value around each event, per individual.
 
 ### `ffgroups-metrics`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups_metrics.FFGroupsMetrics`
+Version `0.1` &middot; `mosaic.behavior.feature_library.ffgroups_metrics.FFGroupsMetrics` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-sequence summary of focal-individual group metrics.
 
@@ -915,7 +915,7 @@ Per-sequence summary of focal-individual group metrics.
 
 ### `frame-aggregate`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.frame_aggregate.FrameAggregate`
+Version `0.3` &middot; `mosaic.behavior.feature_library.frame_aggregate.FrameAggregate` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-sequence feature reducing multi-id data to one row per frame.
 
@@ -935,7 +935,7 @@ Per-sequence feature reducing multi-id data to one row per frame.
 
 ### `individual-aggregate`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.individual_aggregate.IndividualAggregate`
+Version `0.3` &middot; `mosaic.behavior.feature_library.individual_aggregate.IndividualAggregate` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-sequence feature reducing the rows of each individual to one row.
 
@@ -954,7 +954,7 @@ Per-sequence feature reducing the rows of each individual to one row.
 
 ### `label-statistics`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.label_statistics.LabelStatistics`
+Version `0.2` &middot; `mosaic.behavior.feature_library.label_statistics.LabelStatistics` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-individual behavioural statistics of a label sequence: a fingerprint.
 
@@ -988,7 +988,7 @@ Per-individual behavioural statistics of a label sequence: a fingerprint.
 
 ### `nn-delta-bins`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins`
+Version `0.2` &middot; `mosaic.behavior.feature_library.nn_delta_bins.NearestNeighborDeltaBins` &middot; Track spaces `image_px`, `plane_cm`
 
 Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
@@ -1012,7 +1012,7 @@ Bin nearest-neighbor response fields (dangle, dspeed) over neighbor position.
 
 ### `pair-series-correlation`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.pair_series_correlation.PairSeriesCorrelation`
+Version `0.1` &middot; `mosaic.behavior.feature_library.pair_series_correlation.PairSeriesCorrelation` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-sequence feature correlating a column between the individuals of a pair.
 
@@ -1025,7 +1025,7 @@ Per-sequence feature correlating a column between the individuals of a pair.
 
 ### `sequence-aggregate`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate`
+Version `0.4` &middot; `mosaic.behavior.feature_library.sequence_aggregate.SequenceAggregate` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Per-sequence feature reducing the rows of an entry to one row per group.
 
@@ -1045,7 +1045,7 @@ Per-sequence feature reducing the rows of an entry to one row per group.
 
 ### `social-motion-summary`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary`
+Version `0.4` &middot; `mosaic.behavior.feature_library.social_motion_summary.SocialMotionSummary` &middot; Track spaces `image_px`, `plane_cm`
 
 Per-fish summary of social-interaction and locomotor-style metrics.
 
@@ -1062,7 +1062,7 @@ Per-fish summary of social-interaction and locomotor-style metrics.
 
 ### `arhmm`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.arhmm.ArHmmFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 AR-HMM behavioral syllable discovery as a pipeline feature.
 
@@ -1105,7 +1105,7 @@ AR-HMM behavioral syllable discovery as a pipeline feature.
 
 ### `extract-labeled-templates`
 
-Version `0.7` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates`
+Version `0.7` &middot; `mosaic.behavior.feature_library.extract_labeled_templates.ExtractLabeledTemplates` &middot; Track spaces `image_px`, `plane_cm`
 
 Extract labeled, split-annotated templates from upstream features.
 
@@ -1138,7 +1138,7 @@ Extract labeled, split-annotated templates from upstream features.
 
 ### `extract-templates`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates`
+Version `0.4` &middot; `mosaic.behavior.feature_library.extract_templates.ExtractTemplates` &middot; Track spaces `image_px`, `plane_cm`
 
 Subsample per-sequence data into a representative template matrix.
 
@@ -1172,7 +1172,7 @@ Subsample per-sequence data into a representative template matrix.
 
 ### `feral`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeature`
+Version `0.3` &middot; `mosaic.behavior.feature_library.feral_feature.FeralFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 FERAL vision-transformer behavior classifier as a pipeline feature.
 
@@ -1276,7 +1276,7 @@ FERAL vision-transformer behavior classifier as a pipeline feature.
 
 ### `fit-label-map`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap`
+Version `0.2` &middot; `mosaic.behavior.feature_library.fit_label_map.FitLabelMap` &middot; Track spaces `image_px`, `plane_cm`
 
 Map each cluster to the behavior class its labeled rows favor.
 
@@ -1297,7 +1297,7 @@ Map each cluster to the behavior class its labeled rows favor.
 
 ### `global-identity-dinov2-temporal`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.dinov2_temporal_identity_model.GlobalIdentityDinoV2Temporal`
+Version `0.1` &middot; `mosaic.behavior.feature_library.dinov2_temporal_identity_model.GlobalIdentityDinoV2Temporal` &middot; Track spaces `image_px`, `plane_cm`
 
 Train a DINOv2 + temporal identity model from individual sequences.
 
@@ -1343,7 +1343,7 @@ Train a DINOv2 + temporal identity model from individual sequences.
 
 ### `global-identity-embedding`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.identity_embedding_model.GlobalIdentityEmbedding`
+Version `0.1` &middot; `mosaic.behavior.feature_library.identity_embedding_model.GlobalIdentityEmbedding` &middot; Track spaces `image_px`, `plane_cm`
 
 Fit an identity model from frozen backbone embeddings + k-NN.
 
@@ -1382,7 +1382,7 @@ Fit an identity model from frozen backbone embeddings + k-NN.
 
 ### `global-identity-model`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.identity_model.GlobalIdentityModel`
+Version `0.3` &middot; `mosaic.behavior.feature_library.identity_model.GlobalIdentityModel` &middot; Track spaces `image_px`, `plane_cm`
 
 Train a visual identity model from individual animal sequences.
 
@@ -1425,7 +1425,7 @@ Train a visual identity model from individual animal sequences.
 
 ### `global-kmeans`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering`
+Version `0.5` &middot; `mosaic.behavior.feature_library.global_kmeans.GlobalKMeansClustering` &middot; Track spaces `image_px`, `plane_cm`
 
 Global K-Means clustering on templates loaded via load_state. Per-sequence cluster assignment is done in apply(). It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with k-means in place of a watershed segmentation of a density estimate.
 
@@ -1498,7 +1498,7 @@ Global K-Means clustering on templates loaded via load_state. Per-sequence clust
 
 ### `global-scaler`
 
-Version `0.3` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler`
+Version `0.3` &middot; `mosaic.behavior.feature_library.global_scaler.GlobalScaler` &middot; Track spaces `image_px`, `plane_cm`
 
 Fit a StandardScaler on templates and scale per-sequence data.
 
@@ -1553,7 +1553,7 @@ Fit a StandardScaler on templates and scale per-sequence data.
 
 ### `global-tsne`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE`
+Version `0.5` &middot; `mosaic.behavior.feature_library.global_tsne.GlobalTSNE` &middot; Track spaces `image_px`, `plane_cm`
 
 Fit an openTSNE embedding on templates and map per-sequence data.
 
@@ -1636,7 +1636,7 @@ Fit an openTSNE embedding on templates and map per-sequence data.
 
 ### `global-ward`
 
-Version `0.4` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering`
+Version `0.4` &middot; `mosaic.behavior.feature_library.global_ward.GlobalWardClustering` &middot; Track spaces `image_px`, `plane_cm`
 
 Ward hierarchical clustering on templates with per-sequence 1-NN assignment. It is a clustering stage of a behavioral map that follows the approach of Berman et al. (2014), MotionMapper, with Ward clustering in place of a watershed segmentation of a density estimate.
 
@@ -1705,7 +1705,7 @@ Ward hierarchical clustering on templates with per-sequence 1-NN assignment. It 
 
 ### `kpms`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.kpms.KpmsFeature`
+Version `0.1` &middot; `mosaic.behavior.feature_library.kpms.KpmsFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
@@ -1765,7 +1765,7 @@ Fits keypoint-MoSeq to keypoint tracks and applies it, in a runner process.
 
 ### `lightning-action`
 
-Version `0.6` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature`
+Version `0.6` &middot; `mosaic.behavior.feature_library.lightning_action_feature.LightningActionFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Supervised temporal action segmentation via lightning-action.
 
@@ -1852,7 +1852,7 @@ Supervised temporal action segmentation via lightning-action.
 
 ### `probability-ensemble`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature`
+Version `0.2` &middot; `mosaic.behavior.feature_library.probability_ensemble.ProbabilityEnsembleFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Average or blend the class probabilities of several classifier runs.
 
@@ -1899,7 +1899,7 @@ Average or blend the class probabilities of several classifier runs.
 
 ### `sequence-classifier`
 
-Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier`
+Version `0.2` &middot; `mosaic.behavior.feature_library.sequence_classifier.SequenceClassifier` &middot; Track spaces `image_px`, `plane_cm`
 
 Neural sequence classifier: a registered head on runs of consecutive frames.
 
@@ -1998,7 +1998,7 @@ Neural sequence classifier: a registered head on runs of consecutive frames.
 
 ### `tune-threshold`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.tune_threshold.TuneThresholdFeature`
+Version `0.1` &middot; `mosaic.behavior.feature_library.tune_threshold.TuneThresholdFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Choose the probability thresholds of a cross-validated classifier.
 
@@ -2023,7 +2023,7 @@ Choose the probability thresholds of a cross-validated classifier.
 
 ### `vame`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.vame_feature.VameFeature`
+Version `0.1` &middot; `mosaic.behavior.feature_library.vame_feature.VameFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
@@ -2031,7 +2031,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 | --- | --- | --- | --- | --- |
 | `model` | `VameModelArtifact` \| `None` | `null` |  | A fitted VAME model to apply, such as a fit step scoped to the training groups. Unset, the feature fits a new model on the entries in scope. With a model set, nothing is fitted, the entries in scope leave the run id, and the settings that build and preprocess the sessions must equal the model's. |
 | `vame_python` | `string` \| `None` | `null` |  | Path to a Python interpreter with VAME installed. Unset, resolution reads MOSAIC_VAME_CONDA_ENV, then MOSAIC_VAME_PYTHON, then the in-repository environment under feature_library/external/vame-env/.venv. |
-| `device` | `"auto"` \| `"cpu"` \| `"cuda"` \| `"mps"` | `"auto"` |  | Where VAME trains and embeds. The value auto selects CUDA, then MPS, then the CPU, as VAME does. The run identifier leaves the device out. One recipe therefore runs under one name on any machine. Training on different devices gives different models, and only training on the CPU is bit-reproducible. The model bundle and the run log record the device that ran. |
+| `device` | `"auto"` \| `"cpu"` \| `"cuda"` \| `"mps"` | `"auto"` |  | Where VAME trains and embeds: auto selects CUDA, then MPS, then the CPU. The run identifier leaves the device out, so one recipe runs under one name on any machine. Training on different devices gives different models, and only CPU training is bit-reproducible. The model bundle and the run log record the device that ran. |
 | `pose` | `PoseConfig` | _constructed_ |  | Pose keypoint configuration: indices and column prefixes. |
 | `centered_reference_keypoint` | `integer` \| `string` | _required_ |  | The keypoint that egocentric alignment moves to the origin of each frame, as a keypoint index or a keypoint name. It must be one of the selected keypoints. |
 | `orientation_reference_keypoint` | `integer` \| `string` | _required_ |  | The keypoint whose direction from the centered reference keypoint egocentric alignment rotates onto a fixed axis, as a keypoint index or a keypoint name. It must be one of the selected keypoints, and a keypoint other than the centered one. |
@@ -2043,7 +2043,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 | `savgol_length` | `integer` | `5` |  | The Savitzky-Golay filter's window. It is odd, longer than savgol_order, and at most time_window. [frames] |
 | `savgol_order` | `integer` | `2` | >= `0` | The order of the Savitzky-Golay filter's polynomial. |
 | `run_rescaling` | `boolean` | `false` |  | Divide each session's positions by the session's median distance between the two reference keypoints, after the other preprocessing. A session is a run of an individual's frames that no gap longer than max_gap_frames splits. |
-| `max_gap_frames` | `integer` | `30` | >= `0` | The longest gap inside a session that low-confidence cleaning fills by interpolation. It must be 0 without run_lowconf_cleaning. A gap is a run in which either reference keypoint lacks a finite point at or above pose_confidence. A longer gap splits the individual into separate sessions, and a gap at its start or end is trimmed. The rows of these gaps do not receive a latent, and their count is reported. The missing points of the other keypoints are interpolated however long they run. A session is excluded when one of them lacks such a point at every frame. [frames] |
+| `max_gap_frames` | `integer` | `30` | >= `0` | The longest gap inside a session that low-confidence cleaning fills by interpolation. It must be 0 without run_lowconf_cleaning. A gap is a run in which either reference keypoint lacks a finite point at or above pose_confidence. A longer gap splits the individual into separate sessions, and a gap at its start or end is trimmed. These gaps' rows receive no latent, and their count is reported. The other keypoints' missing points are interpolated however long they run, and a session is excluded when one of them lacks such a point at every frame. [frames] |
 | `test_fraction` | `number` | `0.1` | > `0`, < `1` | The fraction of the training data that VAME sets aside to compute the test loss. Training saves the model of the epoch with the lowest test reconstruction loss, among the epochs with a KL weight above 0.99. |
 | `split_mode` | `"mode_1"` \| `"mode_2"` | `"mode_2"` |  | How VAME chooses the test data. mode_1 takes the first test_fraction of the concatenated sessions, and mode_2 a random contiguous chunk of that fraction from each session. |
 | `random_state` | `integer` | `42` |  | Seeds every random number generator that training draws from. |
@@ -2074,7 +2074,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 | `kl_start` | `integer` | `2` | >= `0` | The last epoch at which the KL weight is 0. [epochs] |
 | `annealtime` | `integer` | `4` | >= `1` | How the KL weight rises after kl_start. The linear schedule raises the weight to 1 at epoch kl_start + annealtime, and the sigmoid schedule is centered on epoch annealtime. [epochs] |
 | `embed_batch_size` | `integer` | `64` | >= `1` | How many windows VAME encodes at once when it applies a model. It changes latents only at float32 rounding, about 1e-6. |
-| `embed_chunk_frames` | `integer` | `50000` | >= `1` | The longest stretch of a session that one embedding call reads. A longer session is embedded in chunks that overlap by time_window - 1. Chunking changes latents only at float32 rounding. Lower it when embedding runs out of memory. It is at least time_window. [frames] |
+| `embed_chunk_frames` | `integer` | `50000` | >= `1` | The longest stretch of a session that one embedding call reads. A longer session is embedded in chunks overlapping by time_window - 1, and chunking changes latents only at float32 rounding. Lower it when embedding runs out of memory. It is at least time_window. [frames] |
 | `scratch_dir` | `string` \| `None` | `null` |  | The directory in which the feature creates its exchange directory for the runner's files. Unset, the system's temporary directory. |
 
 ??? note "`JoblibLoadSpec`"
@@ -2110,7 +2110,7 @@ Fits VAME to keypoint tracks, and embeds each frame in its latent space.
 
 ### `xgboost`
 
-Version `0.5` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature`
+Version `0.5` &middot; `mosaic.behavior.feature_library.xgboost_feature.XgboostFeature` &middot; Track spaces `image_px`, `plane_cm`
 
 XGBoost behavior classifier as a pipeline feature.
 
@@ -2187,7 +2187,7 @@ XGBoost behavior classifier as a pipeline feature.
 
 ### `egocentric-crop`
 
-Version `0.3` &middot; `mosaic.behavior.visualization_library.egocentric_crop.EgocentricCrop`
+Version `0.3` &middot; `mosaic.behavior.visualization_library.egocentric_crop.EgocentricCrop` &middot; Track spaces `image_px`, `plane_cm`
 
 Generate egocentric (animal-centered) video crops.
 
@@ -2230,7 +2230,7 @@ Generate egocentric (animal-centered) video crops.
 
 ### `interaction-crop-pipeline`
 
-Version `0.3` &middot; `mosaic.behavior.visualization_library.interaction_crop.InteractionCropPipeline`
+Version `0.3` &middot; `mosaic.behavior.visualization_library.interaction_crop.InteractionCropPipeline` &middot; Track spaces `image_px`, `plane_cm`
 
 Generate egocentric crop videos for detected interaction segments.
 
@@ -2270,7 +2270,7 @@ Generate egocentric crop videos for detected interaction segments.
 
 ### `overlay`
 
-Version `0.1` &middot; `mosaic.behavior.visualization_library.overlay_feature.Overlay`
+Version `0.1` &middot; `mosaic.behavior.visualization_library.overlay_feature.Overlay` &middot; Track spaces `image_px`, `plane_cm`
 
 Render one annotated video per sequence, from tracks and drawn labels.
 
@@ -2294,7 +2294,7 @@ Render one annotated video per sequence, from tracks and drawn labels.
 
 ### `id-tag-columns`
 
-Version `0.1` &middot; `mosaic.behavior.feature_library.id_tag_columns.IdTagColumns`
+Version `0.1` &middot; `mosaic.behavior.feature_library.id_tag_columns.IdTagColumns` &middot; Track spaces `image_px`, `plane_cm`, `world_m`
 
 Attach per-id label fields from labels/<label_kind> to each frame.
 

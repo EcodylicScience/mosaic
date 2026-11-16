@@ -38,6 +38,7 @@ from pydantic import Field
 
 from mosaic.core.json_value import JsonValue
 from mosaic.core.scope import Scope
+from mosaic.core.spaces import TrackSpace
 
 from ..column_contract import PairRead
 from ..inventory.wire import CoverageWire
@@ -302,6 +303,9 @@ class CatalogIndexEntry(GraphModel):
             lack, ``()`` when it declares none.
         lane: The queue its work is offered to, ``None`` for ``tracks``, which
             no job runs.
+        track_spaces: The track spaces a feature computes in, sorted, the two 2D
+            spaces when it declares none. ``()`` for an op and for ``tracks``,
+            which compute in no space. It is metadata and enters no run id.
         emits: The entity level of its rows as declared, ``as-input`` for one
             that keeps its input's level.
         requires: The label of each column requirement under its default
@@ -340,6 +344,7 @@ class CatalogIndexEntry(GraphModel):
     parallelizable: bool = False
     definition: DefinitionWire | None = None
     keywords: tuple[str, ...] = ()
+    track_spaces: tuple[TrackSpace, ...] = ()
 
 
 class ParamRow(GraphModel):

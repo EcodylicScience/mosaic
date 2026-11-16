@@ -6,9 +6,9 @@ as a definition's sidecar, avoids loading pandas.
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Final, Literal, TypeIs
 
-__all__ = ["TRACK_SPACES", "TrackSpace"]
+__all__ = ["TRACK_SPACES", "TrackSpace", "is_track_space"]
 
 type TrackSpace = Literal["image_px", "plane_cm", "world_m"]
 """What a table's spatial columns are measured in, and against what.
@@ -30,3 +30,8 @@ plausible number.
 
 TRACK_SPACES: Final[tuple[TrackSpace, ...]] = ("image_px", "plane_cm", "world_m")
 """Every :data:`TrackSpace`, in a stable order for messages and iteration."""
+
+
+def is_track_space(value: object) -> TypeIs[TrackSpace]:
+    """Whether *value* is one of :data:`TRACK_SPACES`."""
+    return isinstance(value, str) and value in TRACK_SPACES

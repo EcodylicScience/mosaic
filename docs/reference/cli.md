@@ -797,7 +797,11 @@ Without --query the list is sorted by slug. With --query it holds only the
 features that match, best match first: the name, then words of the name,
 then the summary, keywords or category. Under --json each row also lists its
 keywords and names what the installation lacks to run the feature and any
-use its license forbids.
+use its license forbids, and its track_spaces.
+
+With --track-space the list holds only the features that compute in that
+space. The spaces column lists the spaces each feature computes in, which
+are image_px and plane_cm for a feature that declares none.
 
 With --manifest the dataset's feature definitions are listed beside the
 built-in features as def:<name>, each with its version, the first 12
@@ -814,6 +818,7 @@ $ mosaic features list [OPTIONS]
 **Options**:
 
 * `--query <str>`: List only the features whose name, summary, keywords or category contain every word, best match first.
+* `--track-space <str>`: List only the features that compute in this track space (image_px, plane_cm or world_m).
 * `-m, --manifest <path>`: Path to the dataset manifest (dataset.yaml). Names the dataset whose feature definitions (def:<name>) are listed and resolved, which it opens read-only without importing any. Without it only the built-in features are known.
 * `--json`: Emit the list as a JSON array.
 * `--help`: Show this message and exit.

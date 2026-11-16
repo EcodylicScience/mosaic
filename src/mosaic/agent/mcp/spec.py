@@ -70,6 +70,7 @@ from mosaic.core.pipeline.graph.store import (
 from mosaic.core.pipeline.parallelism import MAX_WORKERS_CEILING, ParallelMode
 from mosaic.core.pipeline.summary_arguments import KeyValue, SummaryTest
 from mosaic.core.scan_findings import ScanFinding
+from mosaic.core.spaces import TrackSpace
 from mosaic.core.strict_model import StrictModel
 from mosaic.runlog import AttemptLiveness, AttemptOutcome
 
@@ -266,7 +267,8 @@ MAX_STEP_TYPE_DETAIL_CHARS: Final = 16_000
 """The most characters of JSON that one step type's detail takes.
 
 Not enforced per call. A test measures every step type of the catalog, and the
-largest, ``vame``, takes about 15,700.
+largest, ``vame``, takes just under 16,000, so a field added to every detail
+needs room made in its parameter descriptions first.
 """
 
 MAX_STEP_TYPE_LISTING_CHARS: Final = 4_500
@@ -711,6 +713,13 @@ class DescribeStepTypesInput(ToolInput):
         default=False,
         description="Leave out step types this installation cannot run.",
     )
+    track_space: TrackSpace | None = Field(
+        default=None,
+        description=(
+            "Return step types that compute in this track space, and ops, which "
+            "compute in none."
+        ),
+    )
     names: list[str] | None = Field(
         default=None,
         min_length=1,
@@ -744,6 +753,7 @@ class DescribeStepTypesInput(ToolInput):
                     ("type", self.type is not None),
                     ("category", self.category is not None),
                     ("available_only", self.available_only),
+                    ("track_space", self.track_space is not None),
                     ("cursor", self.cursor is not None),
                 )
                 if given

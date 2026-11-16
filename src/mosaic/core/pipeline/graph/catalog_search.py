@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
+    from mosaic.core.spaces import TrackSpace
+
     from .wire import CatalogIndexEntry
 
 _SEPARATORS: Final = re.compile(r"[\s_-]+")
@@ -45,6 +47,15 @@ class CatalogMatch:
 
     entry: CatalogIndexEntry
     key: tuple[str, ...]
+
+
+def computes_in_track_space(entry: CatalogIndexEntry, space: TrackSpace) -> bool:
+    """Whether *entry* computes in *space*, or in no space at all.
+
+    A feature computes in the spaces it declares. An op and ``tracks`` declare
+    none, which this counts as computing in every space.
+    """
+    return not entry.track_spaces or space in entry.track_spaces
 
 
 def _search_words(text: str) -> tuple[str, ...]:

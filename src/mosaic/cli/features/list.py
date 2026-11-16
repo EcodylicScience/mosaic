@@ -10,6 +10,7 @@ from mosaic.cli._context import definitions_of
 from mosaic.cli._io import emit_json
 from mosaic.cli._render import DIGEST_PREFIX_LENGTH, render_table
 from mosaic.cli.tags import DefinitionsManifestOption
+from mosaic.core.spaces import TRACK_SPACES, is_track_space
 
 if TYPE_CHECKING:
     from mosaic.core.pipeline.graph.wire import DefinitionWire
@@ -26,6 +27,16 @@ def list_command(
             ),
         ),
     ] = "",
+    track_space: Annotated[
+        str | None,
+        typer.Option(
+            "--track-space",
+            help=(
+                "List only the features that compute in this track space (image_px, "
+                "plane_cm or world_m)."
+            ),
+        ),
+    ] = None,
     manifest: DefinitionsManifestOption = None,
     as_json: Annotated[
         bool, typer.Option("--json", help="Emit the list as a JSON array.")
@@ -37,7 +48,11 @@ def list_command(
     features that match, best match first: the name, then words of the name,
     then the summary, keywords or category. Under --json each row also lists its
     keywords and names what the installation lacks to run the feature and any
-    use its license forbids.
+    use its license forbids, and its track_spaces.
+
+    With --track-space the list holds only the features that compute in that
+    space. The spaces column lists the spaces each feature computes in, which
+    are image_px and plane_cm for a feature that declares none.
 
     With --manifest the dataset's feature definitions are listed beside the
     built-in features as def:<name>, each with its version, the first 12
@@ -45,24 +60,43 @@ def list_command(
     definition. Under --json a definition's row carries its name, full digest
     and date in `definition`, which is null for a built-in feature.
     """
-    from mosaic.core.pipeline.graph import catalog_index, search_catalog
+    from mosaic.core.pipeline.graph import (
+        catalog_index,
+        computes_in_track_space,
+        search_catalog,
+    )
 
+    if track_space is not None and not is_track_space(track_space):
+        msg = f"{track_space!r} is not one of {', '.join(TRACK_SPACES)}"
+        raise typer.BadParameter(msg, param_hint="--track-space")
     with definitions_of(manifest):
         entries = [
             match.entry
             for match in search_catalog(catalog_index().entries, query)
             if match.entry.type == "feature"
+            and (
+                track_space is None or computes_in_track_space(match.entry, track_space)
+            )
         ]
     if as_json:
         emit_json([entry.model_dump(mode="json") for entry in entries])
         return
-    columns = ["name", "version", "category", "lane", "available", "restricted"]
+    columns = [
+        "name",
+        "version",
+        "category",
+        "lane",
+        "spaces",
+        "available",
+        "restricted",
+    ]
     if any(entry.definition is not None for entry in entries):
         columns.extend(["digest", "defined"])
     render_table(
         [
             {
                 **entry.model_dump(mode="json"),
+                "spaces": ",".join(entry.track_spaces),
                 "available": "no" if entry.unavailable else "yes",
                 "restricted": "yes" if entry.license_note else "no",
                 **_definition_cells(entry.definition),

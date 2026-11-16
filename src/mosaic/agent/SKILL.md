@@ -264,7 +264,11 @@ The rules are in https://ecodylicscience.github.io/mosaic/concepts/tracks/.
   or, for tracks the recipe itself writes, when the step starts. `pose-egocentric` and
   `pair-world` refuse a pixel or centimeter table. A feature whose computation does not
   depend on the space (`keypoint-kinematics`, `label-statistics`) or that reads no
-  spatial column (the aggregates) accepts every space.
+  spatial column (the aggregates) accepts every space. Before planning on world-frame
+  tracks, find the step types that compute in `world_m` with
+  `describe_step_types(track_space="world_m")` or
+  `mosaic features list --track-space world_m`. Each step type lists its
+  `track_spaces`, and an op, which computes in none, passes the filter.
 - A Tracktor table (`tracktor_corrected_tsv`, `tracktor_raw_csv`) is timed by the file's
   `seconds_total`, because the recording drops frames and no frame rate gives a frame's
   time. The raw format reads that time from the corrected `.tsv` beside it. The table
@@ -854,6 +858,8 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Find step types with `describe_step_types`, which lists them by category with a
   summary each, or with a query. Then call it with `names=[...]` for the params of
   the ones you choose, and `detail: "summary"` for the columns they read and write.
+  `track_space` keeps the step types that compute in that space (`world_m` for a 3D
+  table), and each step type's `track_spaces` lists the spaces it computes in.
 - A dataset that is not ready says so in `describe_dataset`'s `next_steps`. Where the
   server allows it, `manage_dataset` creates a dataset (`create`, a `path` inside the
   server's dataset roots), declares raw files (`add_source` with `kind`, `path` inside

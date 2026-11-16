@@ -300,11 +300,11 @@ _VAME_PYTHON_DESCRIPTION = (
 )
 
 _DEVICE_DESCRIPTION = (
-    "Where VAME trains and embeds. The value auto selects CUDA, then MPS, then "
-    "the CPU, as VAME does. The run identifier leaves the device out. One recipe "
-    "therefore runs under one name on any machine. Training on different devices "
-    "gives different models, and only training on the CPU is bit-reproducible. "
-    "The model bundle and the run log record the device that ran."
+    "Where VAME trains and embeds: auto selects CUDA, then MPS, then the CPU. The "
+    "run identifier leaves the device out, so one recipe runs under one name on "
+    "any machine. Training on different devices gives different models, and only "
+    "CPU training is bit-reproducible. The model bundle and the run log record "
+    "the device that ran."
 )
 
 _CENTERED_REFERENCE_DESCRIPTION = (
@@ -364,10 +364,10 @@ _MAX_GAP_FRAMES_DESCRIPTION = (
     "interpolation. It must be 0 without run_lowconf_cleaning. A gap is a run in "
     "which either reference keypoint lacks a finite point at or above "
     "pose_confidence. A longer gap splits the individual into separate sessions, "
-    "and a gap at its start or end is trimmed. The rows of these gaps do not "
-    "receive a latent, and their count is reported. "
-    "The missing points of the other keypoints are interpolated however long they "
-    "run. A session is excluded when one of them lacks such a point at every frame."
+    "and a gap at its start or end is trimmed. These gaps' rows receive no latent, "
+    "and their count is reported. The other keypoints' missing points are "
+    "interpolated however long they run, and a session is excluded when one of "
+    "them lacks such a point at every frame."
 )
 
 _TEST_FRACTION_DESCRIPTION = (
@@ -506,9 +506,9 @@ _EMBED_BATCH_SIZE_DESCRIPTION = (
 
 _EMBED_CHUNK_FRAMES_DESCRIPTION = (
     "The longest stretch of a session that one embedding call reads. A longer "
-    "session is embedded in chunks that overlap by time_window - 1. Chunking "
-    "changes latents only at float32 rounding. Lower it when embedding runs out "
-    "of memory. It is at least time_window."
+    "session is embedded in chunks overlapping by time_window - 1, and chunking "
+    "changes latents only at float32 rounding. Lower it when embedding runs out of "
+    "memory. It is at least time_window."
 )
 
 _SCRATCH_DIR_DESCRIPTION = (

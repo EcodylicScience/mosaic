@@ -47,6 +47,7 @@ _STEP_TYPE_HEADER = (
     "category",
     "summary",
     "keywords",
+    "track_spaces",
     "lane",
     "emits",
     "consumes",

@@ -530,6 +530,33 @@ def test_step_types_are_searched_by_their_keywords(backend: LocalBackend) -> Non
     assert "social force" in detail.keywords
 
 
+def test_step_types_are_filtered_by_the_track_space_they_compute_in(
+    backend: LocalBackend,
+) -> None:
+    world = _listed(
+        _call(
+            backend, "describe_step_types", StepTypes, track_space="world_m", limit=100
+        )
+    )
+    image = _listed(
+        _call(
+            backend, "describe_step_types", StepTypes, track_space="image_px", limit=100
+        )
+    )
+    details = _call(
+        backend, "describe_step_types", StepTypes, names=["pose-egocentric", "heading"]
+    ).details
+
+    assert "heading" not in world
+    assert {"pose-egocentric", "convert-tracks", "keypoint-kinematics"} <= set(world)
+    assert "pose-egocentric" not in image
+    assert {"heading", "convert-tracks"} <= set(image)
+    assert {detail.name: detail.track_spaces for detail in details} == {
+        "pose-egocentric": ("world_m",),
+        "heading": ("image_px", "plane_cm"),
+    }
+
+
 def test_step_types_are_ranked_and_paged_in_rank_order(backend: LocalBackend) -> None:
     whole = _call(backend, "describe_step_types", StepTypes, query="speed", limit=100)
     paged: list[str] = []

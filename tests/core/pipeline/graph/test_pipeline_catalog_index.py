@@ -23,6 +23,7 @@ from mosaic.core.pipeline.graph import (
     describe_step_type,
     editor_catalog,
     lane_for_step,
+    step_type_detail,
     step_type_lane,
 )
 from mosaic.core.pipeline.ops import OPS
@@ -61,6 +62,7 @@ def test_each_row_summarizes_the_entry_that_describe_returns() -> None:
             entry.summary,
         )
         assert row.keywords == entry.keywords
+        assert row.track_spaces == entry.declaration.track_spaces
         assert row.emits == entry.declaration.emits
         assert (row.unavailable, row.license_note) == (
             entry.unavailable,
@@ -171,3 +173,18 @@ def test_kpms_is_restricted_whether_or_not_its_license_is_accepted(
     assert "fee-for-service" in note
     assert describe_step_type("kpms").license_note == note
     assert {name for name, row in rows.items() if row.license_note} == {"kpms"}
+
+
+def test_each_row_lists_the_track_spaces_its_step_type_computes_in() -> None:
+    rows = {row.name: row for row in catalog_index().entries}
+
+    assert rows["heading"].track_spaces == ("image_px", "plane_cm")
+    assert rows["pose-egocentric"].track_spaces == ("world_m",)
+    assert rows["keypoint-kinematics"].track_spaces == (
+        "image_px",
+        "plane_cm",
+        "world_m",
+    )
+    assert rows[TRACKS_INPUT].track_spaces == ()
+    assert rows["convert-tracks"].track_spaces == ()
+    assert step_type_detail("pose-egocentric").track_spaces == ("world_m",)

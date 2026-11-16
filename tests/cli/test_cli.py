@@ -680,6 +680,41 @@ def test_features_list_ranks_the_features_a_query_matches() -> None:
     assert plain.stdout.splitlines()[1].split()[0] == "speed-angvel"
 
 
+def test_features_list_filters_by_track_space_and_shows_the_spaces() -> None:
+    every = json.loads(runner.invoke(app, ["features", "list", "--json"]).stdout)
+    world = json.loads(
+        runner.invoke(
+            app, ["features", "list", "--track-space", "world_m", "--json"]
+        ).stdout
+    )
+    plain = runner.invoke(app, ["features", "list", "--track-space", "world_m"])
+    unfiltered = runner.invoke(app, ["features", "list"])
+    described = runner.invoke(app, ["features", "describe", "pose-egocentric"])
+    refused = runner.invoke(app, ["features", "list", "--track-space", "polar"])
+
+    by_name = {row["name"]: row for row in every}
+    names = {row["name"] for row in world}
+    assert by_name["heading"]["track_spaces"] == ["image_px", "plane_cm"]
+    assert by_name["pose-egocentric"]["track_spaces"] == ["world_m"]
+    assert "pose-egocentric" in names
+    assert "heading" not in names
+    assert names == {row["name"] for row in every if "world_m" in row["track_spaces"]}
+    assert refused.exit_code == 2
+    assert plain.exit_code == 0
+    assert "spaces" in plain.stdout.splitlines()[0].split("\t")
+    pose_row = next(
+        line for line in plain.stdout.splitlines() if line.startswith("pose-egocentric")
+    )
+    assert "world_m" in pose_row.split("\t")
+    heading_row = next(
+        line for line in unfiltered.stdout.splitlines() if line.startswith("heading\t")
+    )
+    assert "image_px,plane_cm" in heading_row.split("\t")
+    assert any(
+        line == "track_spaces: world_m" for line in described.stdout.splitlines()
+    )
+
+
 # Every registered op kind, as one literal. Separated from the discovery test
 # below because the two answer different questions and change for different
 # reasons: discovery asks whether ``tracking list`` and ``tracking describe``

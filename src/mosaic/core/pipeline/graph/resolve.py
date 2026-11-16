@@ -1301,6 +1301,7 @@ def _index_entry(entry: CatalogEntry) -> CatalogIndexEntry:
         parallelizable=_parallelizable(entry),
         definition=entry.definition,
         keywords=entry.keywords,
+        track_spaces=declared.track_spaces,
     )
 
 
