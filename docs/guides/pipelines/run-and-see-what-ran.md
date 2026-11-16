@@ -166,6 +166,9 @@ steps compute their entries in parallel without it and keep the memory floor alo
 
 The commands that take these options are `mosaic run --feature`,
 `mosaic run --graph-request`, `mosaic pipeline run` and `mosaic pipeline score`.
+Without `--workers` a run computes entries in turn. `--parallel-mode`,
+`--min-free-memory-fraction` or `--admission-margin` alone runs one worker per physical
+core, and `--workers 1` with one of them is refused.
 
 ### What a step will cost, and a probe of it
 

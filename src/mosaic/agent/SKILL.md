@@ -999,7 +999,8 @@ work they cover (https://ecodylicscience.github.io/mosaic/agents/).
 - Memory means the limit that applies: inside a container or a SLURM job, its cgroup's
   limit, otherwise the host's. The floor and `plan_recipe`'s memory figures follow it.
   For a run that must not be killed, the user can start it with `--admission-margin`
-  (from 1 to 4, say 1.5) on the CLI: an entry then starts beside others only when its
+  (from 1 to 4, say 1.5) on the CLI, which alone runs one worker per physical core
+  unless `--workers` names a count: an entry then starts beside others only when its
   predicted memory times the margin fits under the limit, and one predicted over the
   limit even alone ends the step with `EntryOverMemoryLimit`. The prediction counts the
   memory the kernel cannot reclaim, which is what the limit enforces, and not the page

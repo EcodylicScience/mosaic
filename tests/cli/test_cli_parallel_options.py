@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import mosaic.cli._io as cli_io
 import mosaic.core.pipeline.graph as graph_module
 import mosaic.core.pipeline.run as run_module
 from mosaic.cli import app
@@ -122,18 +123,27 @@ def test_a_count_beyond_the_ceiling_is_refused_by_the_option(
     assert result.exit_code == 2
 
 
-@pytest.mark.parametrize(
-    "flags",
-    [
-        ["--parallel-mode", "process"],
-        ["--min-free-memory-fraction", "0.2"],
-        ["--admission-margin", "1.5"],
-    ],
-    ids=["mode", "floor", "margin"],
-)
-def test_the_mode_the_floor_and_the_margin_need_several_workers(
-    dataset: Dataset, flags: list[str]
+KNOB_FLAGS = [
+    ["--parallel-mode", "process"],
+    ["--min-free-memory-fraction", "0.2"],
+    ["--admission-margin", "1.5"],
+]
+KNOB_IDS = ["mode", "floor", "margin"]
+
+
+@pytest.mark.parametrize("flags", KNOB_FLAGS, ids=KNOB_IDS)
+def test_a_knob_without_workers_takes_the_default_worker_count(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch, flags: list[str]
 ) -> None:
+    seen: dict[str, object] = {}
+
+    def run_feature(*_args: object, **kwargs: object) -> Result[str]:
+        seen.update(kwargs)
+        return Result(feature="speed-angvel", run_id="r1", execution_id="e1")
+
+    monkeypatch.setattr(run_module, "run_feature", run_feature)
+    monkeypatch.setattr(cli_io, "default_max_workers", lambda: 3)
+
     result = runner.invoke(
         app,
         [
@@ -143,11 +153,72 @@ def test_the_mode_the_floor_and_the_margin_need_several_workers(
             "--feature",
             "speed-angvel",
             *flags,
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["parallel_workers"] == 3
+    assert seen["parallel_mode"] == (
+        "process" if flags[0] == "--parallel-mode" else "thread"
+    )
+    assert seen["min_free_memory_fraction"] == (
+        0.2 if flags[0] == "--min-free-memory-fraction" else 0.0
+    )
+    assert seen["admission_margin"] == (
+        1.5 if flags[0] == "--admission-margin" else 0.0
+    )
+
+
+@pytest.mark.parametrize("flags", KNOB_FLAGS, ids=KNOB_IDS)
+def test_a_knob_with_one_worker_is_refused(dataset: Dataset, flags: list[str]) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--feature",
+            "speed-angvel",
+            "--workers",
+            "1",
+            *flags,
         ],
     )
 
     assert result.exit_code == 1
-    assert "--workers above 1" in result.stderr
+    assert "--workers 1" in result.stderr
+    assert "more than one worker" in result.stderr
+
+
+def test_a_default_of_one_worker_runs_in_turn(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def run_feature(*_args: object, **kwargs: object) -> Result[str]:
+        seen.update(kwargs)
+        return Result(feature="speed-angvel", run_id="r1", execution_id="e1")
+
+    monkeypatch.setattr(run_module, "run_feature", run_feature)
+    monkeypatch.setattr(cli_io, "default_max_workers", lambda: 1)
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--feature",
+            "speed-angvel",
+            "--parallel-mode",
+            "process",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["parallel_workers"] is None
 
 
 def test_a_margin_under_one_is_refused(dataset: Dataset) -> None:
@@ -208,6 +279,31 @@ def test_an_op_run_takes_no_workers(dataset: Dataset) -> None:
     assert "--feature or --graph-request" in result.stderr
 
 
+@pytest.mark.parametrize("flags", KNOB_FLAGS, ids=KNOB_IDS)
+def test_an_op_run_takes_no_knob_either(dataset: Dataset, flags: list[str]) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--kind",
+            "transcode",
+            *flags,
+        ],
+    )
+
+    assert result.exit_code == 1
+    for flag in (
+        "--workers",
+        "--parallel-mode",
+        "--min-free-memory-fraction",
+        "--admission-margin",
+    ):
+        assert flag in result.stderr
+    assert "--feature or --graph-request" in result.stderr
+
+
 def test_pipeline_run_hands_the_worker_flags_to_the_run(
     dataset: Dataset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -241,6 +337,36 @@ def test_pipeline_run_hands_the_worker_flags_to_the_run(
     assert seen["parallel"] == ParallelSettings(
         workers=3, mode="thread", min_free_memory_fraction=0.1, admission_margin=2.0
     )
+
+
+def test_pipeline_run_takes_the_default_worker_count_for_a_mode_alone(
+    dataset: Dataset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def run_pipeline(*_args: object, **kwargs: object) -> None:
+        seen.update(kwargs)
+        raise _Stopped
+
+    monkeypatch.setattr(graph_module, "run_pipeline", run_pipeline)
+    monkeypatch.setattr(cli_io, "default_max_workers", lambda: 3)
+
+    result = runner.invoke(
+        app,
+        [
+            "pipeline",
+            "run",
+            "--manifest",
+            str(dataset.manifest_path),
+            "--recipe",
+            json.dumps(CHAIN_RECIPE),
+            "--parallel-mode",
+            "process",
+        ],
+    )
+
+    assert isinstance(result.exception, _Stopped)
+    assert seen["parallel"] == ParallelSettings(workers=3, mode="process")
 
 
 def test_pipeline_score_hands_the_admission_margin_to_the_scoring(

@@ -21,6 +21,7 @@ from mosaic.core.pipeline.parallelism import (
     MAX_ADMISSION_MARGIN,
     MAX_WORKERS_CEILING,
     ParallelSettings,
+    default_max_workers,
     valid_admission_margin,
 )
 from mosaic.user_paths import user_path
@@ -119,8 +120,10 @@ WorkersOption = Annotated[
         max=MAX_WORKERS_CEILING,
         help=(
             "Compute this many entries of a parallelizable step at once: a "
-            "feature, convert-tracks or resample-tracks. The default computes "
-            "them in turn. More workers use more memory."
+            "feature, convert-tracks or resample-tracks. Without it a run "
+            "computes them in turn, unless --parallel-mode, "
+            "--min-free-memory-fraction or --admission-margin is given, which "
+            "takes one worker per physical core. More workers use more memory."
         ),
     ),
 ]
@@ -130,7 +133,7 @@ ParallelModeOption = Annotated[
     typer.Option(
         "--parallel-mode",
         help=(
-            "With --workers above 1, 'thread' (the default) shares one copy of the "
+            "With more than one worker, 'thread' (the default) shares one copy of the "
             "feature. 'process' uses every core but spawns an interpreter per "
             "worker and copies each entry's table to it, so it uses far more memory."
         ),
@@ -144,7 +147,7 @@ MinFreeMemoryOption = Annotated[
         min=0.0,
         max=0.99,
         help=(
-            "With --workers above 1, the share of the memory limit that applies, a "
+            "With more than one worker, the share of the memory limit that applies, a "
             "container's or else the host's, that must stay available. The run "
             "waits for its in-flight entries while the share is lower, and fails "
             "when it is still lower with none in flight. 0 turns the check off."
@@ -160,7 +163,7 @@ AdmissionMarginOption = Annotated[
         min=0.0,
         max=MAX_ADMISSION_MARGIN,
         help=(
-            "With --workers above 1, start an entry beside the ones in flight only "
+            "With more than one worker, start an entry beside the ones in flight only "
             "when its predicted memory times this factor fits the memory limit, "
             "learned from the run's own entries. The first entry runs alone and "
             "entries start largest first. 0 (the default) turns the gate off; "
@@ -185,15 +188,27 @@ def parallel_settings(
         admission_margin: The ``--admission-margin`` value.
 
     Returns:
-        The settings, or ``None`` when no flag asks for more than one worker.
+        The settings, or ``None`` when no flag asks for more than one worker. A
+        run that names a mode, a memory floor or an admission margin and no
+        count takes :func:`default_max_workers`, and is serial when that is 1.
     """
-    if workers is None or workers <= 1:
-        if mode is not None or min_free_memory_fraction > 0.0 or admission_margin > 0.0:
+    knob_named = (
+        mode is not None or min_free_memory_fraction > 0.0 or admission_margin > 0.0
+    )
+    if workers is not None and workers <= 1:
+        if knob_named:
             fail(
                 "--parallel-mode, --min-free-memory-fraction and --admission-margin "
-                "apply to a run with --workers above 1."
+                "apply to a run with more than one worker. --workers 1 computes "
+                "entries in turn."
             )
         return None
+    if workers is None:
+        if not knob_named:
+            return None
+        workers = default_max_workers()
+        if workers <= 1:
+            return None
     if not valid_admission_margin(admission_margin):
         fail(f"--admission-margin is 0 (off) or from 1 to 4, not {admission_margin}.")
     return ParallelSettings(

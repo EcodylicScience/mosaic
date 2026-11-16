@@ -195,24 +195,29 @@ def run_command(
     refuse_scope_named_twice(entries, groups, sequences, scope_json)
     if (graph_request is not None) != (step is not None):
         fail("--graph-request and --step are used together, or not at all.")
+    parallel_named = (
+        workers is not None
+        or parallel_mode is not None
+        or min_free_memory_fraction > 0.0
+        or admission_margin > 0.0
+    )
     subset = _step_subset(
         probe,
         step_entries,
         graph_request=graph_request,
         execution_id=execution_id,
-        parallel_named=(
-            workers is not None
-            or parallel_mode is not None
-            or min_free_memory_fraction > 0.0
-            or admission_margin > 0.0
-        ),
+        parallel_named=parallel_named,
         overwrite=overwrite,
     )
+    if kind is not None and parallel_named:
+        fail(
+            "--workers, --parallel-mode, --min-free-memory-fraction and "
+            "--admission-margin are used with --feature or --graph-request, "
+            "not --kind."
+        )
     parallel = parallel_settings(
         workers, parallel_mode, min_free_memory_fraction, admission_margin
     )
-    if parallel is not None and kind is not None:
-        fail("--workers is used with --feature or --graph-request, not --kind.")
     if republish and kind is None:
         msg = (
             "--republish rebuilds an op's published outputs, so it is used with "

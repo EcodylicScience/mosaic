@@ -652,8 +652,9 @@ The agent sees what it needs to choose:
   and the same recipe submitted again resumes.
 
 The same options exist outside the server: `mosaic run --feature`, `mosaic run
---graph-request` and `mosaic pipeline run` take `--workers`, `--parallel-mode` and
-`--min-free-memory-fraction`. A request that you resume by hand with
+--graph-request` and `mosaic pipeline run` take `--workers`, `--parallel-mode`,
+`--min-free-memory-fraction` and `--admission-margin`. Any of the last three without
+`--workers` runs one worker per physical core. A request that you resume by hand with
 `mosaic pipeline run --request` runs its steps in turn unless you pass them. A queue
 that dispatches the steps builds its own commands and does not pass them. When a queue
 also runs several steps at once, the processors used are the steps times the workers.
