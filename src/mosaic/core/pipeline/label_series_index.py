@@ -37,6 +37,7 @@ from mosaic.core.pipeline.index_csv import (
     project_to_schema,
 )
 from mosaic.core.pipeline.index_lock import index_lock
+from mosaic.core.pipeline.ops import IdentityDeferred
 from mosaic.core.strict_model import terse
 from mosaic.core.pipeline.label_series import (
     MANIFEST_FILENAME,
@@ -49,12 +50,14 @@ from mosaic.core.pipeline.label_series import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
+    from mosaic.core.pipeline.types.labels import LabelRevisionRef
 
 __all__ = [
     "LABEL_SERIES_INDEX_COLUMNS",
     "LabelSeriesCollisionError",
     "LabelSeriesIndexRow",
     "LabelSeriesTamperedError",
+    "ResolvedRevision",
     "RevisionManifest",
     "SeriesRevision",
     "carried_series_digests",
@@ -64,6 +67,7 @@ __all__ = [
     "payload_digest",
     "read_label_series",
     "read_revision_manifest",
+    "resolve_series_refs",
     "revision_export",
     "row_for_revision_file",
     "series_index_path",
@@ -95,6 +99,16 @@ class LabelSeriesTamperedError(ValueError):
     that changed afterwards is refused rather than re-indexed under its new
     digest, because re-indexing would quietly rewrite what that model saw.
     """
+
+
+def _tampered(path: Path, recorded: str, measured: str) -> LabelSeriesTamperedError:
+    """The refusal of a revision payload whose bytes differ from its recorded digest."""
+    return LabelSeriesTamperedError(
+        f"{path} was written with digest {recorded} and now measures {measured}. "
+        "A revision is immutable -- a model may name it as what it was trained "
+        "on -- so it is refused rather than re-indexed. Restore the file, or "
+        "save the changed state as a new revision."
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,13 +604,7 @@ def row_for_revision_file(
         raise ValueError(msg)
     measured = known_digest or file_digest(payload_path)
     if measured != manifest.digest:
-        msg = (
-            f"{payload_path} was written with digest {manifest.digest} and now "
-            f"measures {measured}. A revision is immutable -- a model may name it "
-            "as what it was trained on -- so it is refused rather than re-indexed. "
-            "Restore the file, or save the changed state as a new revision."
-        )
-        raise LabelSeriesTamperedError(msg)
+        raise _tampered(payload_path, manifest.digest, measured)
     stat = payload_path.stat()
     return LabelSeriesIndexRow(
         abs_path=Path(ds.relative_to_root(payload_path)),
@@ -677,3 +685,122 @@ def read_label_series(ds: Dataset, series: str) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame(columns=list(LABEL_SERIES_INDEX_COLUMNS))
     return label_series_index(path).read()
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedRevision:
+    """A revision reference, resolved to one revision file on disk.
+
+    Attributes:
+        series: Which series.
+        origin_uuid: The manifest uuid of the dataset that saved the revision.
+        key: What it is a revision of.
+        revision: Its number.
+        digest: The payload's digest, measured from the file.
+        payload: The payload file.
+    """
+
+    series: str
+    origin_uuid: str
+    key: str
+    revision: int
+    digest: str
+    payload: Path
+
+
+def resolve_series_refs(
+    ds: Dataset, series: str, refs: Sequence[LabelRevisionRef], *, kind: str
+) -> tuple[ResolvedRevision, ...]:
+    """Each reference as one revision file, with its digest measured off disk.
+
+    The index says which file a reference means. The file says what is in it:
+    the digest is taken from the bytes now and compared with the index row's, so
+    a revision that was edited in place cannot mint the identifier of the state
+    it used to hold.
+
+    Args:
+        ds: The dataset whose index of *series* is read.
+        series: The series the references name keys of.
+        refs: The references, resolved in order.
+        kind: What is resolving, named in a deferral.
+
+    Raises:
+        KeyError: A reference matches several datasets' revisions of its key
+            and names none.
+        IdentityDeferred: A reference matches no indexed revision, or the
+            revision it matches is not on disk. Both are states a scan or a
+            save can still change, which is what deferring means.
+        LabelSeriesTamperedError: A revision's bytes no longer match the digest
+            its index row recorded.
+    """
+    records = index_records(read_label_series(ds, series))
+    resolved: list[ResolvedRevision] = []
+    for ref in refs:
+        matching = [
+            record
+            for record in records
+            if record.get("key", "") == ref.key
+            and (
+                not ref.origin_uuid or record.get("origin_uuid", "") == ref.origin_uuid
+            )
+        ]
+        if not matching:
+            known = sorted({record.get("key", "") for record in records})
+            origin = f" from dataset {ref.origin_uuid}" if ref.origin_uuid else ""
+            raise IdentityDeferred(
+                kind,
+                f"no revision of {series} key {ref.key!r}{origin} is indexed "
+                f"here (indexed keys: {known or 'none'}). A revision saved in "
+                "another dataset has to be claimed first: declare a labels "
+                f"source with series={series!r} naming the revision, then scan",
+            )
+        origins = sorted({record.get("origin_uuid", "") for record in matching})
+        if len(origins) > 1:
+            msg = (
+                f"{series} key {ref.key!r} is indexed from {len(origins)} "
+                f"datasets ({', '.join(origins)}); name one with origin_uuid"
+            )
+            raise KeyError(msg)
+        if ref.revision is None:
+            chosen = max(
+                matching, key=lambda record: _int_cell(record.get("revision", ""))
+            )
+        else:
+            wanted = [
+                record
+                for record in matching
+                if _int_cell(record.get("revision", "")) == ref.revision
+            ]
+            if not wanted:
+                held = sorted(
+                    _int_cell(record.get("revision", "")) for record in matching
+                )
+                raise IdentityDeferred(
+                    kind,
+                    f"revision {ref.revision} of {series} key {ref.key!r} is "
+                    f"not indexed here (indexed: {held}); claim it and scan",
+                )
+            chosen = wanted[0]
+        payload = ds.resolve_path(chosen["abs_path"])
+        if not payload.is_file():
+            raise IdentityDeferred(
+                kind,
+                f"revision {chosen.get('revision', '')} of {series} key "
+                f"{ref.key!r} ({payload}) is not on disk, and this run's "
+                "identity covers the content of what it reads",
+            )
+        measured = file_digest(payload)
+        recorded = chosen.get("digest", "")
+        if measured != recorded:
+            raise _tampered(payload, recorded, measured)
+        resolved.append(
+            ResolvedRevision(
+                series=series,
+                origin_uuid=origins[0],
+                key=ref.key,
+                revision=_int_cell(chosen.get("revision", "")),
+                digest=measured,
+                payload=payload,
+            )
+        )
+    return tuple(resolved)

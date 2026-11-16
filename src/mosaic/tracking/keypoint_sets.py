@@ -29,13 +29,11 @@ from mosaic.core.annotations.pose_annotations import (
 )
 from mosaic.core.annotations.projection import KEYPOINTS_SERIES
 from mosaic.core.params import Declared, Params
-from mosaic.core.pipeline.file_digest import file_digest
-from mosaic.core.pipeline.index_csv import index_records
 from mosaic.core.pipeline.label_series_index import (
-    read_label_series,
     read_revision_manifest,
+    resolve_series_refs,
 )
-from mosaic.core.pipeline.ops import IdentityDeferred
+from mosaic.core.pipeline.types.labels import LabelRevisionRef
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -101,7 +99,7 @@ def resolve_keypoint_sets(
     """Each reference as one revision file, with its digest measured off disk.
 
     The index says which file a reference means. The file says what is in it:
-    the digest is taken from the bytes now, never read from the index column, so
+    the digest is taken from the bytes now and compared with the index row's, so
     a revision that was edited in place cannot mint the identifier of the state
     it used to hold.
 
@@ -112,80 +110,38 @@ def resolve_keypoint_sets(
         IdentityDeferred: A reference matches no indexed revision, or the
             revision it matches is not on disk. Both are states a scan or a save
             can still change, which is what deferring means.
+        LabelSeriesTamperedError: A revision's bytes no longer match the digest
+            its index row recorded.
     """
-    records = index_records(read_label_series(ds, KEYPOINTS_SERIES))
+    revisions = resolve_series_refs(
+        ds,
+        KEYPOINTS_SERIES,
+        [
+            LabelRevisionRef(
+                key=ref.set_key, origin_uuid=ref.origin_uuid, revision=ref.revision
+            )
+            for ref in refs
+        ],
+        kind=kind,
+    )
     resolved: list[ResolvedSet] = []
-    for ref in refs:
-        matching = [
-            record
-            for record in records
-            if record.get("key", "") == ref.set_key
-            and (
-                not ref.origin_uuid or record.get("origin_uuid", "") == ref.origin_uuid
-            )
-        ]
-        if not matching:
-            known = sorted({record.get("key", "") for record in records})
-            origin = f" from dataset {ref.origin_uuid}" if ref.origin_uuid else ""
-            # Deferred, like data that is not on disk yet: the revision may be
-            # claimed by a scan that has not run. The reason names the repair,
-            # because at execution this is what the failure will say.
-            raise IdentityDeferred(
-                kind,
-                f"no revision of keypoint set {ref.set_key!r}{origin} is indexed "
-                f"here (indexed sets: {known or 'none'}). A set saved in another "
-                "dataset has to be claimed first: declare a labels source with "
-                "series='keypoints' naming the revision, then scan",
-            )
-        origins = sorted({record.get("origin_uuid", "") for record in matching})
-        if len(origins) > 1:
-            msg = (
-                f"keypoint set {ref.set_key!r} is indexed from {len(origins)} "
-                f"datasets ({', '.join(origins)}); name one with origin_uuid"
-            )
-            raise KeyError(msg)
-        if ref.revision is None:
-            chosen = max(matching, key=lambda record: int(record.get("revision", "0")))
-        else:
-            wanted = [
-                record
-                for record in matching
-                if int(record.get("revision", "0")) == ref.revision
-            ]
-            if not wanted:
-                held = sorted(int(record.get("revision", "0")) for record in matching)
-                raise IdentityDeferred(
-                    kind,
-                    f"revision {ref.revision} of keypoint set {ref.set_key!r} is "
-                    f"not indexed here (indexed: {held}); claim it and scan",
-                )
-            chosen = wanted[0]
-        payload = ds.resolve_path(chosen["abs_path"])
-        if not payload.is_file():
-            raise IdentityDeferred(
-                kind,
-                f"revision {chosen.get('revision', '')} of keypoint set "
-                f"{ref.set_key!r} ({payload}) is not on disk, and this run's "
-                "identity covers the content of what it reads",
-            )
-        named = [
-            item
+    for revision in revisions:
+        if any(
+            (item.origin_uuid, item.set_key) == (revision.origin_uuid, revision.key)
             for item in resolved
-            if (item.origin_uuid, item.set_key) == (origins[0], ref.set_key)
-        ]
-        if named:
+        ):
             msg = (
-                f"keypoint set {ref.set_key!r} is named twice; one dataset reads one "
+                f"keypoint set {revision.key!r} is named twice; one dataset reads one "
                 "revision of a set, because two revisions show the same images"
             )
             raise ValueError(msg)
         resolved.append(
             ResolvedSet(
-                origin_uuid=origins[0],
-                set_key=ref.set_key,
-                revision=int(chosen.get("revision", "0")),
-                digest=file_digest(payload),
-                payload=payload,
+                origin_uuid=revision.origin_uuid,
+                set_key=revision.key,
+                revision=revision.revision,
+                digest=revision.digest,
+                payload=revision.payload,
             )
         )
     return tuple(resolved)

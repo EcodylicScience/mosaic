@@ -35,11 +35,13 @@ from mosaic.core.annotations.pose_predictions import (
 from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline._utils import ResolvedScope
+from mosaic.core.pipeline.label_series_index import LabelSeriesTamperedError
 from mosaic.core.pipeline.models import model_run_root
 from mosaic.core.pipeline.ops import OPS, Op
 from mosaic.core.params import Params
 from mosaic.tracking.ops.score_predictions import ScorePredictionsParams
 from tests.helpers import (
+    KEYPOINTS_PAYLOAD,
     MOUSE,
     make_dataset,
     minimal_op_params,
@@ -238,9 +240,25 @@ def test_changed_data_does_move_the_identity(kind: str, tmp_path: Path) -> None:
         _ = _file(first / "added.txt", b"new content")
     elif first.name == "data.yaml":
         _ = _file(first.parent / "train" / "images" / "c.png", b"another image")
+    elif first.name == KEYPOINTS_PAYLOAD:
+        # A revision is immutable, so changed data is the next revision.
+        _ = _revision(ds, (pose_frame("a.png", pose_object((1.0, 2.0), (3.0, 4.0))),))
     elif first.suffix == ".json":
         # Still JSON, so a reader that parses the file reads the new bytes.
         _ = _file(first, first.read_bytes() + b"\n")
     else:
         _ = _file(first, first.read_bytes() + b" edited")
     assert _plan(op, ds, params) != before
+
+
+def test_a_keypoint_revision_edited_in_place_is_refused_at_plan(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "ds")
+    raw = minimal_op_params("prepare-training-data")
+    (payload,) = _keypoint_revision(ds, raw)
+    op = OPS["prepare-training-data"]()
+    params = op.Params.model_validate(raw)
+
+    _ = payload.write_bytes(payload.read_bytes() + b"\n")
+
+    with pytest.raises(LabelSeriesTamperedError):
+        _ = _plan(op, ds, params)

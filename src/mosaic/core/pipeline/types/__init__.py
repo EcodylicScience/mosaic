@@ -45,6 +45,7 @@ from mosaic.core.pipeline.types.inputs import (
 )
 from mosaic.core.pipeline.types.labels import (
     GroundTruthLabelsSource,
+    LabelRevisionRef,
     LabelsSource,
     LabelsSourceSpec,
 )
@@ -80,6 +81,7 @@ __all__ = [
     "InputsLike",
     "JoblibArtifact",
     "JoblibLoadSpec",
+    "LabelRevisionRef",
     "LabeledTemplatesRef",
     "LabelsSource",
     "LabelsSourceSpec",

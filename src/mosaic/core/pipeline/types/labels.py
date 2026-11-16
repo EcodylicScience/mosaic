@@ -16,7 +16,7 @@ from mosaic.core.pipeline.label_controls import (
     LabelMask,
     LabelRemap,
 )
-from mosaic.core.params import Declared, NestedParams
+from mosaic.core.params import Declared, NestedParams, Params
 from mosaic.core.pipeline.types.results import ResultColumn
 
 K = TypeVar("K", bound=str, default=str)
@@ -53,6 +53,29 @@ def _is_retired_value(name: str, value: object) -> bool:
     except ValidationError:
         return False
     return spec.model_dump() == _RETIRED_IDENTITY["load"]
+
+
+class LabelRevisionRef(Params):
+    """One revision of a label series, and which saved state of it to read."""
+
+    key: Annotated[str, Declared("The revision's key in its label series.")]
+    origin_uuid: Annotated[
+        str,
+        Declared(
+            "The manifest uuid of the dataset the revision was saved in. Needed "
+            "only when two datasets' revisions share a key; empty matches the "
+            "one that has it."
+        ),
+    ] = ""
+    revision: Annotated[
+        int | None,
+        Field(ge=1),
+        Declared(
+            "Which revision to read. Left unset, the latest one indexed when the "
+            "run is named. The number selects and is recorded; only the content "
+            "it resolves to enters the run identifier."
+        ),
+    ] = None
 
 
 class LabelsSource(NestedParams, Generic[K]):

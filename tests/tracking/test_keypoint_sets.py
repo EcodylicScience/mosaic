@@ -11,6 +11,7 @@ from mosaic.core.annotations.pose_annotations import PoseAnnotationSet, PoseFram
 from mosaic.core.annotations.projection import write_keypoint_set_revision
 from mosaic.core.dataset import Dataset
 from mosaic.core.manifest import LabelsScanSource
+from mosaic.core.pipeline.label_series_index import LabelSeriesTamperedError
 from mosaic.tracking import register_ops
 from mosaic.tracking.keypoint_sets import (
     KeypointSetRef,
@@ -22,6 +23,7 @@ from mosaic.tracking.keypoint_sets import (
 from mosaic.tracking.ops import prepare
 from mosaic.tracking.ops.prepare import PrepareTrainingDataParams, check_preparation
 from tests.helpers import (
+    KEYPOINTS_PAYLOAD,
     make_dataset,
     pose_frame,
     pose_object,
@@ -112,3 +114,22 @@ def test_prepare_reads_each_set_through_read_resolved_set(
         PrepareTrainingDataParams(sets=(KeypointSetRef(set_key=SET_KEY),)),
     )
     assert read == [SET_KEY]
+
+
+def test_resolve_keypoint_sets_refuses_a_revision_edited_in_place(
+    claimed: tuple[Dataset, Dataset],
+) -> None:
+    project, library = claimed
+    payload = (
+        project.get_root("labels_raw")
+        / "keypoints"
+        / SET_KEY
+        / "rev1"
+        / KEYPOINTS_PAYLOAD
+    )
+    _ = payload.write_bytes(payload.read_bytes() + b" ")
+
+    with pytest.raises(LabelSeriesTamperedError, match="immutable"):
+        _ = resolve_keypoint_sets(
+            library, (KeypointSetRef(set_key=SET_KEY),), kind="any-op"
+        )
