@@ -18,6 +18,7 @@ import pytest
 from mosaic.core.typed_attribute import (
     TypedAttributeType,
     TypedAttributeValue,
+    as_typed_attribute_type,
     validate_constraints,
     validate_typed_value,
 )
@@ -42,6 +43,16 @@ class TestUnknownType:
     def test_the_message_lists_what_was_expected(self) -> None:
         with pytest.raises(ValueError, match="categorical"):
             validate_constraints("enum", {})  # pyright: ignore[reportArgumentType]
+
+
+class TestNarrowingAName:
+    @pytest.mark.parametrize("name", ALL_TYPES)
+    def test_each_declared_type_narrows_to_itself(self, name: str) -> None:
+        assert as_typed_attribute_type(name) == name
+
+    @pytest.mark.parametrize("name", ["duration", "", "Int", "labels"])
+    def test_any_other_name_narrows_to_none(self, name: str) -> None:
+        assert as_typed_attribute_type(name) is None
 
 
 class TestConstraintsAreWellFormed:

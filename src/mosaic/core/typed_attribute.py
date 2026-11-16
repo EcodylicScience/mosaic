@@ -43,13 +43,16 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from typing import Final, Literal
+from typing import Final, Literal, get_args
 
 from mosaic.core.json_value import JsonValue
 
 __all__ = [
+    "OPTIONS_MAX_COUNT",
+    "OPTION_MAX_LENGTH",
     "TypedAttributeType",
     "TypedAttributeValue",
+    "as_typed_attribute_type",
     "validate_constraints",
     "validate_typed_value",
 ]
@@ -62,17 +65,30 @@ TypedAttributeValue = str | int | float | bool | None
 """Every value a typed attribute can hold, across all six types."""
 
 
-_VALID_TYPES: Final[frozenset[str]] = frozenset(
-    ("label", "text", "int", "float", "bool", "categorical")
-)
+_VALID_TYPES: Final[frozenset[str]] = frozenset(get_args(TypedAttributeType))
 
 # Option strings follow the same naming bounds as a user-visible attribute name.
 _OPTION_MIN_LENGTH: Final = 1
-_OPTION_MAX_LENGTH: Final = 64
+OPTION_MAX_LENGTH: Final = 64
+"""The longest string a categorical option or categorical value may be."""
+
 # Cap on ``len(options)``. The validator walks the list more than once per call,
 # so an unbounded one is a denial-of-service surface; 1024 leaves generous room
 # for any realistic vocabulary.
-_OPTIONS_MAX_COUNT: Final = 1024
+OPTIONS_MAX_COUNT: Final = 1024
+"""The most options a categorical attribute may declare."""
+
+
+def as_typed_attribute_type(name: str) -> TypedAttributeType | None:
+    """*name* as a declared type, or ``None`` when it names none of the six.
+
+    Args:
+        name: A type name read from outside the type system, such as a file.
+    """
+    for declared in get_args(TypedAttributeType):
+        if declared == name:
+            return declared
+    return None
 
 
 def _ensure_known_type(type_: str) -> None:
@@ -184,10 +200,10 @@ def _validate_categorical_constraints(constraints: Mapping[str, JsonValue]) -> N
     if len(options) < 1:
         msg = "categorical constraints: options must be non-empty"
         raise ValueError(msg)
-    if len(options) > _OPTIONS_MAX_COUNT:
+    if len(options) > OPTIONS_MAX_COUNT:
         msg = (
             "categorical constraints: options must have at most "
-            f"{_OPTIONS_MAX_COUNT} entries"
+            f"{OPTIONS_MAX_COUNT} entries"
         )
         raise ValueError(msg)
     seen: set[str] = set()
@@ -195,10 +211,10 @@ def _validate_categorical_constraints(constraints: Mapping[str, JsonValue]) -> N
         if not isinstance(option, str):
             msg = "categorical constraints: options must be strings"
             raise ValueError(msg)
-        if not _OPTION_MIN_LENGTH <= len(option) <= _OPTION_MAX_LENGTH:
+        if not _OPTION_MIN_LENGTH <= len(option) <= OPTION_MAX_LENGTH:
             msg = (
                 "categorical constraints: each option must have length in "
-                f"[{_OPTION_MIN_LENGTH}, {_OPTION_MAX_LENGTH}]"
+                f"[{_OPTION_MIN_LENGTH}, {OPTION_MAX_LENGTH}]"
             )
             raise ValueError(msg)
         if option in seen:

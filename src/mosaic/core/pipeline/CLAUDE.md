@@ -382,6 +382,8 @@ are in `graph/CLAUDE.md`.
 
 - The rule a series follows is declared in the registry (`label_series.py`), and a
   path does not decide it.
+- The series are `keypoints`, `tags` and the reserved `behavior`. `tags` has one key,
+  `dataset`, and a revision is the whole tag table.
 - An uploaded label file enters its sequence's composition (`sequences.csv`), and a
   series revision enters none.
 - `write_series_revision` (`label_series_index.py`) chooses every filename and number,

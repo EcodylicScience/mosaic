@@ -1,20 +1,23 @@
-"""Saving an annotation set's state as a revision of the ``keypoints`` label series.
+"""Saving a keypoint set or the tag table as a revision of a label series.
 
-The annotation tool keeps its state somewhere editing is cheap -- a database with
-history. What a training run reads has to be in the dataset, and it has to be a
-*specific version*, so a model can be tied to exactly what it saw. This is the
-seam between the two: the caller hands over the current state, and mosaic writes
-it as the next revision, or recognizes that nothing changed and writes nothing.
+The authoring tool keeps its state somewhere editing is cheap -- a database
+with history. What a training run or an analysis reads has to be in the
+dataset, and it has to be a *specific version*, so a model or a result can be
+tied to exactly what it saw. This is the seam between the two: the caller hands
+over the current state, and mosaic writes it as the next revision, or
+recognizes that nothing changed and writes nothing.
 
-A revision holds the full state (:mod:`mosaic.core.annotations.pose_annotations`)
-and a COCO Keypoints export generated from it
-(:mod:`mosaic.core.annotations.writers.coco`) for the tools that read COCO. Only
-the first is the revision's identity.
+A keypoint revision holds the full state
+(:mod:`mosaic.core.annotations.pose_annotations`) and a COCO Keypoints export
+generated from it (:mod:`mosaic.core.annotations.writers.coco`) for the tools
+that read COCO. Only the first is the revision's identity. A tag revision holds
+the whole tag table (:mod:`mosaic.core.annotations.tag_table`) and nothing
+else.
 
-mosaic owns the layout under ``labels_raw/keypoints/``. The caller chooses no
-filename and no revision number. See :mod:`mosaic.core.pipeline.label_series` for
-the rule a series follows and why it is not the rule the rest of ``labels_raw``
-follows.
+mosaic owns the layout under ``labels_raw/<series>/``. The caller chooses no
+filename and no revision number. See :mod:`mosaic.core.pipeline.label_series`
+for the rule a series follows and why it is not the rule the rest of
+``labels_raw`` follows.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from mosaic.core.annotations.pose_annotations import (
     PoseFrame,
     pose_annotations_payload,
 )
+from mosaic.core.annotations.tag_table import TagTable, tag_table_payload
 from mosaic.core.annotations.writers.coco import coco_keypoints_payload
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.label_series import series_spec
@@ -44,12 +48,21 @@ if TYPE_CHECKING:
 __all__ = [
     "COCO_EXPORT_FILENAME",
     "KEYPOINTS_SERIES",
+    "TAGS_SERIES",
+    "TAG_TABLE_KEY",
     "anchored_keypoint_set",
     "write_keypoint_set_revision",
+    "write_tag_table_revision",
 ]
 
 KEYPOINTS_SERIES: Final = "keypoints"
 """The series a keypoint annotation set is saved into."""
+
+TAGS_SERIES: Final = "tags"
+"""The series a dataset's tag table is saved into."""
+
+TAG_TABLE_KEY: Final = "dataset"
+"""The one key of the ``tags`` series: a revision is the whole table."""
 
 COCO_EXPORT_FILENAME: Final = series_spec(KEYPOINTS_SERIES).exports[0]
 """The COCO Keypoints export every revision holds beside its saved state."""
@@ -147,5 +160,41 @@ def write_keypoint_set_revision(
         exports={COCO_EXPORT_FILENAME: coco_keypoints_payload(anchored)},
         origin=origin,
         n_records=len(anchored.frames),
+        origin_ref=origin_ref,
+    )
+
+
+def write_tag_table_revision(
+    ds: Dataset,
+    *,
+    table: TagTable,
+    origin: Mapping[str, JsonValue],
+    origin_ref: str = "",
+) -> SeriesRevision:
+    """Save *table* as the next tag table revision, unless nothing changed.
+
+    A revision is the whole table, so pass every sequence's tags and every
+    individual's rows, not the change. The payload is deterministic, which
+    makes an unchanged table an unchanged digest: the existing revision is
+    returned and nothing is written.
+
+    Args:
+        ds: The dataset the table describes.
+        table: The state to save.
+        origin: Provenance recorded verbatim beside the payload. It is not
+            part of the revision's identity, so a new origin alone writes
+            nothing.
+        origin_ref: A short pointer into *origin* for the index row.
+
+    Returns:
+        The revision, and whether this call wrote it.
+    """
+    return write_series_revision(
+        ds,
+        series=TAGS_SERIES,
+        key=TAG_TABLE_KEY,
+        payload=tag_table_payload(table),
+        origin=origin,
+        n_records=len(table.sequences),
         origin_ref=origin_ref,
     )

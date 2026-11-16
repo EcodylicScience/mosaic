@@ -59,6 +59,8 @@ from tests.helpers import (
     pose_object,
     pose_set,
     revision_file,
+    tag_table,
+    write_tags,
 )
 
 
@@ -326,6 +328,13 @@ def test_a_key_has_to_name_one_directory(tmp_path: Path, key: str) -> None:
 
 def test_the_rule_is_declared_not_inferred() -> None:
     assert series_spec("keypoints").unit == "set"
+    tags = series_spec("tags")
+    assert (tags.unit, tags.payload_filename, tags.format, tags.exports) == (
+        "set",
+        "tags.mosaic.json",
+        "mosaic-tags",
+        (),
+    )
     with pytest.raises(KeyError, match="reserved"):
         _ = series_spec("behavior")
     with pytest.raises(KeyError, match="unknown"):
@@ -351,6 +360,26 @@ def test_a_per_sequence_scan_never_indexes_a_series_file(tmp_path: Path) -> None
     assert is_under_label_series(labels_raw / "keypoints" / "index.csv")
     assert is_under_label_series(
         labels_raw / "keypoints" / "17-mice" / "rev1" / "manifest.json"
+    )
+
+
+def test_a_per_sequence_scan_never_indexes_a_tags_file(tmp_path: Path) -> None:
+    ds = make_dataset(tmp_path / "52", name="project")
+    table = tag_table(
+        {("g", "s1"): {"condition": "treated"}}, {"condition": "categorical"}
+    )
+    _ = write_tags(ds, table)
+    labels_raw = ds.get_root("labels_raw")
+    uploaded = labels_raw / "session1.json"
+    _ = uploaded.write_text("{}")
+
+    found = [
+        path for path, _stat in iter_track_files([labels_raw], ["*.json", "*.csv"])
+    ]
+
+    assert found == [uploaded.resolve()] or found == [uploaded]
+    assert is_under_label_series(
+        labels_raw / "tags" / "dataset" / "rev1" / "tags.mosaic.json"
     )
 
 

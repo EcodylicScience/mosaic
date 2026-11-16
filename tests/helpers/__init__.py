@@ -116,6 +116,8 @@ What lives where:
   whose label varies inside every group, with what it wrote and lost, and the
   rows of one individual at a steady step, the error text that a missing ``time``
   gives ``duration`` and ``share``, and the values of an ROI column.
+- ``tag_tables``: a table of sequence tags in the shape the ``tags`` series saves,
+  and its write into a dataset.
 
 Fixtures stay in ``tests/conftest.py``, because pytest collects them only from
 there. Their bodies delegate here, so the logic has one home either way.
@@ -428,6 +430,7 @@ from tests.helpers.state_writes import (
     load_results_after_each_failed_write,
     record_published_files,
 )
+from tests.helpers.tag_tables import tag_table, write_tags
 from tests.helpers.trees import PathState, assert_tree_unchanged, tree_snapshot
 from tests.helpers.tracks import (
     add_track_sequences,
@@ -854,10 +857,12 @@ __all__ = [
     "registered_world_points",
     "track_sequences",
     "track_table",
+    "tag_table",
     "tree_snapshot",
     "ultralytics_probe_response",
     "unpickling_member",
     "write_data_yaml",
+    "write_tags",
     "write_appearance_readback",
     "write_calms21_npy",
     "write_dlc_csv",

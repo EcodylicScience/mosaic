@@ -112,6 +112,12 @@ LABEL_SERIES: Final = MappingProxyType(
             format="mosaic-pose-annotations",
             exports=("annotations.coco.json",),
         ),
+        "tags": SeriesSpec(
+            name="tags",
+            unit="set",
+            payload_filename="tags.mosaic.json",
+            format="mosaic-tags",
+        ),
     }
 )
 """Every series mosaic can write and read, by name."""
