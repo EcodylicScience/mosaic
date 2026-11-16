@@ -13,13 +13,20 @@ being written.
 
 **The guarantee, and its limit.** A POSIX advisory lock is per-inode on one
 filesystem -- here, the sidecar's inode. It serializes any number of processes
-and threads writing through one mount, which covers the real case -- parallel
-feature workers and queue workers on a host. It does **not** reach across
-machines: two hosts writing the same synced folder (a dataset shared between a
-Mac and a Linux box, as they are today) each lock their own local copy, both
-write, and the sync service produces conflicted copies with no error. So the
-rule is a constraint rather than a promise: **many writers on one mount, or many
-machines one at a time, never both.**
+and threads writing through one mount. It reaches across machines only where
+the filesystem sends locks to a server: NFS with locking on, and CIFS, whose
+Linux client sends ``flock`` to the server as an SMB lock. Two hosts writing the
+same synced folder each lock their own local copy, both write, and the sync
+service produces conflicted copies with no error.
+
+**A CIFS mount must also not cache.** Excluding the other machines is not enough
+on CIFS. A client that caches attributes (``actimeo``) reads the index another
+machine replaced as the old version and writes back without that machine's
+rows. A client that keeps closed handles open (``closetimeo``) fails the open
+with ``EINVAL``. Both happen under a lock that is held correctly. Writers on
+several machines therefore need ``actimeo=0,closetimeo=0`` on every client, and
+``index_lock`` warns once per mount (:class:`CachingMountWarning`) when a Linux
+CIFS mount lacks them.
 
 **Why a sidecar and not the index file itself.** The lock is held on an inode,
 and ``atomic_write`` renames a **new** inode over the index path on every write.
@@ -76,9 +83,11 @@ from __future__ import annotations
 
 import errno
 import os
+import re
 import sys
 import threading
 import time
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -271,6 +280,7 @@ def index_lock(path: Path, timeout: float = DEFAULT_TIMEOUT_S) -> Generator[None
             return
 
         path.parent.mkdir(parents=True, exist_ok=True)
+        _warn_if_caching_mount(resolved.parent)
         fd = _open_lock_fd(resolved)
         try:
             _acquire(fd, path, timeout)
@@ -297,6 +307,118 @@ def index_lock_unless_dry_run(path: Path, *, dry_run: bool) -> Generator[None]:
         return
     with index_lock(path):
         yield
+
+
+class CachingMountWarning(UserWarning):
+    """An index is written on a CIFS mount whose client caches.
+
+    The lock still excludes the other machines. Their writes can still be lost,
+    because a caching client reads an index another machine replaced as the old
+    version, or fails to open it with ``EINVAL``. A warning and not a refusal,
+    because one machine writing alone on such a mount is safe, and mosaic
+    cannot tell whether others write.
+    """
+
+
+_MOUNTINFO: Final = Path("/proc/self/mountinfo")
+_CIFS_TYPES: Final = frozenset({"cifs", "smb3"})
+
+# Directories already checked, and mount points already warned about, in this
+# process. A mount's options do not change while it is mounted.
+_checked_dirs: set[Path] = set()
+_warned_mounts: set[str] = set()
+
+
+def _unescape_mount_field(field: str) -> str:
+    """Undo the octal escapes (``\\040`` for a space) of a mountinfo field."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def cifs_caching_options(
+    directory: Path, mountinfo: str
+) -> tuple[str, list[str]] | None:
+    """The CIFS mount holding *directory* and the options that make it cache.
+
+    Reads the format of ``/proc/self/mountinfo``. The mount is the one whose
+    mount point is the longest prefix of *directory*. Returns ``None`` when
+    that mount is not CIFS, or caches neither attributes of files
+    (``acregmax``, shown as ``actimeo`` when it equals ``acdirmax``) nor
+    closed handles (``closetimeo``, absent before Linux 6.0).
+
+    Args:
+        directory: A resolved directory.
+        mountinfo: The text of ``/proc/self/mountinfo``.
+
+    Returns:
+        The mount point and each caching option as ``name=value``, or ``None``.
+    """
+    best: tuple[str, str, str] | None = None
+    target = str(directory)
+    for line in mountinfo.splitlines():
+        fields = line.split()
+        if "-" not in fields:
+            continue
+        separator = fields.index("-")
+        if len(fields) < 5 or len(fields) < separator + 4:
+            continue
+        mount_point = _unescape_mount_field(fields[4])
+        inside = target == mount_point or target.startswith(
+            mount_point.rstrip("/") + "/"
+        )
+        if inside and (best is None or len(mount_point) >= len(best[0])):
+            best = (mount_point, fields[separator + 1], fields[separator + 3])
+    if best is None or best[1] not in _CIFS_TYPES:
+        return None
+    options: dict[str, str] = {}
+    for option in best[2].split(","):
+        name, _, value = option.partition("=")
+        options[name] = value
+    caching: list[str] = []
+    attribute_name = "acregmax" if "acregmax" in options else "actimeo"
+    attribute_timeout = options.get(attribute_name)
+    if attribute_timeout is None or attribute_timeout != "0":
+        caching.append(f"{attribute_name}={attribute_timeout or 'default'}")
+    close_timeout = options.get("closetimeo")
+    if close_timeout is not None and close_timeout != "0":
+        caching.append(f"closetimeo={close_timeout}")
+    return (best[0], caching) if caching else None
+
+
+def _read_mountinfo() -> str | None:
+    """The text of ``/proc/self/mountinfo``; ``None`` off Linux or unreadable."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        return _MOUNTINFO.read_text()
+    except OSError:
+        return None
+
+
+def _warn_if_caching_mount(directory: Path) -> None:
+    """Warn once per mount when *directory* is on a CIFS mount that caches."""
+    with _registry_guard:
+        if directory in _checked_dirs:
+            return
+        _checked_dirs.add(directory)
+    mountinfo = _read_mountinfo()
+    if mountinfo is None:
+        return
+    found = cifs_caching_options(directory, mountinfo)
+    if found is None:
+        return
+    mount_point, caching = found
+    with _registry_guard:
+        if mount_point in _warned_mounts:
+            return
+        _warned_mounts.add(mount_point)
+    warnings.warn(
+        f"{directory} is on the CIFS mount {mount_point}, whose client caches "
+        f"({', '.join(caching)}). Index writers on other machines can lose rows "
+        f"or fail with EINVAL. Mount it with actimeo=0,closetimeo=0 on every "
+        f"machine that writes the dataset.",
+        CachingMountWarning,
+        stacklevel=4,
+    )
 
 
 def _resolved_parent(path: Path) -> Path:

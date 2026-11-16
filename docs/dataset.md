@@ -202,6 +202,12 @@ copies of the index without an error. An NFS volume mounted with `nolock` keeps 
 machine's locks local in the same way. Write to such a dataset from one machine at a
 time.
 
+A CIFS (SMB) share sends locks to its server, but its client caches by default. A
+machine then reads an index another machine replaced as the old version, and writes it
+back without that machine's rows, or fails to open it with `Invalid argument`. Mount the
+share with `actimeo=0,closetimeo=0` on every machine that writes the dataset. On Linux,
+mosaic warns with `CachingMountWarning` when a dataset's CIFS mount lacks them.
+
 ## Index files placed in the dataset
 
 If you copy or move your files into `media_raw/` or `tracks_raw/`, index them in one

@@ -8,7 +8,13 @@ interpret.
 M0 and M1 predate this file; both carried their entry in the final commit
 message of their branch, and for both the answer was **nothing**.
 
-## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, and `event-response` writes `recovery_time_s`
+## Unreleased: the aggregates take `bin_s` for time bins and compare with `threshold_op`, a missing value stays missing under a threshold, `event-response` writes `recovery_time_s`, and an index lock on a caching CIFS mount warns
+
+`index_lock` warns with `CachingMountWarning`, once per mount, when a dataset is on a
+Linux CIFS mount without `actimeo=0,closetimeo=0`. The lock excludes writers on other
+machines there, but a client that caches reads an index another machine replaced as the
+old version and drops that machine's rows, or fails the open with `EINVAL`. Nothing on
+disk moves.
 
 `sequence-aggregate` and `individual-aggregate` take `bin_s`, the length in seconds of
 time bins. Each row goes to the bin `floor(time / bin_s)`, anchored at time 0 of the

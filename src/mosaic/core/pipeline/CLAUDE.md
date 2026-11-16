@@ -23,9 +23,12 @@ are in `graph/CLAUDE.md`.
 - **`track_universe.current_run_id` is the one rule for an unpinned `Result`**
   (`tests/core/pipeline/test_unpinned_result_rule.py`).
 - **A lock the filesystem refuses raises `IndexLockUnsupported`**
-  (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write. The lock
-  serializes writers on one mount only
-  (`tests/core/pipeline/test_index_lock_capability.py`).
+  (`core/pipeline/index_lock.py`) and is not degraded to an unlocked write
+  (`tests/core/pipeline/test_index_lock_capability.py`). The lock serializes writers
+  across machines where the filesystem sends locks to its server (NFS, CIFS). A CIFS
+  client that caches still loses rows written by other machines, so `index_lock` warns
+  with `CachingMountWarning` on a Linux CIFS mount without `actimeo=0,closetimeo=0`
+  (`tests/core/pipeline/test_index_lock_caching_mount.py`).
 - **Entries computed at once go through `EntryPool`** (`entry_pool.py`): `run_feature`
   and each op that sets `parallelizable` (`convert-tracks`, `resample-tracks`), which
   reads its workers from `ctx.parallel`. A worker stages a tracks table under a hidden
