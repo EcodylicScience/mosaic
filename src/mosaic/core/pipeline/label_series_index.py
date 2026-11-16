@@ -42,6 +42,7 @@ from mosaic.core.strict_model import terse
 from mosaic.core.pipeline.label_series import (
     MANIFEST_FILENAME,
     SERIES_MARKER,
+    LabelRevisionRef,
     SeriesSpec,
     revision_dirname,
     revision_of,
@@ -50,7 +51,6 @@ from mosaic.core.pipeline.label_series import (
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
-    from mosaic.core.pipeline.types.labels import LabelRevisionRef
 
 __all__ = [
     "LABEL_SERIES_INDEX_COLUMNS",

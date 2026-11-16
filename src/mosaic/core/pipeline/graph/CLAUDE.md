@@ -205,6 +205,13 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
   measures the plan's entries against. A step with a `tracks` reference keeps its
   upstream's. `save_request` leaves the key out when it is `None`, and the fingerprint
   includes it only when it is set (`test_pipeline_plan_fingerprint.py`).
+- `Request.tag_revision` is the revision of the dataset's tag table that every step
+  reading it plans and runs with. `submit_request` resolves a passed reference once
+  (`resolve_tag_ref`) before it plans, and otherwise records `Plan.tags_read`, the
+  revision the plan read. A step passes it to `run_feature`, and `pipeline verify`
+  rebuilds a step from `Plan.tags_read`, so a table imported after the submit moves
+  no run id. `save_request` leaves the key out when it is `None`
+  (`test_pipeline_tag_revision.py`).
 - `refuse_mixed_schemas` (`step_preflight.py`) runs in `plan_pipeline` before the walk
   when `refuse` is set, and in `execute_step` for the starting step alone (`only`). With
   no variant, a feature step reading `tracks` with no `tracks` reference, no bind and

@@ -33,7 +33,7 @@ from mosaic.core.pipeline.label_series_index import (
     read_revision_manifest,
     resolve_series_refs,
 )
-from mosaic.core.pipeline.types.labels import LabelRevisionRef
+from mosaic.core.pipeline.label_series import LabelRevisionRef
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset

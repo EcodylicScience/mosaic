@@ -93,8 +93,11 @@ from ..inventory.scan import inventory as scan_inventory, reportable_universe
 from ..models import PREPARED_DATA_KINDS
 from ..ops import IdentityDeferred, OpIdentity, check_scope_takes
 from ..preprocess_layout import PREPROCESS_KIND
+from ..label_series import TAG_TABLE_KEY, TAGS_SERIES, LabelRevisionRef
 from ..resolve import resolve_references
 from ..run import resolve_feature_identity
+from ..tag_reads import ResolvedTagTable, resolve_tag_table, tag_read_problems
+from ..types.feature import ReadsTags
 from ..track_space import TrackSpaceRefused
 from .digest import recipe_digest
 from .heldout import deferred_scope_problem, held_out_fit_problem
@@ -503,6 +506,9 @@ class Plan:
             runs of the recipes it retires, each removable or kept with its
             reason, when the plan was asked for them
             (:func:`~.cleanup.plan_with_cleanup`). ``None`` otherwise.
+        tags_read: The revision of the tag table that the steps reading it were
+            planned from, ``None`` when no step reads it or when the table was
+            passed unwritten. Not part of the wire or the fingerprint.
     """
 
     recipe_digest: str
@@ -528,6 +534,7 @@ class Plan:
     track_space_refusals: Mapping[str, TrackSpaceRefused] = field(
         default_factory=dict[str, TrackSpaceRefused], compare=False
     )
+    tags_read: LabelRevisionRef | None = None
 
     def step(self, step_id: str) -> PlannedStep:
         """The planned step with this id, or ``KeyError``."""
@@ -671,6 +678,61 @@ class _Findings:
             self.tracks[step_id] = columns
 
 
+@dataclass(slots=True)
+class _TagSource:
+    """The one revision of the tag table that a plan's reading steps are planned from.
+
+    Resolved when the first step that reads the table is planned, from the
+    request's reference, else the payload its caller built, else the latest
+    revision. Every later step reads the same table, and the revision it names
+    is what each step's identity is then built from, so a revision written
+    while the plan is made cannot split it.
+    """
+
+    ds: Dataset
+    ref: LabelRevisionRef | None = None
+    payload: bytes | None = None
+    resolved: ResolvedTagTable | None = None
+    failed: IdentityDeferred | KeyError | None = None
+
+    def table(self, kind: str) -> ResolvedTagTable:
+        """The table, resolved on the first call.
+
+        A failure to choose a revision is kept and raised again by each later
+        call.
+
+        Raises:
+            IdentityDeferred: No revision is indexed, or the one named is not.
+            KeyError: Several datasets' revisions match and the reference names
+                no origin.
+            LabelSeriesTamperedError: The revision's bytes changed after it was
+                indexed.
+        """
+        if self.failed is not None:
+            raise self.failed
+        if self.resolved is None:
+            try:
+                self.resolved = resolve_tag_table(
+                    self.ds, self.ref, payload=self.payload, kind=kind
+                )
+            except (IdentityDeferred, KeyError) as exc:
+                self.failed = exc
+                raise
+        return self.resolved
+
+    def pin(self) -> tuple[LabelRevisionRef | None, bytes | None]:
+        """The reference or payload that resolves to the table already read."""
+        ref = None if self.resolved is None else self.resolved.ref
+        if ref is None:
+            return None, self.payload
+        return ref, None
+
+    @property
+    def read(self) -> LabelRevisionRef | None:
+        """The revision that was read, ``None`` when none was or it is unwritten."""
+        return None if self.resolved is None else self.resolved.ref
+
+
 @dataclass(frozen=True, slots=True)
 class _Resolution:
     """One step's identity, plus the one fact narrowing needs beyond it."""
@@ -708,6 +770,7 @@ def plan_pipeline(
     applies_request_id: str | None = None,
     ignore_unavailable: bool = False,
     revalidate: bool = True,
+    series_payloads: Mapping[tuple[str, str], bytes] | None = None,
 ) -> Plan:
     """Resolve *recipe* against *ds*. Returns what to run; never submits it.
 
@@ -715,6 +778,11 @@ def plan_pipeline(
     entered, and loads no definition: a ``def:`` step is resolved from its
     sidecar, and its planned spec names the full digest of the version it
     resolved to.
+
+    Several datasets can each index a revision of the tag table. A request whose
+    ``tag_revision`` names none of them is a problem at ``tag_revision`` of each
+    step that reads the table, saying to name one with ``origin_uuid``, and the
+    step is left unresolved. Nothing is raised for it.
 
     Args:
         ds: The dataset. Read only -- planning writes nothing, not even a cache.
@@ -774,6 +842,13 @@ def plan_pipeline(
         revalidate: Whether *inventory* is revalidated before it is read. A
             caller that revalidates its view on a schedule of its own unsets
             it, and the plan then reads the view as held.
+        series_payloads: Revisions of a label series that the caller has built
+            and not written, keyed by ``(series, key)``. The one seam for an
+            unsaved revision. Only ``("tags", "dataset")`` is read, a tag table
+            from ``tag_table_payload``: a step reading the table reads it when
+            the request names no revision, in place of the latest one, so the
+            plan is of a table that is not written yet. With neither, a step
+            reading the table has no identity yet and reports it unresolved.
 
     Returns:
         A :class:`Plan`: one :class:`PlannedStep` per step, in topological order.
@@ -801,16 +876,31 @@ def plan_pipeline(
             after the walk whatever *refuse* says. Or the request that
             *applies_request_id* names cannot be applied, raised before the
             dataset's tracks are read.
-        ValueError: *pins* and *applies_request_id* are both given.
+        ValueError: *pins* and *applies_request_id* are both given, or
+            *series_payloads* holds a key other than ``("tags", "dataset")``.
+        LabelSeriesTamperedError: A step reads a revision of the tag table whose
+            bytes changed after it was indexed.
         ScopeRefused: An op step's scope is one that op's declaration does not
             accept. Raised on the first such step rather than collected,
             because it takes the dataset to enumerate the selector against and
             so cannot be answered alongside the recipe problems above.
     """
+    unread = sorted(set(series_payloads or {}) - {(TAGS_SERIES, TAG_TABLE_KEY)})
+    if unread:
+        msg = (
+            f"series_payloads holds {unread[0]}, and only "
+            f"{(TAGS_SERIES, TAG_TABLE_KEY)} is read by a plan"
+        )
+        raise ValueError(msg)
     with definition_scope(ds, load=False):
         catalog = declaration_catalog() if catalog is None else catalog
         reject_unless_valid(recipe, catalog, ignore_unavailable=ignore_unavailable)
         pair_reads = pair_rules(recipe, catalog)
+        tags = _TagSource(
+            ds,
+            ref=request.tag_revision if request is not None else None,
+            payload=(series_payloads or {}).get((TAGS_SERIES, TAG_TABLE_KEY)),
+        )
 
         narrowing = scope
         if narrowing is None and request is not None:
@@ -908,6 +998,7 @@ def plan_pipeline(
                 tracks_run_id=tracks_run_id,
                 pinned_inv=pinned_inv if step.id in pins else None,
                 pair_read=pair_reads.get(step.id),
+                tags=tags,
             )
             if isinstance(step, FeatureStepSpec):
                 findings.problems.extend(_shared_run_problems(recipe, step, resolved))
@@ -1043,6 +1134,7 @@ def plan_pipeline(
             tracks_run_id=tracks_run_id,
             locked=locked,
             track_space_refusals=refused_spaces,
+            tags_read=tags.read,
         )
         if pinned_inv is not None:
             # Imported here, because pins imports this module.
@@ -1071,6 +1163,7 @@ def _plan_step(
     tracks_run_id: str | None = None,
     pinned_inv: DatasetInventory | None = None,
     pair_read: PairRead | None = None,
+    tags: _TagSource,
 ) -> PlannedStep:
     """Resolve one step against everything the walk has already established.
 
@@ -1088,6 +1181,7 @@ def _plan_step(
     no entries.
     *pair_read* is the rows the step reads of a pair table, from
     :func:`~.validate.pair_rules`. A resolved ``once`` enters its params.
+    *tags* is the tag table that every step reading it is planned from.
     """
     pairs: Literal["once"] | None = "once" if pair_read == "once" else None
     declared = catalog[step.feature if isinstance(step, FeatureStepSpec) else step.kind]
@@ -1164,6 +1258,7 @@ def _plan_step(
             tracks_run_id=tracks_run_id,
             pinned=pinned_inv is not None,
             pairs=pairs,
+            tags=tags,
         )
         problems.extend(resolution.problems)
         base = replace(
@@ -1956,6 +2051,7 @@ def _resolve_feature_step(
     tracks_run_id: str | None = None,
     pinned: bool = False,
     pairs: Literal["once"] | None = None,
+    tags: _TagSource,
 ) -> _Resolution:
     """One feature step's identity, from its params plus what is above it.
 
@@ -1964,6 +2060,9 @@ def _resolve_feature_step(
     request's variant, which a step reading the tracks without a ``tracks``
     reference reads. A *pinned* step takes its identity from its pin, so an
     entry of two variants leaves it unnamed here and raises no problem.
+    A step that reads the tag table reads the revision of *tags*. What that
+    table refuses in the step is a problem at the params path it names, and a
+    table with no revision leaves the identity unresolved.
     """
     spec = resolve_step_spec(
         recipe, step.id, resolved, tracks_run_id=tracks_run_id, pairs=pairs
@@ -1972,7 +2071,7 @@ def _resolve_feature_step(
     if shared:
         # Before the feature is built, because its inputs model refuses a run
         # listed twice.
-        return _Resolution(step=_unresolved_feature(step, spec, shared))
+        return _Resolution(step=_unresolved_feature(step, spec, shared[0].message))
     feature = build_step_feature(spec)
     # Pin every unpinned reference before hashing, exactly as execution does. A
     # params reference the recipe wrote literally -- a global fitter's templates,
@@ -1984,6 +2083,45 @@ def _resolve_feature_step(
     # both in ``__init__``, as a model they are given is applied and not fitted.
     fits = bool(getattr(feature, "fits", False))
     reach = feature_reach(feature)
+
+    tag_revision: LabelRevisionRef | None = None
+    tag_payload: bytes | None = None
+    if isinstance(feature, ReadsTags):
+        try:
+            table = tags.table(feature.name)
+        except IdentityDeferred as exc:
+            return _Resolution(
+                step=_unresolved_feature(step, spec, exc.because),
+                scope_dependent=scope_dependent,
+                fits=fits,
+                reach=reach,
+            )
+        except KeyError as exc:
+            problem = Problem(
+                step.id,
+                "tag_revision",
+                f"{exc.args[0]} in the request's tag_revision",
+            )
+            return _Resolution(
+                step=_unresolved_feature(step, spec, problem.message),
+                scope_dependent=scope_dependent,
+                fits=fits,
+                reach=reach,
+                problems=(problem,),
+            )
+        found = tuple(
+            Problem(step.id, where, message)
+            for where, message in tag_read_problems(table.table, feature.tag_read())
+        )
+        if found:
+            return _Resolution(
+                step=_unresolved_feature(step, spec, found[0].message),
+                scope_dependent=scope_dependent,
+                fits=fits,
+                reach=reach,
+                problems=found,
+            )
+        tag_revision, tag_payload = tags.pin()
 
     try:
         run_id, _ = resolve_feature_identity(
@@ -2004,6 +2142,8 @@ def _resolve_feature_step(
             frame_end=spec.filter_end_frame,
             overlap_frames=spec.overlap_frames,
             time_window=TimeWindow(spec.filter_start_time, spec.filter_end_time),
+            tag_revision=tag_revision,
+            tag_payload=tag_payload,
         )
     except AmbiguousTracksVariant as ambiguous:
         if pinned:
@@ -2025,7 +2165,7 @@ def _resolve_feature_step(
             step.id, "tracks", ambiguous, _NAME_THE_TRACKS_STEP
         )
         return _Resolution(
-            step=_unresolved_feature(step, spec, [problem]),
+            step=_unresolved_feature(step, spec, problem.message),
             scope_dependent=scope_dependent,
             fits=fits,
             reach=reach,
@@ -2071,9 +2211,9 @@ def _ambiguous_tracks_problem(
 
 
 def _unresolved_feature(
-    step: FeatureStepSpec, spec: StepSpec, problems: Sequence[Problem]
+    step: FeatureStepSpec, spec: StepSpec, because: str
 ) -> PlannedStep:
-    """The record of a feature step whose identity *problems* leave unresolved."""
+    """The record of a feature step whose identity is unresolved for *because*."""
     return PlannedStep(
         step_id=step.id,
         kind="feature",
@@ -2081,7 +2221,7 @@ def _unresolved_feature(
         spec=spec,
         run_id=None,
         storage_name=spec.storage_name,
-        reason=IdentityUnresolved(step=step.id, because=problems[0].message),
+        reason=IdentityUnresolved(step=step.id, because=because),
         parallelizable=feature_parallelizable(spec.feature),
     )
 

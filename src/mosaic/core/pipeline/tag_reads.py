@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mosaic.core.annotations.projection import TAG_TABLE_KEY, TAGS_SERIES
 from mosaic.core.annotations.tag_table import (
     TagRead,
     TagTable,
@@ -22,12 +21,17 @@ from mosaic.core.annotations.tag_table import (
     sequence_tags_projection,
 )
 from mosaic.core.pipeline._utils import LabelRevisionTerm
+from mosaic.core.pipeline.label_series import (
+    TAG_TABLE_KEY,
+    TAGS_SERIES,
+    LabelRevisionRef,
+    refuse_other_tag_key,
+)
 from mosaic.core.pipeline.label_series_index import (
     payload_digest,
     resolve_series_refs,
 )
 from mosaic.core.pipeline.types.feature import Feature, ReadsTags
-from mosaic.core.pipeline.types.labels import LabelRevisionRef
 
 if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
@@ -36,6 +40,7 @@ __all__ = [
     "ResolvedTagTable",
     "feature_tag_read",
     "refuse_tag_read",
+    "resolve_tag_ref",
     "resolve_tag_table",
     "tag_read_problems",
     "tag_term",
@@ -62,6 +67,42 @@ class ResolvedTagTable:
     payload_digest: str
     path: Path | None
     table: TagTable
+
+    @property
+    def ref(self) -> LabelRevisionRef | None:
+        """The reference that names this revision, or ``None`` if it is unwritten."""
+        if self.revision is None:
+            return None
+        return LabelRevisionRef(
+            key=TAG_TABLE_KEY, origin_uuid=self.origin_uuid, revision=self.revision
+        )
+
+
+def resolve_tag_ref(
+    ds: Dataset, ref: LabelRevisionRef, *, kind: str
+) -> LabelRevisionRef:
+    """The reference that names the revision *ref* resolves to.
+
+    Args:
+        ds: The dataset whose ``tags`` series is read.
+        ref: The reference to resolve. Without a revision it means the latest
+            indexed one, and without an origin the one dataset that has it.
+        kind: What is resolving, named in a deferral.
+
+    Raises:
+        ValueError: *ref* names a key other than ``dataset``.
+        IdentityDeferred: No revision is indexed, or the one named is not.
+        KeyError: Several datasets' revisions match and *ref* names no origin.
+        LabelSeriesTamperedError: The revision's bytes changed after it was
+            indexed.
+    """
+    refuse_other_tag_key(ref)
+    (revision,) = resolve_series_refs(ds, TAGS_SERIES, (ref,), kind=kind)
+    return LabelRevisionRef(
+        key=TAG_TABLE_KEY,
+        origin_uuid=revision.origin_uuid,
+        revision=revision.revision,
+    )
 
 
 def resolve_tag_table(

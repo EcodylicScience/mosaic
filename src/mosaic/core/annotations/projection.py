@@ -36,7 +36,7 @@ from mosaic.core.annotations.pose_annotations import (
 from mosaic.core.annotations.tag_table import TagTable, tag_table_payload
 from mosaic.core.annotations.writers.coco import coco_keypoints_payload
 from mosaic.core.json_value import JsonValue
-from mosaic.core.pipeline.label_series import series_spec
+from mosaic.core.pipeline.label_series import TAG_TABLE_KEY, TAGS_SERIES, series_spec
 from mosaic.core.pipeline.label_series_index import (
     SeriesRevision,
     write_series_revision,
@@ -48,8 +48,6 @@ if TYPE_CHECKING:
 __all__ = [
     "COCO_EXPORT_FILENAME",
     "KEYPOINTS_SERIES",
-    "TAGS_SERIES",
-    "TAG_TABLE_KEY",
     "anchored_keypoint_set",
     "write_keypoint_set_revision",
     "write_tag_table_revision",
@@ -57,12 +55,6 @@ __all__ = [
 
 KEYPOINTS_SERIES: Final = "keypoints"
 """The series a keypoint annotation set is saved into."""
-
-TAGS_SERIES: Final = "tags"
-"""The series a dataset's tag table is saved into."""
-
-TAG_TABLE_KEY: Final = "dataset"
-"""The one key of the ``tags`` series: a revision is the whole table."""
 
 COCO_EXPORT_FILENAME: Final = series_spec(KEYPOINTS_SERIES).exports[0]
 """The COCO Keypoints export every revision holds beside its saved state."""

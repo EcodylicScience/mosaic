@@ -31,7 +31,7 @@ from mosaic.core.pipeline.run import (
 )
 from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs
 from mosaic.core.pipeline.types.feature import ReadsTags
-from mosaic.core.pipeline.types.labels import LabelRevisionRef
+from mosaic.core.pipeline.label_series import LabelRevisionRef
 from mosaic.core.params import Params
 from mosaic.core.scope import Scope
 from mosaic.core.typed_attribute import TypedAttributeType, TypedAttributeValue

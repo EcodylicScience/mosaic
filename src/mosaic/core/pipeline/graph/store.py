@@ -207,9 +207,9 @@ def save_recipe(base_dir: Path | str, recipe: Recipe) -> Path:
 def save_request(base_dir: Path | str, request: Request) -> Path:
     """Write one submission's request file, and return its path.
 
-    A request without step scopes, a tracks variant, pins, feature definitions,
-    an applied request, locked steps, a cleanup, or a cleanup that retires no
-    recipe is written without those keys. Its file is then what an older mosaic
+    A request without step scopes, a tracks variant, a tag revision, pins, feature
+    definitions, an applied request, locked steps, a cleanup, or a cleanup that
+    retires no recipe is written without those keys. Its file is then what an older mosaic
     wrote, and reads there.
 
     Raises:
@@ -221,6 +221,8 @@ def save_request(base_dir: Path | str, request: Request) -> Path:
         exclude["step_scopes"] = True
     if request.tracks_run_id is None:
         exclude["tracks_run_id"] = True
+    if request.tag_revision is None:
+        exclude["tag_revision"] = True
     if not request.pins:
         exclude["pins"] = True
     if not request.definitions:

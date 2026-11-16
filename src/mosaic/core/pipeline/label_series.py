@@ -34,10 +34,12 @@ Two rules under one root is a hazard if either is inferred, so **the rule is
 declared here, per series, and never read off a path**. Code that needs to know
 whether something is versioned asks this registry.
 
-This module is the dependency-light half: the registry, the layout, and the
-recognition test. It imports no pandas, because ``core.manifest`` reads the
-registry to validate a declared source and must stay cheap to import. The index,
-the writer and the scan live in :mod:`mosaic.core.pipeline.label_series_index`.
+This module is the dependency-light half: the registry, the layout, the
+recognition test, the reference that names one revision of a series
+(:class:`LabelRevisionRef`), and the names of the ``tags`` series and its one
+key. It imports no pandas, because ``core.manifest`` reads the registry to
+validate a declared source and must stay cheap to import. The index, the writer
+and the scan live in :mod:`mosaic.core.pipeline.label_series_index`.
 """
 
 from __future__ import annotations
@@ -46,20 +48,72 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
+
+from pydantic import Field
+
+from mosaic.core.params import Declared, Params
 
 __all__ = [
     "LABEL_SERIES",
     "MANIFEST_FILENAME",
     "RESERVED_SERIES",
     "SERIES_MARKER",
+    "TAGS_SERIES",
+    "TAG_TABLE_KEY",
+    "LabelRevisionRef",
     "SeriesSpec",
     "SeriesUnit",
     "is_under_label_series",
+    "refuse_other_tag_key",
     "revision_dirname",
     "revision_of",
     "series_spec",
 ]
+
+TAGS_SERIES: Final = "tags"
+"""The series a dataset's tag table is saved into."""
+
+TAG_TABLE_KEY: Final = "dataset"
+"""The one key of the ``tags`` series: a revision is the whole table."""
+
+
+class LabelRevisionRef(Params):
+    """One revision of a label series, and which saved state of it to read."""
+
+    key: Annotated[str, Declared("The revision's key in its label series.")]
+    origin_uuid: Annotated[
+        str,
+        Declared(
+            "The manifest uuid of the dataset the revision was saved in. Needed "
+            "only when two datasets' revisions share a key; empty matches the "
+            "one that has it."
+        ),
+    ] = ""
+    revision: Annotated[
+        int | None,
+        Field(ge=1),
+        Declared(
+            "Which revision to read. Left unset, the latest one indexed when the "
+            "run is named. The number selects and is recorded; only the content "
+            "it resolves to enters the run identifier."
+        ),
+    ] = None
+
+
+def refuse_other_tag_key(ref: LabelRevisionRef) -> None:
+    """Raise unless *ref* names the one key of the ``tags`` series.
+
+    Raises:
+        ValueError: *ref* names another key.
+    """
+    if ref.key != TAG_TABLE_KEY:
+        msg = (
+            f"tag_revision names the key {ref.key!r}; the tag table of a dataset "
+            f"has the key {TAG_TABLE_KEY!r}"
+        )
+        raise ValueError(msg)
+
 
 SERIES_MARKER: Final = ".mosaic-series"
 """The file that marks a directory as a label series.

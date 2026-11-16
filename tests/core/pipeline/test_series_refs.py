@@ -7,7 +7,6 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mosaic.core.annotations.projection import TAG_TABLE_KEY, TAGS_SERIES
 from mosaic.core.annotations.tag_table import tag_table_payload
 from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.file_digest import file_digest
@@ -17,7 +16,11 @@ from mosaic.core.pipeline.label_series_index import (
     series_index_path,
 )
 from mosaic.core.pipeline.ops import IdentityDeferred
-from mosaic.core.pipeline.types.labels import LabelRevisionRef
+from mosaic.core.pipeline.label_series import (
+    TAG_TABLE_KEY,
+    TAGS_SERIES,
+    LabelRevisionRef,
+)
 from mosaic.core.typed_attribute import TypedAttributeType
 from tests.helpers import make_dataset, tag_table, write_tags
 

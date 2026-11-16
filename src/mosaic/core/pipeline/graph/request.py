@@ -22,6 +22,7 @@ rather than an architecture.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar
 
@@ -32,6 +33,7 @@ from ..definitions.scope import definition_scope
 from ..definitions.store import is_definition_slug, parse_definition_slug
 from ..error_kind import ClassifiedError, ErrorKind
 from ..parallelism import ParallelSettings, parallel_flags
+from ..tag_reads import resolve_tag_ref
 from .digest import document_digest, recipe_digest
 from .cleanup import plan_cleanup
 from .model import (
@@ -72,6 +74,7 @@ if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
 
     from ..inventory.cache import InventoryCache
+    from ..label_series import LabelRevisionRef
     from .apply import AppliedFit
     from .compatibility import DeclarationCatalog
 
@@ -243,6 +246,7 @@ def planning_request(
     bind: Mapping[str, BoundRef] | None = None,
     step_scopes: Mapping[str, Scope] | None = None,
     tracks_run_id: str | None = None,
+    tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
     applied: AppliedFit | None = None,
 ) -> Request:
@@ -253,11 +257,14 @@ def planning_request(
     ones each step makes. Its ``request_id`` is empty and it assigns no
     execution id. Given *applied*, it records the request applied, and the
     pins, the tracks variant and the locked steps derived from it, in place of
-    *pins* and *tracks_run_id*.
+    *pins* and *tracks_run_id*. *tag_revision* is recorded as given, so a caller
+    passes the reference that :func:`~mosaic.core.pipeline.tag_reads.resolve_tag_ref`
+    resolved.
 
     Raises:
         ValueError: A choice the request refuses, such as a step both bound
-            and pinned.
+            and pinned, or a *tag_revision* that names another key than
+            ``dataset``.
     """
     if applied is not None:
         pins, tracks_run_id = applied.pins, applied.tracks_run_id
@@ -268,6 +275,7 @@ def planning_request(
         bind=dict(bind or {}),
         step_scopes=dict(step_scopes or {}),
         tracks_run_id=tracks_run_id,
+        tag_revision=tag_revision,
         pins=dict(pins or {}),
         applies_request_id=None if applied is None else applied.request_id,
         locked=[] if applied is None else list(applied.locked),
@@ -292,6 +300,7 @@ def submit_request(
     cleanup: CleanupPolicy | None = None,
     retire: Iterable[str] = (),
     tracks_run_id: str | None = None,
+    tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
     revalidate: bool = True,
@@ -350,6 +359,16 @@ def submit_request(
         tracks_run_id: The tracks variant that each feature step reading the
             tracks without a ``tracks`` reference reads, recorded on the
             request. ``None`` leaves each entry's one variant.
+        tag_revision: The revision of the tag table that each step reading it
+            reads, naming the key ``dataset``. It is resolved once, before
+            anything is planned, whether or not a step reads the table, and the
+            request records the revision it names. Without a revision it means
+            the latest indexed one. ``None`` leaves the choice to the plan, which
+            reads the latest revision when a step reads the table, and the
+            request then records that revision. When no step reads the table
+            the request records none. A reference that names no origin while
+            several datasets' revisions match is planned as it stands, so the
+            plan refuses each step reading the table.
         pins: The finished run each pinned step serves, keyed by step id,
             recorded on the request. A pinned step is not executed, and the
             steps below it derive their identity from its run.
@@ -388,8 +407,12 @@ def submit_request(
             an entry holds two (:func:`~.step_preflight.refuse_mixed_schemas`),
             or a pin is unusable (:func:`~.pins.refuse_unusable_pins`), or
             the request that *applies_request_id* names cannot be applied.
-        ValueError: A step is both bound and pinned, a pin names no run, or
-            *pins* and *applies_request_id* are both given.
+        ValueError: A step is both bound and pinned, a pin names no run,
+            *pins* and *applies_request_id* are both given, or *tag_revision*
+            names another key than ``dataset``.
+        IdentityDeferred: *tag_revision* names a revision that is not indexed.
+        LabelSeriesTamperedError: The revision *tag_revision* names changed after
+            it was indexed.
         CleanupNeedsPlan: *cleanup* is given without *expect_plan*.
         CleanupOnManagedDataset: *cleanup* is given and a service manages the
             dataset.
@@ -423,12 +446,23 @@ def submit_request(
                 tracks_run_id=tracks_run_id,
                 catalog=catalog,
             )
+        # Resolved once, before the plan, so that the revision the request records
+        # is the one every run id is built from, whichever revision is written
+        # while the submission is made.
+        pinned_tags = None
+        if tag_revision is not None:
+            # A reference that matches several datasets' revisions and names no
+            # origin stays unresolved. The plan reports it as a problem of each
+            # step reading the table, and it is not recorded.
+            with suppress(KeyError):
+                pinned_tags = resolve_tag_ref(ds, tag_revision, kind="tag_revision")
         planning = planning_request(
             recipe,
             scope=scope,
             bind=bind,
             step_scopes=step_scopes,
             tracks_run_id=tracks_run_id,
+            tag_revision=pinned_tags or tag_revision,
             pins=pins,
             applied=applied,
         )
@@ -510,6 +544,7 @@ def submit_request(
                 "step_versions": versions,
                 "definitions": definitions,
                 "cleanup": removal,
+                "tag_revision": pinned_tags or plan.tags_read,
             }
         )
         computes = computed_runs(plan)

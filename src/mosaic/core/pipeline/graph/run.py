@@ -118,6 +118,7 @@ if TYPE_CHECKING:
     from mosaic.runlog import RunLogSnapshot
 
     from ..inventory.cache import InventoryCache
+    from ..label_series import LabelRevisionRef
     from .compatibility import DeclarationCatalog
     from .driver_lease import DriverLease
     from .failures import FailureStore
@@ -239,6 +240,7 @@ def run_pipeline(
     step_scopes: Mapping[str, Scope] | None = None,
     parallel: ParallelSettings | None = None,
     tracks_run_id: str | None = None,
+    tag_revision: LabelRevisionRef | None = None,
     pins: Mapping[str, str] | None = None,
     applies_request_id: str | None = None,
 ) -> PipelineRun:
@@ -300,6 +302,9 @@ def run_pipeline(
         tracks_run_id: The tracks variant that each feature step reading the
             tracks without a ``tracks`` reference reads. Recorded on the
             request that is submitted, and ignored when *request* is given.
+        tag_revision: The revision of the tag table that each step reading it
+            reads, as for :func:`~.request.submit_request`. Recorded on the
+            request that is submitted, and ignored when *request* is given.
         pins: The finished run each pinned step serves, keyed by step id.
             Recorded on the request that is submitted, and ignored when
             *request* is given.
@@ -343,6 +348,7 @@ def run_pipeline(
                 catalog=catalog,
                 step_scopes=step_scopes,
                 tracks_run_id=tracks_run_id,
+                tag_revision=tag_revision,
                 pins=pins,
                 applies_request_id=applies_request_id,
             ).request

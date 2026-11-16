@@ -7,12 +7,9 @@ import json
 from pathlib import Path
 from typing import Final
 
-from mosaic.core.annotations.projection import (
-    TAG_TABLE_KEY,
-    TAGS_SERIES,
-    write_tag_table_revision,
-)
+from mosaic.core.annotations.projection import write_tag_table_revision
 from mosaic.core.annotations.tag_table import read_tag_table, tag_table_payload
+from mosaic.core.pipeline.label_series import TAG_TABLE_KEY, TAGS_SERIES
 from mosaic.core.pipeline.label_series_index import (
     read_label_series,
     read_revision_manifest,

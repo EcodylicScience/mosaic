@@ -94,6 +94,7 @@ from .run import (
     resolve_labels_variants,
 )
 from .resolve import resolve_references
+from .tag_reads import feature_tag_read
 from .types import InputStream
 from .types.data_config import COLUMNS, META_COLS
 from .writers import FeatureOutput, trim_feature_output, write_output
@@ -610,6 +611,9 @@ def _tolerant(feature: Feature) -> bool:
 def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Rebuilt:
     """Rebuild a step's feature as the engine would before fitting it.
 
+    A step that reads the tag table reads the revision that *plan* records
+    (``Plan.tags_read``), so its identity and its lookup are the ones the run had.
+
     Raises:
         RuntimeError: The rebuilt feature is not the planned run.
     """
@@ -641,6 +645,11 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
             consumed_roots=feature.consumed_roots,
         )
     resolved.labels_variants = resolve_labels_variants(ds, feature, spec.labels_run_id)
+    # The revision the plan read, resolved once: the same table gives the term of
+    # the identity and the lookup the feature is handed.
+    tags = feature_tag_read(ds, feature, plan.tags_read)
+    if tags is not None:
+        resolved.label_revisions = (tags[1],)
     time_window = TimeWindow(spec.filter_start_time, spec.filter_end_time)
     run_id, _ = compute_run_id(
         feature,
@@ -658,7 +667,11 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
     if spec.overlap_frames > 0:
         verify_overlap_supported(manifest, spec.overlap_frames)
     artifact_paths, dependency_lookups = _resolve_dependencies(
-        ds, feature, spec.labels_run_id, entries=resolved.entries
+        ds,
+        feature,
+        spec.labels_run_id,
+        tags[0] if tags is not None else None,
+        entries=resolved.entries,
     )
     filter_factory = _make_filter_factory(
         ds,

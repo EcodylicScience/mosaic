@@ -39,6 +39,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 from mosaic.core.filter_bounds import check_one_filter_per_boundary
 from mosaic.core.json_value import JsonValue
 from mosaic.core.pipeline.label_controls import LabelMask, LabelRemap
+from mosaic.core.pipeline.label_series import LabelRevisionRef, refuse_other_tag_key
 from mosaic.core.scope import Scope
 
 from .expand import expand_repeats
@@ -609,6 +610,15 @@ class Request(GraphModel):
     reads in an older mosaic.
     """
 
+    tag_revision: LabelRevisionRef | None = None
+    """The revision of the tag table that each step reading it reads, or ``None``.
+
+    It names the key ``dataset``. A reference without a ``revision``, and ``None``,
+    mean the latest indexed revision, which a submission records when a step reads
+    the table. Left out of the request file when ``None``, so a request without
+    one reads in an older mosaic.
+    """
+
     pins: dict[str, str] = Field(default_factory=dict)
     """The run each pinned step serves, keyed by step id.
 
@@ -672,6 +682,12 @@ class Request(GraphModel):
                 "tracks_run_id names no variant; leave it unset to read each "
                 "entry's one variant"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _tag_revision_names_the_dataset_table(self) -> Self:
+        if self.tag_revision is not None:
+            refuse_other_tag_key(self.tag_revision)
         return self
 
     @model_validator(mode="after")

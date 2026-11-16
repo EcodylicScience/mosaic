@@ -108,6 +108,7 @@ if TYPE_CHECKING:
     from mosaic.core.json_value import JsonValue
 
     from ..job import CancelToken
+    from ..label_series import LabelRevisionRef
     from ..types.feature import Feature
     from .compatibility import DeclarationCatalog
     from .failures import FailureStore
@@ -350,6 +351,7 @@ def _execute(
         asks_every_entry=(
             subset is None and _asks_every_entry(ready.planned, ready.plan)
         ),
+        tag_revision=ready.plan.tags_read,
         attempt=attempt,
         overwrite=overwrite,
         store=store,
@@ -815,6 +817,7 @@ def _run(
     asked: tuple[Entry, ...],
     *,
     asks_every_entry: bool,
+    tag_revision: LabelRevisionRef | None,
     attempt: str,
     overwrite: bool,
     store: FailureStore,
@@ -900,6 +903,7 @@ def _run(
             asks_every_entry=asks_every_entry,
             overwrite=overwrite,
             tracks_run_id=spec.tracks_run_id,
+            tag_revision=tag_revision,
             labels_run_id=spec.labels_run_id,
             overlap_frames=spec.overlap_frames,
             filter_start_frame=spec.filter_start_frame,

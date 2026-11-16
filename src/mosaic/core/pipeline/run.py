@@ -149,7 +149,7 @@ from .types import (
     TracksColumn,
 )
 from .types.inputs import InputsLike
-from .types.labels import LabelRevisionRef
+from .label_series import LabelRevisionRef
 from .job import CancelToken, Cancelled, JobContext, job_context
 from .entry_pool import EntryPool
 from .memory_watch import (

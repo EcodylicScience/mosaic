@@ -43,9 +43,9 @@ from mosaic.core.pipeline.types.inputs import (
     TrackInputs,
     TrackLike,
 )
+from mosaic.core.pipeline.label_series import LabelRevisionRef
 from mosaic.core.pipeline.types.labels import (
     GroundTruthLabelsSource,
-    LabelRevisionRef,
     LabelsSource,
     LabelsSourceSpec,
 )
