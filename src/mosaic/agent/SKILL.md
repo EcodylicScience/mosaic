@@ -237,10 +237,12 @@ A dataset is a directory with `dataset.yaml` and named roots
   `mosaic sequence-tags import design.csv -m dataset.yaml` (`manage_dataset` action
   `import_sequence_tags`) writes it as the next revision of the table, while
   `mosaic sequence-tags list` (`list_sequence_tags`) shows each tag's type, values and
-  entry counts. Use `--dry-run` to see the changes first, `--type NAME=TYPE` for a type
-  that inference gets wrong and `--key NAME=entry|sequence|recording` when no header
-  column is named `entry`, `sequence`, `group` with `sequence`, or `recording`. A row
-  that names no entry is a warning with its line, and the other rows are written.
+  entry counts, and the MCP answers `result_too_large` for a listing above 40,000
+  characters, which the command prints whole with `--json`. Use `--dry-run` to see the
+  changes first, `--type NAME=TYPE` for a type that inference gets wrong and
+  `--key NAME=entry|sequence|recording` when no header column is named `entry`,
+  `sequence`, `group` with `sequence`, or `recording`. A row that names no entry is a
+  warning with its line, and the other rows are written.
   `--replace` also removes the tags that the CSV does not name, and asks the user
   through MCP. A dataset that mosaic-api manages, or whose tags came from one of its
   projects or from another dataset, refuses the import: edit the tags there. After an

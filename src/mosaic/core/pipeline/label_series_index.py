@@ -2,8 +2,9 @@
 
 The registry, the layout and the rule a series follows are in
 :mod:`mosaic.core.pipeline.label_series`. This module is the half that touches an
-index: the typed row, the writer that mints a revision, and the reader that turns
-a revision on disk back into a row.
+index: the typed row, the writer that mints a revision, the reader that turns
+a revision on disk back into a row, and the resolver that finds the revision a
+reference names.
 
 **mosaic owns the layout; a caller hands it content.** Whoever authored the state
 -- the annotator through mosaic-api, a notebook -- supplies bytes and a free-form
@@ -60,6 +61,7 @@ __all__ = [
     "ResolvedRevision",
     "RevisionManifest",
     "SeriesRevision",
+    "SeveralOrigins",
     "carried_series_digests",
     "ensure_series_root",
     "label_series_index",
@@ -99,6 +101,28 @@ class LabelSeriesTamperedError(ValueError):
     that changed afterwards is refused rather than re-indexed under its new
     digest, because re-indexing would quietly rewrite what that model saw.
     """
+
+
+class SeveralOrigins(KeyError):
+    """A reference matches the key's revisions of several datasets and names none.
+
+    A :class:`KeyError`, so a caller that refuses an unknown reference refuses this
+    one too.
+
+    Attributes:
+        series: The series the reference reads.
+        key: The key the reference names.
+        origins: The datasets' uuids that indexed the key, sorted.
+    """
+
+    def __init__(self, series: str, key: str, origins: Sequence[str]) -> None:
+        self.series = series
+        self.key = key
+        self.origins = tuple(origins)
+        super().__init__(
+            f"{series} key {key!r} is indexed from {len(self.origins)} "
+            f"datasets ({', '.join(self.origins)}); name one with origin_uuid"
+        )
 
 
 def _tampered(path: Path, recorded: str, measured: str) -> LabelSeriesTamperedError:
@@ -725,8 +749,8 @@ def resolve_series_refs(
         kind: What is resolving, named in a deferral.
 
     Raises:
-        KeyError: A reference matches several datasets' revisions of its key
-            and names none.
+        SeveralOrigins: A reference matches several datasets' revisions of its
+            key and names none.
         IdentityDeferred: A reference matches no indexed revision, or the
             revision it matches is not on disk. Both are states a scan or a
             save can still change, which is what deferring means.
@@ -756,11 +780,7 @@ def resolve_series_refs(
             )
         origins = sorted({record.get("origin_uuid", "") for record in matching})
         if len(origins) > 1:
-            msg = (
-                f"{series} key {ref.key!r} is indexed from {len(origins)} "
-                f"datasets ({', '.join(origins)}); name one with origin_uuid"
-            )
-            raise KeyError(msg)
+            raise SeveralOrigins(series, ref.key, origins)
         if ref.revision is None:
             chosen = max(
                 matching, key=lambda record: _int_cell(record.get("revision", ""))

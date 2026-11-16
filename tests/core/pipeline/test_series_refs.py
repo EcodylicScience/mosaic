@@ -12,6 +12,7 @@ from mosaic.core.dataset import Dataset
 from mosaic.core.pipeline.file_digest import file_digest
 from mosaic.core.pipeline.label_series_index import (
     LabelSeriesTamperedError,
+    SeveralOrigins,
     resolve_series_refs,
     series_index_path,
 )
@@ -148,6 +149,23 @@ def test_two_origins_without_an_origin_uuid_raise_key_error(ds: Dataset) -> None
         _ = resolve_series_refs(
             ds, TAGS_SERIES, (LabelRevisionRef(key=TAG_TABLE_KEY),), kind="any-op"
         )
+
+
+def test_the_several_origins_error_names_the_series_key_and_origins(
+    ds: Dataset,
+) -> None:
+    _ = write_tags(ds, tag_table({("g", "s1"): {"treatment": "a"}}, TYPES))
+    other = _index_a_second_origin(ds)
+
+    with pytest.raises(SeveralOrigins) as raised:
+        _ = resolve_series_refs(
+            ds, TAGS_SERIES, (LabelRevisionRef(key=TAG_TABLE_KEY),), kind="any-op"
+        )
+
+    assert raised.value.series == TAGS_SERIES
+    assert raised.value.key == TAG_TABLE_KEY
+    assert raised.value.origins == tuple(sorted((ds.uuid or "", other)))
+    assert isinstance(raised.value, KeyError)
 
 
 def test_an_origin_uuid_selects_among_origins(ds: Dataset) -> None:

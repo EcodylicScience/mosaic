@@ -44,7 +44,6 @@ __all__ = [
     "resolve_tag_ref",
     "resolve_tag_table",
     "tag_read_problems",
-    "tag_term",
 ]
 
 
@@ -93,7 +92,8 @@ def resolve_tag_ref(
     Raises:
         ValueError: *ref* names a key other than ``dataset``.
         IdentityDeferred: No revision is indexed, or the one named is not.
-        KeyError: Several datasets' revisions match and *ref* names no origin.
+        SeveralOrigins: Several datasets' revisions match and *ref* names no
+            origin.
         LabelSeriesTamperedError: The revision's bytes changed after it was
             indexed.
     """
@@ -126,7 +126,8 @@ def resolve_tag_table(
 
     Raises:
         IdentityDeferred: No revision is indexed, or the one named is not.
-        KeyError: Several datasets' revisions match and *ref* names no origin.
+        SeveralOrigins: Several datasets' revisions match and *ref* names no
+            origin.
         LabelSeriesTamperedError: The revision's bytes changed after it was
             indexed.
         ValueError: *payload*, or the revision file, is not a tag table.
@@ -200,7 +201,8 @@ def _colliding_columns(read: TagRead) -> list[str]:
     for name in dict.fromkeys(read.sequence_tags):
         writers.setdefault(renamed.get(name, name), []).append(name)
     return [
-        f"fields {_joined(names)} both write the column '{column}'"
+        f"fields {_joined(names)} {'both' if len(names) == 2 else 'all'} "
+        f"write the column '{column}'"
         for column, names in sorted(writers.items())
         if len(names) > 1
     ]
@@ -225,7 +227,7 @@ def refuse_tag_read(feature_name: str, table: TagTable, read: TagRead) -> None:
         raise ValueError(msg)
 
 
-def tag_term(resolved: ResolvedTagTable, read: TagRead) -> LabelRevisionTerm:
+def _tag_term(resolved: ResolvedTagTable, read: TagRead) -> LabelRevisionTerm:
     """The identity term of *read* over *resolved*.
 
     Its digest covers the named sequence tags over every sequence of the table, so
@@ -258,7 +260,7 @@ def feature_tag_read(
     Raises:
         ValueError: The table does not suit the declaration; the message is the
             first of :func:`tag_read_problems`.
-        IdentityDeferred, KeyError, LabelSeriesTamperedError: As
+        IdentityDeferred, SeveralOrigins, LabelSeriesTamperedError: As
             :func:`resolve_tag_table`.
     """
     if not isinstance(feature, ReadsTags):
@@ -266,4 +268,4 @@ def feature_tag_read(
     read = feature.tag_read()
     resolved = resolve_tag_table(ds, ref, payload=payload, kind=feature.name)
     refuse_tag_read(feature.name, resolved.table, read)
-    return resolved, tag_term(resolved, read)
+    return resolved, _tag_term(resolved, read)

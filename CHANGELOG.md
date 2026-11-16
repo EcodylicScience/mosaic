@@ -39,7 +39,8 @@ revisions of any label series, and `LabelRevisionRef`
 (`mosaic.core.pipeline.label_series`) is a reference: a `key`, an `origin_uuid` for the
 case that several datasets index the key, and a `revision`. Keypoint sets resolve
 through them now. A reference that matches the revisions of several datasets and names
-none is a `KeyError`.
+none raises `SeveralOrigins`, a `KeyError` that carries the series, the key and the
+origins.
 
 ### One request, one tag table
 

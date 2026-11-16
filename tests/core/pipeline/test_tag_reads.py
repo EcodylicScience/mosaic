@@ -30,6 +30,7 @@ from mosaic.core.pipeline.run import (
     run_feature,
 )
 from mosaic.core.pipeline.types import DependencyLookup, InputStream, TrackInputs
+from mosaic.core.pipeline.tag_reads import tag_read_problems
 from mosaic.core.pipeline.types.feature import ReadsTags
 from mosaic.core.pipeline.label_series import LabelRevisionRef
 from mosaic.core.params import Params
@@ -334,6 +335,25 @@ def test_a_problem_with_the_fields_refuses_the_run(
 
     with pytest.raises(ValueError, match=message):
         _ = run_feature(ds, _Stamp(fields, renames))
+
+
+def test_three_fields_that_write_one_column_are_named_together() -> None:
+    table = tag_table(
+        {entry: {"treatment": "a", "site": "north", "age": 3} for entry in ENTRIES},
+        {**TYPES, "age": "int"},
+    )
+    read = TagRead(
+        ("treatment", "site", "age"),
+        WRITES,
+        (("treatment", "x"), ("site", "x"), ("age", "x")),
+    )
+
+    assert tag_read_problems(table, read) == [
+        (
+            "params.field_renames",
+            "fields 'treatment', 'site' and 'age' all write the column 'x'",
+        )
+    ]
 
 
 def test_a_tag_named_as_a_column_the_step_writes_refuses_the_run(ds: Dataset) -> None:

@@ -612,7 +612,7 @@ def _build(ds: Dataset, planned: PlannedStep, plan: Plan, n_threads: int) -> _Re
     """Rebuild a step's feature as the engine would before fitting it.
 
     A step that reads the tag table reads the revision that *plan* records
-    (``Plan.tags_read``), so its identity and its lookup are the ones the run had.
+    (``Plan.tags_read``), so its identity and its lookup come from one revision.
 
     Raises:
         RuntimeError: The rebuilt feature is not the planned run.

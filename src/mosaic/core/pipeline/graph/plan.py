@@ -703,8 +703,8 @@ class _TagSource:
 
         Raises:
             IdentityDeferred: No revision is indexed, or the one named is not.
-            KeyError: Several datasets' revisions match and the reference names
-                no origin.
+            SeveralOrigins: Several datasets' revisions match and the reference
+                names no origin.
             LabelSeriesTamperedError: The revision's bytes changed after it was
                 indexed.
         """

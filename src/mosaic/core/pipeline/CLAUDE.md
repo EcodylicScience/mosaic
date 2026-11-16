@@ -396,7 +396,8 @@ are in `graph/CLAUDE.md`.
   the directories on disk, and creates the revision directory exclusively.
 - Only the payload is digested and compared. `revision_export` checks an export's
   digest where it is read. A revision whose payload changed raises
-  `LabelSeriesTamperedError` at scan.
+  `LabelSeriesTamperedError` at scan, and `resolve_series_refs` raises it when a
+  plan or a run names the revision.
 - A series is recognized by its `.mosaic-series` marker (`is_under_label_series`).
   `ensure_series_root` does not count mosaic's bookkeeping files as a squatter.
 - A prune verb, when one exists, keeps every consumed revision

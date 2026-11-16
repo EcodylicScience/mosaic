@@ -208,10 +208,10 @@ request, and `drivers/<rid>.log` the output of that driver and its steps
 - `Request.tag_revision` is the revision of the dataset's tag table that every step
   reading it plans and runs with. `submit_request` resolves a passed reference once
   (`resolve_tag_ref`) before it plans, and otherwise records `Plan.tags_read`, the
-  revision the plan read. A step passes it to `run_feature`, and `pipeline verify`
-  rebuilds a step from `Plan.tags_read`, so a table imported after the submit moves
-  no run id. `save_request` leaves the key out when it is `None`
-  (`test_pipeline_tag_revision.py`).
+  revision the plan read. A step passes it to `run_feature`, so a table imported
+  after the submit moves no step's run id. `pipeline verify` plans without the
+  request and rebuilds each step from the revision its own plan read, the latest.
+  `save_request` leaves the key out when it is `None` (`test_pipeline_tag_revision.py`).
 - `refuse_mixed_schemas` (`step_preflight.py`) runs in `plan_pipeline` before the walk
   when `refuse` is set, and in `execute_step` for the starting step alone (`only`). With
   no variant, a feature step reading `tracks` with no `tracks` reference, no bind and

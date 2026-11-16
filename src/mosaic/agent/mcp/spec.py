@@ -627,6 +627,15 @@ class ToolInput(StrictModel):
         """
         return declared
 
+    def reads_only(self, declared: bool) -> bool:
+        """Return whether this call changes nothing, so its result is bounded.
+
+        Args:
+            declared: The tool's :attr:`ToolAnnotations.read_only`. A tool whose
+                action reads under a name that changes things says so here.
+        """
+        return declared
+
     def whole_result_advice(self) -> str:
         """Return what to add to a ``result_too_large`` refusal, or ``""``.
 
@@ -1382,6 +1391,18 @@ class ManageDatasetInput(ToolInput):
             "with reason confirmation_required listed."
         ),
     )
+
+    @override
+    def reads_only(self, declared: bool) -> bool:
+        """Return that ``list_sequence_tags`` reads, though the tool is not read-only."""
+        return declared or self.action == "list_sequence_tags"
+
+    @override
+    def whole_result_advice(self) -> str:
+        """Return that the CLI lists every sequence tag whole, for that action."""
+        if self.action == "list_sequence_tags":
+            return "mosaic sequence-tags list --json lists every tag whole."
+        return ""
 
 
 class DatasetChange(StrictModel):
@@ -2269,10 +2290,12 @@ def call_tool(
 def _bounded(spec: ToolSpec, request: ToolInput, output: BaseModel) -> BaseModel:
     """Return *output*, or :func:`result_too_large` for a read above the budget.
 
-    A tool that changes a dataset has done so by the time it returns, so its
+    A call that changes a dataset has done so by the time it returns, so its
     result is returned whatever its size.
     """
-    if isinstance(output, ErrorEnvelope) or not spec.annotations.read_only:
+    if isinstance(output, ErrorEnvelope) or not request.reads_only(
+        spec.annotations.read_only
+    ):
         return output
     chars = len(output.model_dump_json())
     if chars <= MAX_RESULT_CHARS:
@@ -2284,8 +2307,10 @@ def result_too_large(spec: ToolSpec, request: ToolInput, chars: int) -> ErrorEnv
     """Refuse a result of *chars* characters, naming the arguments that narrow it.
 
     The arguments are ``request.narrowing(spec.narrowing)``. A flag already true
-    in *request* is left out, since calling again with it narrows nothing. A
-    summary's refusal adds that the CLI and Python return it whole.
+    in *request* is left out, since calling again with it narrows nothing. The
+    request's whole-result advice follows the arguments. When no argument is
+    left, the advice replaces the sentence that says the CLI prints the result
+    whole.
     """
     arguments = [
         argument
@@ -2293,13 +2318,13 @@ def result_too_large(spec: ToolSpec, request: ToolInput, chars: int) -> ErrorEnv
         if getattr(request, argument, None) is not True
     ]
     narrow_with: list[JsonValue] = list(arguments)
-    advice = (
-        f"Call again narrowed by {', '.join(arguments)}."
-        if arguments
-        else "No argument narrows it. The mosaic CLI prints it whole."
-    )
-    if whole := request.whole_result_advice():
-        advice += f" {whole}"
+    whole = request.whole_result_advice()
+    if arguments:
+        advice = f"Call again narrowed by {', '.join(arguments)}."
+        if whole:
+            advice += f" {whole}"
+    else:
+        advice = f"No argument narrows it. {whole or 'The mosaic CLI prints it whole.'}"
     return ErrorEnvelope(
         kind="invalid",
         reason=RESULT_TOO_LARGE,

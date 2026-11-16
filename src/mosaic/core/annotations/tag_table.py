@@ -20,11 +20,10 @@ Nothing time-dependent and no database row id belongs in the payload; provenance
 goes in the revision's ``origin``. Renaming an individual, a UID or a definition
 changes the payload, since each is a column name or a column value.
 
-**One check for writing and reading.** A table that holds a value without a
-definition, a value its type refuses, two definitions of one name in one
-vocabulary, two sequences of one entry, or two rows of one tracker id in one
-variant of a sequence is refused whether it is being written or
-read.
+**One check for writing and reading.** The same check refuses a table on write and
+on read. It refuses a value without a definition, a value its type refuses, two
+definitions of one name in one vocabulary, two sequences of one entry, and two rows
+of one tracker id in one variant of a sequence.
 """
 
 from __future__ import annotations

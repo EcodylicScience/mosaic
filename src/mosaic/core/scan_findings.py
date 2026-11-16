@@ -1,7 +1,8 @@
-"""What a source scan drops or cannot place, as findings.
+"""What a source scan or a CSV import drops or cannot place, as findings.
 
 A scan that finds nothing in a source is indistinguishable from a scan of an
-empty source unless it says why. :class:`ScanFinding` names the source and the
+empty source unless it says why. The import of sequence tags reports the rows of
+its CSV that name no entry the same way. :class:`ScanFinding` names the source and the
 problem. :class:`FindingLog` prints each finding on stderr as it is made and
 keeps it, so ``mosaic scan --json`` and the MCP's ``manage_dataset`` return what
 stderr alone would not carry to an agent.
@@ -54,11 +55,12 @@ the dataset imports names no entry.
 
 
 class ScanFinding(StrictModel):
-    """One thing a scan dropped or could not place.
+    """One thing a scan or a CSV import dropped or could not place.
 
     Attributes:
-        kind: Which raw root the source feeds.
-        source: The source's id.
+        kind: Which raw root the source feeds. A sequence tag import reports
+            ``labels``.
+        source: The source's id, or the CSV's file name for a sequence tag import.
         problem: What happened.
         message: The problem, for a person.
         path: The path it concerns, when it concerns one.

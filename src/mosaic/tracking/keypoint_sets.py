@@ -101,7 +101,7 @@ def resolve_keypoint_sets(
     The index says which file a reference means. The file says what is in it:
     the digest is taken from the bytes now and compared with the index row's, so
     a revision that was edited in place cannot mint the identifier of the state
-    it used to hold.
+    it used to hold. ``resolve_series_refs`` does the resolving.
 
     Raises:
         KeyError: A reference matches several datasets' sets and names none.

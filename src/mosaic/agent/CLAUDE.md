@@ -39,8 +39,9 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   mode and `where`, `columns` and `by` in `summary` mode.
   `ToolInput.whole_result_advice` adds the route that returns a result whole, which
   `PreviewOutputInput` overrides in `summary` mode to name the CLI and Python. A write
-  tool's result is returned whatever its size. A new argument that shrinks a result
-  joins its tool's `narrowing`, and a new `limit` must
+  tool's result is returned whatever its size, unless `ToolInput.reads_only` says the
+  call reads, as `ManageDatasetInput` does for `list_sequence_tags`. A new argument
+  that shrinks a result joins its tool's `narrowing`, and a new `limit` must
   (`test_every_tool_with_a_limit_names_it_among_its_narrowing`).
 - A tool has one output model, except `preview_output`, whose `PreviewOutput`
   (`core/pipeline/run_summary.py`) is the `anyOf` of `ArtifactPreview` and
@@ -89,8 +90,8 @@ the MCP server behind `mosaic agent serve`. The user documentation is
   dataset inside the operator's `dataset_roots` and declares a source inside its
   `source_roots`, each path resolved through links and `..`. It writes the manifest
   only through `Dataset.declare_scan_source`, `undeclare_scan_source` and
-  `update_tags`, which take the manifest's lock, and never `splits`. Its one other
-  writer is the tags series: `import_sequence_tags` reads a CSV inside `source_roots`,
+  `update_tags`, which take the manifest's lock, and never `splits`. It also writes the
+  tags series: `import_sequence_tags` reads a CSV inside `source_roots`,
   asks `replace_sequence_tags` when `replace` removes tags, and is refused on a managed
   dataset whatever `allow_managed_writes` says. `list_sequence_tags` is answered before
   `_changeable`, so a managed dataset lists its tags. A dataset below a dataset root is

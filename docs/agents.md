@@ -266,12 +266,14 @@ lets the agent start from a folder of raw files: create a dataset inside a datas
   `--type`, `--replace` and `--dry-run`. The answer lists the change to each tag, and
   the rows that name no entry as findings with their CSV line, while the matched rows
   are written. `list_sequence_tags` shows each sequence tag with its type, its values
-  and their entry counts, and writes nothing. It works on a managed dataset, and the
-  import is refused there whatever `allow_managed_writes` says, as it is on a dataset
-  whose tags came from a service's project or from another dataset. That refusal and a
-  table that several datasets index answer `conflict`, as does an import that another
-  import preceded, so the agent lists the tags and imports again. A CSV or key that
-  cannot be read answers `invalid` with what to change.
+  and their entry counts, and writes nothing. A listing above 40,000 characters
+  answers `result_too_large`, and `mosaic sequence-tags list --json` prints it whole.
+  It works on a managed dataset, and the import is refused there whatever
+  `allow_managed_writes` says, as it is on a dataset whose tags came from a service's
+  project or from another dataset. That refusal and a table that several datasets
+  index answer `conflict`, as does an import that another import preceded, so the
+  agent lists the tags and imports again. A CSV or key that cannot be read answers
+  `invalid` with what to change.
 - No action writes `splits`, and a managed dataset is refused.
 - `describe_dataset` and `mosaic describe` list `next_steps` for a dataset that is
   not ready: a source to declare, sources to scan, raw files to convert.

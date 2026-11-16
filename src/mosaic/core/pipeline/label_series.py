@@ -5,8 +5,9 @@
 change moves a composition hash and blocks while derivatives exist.
 
 A **series** follows a different rule, on purpose. It is the committed state of an
-editor -- the keypoint annotator, later the behavior scoring tool -- projected to
-disk whenever a consumer needs a fixed copy of it. Such a state is *versioned*:
+editor, such as the keypoint annotator, or the dataset's tag table, projected to
+disk whenever a consumer needs a fixed copy of it. The behavior scoring tool will
+have one. Such a state is *versioned*:
 each save that changed something is a new immutable revision, revisions coexist,
 nothing is ever replaced, and a consumer names the revision it read. That is what
 lets a trained model be tied to the exact annotations it saw, and it is why a new

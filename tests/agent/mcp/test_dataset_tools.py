@@ -14,7 +14,13 @@ import anyio
 import pytest
 
 from mosaic.agent.mcp.local import LocalBackend
-from mosaic.agent.mcp.spec import DatasetChange, DatasetList, call_tool
+from mosaic.agent.mcp.spec import (
+    MAX_RESULT_CHARS,
+    DatasetChange,
+    DatasetList,
+    ManageDatasetInput,
+    call_tool,
+)
 from mosaic.core.annotations import sequence_tags
 from mosaic.core.annotations.sequence_tag_wire import (
     SequenceTagImport,
@@ -1010,6 +1016,40 @@ def test_a_managed_dataset_lists_its_tags_and_refuses_an_import_even_when_allowe
     assert "managed" in refused.message
     assert refused_by_default.reason == "dataset_managed"
     assert list_sequence_tags(_study(roots)).revision == 1
+
+
+def test_a_listing_above_the_result_budget_is_refused_and_names_the_command_line(
+    backend: LocalBackend, roots: tuple[Path, Path]
+) -> None:
+    uuid = _created(backend).dataset
+    entries = tuple(("g", f"s{index:04d}") for index in range(1200))
+    add_track_sequences(_study(roots), *entries)
+    rows = "".join(
+        f"g:s{index:04d},{'v' * 40}{index:04d}\n" for index in range(len(entries))
+    )
+    name = _tags_csv(roots, f"entry,site\n{rows}")
+    _ = _call(
+        backend, DatasetChange, action="import_sequence_tags", dataset=uuid, path=name
+    )
+
+    refused = _call(backend, ErrorEnvelope, action="list_sequence_tags", dataset=uuid)
+
+    assert (refused.kind, refused.reason) == ("invalid", "result_too_large")
+    assert refused.detail is not None
+    assert refused.detail["tool"] == "manage_dataset"
+    assert refused.detail["budget"] == MAX_RESULT_CHARS
+    assert refused.message.count("CLI") + refused.message.count("mosaic ") == 1
+    assert "mosaic sequence-tags list --json" in refused.message
+
+
+def test_other_actions_name_no_command_for_a_whole_result() -> None:
+    listing = ManageDatasetInput(action="list_sequence_tags", dataset="d")
+    scan = ManageDatasetInput(action="scan", dataset="d")
+
+    assert "mosaic sequence-tags list --json" in listing.whole_result_advice()
+    assert scan.whole_result_advice() == ""
+    assert listing.reads_only(False)
+    assert not scan.reads_only(False)
 
 
 def test_the_listing_equals_the_command_line_json(

@@ -55,6 +55,7 @@ from mosaic.core.pipeline.label_series import (
 )
 from mosaic.core.pipeline.label_series_index import (
     ResolvedRevision,
+    SeveralOrigins,
     read_label_series,
     read_revision_manifest,
     resolve_series_refs,
@@ -74,7 +75,6 @@ if TYPE_CHECKING:
     from mosaic.core.dataset import Dataset
 
 __all__ = [
-    "RESERVED_COLUMNS",
     "KeyForm",
     "SequenceTagCsv",
     "SequenceTagCsvInvalid",
@@ -95,7 +95,7 @@ a sequence name, alone or beside a ``group`` column. ``recording`` is a continuo
 group or an undivided recording's entry token, and names every sequence of it.
 """
 
-RESERVED_COLUMNS: Final[frozenset[str]] = frozenset(
+_RESERVED_COLUMNS: Final[frozenset[str]] = frozenset(
     {"group", "sequence", "id", "frame", "time", "individual", "uid"}
 )
 """The names of a column that a tag may not have, since a step that reads tags writes it."""
@@ -210,7 +210,7 @@ def read_sequence_tag_csv(
     key_form, key_indexes = _key(header, key)
     tag_indexes = [index for index in range(len(header)) if index not in key_indexes]
     for index in tag_indexes:
-        if header[index] in RESERVED_COLUMNS:
+        if header[index] in _RESERVED_COLUMNS:
             raise SequenceTagCsvInvalid(reserved_name_message(header[index]))
     tag_names = {header[index] for index in tag_indexes}
     for name in types:
@@ -517,11 +517,12 @@ def _latest_revision(ds: Dataset, *, kind: str) -> ResolvedRevision | None:
         (found,) = resolve_series_refs(
             ds, TAGS_SERIES, (LabelRevisionRef(key=TAG_TABLE_KEY),), kind=kind
         )
-    except KeyError as exc:
-        indexed_from = str(exc.args[0]).partition(";")[0]
+    except SeveralOrigins as exc:
         msg = (
-            f"the {indexed_from}, so a run cannot tell which table to read. Keep "
-            "the revisions of one dataset in labels_raw/tags"
+            f"the {exc.series} key {exc.key!r} is indexed from "
+            f"{len(exc.origins)} datasets ({', '.join(exc.origins)}), so a run "
+            "cannot tell which table to read. Keep the revisions of one dataset "
+            "in labels_raw/tags"
         )
         raise SequenceTagTableUnavailable(msg) from exc
     except IdentityDeferred as exc:
